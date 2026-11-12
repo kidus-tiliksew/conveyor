@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page } from '@playwright/test'
+import { expect, type Locator, type Page, type TestInfo } from '@playwright/test'
 import type { NextAction, WorkOrder } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
@@ -215,11 +215,12 @@ test('Show IDs flattens nested next-action details into labelled text', async ({
   await expect(ids).not.toContainText('"')
 })
 
-// A running agent attempt reads as one row on the Timeline: the server's
+// A running agent attempt reads as one banner on the Timeline: the server's
 // label as a status chip, its summary as the one heading, the current order's
-// model and elapsed time, the time left, and one "More actions" menu for the
-// rare acts (DEC-61; req-operator-next-action AC-1.7, AC-1.8, AC-7.1;
-// component-next-action invariant 33; component-web-task-surfaces invariant 32).
+// model logo and elapsed time, and one "More actions" menu for the rare acts.
+// It prints no deadline (DEC-61; DEC-129; req-operator-next-action AC-1.7,
+// AC-1.8, AC-7.1; component-next-action invariant 33;
+// component-web-task-surfaces invariant 32).
 const runningOrder = {
   id: 'order-impl-running',
   task_id: taskId,
@@ -345,17 +346,19 @@ for (const surface of surfaces) {
       const detail = page.getByRole(surface.detail, { name: surface.label })
       await expect(detail.getByText('An agent is implementing this task.', { exact: true })).toHaveCount(1)
 
-      // The current order's model and elapsed time, and the time left.
+      // The current order's model as its logo, named by the model, and the
+      // elapsed time. The model text and the deadline do not render (DEC-129).
       const meta = card.locator('[data-banner-meta]')
-      await expect(meta.locator('[data-banner-model]')).toHaveText('claude-opus-5-5·')
+      const model = meta.locator('[data-banner-model]')
+      await expect(model).toHaveAccessibleName('claude-opus-5-5')
+      await expect(model.locator('svg')).toHaveCount(1)
+      await expect(card.getByText('claude-opus-5-5')).toHaveCount(0)
       await expect(meta.locator('time')).toHaveText('started 1h ago')
-      // At 375 px the meta has its own row, so the model shows in full.
-      if (width < 640) await expect(meta.locator('[data-banner-model]')).toBeInViewport()
+      // At 375 px the meta has its own line, so the logo shows.
+      if (width < 640) await expect(model).toBeInViewport()
       await expect(meta.locator('time')).toHaveAttribute('datetime', '2026-10-12T10:00:00.000Z')
-      const left = card.locator('[data-next-action-deadline]')
-      await expect(left).toContainText('3h left')
-      await expect(left.locator('time')).toHaveAttribute('datetime', '2026-10-12T14:00:00Z')
-      await expect(left).toHaveAttribute('data-tone', 'neutral')
+      await expect(card.locator('[data-next-action-deadline]')).toHaveCount(0)
+      await expect(card.getByText(/\bleft\b|Deadline passed/)).toHaveCount(0)
       await expect(card).toHaveAttribute('data-tone', 'neutral')
 
       // The stage line, the visible if-ignored line, the inline stop button,
@@ -376,21 +379,23 @@ for (const surface of surfaces) {
         await expect(page.locator('dt').getByText(label, { exact: true })).toHaveCount(0)
       }
 
-      // One row: the chip, sentence, time left, and menu share a line. At
-      // 375 px the meta wraps under the sentence.
+      // From 640 px the chip, summary, meta, and menu share one row. Below
+      // 640 px the summary and menu take the first line, and the chip and the
+      // meta take the second (DEC-129(3)).
       const menu = card.getByRole('button', { name: 'More actions' })
       const row = await verticalCenter(chip)
-      for (const part of [left, menu]) expect(Math.abs((await verticalCenter(part)) - row)).toBeLessThanOrEqual(4)
       const headingBox = await heading.boundingBox()
       const metaBox = await meta.boundingBox()
       const chipBox = await chip.boundingBox()
       if (!headingBox || !metaBox || !chipBox) throw new Error('banner part has no box')
-      expect(Math.abs(headingBox.y - chipBox.y)).toBeLessThanOrEqual(4)
       if (width < 640) {
-        expect(metaBox.y).toBeGreaterThanOrEqual(headingBox.y + headingBox.height - 1)
-        expect(Math.abs(metaBox.x - headingBox.x)).toBeLessThanOrEqual(1)
-      } else {
+        expect(chipBox.y).toBeGreaterThanOrEqual(headingBox.y + headingBox.height - 1)
         expect(Math.abs((await verticalCenter(meta)) - row)).toBeLessThanOrEqual(4)
+        expect(metaBox.x).toBeGreaterThan(chipBox.x + chipBox.width)
+        expect(Math.abs((await verticalCenter(menu)) - (await verticalCenter(heading)))).toBeLessThanOrEqual(4)
+      } else {
+        for (const part of [meta, menu]) expect(Math.abs((await verticalCenter(part)) - row)).toBeLessThanOrEqual(4)
+        expect(Math.abs(headingBox.y - chipBox.y)).toBeLessThanOrEqual(4)
         expect(metaBox.x).toBeGreaterThan(headingBox.x)
         const cardBox = await card.boundingBox()
         expect(cardBox && cardBox.height).toBeLessThanOrEqual(48)
@@ -425,10 +430,218 @@ for (const width of [375, 1280]) {
     // The queue age only: the earlier attempt's model is not this order's.
     await expect(card.locator('[data-banner-meta]')).toHaveText('queued 1h 30m ago')
     await expect(card.getByText('claude-opus-5-5')).toHaveCount(0)
-    await expect(card.locator('[data-next-action-deadline]')).toContainText('22h 30m left')
+    await expect(card.locator('[data-next-action-deadline]')).toHaveCount(0)
+    await expect(card.getByText(/\bleft\b|Deadline passed/)).toHaveCount(0)
     await expect(card.locator('[data-deadline-progress]')).toHaveCount(0)
     await expect(card).toHaveAttribute('data-tone', 'neutral')
     expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+  })
+}
+
+// On a 375 px touch screen the banner keeps its visual sizes: the chip stays
+// 24 px tall, and touch areas outside the layout box give the chip and the
+// model logo 40 px of height without overlapping. The summary sits on the
+// first line, and the chip, logo, and elapsed time on the second, with the
+// time at the line's right edge (DEC-129(3), DEC-129(4)).
+test.describe('the banner on a 375 px touch screen', () => {
+  test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true })
+
+  test('keeps the chip 24 px tall and gives the chip and logo separate 40 px touch areas', async ({ page }) => {
+    await page.clock.setFixedTime(oneHourIn)
+    await mockAPI(
+      page,
+      () => activity('running', workingAction, [runningOrder]),
+      () => workingAction,
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const card = page.getByRole('region', { name: 'Next action' })
+    const chip = card.getByRole('button', { name: 'Working, agent' })
+    const logo = card.locator('[data-banner-model]')
+    const heading = card.getByRole('heading', { name: 'An agent is implementing this task.' })
+    const meta = card.locator('[data-banner-meta]')
+    const time = meta.locator('time')
+    await expect(card.getByRole('button', { name: 'operator' })).toHaveAttribute('data-live', '')
+    await expect(card.locator('[data-live-halo]')).toHaveCount(0)
+
+    const chipBox = await chip.boundingBox()
+    const logoBox = await logo.boundingBox()
+    const headingBox = await heading.boundingBox()
+    const metaBox = await meta.boundingBox()
+    const timeBox = await time.boundingBox()
+    if (!chipBox || !logoBox || !headingBox || !metaBox || !timeBox) throw new Error('banner part has no box')
+    expect(Math.round(chipBox.height)).toBe(24)
+
+    // Each touch area answers a hit test across 40 px of height.
+    const hits = (x: number, top: number, count: number, selector: string) =>
+      page.evaluate(
+        ({ x, top, count, selector }) =>
+          Array.from({ length: count }, (_, index) =>
+            Boolean(document.elementFromPoint(x, top + index)?.closest(selector)),
+          ),
+        { x, top, count, selector },
+      )
+    const chipCenter = chipBox.y + chipBox.height / 2
+    const logoCenter = logoBox.y + logoBox.height / 2
+    expect(await hits(chipBox.x + chipBox.width / 2, chipCenter - 19.5, 40, '[data-status-chip]')).not.toContain(false)
+    expect(await hits(logoBox.x + logoBox.width / 2, logoCenter - 19.5, 40, '[data-banner-model]')).not.toContain(false)
+
+    // No point along the second line's center row lies in both touch areas.
+    const areas = await page.evaluate(() => {
+      const area = (element: Element) => {
+        const box = element.getBoundingClientRect()
+        const after = getComputedStyle(element, '::after')
+        const px = (value: string) => Number.parseFloat(value) || 0
+        // A negative inset places the pseudo-element's edge outside the box.
+        return {
+          left: box.left + px(after.left),
+          right: box.right - px(after.right),
+          top: box.top + px(after.top),
+          bottom: box.bottom - px(after.bottom),
+        }
+      }
+      return {
+        chip: area(document.querySelector('[data-status-chip]') as Element),
+        logo: area(document.querySelector('[data-banner-model]') as Element),
+      }
+    })
+    expect(areas.chip.bottom - areas.chip.top).toBeGreaterThanOrEqual(40)
+    expect(areas.logo.bottom - areas.logo.top).toBeGreaterThanOrEqual(40)
+    for (let x = 0; x <= 375; x++) {
+      const inChip = x >= areas.chip.left && x <= areas.chip.right
+      const inLogo = x >= areas.logo.left && x <= areas.logo.right
+      expect(inChip && inLogo, `x=${x}`).toBe(false)
+    }
+    const row = await page.evaluate(
+      ({ y }) =>
+        Array.from({ length: 376 }, (_, x) => {
+          const hit = document.elementFromPoint(x, y)
+          return hit?.closest('[data-status-chip]') ? 'chip' : hit?.closest('[data-banner-model]') ? 'logo' : ''
+        }),
+      { y: chipCenter },
+    )
+    expect(row.lastIndexOf('chip')).toBeLessThan(row.indexOf('logo'))
+
+    // The summary is above the chip, and the elapsed time ends at the meta
+    // line's right edge.
+    expect(headingBox.y + headingBox.height).toBeLessThanOrEqual(chipBox.y)
+    expect(Math.abs(timeBox.x + timeBox.width - (metaBox.x + metaBox.width))).toBeLessThanOrEqual(2)
+    expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+
+    // A tap on the logo opens its tooltip with the model name.
+    await logo.tap()
+    await expect(card.getByRole('tooltip').filter({ hasText: /^claude-opus-5-5$/ })).toBeVisible()
+  })
+})
+
+// At 1280 px a long summary wraps instead of truncating, and the meta and the
+// menu stay inside the banner (DEC-129(3)). An unbroken token, such as a URL,
+// wraps inside the summary's column too.
+test('a long summary wraps at 1280 px and the menu stays inside the banner', async ({ page }) => {
+  await page.clock.setFixedTime(oneHourIn)
+  await page.setViewportSize({ width: 1280, height: 900 })
+  const summary =
+    'An agent is implementing this task, which rebuilds the passive next-action banner so that a long summary wraps onto a second line and never pushes the elapsed time or the More actions menu outside the banner box on a wide screen.'
+  const long: NextAction = { ...workingAction, summary }
+  await mockAPI(
+    page,
+    () => activity('running', long, [runningOrder]),
+    () => long,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  const heading = card.getByRole('heading', { name: summary })
+  await expect(heading).toBeVisible()
+  const headingBox = await heading.boundingBox()
+  const cardBox = await card.boundingBox()
+  const menuBox = await card.getByRole('button', { name: 'More actions' }).boundingBox()
+  const metaBox = await card.locator('[data-banner-meta]').boundingBox()
+  if (!headingBox || !cardBox || !menuBox || !metaBox) throw new Error('banner part has no box')
+  // Two or more 20 px lines, with no ellipsis.
+  expect(headingBox.height).toBeGreaterThanOrEqual(2 * 20)
+  expect(await heading.evaluate((element) => getComputedStyle(element).textOverflow)).not.toBe('ellipsis')
+  for (const box of [menuBox, metaBox]) {
+    expect(box.x).toBeGreaterThanOrEqual(cardBox.x)
+    expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width)
+    expect(box.y).toBeGreaterThanOrEqual(cardBox.y)
+    expect(box.y + box.height).toBeLessThanOrEqual(cardBox.y + cardBox.height)
+  }
+  expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+
+  // A summary with one long unbroken token stays left of the meta.
+  const token: NextAction = {
+    ...workingAction,
+    summary: `See https://example.test/${'a'.repeat(160)} for the order.`,
+  }
+  await page.unroute('**/v1/**')
+  await mockAPI(
+    page,
+    () => activity('running', token, [runningOrder]),
+    () => token,
+  )
+  await page.reload()
+  const tokenHeading = card.getByRole('heading', { name: token.summary })
+  await expect(tokenHeading).toBeVisible()
+  const tokenRight = await tokenHeading.evaluate((element) => {
+    const range = document.createRange()
+    range.selectNodeContents(element)
+    return Math.max(...Array.from(range.getClientRects(), (rect) => rect.right))
+  })
+  const tokenMetaBox = await card.locator('[data-banner-meta]').boundingBox()
+  if (!tokenMetaBox) throw new Error('meta has no box')
+  expect(tokenRight).toBeLessThanOrEqual(tokenMetaBox.x)
+  expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+})
+
+// Screenshots of the banner's working, queued, and long-summary states at
+// 375 px on a touch screen and at 1280 px, attached to the Playwright report
+// for review (AGENTS.md visual check). No screenshot is committed.
+const longSummaryAction: NextAction = {
+  ...workingAction,
+  summary:
+    'An agent is implementing this task, which rebuilds the passive next-action banner so that a long summary wraps onto a second line and never pushes the elapsed time or the More actions menu outside the banner box.',
+}
+const bannerStates = [
+  { name: 'working', state: 'running', action: workingAction, order: runningOrder },
+  { name: 'queued', state: 'queued', action: queuedAction, order: queuedOrder },
+  { name: 'long-summary', state: 'running', action: longSummaryAction, order: runningOrder },
+] as const
+
+async function captureBanner(page: Page, testInfo: TestInfo, name: string) {
+  const card = page.getByRole('region', { name: 'Next action' })
+  await expect(card.getByRole('heading')).toBeVisible()
+  await card.scrollIntoViewIfNeeded()
+  const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+  const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, animations: 'disabled' })
+  await testInfo.attach(name, { body: image, contentType: 'image/png' })
+}
+
+test.describe('capture the banner on a 375 px touch screen', () => {
+  test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true })
+  for (const banner of bannerStates) {
+    test(`capture the ${banner.name} banner at 375 px`, async ({ page }, testInfo) => {
+      await page.clock.setFixedTime(oneHourIn)
+      await mockAPI(
+        page,
+        () => activity(banner.state, banner.action, [banner.order]),
+        () => banner.action,
+      )
+      await page.goto(`/w/demo/tasks/${taskId}/full`)
+      await captureBanner(page, testInfo, `banner-${banner.name}-375-touch.png`)
+    })
+  }
+})
+
+for (const banner of bannerStates) {
+  test(`capture the ${banner.name} banner at 1280 px`, async ({ page }, testInfo) => {
+    await page.clock.setFixedTime(oneHourIn)
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await mockAPI(
+      page,
+      () => activity(banner.state, banner.action, [banner.order]),
+      () => banner.action,
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    await captureBanner(page, testInfo, `banner-${banner.name}-1280.png`)
   })
 }
 
@@ -449,14 +662,11 @@ test('a banner field the order lacks prints nothing', async ({ page }) => {
   await expect(card.getByText(/ago|left|undefined|NaN/)).toHaveCount(0)
 })
 
-// The last tenth of the execution span takes the attention tone on the bar,
-// the time text, and the banner border; before it the banner stays neutral.
-for (const { at, tone, left } of [
-  { at: '2026-10-12T13:30:00Z', tone: 'neutral', left: '30m left' },
-  { at: '2026-10-12T13:36:00Z', tone: 'attention', left: '24m left' },
-  { at: '2026-10-12T14:10:00Z', tone: 'attention', left: 'Deadline passed' },
-]) {
-  test(`at ${at} the banner tone is ${tone}`, async ({ page }) => {
+// The banner prints no deadline, time left, or deadline progress, and takes
+// no tone from the deadline, at any point of the execution span (DEC-129(1);
+// component-next-action invariant 33).
+for (const at of ['2026-10-12T13:30:00Z', '2026-10-12T13:36:00Z', '2026-10-12T14:10:00Z']) {
+  test(`at ${at} the banner prints no deadline and keeps the neutral tone`, async ({ page }) => {
     await page.clock.setFixedTime(new Date(at))
     await page.setViewportSize({ width: 1280, height: 900 })
     await mockAPI(
@@ -466,38 +676,27 @@ for (const { at, tone, left } of [
     )
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     const card = page.getByRole('region', { name: 'Next action' })
-    const timeLeft = card.locator('[data-next-action-deadline]')
-    await expect(timeLeft).toContainText(left)
-    await expect(timeLeft).toHaveAttribute('data-tone', tone)
-    await expect(card).toHaveAttribute('data-tone', tone)
-    const progress = Number(await card.locator('[data-deadline-progress]').getAttribute('data-deadline-progress'))
-    expect(progress).toBe(Math.min(100, Math.round(((Date.parse(at) - Date.parse(timestamp)) / (4 * 3600_000)) * 100)))
-    // Compare against probes carrying the attention classes the banner uses.
+    await expect(card.getByRole('heading', { name: 'An agent is implementing this task.' })).toBeVisible()
+    await expect(card.locator('[data-next-action-deadline]')).toHaveCount(0)
+    await expect(card.locator('[data-deadline-progress]')).toHaveCount(0)
+    await expect(card.getByText(/\bleft\b|Deadline passed|^Deadline /)).toHaveCount(0)
+    await expect(card).toHaveAttribute('data-tone', 'neutral')
     const colors = await card.evaluate((element) => {
-      const probe = (className: string, property: 'color' | 'borderTopColor' | 'backgroundColor') => {
-        const span = document.createElement('span')
-        span.className = className
-        element.append(span)
-        const value = getComputedStyle(span)[property]
-        span.remove()
-        return value
-      }
-      return {
-        border: getComputedStyle(element).borderTopColor,
-        attentionBorder: probe('border border-attention/60', 'borderTopColor'),
-        attentionText: probe('text-attention', 'color'),
-        attentionBar: probe('bg-attention-dot', 'backgroundColor'),
-        bar: getComputedStyle(element.querySelector('[data-deadline-progress] > span') as Element).backgroundColor,
-      }
+      const span = document.createElement('span')
+      span.className = 'border border-attention/60'
+      element.append(span)
+      const attentionBorder = getComputedStyle(span).borderTopColor
+      span.remove()
+      return { border: getComputedStyle(element).borderTopColor, attentionBorder }
     })
-    const timeColor = await timeLeft.evaluate((element) => getComputedStyle(element).color)
-    expect(timeColor === colors.attentionText).toBe(tone === 'attention')
-    expect(colors.border === colors.attentionBorder).toBe(tone === 'attention')
-    expect(colors.bar === colors.attentionBar).toBe(tone === 'attention')
+    expect(colors.border).not.toBe(colors.attentionBorder)
   })
 }
 
-test('the deadline keeps its full time in a tooltip reachable by keyboard', async ({ page }) => {
+// The model logo and the chip keep their tooltips reachable by keyboard: the
+// logo's names the model, and the chip's names the actor and the if-ignored
+// sentence (DEC-129(2); component-next-action invariant 33).
+test('the model logo and the chip open their tooltips by keyboard', async ({ page }) => {
   await page.clock.setFixedTime(oneHourIn)
   await mockAPI(
     page,
@@ -506,15 +705,40 @@ test('the deadline keeps its full time in a tooltip reachable by keyboard', asyn
   )
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const card = page.getByRole('region', { name: 'Next action' })
-  const timeLeft = card.locator('[data-next-action-deadline]')
-  await timeLeft.focus()
-  await expect(card.getByRole('tooltip').filter({ hasText: /^Deadline Oct 12, 2026/ })).toBeVisible()
+  await card.locator('[data-banner-model]').focus()
+  await expect(card.getByRole('tooltip').filter({ hasText: /^claude-opus-5-5$/ })).toBeVisible()
   // The chip's tooltip names the actor and the if-ignored sentence on focus.
   await card.getByRole('button', { name: 'Working, agent' }).focus()
   const chipTip = card.getByRole('tooltip').filter({ hasText: 'If ignored: The attempt continues.' })
   await expect(chipTip).toBeVisible()
   await expect(chipTip).toContainText('agent')
 })
+
+// A model that names no known provider shows its harness logo and is named
+// "<model> via <harness>"; a model with no known logo shows a generic chip
+// icon and is named by the model alone (DEC-129(2)).
+for (const { name, agent, label, harness } of [
+  { name: 'auto', agent: 'cursor', label: 'auto via Cursor', harness: true },
+  { name: 'mystery-model-9', agent: 'some-harness', label: 'mystery-model-9', harness: false },
+]) {
+  test(`the banner names the ${harness ? 'harness' : 'generic'} logo ${label}`, async ({ page }) => {
+    await page.clock.setFixedTime(oneHourIn)
+    const order = { ...runningOrder, model: name, agent } as unknown as WorkOrder
+    await mockAPI(
+      page,
+      () => activity('running', workingAction, [order]),
+      () => workingAction,
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const card = page.getByRole('region', { name: 'Next action' })
+    const logo = card.locator('[data-banner-model]')
+    await expect(logo).toHaveAccessibleName(label)
+    await expect(logo.locator('svg.lucide-cpu')).toHaveCount(harness ? 0 : 1)
+    await expect(card.getByText(name, { exact: true })).toHaveCount(0)
+    await logo.focus()
+    await expect(card.getByRole('tooltip').filter({ hasText: label })).toBeVisible()
+  })
+}
 
 // The rare acts sit behind one menu: Copy order ID when the statement names an
 // order, Show IDs, and Stop attempt… only for recover_work and a claimed order
