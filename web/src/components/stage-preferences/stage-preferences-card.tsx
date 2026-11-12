@@ -29,6 +29,10 @@ import { ReviewEditor } from './review-editor'
 
 type Draft = { stages: StagePreferenceStages; baseVersion: number }
 type Status = { text: string; failed: boolean } | null
+// The read that follows a stale save. Only a successful fresh read may resolve
+// the conflict; a failed one never falls back to the cached set
+// (component-stage-preferences, State and failure).
+type FreshRead = { kind: 'reading' } | { kind: 'failed'; message: string } | { kind: 'read'; set: StagePreferences }
 
 const singleStages: SingleStageKey[] = ['plan', 'implement', 'verify']
 
@@ -37,7 +41,26 @@ export function StagePreferencesCard() {
   const current = useQuery({ queryKey: stagePreferencesQueryKey(), queryFn: fetchStagePreferences })
   const [draft, setDraft] = useState<Draft | null>(null)
   const [conflict, setConflict] = useState(false)
+  const [fresh, setFresh] = useState<FreshRead>({ kind: 'reading' })
   const [status, setStatus] = useState<Status>(null)
+
+  const readFresh = async () => {
+    setFresh({ kind: 'reading' })
+    try {
+      const set = await queryClient.fetchQuery({
+        queryKey: stagePreferencesQueryKey(),
+        queryFn: fetchStagePreferences,
+        staleTime: 0,
+        retry: 1,
+      })
+      setFresh({ kind: 'read', set })
+    } catch (cause) {
+      setFresh({
+        kind: 'failed',
+        message: cause instanceof Error ? cause.message : 'Conveyor could not read your stage preferences. Try again.',
+      })
+    }
+  }
 
   const save = useMutation({
     mutationFn: (sent: Draft) => saveStagePreferences(stagesForSave(sent.stages), sent.baseVersion),
@@ -60,11 +83,15 @@ export function StagePreferencesCard() {
           ? null
           : { text: cause instanceof Error ? cause.message : 'Could not save stage preferences.', failed: true },
       )
-      if (stale) await queryClient.invalidateQueries({ queryKey: stagePreferencesQueryKey() })
+      if (stale) await readFresh()
     },
   })
 
-  const saved = current.data
+  // The cached set counts as current only while the latest read succeeded.
+  // After a failed refetch TanStack Query keeps the old data, which this card
+  // never shows as saved (component-stage-preferences, State and failure).
+  const saved = current.status === 'success' ? current.data : undefined
+  const readFailed = current.status === 'error'
   const shown = draft?.stages ?? saved?.stages ?? emptyStages()
   const editing = Boolean(draft)
   const busy = save.isPending
@@ -122,6 +149,17 @@ export function StagePreferencesCard() {
           </div>
         )}
 
+        {readFailed && draft && !conflict && (
+          <div className="space-y-2" role="alert">
+            <p className="text-sm text-failure">
+              Conveyor could not read your saved stage preferences. Your unsaved changes stay in the form.
+            </p>
+            <Button type="button" variant="secondary" size="sm" onClick={() => void current.refetch()}>
+              Read saved preferences again
+            </Button>
+          </div>
+        )}
+
         {conflict && draft && (
           <section
             aria-label="Saved stage preferences"
@@ -130,17 +168,27 @@ export function StagePreferencesCard() {
             <div className="space-y-1" role="alert">
               <p className="text-sm font-medium text-foreground">Your stage preferences changed in another place.</p>
               <p className="text-sm leading-6 text-muted">
-                The saved preferences are below, and your unsaved changes stay in the form. Save your changes to replace
-                the saved preferences, or discard your changes to keep them.
+                {fresh.kind === 'read'
+                  ? 'The saved preferences are below, and your unsaved changes stay in the form. Save your changes to replace the saved preferences, or discard your changes to keep them.'
+                  : 'Your unsaved changes stay in the form. Conveyor must read the saved preferences before you can choose.'}
               </p>
             </div>
-            {current.isFetching && <p className="text-sm text-muted">Reading the saved preferences…</p>}
-            {current.isError && <p className="text-sm text-failure">{current.error.message}</p>}
-            {saved && !current.isFetching && (
+            {fresh.kind === 'reading' && <p className="text-sm text-muted">Reading the saved preferences…</p>}
+            {fresh.kind === 'failed' && (
+              <div className="space-y-2">
+                <p className="text-sm text-failure">
+                  Conveyor could not read the saved preferences. Your changes are not saved yet.
+                </p>
+                <Button type="button" variant="secondary" size="sm" onClick={() => void readFresh()}>
+                  Read saved preferences again
+                </Button>
+              </div>
+            )}
+            {fresh.kind === 'read' && (
               <>
-                <SavedSummary stages={saved.stages} />
+                <SavedSummary stages={fresh.set.stages} />
                 <div className="flex flex-wrap gap-2">
-                  <Button type="button" size="sm" disabled={busy} onClick={() => submit(saved.version)}>
+                  <Button type="button" size="sm" disabled={busy} onClick={() => submit(fresh.set.version)}>
                     Save my changes
                   </Button>
                   <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={discard}>
@@ -152,7 +200,7 @@ export function StagePreferencesCard() {
           </section>
         )}
 
-        {saved && (
+        {(saved || draft) && (
           <form
             aria-label="Edit stage preferences"
             className="space-y-5"

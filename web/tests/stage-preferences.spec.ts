@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
 import type { StagePreferenceStages, StagePreferences } from '../src/lib/stage-preferences'
 import { callerIdentity } from './helpers/caller-identity'
+import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
 
 // The Settings stage preferences card (component-stage-preferences;
 // component-web-dashboard invariant 25; req-stage-preferences AC-2.1, AC-2.4).
@@ -242,6 +243,124 @@ test('discarding a stale draft shows the current set', async ({ page }) => {
   expect(state.puts).toHaveLength(1)
 })
 
+test('a stale save whose follow-up reads fail never resolves against the cached set', async ({ page }) => {
+  const state = await mockSettings(page, savedSet, 3)
+  await page.goto('/w/demo/settings')
+  await page.getByLabel('Plan model', { exact: true }).fill('gpt-7')
+  // Another session saved version 4. The PUT answers 412, and the read that
+  // follows and its one automatic retry both fail.
+  const elsewhere: StagePreferenceStages = {
+    ...savedSet,
+    verify: { harness: 'opencode', model: 'saved-elsewhere', effort: '' },
+  }
+  state.putAnswers.push({ status: 412, json: { error: 'version_conflict', message: 'changed' }, changeTo: elsewhere })
+  state.getFailures = 2
+  await page.getByRole('button', { name: 'Save stage preferences' }).click()
+  const conflict = page.getByRole('region', { name: 'Saved stage preferences' })
+  await expect(conflict.getByText('Conveyor could not read the saved preferences.')).toBeVisible()
+  // Neither the cached version 3 set nor a way to resolve against it shows.
+  await expect(conflict.getByText('codex, gpt-6.1-sol, medium effort')).toHaveCount(0)
+  await expect(conflict.getByRole('button', { name: 'Save my changes' })).toHaveCount(0)
+  await expect(conflict.getByRole('button', { name: 'Discard my changes' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Save stage preferences' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Discard changes' })).toHaveCount(0)
+  // The draft stays.
+  await expect(page.getByLabel('Plan model', { exact: true })).toHaveValue('gpt-7')
+  expect(state.puts).toHaveLength(1)
+
+  // An explicit retry reads the real new set, and only then can the person
+  // choose.
+  await conflict.getByRole('button', { name: 'Read saved preferences again' }).click()
+  await expect(conflict.getByText('opencode, saved-elsewhere')).toBeVisible()
+  await expect(conflict.getByText('Conveyor could not read the saved preferences.')).toHaveCount(0)
+  await expect(page.getByLabel('Plan model', { exact: true })).toHaveValue('gpt-7')
+  await conflict.getByRole('button', { name: 'Save my changes' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Stage preferences saved.' })).toBeVisible()
+  expect(state.puts.map((put) => put.ifMatch)).toEqual(['"3"', '"4"'])
+  expect(state.puts[1].body.stages.plan?.model).toBe('gpt-7')
+})
+
+test('discarding after a failed and then successful read shows the real new set', async ({ page }) => {
+  const state = await mockSettings(page, savedSet, 3)
+  await page.goto('/w/demo/settings')
+  await page.getByLabel('Implement harness', { exact: true }).fill('cursor')
+  const elsewhere: StagePreferenceStages = { ...savedSet, implement: { harness: 'codex', model: 'other', effort: '' } }
+  state.putAnswers.push({ status: 412, json: { error: 'version_conflict', message: 'changed' }, changeTo: elsewhere })
+  state.getFailures = 2
+  await page.getByRole('button', { name: 'Save stage preferences' }).click()
+  const conflict = page.getByRole('region', { name: 'Saved stage preferences' })
+  await expect(conflict.getByText('Conveyor could not read the saved preferences.')).toBeVisible()
+  await conflict.getByRole('button', { name: 'Read saved preferences again' }).click()
+  await conflict.getByRole('button', { name: 'Discard my changes' }).click()
+  await expect(conflict).toHaveCount(0)
+  await expect(page.getByLabel('Implement harness', { exact: true })).toHaveValue('codex')
+  await expect(page.getByLabel('Implement model', { exact: true })).toHaveValue('other')
+  expect(state.puts).toHaveLength(1)
+})
+
+test('a failed refetch with a draft keeps the draft and never shows the cached set as saved', async ({ page }) => {
+  await installQueryClientProbe(page)
+  const state = await mockSettings(page, savedSet, 3)
+  await page.goto('/w/demo/settings')
+  await page.getByLabel('Plan model', { exact: true }).fill('gpt-7')
+  // The set changed elsewhere, and the next reads fail.
+  state.set = {
+    version: 4,
+    updated_at: '2026-11-12T10:00:00Z',
+    stages: { ...savedSet, plan: { harness: 'codex', model: 'saved-elsewhere', effort: '' } },
+  }
+  state.getFailures = 2
+  await withQueryClient(
+    page,
+    (client) =>
+      (client as unknown as { refetchQueries(filter: { queryKey: readonly unknown[] }): Promise<void> }).refetchQueries(
+        { queryKey: ['stage-preferences'] },
+      ),
+    undefined,
+  )
+  const failure = page.getByRole('alert').filter({ hasText: 'Conveyor could not read your saved stage preferences.' })
+  await expect(failure).toBeVisible()
+  await expect(page.getByLabel('Plan model', { exact: true })).toHaveValue('gpt-7')
+
+  // Discarding the draft while the read is failed shows no cached set.
+  await page.getByRole('button', { name: 'Discard changes' }).click()
+  await expect(page.getByRole('form', { name: 'Edit stage preferences' })).toHaveCount(0)
+  await expect(
+    page.getByRole('alert').getByText('Conveyor could not read your stage preferences. Try again.'),
+  ).toBeVisible()
+
+  // A successful retry shows the real new set.
+  await page.getByRole('button', { name: 'Try again' }).click()
+  await expect(page.getByLabel('Plan model', { exact: true })).toHaveValue('saved-elsewhere')
+  expect(state.puts).toHaveLength(0)
+})
+
+test('a failed refetch with a draft still saves the draft against its own version', async ({ page }) => {
+  await installQueryClientProbe(page)
+  const state = await mockSettings(page, savedSet, 3)
+  await page.goto('/w/demo/settings')
+  await page.getByLabel('Plan model', { exact: true }).fill('gpt-7')
+  state.getFailures = 2
+  await withQueryClient(
+    page,
+    (client) =>
+      (client as unknown as { refetchQueries(filter: { queryKey: readonly unknown[] }): Promise<void> }).refetchQueries(
+        { queryKey: ['stage-preferences'] },
+      ),
+    undefined,
+  )
+  await expect(
+    page.getByRole('alert').filter({ hasText: 'Conveyor could not read your saved stage preferences.' }),
+  ).toBeVisible()
+  await page.getByRole('button', { name: 'Read saved preferences again' }).click()
+  await expect(
+    page.getByRole('alert').filter({ hasText: 'Conveyor could not read your saved stage preferences.' }),
+  ).toHaveCount(0)
+  await page.getByRole('button', { name: 'Save stage preferences' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Stage preferences saved.' })).toBeVisible()
+  expect(state.puts.map((put) => put.ifMatch)).toEqual(['"3"'])
+})
+
 test('read, validation, and store failures are reported and keep the draft', async ({ page }) => {
   const state = await mockSettings(page, savedSet, 2)
   // The first read and its one automatic retry fail.
@@ -323,10 +442,15 @@ for (const width of [375, 1280]) {
       json: { error: 'version_conflict', message: 'changed' },
       changeTo: { ...savedSet, verify: { harness: 'opencode', model: 'saved-elsewhere', effort: '' } },
     })
+    // The read after the stale save fails first, then an explicit retry
+    // reads the new set.
+    state.getFailures = 2
     await page.getByRole('button', { name: 'Save stage preferences' }).click()
-    await expect(
-      page.getByRole('region', { name: 'Saved stage preferences' }).getByText('saved-elsewhere'),
-    ).toBeVisible()
+    const conflict = page.getByRole('region', { name: 'Saved stage preferences' })
+    await expect(conflict.getByText('Conveyor could not read the saved preferences.')).toBeVisible()
+    await shoot(card(page), `stage-preferences-stale-read-failed-${width}.png`)
+    await conflict.getByRole('button', { name: 'Read saved preferences again' }).click()
+    await expect(conflict.getByText('saved-elsewhere')).toBeVisible()
     await shoot(card(page), `stage-preferences-stale-${width}.png`)
 
     await mockSettings(page)
