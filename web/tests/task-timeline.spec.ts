@@ -2278,16 +2278,27 @@ test.describe('on a coarse pointer at 375 px', () => {
   })
 })
 
-function openRound() {
-  const item = reviewPanel([
-    { model: 'claude-opus-5-5', verdict: 'approve' },
-    { model: 'gpt-6.1-sol', verdict: 'approve' },
-  ]) as { summaries: Record<string, { by_order?: Record<string, unknown> }>; work_orders: WorkOrder[] }
+// An unsettled round whose last seat has no verdict yet.
+function openRound(models = ['claude-opus-5-5', 'gpt-6.1-sol']) {
+  const item = reviewPanel(models.map((model) => ({ model, verdict: 'approve' }))) as {
+    summaries: Record<string, { by_order?: Record<string, unknown> }>
+    work_orders: WorkOrder[]
+  }
   delete item.summaries.review_rounds
-  const second = `${taskId}-review-1-seat-2`
-  delete item.summaries.review_results.by_order?.[second]
-  item.work_orders[1] = { ...item.work_orders[1], state: 'claimed' }
+  const last = models.length - 1
+  delete item.summaries.review_results.by_order?.[`${taskId}-review-1-seat-${models.length}`]
+  item.work_orders[last] = { ...item.work_orders[last], state: 'claimed' }
   return item
+}
+
+// The open-round footer holds only the verdict count and the convened time.
+async function expectOpenFooter(panel: Locator, count: string) {
+  const footer = panel.locator('[data-review-time]').locator('xpath=..')
+  await expect(footer.locator(':scope > *')).toHaveCount(2)
+  await expect(footer.locator(':scope > span')).toHaveText(count)
+  await expect(footer).not.toContainText('·')
+  await expect(footer).not.toContainText('changes requested')
+  await expect(footer).not.toContainText('sends the task back')
 }
 
 for (const width of [375, 1280]) {
@@ -2316,8 +2327,20 @@ for (const width of [375, 1280]) {
     await expect(open.locator('[data-review-header] time')).toHaveCount(0)
     const convened = open.locator('[data-review-time]')
     await expect(convened).toHaveText(/^Convened [A-Z][a-z]{2} \d{1,2}, /)
-    await expect(convened.locator('xpath=..')).toContainText('1 of 2 verdicts in')
+    await expectOpenFooter(open, '1 of 2 verdicts in')
     await expectNoSidewaysScroll(page)
     await capture(page, testInfo, `review-panel-open-${width}.png`)
   })
 }
+
+test('a one-seat open review round keeps its footer of count and time', async ({ page }) => {
+  const open = await openPanel(page, openRound(['claude-opus-5-5']), 375)
+  const convened = open.locator('[data-review-time]')
+  await expect(convened).toHaveText(/^Convened [A-Z][a-z]{2} \d{1,2}, /)
+  await expectOpenFooter(open, '0 of 1 verdicts in')
+  // The time keeps its place at the end of the strip.
+  const count = await box(open.getByText('0 of 1 verdicts in', { exact: true }))
+  const time = await box(convened)
+  expect(time.x).toBeGreaterThanOrEqual(count.x + count.width)
+  await expectNoSidewaysScroll(page)
+})
