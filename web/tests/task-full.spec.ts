@@ -1382,8 +1382,19 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                                   payload: { version: 2 },
                                                   at: '2026-07-15T11:58:00Z',
                                                 },
+                                                // Every backend records the approval's
+                                                // intervention event with the intervention.
                                                 {
                                                   id: 2,
+                                                  task_id: taskId,
+                                                  kind: 'intervention.approve',
+                                                  actor_id: 'operator',
+                                                  actor_role: 'human' as const,
+                                                  payload: { reason_code: 'approved', comment: '' },
+                                                  at: '2026-07-15T11:59:00Z',
+                                                },
+                                                {
+                                                  id: 3,
                                                   task_id: taskId,
                                                   kind: 'spec.version_approved',
                                                   actor_id: 'operator',
@@ -5101,15 +5112,17 @@ test('review card renders authorized verification evidence with accessible previ
   expect(authorizationHeaders.every((header) => header === '')).toBe(true)
 })
 
-// The plan section shows each version, so neither versioned plan event adds a
-// timeline row (component-web-task-surfaces, Task detail composition).
-test('spec approval keeps the human marker without versioned plan events', async ({ page }) => {
+// The plan version and its approval read as one plan-cycle entry that names
+// the approved version, with no separate approval row
+// (component-web-task-surfaces invariant 68; req-260809-a40c75 AC-4.2).
+test('spec approval reads as one plan cycle that names the approved version', async ({ page }) => {
   await page.goto('/w/demo/tasks/spec-approval/full')
 
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  const timelineRows = timeline.locator('ol > li')
+  const timelineRows = timeline.locator(':scope > ol > li')
   await expect(timelineRows).toHaveCount(1)
-  await expect(timelineRows.nth(0)).toContainText('Approved')
+  await expect(timelineRows.nth(0)).toContainText('Plan v2 ready')
+  await expect(timelineRows.nth(0)).toContainText('Approved plan v2')
   await expect(timeline.getByText('Plan v2 drafted')).toHaveCount(0)
   await expect(timeline.getByText(/Spec v\d+ approved/)).toHaveCount(0)
 })
