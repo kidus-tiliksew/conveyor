@@ -1079,12 +1079,6 @@ function PanelEntry({
             <span>
               {verdictsIn} of {seats.length} verdicts in
             </span>
-            {seats.length > 1 && (
-              <>
-                <span className="text-faint">·</span>
-                <span>any “changes requested” sends the task back</span>
-              </>
-            )}
             <time dateTime={entry.at} className="ml-auto shrink-0" data-review-time>
               Convened {absoluteTime(entry.at)}
             </time>
