@@ -1357,9 +1357,9 @@ test('round summaries attach only to their matching review panels', () => {
   expect(legacy[0].roundSummary).toBeUndefined()
 })
 
-// req-review-gates-evidence AC-2.12 and component-review invariant 39: a seat
-// shows its current reported model with no self-reported label, a recorded
-// match reads as such, and the panel states the frozen policy.
+// component-review invariant 39 and DEC-128: a seat shows its current reported
+// model with no self-reported label, the panel never shows a recorded
+// implementer match, and the panel states the frozen policy.
 function seatLabelPanel(distinctModels: boolean) {
   const seat = (n: number, extra: Partial<WorkOrder>) =>
     order(`${taskId}-review-1-seat-${n}`, {
@@ -1402,7 +1402,7 @@ function seatLabelPanel(distinctModels: boolean) {
   })
 }
 
-test('review seats label reported models and the recorded implementer match', async ({ page }) => {
+test('review seats label reported models and never show the recorded implementer match', async ({ page }) => {
   await mockAPI(page, seatLabelPanel(true), nextAction(`${taskId}-review-1-seat-4`, 'review'))
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
@@ -1411,7 +1411,8 @@ test('review seats label reported models and the recorded implementer match', as
   await expect(timeline.getByText('· task policy: distinct seat models')).toBeVisible()
   await expect(seat(1).getByText('claude-sonnet-5-5', { exact: true })).toBeVisible()
   await expect(seat(1).getByText('self-reported')).toHaveCount(0)
-  await expect(seat(1).getByText('same model as implementer', { exact: true })).toBeVisible()
+  // Seat 1's verdict recorded `true`, and the row still shows no match.
+  await expect(seat(1).getByText('same model as implementer')).toHaveCount(0)
   await expect(seat(2).getByText('gpt-6', { exact: true })).toBeVisible()
   await expect(seat(2).getByText('self-reported')).toHaveCount(0)
   await expect(seat(2).getByText('same model as implementer')).toHaveCount(0)
@@ -1421,6 +1422,9 @@ test('review seats label reported models and the recorded implementer match', as
   await expect(seat(4).getByText('self-reported')).toHaveCount(0)
   await expect(seat(5).getByText('earlier-model', { exact: true })).toBeVisible()
   await expect(seat(5).getByText('self-reported')).toHaveCount(0)
+  await expect(seat(4).getByText('same model as implementer')).toHaveCount(0)
+  await expect(seat(5).getByText('same model as implementer')).toHaveCount(0)
+  await expect(timeline.getByText('same model as implementer')).toHaveCount(0)
 })
 
 test('the review panel states the distinct-model policy only when the frozen policy is on', async ({ page }) => {
@@ -1737,7 +1741,8 @@ test('a stalled queued task with a redispatch choice renders no timeline redispa
 })
 
 // The review panel reads on a phone (task 261110-50771a;
-// component-web-task-surfaces; req-review-gates-evidence AC-2.7, AC-2.12):
+// component-web-task-surfaces; req-review-gates-evidence AC-2.7;
+// component-review invariant 39; DEC-128):
 // each settled seat row keeps its label, model, verdict, and duration on one
 // line, notes wrap inside the card, a one-seat panel's note has no seat
 // gutter, and the settled banner states what happened next in short words.
@@ -1949,10 +1954,10 @@ test('a three-seat panel keeps each seat row on one line at 375 px and attribute
   expect(await name.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
   expect(await name.evaluate((element) => getComputedStyle(element).textOverflow)).toBe('ellipsis')
 
-  // The recorded match and the risk tier stay readable; no seat says self-reported.
-  await expect(seatRow(panel, 1).getByText('same model as implementer', { exact: true })).toBeVisible()
+  // The risk tier stays readable. No seat shows a recorded implementer match,
+  // although seat 1's verdict recorded `true`, and no seat says self-reported.
   await expect(seatRow(panel, 1).locator('[data-seat-risk-tier="medium"]')).toBeVisible()
-  await expect(seatRow(panel, 2).getByText('same model as implementer')).toHaveCount(0)
+  await expect(panel.getByText('same model as implementer')).toHaveCount(0)
   await expect(panel.getByText('self-reported')).toHaveCount(0)
 
   // Each note in a multi-seat panel keeps its seat label.

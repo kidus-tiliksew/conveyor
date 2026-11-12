@@ -910,8 +910,6 @@ export interface PanelSeatReview {
   at: string
   // Set when the summary or feedback was cut at 16,384 bytes.
   truncatedEventId?: string
-  // The recorded verdict states the seat reported the implementer's model.
-  sameModelAsImplementer: boolean
   // The seat's stated risk tier and reason (req-risk-based-review AC-5.3).
   riskTier?: RiskTier
   riskReason?: string
@@ -997,7 +995,6 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
       feedback: typeof result.feedback === 'string' ? result.feedback : '',
       at: result.at,
       truncatedEventId: result.truncated ? result.event_id : undefined,
-      sameModelAsImplementer: result.same_model_as_implementer === 'true',
       riskTier: result.risk_tier,
       riskReason: result.risk_reason,
     }
