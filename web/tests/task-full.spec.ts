@@ -5218,9 +5218,8 @@ test('review panel hides generated metadata while preserving reported zero usage
   await expect(panel.getByText('0 in / 0 out', { exact: true }).last()).toBeVisible()
   await expect(panel.getByText('Checking requirement citations.', { exact: true })).toBeVisible()
   await expect(panel.getByText(/conveyor run mode/i)).toHaveCount(0)
-  // No seat row labels its model self-reported (req-review-gates-evidence
-  // AC-2.12; component-review invariant 39), and the generated enforcement
-  // sentence stays hidden.
+  // No seat row labels its model self-reported (component-review invariant
+  // 39), and the generated enforcement sentence stays hidden.
   await expect(panel.getByText('self-reported')).toHaveCount(0)
   await expect(panel.getByText(/model self-reported by the agent/i)).toHaveCount(0)
   await expect(panel.getByText('Usage unavailable')).toHaveCount(0)

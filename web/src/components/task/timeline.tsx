@@ -1135,12 +1135,12 @@ function SeatRow({
 }) {
   const progress = reviewSeatProgress(seat.order.progress)
   // A seat shows its current reported model with no self-reported label, and
-  // the implementer match only when the verdict recorded `true` (AC-2.12;
-  // component-review invariant 39).
+  // never whether that model matches the implementer's (component-review
+  // invariant 39; DEC-128).
   //
   // The grid keeps the seat label, the model, and the verdict on one line at
   // any width: the model column alone shrinks, and the model chip truncates.
-  // The match, risk tier, and usage wrap below the model inside its column.
+  // The risk tier and usage wrap below the model inside its column.
   // A card narrower than 26rem, such as on a 375 px phone, drops the fixed
   // label column, the wide gaps and padding, and the verdict word, so that a
   // 24-character model name shows in full (task 261110-50771a).
@@ -1171,9 +1171,6 @@ function SeatRow({
           usageAvailable={usageAvailable}
           showUnavailableUsage={false}
         />
-        {seat.review?.sameModelAsImplementer && (
-          <span className="font-sans text-attention">same model as implementer</span>
-        )}
         <SeatRiskTier tier={seat.review?.riskTier} reason={seat.review?.riskReason} />
         {usageAvailable && (
           <span className="text-faint">
