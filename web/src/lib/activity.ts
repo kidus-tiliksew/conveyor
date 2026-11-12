@@ -386,10 +386,10 @@ type NoteEventKind = (typeof noteEventKinds)[number]
 // and the remaining publication bookkeeping reads as noise. Technical activity
 // keeps them all (component-web-task-surfaces, Task detail composition; task
 // 261028-5c2ae2). A merge request and its GitHub confirmation only repeat the
-// finished state, and a dependency wait reads from the Dependencies section,
-// the Board card's dependency mark, and the flowchart's waiting side state
-// (req-operator-next-action AC-6.11, AC-3.4, AC-7.5; task 261108-38aabb). A
-// plan-state move reads from the plan section and the plan-state label
+// finished state. A dependency addition or removal reads from the
+// Dependencies section, the Board card's dependency mark, and the flowchart's
+// waiting side state (req-operator-next-action AC-6.11, AC-3.4, AC-7.5; tasks
+// 261108-38aabb and 261112-436fab). A plan-state move reads from the plan section and the plan-state label
 // (component-web-task-surfaces invariant 65).
 const hiddenNoteKinds = new Set([
   'review.completed',
@@ -404,6 +404,7 @@ const hiddenNoteKinds = new Set([
   'merge.requested',
   'merge.confirmed',
   'task.dependency_added',
+  'task.dependency_removed',
   'task.plan_state_changed',
 ])
 
@@ -1355,11 +1356,12 @@ function noteContent(
         return { title: command === 'task.start_over' ? 'Closed — started over as a new task' : 'Closed' }
       return undefined
     }
-    // A dependency wait reads from the Dependencies section, the Board card's
-    // dependency mark, and the flowchart's waiting side state; the recorded
-    // event stays in technical activity (req-operator-next-action AC-6.11,
-    // AC-3.4, AC-7.5).
+    // A dependency addition or removal reads from the Dependencies section,
+    // the Board card's dependency mark, and the flowchart's waiting side state;
+    // the recorded event stays in technical activity (req-operator-next-action
+    // AC-6.11, AC-3.4, AC-7.5).
     case 'task.dependency_added':
+    case 'task.dependency_removed':
       return undefined
     // A task-context decision shows as the document under Attached context;
     // the recorded event stays in technical activity and the audit reads
@@ -1424,11 +1426,6 @@ function noteContent(
             ? `${payload.depends_on_task_id} closed without merging`
             : undefined,
         alarm: true,
-      }
-    case 'task.dependency_removed':
-      return {
-        title: 'Dependency removed',
-        detail: typeof payload.reason === 'string' ? payload.reason : undefined,
       }
     // Queued and associated issue publications are bookkeeping; only the
     // retry and failure alarms read as timeline notes.
