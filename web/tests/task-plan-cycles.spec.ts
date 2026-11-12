@@ -541,8 +541,9 @@ test('earlier history pages absorb the events a cycle names', async ({ page }) =
 })
 
 // Visual record for the pull request: settled and waiting timelines at 375 px
-// and at a desktop width. The files land in PLAN_CYCLE_SCREENSHOT_DIR when it
-// is set, else in the test's output directory; neither is committed.
+// and at a desktop width. Each image is attached to the Playwright report,
+// which CI uploads, and is also written to PLAN_CYCLE_SCREENSHOT_DIR when it is
+// set, else to the test's output directory. No image is committed.
 for (const width of [375, 1280]) {
   test(`plan cycle screenshots at ${width} px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 1400 })
@@ -557,10 +558,14 @@ for (const width of [375, 1280]) {
       .nth(1)
       .getByRole('button', { name: /Plan revision/ })
       .click()
-    await settled.screenshot({ path: target(`plan-cycles-settled-${width}.png`) })
+    const settledName = `plan-cycles-settled-${width}.png`
+    await settled.screenshot({ path: target(settledName) })
+    await testInfo.attach(settledName, { path: target(settledName), contentType: 'image/png' })
     await page.goto('/w/demo/tasks/plan-cycles-waiting/full')
     const waiting = timelineOf(page)
     await expect(waiting.getByText('Waiting for your decision below')).toBeVisible()
-    await page.screenshot({ path: target(`plan-cycles-waiting-${width}.png`), fullPage: true })
+    const waitingName = `plan-cycles-waiting-${width}.png`
+    await page.screenshot({ path: target(waitingName), fullPage: true })
+    await testInfo.attach(waitingName, { path: target(waitingName), contentType: 'image/png' })
   })
 }
