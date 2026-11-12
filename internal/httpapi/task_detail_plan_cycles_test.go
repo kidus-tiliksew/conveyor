@@ -465,3 +465,298 @@ func TestBoundedDetailPlanCyclesOutsideEventPage(t *testing.T) {
 		t.Fatalf("texts = %q, %q", revision.Steps[0].Text, revision.Steps[1].Text)
 	}
 }
+
+// TestPlanCyclesDecisionAfterItsStep folds the ledger order every backend
+// writes for a plan-gate decision: the dispatcher records the version
+// approval, the plan-state move, and the task state change before the API
+// records the intervention. The intervention event names itself on the step
+// those events recorded, so no decision renders as its own entry
+// (component-web-task-surfaces invariants 67 to 69; req-260809-a40c75 AC-4.1,
+// AC-4.2; DEC-130(1)).
+func TestPlanCyclesDecisionAfterItsStep(t *testing.T) {
+	t.Run("the reported approval names intervention 2024 and its person", func(t *testing.T) {
+		// Task 261112-b903b7 as PostgreSQL recorded it: the version approval
+		// and the plan-state move are 27 ms before the intervention event.
+		at := func(value string) time.Time {
+			parsed, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return parsed
+		}
+		const actor = "user:usr_L-rsl-N4aIe3UaaF"
+		event := func(id int64, when, kind, jobID, payload string) core.Event {
+			return core.Event{ID: id, TaskID: "261112-b903b7", JobID: jobID, Kind: kind, ActorID: actor, ActorRole: core.ActorHuman,
+				At: at(when), Payload: json.RawMessage(payload)}
+		}
+		decidedAt := "2026-11-12T08:41:47.204596Z"
+		events := []core.Event{
+			event(842588, "2026-11-12T08:25:52.263653Z", core.EventTaskPlanStateChanged, "", `{"cause":"intake","from":null,"to":"needed"}`),
+			event(842623, "2026-11-12T08:35:49.894659Z", "spec.version_created", "", `{"version":1,"acceptance_count":0,"origin":"plan_order"}`),
+			event(842624, "2026-11-12T08:35:49.93348Z", "task.state_changed", "", `{"from":"running","to":"awaiting_human","command":"gate.spec"}`),
+			event(842625, "2026-11-12T08:35:49.935037Z", core.EventTaskPlanStateChanged, "", `{"cause":"plan_submitted","from":"needed","to":"awaiting_approval"}`),
+			event(842629, "2026-11-12T08:41:47.177094Z", "spec.version_approved", "", `{"version":1}`),
+			event(842630, "2026-11-12T08:41:47.178625Z", core.EventTaskPlanStateChanged, "", `{"cause":"plan_approved","from":"awaiting_approval","to":"completed"}`),
+			event(842631, "2026-11-12T08:41:47.18749Z", "risk.rated", "", `{"source":"plan"}`),
+			event(842632, "2026-11-12T08:41:47.194943Z", "task.state_changed", "", `{"from":"awaiting_human","to":"queued","command":"intervention.approve_spec"}`),
+			event(842633, "2026-11-12T08:41:47.195603Z", "pipeline.transition_decided", "", `{"state":"queued"}`),
+			event(842634, decidedAt, "intervention.approve", "261112-b903b7-spec-1", `{"reason_code":"approved","comment":""}`),
+			event(842635, "2026-11-12T08:41:47.23584Z", "job.created", "261112-b903b7-implement-1", `{"id":"261112-b903b7-implement-1","state":"pending"}`),
+			event(842687, "2026-11-12T08:56:16.476167Z", "task.state_changed", "261112-b903b7-implement-1", `{"from":"queued","to":"running","command":"order.claim"}`),
+		}
+		interventions := []core.Intervention{{ID: 2024, TaskID: "261112-b903b7", JobID: "261112-b903b7-spec-1", ActorID: actor, ActorRole: core.ActorHuman,
+			Action: core.InterventionApprove, ReasonCode: "approved", At: at(decidedAt)}}
+		cycles := derivePlanCycles(events, interventions)
+		resolvePlanCyclePeople(cycles, nil)
+		requireCycles(t, map[string]bool{}, cycles,
+			"plan contested=- versions=1..1 outcome=approved",
+			"  plan_drafted v1 e842623",
+			"  plan_approved v1 by usr_L-rsl-N4aIe3UaaF i2024 e842629",
+		)
+	})
+
+	t.Run("an approval recorded only by the plan-state move", func(t *testing.T) {
+		var l planLedger
+		l.event(0, "spec.version_created", "", `{"version":1,"origin":"plan_order"}`)
+		l.event(10, core.EventTaskPlanStateChanged, "", `{"from":"awaiting_approval","to":"completed","cause":"plan_approved"}`)
+		l.event(10, "task.state_changed", "", `{"from":"awaiting_human","to":"queued","command":"intervention.approve_spec"}`)
+		l.decide(10, core.InterventionApprove, "approved", "Good plan.", planOperator)
+		requireCycles(t, map[string]bool{}, l.cycles(),
+			"plan contested=- versions=1..1 outcome=approved",
+			"  plan_drafted v1 e1",
+			`  plan_approved v1 by usr_meron i1 e2 "Good plan."`,
+		)
+	})
+
+	t.Run("changes requested, then the next version is approved, with identical comments", func(t *testing.T) {
+		var l planLedger
+		l.event(0, "spec.version_created", "", `{"version":1,"origin":"plan_order"}`)
+		l.event(10, core.EventTaskPlanStateChanged, "", `{"from":"awaiting_approval","to":"needed","cause":"plan_redirected"}`)
+		l.event(10, "task.state_changed", "", `{"from":"awaiting_human","to":"queued","command":"intervention.redirect"}`)
+		l.decide(10, core.InterventionRedirect, "changes-requested", "Same words.", planOperator)
+		l.event(15, "task.state_changed", "", `{"from":"queued","to":"running","command":"order.claim"}`)
+		l.event(20, "spec.version_created", "", `{"version":2,"origin":"plan_order"}`)
+		l.event(30, "spec.version_approved", "", `{"version":2}`)
+		l.event(30, core.EventTaskPlanStateChanged, "", `{"from":"awaiting_approval","to":"completed","cause":"plan_approved"}`)
+		l.decide(30, core.InterventionApprove, "approved", "Same words.", planOwner)
+		requireCycles(t, map[string]bool{}, l.cycles(),
+			"plan contested=- versions=1..2 outcome=approved",
+			"  plan_drafted v1 e1",
+			`  changes_requested v1 by usr_meron i1 e2 "Same words."`,
+			"  plan_drafted v2 e6",
+			`  plan_approved v2 by usr_abel i2 e7 "Same words."`,
+		)
+	})
+
+	t.Run("revision and planning approvals recorded after their moves", func(t *testing.T) {
+		var l planLedger
+		l.event(0, "spec.version_created", "", `{"version":1,"origin":"intake"}`)
+		l.event(0, "spec.version_approved", "", `{"version":1}`)
+		l.event(10, "work_order.plan_revision_requested", "", `{"rationale":"r1","plan_version":1}`)
+		l.event(20, core.EventTaskPlanStateChanged, "", `{"from":"completed","to":"needed","cause":"plan_revision_approved"}`)
+		l.decide(20, core.InterventionRedirect, "plan-revision-approved", "Go ahead.", planOperator)
+		l.event(30, "spec.version_created", "", `{"version":2,"origin":"plan_order"}`)
+		var p planLedger
+		p.event(0, "work_order.plan_revision_requested", "", `{"rationale":"This needs a plan."}`)
+		p.event(5, core.EventTaskPlanStateChanged, "", `{"from":"not_required","to":"needed","cause":"planning_requested_approved"}`)
+		p.decide(5, core.InterventionRedirect, "plan-revision-approved", "", planOperator)
+		requireCycles(t, map[string]bool{}, append(l.cycles(), p.cycles()...),
+			"plan contested=- versions=1..1 outcome=approved",
+			"  plan_filed v1 e1",
+			"  plan_approved v1 e2",
+			"revision_request contested=1 versions=2..2 outcome=awaiting_decision",
+			`  revision_requested v1 e3 "r1"`,
+			`  revision_approved v1 by usr_meron i1 e4 "Go ahead."`,
+			"  plan_drafted v2 e6",
+			"planning_request contested=- versions=-..- outcome=planning",
+			`  planning_requested e1 "This needs a plan."`,
+			"  revision_approved by usr_meron i1 e2",
+		)
+	})
+
+	t.Run("a reject at the plan gate recorded after the task closed", func(t *testing.T) {
+		var l planLedger
+		l.event(0, "spec.version_created", "", `{"version":1,"origin":"plan_order"}`)
+		l.event(5, "task.state_changed", "", `{"from":"awaiting_human","to":"closed","command":"intervention.reject"}`)
+		l.decide(5, core.InterventionReject, "wrong-approach", "No.", planOperator)
+		requireCycles(t, map[string]bool{}, l.cycles(),
+			"plan contested=- versions=1..1 outcome=closed",
+			"  plan_drafted v1 e1",
+			`  task_closed by usr_meron i1 e2 "No."`,
+		)
+	})
+
+	t.Run("an operator send-back keeps its actor and comment in either order", func(t *testing.T) {
+		var l planLedger
+		l.event(0, "spec.version_created", "", `{"version":1,"origin":"plan_order"}`)
+		l.event(10, "task.setup.changed", planOwner, `{"actor":"user:usr_abel","reason":"Plan again.","plan_state":{"from":"awaiting_approval","to":"needed"}}`)
+		l.event(10, core.EventTaskPlanStateChanged, "", `{"from":"awaiting_approval","to":"needed","cause":"operator"}`)
+		l.event(20, "spec.version_created", "", `{"version":2,"origin":"plan_order"}`)
+		l.event(30, core.EventTaskPlanStateChanged, "", `{"from":"awaiting_approval","to":"needed","cause":"operator"}`)
+		l.event(30, "task.setup.changed", planOperator, `{"actor":"user:usr_meron","reason":"Once more.","plan_state":{"from":"awaiting_approval","to":"needed"}}`)
+		requireCycles(t, map[string]bool{}, l.cycles(),
+			"plan contested=- versions=1..2 outcome=planning",
+			"  plan_drafted v1 e1",
+			`  plan_sent_back v1 by usr_abel e3 "Plan again."`,
+			"  plan_drafted v2 e4",
+			`  plan_sent_back v2 by usr_meron e5 "Once more."`,
+		)
+	})
+
+	t.Run("a later merge approval or review redirect never joins an automatic approval", func(t *testing.T) {
+		var l planLedger
+		l.event(0, "spec.version_created", "", `{"version":1,"origin":"plan_order"}`)
+		l.event(0, "spec.version_approved", "", `{"version":1}`)
+		l.event(0, core.EventTaskPlanStateChanged, "", `{"from":"awaiting_approval","to":"completed","cause":"plan_approved"}`)
+		l.event(0, "task.state_changed", "", `{"from":"running","to":"queued","command":"stage.advance"}`)
+		l.event(10, "task.state_changed", "", `{"from":"queued","to":"running","command":"order.claim"}`)
+		l.event(20, "task.state_changed", "", `{"from":"running","to":"awaiting_human","command":"gate.merge"}`)
+		l.decide(30, core.InterventionRedirect, "", "Fix the test.", "review:round:1")
+		l.event(30, "task.state_changed", "", `{"from":"awaiting_human","to":"queued","command":"intervention.redirect"}`)
+		l.decide(40, core.InterventionApprove, "", "Ship it.", planOperator)
+		requireCycles(t, map[string]bool{}, l.cycles(),
+			"plan contested=- versions=1..1 outcome=approved",
+			"  plan_drafted v1 e1",
+			"  plan_approved v1 e2",
+		)
+	})
+
+	t.Run("a changes-requested step without its decision keeps a later review redirect out", func(t *testing.T) {
+		var l planLedger
+		l.event(0, "spec.version_created", "", `{"version":1,"origin":"plan_order"}`)
+		l.event(10, core.EventTaskPlanStateChanged, "", `{"from":"awaiting_approval","to":"needed","cause":"plan_redirected"}`)
+		l.event(10, "task.state_changed", "", `{"from":"awaiting_human","to":"queued","command":"intervention.redirect"}`)
+		l.event(11, "task.state_changed", "", `{"from":"queued","to":"running","command":"order.claim"}`)
+		l.decide(50, core.InterventionRedirect, "", "Fix the test.", "review:round:1")
+		requireCycles(t, map[string]bool{}, l.cycles(),
+			"plan contested=- versions=1..1 outcome=planning",
+			"  plan_drafted v1 e1",
+			"  changes_requested v1 e2",
+		)
+	})
+
+	t.Run("a decision of another action ends the wait", func(t *testing.T) {
+		var l planLedger
+		l.event(0, "spec.version_created", "", `{"version":1,"origin":"plan_order"}`)
+		l.event(10, core.EventTaskPlanStateChanged, "", `{"from":"awaiting_approval","to":"completed","cause":"plan_approved"}`)
+		l.decide(10, core.InterventionPull, "", "", planOperator)
+		l.decide(10, core.InterventionApprove, "approved", "", planOperator)
+		requireCycles(t, map[string]bool{}, l.cycles(),
+			"plan contested=- versions=1..1 outcome=approved",
+			"  plan_drafted v1 e1",
+			"  plan_approved v1 e2",
+		)
+	})
+
+	t.Run("a missing or mismatched intervention record adds no person and no step", func(t *testing.T) {
+		var l planLedger
+		l.event(0, "spec.version_created", "", `{"version":1,"origin":"plan_order"}`)
+		l.event(10, "spec.version_approved", "", `{"version":1}`)
+		l.decide(10, core.InterventionApprove, "approved", "Approved without a record.", planOperator)
+		// The record is lost: only the intervention event stays.
+		l.interventions = nil
+		l.event(20, "spec.version_created", "", `{"version":2,"origin":"plan_order"}`)
+		l.event(30, "spec.version_approved", "", `{"version":2}`)
+		l.decide(30, core.InterventionApprove, "approved", "", planOperator)
+		// The record names another actor than the event.
+		l.interventions[0].ActorID = planOwner
+		requireCycles(t, map[string]bool{}, l.cycles(),
+			"plan contested=- versions=1..1 outcome=approved",
+			"  plan_drafted v1 e1",
+			`  plan_approved v1 e2 "Approved without a record."`,
+			"plan contested=- versions=2..2 outcome=approved",
+			"  plan_drafted v2 e4",
+			"  plan_approved v2 e5",
+		)
+	})
+
+	t.Run("a decision recorded first still suppresses the later fallback", func(t *testing.T) {
+		var l planLedger
+		l.event(0, "spec.version_created", "", `{"version":1,"origin":"plan_order"}`)
+		l.decide(10, core.InterventionApprove, "approved", "", planOperator)
+		l.event(10, "spec.version_approved", "", `{"version":1}`)
+		l.event(10, core.EventTaskPlanStateChanged, "", `{"from":"awaiting_approval","to":"completed","cause":"plan_approved"}`)
+		l.event(20, "spec.version_created", "", `{"version":2,"origin":"plan_order"}`)
+		l.decide(30, core.InterventionRedirect, "changes-requested", "Again.", planOperator)
+		l.event(30, core.EventTaskPlanStateChanged, "", `{"from":"awaiting_approval","to":"needed","cause":"plan_redirected"}`)
+		requireCycles(t, map[string]bool{}, l.cycles(),
+			"plan contested=- versions=1..1 outcome=approved",
+			"  plan_drafted v1 e1",
+			"  plan_approved v1 by usr_meron i1 e2",
+			"plan contested=- versions=2..2 outcome=planning",
+			"  plan_drafted v2 e5",
+			`  changes_requested v2 by usr_meron i2 e6 "Again."`,
+		)
+	})
+}
+
+// TestBoundedDetailPlanApprovalAfterItsStep reads the bounded detail when the
+// plan approval's intervention follows the version approval and the
+// plan-state move, as the dispatcher and the API write them, and more than
+// 100 human events push the approval off the bounded page. The approval step
+// names the intervention and its person, so the dashboard absorbs it from the
+// summary alone (component-web-task-surfaces invariants 25, 67, 68, and 71).
+func TestBoundedDetailPlanApprovalAfterItsStep(t *testing.T) {
+	st := store.NewMemory()
+	h := newHistoryHarness(t, st)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), historyWorkspace)
+	if err := st.CreateTask(ctx, core.Task{ID: "approval-task", Workspace: historyWorkspace, State: core.TaskParked, Title: "Approval", CreatedAt: historyEpoch}); err != nil {
+		t.Fatal(err)
+	}
+	appendAt := func(ms int, kind, payload string) {
+		t.Helper()
+		if err := st.AppendEvent(ctx, core.Event{TaskID: "approval-task", Kind: kind, ActorID: "user:usr_a", ActorRole: core.ActorHuman,
+			At: historyEpoch.Add(time.Duration(ms) * time.Millisecond), Payload: json.RawMessage(payload)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendAt(1, "spec.version_created", `{"version":1,"acceptance_count":0,"origin":"plan_order"}`)
+	appendAt(2, core.EventTaskPlanStateChanged, `{"from":"needed","to":"awaiting_approval","cause":"plan_submitted"}`)
+	appendAt(10, "spec.version_approved", `{"version":1}`)
+	appendAt(11, core.EventTaskPlanStateChanged, `{"from":"awaiting_approval","to":"completed","cause":"plan_approved"}`)
+	appendAt(12, "task.state_changed", `{"from":"awaiting_human","to":"queued","command":"intervention.approve_spec"}`)
+	operator := store.WithActor(ctx, store.Actor{ID: "user:usr_a", Role: core.ActorHuman})
+	if err := st.CreateIntervention(operator, core.Intervention{TaskID: "approval-task", Action: core.InterventionApprove, ReasonCode: "approved",
+		Comment: "Looks right.", At: historyEpoch.Add(37 * time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 130 {
+		appendAt(100+i, "job.timeout", `{"stage":"implement"}`)
+	}
+	detail, response := h.bounded("approval-task")
+	for _, event := range detail.Events {
+		if event.Kind == "spec.version_approved" || event.Kind == "intervention.approve" {
+			t.Fatalf("the approval is on the presentation page; the fixture must place it outside: %s", event.Kind)
+		}
+	}
+	var body struct {
+		Summaries struct {
+			PlanCycles []struct {
+				Outcome string `json:"outcome"`
+				Steps   []struct {
+					Kind           string `json:"kind"`
+					PlanVersion    *int   `json:"plan_version"`
+					UserID         string `json:"user_id"`
+					InterventionID *int64 `json:"intervention_id"`
+					Text           string `json:"text"`
+				} `json:"steps"`
+			} `json:"plan_cycles"`
+		} `json:"summaries"`
+		Interventions []core.Intervention `json:"interventions"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	cycles := body.Summaries.PlanCycles
+	if len(cycles) != 1 || cycles[0].Outcome != "approved" || len(cycles[0].Steps) != 2 {
+		t.Fatalf("plan cycles = %+v", cycles)
+	}
+	approval := cycles[0].Steps[1]
+	if len(body.Interventions) != 1 {
+		t.Fatalf("interventions = %+v", body.Interventions)
+	}
+	if approval.Kind != "plan_approved" || approval.PlanVersion == nil || *approval.PlanVersion != 1 || approval.UserID != "usr_a" ||
+		approval.InterventionID == nil || *approval.InterventionID != body.Interventions[0].ID || approval.Text != "Looks right." {
+		t.Fatalf("approval step = %+v", approval)
+	}
+}
