@@ -49,8 +49,8 @@ func composedRuntimeServer(t *testing.T) (*Server, store.Backend, *config.Config
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime.ExecutionSettings == nil || runtime.ExecutionSettings.ControlPlane.Planning.Model != "leak-planning-model" || runtime.Routing.Stages["triage"].Model != "leak-triage-model" || len(runtime.PlanningModels) != 2 {
-		t.Fatalf("fixture runtime is not composed: settings=%+v triage=%+v allowlist=%v", runtime.ExecutionSettings, runtime.Routing.Stages["triage"], runtime.PlanningModels)
+	if runtime.ExecutionSettings == nil || runtime.ExecutionSettings.ControlPlane.Planning.Model != "leak-planning-model" || runtime.Routing.Triage.Model != "leak-triage-model" || len(runtime.PlanningModels) != 2 {
+		t.Fatalf("fixture runtime is not composed: settings=%+v triage=%+v allowlist=%v", runtime.ExecutionSettings, runtime.Routing.Triage, runtime.PlanningModels)
 	}
 	provider := func(ctx context.Context) (*config.Config, error) { return backend.RuntimeConfig(ctx, deployment) }
 	server := NewServer(backend)

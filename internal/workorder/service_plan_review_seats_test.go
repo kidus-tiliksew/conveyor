@@ -50,8 +50,8 @@ func newPlanSeatsEnv(t *testing.T, id string, gate bool, setup config.PolicyCont
 	}
 	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, workspaceSeats)},
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"spec":      {Model: "planner", Execution: config.ExecutionMCP, Timeout: time.Hour},
-			"implement": {Model: "implementer", Execution: config.ExecutionMCP, Timeout: time.Hour},
+			"spec":      {Execution: config.ExecutionMCP, Timeout: time.Hour},
+			"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour},
 		}}, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor.git", Base: "main"}}}
 	d := dispatch.New(st, cfg, nil)
 	d.DisableMemoryQueueForTest()

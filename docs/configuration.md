@@ -12,7 +12,9 @@ explicitly when a host also runs agent sessions.
 
 Read by `conveyord` (and written by `conveyor init`). It holds pipeline
 policy and the settings of the stages that run inside `conveyord` (triage,
-title generation, and planning), never harnesses or executor models (DEC-104).
+title generation, and planning). It holds no agent harness, model, or effort
+for any stage (DEC-132). The person who starts an agent session chooses its
+harness and model.
 The annotated [conveyor.example.yaml](../conveyor.example.yaml) documents
 every field inline; the shape:
 
@@ -36,7 +38,7 @@ execution_settings:
   review: {timeout: 1h}
 
 review:
-  seats: [{}]                    # seat count only; seat models are client-local
+  seats: [{}]                    # seat count only; a seat holds no harness, model, or effort
   distinct_models: false         # refuse a seat claim that repeats a round's model name
 
 execution:
@@ -77,15 +79,25 @@ model is not configured", set `execution_settings.control_plane.planning.model`
 `conveyord`.
 
 A deployment file written before execution setups were retired may still
-carry `harnesses`, `setups`, `default_setup`, `routing` models, stage
-`harness`, `model`, `model_policy`, or `effort`, review fallbacks, or seat
-models. `conveyord` and `conveyor init` ignore those keys, never validate them,
-and log one line naming each ignored field without its value. When `default_setup` names one of
-the file's `setups`, that setup's stage timeouts, review seat count, and
-control-plane settings apply, as they did before, and its executor detail is
-dropped. Other unknown keys still fail
-the load. Conveyor keeps execution detail nowhere, so remove those keys when
-convenient.
+carry `harnesses`, `setups`, `default_setup`, `routing`, a stage `harness`,
+`model`, `model_policy`, or `effort`, review fallbacks, or seat models.
+`conveyord` and `conveyor init` ignore those keys, never validate them, and
+log one line naming each ignored field without its value. A `routing` stage
+keeps only its timeout, so a stage that `execution_settings` leaves without a
+timeout still takes it. The `model`, `model_tier`, and `effort` of
+`routing.stages.triage` still set the triage model and effort where
+`execution_settings.control_plane.triage` states none. When `default_setup`
+names one of the file's `setups`, that setup's stage timeouts, review seat
+count, and control-plane settings apply, as they did before, and its executor
+detail is dropped. Other unknown keys still fail the load. Conveyor keeps
+execution detail nowhere, so remove those keys when convenient.
+
+A workspace configuration that an earlier release stored may hold the same
+keys. Every read drops them before it decodes the rest, logs each removed
+field by name once per process, and never rewrites the stored row or changes
+its version. The row keeps the stage timeouts and review seat count it
+resolved to, and triage and planning settings always come from the
+deployment file.
 
 ### Database selection
 

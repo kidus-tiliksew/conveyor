@@ -2191,8 +2191,8 @@ func TestMCPCreateTaskRetryUsesPersistedPolicyBeforeLiveHealth(t *testing.T) {
 		Execution: config.ExecutionPolicy{DefaultMode: "auto", DefaultPlanState: "needed", MergeApproval: true},
 
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"implement": {Harness: "codex"},
-			"review":    {Harness: "codex", Execution: config.ExecutionMCP},
+			"implement": {},
+			"review":    {Execution: config.ExecutionMCP},
 		}},
 		Repos: []config.Repo{{Name: "api", Base: "main"}},
 	}

@@ -18,7 +18,7 @@ func TestPolicyOnlyDispatchCarriesTimeoutAndNoExecutionPins(t *testing.T) {
 	cfg := &config.Config{
 		WorkOrderQueueTimeout: time.Hour,
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"implement": {Execution: config.ExecutionMCP, TimeoutText: "3h", Model: "server-model", Harness: "server-harness", Effort: "high"},
+			"implement": {Execution: config.ExecutionMCP, TimeoutText: "3h"},
 		}},
 	}
 	order, err := BuildFutureWorkOrderRouting(cfg, core.Task{}, core.StageImplement)
@@ -36,7 +36,7 @@ func TestPolicyOnlyDispatchCarriesTimeoutAndNoExecutionPins(t *testing.T) {
 func TestPolicyOnlyReviewRoundFreezesSeatShapeNotExecution(t *testing.T) {
 	cfg := &config.Config{
 		WorkOrderQueueTimeout: time.Hour,
-		Review:                config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "one", Harness: "codex"}, {Model: "two", Harness: "claude", Effort: "high"}}},
+		Review:                config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}},
 	}
 	minimum := store.ReviewSeatMinimum(config.PolicyContract{}, len(cfg.Review.Seats))
 	_, orders, err := BuildReviewRound(cfg, core.Task{ID: "policy-review"}, config.StageRoute{TimeoutText: "45m"}, 1, minimum, minimum)
@@ -65,13 +65,12 @@ func TestFrozenPolicySurvivesWorkspacePolicyEdits(t *testing.T) {
 	current := &config.Config{
 		MaxBounces:            9,
 		WorkOrderQueueTimeout: time.Hour,
-		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"triage":    {Execution: config.ExecutionInProcess, Model: "title-model", TimeoutText: "1m"},
-			"spec":      {Execution: config.ExecutionMCP, Harness: "local", Model: "spec-local", TimeoutText: "50m"},
-			"implement": {Execution: config.ExecutionMCP, Harness: "local", Model: "implement-local", TimeoutText: "8h"},
-			"review":    {Execution: config.ExecutionMCP, Harness: "local", Model: "review-local", TimeoutText: "3h"},
+		Routing: config.Routing{Triage: config.TriageRoute{Model: "title-model", TimeoutText: "1m"}, Stages: map[string]config.StageRoute{
+			"spec":      {Execution: config.ExecutionMCP, TimeoutText: "50m"},
+			"implement": {Execution: config.ExecutionMCP, TimeoutText: "8h"},
+			"review":    {Execution: config.ExecutionMCP, TimeoutText: "3h"},
 		}},
-		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Harness: "local", Model: "review-local"}}},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
 	}
 	implement, err := BuildFutureWorkOrderRouting(current, task, core.StageImplement)
 	if err != nil || implement.ExecutionTimeoutText != "2h" {
@@ -85,8 +84,8 @@ func TestFrozenPolicySurvivesWorkspacePolicyEdits(t *testing.T) {
 		t.Fatalf("review orders=%+v err=%v", reviews, err)
 	}
 	frozen := current.WithPolicy(task.SetupContract)
-	if frozen.MaxBounces != 3 || frozen.Routing.Stages["triage"].Model != "title-model" || frozen.Routing.Stages["implement"].Harness != "local" || frozen.Routing.Stages["implement"].Model != "implement-local" || len(frozen.Review.Seats) != 2 || frozen.Review.Seats[0].Harness != "local" {
-		t.Fatalf("policy overlay replaced execution detail: %+v", frozen)
+	if frozen.MaxBounces != 3 || frozen.Routing.Triage != current.Routing.Triage || frozen.Routing.Stages["implement"].TimeoutText != "2h" || len(frozen.Review.Seats) != 2 {
+		t.Fatalf("policy overlay replaced the deployment triage route or missed the frozen policy: %+v", frozen)
 	}
 }
 
@@ -182,10 +181,9 @@ func TestTriageProceedRoutesByPlanState(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
-				"triage":    {Model: "triage", Execution: config.ExecutionInProcess, Timeout: time.Minute},
-				"spec":      {Model: "planner", Execution: config.ExecutionMCP, Timeout: time.Hour},
-				"implement": {Model: "implementer", Execution: config.ExecutionMCP, Timeout: time.Hour},
+			cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Triage: config.TriageRoute{Model: "triage", Timeout: time.Minute}, Stages: map[string]config.StageRoute{
+				"spec":      {Execution: config.ExecutionMCP, Timeout: time.Hour},
+				"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour},
 			}}}
 			agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"Ready.\"}\n```"}}
 			dispatcher := New(st, cfg, agent)

@@ -422,7 +422,7 @@ func dispatchRaceConfig(workspace string) *config.Config {
 	return &config.Config{
 		Workspace: workspace,
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"implement": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 		}},
 		Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo.git", GitHub: "acme/repo", Base: "main"}},
 	}

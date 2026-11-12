@@ -21,7 +21,10 @@ import (
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
-func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
+// A review route that still says in_process no longer runs a model at
+// submission: the submission records its context freshness, waits for the
+// MCP review round, and no model is called (DEC-132(2)).
+func TestSubmitForReviewWithStaleInProcessRouteAwaitsMCPReview(t *testing.T) {
 	t.Parallel()
 	for _, recording := range []bool{true, false} {
 		t.Run(fmt.Sprint(recording), func(t *testing.T) {
@@ -50,7 +53,7 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{
-				"review": {Model: "reviewer", Execution: config.ExecutionInProcess, Timeout: time.Minute},
+				"review": {Execution: config.ExecutionInProcess, Timeout: time.Minute},
 			}}}
 			agent := &staticAgent{output: "```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"all criteria pass\",\"feedback\":\"\"}\n```"}
 			dispatcher := dispatch.New(st, cfg, agent)
@@ -86,17 +89,14 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 			if !ok || freshness.UnfetchedAdditions != 1 || freshness.ObservationRecorded != recording || freshness.Additions.Items[0].ArtifactID != correction.ID {
 				t.Fatalf("submission freshness=%+v", result["context_freshness"])
 			}
-			if result["await_review"] != false || result["verdict"] != "approve" {
+			if result["await_review"] != true || result["verdict"] != nil {
 				t.Fatalf("result = %+v", result)
 			}
-			if !strings.Contains(agent.input.Prompt, "```conveyor:review") || strings.Contains(agent.input.Prompt, "submit_review_verdict") {
-				t.Fatalf("in-process review prompt has the wrong terminal contract: %s", agent.input.Prompt)
-			}
-			if !strings.Contains(agent.input.Prompt, "diff --git a/app.txt b/app.txt") {
-				t.Fatalf("in-process review prompt is missing the branch diff: %s", agent.input.Prompt)
+			if agent.input.Prompt != "" {
+				t.Fatalf("submission ran a review model: %s", agent.input.Prompt)
 			}
 			updated, err := st.GetTask(ctx, task.ID)
-			if err != nil || updated.State != core.TaskApproved {
+			if err != nil || updated.State == core.TaskApproved || updated.NextStage != core.StageReview {
 				t.Fatalf("task = %+v err=%v", updated, err)
 			}
 		})
@@ -209,7 +209,7 @@ func TestSubmissionDerivedGovernanceAttachesWithoutAProposalWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"review": {Execution: config.ExecutionMCP, Model: "reviewer", Timeout: time.Hour, TimeoutText: "1h"},
+		"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 	}}}
 	dispatcher := dispatch.New(st, cfg, nil)
 	dispatcher.DisableMemoryQueueForTest()
@@ -300,10 +300,10 @@ func newEvidenceSubmissionFixture(t *testing.T, wrap ...func(store.Store) store.
 		Workspace: "demo", MaxBounces: 2,
 		Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}},
 		Review: config.ReviewPanel{Seats: []config.ReviewSeat{
-			{Model: "reviewer-a"}, {Model: "reviewer-b"},
+			{}, {},
 		}},
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 		}},
 	}
 	dispatcher := dispatch.New(st, cfg, nil)

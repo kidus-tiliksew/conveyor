@@ -54,8 +54,8 @@ func (agent *headlineAgent) Run(ctx context.Context, model string, input inproce
 	return agent.result, agent.err
 }
 
-func headlineConfig(route config.StageRoute) *config.Config {
-	return &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": route}}}
+func headlineConfig(route config.TriageRoute) *config.Config {
+	return &config.Config{Workspace: "demo", Routing: config.Routing{Triage: route}}
 }
 
 // headlineFixtureInputs is a requirement with two serving tasks whose bodies
@@ -114,8 +114,8 @@ func TestGenerateRequirementHeadlineModelOverrides(t *testing.T) {
 			t.Setenv(config.ControlPlaneModelEnv, test.general)
 			t.Setenv(config.TriageModelEnv, test.triage)
 			t.Setenv(config.PlanningModelEnv, test.planning)
-			cfg := headlineConfig(config.StageRoute{Model: "deployment-triage", Effort: "low", Timeout: time.Minute, TimeoutText: "1m", Execution: config.ExecutionInProcess})
-			before := cfg.Routing.Stages["triage"]
+			cfg := headlineConfig(config.TriageRoute{Model: "deployment-triage", Effort: "low", Timeout: time.Minute, TimeoutText: "1m"})
+			before := cfg.Routing
 			agent := &headlineAgent{result: inprocess.Result{Output: "Two tasks serve the requirement.", Model: "served-model"}}
 			d := New(store.NewMemory(), nil, agent)
 			d.ConfigProvider = func(context.Context) (*config.Config, error) { return cfg, nil }
@@ -126,8 +126,8 @@ func TestGenerateRequirementHeadlineModelOverrides(t *testing.T) {
 			if agent.model != test.want || headline.Text != "Two tasks serve the requirement." {
 				t.Fatalf("model=%q headline=%+v, want model %q", agent.model, headline, test.want)
 			}
-			if after := cfg.Routing.Stages["triage"]; !reflect.DeepEqual(after, before) || len(cfg.Routing.Stages) != 1 {
-				t.Fatalf("configuration changed: before=%+v after=%+v", before, cfg.Routing.Stages)
+			if after := cfg.Routing; !reflect.DeepEqual(after, before) {
+				t.Fatalf("configuration changed: before=%+v after=%+v", before, after)
 			}
 		})
 	}
@@ -141,23 +141,23 @@ func TestGenerateRequirementHeadlineUnconfigured(t *testing.T) {
 	inputs, actions := headlineFixtureInputs(1)
 	input := headlineInputFor(inputs, actions)
 	clearControlPlaneModelOverrides(t)
-	if _, err := New(store.NewMemory(), headlineConfig(config.StageRoute{Model: "triage"}), nil).GenerateRequirementHeadline(t.Context(), input); !errors.Is(err, ErrHeadlineUnconfigured) {
+	if _, err := New(store.NewMemory(), headlineConfig(config.TriageRoute{Model: "triage"}), nil).GenerateRequirementHeadline(t.Context(), input); !errors.Is(err, ErrHeadlineUnconfigured) {
 		t.Fatalf("nil agent err=%v", err)
 	}
 	for name, test := range map[string]struct {
-		stages             map[string]config.StageRoute
+		triage             config.TriageRoute
 		general, overrides string
 	}{
-		"missing route":                {stages: map[string]config.StageRoute{"review": {Model: "reviewer"}}},
-		"blank model":                  {stages: map[string]config.StageRoute{"triage": {Model: "  ", Timeout: time.Minute}}},
-		"overrides without a route":    {stages: map[string]config.StageRoute{}, general: "general-override", overrides: "triage-override"},
-		"overrides with a blank model": {stages: map[string]config.StageRoute{"triage": {Model: ""}}, general: "general-override", overrides: "triage-override"},
+		"missing route":                {},
+		"blank model":                  {triage: config.TriageRoute{Model: "  ", Timeout: time.Minute}},
+		"overrides without a route":    {general: "general-override", overrides: "triage-override"},
+		"overrides with a blank model": {triage: config.TriageRoute{Timeout: time.Minute}, general: "general-override", overrides: "triage-override"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(config.ControlPlaneModelEnv, test.general)
 			t.Setenv(config.TriageModelEnv, test.overrides)
 			agent := &headlineAgent{result: inprocess.Result{Output: "never used"}}
-			d := New(store.NewMemory(), &config.Config{Workspace: "demo", Routing: config.Routing{Stages: test.stages}}, agent)
+			d := New(store.NewMemory(), &config.Config{Workspace: "demo", Routing: config.Routing{Triage: test.triage, Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}, agent)
 			if _, err := d.GenerateRequirementHeadline(t.Context(), input); !errors.Is(err, ErrHeadlineUnconfigured) {
 				t.Fatalf("err=%v, want ErrHeadlineUnconfigured", err)
 			}
@@ -185,24 +185,24 @@ func TestGenerateRequirementHeadlineTimeoutAndResult(t *testing.T) {
 
 	waiting := &headlineAgent{wait: true}
 	started := time.Now()
-	_, err := New(store.NewMemory(), headlineConfig(config.StageRoute{Model: "triage", Timeout: 50 * time.Millisecond}), waiting).GenerateRequirementHeadline(t.Context(), input)
+	_, err := New(store.NewMemory(), headlineConfig(config.TriageRoute{Model: "triage", Timeout: 50 * time.Millisecond}), waiting).GenerateRequirementHeadline(t.Context(), input)
 	if !errors.Is(err, context.DeadlineExceeded) || !waiting.hasDeadline || waiting.deadline.After(started.Add(50*time.Millisecond+time.Second)) {
 		t.Fatalf("timeout err=%v deadline=%v/%v", err, waiting.deadline, waiting.hasDeadline)
 	}
 
 	unbounded := &headlineAgent{result: inprocess.Result{Output: "Done."}}
-	if _, err = New(store.NewMemory(), headlineConfig(config.StageRoute{Model: "triage"}), unbounded).GenerateRequirementHeadline(t.Context(), input); err != nil || unbounded.hasDeadline {
+	if _, err = New(store.NewMemory(), headlineConfig(config.TriageRoute{Model: "triage"}), unbounded).GenerateRequirementHeadline(t.Context(), input); err != nil || unbounded.hasDeadline {
 		t.Fatalf("no-timeout err=%v deadline=%v", err, unbounded.hasDeadline)
 	}
 
 	providerErr := errors.New("Responses API returned 500")
 	failing := &headlineAgent{err: providerErr}
-	if _, err = New(store.NewMemory(), headlineConfig(config.StageRoute{Model: "triage"}), failing).GenerateRequirementHeadline(t.Context(), input); !errors.Is(err, providerErr) || errors.Is(err, ErrHeadlineInvalid) || errors.Is(err, ErrHeadlineUnconfigured) {
+	if _, err = New(store.NewMemory(), headlineConfig(config.TriageRoute{Model: "triage"}), failing).GenerateRequirementHeadline(t.Context(), input); !errors.Is(err, providerErr) || errors.Is(err, ErrHeadlineInvalid) || errors.Is(err, ErrHeadlineUnconfigured) {
 		t.Fatalf("provider err=%v", err)
 	}
 
 	served := &headlineAgent{result: inprocess.Result{Output: "  One task waits on the operator.  ", Model: "gpt-served-2026", TokensIn: 321, TokensOut: 45}}
-	headline, err := New(store.NewMemory(), headlineConfig(config.StageRoute{Model: "gpt-requested", Timeout: time.Minute}), served).GenerateRequirementHeadline(t.Context(), input)
+	headline, err := New(store.NewMemory(), headlineConfig(config.TriageRoute{Model: "gpt-requested", Timeout: time.Minute}), served).GenerateRequirementHeadline(t.Context(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestGenerateRequirementHeadlineRejectsInvalidOutput(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			agent := &headlineAgent{result: inprocess.Result{Output: test.output, Model: "served"}}
-			headline, err := New(store.NewMemory(), headlineConfig(config.StageRoute{Model: "triage"}), agent).GenerateRequirementHeadline(t.Context(), input)
+			headline, err := New(store.NewMemory(), headlineConfig(config.TriageRoute{Model: "triage"}), agent).GenerateRequirementHeadline(t.Context(), input)
 			if test.valid {
 				if err != nil || headline.Text != test.want {
 					t.Fatalf("headline=%q err=%v, want %q", headline.Text, err, test.want)
@@ -278,7 +278,7 @@ func TestGenerateRequirementHeadlinePromptExcludesTaskBodies(t *testing.T) {
 	inputs, actions := headlineFixtureInputs(3)
 	input := headlineInputFor(inputs, actions)
 	agent := &headlineAgent{result: inprocess.Result{Output: "One task waits on the operator."}}
-	if _, err := New(store.NewMemory(), headlineConfig(config.StageRoute{Model: "triage"}), agent).GenerateRequirementHeadline(t.Context(), input); err != nil {
+	if _, err := New(store.NewMemory(), headlineConfig(config.TriageRoute{Model: "triage"}), agent).GenerateRequirementHeadline(t.Context(), input); err != nil {
 		t.Fatal(err)
 	}
 	prompt := agent.input.Prompt

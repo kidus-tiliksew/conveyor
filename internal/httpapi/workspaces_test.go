@@ -101,13 +101,13 @@ func TestWorkspaceContextFailsClosedAndIsolatesLists(t *testing.T) {
 
 func TestCreateWorkspaceValidatesAndUsesDefaults(t *testing.T) {
 	control := &fakeWorkspaceControl{}
-	deployment := &config.Config{Workspace: "demo", MaxBounces: 2, Database: config.Database{Backend: "memory"}, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", TimeoutText: "1h", Execution: config.ExecutionInProcess}, "spec": {Model: "gpt", TimeoutText: "1h", Execution: config.ExecutionInProcess}, "implement": {Model: "operator", TimeoutText: "1h", Execution: config.ExecutionMCP}, "review": {Model: "operator", TimeoutText: "1h", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
+	deployment := &config.Config{Workspace: "demo", MaxBounces: 2, Database: config.Database{Backend: "memory"}, Routing: config.Routing{Triage: config.TriageRoute{Model: "gpt", TimeoutText: "1h"}, Stages: map[string]config.StageRoute{"spec": {TimeoutText: "1h", Execution: config.ExecutionInProcess}, "implement": {TimeoutText: "1h", Execution: config.ExecutionMCP}, "review": {TimeoutText: "1h", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	srv := NewServer(store.NewMemory())
 	srv.Workspaces, srv.Deployment, srv.BearerToken = control, deployment, "token"
 	srv.Memberships = localOperatorInstanceAdmin()
 	queued := ""
 	srv.EnsureWorkspaceQueues = func(id string, candidate *config.Config) error {
-		if candidate == nil || candidate.Workspace != id || candidate.Routing.Stages["triage"].TimeoutText != "1h" || control.created != nil {
+		if candidate == nil || candidate.Workspace != id || candidate.Routing.Triage.TimeoutText != "1h" || control.created != nil {
 			t.Fatalf("queue preflight must receive the candidate before persistence: %+v", candidate)
 		}
 		queued = id
@@ -147,16 +147,14 @@ func TestCreateWorkspaceDoesNotPersistWhenQueueRegistrationFails(t *testing.T) {
 // legacyExecutorDeployment is a deployment value that still carries execution
 // detail, as a file loaded before DEC-56 did.
 func legacyExecutorDeployment() *config.Config {
-	const harness = "codex"
 	return &config.Config{
 		Workspace: "demo", MaxBounces: 2, Database: config.Database{Backend: "memory"},
-		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"triage":    {Model: "gpt", TimeoutText: "1h", Execution: config.ExecutionInProcess},
-			"spec":      {Model: "gpt-sol", Harness: harness, Effort: "high", TimeoutText: "30m", Execution: config.ExecutionMCP},
-			"implement": {Model: "gpt-sol", Harness: harness, Effort: "high", TimeoutText: "4h", Execution: config.ExecutionMCP},
-			"review":    {Model: "gpt-terra", Harness: harness, TimeoutText: "1h", Execution: config.ExecutionMCP},
+		Routing: config.Routing{Triage: config.TriageRoute{Model: "gpt", TimeoutText: "1h"}, Stages: map[string]config.StageRoute{
+			"spec":      {TimeoutText: "30m", Execution: config.ExecutionMCP},
+			"implement": {TimeoutText: "4h", Execution: config.ExecutionMCP},
+			"review":    {TimeoutText: "1h", Execution: config.ExecutionMCP},
 		}},
-		Review:         config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-terra", Harness: harness, Effort: "high"}}},
+		Review:         config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
 		PlanningModels: []string{"gpt"},
 		Repos:          []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}},
 	}
@@ -168,14 +166,8 @@ func assertCandidateHasNoExecutionDetail(t *testing.T, candidate *config.Config)
 		t.Fatalf("candidate inherited execution detail: settings=%v planning=%v", candidate.ExecutionSettings, candidate.PlanningModels)
 	}
 	for _, stage := range []string{"spec", "implement", "review", "verify"} {
-		route := candidate.Routing.Stages[stage]
-		if route.Model != "" || route.Harness != "" || route.Effort != "" || route.ModelPolicy != "" {
-			t.Fatalf("candidate inherited %s execution detail: %+v", stage, route)
-		}
-	}
-	for i, seat := range candidate.Review.Seats {
-		if seat != (config.ReviewSeat{}) {
-			t.Fatalf("candidate inherited seat %d contents: %+v", i, seat)
+		if route := candidate.Routing.Stages[stage]; route.Execution != config.ExecutionMCP {
+			t.Fatalf("candidate %s route is not an MCP work-order route: %+v", stage, route)
 		}
 	}
 }
@@ -319,7 +311,7 @@ func createWorkspaceAcceptsPolicyOnlyDocuments(t *testing.T) {
 			if control.created == nil || control.created != preflight || control.created.Workspace != "engineering" {
 				t.Fatalf("created=%+v preflight=%+v", control.created, preflight)
 			}
-			if triage := control.created.Routing.Stages["triage"]; triage.Model != "gpt" || triage.Execution != config.ExecutionInProcess {
+			if triage := control.created.Routing.Triage; triage.Model != "gpt" {
 				t.Fatalf("deployment control-plane route lost for queue preflight: %+v", triage)
 			}
 			assertCandidateHasNoExecutionDetail(t, control.created)

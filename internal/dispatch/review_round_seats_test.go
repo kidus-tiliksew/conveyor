@@ -111,10 +111,10 @@ func TestBuildReviewRoundRejectsBelowFloor(t *testing.T) {
 }
 
 func TestBuildReviewRoundBeyondConfiguredSeats(t *testing.T) {
-	cfg := &config.Config{WorkOrderQueueTimeout: time.Hour, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Harness: "codex", Model: "pinned", Effort: "high"}}},
-		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, TimeoutText: "45m", Harness: "codex", Model: "route"}}}}
+	cfg := &config.Config{WorkOrderQueueTimeout: time.Hour, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, TimeoutText: "45m"}}}}
 	task := core.Task{ID: "beyond", SetupContract: config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}}}
-	jobs, orders, err := BuildReviewRound(cfg, task, config.StageRoute{TimeoutText: "45m", Harness: "codex", Model: "route"}, 2, 3, 1)
+	jobs, orders, err := BuildReviewRound(cfg, task, config.StageRoute{TimeoutText: "45m"}, 2, 3, 1)
 	if err != nil || len(jobs) != 3 || len(orders) != 3 {
 		t.Fatalf("jobs=%+v orders=%+v err=%v", jobs, orders, err)
 	}

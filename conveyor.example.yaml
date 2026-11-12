@@ -7,14 +7,13 @@
 # general value for their stages. Empty values are ignored; these deployment
 # overrides never change the stored workspace configuration or MCP work orders.
 #
-# This annotated file is a combined example. conveyord reads it through the
-# deployment loader, which keeps pipeline policy, stage timeouts, the review
-# seat count, and the in-process control-plane models, and ignores and logs
-# by name every execution key: harnesses, setups, default_setup, stage
-# harness/model/model_policy/effort, review fallbacks, and seat contents
-# (DEC-104). Conveyor keeps no harness registry or execution setup anywhere;
-# the sections below remain only to show what an earlier file held.
-# conveyor init writes a policy-only file.
+# This file holds pipeline policy and the settings of the stages that run
+# inside conveyord: triage, title generation, and planning (DEC-132). It holds
+# no agent harness, model, or effort. The person who starts an agent session
+# chooses its harness and model. The deployment loader still loads a file an
+# earlier release wrote: it ignores and logs by name, never by value, any
+# harnesses, setups, default_setup, routing, stage harness, model,
+# model_policy, or effort, review fallbacks, and seat contents.
 workspace: demo
 # pack_dir: /path/to/custom/pack  # optional strict override; omitted uses the embedded canonical role pack
 # Review rounds before human check-in (component-task-lifecycle): the window resets after
@@ -23,12 +22,11 @@ max_bounces: 10
 work_order_queue_timeout: 24h
 # planning_snapshot_max_bytes: 536870912  # cap compressed and extracted snapshot bytes
 
-# Where conveyor checkout, conveyor run, and the worker create new task
-# worktrees (component-harness-execution). An executing machine must choose:
-# with no location, checkout creates no worktree and run and the worker refuse
-# to start. mode: repository places them at <primary checkout>/<dir> (dir
-# defaults to _worktrees, added to .git/info/exclude); mode: machine places
-# them under root (defaults to ~/.conveyor/worktrees). The daemon ignores it.
+# Where conveyor checkout creates new task worktrees on an agent's machine
+# (component-git-delivery). With no location, checkout creates no worktree.
+# mode: repository places them at <primary checkout>/<dir> (dir defaults to
+# _worktrees, added to .git/info/exclude); mode: machine places them under
+# root (defaults to ~/.conveyor/worktrees). The daemon ignores it.
 worktree_location:
   mode: machine
   root: ~/.conveyor/worktrees
@@ -41,53 +39,19 @@ database:
 # runtime:
 #   peers: true
 
-# Default-setup projection for older clients (component-harness-execution). The setup block
-# below is authoritative; this and routing remain readable compatibility data.
+# Settings of the in-process control-plane stages, and the stage timeouts
+# that each task freezes at intake. Planning takes the triage model, effort,
+# and timeout unless control_plane.planning states its own; planning_models
+# lists alternate planning models.
 execution_settings:
   control_plane:
     triage: {model: gpt-5.6-luna, timeout: 20m}
   spec:
-    harness: local-agent
-    model: gpt-5.6-sol
-    model_policy: explicit
-    effort: high
     timeout: 30m
   implementation:
-    harness: local-agent
-    model_policy: harness_default
-    # Omit effort for the harness default; an explicit low, medium, or high
-    # value is valid only when local-agent declares that effort_args mapping.
-    effort: high
     timeout: 4h
   review:
-    execution: mcp
     timeout: 1h
-
-# Deprecated compatibility shape for older REST/CLI consumers.
-routing:
-  stages:
-    triage:
-      model: gpt-5.6-luna
-      timeout: 20m
-      execution: in_process
-    spec:
-      model: gpt-5.6-sol
-      model_policy: explicit
-      harness: local-agent
-      effort: high
-      timeout: 30m
-      execution: mcp
-    implement:
-      model: operator-owned
-      harness: local-agent
-      effort: high
-      timeout: 4h
-      execution: mcp
-    review:
-      model: operator-owned
-      harness: local-agent
-      timeout: 1h
-      execution: mcp
 
 execution:
   default_plan_state: needed
@@ -96,70 +60,18 @@ execution:
   review_concurrency: 1
   first_activity_timeout: 2m
 
-# Argv arrays are executed directly, never through a shell. This local-agent
-# runs Claude Code; pick models your Claude account can use.
-harnesses:
-  - name: local-agent
-    # The json_file transport is supported only for Claude Code
-    # (component-harness-execution). The generated mcp.json references
-    # ${CONVEYOR_API_TOKEN} instead of carrying a credential,
-    # --strict-mcp-config makes it the only MCP source, and stream-json with
-    # --verbose carries the initialization receipt the launcher requires
-    # before it trusts the child. An operator wrapper or another agent CLI on
-    # json_file is refused before claiming: use the Codex toml_override
-    # template or a Grok, Cursor, or OpenCode environment harness instead.
-    mcp_transport: json_file
-    command: [claude, -p, "{prompt}", --mcp-config, "{mcp_config}", --strict-mcp-config, --allowedTools, "mcp__conveyor__*", --output-format, stream-json, --verbose, --permission-mode, bypassPermissions, --add-dir, ..]
-    model_args: [--model, "{model}"]
-    # Provider-specific flags stay inside this shell-free adapter mapping.
-    effort_args:
-      high: [--effort, high]
-    probe_command: [claude, --version]
-    probe_timeout: 10s
-
-# One durable review order is created per ordered seat. A seat-level harness
-# is optional and otherwise uses execution_settings.review.fallback_harness.
-# Here every seat is explicit, so route-level fallback data is unused. Effort
-# is optional; when absent, the selected harness keeps its own default.
+# Review policy, frozen on each task at intake. The number of seats is the
+# minimum review seat count; one review work order opens per seat. A seat holds
+# no harness, model, or effort: each seat's agent session reports its own model
+# when it claims the order.
 review:
-  # Off by default and frozen on each task at intake. When true, a review seat
-  # claim is refused when its reported model name is blank or repeats a name
-  # another seat of the round reports. Names are compared, never verified.
+  # Off by default. When true, a review seat claim is refused when its
+  # reported model name is blank or repeats a name another seat of the round
+  # reports. Names are compared, never verified.
   distinct_models: false
   seats:
-    - model: gpt-5.6
-      harness: local-agent
-    - model: claude-opus-4.1
-      harness: local-agent
-
-# Named execution contracts are the authoritative v1.28 shape. The matching
-# top-level execution_settings/review fields above are emitted as the default
-# setup projection for older clients (component-harness-execution).
-default_setup: default
-setups:
-  - name: default
-    refresh_review: delta # delta | full | none; frozen on each task
-    execution_settings:
-      control_plane:
-        triage: {model: gpt-5.6-luna, timeout: 20m}
-      spec:
-        harness: local-agent
-        model: gpt-5.6-sol
-        model_policy: explicit
-        effort: high
-        timeout: 30m
-      implementation:
-        harness: local-agent
-        model_policy: harness_default
-        effort: high
-        timeout: 4h
-      review:
-        execution: mcp
-        timeout: 1h
-    review:
-      seats:
-        - {model: gpt-5.6, harness: local-agent}
-        - {model: claude-opus-4.1, harness: local-agent}
+    - {}
+    - {}
 
 repos:
   - name: api

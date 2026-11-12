@@ -854,7 +854,7 @@ func TestStaleApprovalDispatchesDeltaRefreshRound(t *testing.T) {
 	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
 		t.Fatal(err)
 	}
-	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "new-head"}, nil
 	}
@@ -873,7 +873,7 @@ func TestRepeatedStaleApprovalPollKeepsActiveRefreshSeat(t *testing.T) {
 	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
 		t.Fatal(err)
 	}
-	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "new-head"}, nil
 	}
@@ -915,7 +915,7 @@ func TestApprovedRefreshBindsOrderHeadAndRestoresMergeReadiness(t *testing.T) {
 	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"head_sha": "head-a"})}); err != nil {
 		t.Fatal(err)
 	}
-	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "head-b"}, nil
 	}
@@ -978,7 +978,7 @@ func TestNonAdvancingRefreshBindingParksEpisodeWithoutReplacementRound(t *testin
 	if err := st.BindTaskApproval(ctx, task.ID, "head-a"); err != nil {
 		t.Fatal(err)
 	}
-	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "head-b"}, nil
 	}
@@ -1044,7 +1044,7 @@ func TestConflictResolutionForcesDeltaWhenFrozenPolicyIsNone(t *testing.T) {
 	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
 		t.Fatal(err)
 	}
-	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
 	current, _ := st.GetTask(ctx, task.ID)
 	if err := d.beginRefreshLocked(ctx, current, githubtrigger.PullRequest{HeadSHA: "resolved-head"}, "merge-conflict", true); err != nil {
 		t.Fatal(err)
@@ -1510,7 +1510,7 @@ func TestGateOnReadMergeReadinessNeverRequestsMerge(t *testing.T) {
 			t.Fatal(err)
 		}
 		refuseMerge(d)
-		d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+		d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
 		d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 			return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "moved-head"}, nil
 		}
@@ -1563,7 +1563,7 @@ func TestGateOnConflictFixRefreshReturnsToMergeGateWithoutMerging(t *testing.T) 
 	if _, err = taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true}); err != nil {
 		t.Fatal(err)
 	}
-	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
 	if err = d.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -1673,7 +1673,7 @@ func TestEngagedRefreshIsNotRemarkedForUnchangedHeadPair(t *testing.T) {
 	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
 		t.Fatal(err)
 	}
-	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
 	current, _ := st.GetTask(ctx, task.ID)
 	if err := d.beginRefreshLocked(ctx, current, githubtrigger.PullRequest{HeadSHA: "new-head"}, "approval-stale", false); err != nil {
 		t.Fatal(err)

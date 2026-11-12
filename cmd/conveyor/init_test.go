@@ -129,7 +129,7 @@ func TestDefaultInitConfigWritesPolicyOnly(t *testing.T) {
 	if loaded.Execution.DefaultPlanState != "needed" || !loaded.Execution.MergeApproval {
 		t.Fatalf("generated gates = %+v, want both on", loaded.Execution)
 	}
-	triage := loaded.Routing.Stages["triage"]
+	triage := loaded.Routing.Triage
 	planning := loaded.ExecutionSettings.ControlPlane.Planning
 	if triage.Model != "gpt-5.6-luna" || triage.Effort != "high" || triage.TimeoutText != "20m" || planning.Model != "gpt-5.6-luna" || planning.Effort != "high" {
 		t.Fatalf("control-plane settings were not retained: triage=%+v planning=%+v", triage, planning)
@@ -157,11 +157,11 @@ func legacyExecutorInitConfig(t *testing.T, databaseURL string, answers initAnsw
 			Triage:   config.ModelTimeoutSettings{Model: "gpt-5.6-luna", Effort: "high", TimeoutText: "20m"},
 			Planning: config.PlanningSettings{Model: "gpt-5.6-luna", Effort: "high", TimeoutText: "20m"},
 		},
-		Spec:           config.ImplementationSettings{Harness: harness, Model: "gpt-5.6-sol", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "30m"},
-		Implementation: config.ImplementationSettings{Harness: harness, Model: "gpt-5.6-sol", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "4h"},
+		Spec:           config.ImplementationSettings{TimeoutText: "30m"},
+		Implementation: config.ImplementationSettings{TimeoutText: "4h"},
 		Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h"},
 	}
-	review := config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-5.6-terra", Harness: harness, Effort: "high"}}}
+	review := config.ReviewPanel{Seats: []config.ReviewSeat{{}}}
 	data, err := yaml.Marshal(config.Config{
 		Workspace: answers.WorkspaceID, MaxBounces: 10,
 		WorkOrderQueueTimeoutText: config.DefaultWorkOrderQueueTimeoutText,

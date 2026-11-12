@@ -211,6 +211,10 @@ func runWorkspaceControl(t *testing.T, x Fixture) {
 	// A stored row an earlier release wrote with harness and setup keys
 	// still loads unchanged on every backend (runtime_planning.go).
 	t.Run("LegacyWorkspaceRowLoads", func(t *testing.T) { runLegacyWorkspaceRowLoads(t, x) })
+	// A stored row whose direct routes, execution settings, and seats
+	// still hold every removed agent-stage key loads unchanged on every
+	// backend (runtime_planning.go).
+	t.Run("LegacyDirectRouteWorkspaceRowLoads", func(t *testing.T) { runLegacyDirectRouteWorkspaceRowLoads(t, x) })
 }
 
 // runBootstrapAndCredentialLifecycleActorsExplicit proves startup and

@@ -30,8 +30,8 @@ func (d *Dispatcher) GenerateTaskTitle(ctx context.Context, task core.Task) (str
 	if err != nil {
 		return "", err
 	}
-	route, ok := cfg.Routing.Stages[string(core.StageTriage)]
-	if !ok || strings.TrimSpace(route.Model) == "" {
+	route := cfg.Routing.Triage
+	if strings.TrimSpace(route.Model) == "" {
 		return "", fmt.Errorf("triage route with a model is not configured")
 	}
 	model := config.ResolveControlPlaneModel(string(core.StageTriage), route.Model)

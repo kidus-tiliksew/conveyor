@@ -133,7 +133,7 @@ func TestMonitorPostMergeAttemptsReuseOneTaskAndKeepDistinctObservations(t *test
 		return &config.Config{
 			Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
 			Routing:   config.Routing{Stages: map[string]config.StageRoute{"implement": {TimeoutText: "4h"}, "review": {TimeoutText: "1h"}}},
-			Review:    config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review"}}},
+			Review:    config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
 			Execution: config.ExecutionPolicy{DefaultPlanState: "needed"},
 		}, nil
 	}

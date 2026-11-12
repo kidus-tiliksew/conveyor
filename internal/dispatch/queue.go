@@ -289,7 +289,11 @@ func inProcessRouteTimeouts(workspace string, cfg *config.Config) []routeTimeout
 	routes := make([]routeTimeout, 0, 2)
 	for _, stage := range []string{"triage", "spec"} {
 		timeout := config.DefaultStageTimeout
-		if route, ok := cfg.Routing.Stages[stage]; ok && route.Timeout > 0 {
+		if stage == "triage" {
+			if cfg.Routing.Triage.Timeout > 0 {
+				timeout = cfg.Routing.Triage.Timeout
+			}
+		} else if route, ok := cfg.Routing.Stages[stage]; ok && route.Timeout > 0 {
 			timeout = route.Timeout
 		}
 		routes = append(routes, routeTimeout{name: workspace + "/" + stage, timeout: timeout})
