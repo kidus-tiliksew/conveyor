@@ -21,7 +21,18 @@ a task repository; each stage order runs in its own thread. Verification
 threads follow `conveyor-kit-verify`, and plan, implementation, and review
 threads follow `conveyor-work`. Threads never start other threads, wait for
 verdicts, or record a gate or proposal decision, and an implementation thread
-never proposes or revises a document. The coordinator records only
+never proposes or revises a document. The one exception: when the review
+primary entry is set, one review primary thread per round starts the seat
+threads, claims no seat, and submits no verdict. Before each thread start, the
+coordinator reads the person's stage preferences with `get_stage_preferences`
+for that thread's harness, model, and effort. Review seat N takes seat entry N
+or else the review primary entry. The host and the number of tasks run at once
+come from the coordinator's own agent memory. It asks about every uncovered
+choice in one message with a recommendation for each, saves stage answers with
+`set_stage_preference`, and saves host and concurrency answers in agent memory.
+It changes a saved choice only on the operator's direct instruction, and it
+reports an unavailable host, harness, or model as a blocker. Threads never write
+a stage preference. The coordinator records only
 routine decisions within the scope the operator delegated, with the operator's
 own credential, and brings product, scope, risk, validation-waiver, and
 operator-reserved decisions to the operator. The first sentence of every

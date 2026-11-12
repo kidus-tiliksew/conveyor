@@ -36,11 +36,11 @@ harness does not expose one; never guess a model ID.
 
 Every session claims its own order: a person started it in their own
 harness, and Conveyor launches no agent session, so no launcher renews the
-lease or owns a later stage (DEC-97(1)). Every verifier and reviewer reports
+lease or owns a later stage (DEC-131(1)). Every verifier and reviewer reports
 and exits after submitting its own result. The session that claimed the
 task's order continues the playbook's self-claimed delivery loop after
-implementation submission (DEC-97(2)): it starts a separate verifier or
-reviewer agent per order, awaits the verdict with `await_review`, and claims
+implementation submission (DEC-131(2)): it starts a separate verifier or
+reviewer agent per order, or one review primary agent for a round, awaits the verdict with `await_review`, and claims
 each changes-requested successor under a fresh session ID and client token. At
 a pending human gate it summarizes the decision with a dashboard link and
 offers to record it, listing the replies as message text. It never offers them
@@ -52,10 +52,21 @@ and goes straight into `conveyor task wait` after the offer. When its task
 merges or closes, it runs `conveyor done <task-id>` from the primary checkout
 and reports the result. After a merge it then fast-forwards a clean primary
 checkout that is on the base branch, and otherwise reports why it skipped
-(req-delegated-execution AC-3.8, AC-3.9). It plans
-in-session unless the operator's planning preference names another agent.
-Delegated planners, verifiers, and reviewers never record gate or proposal
-decisions.
+(req-delegated-execution AC-3.8, AC-3.9). Each time it starts a planner,
+verifier, reviewer, or review primary, it reads the person's stage preferences
+with `get_stage_preferences` and starts that agent with the stored harness,
+model, and effort. Review seat N takes seat entry N or else the review primary
+entry. It plans in-session without asking when no planning preference is
+stored. For an unset verification stage, an uncovered review seat, or two seats
+on one model under a frozen true `review.distinct_models`, it asks the operator
+and saves the direct answer with `set_stage_preference`. It reports a harness
+or model that it cannot start and never replaces it. It changes a stage
+preference only on the operator's direct instruction. Where agents run, how
+many tasks run at once, and the review seat count rule stay in agent memory
+(DEC-131(3); DEC-123(3)). A review primary only starts the seat agents: it
+claims no seat, submits no verdict, and awaits no verdict. Delegated planners,
+verifiers, reviewers, and review primaries never record gate or proposal
+decisions and never write a stage preference.
 
 For implementation delivery, commit after validation and run
 `conveyor submit <task-id>` in the dedicated worktree with

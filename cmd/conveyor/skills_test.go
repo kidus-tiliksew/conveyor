@@ -183,22 +183,74 @@ func TestConveyorCoordinateSkillInstallsForEveryTool(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, criterion := range []string{"AC-1.1", "AC-1.2", "AC-1.3", "AC-1.4", "AC-1.5", "AC-1.6", "AC-1.7", "AC-1.8", "AC-2.1", "AC-2.2", "AC-2.3", "AC-2.4", "AC-2.5", "AC-2.6", "AC-3.1", "AC-3.2", "AC-3.3"} {
+			for _, criterion := range []string{"AC-1.1", "AC-1.2", "AC-1.3", "AC-1.4", "AC-1.5", "AC-1.6", "AC-1.7", "AC-1.8", "AC-1.9", "AC-1.10", "AC-2.1", "AC-2.2", "AC-2.3", "AC-2.4", "AC-2.5", "AC-2.6", "AC-3.1", "AC-3.2", "AC-3.3"} {
 				if !bytes.Contains(playbook, []byte(criterion)) {
 					t.Errorf("%s %s coordination playbook does not cite req-agent-coordination %s", scope.name, destination.tool.name, criterion)
 				}
 			}
-			// Each of the three thread role prompts carries the timeline rule
-			// byte for byte (AC-3.3), and the quoted copy in "Readable
-			// timeline text" matches them word for word (DEC-126(1)).
-			if got := bytes.Count(playbook, []byte(coordinationTimelineRule)); got != 3 {
-				t.Errorf("%s %s coordination playbook carries the timeline rule in %d role prompts, want 3", scope.name, destination.tool.name, got)
+			// Each of the four thread role prompts, the review primary's
+			// included, carries the timeline rule byte for byte (AC-3.3), and
+			// the quoted copy in "Readable timeline text" matches them word
+			// for word (DEC-126(1)).
+			if got := bytes.Count(playbook, []byte(coordinationTimelineRule)); got != 4 {
+				t.Errorf("%s %s coordination playbook carries the timeline rule in %d role prompts, want 4", scope.name, destination.tool.name, got)
 			}
-			if got := strings.Count(wordsOutsideBlockquotes(string(playbook)), wordsOutsideBlockquotes(coordinationTimelineRule)); got != 4 {
-				t.Errorf("%s %s coordination playbook carries %d word-for-word copies of the timeline rule, want 4", scope.name, destination.tool.name, got)
+			if got := strings.Count(wordsOutsideBlockquotes(string(playbook)), wordsOutsideBlockquotes(coordinationTimelineRule)); got != 5 {
+				t.Errorf("%s %s coordination playbook carries %d word-for-word copies of the timeline rule, want 5", scope.name, destination.tool.name, got)
 			}
 			if normalized := strings.Join(strings.Fields(string(playbook)), " "); !strings.Contains(normalized, "Write your timeline text, every decision reason, and every operator escalation or out-of-band question under that profile (DEC-126(2)).") {
 				t.Errorf("%s %s coordination playbook does not apply the plain-English profile to its own text", scope.name, destination.tool.name)
+			}
+			// Stage roles come from the stored stage preferences, read at
+			// each thread start; host and concurrency stay in agent memory;
+			// only a review primary thread starts other threads
+			// (req-agent-coordination AC-1.6, AC-1.7, AC-1.9, AC-1.10;
+			// DEC-131(3); component-cli-onboarding invariant 42).
+			normalizedPlaybook := strings.Join(strings.Fields(string(playbook)), " ")
+			for _, fragment := range []string{
+				"The person's stored stage preferences give the harness, model, and effort for each role. Read them with `get_stage_preferences` and the workspace ID.",
+				"For review seat N, use seat entry N. When the seat has no entry of its own, use the review primary entry.",
+				"The host, the concurrency, how to launch a harness on the host, and every other operator rule for running stages stay in your own agent memory. Conveyor stores none of them.",
+				"When a choice is not covered, ask the operator about every uncovered choice in one message. Recommend an answer for each.",
+				"Read the stage preferences again each time you start a thread, so a change applies to the next thread you start (req-agent-coordination AC-1.9)",
+				"A failed read is not an unset stage.",
+				"Save the operator's direct answer for a harness, model, or effort with `set_stage_preference`",
+				// Lost update: the write is built from a read taken just before it.
+				"Call `get_stage_preferences` again immediately before the write. Build the value from that new read, and change only the entries that the answer covers.",
+				"When the write is refused or fails, or the result differs, report it to the operator and start no thread for that role.",
+				"**Save host and concurrency answers in agent memory.**",
+				"Change a stored stage preference or a saved host or concurrency preference only on the operator's direct instruction.",
+				"Never substitute another host, harness, or model (req-agent-coordination AC-1.7)",
+				"Threads you start never write a stage preference or a memory preference.",
+				"When the review primary entry is set, you start one review primary thread for the round, and that thread starts the round's seat threads (req-agent-coordination AC-1.10). It is the only thread that starts others.",
+				"**Review primary:**",
+				"Claim no order, submit no verdict, wait for no review verdict, and record no gate or proposal decision. Write no stage preference and ask the operator nothing.",
+				"Confirm each seat's claim from `list_work_orders`, never from the review primary's report.",
+				"Stage choices (stored stage preferences, read at each thread start):",
+				"Host setup (agent memory): <host>; concurrency <n>.",
+			} {
+				if !strings.Contains(normalizedPlaybook, fragment) {
+					t.Errorf("%s %s coordination playbook missing %q", scope.name, destination.tool.name, fragment)
+				}
+			}
+			for _, fragment := range []string{
+				"Read the operator's saved setup preferences from your own agent memory",
+				"When memory does not cover a choice",
+				"Save answers in the memory your harness provides",
+			} {
+				if strings.Contains(normalizedPlaybook, fragment) {
+					t.Errorf("%s %s coordination playbook still keeps stage choices in agent memory: %q", scope.name, destination.tool.name, fragment)
+				}
+			}
+			for _, fragment := range []string{
+				"The one exception: when the review primary entry is set, one review primary thread per round starts the seat threads, claims no seat, and submits no verdict.",
+				"Before each thread start, the coordinator reads the person's stage preferences with `get_stage_preferences` for that thread's harness, model, and effort.",
+				"saves stage answers with `set_stage_preference`, and saves host and concurrency answers in agent memory",
+				"Threads never write a stage preference.",
+			} {
+				if !strings.Contains(normalizedWrapper, fragment) {
+					t.Errorf("%s %s coordination wrapper missing %q", scope.name, destination.tool.name, fragment)
+				}
 			}
 		}
 	}
@@ -543,11 +595,11 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"never run `conveyor checkout` for a spec order",
 		"implementation, verification, or review order, run `conveyor checkout <task-id>`",
 		// One session mode: the session claims its own order and no launcher
-		// owns a later stage (DEC-97(1), DEC-97(2)).
+		// owns a later stage (DEC-131(1), DEC-131(2)).
 		"Every session that follows this playbook claims its order itself",
-		"nothing else renews the lease, receives verdicts, or schedules a later stage (DEC-97(1))",
+		"nothing else renews the lease, receives verdicts, or schedules a later stage (DEC-131(1))",
 		"changes-requested bounce always arrives as a new order in a fresh session",
-		"No launcher renews the lease on the session's behalf (DEC-97(1))",
+		"No launcher renews the lease on the session's behalf (DEC-131(1))",
 		// AC-2.2: self-claimed lease sizing and renewal.
 		"Claim with a `lease_seconds` that covers the longest expected step, up to the 3600-second maximum",
 		"Call `renew_work_order` with the same `lease_seconds` at each progress milestone and before any step expected to outlast one third of the remaining lease",
@@ -560,15 +612,44 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"Start one separate agent for each such order, including one per review seat",
 		"Do not fork the implementer's conversation, summarize its reasoning, or pass its session ID, client token, or plan notes",
 		"Each agent creates its own session ID and client token, claims its order",
-		// AC-3.4 through AC-3.6 and AC-3.12: stage preference in agent memory.
-		"When no planning preference is recorded, plan the order in-session and do not ask",
-		"When the preference names another agent, start that agent for the plan order the same way as a reviewer",
+		// AC-3.4 through AC-3.6 and AC-3.12 to AC-3.15: stage preferences
+		// stored in Conveyor (DEC-131(3); component-cli-onboarding
+		// invariant 36).
+		"Conveyor stores each person's stage preferences, one set per person that applies in every workspace (DEC-131(3); req-stage-preferences REQ-1)",
+		"Each time the session starts a planner, verifier, reviewer, or review primary, it first calls `get_stage_preferences` with the workspace ID. A change then applies to the next agent that the session starts (req-agent-skills AC-3.13)",
+		"When the read fails, report the failure to the operator and wait. A failed read is not an unset stage. Never use an earlier read or a default in its place.",
+		"Start each agent with the harness, model, and effort of its entry, and name that harness and model in the progress report (req-agent-skills AC-3.4)",
+		"When `plan` is set, start a planning agent with that entry for the plan order, the same way as a reviewer",
 		"That agent claims the plan order under its own session ID and client token, plans, submits through `submit_plan`, reports, and exits",
-		"Start reviewers as the preference states",
-		"Ask the operator before starting a verifier or reviewer and record the answer in agent memory. This ask covers verification and review only",
-		"start an isolated subagent of the session's own harness and report that default",
-		"Change a recorded preference only on the operator's direct instruction",
-		"name the harness and model used for each verifier and reviewer",
+		// The planning exception: an unset planning stage is never asked.
+		"When `plan` is unset, plan the order in-session and do not ask (req-agent-skills AC-3.12). This rule is the one exception to the ask below: an unset planning stage is never asked.",
+		"For review seat N, use seat entry N. When the seat has no entry of its own, use the review primary entry.",
+		"Ask the operator before starting the verifier or reviewer in each of these cases (req-agent-skills AC-3.5)",
+		"`verify` is unset and a verification order is claimable.",
+		"A review seat has neither its own seat entry nor a review primary entry.",
+		"The task's frozen `review.distinct_models` policy is true, and two seats of the round would run on the same model.",
+		"Save only the operator's direct answer, with `set_stage_preference`",
+		// Lost update: a review write is built from a read taken just
+		// before it, so a concurrent change to another seat survives.
+		"Call `get_stage_preferences` again immediately before the write. Build the `review` value from that new read, and change only the entries that the answer covers. Keep every other primary and seat entry exactly as the new read shows it.",
+		"The tool returns the whole set after the change. Make sure that it holds the answer and each entry that you kept.",
+		"When the write is refused or fails, report the error and the unsaved answer to the operator. Then wait for the operator's instruction.",
+		"Never save a host, a sandbox, a concurrency limit, a command, an argument, a credential, or a count rule as a stage preference",
+		"When the operator cannot be asked, start an isolated subagent of the session's own harness for the verifier or reviewer, and report that default (req-agent-skills AC-3.5). Save nothing. Planning stays in the session.",
+		"It never starts another harness or model in its place (req-agent-skills AC-3.14)",
+		"The session changes a stored stage preference only on the operator's direct instruction",
+		"A planner, verifier, reviewer, or review primary that the session started never writes a stage preference and never asks the operator",
+		"stay in the harness's own agent memory. Conveyor stores none of them (DEC-131(3))",
+		"The operator's review seat count rule is one of these memory rules (DEC-123(3); DEC-131(3))",
+		"When the operator's review seat count rule in agent memory directs it, the implementation submission declares the seat count",
+		"name the harness and model used for each verifier, reviewer, and review primary",
+		// AC-3.15: the review primary only starts the seat agents.
+		"### Start a review primary",
+		"The review primary claims no seat, submits no verdict, and does not call `await_review`. It ends once the seat agents are started.",
+		"The session awaits the verdicts itself",
+		"Claim no order, submit no verdict, and do not call await_review. Write no stage preference, ask the operator nothing, and record no gate or proposal decision.",
+		"A review primary that a self-claimed session started holds no order and submits nothing",
+		"That session asks the operator for a different model for the seat, saves the answer, and starts a new agent with it (req-review-gates-evidence AC-2.10; req-agent-skills AC-3.5; DEC-132(4))",
 		// Harness-neutral agent start: the harness owns its launch mechanism.
 		"Start each agent through its harness's own subagent or separate-process mechanism, with a fresh context and the launch prompt as its only input. Never pass a token as an argument.",
 		// Waiting, bounces, approval, and gates.
@@ -639,13 +720,21 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"The session never merges, rebases, stashes, resets, or switches branches there, and never edits its files (req-delegated-execution AC-3.9)",
 		"A planner, verifier, or reviewer that the session started never runs the fast-forward",
 		"with the post-merge fast-forward bounded by REQ-3 AC-3.8 and AC-3.9",
-		"req-agent-skills REQ-2 (AC-2.1 through AC-2.3) and REQ-3 (AC-3.1 through AC-3.7 and AC-3.9 through AC-3.12) under DEC-97 and DEC-84",
+		"req-agent-skills REQ-2 (AC-2.1 through AC-2.3) and REQ-3 (AC-3.1 through AC-3.7 and AC-3.9 through AC-3.15) under DEC-131 and DEC-84",
 	}
 	playbookForbidden := []string{
 		// Authority boundary refers to Human gates instead of restating the
 		// direct-instruction rule.
 		"or adds review seats, only as [Human gates](#human-gates) describes: on the operator's direct instruction",
-		// No launched session mode remains (DEC-97(1)).
+		// Stage preferences no longer live in agent memory, and the
+		// superseded decisions are not cited (DEC-131(3); DEC-132).
+		"record the answer in agent memory",
+		"free-form text in the session's own agent memory",
+		"Conveyor never stores it on the server",
+		"When the operator's stage preference directs it",
+		"DEC-97",
+		"DEC-104",
+		// No launched session mode remains (DEC-131(1)).
 		"Launched session",
 		"A launched session",
 		"conveyor run",
@@ -667,18 +756,25 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"cursor-agent -p",
 	}
 	wrapperRequired := []string{
-		"Every session claims its own order: a person started it in their own harness, and Conveyor launches no agent session, so no launcher renews the lease or owns a later stage (DEC-97(1))",
+		"Every session claims its own order: a person started it in their own harness, and Conveyor launches no agent session, so no launcher renews the lease or owns a later stage (DEC-131(1))",
 		"continues the playbook's self-claimed delivery loop after implementation submission",
+		"Each time it starts a planner, verifier, reviewer, or review primary, it reads the person's stage preferences with `get_stage_preferences`",
+		"It plans in-session without asking when no planning preference is stored",
+		"it asks the operator and saves the direct answer with `set_stage_preference`",
+		"Where agents run, how many tasks run at once, and the review seat count rule stay in agent memory (DEC-131(3); DEC-123(3))",
+		"A review primary only starts the seat agents: it claims no seat, submits no verdict, and awaits no verdict",
 		"Every verifier and reviewer reports and exits after submitting its own result",
 		"awaits the verdict with `await_review`",
 		"At a pending human gate it summarizes the decision with a dashboard link and offers to record it",
 		"reads the gate again before recording a typed reply, and goes straight into `conveyor task wait` after the offer",
 		"only on the operator's direct instruction in the same conversation, for its own task, with the operator's own credential (DEC-84)",
-		"Delegated planners, verifiers, and reviewers never record gate or proposal decisions",
+		"Delegated planners, verifiers, reviewers, and review primaries never record gate or proposal decisions and never write a stage preference",
 		"When its task merges or closes, it runs `conveyor done <task-id>` from the primary checkout and reports the result",
 		"After a merge it then fast-forwards a clean primary checkout that is on the base branch, and otherwise reports why it skipped (req-delegated-execution AC-3.8, AC-3.9)",
 	}
 	wrapperForbidden := []string{
+		"DEC-97",
+		"the operator's planning preference names another agent",
 		"conveyor run",
 		"launched reports and exits",
 		"DEC-45",
@@ -755,7 +851,7 @@ func TestClaimingSkillsShipClaimIdentityAndUsageReporting(t *testing.T) {
 			"Omit `cost_usd`",
 			"A session without figures skips the call and invents none",
 			"Missing usage never delays or blocks a lifecycle submission",
-			// Seats under a frozen distinct-models policy (DEC-104(4)).
+			// Seats under a frozen distinct-models policy (DEC-132(4)).
 			"give each seat a different model when you start it",
 			"never changes its reported name to pass the comparison",
 			// Session-run terminal cleanup stays intact.
@@ -1672,8 +1768,9 @@ func TestExecutionPlaybooksShipOutOfBandGateRules(t *testing.T) {
 				"Request changes, decline, and reject carry the operator's own text from the answer; when the answer carries none, ask for it in plain text",
 				"An answer to a question the session posted out of band counts as that instruction only as **Record an out-of-band answer** describes",
 			}, shared...),
-			// The verifier/reviewer and planner launch prompts.
-			childPrompts:  2,
+			// The verifier/reviewer, review primary, and planner launch
+			// prompts (req-agent-skills AC-3.15).
+			childPrompts:  3,
 			forbiddenText: []string{"DEC-45"},
 		},
 		{
@@ -1697,8 +1794,9 @@ func TestExecutionPlaybooksShipOutOfBandGateRules(t *testing.T) {
 				"The recorded reason states delegated coordination scope and names the channel and the answer time (req-agent-coordination AC-2.6)",
 				"Threads you start never post, answer, or record these questions",
 			}, shared...),
-			// The planner, implementer, and verifier-or-reviewer thread prompts.
-			childPrompts: 3,
+			// The planner, implementer, verifier-or-reviewer, and review
+			// primary thread prompts (req-agent-coordination AC-1.10).
+			childPrompts: 4,
 			forbiddenText: []string{
 				"These are the conditions `conveyor-work` sets",
 				"The channel attributes the answer to the operator's own authenticated account",
