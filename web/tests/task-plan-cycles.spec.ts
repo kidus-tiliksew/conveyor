@@ -2,6 +2,7 @@ import { expect, type Locator, type Page, type Route } from '@playwright/test'
 import type { ActivityItem, TaskPlanCycle } from '../src/lib/types'
 import { type CompleteEvent, test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
+import { activityFrame, controlTaskStreams } from './helpers/task-streams'
 
 // Plan history reads as one timeline entry per plan cycle, built only from
 // `summaries.plan_cycles` (component-web-task-surfaces invariants 41 and 67 to
@@ -212,16 +213,16 @@ function waitingTask(id = 'plan-cycles-waiting') {
   return item
 }
 
-async function mockServer(page: Page, details: Record<string, unknown>[]) {
+async function mockServer(page: Page, details: Record<string, unknown>[], role: 'viewer' | 'operator' = 'operator') {
   const byId = new Map(details.map((item) => [(item as { task: { id: string } }).task.id, item]))
+  const reads = new Map<string, number>()
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())
     const path = url.pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me')
-      return route.fulfill({ json: callerIdentity({ id: 'usr_meron', role: 'operator' }, request) })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_meron', role }, request) })
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: 'demo', max_bounces: 3, database: 'postgres', repos: [] } })
     if (path === '/v1/workspaces/demo/members') return route.fulfill({ json: members })
@@ -229,7 +230,9 @@ async function mockServer(page: Page, details: Record<string, unknown>[]) {
       return route.fulfill({ json: { items: [], attention: { total: 0, task_count: 0, pending_proposal_count: 0 } } })
     const detailPath = path.match(/^\/v1\/tasks\/([^/]+)\/activity$/)
     if (detailPath) {
-      const item = byId.get(decodeURIComponent(detailPath[1]))
+      const id = decodeURIComponent(detailPath[1])
+      reads.set(id, (reads.get(id) ?? 0) + 1)
+      const item = byId.get(id)
       if (!item) return route.fulfill({ status: 404, json: { error: 'not_found' } })
       return route.fulfill({ json: item })
     }
@@ -241,6 +244,10 @@ async function mockServer(page: Page, details: Record<string, unknown>[]) {
     if (path.endsWith('/stream')) return route.fulfill({ status: 204 })
     return route.fulfill({ json: [] })
   })
+  return {
+    set: (item: Record<string, unknown>) => byId.set((item as { task: { id: string } }).task.id, item),
+    reads: (id: string) => reads.get(id) ?? 0,
+  }
 }
 
 function timelineOf(page: Page) {
@@ -392,6 +399,55 @@ test('a cycle waiting on a plan-revision decision stays open with the attention 
   const cycleBox = await waiting.boundingBox()
   const gateBox = await gate.boundingBox()
   expect(gateBox?.y ?? 0).toBeGreaterThan(cycleBox?.y ?? 0)
+})
+
+// A viewer who cannot act on the gate sees no decision panel, so the waiting
+// cycle names the wait without directing them below (invariant 69).
+test('a viewer without the gate capability sees neutral waiting wording', async ({ page }) => {
+  await mockServer(page, [waitingTask()], 'viewer')
+  await page.goto('/w/demo/tasks/plan-cycles-waiting/full')
+  const waiting = cycles(timelineOf(page)).nth(1)
+  await expect(waiting.getByText('Waiting for a decision', { exact: true })).toBeVisible()
+  await expect(waiting.getByText('Waiting for an operator decision')).toBeVisible()
+  await expect(waiting.getByText('Needs your decision')).toHaveCount(0)
+  await expect(waiting.getByText('Waiting for your decision below')).toHaveCount(0)
+  await expect(waiting.locator(':scope > [data-plan-cycle-attention]')).toHaveCount(1)
+  await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
+})
+
+// A cycle seeds its fold state on mount; when a newer cycle opens on a live
+// refresh, the former newest cycle folds (invariant 70).
+test('a cycle folds when a newer cycle opens on a live refresh', async ({ page }) => {
+  const streams = await controlTaskStreams(page)
+  const id = 'plan-cycles-live'
+  const later = waitingTask(id)
+  const earlier = {
+    ...later,
+    task: { ...later.task, state: 'running' },
+    events: later.events.slice(0, 3),
+    next_action: working,
+  }
+  const server = await mockServer(page, [earlier])
+  await page.clock.install({ time: new Date('2026-11-12T08:00:00Z') })
+  await page.goto(`/w/demo/tasks/${id}/full`)
+  const timeline = timelineOf(page)
+  await expect(cycles(timeline)).toHaveCount(1)
+  await expect(cycles(timeline).nth(0).locator('[data-plan-cycle-step]')).toHaveCount(2)
+  await expect.poll(() => streams.countFor(id)).toBeGreaterThan(0)
+  await streams.open()
+  const now = await page.evaluate(() => Date.now())
+  await page.clock.pauseAt(now + 1_000)
+  const reads = server.reads(id)
+  server.set(later)
+  await streams.send(activityFrame)
+  await page.clock.runFor(250)
+  await expect.poll(() => server.reads(id)).toBeGreaterThan(reads)
+  // Query results arrive through timers, so the clock runs again to render them.
+  await page.clock.resume()
+  await expect(cycles(timeline)).toHaveCount(2)
+  const former = cycles(timeline).nth(0)
+  await expect(former.getByRole('button', { name: /Plan v1/ })).toHaveAttribute('aria-expanded', 'false')
+  await expect(former.locator('[data-plan-cycle-step]')).toHaveCount(0)
 })
 
 // The dashboard reads cycles, versions, outcomes, and people only from the

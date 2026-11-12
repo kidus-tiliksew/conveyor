@@ -5558,7 +5558,9 @@ test('the revision chain reads as one plan cycle: request, decision, and the pla
   // produced, each with its time (req-260809-a40c75 AC-4.1; DEC-130(1)).
   const cycle = timeline.getByRole('article', { name: 'Plan revision v7 → v8' })
   await expect(cycle).toBeVisible()
-  await expect(cycle.getByText('Needs your decision')).toBeVisible()
+  // This fixture renders no decision panel below the timeline, so the waiting
+  // cycle uses the neutral wording.
+  await expect(cycle.getByText('Waiting for a decision', { exact: true })).toBeVisible()
   const steps = cycle.locator('[data-plan-cycle-step]')
   await expect(steps).toHaveCount(3)
   await expect(steps.nth(0)).toContainText('Agent asked to revise plan v7')
@@ -5567,7 +5569,7 @@ test('the revision chain reads as one plan cycle: request, decision, and the pla
   await expect(steps.nth(1)).toContainText('Re-plan around the new handler contract.')
   await expect(steps.nth(2)).toContainText('Plan v8 ready')
   await expect(cycle.locator('time')).toHaveCount(3)
-  await expect(cycle.getByText('Waiting for your decision below')).toBeVisible()
+  await expect(cycle.getByText('Waiting for an operator decision')).toBeVisible()
 
   // No separate request note or decision card, and the release the request
   // rode in on is not repeated.

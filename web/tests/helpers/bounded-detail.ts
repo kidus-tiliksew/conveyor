@@ -618,7 +618,7 @@ function planCycles(item: CompleteActivity, ordered: Ordered[]): TaskPlanCycle[]
         (candidate) =>
           !used.has(candidate.id) &&
           candidate.action === action &&
-          Date.parse(candidate.at) === Date.parse(event.at) &&
+          atMicros(candidate.at) === atMicros(event.at) &&
           candidate.reason_code === reason &&
           candidate.comment === comment &&
           candidate.actor_id === event.actor_id,

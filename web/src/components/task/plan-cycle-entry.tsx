@@ -209,23 +209,33 @@ function spanText(cycle: TaskPlanCycle) {
   return `${absoluteTime(first)} – ${end} · ${count} ${count === 1 ? 'step' : 'steps'}`
 }
 
+// A viewer who cannot see the decision panel below the timeline gets wording
+// that names the wait without directing them to a control they do not have.
+const waitingWithoutPanel = { label: 'Waiting for a decision', step: 'Waiting for an operator decision' }
+
 export function PlanCycleEntry({
   cycle,
   newest,
   rail,
   audit,
+  decisionVisible = true,
 }: {
   cycle: TaskPlanCycle
   newest: boolean
   rail: ReactNode
   audit?: (eventId: string) => ReactNode
+  // Whether this viewer sees the decision panel below the timeline.
+  decisionVisible?: boolean
 }) {
   const foldable = planCycleFoldable(cycle, newest)
   // The fold state lives in the browser only (invariant 70).
   const [open, setOpen] = useState(!foldable)
   const stepsId = useId()
   const { title, range } = planCycleHeading(cycle)
-  const badge = outcomeBadges[cycle.outcome]
+  const badge =
+    cycle.outcome === 'awaiting_decision' && !decisionVisible
+      ? { ...outcomeBadges.awaiting_decision, label: waitingWithoutPanel.label }
+      : outcomeBadges[cycle.outcome]
   const heading = (
     <>
       <strong className="font-semibold">{title}</strong>
@@ -270,7 +280,7 @@ export function PlanCycleEntry({
               ))}
               {waiting && (
                 <li className="py-1.5 text-sm font-medium text-attention" data-plan-cycle-waiting>
-                  Waiting for your decision below
+                  {decisionVisible ? 'Waiting for your decision below' : waitingWithoutPanel.step}
                 </li>
               )}
             </ol>
