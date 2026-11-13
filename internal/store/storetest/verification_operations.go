@@ -41,6 +41,8 @@ func verificationPublicState(t *testing.T, v *verificationFixture) any {
 }
 
 func runVerificationOperations(t *testing.T, x Fixture) {
+	t.Run("ServerSelectsRecoveryAuthorizations", func(t *testing.T) { runServerSelectsRecoveryAuthorizations(t, x) })
+	t.Run("OperationAuthorizationServesOneReprepare", func(t *testing.T) { runOperationAuthorizationServesOneReprepare(t, x) })
 	t.Run("AppliedAndUnknownReconciliation", func(t *testing.T) { runVerificationReconciliation(t, x) })
 	t.Run("OperatorCheckpoint", func(t *testing.T) { runVerificationCheckpoint(t, x) })
 	t.Run("Checkpoints", func(t *testing.T) { runVerificationCheckpoints(t, x) })
@@ -51,8 +53,6 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 	t.Run("RetryGateScopedToVerifyOrder", func(t *testing.T) { runVerificationRetryGateScope(t, x) })
 	t.Run("OneRecoveryDisposesEveryGatedSubject", func(t *testing.T) { runRecoveryDisposesEveryGatedSubject(t, x) })
 	t.Run("OneRecoveryDisposesAttemptsAcrossContexts", func(t *testing.T) { runRecoveryDisposesAttemptsAcrossContexts(t, x) })
-	t.Run("ServerSelectsRecoveryAuthorizations", func(t *testing.T) { runServerSelectsRecoveryAuthorizations(t, x) })
-	t.Run("OperationAuthorizationServesOneReprepare", func(t *testing.T) { runOperationAuthorizationServesOneReprepare(t, x) })
 	t.Run("OperatorRecoveryBindsSuccessorAndConsumesAuthorization", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
 		obligation := store.VerificationObligation{ID: "recovery-" + v.access.TaskID, Description: "Recover one external mutation", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "recovery", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
@@ -1465,77 +1465,6 @@ func runRecoveryDisposesEveryGatedSubject(t *testing.T, x Fixture) {
 	}
 }
 
-// runRecoveryDisposesAttemptsAcrossContexts covers a disposition set that
-// spans two contexts of one verify order: a gated attempt that ended in the
-// first context, and a still-running attempt with an unresolved operation in
-// the second. One recovery with mixed dispositions authorizes both, cancels
-// the running attempt, authorizes its operation, and resolves no operation
-// (component-verification-service invariant 45; DEC-133(1), (2)).
-func runRecoveryDisposesAttemptsAcrossContexts(t *testing.T, x Fixture) {
-	v := newVerificationFixture(t, x)
-	digest := verificationSHA([]byte("{}"))
-	gated := recoveryFixtureObligation("gated-"+v.access.TaskID, "operator_action_required", "")
-	mutating := recoveryFixtureObligation("mutating-"+v.access.TaskID, "operator_action_required", "step")
-	gatedSubject := recoveryFixtureRegister(t, &v, gated)
-	r := v.apply(t, recoveryFixtureStart("context-a", "", gatedSubject))
-	v.runID = r.ID
-	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "fixture environment unavailable"}})
-	contextA, runA := v.contextID, r.ID
-	order, err := x.Backend.GetWorkOrder(x.Context, v.access.WorkOrderID)
-	requireOK(t, err)
-	order.State, order.LastAttemptID, order.LastAttemptOutcome = core.WorkOrderQueued, order.AttemptID, core.WorkOrderOutcomeExpired
-	order.SessionID, order.AttemptID, order.ClaimantID, order.WorkerID, order.ClientTokenHash = "", "", "", "", ""
-	order.LeaseExpiresAt = time.Time{}
-	requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRelease))
-
-	recoveryFixtureReclaim(t, x, &v, "cross-context")
-	recoveryFixtureRegister(t, &v, gated)
-	mutatingSubject := recoveryFixtureRegister(t, &v, mutating)
-	r = v.apply(t, recoveryFixtureStart("context-b", "", mutatingSubject))
-	v.runID = r.ID
-	op := v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "context-b-step", Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: digest}})
-	contextB, runB := v.contextID, r.ID
-	recoveryFixtureLoseClaim(t, x, &v)
-
-	entries := []nextaction.Disposition{
-		{ContextID: contextA, RunID: runA, OperationIDs: []string{}, InputDigest: digest},
-		{ContextID: contextB, RunID: runB, OperationIDs: []string{op.ID}, InputDigest: digest},
-	}
-	operator, owner := bootstrapOwner(t, x)
-	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
-	observer := v
-	observer.ctx, observer.access.UserID = operator, owner.ID
-	reason := "Operator inspected the provider and the fixture environment."
-	before := verificationPublicState(t, &observer)
-	if _, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, recoveryFixtureRequest(reason, entries[1:], "not_applied")), x.Backend, order.ID, "cross-omitted", time.Hour); !errors.Is(err, store.ErrVerificationInvalid) {
-		t.Fatalf("recovery without the earlier context's attempt: %v, want an invalid recovery refusal", err)
-	}
-	if !reflect.DeepEqual(before, verificationPublicState(t, &observer)) {
-		t.Fatal("refused cross-context recovery changed the aggregate")
-	}
-	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, recoveryFixtureRequest(reason, entries, "applied", "not_applied")), x.Backend, order.ID, "cross-recovery", time.Hour)
-	requireOK(t, err)
-	if n := recoveryFixtureAuthorized(t, x, v.access.TaskID); n != 2 {
-		t.Fatalf("cross-context recovery appended %d recovery_authorized events, want 2", n)
-	}
-	for _, attempt := range observer.snapshotFor(t, contextA).Attempts {
-		if attempt.ID == runA && (len(attempt.Recovery) != 1 || attempt.Recovery[0].Disposition != "applied" || attempt.Recovery[0].Original.ContextID != contextA) {
-			t.Fatalf("context A attempt authorizations = %+v", attempt.Recovery)
-		}
-	}
-	snapshot := observer.snapshotFor(t, contextB)
-	for _, attempt := range snapshot.Attempts {
-		if attempt.ID == runB && (attempt.State != "cancelled" || attempt.EndedAt == nil || len(attempt.Recovery) != 1 || attempt.Recovery[0].Disposition != "not_applied") {
-			t.Fatalf("running attempt after recovery = state %s, authorizations %+v; want cancelled with one authorization", attempt.State, attempt.Recovery)
-		}
-	}
-	for _, operation := range snapshot.Operations {
-		if operation.ID == op.ID && (len(operation.Recovery) != 1 || operation.Recovery[0].ID != "recovery:cross-recovery" || operation.Recovery[0].Disposition != "not_applied") {
-			t.Fatalf("operation authorizations = %+v", operation.Recovery)
-		}
-	}
-}
-
 // serverSelectedStart starts subject under key with no authorization in the
 // command. The server selects the authorization that a gated start consumes
 // (component-verification-service invariant 19; DEC-133(3)).
@@ -1818,3 +1747,75 @@ func runOperationAuthorizationServesOneReprepare(t *testing.T, x Fixture) {
 	}
 	assertOperationAuthorization(t, &observer, oldContext, op.ID, started.ID)
 }
+
+// runRecoveryDisposesAttemptsAcrossContexts covers a disposition set that
+// spans two contexts of one verify order: a gated attempt that ended in the
+// first context, and a still-running attempt with an unresolved operation in
+// the second. One recovery with mixed dispositions authorizes both, cancels
+// the running attempt, authorizes its operation, and resolves no operation
+// (component-verification-service invariant 45; DEC-133(1), (2)).
+func runRecoveryDisposesAttemptsAcrossContexts(t *testing.T, x Fixture) {
+	v := newVerificationFixture(t, x)
+	digest := verificationSHA([]byte("{}"))
+	gated := recoveryFixtureObligation("gated-"+v.access.TaskID, "operator_action_required", "")
+	mutating := recoveryFixtureObligation("mutating-"+v.access.TaskID, "operator_action_required", "step")
+	gatedSubject := recoveryFixtureRegister(t, &v, gated)
+	r := v.apply(t, recoveryFixtureStart("context-a", "", gatedSubject))
+	v.runID = r.ID
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "fixture environment unavailable"}})
+	contextA, runA := v.contextID, r.ID
+	order, err := x.Backend.GetWorkOrder(x.Context, v.access.WorkOrderID)
+	requireOK(t, err)
+	order.State, order.LastAttemptID, order.LastAttemptOutcome = core.WorkOrderQueued, order.AttemptID, core.WorkOrderOutcomeExpired
+	order.SessionID, order.AttemptID, order.ClaimantID, order.WorkerID, order.ClientTokenHash = "", "", "", "", ""
+	order.LeaseExpiresAt = time.Time{}
+	requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRelease))
+
+	recoveryFixtureReclaim(t, x, &v, "cross-context")
+	recoveryFixtureRegister(t, &v, gated)
+	mutatingSubject := recoveryFixtureRegister(t, &v, mutating)
+	r = v.apply(t, recoveryFixtureStart("context-b", "", mutatingSubject))
+	v.runID = r.ID
+	op := v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "context-b-step", Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: digest}})
+	contextB, runB := v.contextID, r.ID
+	recoveryFixtureLoseClaim(t, x, &v)
+
+	entries := []nextaction.Disposition{
+		{ContextID: contextA, RunID: runA, OperationIDs: []string{}, InputDigest: digest},
+		{ContextID: contextB, RunID: runB, OperationIDs: []string{op.ID}, InputDigest: digest},
+	}
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	observer := v
+	observer.ctx, observer.access.UserID = operator, owner.ID
+	reason := "Operator inspected the provider and the fixture environment."
+	before := verificationPublicState(t, &observer)
+	if _, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, recoveryFixtureRequest(reason, entries[1:], "not_applied")), x.Backend, order.ID, "cross-omitted", time.Hour); !errors.Is(err, store.ErrVerificationInvalid) {
+		t.Fatalf("recovery without the earlier context's attempt: %v, want an invalid recovery refusal", err)
+	}
+	if !reflect.DeepEqual(before, verificationPublicState(t, &observer)) {
+		t.Fatal("refused cross-context recovery changed the aggregate")
+	}
+	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, recoveryFixtureRequest(reason, entries, "applied", "not_applied")), x.Backend, order.ID, "cross-recovery", time.Hour)
+	requireOK(t, err)
+	if n := recoveryFixtureAuthorized(t, x, v.access.TaskID); n != 2 {
+		t.Fatalf("cross-context recovery appended %d recovery_authorized events, want 2", n)
+	}
+	for _, attempt := range observer.snapshotFor(t, contextA).Attempts {
+		if attempt.ID == runA && (len(attempt.Recovery) != 1 || attempt.Recovery[0].Disposition != "applied" || attempt.Recovery[0].Original.ContextID != contextA) {
+			t.Fatalf("context A attempt authorizations = %+v", attempt.Recovery)
+		}
+	}
+	snapshot := observer.snapshotFor(t, contextB)
+	for _, attempt := range snapshot.Attempts {
+		if attempt.ID == runB && (attempt.State != "cancelled" || attempt.EndedAt == nil || len(attempt.Recovery) != 1 || attempt.Recovery[0].Disposition != "not_applied") {
+			t.Fatalf("running attempt after recovery = state %s, authorizations %+v; want cancelled with one authorization", attempt.State, attempt.Recovery)
+		}
+	}
+	for _, operation := range snapshot.Operations {
+		if operation.ID == op.ID && (len(operation.Recovery) != 1 || operation.Recovery[0].ID != "recovery:cross-recovery" || operation.Recovery[0].Disposition != "not_applied") {
+			t.Fatalf("operation authorizations = %+v", operation.Recovery)
+		}
+	}
+}
+

@@ -301,6 +301,20 @@ func TestOrderRecoverDispositionFlags(t *testing.T) {
 	}
 }
 
+// TestOrderRecoverHelpNamesNoKitVerifyFlag pins that the recover help teaches
+// only the recovery command: the next verification run needs no flag of
+// conveyor kit verify (component-verification-service invariant 19;
+// DEC-133(3)).
+func TestOrderRecoverHelpNamesNoKitVerifyFlag(t *testing.T) {
+	help := orderRecoverCmd().Long
+	if strings.Contains(help, "--replay-authorization") || strings.Contains(help, "kit verify --") {
+		t.Fatalf("recover help names a kit verify flag:\n%s", help)
+	}
+	if !strings.Contains(help, "The next verification run uses these authorizations. It needs no flag.") {
+		t.Fatalf("recover help does not say that the next run needs no flag:\n%s", help)
+	}
+}
+
 func TestOrderRedispatchResolvesTask(t *testing.T) {
 	c, seen := serveOrders(t, func(w http.ResponseWriter, r *http.Request) {
 		if serveOrderReads(t, w, r, `[{"id":"261011-other-spec-1","task_id":"261011-other"},{"id":"261011-aaaaaa-spec-2","task_id":"261011-aaaaaa","state":"completed"}]`, false) {
@@ -637,16 +651,3 @@ func TestOrderRetireServerRefusalPassthrough(t *testing.T) {
 	}
 }
 
-// TestOrderRecoverHelpNamesNoKitVerifyFlag pins that the recover help teaches
-// only the recovery command: the next verification run needs no flag of
-// conveyor kit verify (component-verification-service invariant 19;
-// DEC-133(3)).
-func TestOrderRecoverHelpNamesNoKitVerifyFlag(t *testing.T) {
-	help := orderRecoverCmd().Long
-	if strings.Contains(help, "--replay-authorization") || strings.Contains(help, "kit verify --") {
-		t.Fatalf("recover help names a kit verify flag:\n%s", help)
-	}
-	if !strings.Contains(help, "The next verification run uses these authorizations. It needs no flag.") {
-		t.Fatalf("recover help does not say that the next run needs no flag:\n%s", help)
-	}
-}
