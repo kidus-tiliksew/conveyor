@@ -3061,3 +3061,78 @@ for (const viewport of [
     await testInfo.attach(name, { body: image, contentType: 'image/png' })
   })
 }
+
+// A verify order released at its sealed verification checkpoint states
+// verification_disposition with the decision request in details.checkpoint.
+// The card prints that request above the disposition entries, and the form
+// sends the same one request (component-next-action invariant 15; DEC-133(1)).
+const sealedCheckpointRequest =
+  'Two exercises need an operator\nRequired operator action: Restore the fixtures and authorize one retry of each'
+
+function sealedCheckpointAction(): NextAction {
+  const action = dispositionAction()
+  return { ...action, details: { ...action.details, checkpoint: sealedCheckpointRequest } }
+}
+
+for (const viewport of [
+  { name: 'mobile', width: 375, height: 1400 },
+  { name: 'desktop', width: 1280, height: 1100 },
+]) {
+  test(`the sealed checkpoint card shows the decision request above two entries at ${viewport.width} px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    const posts = await mockAPI(
+      page,
+      () => activity('running', sealedCheckpointAction()),
+      () => sealedCheckpointAction(),
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const d = dispositionCard(page)
+    const request = d.card.getByRole('region', { name: 'Verification checkpoint request' })
+    await expect(request).toBeVisible()
+    await expect(request).toContainText('Two exercises need an operator')
+    await expect(request).toContainText(
+      'Required operator action: Restore the fixtures and authorize one retry of each',
+    )
+    await d.open().click()
+    const entries = d.card.locator('[data-disposition-entry]')
+    await expect(entries).toHaveCount(2)
+    await expect(d.card.getByRole('radio', { checked: true })).toHaveCount(0)
+    // The request sits above the first entry, and every entry fits the card.
+    const requestBox = await request.boundingBox()
+    const firstBox = await entries.first().boundingBox()
+    expect(requestBox && firstBox && requestBox.y + requestBox.height <= firstBox.y).toBeTruthy()
+    const cardBox = await d.card.boundingBox()
+    for (const box of [requestBox, ...(await Promise.all((await entries.all()).map((entry) => entry.boundingBox())))]) {
+      expect(box && cardBox && box.x + box.width <= cardBox.x + cardBox.width + 1).toBeTruthy()
+    }
+    await d.card.scrollIntoViewIfNeeded()
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const name = `sealed-checkpoint-card-${viewport.name}.png`
+    const image = await d.card.screenshot({ path: shots ? `${shots}/${name}` : undefined, animations: 'disabled' })
+    await testInfo.attach(name, { body: image, contentType: 'image/png' })
+
+    await d.entry('kit:staging-fixtures/login').getByRole('radio', { name: 'Not applied' }).check()
+    await d.entry('ordinary:checkout-charges-card').getByRole('radio', { name: 'Applied', exact: true }).check()
+    await d.reason().fill('Fixtures restored.')
+    await d.send().click()
+    await expect.poll(() => posts.length).toBe(1)
+    expect(posts[0].path).toBe('/v1/work-orders/card-task-verify-1/recover')
+    const body = posts[0].body as { verification: { reason: string; dispositions: { run_id: string }[] } }
+    expect(body.verification.reason).toBe('Fixtures restored.')
+    expect(body.verification.dispositions.map((entry) => entry.run_id)).toEqual(['run-login-1', 'run-checkout-2'])
+  })
+}
+
+test('the disposition card without a decision request shows no request box', async ({ page }) => {
+  await mockAPI(
+    page,
+    () => activity('running', dispositionAction()),
+    () => dispositionAction(),
+  )
+  await page.goto(`/w/demo/tasks/${taskId}`)
+  const d = dispositionCard(page)
+  await expect(d.open()).toBeVisible()
+  await expect(d.card.locator('[data-checkpoint-request]')).toHaveCount(0)
+})
