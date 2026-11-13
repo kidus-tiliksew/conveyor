@@ -8,3 +8,13 @@ fdd0dc159d88a6238fa5effe454c10068acfed41604f7b972827d919628fd0d4  ./4-setpriv-ma
 0752b9573262a1073e542732e5cb5c5f6b987b07b0bdfd2a0d6475d84f1a4345  ./4-setpriv-make-test-go/manifest.json
 b50507097c2a5246eb7a048e41f6f7b2f120e90899b7cacf8ed7d170b3d039bb  ./5-setpriv-make-test-ui/command.log
 29fdd0d0600fe7bb535a4cc7ea70bf590bc2247fac00ad66274977da898a40a7  ./5-setpriv-make-test-ui/manifest.json
+b3f2dd5996ae8162aedf103db1c6fb1802895651cbce877e705e0428a3dbf52b  ./head-229d534c/1-make-build/command.log
+5394124a2291d3debd192020eb3c284f8773821db3c29c6c7e55e7cc07e22049  ./head-229d534c/1-make-build/manifest.json
+12428484bc6a7a5f77eacbe702f12a47b1db0731597467242f489872ec1318ac  ./head-229d534c/2-make-vet/command.log
+df7b1ac414949d208a35ef5bef723f06fcdc654f9730ac391dc474ac9eedcd40  ./head-229d534c/2-make-vet/manifest.json
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./head-229d534c/3-make-fmt-check/command.log
+010bbcec768d4ade10aa1d547ca5c38d2abed64d88fcfdc28531f749421579db  ./head-229d534c/3-make-fmt-check/manifest.json
+6015a3cbeaf0096370ba6b90131870144ebcb94ba002c5c445faa7af7450abca  ./head-229d534c/4-setpriv-make-test-go/command.log
+9ba41ab118948cd91a82b61da04b5dba4d4fef66f8a9e0e2857f710a580e05ca  ./head-229d534c/4-setpriv-make-test-go/manifest.json
+434a2cad05edfc607e1d6466f53a9cb90e3117934c01a5fb3ac33a072f0fda2c  ./head-229d534c/5-setpriv-make-test-ui/command.log
+141ff791d4e8d477de4406089097f49cba3120d8b6029f88f59e6405e2fccf3c  ./head-229d534c/5-setpriv-make-test-ui/manifest.json
