@@ -5,7 +5,9 @@ This branch holds only retained validation records for task 261113-f66367 (PR #1
 The branch holds two complete sets of the same five runs, each executed in the dedicated task worktree (`before.git.head` and `after.git.head` in each manifest):
 
 - `head-229d534c/`: head `229d534c048f1b2d93fd781c77c82930042a4ad4`, the submitted head of PR #1637. It adds one test assertion fix and one CLI refusal message to the head below.
-- The top-level attempt directories: head `3f8ec79e94b5954dc7d3dff6aa844597d443614f`, the merge of `origin/main` into the task branch, the first pushed head of PR #1637. Before the runs, the task cache was prepared with `prepare-cache`, and `CONVEYOR_TASK_CACHE`, `GOCACHE`, `GOTMPDIR`, `TMPDIR`, `PLAYWRIGHT_BROWSERS_PATH`, and `npm_config_cache` were exported, as docs/validation-evidence.md requires.
+- The top-level attempt directories: head `3f8ec79e94b5954dc7d3dff6aa844597d443614f`, the merge of `origin/main` into the task branch, the first pushed head of PR #1637.
+
+Before the runs, the task cache was prepared with `prepare-cache`, and `CONVEYOR_TASK_CACHE`, `GOCACHE`, `GOTMPDIR`, `TMPDIR`, `PLAYWRIGHT_BROWSERS_PATH`, and `npm_config_cache` were exported, as docs/validation-evidence.md requires.
 
 The approved plan's done criterion names these commands:
 
@@ -15,7 +17,7 @@ The approved plan's done criterion names these commands:
     setpriv --inh-caps=-all --ambient-caps=-all make test-go MAKEOVERRIDES= RUN_GO_UNIT_TESTS='CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./internal/store ./internal/nextaction ./internal/httpapi ./internal/workorder ./cmd/conveyor'
     setpriv --inh-caps=-all --ambient-caps=-all make test-ui MAKEOVERRIDES= PLAYWRIGHT_ARGS='tests/next-action-card.spec.ts'
 
-The helper's policy `command` must start with `make`, so for attempts 4 and 5 the `setpriv --inh-caps=-all --ambient-caps=-all` prefix wraps the helper: `setpriv --inh-caps=-all --ambient-caps=-all python3 scripts/validation_evidence.py run --timeout 580 --policy <policy>`. `make` and every child then run without inheritable or ambient capabilities. In that sandbox the user's `CapEff` is `0000000000000004` (CAP_DAC_READ_SEARCH) without the prefix and `0000000000000000` under it. Each policy `command` is the plan's argv exactly.
+The helper's policy `command` must start with `make`, so for attempts 4 and 5 the `setpriv --inh-caps=-all --ambient-caps=-all` prefix wraps the helper: `setpriv --inh-caps=-all --ambient-caps=-all python3 scripts/validation_evidence.py run --timeout <seconds> --policy <policy>` (580 seconds in the first set; 400 for test-go and 500 for test-ui in `head-229d534c/`). `make` and every child then run without inheritable or ambient capabilities. In that sandbox the user's `CapEff` is `0000000000000004` (CAP_DAC_READ_SEARCH) without the prefix and `0000000000000000` under it. Each policy `command` is the plan's argv exactly.
 
 Both sets have the same outcome, shown here for the submitted head (`head-229d534c/`):
 
