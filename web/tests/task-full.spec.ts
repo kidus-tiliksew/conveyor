@@ -6076,9 +6076,7 @@ test('a blocking task change clears waiting state without a reload and no timer 
   await expect(page.getByRole('link', { name: 'Backend contract · Satisfied' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Redispatch' })).toBeVisible()
   // The unblocked queued order adds no entry; the redispatch card states the wait.
-  await expect(
-    page.getByText('Waiting for an agent to pick this task up. If none does, this button offers it to agents again.'),
-  ).toBeVisible()
+  await expect(page.getByText('Waiting for an agent to pick this task up.', { exact: true })).toBeVisible()
   await expect(page.locator('li[data-order-entry="queued"]')).toHaveCount(0)
 
   await page.goto('/w/demo/tasks/no-blockers/full')
@@ -6442,9 +6440,7 @@ for (const stage of ['implement', 'verify', 'review'] as const) {
     )
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
-    await expect(
-      page.getByText('Waiting for an agent to pick this task up. If none does, this button offers it to agents again.'),
-    ).toBeVisible()
+    await expect(page.getByText('Waiting for an agent to pick this task up.', { exact: true })).toBeVisible()
     await expectNoTaskProposalSurface(page)
   })
 }
