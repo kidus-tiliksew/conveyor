@@ -1,7 +1,8 @@
-import { expect, type Page, type Route, type TestInfo } from '@playwright/test'
+import { expect, type Locator, type Page, type Route, type TestInfo } from '@playwright/test'
 import type { PlanActs, PlanOrigin, PlanState, RiskTier, TaskRisk } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
+import { waitForSheetSettled } from './helpers/sheet'
 
 // The dashboard's plan-state surfaces against mocks in the server's served
 // shapes (component-web-task-surfaces invariants 57 to 65; component-plan-state
@@ -298,9 +299,46 @@ test('the plan section renders for every plan state without a plan version, head
   await expect(planSection(page).locator('[data-plan-state-label]')).toHaveText('No plan required')
 })
 
-test('the plan section shows no origin, the base commit or None recorded, and the approval per state', async ({
-  page,
-}) => {
+// The plan card hooks that DEC-134 removed with the facts they marked.
+const removedPlanHooks = [
+  'data-plan-facts',
+  'data-plan-provenance',
+  'data-plan-base-commit',
+  'data-plan-risk',
+  'data-plan-risk-reason',
+]
+
+// The plan card header holds only the title, the version, and the approval
+// badge. The badge follows the version directly, and every item shares one
+// line inside the header (component-web-task-surfaces invariant 60; DEC-134).
+async function expectPlanHeaderOnly(scope: Locator, version: string, approval: string) {
+  const header = scope.locator('[data-plan-header]')
+  await expect(header).toHaveText(`Execution plan${version}${approval}`)
+  for (const hook of removedPlanHooks) await expect(scope.locator(`[${hook}]`)).toHaveCount(0)
+  for (const text of ['Base commit', 'Plan risk tier', 'Origin']) {
+    await expect(scope.getByText(text, { exact: true })).toHaveCount(0)
+  }
+  await expect(scope.getByText(/^Review: \d+ seats?/)).toHaveCount(0)
+  const box = async (locator: Locator) => {
+    const rect = await locator.boundingBox()
+    if (!rect) throw new Error('a plan header item is not rendered')
+    return rect
+  }
+  const middle = (rect: { y: number; height: number }) => rect.y + rect.height / 2
+  const headerBox = await box(header)
+  const title = await box(header.getByRole('heading', { name: 'Execution plan', exact: true }))
+  const count = await box(header.getByText(version, { exact: true }))
+  const badge = await box(header.locator('[data-plan-status]').getByText(approval, { exact: true }))
+  for (const item of [count, badge]) expect(Math.abs(middle(item) - middle(title))).toBeLessThanOrEqual(4)
+  expect(count.x).toBeGreaterThanOrEqual(title.x + title.width - 0.5)
+  expect(badge.x).toBeGreaterThanOrEqual(count.x + count.width - 0.5)
+  expect(badge.x - (count.x + count.width)).toBeLessThanOrEqual(16)
+  expect(title.x).toBeGreaterThanOrEqual(headerBox.x)
+  expect(badge.x + badge.width).toBeLessThanOrEqual(headerBox.x + headerBox.width + 0.5)
+  expect(await header.evaluate((node) => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(0)
+}
+
+test('the plan section shows no origin or base commit, and the approval per state', async ({ page }) => {
   const cases: Array<{
     id: string
     state: PlanState
@@ -338,7 +376,6 @@ test('the plan section shows no origin, the base commit or None recorded, and th
     },
   ]
   await mockServer(page, { details: cases.map((entry) => detail(entry.id, entry.state, { spec: entry.spec })) })
-  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
   for (const entry of cases) {
     await page.goto(`/w/demo/tasks/${entry.id}/full`)
     const section = planSection(page)
@@ -363,18 +400,14 @@ test('the plan section shows no origin, the base commit or None recorded, and th
     await badge.focus()
     await expect(status.locator('[data-plan-approval-time]')).toHaveText(time)
     await badge.blur()
-    const base = section.locator('[data-plan-base-commit]')
-    if (entry.spec.base_commit) {
-      await expect(base.locator('code')).toHaveText(commit.slice(0, 12))
-      await base.getByRole('button', { name: 'Copy base commit' }).click()
-      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(commit)
-    } else {
-      await expect(base).toHaveText('None recorded')
-    }
+    // The read keeps spec.base_commit, and the card shows no base commit
+    // (DEC-134(2), (3)).
+    await expectPlanHeaderOnly(section, 'v2', entry.approval)
+    await expect(section.getByText(commit.slice(0, 12))).toHaveCount(0)
   }
 })
 
-// ---- Plan risk tier (req-risk-based-review AC-4.4) ----
+// ---- Plan card header (DEC-134) ----
 
 const planRiskReason = 'Approval-time ratings span three stores, so a wrong write could weaken the review floor.'
 const pathRisk: TaskRisk = {
@@ -390,51 +423,61 @@ const pathRisk: TaskRisk = {
   author_approval_needed: false,
   ratings: [],
 }
-const riskPlanContent = `## Approach\n\nRecord the plan tier.\n\n## Files touched\n\n- internal/store/risk.go\n\n## Ordering\n\n1. Parse.\n\n## Risks\n\n- Three stores.\n\nRisk tier: high — ${planRiskReason}\n\n## Done criteria\n\n- The plan is rated.`
+const riskPlanContent = `## Approach\n\nRecord the plan tier.\n\n## Files touched\n\n- internal/store/risk.go\n\n## Ordering\n\n1. Parse.\n\n## Risks\n\n- Three stores.\n\n## Done criteria\n\n- The plan is rated.`
 
-test('at plan approval the plan card shows the version tier and reason on both task-detail variants', async ({
-  page,
-}) => {
-  await mockServer(page, {
-    details: [
-      detail('risk-awaiting', 'awaiting_approval', {
-        spec: {
-          origin: 'plan_order',
-          base_commit: commit,
-          risk_tier: 'high',
-          risk_reason: planRiskReason,
-          content: riskPlanContent,
-        },
-        risk: pathRisk,
-      }),
-      detail('risk-legacy', 'awaiting_approval', { spec: { origin: 'plan_order' } }),
-    ],
-  })
-  for (const path of ['/w/demo/tasks/risk-awaiting', '/w/demo/tasks/risk-awaiting/full']) {
-    await page.goto(path)
-    const plan = planSection(page).locator('[data-plan-risk]')
-    await expect(plan).toHaveAttribute('data-plan-risk', 'high')
-    await expect(plan.getByText('Plan risk tier', { exact: true })).toBeVisible()
-    await expect(plan.locator('[data-risk-tier]')).toHaveText('High')
-    // The chip shows alone; its reason sits behind it.
-    await expect(plan.locator('[data-plan-risk-reason]')).toHaveCount(0)
-    await expect(plan.getByText(planRiskReason)).toHaveCount(0)
-    const chip = plan.getByRole('button', { name: `Plan risk tier High. ${planRiskReason}` })
-    await chip.focus()
-    await expect(plan.locator('[data-plan-risk-reason]')).toHaveText(planRiskReason)
-    await chip.blur()
-    await expect(plan.locator('[data-plan-risk-reason]')).toHaveCount(0)
-    await expect(
-      planSection(page).locator('[data-plan-status]').getByText('Awaiting approval', { exact: true }),
-    ).toBeVisible()
-    // The task's own tier stays the server's aggregate, apart from the plan's.
-    await expect(page.locator('[data-task-risk]').first().locator('[data-risk-tier]')).toHaveText('Medium')
-  }
-  // A version that states no tier shows no invented one.
-  for (const path of ['/w/demo/tasks/risk-legacy', '/w/demo/tasks/risk-legacy/full']) {
-    await page.goto(path)
-    await expect(planSection(page).getByRole('heading', { name: 'Execution plan' })).toBeVisible()
-    await expect(planSection(page).locator('[data-plan-risk]')).toHaveCount(0)
+// The read still carries the plan's base commit, risk tier, and reason, and
+// the card shows none of them (DEC-134(2), (3)).
+const riskAwaiting = detail('risk-awaiting', 'awaiting_approval', {
+  spec: {
+    origin: 'plan_order',
+    base_commit: commit,
+    risk_tier: 'high',
+    risk_reason: planRiskReason,
+    content: riskPlanContent,
+  },
+  risk: pathRisk,
+})
+const riskCompleted = detail('risk-completed', 'completed', {
+  spec: {
+    origin: 'plan_order',
+    approved: true,
+    base_commit: commit,
+    risk_tier: 'low',
+    risk_reason: planRiskReason,
+    content: riskPlanContent,
+  },
+  risk: pathRisk,
+})
+
+const planCases = [
+  { item: riskAwaiting, approval: 'Awaiting approval', time: /^Drafted Nov 9, / },
+  { item: riskCompleted, approval: 'Approved', time: /^Approved Nov 9, 11:30/ },
+]
+
+// The sheet slides in. Boxes are read only once it rests.
+async function openPlan(page: Page, path: string) {
+  await page.goto(path)
+  if (!path.endsWith('/full')) await waitForSheetSettled(page.getByRole('dialog', { name: 'Task detail' }))
+  return planSection(page)
+}
+
+test('the plan card shows no plan risk tier on both task-detail variants', async ({ page }) => {
+  await mockServer(page, { details: planCases.map((entry) => entry.item) })
+  for (const entry of planCases) {
+    for (const path of [`/w/demo/tasks/${entry.item.task.id}`, `/w/demo/tasks/${entry.item.task.id}/full`]) {
+      const section = await openPlan(page, path)
+      await expectPlanHeaderOnly(section, 'v2', entry.approval)
+      await expect(section.getByText(planRiskReason)).toHaveCount(0)
+      // The approval or draft time stays behind the badge (DEC-127(1)).
+      const status = section.locator('[data-plan-status]')
+      const badge = status.getByRole('button', { name: new RegExp(`^${entry.approval}\\. `) })
+      await expect(badge).toHaveAccessibleName(new RegExp(`^${entry.approval}\\. ${entry.time.source.slice(1)}`))
+      await badge.focus()
+      await expect(status.locator('[data-plan-approval-time]')).toHaveText(entry.time)
+      await badge.blur()
+      // The task's own tier stays in the properties (req-risk-based-review REQ-11).
+      await expect(page.locator('[data-task-risk]').first().locator('[data-risk-tier]')).toHaveText('Medium')
+    }
   }
 })
 
@@ -446,37 +489,6 @@ async function capture(page: Page, testInfo: TestInfo, name: string) {
   await testInfo.attach(name, { body: image, contentType: 'image/png' })
 }
 
-const riskCompleted = detail('risk-completed', 'completed', {
-  spec: {
-    origin: 'plan_order',
-    approved: true,
-    base_commit: commit,
-    risk_tier: 'low',
-    risk_reason: planRiskReason,
-    content: riskPlanContent,
-  },
-})
-
-// The plan facts' term column and value column, measured on the page.
-async function planFactLayout(page: Page) {
-  return planSection(page)
-    .locator('[data-plan-facts]')
-    .evaluate((list) => {
-      const box = (selector: string) => list.querySelector(selector)!.getBoundingClientRect()
-      const terms = Array.from(list.querySelectorAll('dt')).map((term) => term.getBoundingClientRect())
-      const values = Array.from(list.querySelectorAll('dd')).map((value) => value.getBoundingClientRect())
-      return {
-        header: list.parentElement!.getBoundingClientRect().width,
-        termLefts: terms.map((term) => Math.round(term.left)),
-        valueLefts: values.map((value) => Math.round(value.left)),
-        termWidths: terms.map((term) => Math.round(term.width)),
-        rows: terms.map((term) => Math.round(term.top)),
-        commitTop: Math.round(box('[data-plan-base-commit]').top),
-        riskTop: Math.round(box('[data-plan-risk] dd').top),
-      }
-    })
-}
-
 test.describe('at phone width on a touch screen', () => {
   test.use({
     viewport: { width: 375, height: 800 },
@@ -486,43 +498,39 @@ test.describe('at phone width on a touch screen', () => {
     timezoneId: 'UTC',
   })
 
-  test('the plan tier stays beside an approved plan and opens its reason by tap', async ({ page }, testInfo) => {
-    await mockServer(page, { details: [riskCompleted] })
-    await page.goto('/w/demo/tasks/risk-completed/full')
-    const plan = planSection(page).locator('[data-plan-risk]')
-    await expect(plan.locator('[data-risk-tier]')).toHaveText('Low')
-    await expect(plan.locator('[data-plan-risk-reason]')).toHaveCount(0)
-    const chip = plan.getByRole('button', { name: `Plan risk tier Low. ${planRiskReason}` })
-    await chip.tap()
-    await expect(plan.locator('[data-plan-risk-reason]')).toHaveText(planRiskReason)
-    await expect(planSection(page).locator('[data-plan-origin]')).toHaveCount(0)
-    // Below 40rem the facts form two columns with a 6rem term column.
-    const layout = await planFactLayout(page)
-    expect(layout.header).toBeLessThan(640)
-    expect(new Set(layout.termLefts).size).toBe(1)
-    expect(new Set(layout.valueLefts).size).toBe(1)
-    expect(layout.valueLefts[0] - layout.termLefts[0]).toBeGreaterThanOrEqual(96)
-    expect(layout.riskTop).toBeGreaterThan(layout.commitTop)
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
-    expect(overflow).toBeLessThanOrEqual(0)
-    await capture(page, testInfo, 'plan-risk-open-375.png')
-    // The approval time opens by tap.
-    const status = planSection(page).locator('[data-plan-status]')
-    await status.getByRole('button', { name: /^Approved\. Approved Nov 9, / }).tap()
-    await expect(status.locator('[data-plan-approval-time]')).toHaveText(/^Approved Nov 9, 11:30/)
+  test('the plan header keeps one line and opens the approval time by tap', async ({ page }, testInfo) => {
+    await mockServer(page, { details: planCases.map((entry) => entry.item) })
+    for (const entry of planCases) {
+      for (const variant of ['sheet', 'full'] as const) {
+        const id = entry.item.task.id
+        const section = await openPlan(page, variant === 'full' ? `/w/demo/tasks/${id}/full` : `/w/demo/tasks/${id}`)
+        await expectPlanHeaderOnly(section, 'v2', entry.approval)
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+        expect(overflow).toBeLessThanOrEqual(0)
+        await capture(page, testInfo, `plan-header-${id}-${variant}-375.png`)
+        const status = section.locator('[data-plan-status]')
+        await status.getByRole('button', { name: new RegExp(`^${entry.approval}\\. `) }).tap()
+        await expect(status.locator('[data-plan-approval-time]')).toHaveText(entry.time)
+      }
+    }
   })
 })
 
-test('the plan facts share one line on a header at least 40rem wide', async ({ page }, testInfo) => {
+test('the plan header keeps one line at desktop width', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 })
-  await mockServer(page, { details: [riskCompleted] })
-  await page.goto('/w/demo/tasks/risk-completed/full')
-  await expect(planSection(page).locator('[data-plan-risk] [data-risk-tier]')).toHaveText('Low')
-  const layout = await planFactLayout(page)
-  expect(layout.header).toBeGreaterThanOrEqual(640)
-  expect(new Set(layout.rows).size).toBe(1)
-  expect(layout.termLefts[1]).toBeGreaterThan(layout.valueLefts[0])
-  await capture(page, testInfo, 'plan-1440.png')
+  await mockServer(page, { details: planCases.map((entry) => entry.item) })
+  for (const entry of planCases) {
+    for (const variant of ['sheet', 'full'] as const) {
+      const id = entry.item.task.id
+      const section = await openPlan(page, variant === 'full' ? `/w/demo/tasks/${id}/full` : `/w/demo/tasks/${id}`)
+      await expectPlanHeaderOnly(section, 'v2', entry.approval)
+      await capture(page, testInfo, `plan-header-${id}-${variant}-1440.png`)
+      const status = section.locator('[data-plan-status]')
+      await status.getByRole('button', { name: new RegExp(`^${entry.approval}\\. `) }).hover()
+      await expect(status.locator('[data-plan-approval-time]')).toHaveText(entry.time)
+      await page.mouse.move(0, 0)
+    }
+  }
 })
 
 // ---- Operator acts (invariants 61, 62, 64; AC-3.1, AC-3.2) ----
