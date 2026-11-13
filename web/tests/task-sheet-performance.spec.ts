@@ -1,6 +1,7 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
 import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
+import { openSettingsRow } from './helpers/settings'
 import { activityFrame, controlTaskStreams, readyFrame } from './helpers/task-streams'
 import { controlWorkspaceChanges } from './helpers/workspace-changes'
 
@@ -609,6 +610,7 @@ test.describe('slow reads', () => {
     // Saving the profile refreshes identity at once and marks members stale,
     // so the Board's cards read members again on return inside five minutes.
     await page.getByRole('link', { name: 'Settings' }).first().click()
+    await openSettingsRow(page, 'Profile')
     await expect(page.getByLabel('Display name')).toBeVisible()
     const beforeSave = { identity: server.count(reads.identity), members: server.count(reads.members) }
     await page.getByLabel('Display name').fill('Ada Lovelace')
