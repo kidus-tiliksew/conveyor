@@ -36,6 +36,8 @@ func TestProjectRowsAndLabel(t *testing.T) {
 		{name: "row7", in: Input{Task: core.Task{State: core.TaskApproved}, Markers: Markers{ForgeFailure: true}, Now: now}, actor: ActorFactory, kind: KindMerging},
 		{name: "row7 over question", in: mergingAndQuestion(now), actor: ActorFactory, kind: KindMerging, secondary: KindAgentQuestion},
 		{name: "row9-10", in: questionAndVerify(now), actor: ActorOperator, kind: KindAgentQuestion, secondary: KindVerificationDisposition},
+		{name: "row10-11 sealed set", in: sealedCheckpointInput(now, &DispositionInput{Set: sealedCheckpointSet()}), actor: ActorOperator, kind: KindVerificationDisposition, secondary: KindStalled},
+		{name: "row10-11 sealed refused", in: sealedCheckpointInput(now, &DispositionInput{Refusal: "no set"}), actor: ActorOperator, kind: KindAgentQuestion, secondary: KindVerificationDisposition},
 		{name: "row11-12", in: Input{Task: core.Task{State: core.TaskRunning}, Markers: Markers{ForgeFailure: true, ReviewRecovery: true}, Now: now}, actor: ActorOperator, kind: KindForgeFailure, secondary: KindReviewRecovery},
 		{name: "row13-14", in: unsatisfiableAndSuppressed(now), actor: ActorOperator, kind: KindDependencyUnsatisfiable, secondary: KindStalled},
 		{name: "row14 timed_out", in: timedOut(now), actor: ActorOperator, kind: KindStalled, stall: StallTimedOut},

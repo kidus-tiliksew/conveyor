@@ -78,9 +78,7 @@ func rules() []rule {
 		{match: checkHold, build: checkHoldBuild},
 		{match: gateOffApproved, build: mergingBuild},
 		{match: agentQuestion, build: agentQuestionBuild},
-		{match: verificationDisposition, build: func(in Input) built {
-			return built{actor: ActorOperator, kind: KindVerificationDisposition, judgment: true, deadline: in.Markers.VerificationHoldDeadline, order: dispositionOrder(in.Orders)}
-		}},
+		{match: verificationDisposition, build: dispositionBuild},
 		{match: forgeFailure, build: func(Input) built { return built{actor: ActorOperator, kind: KindForgeFailure} }},
 		{match: reviewRecovery, build: func(Input) built { return built{actor: ActorOperator, kind: KindReviewRecovery} }},
 		{match: dependencyUnsatisfiable, build: func(in Input) built {
@@ -213,9 +211,41 @@ func checkHoldBuild(in Input) built {
 // released at its checkpoint, so a resumed order never asks its answered
 // question again (feature-operator-next-action NA-3 row 9;
 // req-operator-next-action AC-1.6).
+//
+// A verify order released at its sealed verification checkpoint carries a
+// decision request too. When row 11 selects that same order and its
+// disposition set has at least one entry, row 11 takes the order and row 10
+// does not match, so the operator records the dispositions instead of an
+// answer that recovers the order without them. An empty or refused set keeps
+// row 10 (component-next-action invariant 3 row 10, invariant 15; DEC-133(1)).
 func agentQuestion(in Input) bool {
 	order := latestQueued(in.Orders)
-	return in.Markers.CheckpointDecision && order != nil && order.LastAttemptOutcome == core.WorkOrderOutcomeReleased
+	if !in.Markers.CheckpointDecision || order == nil || order.LastAttemptOutcome != core.WorkOrderOutcomeReleased {
+		return false
+	}
+	return !dispositionFirst(in, *order)
+}
+
+// dispositionFirst reports whether row 11 takes order's decision request:
+// order is the verify order row 11 selects, still released at its sealed
+// verification checkpoint, and its disposition set is either stated with at
+// least one entry and no refusal or not read. The assembler reads the set only
+// after a first projection selects row 11, and a compact read never reads it,
+// so an unread set keeps row 11. The assembler's second projection then holds
+// the read set, and an empty or refused set returns the order to row 10
+// (component-next-action invariant 15).
+func dispositionFirst(in Input, order core.WorkOrder) bool {
+	if !AtVerificationCheckpoint(order) || !verificationDisposition(in) {
+		return false
+	}
+	if selected := dispositionOrder(in.Orders); selected == nil || selected.ID != order.ID {
+		return false
+	}
+	input, read := in.Dispositions[order.ID]
+	if !read {
+		return true
+	}
+	return len(input.Set) > 0 && input.Refusal == ""
 }
 
 // agentQuestionBuild presents the latest queued order's checkpoint. An
@@ -259,6 +289,20 @@ func verificationDisposition(in Input) bool {
 		return false
 	}
 	return dispositionOrder(in.Orders) != nil
+}
+
+// dispositionBuild states row 11 for the verify order dispositionOrder
+// selects. When that order is released at its sealed verification checkpoint
+// with a decision request, the statement carries the request in
+// details.checkpoint, and the card shows it above the entries
+// (component-next-action invariant 15).
+func dispositionBuild(in Input) built {
+	order := dispositionOrder(in.Orders)
+	row := built{actor: ActorOperator, kind: KindVerificationDisposition, judgment: true, deadline: in.Markers.VerificationHoldDeadline, order: order}
+	if order != nil && AtVerificationCheckpoint(*order) {
+		row.checkpoint = order.Checkpoint.DecisionRequest
+	}
+	return row
 }
 
 func forgeFailure(in Input) bool { return in.Markers.ForgeFailure }

@@ -51,6 +51,7 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 	t.Run("RetryGateScopedToVerifyOrder", func(t *testing.T) { runVerificationRetryGateScope(t, x) })
 	t.Run("OneRecoveryDisposesEveryGatedSubject", func(t *testing.T) { runRecoveryDisposesEveryGatedSubject(t, x) })
 	t.Run("OneRecoveryDisposesAttemptsAcrossContexts", func(t *testing.T) { runRecoveryDisposesAttemptsAcrossContexts(t, x) })
+	t.Run("SealedCheckpointOffersDispositionsFirst", func(t *testing.T) { runSealedCheckpointOffersDispositionsFirst(t, x) })
 	t.Run("OperatorRecoveryBindsSuccessorAndConsumesAuthorization", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
 		obligation := store.VerificationObligation{ID: "recovery-" + v.access.TaskID, Description: "Recover one external mutation", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "recovery", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
@@ -692,10 +693,12 @@ func runNextActionDispositionBinding(t *testing.T, x Fixture) {
 	v := newVerificationFixture(t, x, true)
 	order, operationID := sealVerificationCheckpoint(t, &v, true)
 
-	question, err := store.ReadNextAction(x.Context, x.Backend, order.TaskID, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: gates})
+	// The sealed checkpoint's decision request no longer outranks its set:
+	// the ordinary read states row 11 (component-next-action invariant 15).
+	sealed, err := store.ReadNextAction(x.Context, x.Backend, order.TaskID, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: gates})
 	requireOK(t, err)
-	if question.Kind != nextaction.KindAgentQuestion || question.Details.Dispositions != nil {
-		t.Fatalf("sealed checkpoint = %s dispositions %+v, want agent_question without a set", question.Kind, question.Details.Dispositions)
+	if sealed.Kind != nextaction.KindVerificationDisposition || sealed.Details.Checkpoint != order.Checkpoint.DecisionRequest {
+		t.Fatalf("sealed checkpoint = %s checkpoint %q, want verification_disposition with the decision request", sealed.Kind, sealed.Details.Checkpoint)
 	}
 
 	action := projectVerificationDisposition(t, x, order.TaskID, gates)
@@ -1531,5 +1534,109 @@ func runRecoveryDisposesAttemptsAcrossContexts(t *testing.T, x Fixture) {
 		if operation.ID == op.ID && (len(operation.Recovery) != 1 || operation.Recovery[0].ID != "recovery:cross-recovery" || operation.Recovery[0].Disposition != "not_applied") {
 			t.Fatalf("operation authorizations = %+v", operation.Recovery)
 		}
+	}
+}
+
+// runSealedCheckpointOffersDispositionsFirst seals a real
+// operator_action_required checkpoint with two retry-gated attempts and leaves
+// the decision request the seal writes in place. The ordinary next-action read
+// states verification_disposition, not agent_question: details.checkpoint
+// carries the decision request, details.dispositions carries both attempts,
+// the one choice is record_dispositions, and agent_question is no secondary
+// match. A compact read states the same compact fields without reading the
+// set. A recovery built from the stated set requeues the order, a new claim
+// opens a successor context, and a gated start sent with the recovery's
+// authorization launches. A sealed checkpoint whose set is refused keeps its
+// decision request at agent_question (component-next-action invariant 3 row
+// 10, invariant 15; component-verification-service invariant 45; DEC-133(1);
+// req-verification-kits AC-3.2, AC-3.4).
+func runSealedCheckpointOffersDispositionsFirst(t *testing.T, x Fixture) {
+	gates := map[core.Capability]bool{core.CapabilityOperateGates: true}
+	v := newVerificationFixture(t, x, true)
+	digest := verificationSHA([]byte("{}"))
+	var obligations []store.VerificationObligation
+	for _, name := range []string{"login", "checkout"} {
+		obligations = append(obligations, recoveryFixtureObligation("sealed-"+name+"-"+v.access.TaskID, "operator_action_required", ""))
+	}
+	subjects := make([]core.VerificationSubject, len(obligations))
+	originals := make([]string, len(obligations))
+	for i := range obligations {
+		subjects[i] = recoveryFixtureRegister(t, &v, obligations[i])
+		r := v.apply(t, recoveryFixtureStart(fmt.Sprintf("sealed-first-%d", i), "", subjects[i]))
+		v.runID, originals[i] = r.ID, r.ID
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "blocked", Explanation: "fixture environment unavailable"}})
+	}
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: verificationFixtureCoverage(v.snapshot(t)), Feedback: "Two exercises need an operator", RequiredAction: "Restore the fixtures and authorize one retry of each"}})
+	order, err := x.Backend.GetWorkOrder(x.Context, v.access.WorkOrderID)
+	requireOK(t, err)
+	if order.State != core.WorkOrderQueued || order.Checkpoint == nil || order.Checkpoint.Verification == nil || order.Checkpoint.DecisionRequest == "" {
+		t.Fatalf("sealed checkpoint order = %+v, want a queued verify order with its decision request", order)
+	}
+
+	action, err := store.ReadNextAction(x.Context, x.Backend, order.TaskID, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: gates})
+	requireOK(t, err)
+	if action.Kind != nextaction.KindVerificationDisposition || action.CurrentOrder == nil || action.CurrentOrder.ID != order.ID {
+		t.Fatalf("sealed checkpoint = %s on %+v, want verification_disposition on %s", action.Kind, action.CurrentOrder, order.ID)
+	}
+	if action.Details.Checkpoint != order.Checkpoint.DecisionRequest {
+		t.Fatalf("details.checkpoint = %q, want the decision request %q", action.Details.Checkpoint, order.Checkpoint.DecisionRequest)
+	}
+	want := []nextaction.Disposition{
+		{ContextID: v.contextID, RunID: originals[0], OperationIDs: []string{}, InputDigest: digest, Subject: "ordinary:" + obligations[0].ID, State: "blocked"},
+		{ContextID: v.contextID, RunID: originals[1], OperationIDs: []string{}, InputDigest: digest, Subject: "ordinary:" + obligations[1].ID, State: "blocked"},
+	}
+	if !reflect.DeepEqual(action.Details.Dispositions, want) {
+		t.Fatalf("dispositions = %+v, want both gated attempts %+v (refusals %+v)", action.Details.Dispositions, want, action.Details.Refusals)
+	}
+	if len(action.Choices) != 1 || action.Choices[0].ID != "record_dispositions" || !action.Choices[0].Allowed || action.Choices[0].Path != "/v1/work-orders/"+order.ID+"/recover" {
+		t.Fatalf("choices = %+v, want one allowed record_dispositions on %s", action.Choices, order.ID)
+	}
+	for _, secondary := range action.Details.Secondary {
+		if secondary.Kind == nextaction.KindAgentQuestion {
+			t.Fatalf("secondary = %+v, want no agent_question", action.Details.Secondary)
+		}
+	}
+	task, err := x.Backend.GetTask(x.Context, order.TaskID)
+	requireOK(t, err)
+	compact, err := store.ReadNextActions(x.Context, x.Backend, []core.Task{task}, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: gates, CompactOnly: true})
+	requireOK(t, err)
+	if got, wantCompact := nextaction.CompactFrom(compact[task.ID]), nextaction.CompactFrom(action); !reflect.DeepEqual(got, wantCompact) {
+		t.Fatalf("compact = %+v, want %+v", got, wantCompact)
+	}
+
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	requestID := "sealed-checkpoint-recovery"
+	request := recoveryFixtureRequest("Operator restored both fixtures and authorizes one retry of each.", action.Details.Dispositions, "applied", "not_applied")
+	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, request), x.Backend, order.ID, requestID, time.Hour)
+	requireOK(t, err)
+	if n := recoveryFixtureAuthorized(t, x, order.TaskID); n != len(want) {
+		t.Fatalf("recovery appended %d recovery_authorized events, want %d", n, len(want))
+	}
+	after, err := store.ReadNextAction(x.Context, x.Backend, order.TaskID, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: gates})
+	requireOK(t, err)
+	if after.Kind == nextaction.KindVerificationDisposition || after.Kind == nextaction.KindAgentQuestion {
+		t.Fatalf("recovered checkpoint = %s, want neither a disposition nor a question", after.Kind)
+	}
+
+	recoveryFixtureReclaim(t, x, &v, "sealed-successor")
+	subject := recoveryFixtureRegister(t, &v, obligations[0])
+	if r := v.apply(t, recoveryFixtureStart("sealed-successor-0", "recovery:"+requestID, subject)); !r.LaunchAuthorized {
+		t.Fatalf("gated successor start of %s was not authorized", obligations[0].ID)
+	}
+
+	// A sealed checkpoint with neither an unresolved operation nor a
+	// retry-gated attempt has a refused set, so its decision request stays
+	// at agent_question and row 11 states no set.
+	replayable := newVerificationFixture(t, x, true)
+	safe := recoveryFixtureObligation("sealed-replayable-"+replayable.access.TaskID, "safe_to_replay", "")
+	replayable.subject = recoveryFixtureRegister(t, &replayable, safe)
+	replayable.start(t, "sealed-replayable")
+	replayable.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "blocked", Explanation: "Fixture account locked"}})
+	replayable.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: verificationFixtureCoverage(replayable.snapshot(t)), Feedback: "Fixture account locked", RequiredAction: "Unlock the fixture account"}})
+	question, err := store.ReadNextAction(x.Context, x.Backend, replayable.access.TaskID, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: gates})
+	requireOK(t, err)
+	if question.Kind != nextaction.KindAgentQuestion || question.Details.Checkpoint == "" || question.Details.Dispositions != nil {
+		t.Fatalf("refused set = %s checkpoint %q dispositions %+v, want agent_question with the decision request", question.Kind, question.Details.Checkpoint, question.Details.Dispositions)
 	}
 }

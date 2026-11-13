@@ -49,6 +49,24 @@ func TestMarkersReadTheLatestQueuedOrdersCheckpoint(t *testing.T) {
 	}
 }
 
+// A verify order released at its sealed verification checkpoint keeps both
+// facts the seal records: the decision request sets the agent-question
+// marker and the verification checkpoint sets the disposition marker. The
+// projection, not the markers, gives the order to row 11 when its set has an
+// entry, and the first projection without a set selects row 11, so the
+// assembler reads the set (component-next-action invariant 15).
+func TestSealedVerifyCheckpointSetsBothMarkers(t *testing.T) {
+	sealed := core.WorkOrder{ID: "verify-1", Stage: core.StageVerify, State: core.WorkOrderQueued, LastAttemptID: "attempt-1", LastAttemptOutcome: core.WorkOrderOutcomeReleased, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Provider acknowledgement is unknown\nRequired operator action: Inspect provider", Verification: &core.WorkOrderVerificationCheckpoint{ContextID: "ctx", OperationIDs: []string{"op"}}}}
+	markers := markersFrom(ActivityMarker{}, nil, []core.WorkOrder{sealed})
+	if !markers.CheckpointDecision || !markers.VerificationDisposition || markers.Checkpoint != sealed.Checkpoint.DecisionRequest {
+		t.Fatalf("markers = %+v, want both markers with the decision request", markers)
+	}
+	first := nextaction.Project(nextaction.Input{Task: core.Task{ID: "t", State: core.TaskRunning}, Markers: markers, Orders: []core.WorkOrder{sealed}, Now: time.Now().UTC()})
+	if first.Kind != nextaction.KindVerificationDisposition || first.CurrentOrder == nil || first.CurrentOrder.ID != sealed.ID || first.Details.Checkpoint != sealed.Checkpoint.DecisionRequest {
+		t.Fatalf("first projection = %s on %+v, want verification_disposition on %s so the set is read", first.Kind, first.CurrentOrder, sealed.ID)
+	}
+}
+
 // The row-11 disposition set holds each attempt of the verify order with an
 // unresolved operation, with every such operation in ID order and the
 // attempt's safe-input digest, subject, and state, so
