@@ -381,15 +381,19 @@ func (s *Service) claim(ctx context.Context, id string, claim core.WorkOrderClai
 	return order, nil
 }
 
-func (s *Service) RecoverVerification(ctx context.Context, id, requestID, direction string, disposition *store.VerificationRecoveryDisposition) (core.WorkOrder, error) {
-	if disposition == nil {
+// RecoverVerification recovers an order. A non-nil verification object
+// records the operator's dispositions for the verify order's disposition set
+// and needs operate_gates beyond the route's recover_work
+// (component-verification-service invariant 45).
+func (s *Service) RecoverVerification(ctx context.Context, id, requestID, direction string, verification *store.VerificationRecovery) (core.WorkOrder, error) {
+	if verification == nil {
 		return s.Recover(ctx, id, requestID, direction)
 	}
 	membership, ok := s.Store.(store.MembershipStore)
 	if !ok {
 		return core.WorkOrder{}, store.ErrVerificationAccess
 	}
-	ctx = store.WithVerificationRecovery(ctx, disposition)
+	ctx = store.WithVerificationRecovery(ctx, verification)
 	if err := store.AuthorizeVerificationRecovery(ctx, membership); err != nil {
 		return core.WorkOrder{}, err
 	}

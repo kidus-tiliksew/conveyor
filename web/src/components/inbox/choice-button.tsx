@@ -4,7 +4,7 @@ import { GateMutationError, postNextActionChoice } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
 import type { TaskRouteVariant } from '../../lib/task-route'
-import type { NextActionChoice, NextActionDetails } from '../../lib/types'
+import type { DispositionAnswer, NextActionChoice, NextActionDetails } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { TaskRestartControl } from '../task/task-restart-dialog'
@@ -12,6 +12,7 @@ import { useTaskDetail } from '../task/use-task-detail'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 import { choiceBody } from './choice-bodies'
+import { DispositionList } from './disposition-list'
 import { Kbd, useShortcutChoice } from './inbox-keyboard'
 import { nextActionQueryKey, nextActionsQueryKey } from './use-next-actions'
 
@@ -76,7 +77,17 @@ export function NextActionChoices({
   const client = useQueryClient()
   const [composing, setComposing] = useState<NextActionChoice | null>(null)
   const [input, setInput] = useState('')
+  // The operator's answer for each attempt of a disposition set, by run ID.
+  const [answers, setAnswers] = useState<Record<string, DispositionAnswer>>({})
   const [restarting, setRestarting] = useState(false)
+  // A disposition set the server states again with other attempts, or another
+  // task, clears every answer, so no answer carries over to an attempt the
+  // operator has not seen (component-next-action invariant 15).
+  const dispositionKey = `${taskId}\u0000${(details?.dispositions ?? []).map((entry) => `${entry.context_id}/${entry.run_id}/${entry.input_digest}/${(entry.operation_ids ?? []).join(',')}`).join('|')}`
+  useEffect(() => {
+    void dispositionKey
+    setAnswers({})
+  }, [dispositionKey])
   // A choice low on the page opens its input past the fold, confirm included.
   const composerRef = useRef<HTMLDivElement>(null)
   const composingId = composing?.id
@@ -92,20 +103,29 @@ export function NextActionChoices({
 
   const mutation = useMutation({
     onMutate: (): MutationWorkspace => ({ workspace }),
-    mutationFn: async ({ choice, text }: { choice: NextActionChoice; text: string }) => {
+    mutationFn: async ({
+      choice,
+      text,
+      chosen,
+    }: {
+      choice: NextActionChoice
+      text: string
+      chosen: Record<string, DispositionAnswer>
+    }) => {
       const contract = choiceBody(choice.id)
       if (!contract) throw new Error('This choice cannot be sent from this page.')
       const requestId = crypto.randomUUID()
       await postNextActionChoice(
         workspace,
         choice,
-        contract.body(text, requestId, details),
+        contract.body(text, requestId, details, chosen),
         contract.idempotent ? requestId : undefined,
       )
     },
     onSuccess: (_result, { choice }) => {
       setComposing(null)
       setInput('')
+      setAnswers({})
       onActed?.(choice)
     },
     onSettled: async (_result, error, _variables, context) => {
@@ -128,11 +148,15 @@ export function NextActionChoices({
   const send = (choice: NextActionChoice, text: string) => {
     if (inFlight.current) return
     inFlight.current = true
-    mutation.mutate({ choice, text })
+    mutation.mutate({ choice, text, chosen: answers })
   }
 
   if (choices.length === 0 && !leading && !status) return null
   const contract = composing ? choiceBody(composing.id) : undefined
+  const dispositionEntries = contract?.composer === 'dispositions' ? (details?.dispositions ?? []) : []
+  const unanswered =
+    contract?.composer === 'dispositions' &&
+    (dispositionEntries.length === 0 || dispositionEntries.some((entry) => !answers[entry.run_id]))
   const reasons = choices.map((choice) => {
     const body = choiceBody(choice.id)
     return !choice.allowed
@@ -215,6 +239,7 @@ export function NextActionChoices({
                   if (body?.input) {
                     setComposing((current) => (current?.id === choice.id ? null : choice))
                     setInput('')
+                    setAnswers({})
                     return
                   }
                   send(choice, '')
@@ -239,6 +264,14 @@ export function NextActionChoices({
       {composing && contract?.input && (
         <div ref={composerRef} className="space-y-2">
           <p className="text-xs text-muted">{composing.effect}</p>
+          {contract.composer === 'dispositions' && (
+            <DispositionList
+              entries={dispositionEntries}
+              answers={answers}
+              disabled={mutation.isPending}
+              onAnswer={(runId, answer) => setAnswers((current) => ({ ...current, [runId]: answer }))}
+            />
+          )}
           <Textarea
             autoFocus
             aria-label={contract.input.label}
@@ -248,13 +281,20 @@ export function NextActionChoices({
             onChange={(event) => setInput(event.target.value)}
           />
           <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setComposing(null)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setComposing(null)
+                setAnswers({})
+              }}
+            >
               Cancel
             </Button>
             <Button
               size="sm"
               variant={composing.id === 'reject' || composing.id === 'close' ? 'danger' : 'default'}
-              disabled={mutation.isPending || (contract.input.required && !input.trim())}
+              disabled={mutation.isPending || (contract.input.required && !input.trim()) || unanswered}
               onClick={() => send(composing, input)}
             >
               {composing.label.replace(/…$/, '')}

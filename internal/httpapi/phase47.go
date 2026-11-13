@@ -118,9 +118,12 @@ func (s *Server) recoverWorkOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Verification *store.VerificationRecoveryDisposition `json:"verification,omitempty"`
-		RequestID    string                                 `json:"request_id"`
-		Direction    string                                 `json:"direction"`
+		// The verification object decodes strictly: the former single-attempt
+		// object and any unknown field are refused
+		// (component-verification-service invariant 45).
+		Verification *store.VerificationRecovery `json:"verification,omitempty"`
+		RequestID    string                      `json:"request_id"`
+		Direction    string                      `json:"direction"`
 	}
 	raw, err := readBoundedBody(w, r, 1<<20)
 	if errors.Is(err, errBodyTooLarge) {

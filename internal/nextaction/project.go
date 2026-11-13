@@ -246,11 +246,11 @@ func agentQuestionBuild(in Input) built {
 	return row
 }
 
-// verificationDisposition matches row 10 only when it can select a verify
-// order for the applied and not-applied choices. A disposition marker with no
+// verificationDisposition matches row 11 only when it can select a verify
+// order for the record_dispositions choice. A disposition marker with no
 // queued or claimed verify order behind it, such as a checkpoint kept for
 // history on a verify order that has since been recovered and submitted,
-// never selects row 10, so the operator is never asked for a disposition that
+// never selects row 11, so the operator is never asked for a disposition that
 // every choice refuses with no order to recover; the task falls through to the
 // row its current orders state (feature-operator-next-action NA-3 row 10;
 // task 261030-54fbd3).
@@ -330,7 +330,7 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 		na.Details.MergeReadiness = in.MergeReadiness.Summary
 	}
 	na.Blocks = append([]BlockerRef{}, in.Blocks...)
-	na.Details.Disposition = dispositionFor(in, row)
+	na.Details.Dispositions = dispositionsFor(in, row)
 	if row.kind == KindContextProposal {
 		na.Details.ContextProposals = contextProposalDetails(in.ContextProposals)
 		na.Details.MonitorOrigin = monitorOrigin(in)
@@ -445,21 +445,23 @@ func dependentList(blocks []BlockerRef) string {
 	return out
 }
 
-// dispositionFor copies the selected verify order's binding onto row 10 only;
-// every other row leaves details.disposition absent
-// (feature-operator-next-action NA-3, Disposition binding).
-func dispositionFor(in Input, row built) *Disposition {
+// dispositionsFor copies the selected verify order's disposition set onto
+// row 11 only; every other row leaves details.dispositions absent
+// (component-next-action invariant 15).
+func dispositionsFor(in Input, row built) []Disposition {
 	if row.kind != KindVerificationDisposition || row.order == nil {
 		return nil
 	}
-	binding := in.Dispositions[row.order.ID].Binding
-	if binding == nil {
+	set := in.Dispositions[row.order.ID].Set
+	if len(set) == 0 {
 		return nil
 	}
-	return &Disposition{
-		ContextID: binding.ContextID, RunID: binding.RunID,
-		OperationIDs: append([]string{}, binding.OperationIDs...), InputDigest: binding.InputDigest,
+	out := make([]Disposition, 0, len(set))
+	for _, entry := range set {
+		entry.OperationIDs = append([]string{}, entry.OperationIDs...)
+		out = append(out, entry)
 	}
+	return out
 }
 
 func orderView(order *core.WorkOrder) *OrderView {
@@ -585,11 +587,10 @@ func verifyOrder(orders []core.WorkOrder) *core.WorkOrder {
 	return nil
 }
 
-// dispositionOrder selects row 10's order: the latest queued verify order
+// dispositionOrder selects row 11's order: the latest queued verify order
 // still released at a verification checkpoint, the order whose sealed
-// checkpoint the disposition binding reads, and otherwise the latest queued
-// or claimed verify order (feature-operator-next-action NA-3 row 10,
-// Disposition binding).
+// checkpoint the disposition set reads, and otherwise the latest queued
+// or claimed verify order (component-next-action invariant 15).
 func dispositionOrder(orders []core.WorkOrder) *core.WorkOrder {
 	for i := len(orders) - 1; i >= 0; i-- {
 		if AtVerificationCheckpoint(orders[i]) {

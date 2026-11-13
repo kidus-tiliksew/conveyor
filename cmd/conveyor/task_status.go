@@ -284,6 +284,13 @@ func choiceCommand(taskID string, action nextActionView, choice nextActionChoice
 		} else if order != "" {
 			return "conveyor order recover " + order + ` --direction "<answer>"`, true
 		}
+	case onOrder && choice.ID == "record_dispositions":
+		// The command reads the disposition set from this next action, so the
+		// operator types only the answers and the reason
+		// (component-verification-service invariant 45).
+		if order := pathSegmentAfter(choice.Path, "work-orders"); order != "" {
+			return "conveyor order recover " + order + ` --disposition <applied|not_applied> --reason "<reason>"`, true
+		}
 	case onTask && strings.HasSuffix(choice.Path, "/redispatch") && (choice.ID == "recover" || choice.ID == "redispatch"):
 		if action.CurrentOrder != nil && action.CurrentOrder.ID != "" {
 			return "conveyor order redispatch " + action.CurrentOrder.ID, true

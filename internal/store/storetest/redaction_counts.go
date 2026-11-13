@@ -306,7 +306,7 @@ func runRecoveryReasonCount(t *testing.T, x Fixture) {
 	requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRelease))
 	operator, owner := bootstrapOwner(t, x)
 	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
-	disposition := &store.VerificationRecoveryDisposition{ContextID: v.contextID, RunID: v.runID, OperationIDs: []string{op.ID}, InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied", Reason: "Operator inspected " + countFixtureSecret}
+	disposition := &store.VerificationRecovery{Reason: "Operator inspected " + countFixtureSecret, Dispositions: []store.VerificationRecoveryDisposition{{ContextID: v.contextID, RunID: v.runID, OperationIDs: []string{op.ID}, InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied"}}}
 	recovery := store.WithVerificationRecovery(operator, disposition)
 	_, err = RecoverWorkOrder(recovery, x.Backend, order.ID, "counted-recovery", time.Hour)
 	requireOK(t, err)

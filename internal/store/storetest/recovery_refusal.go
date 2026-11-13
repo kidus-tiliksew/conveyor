@@ -900,11 +900,8 @@ func runDispositionRecoverRefusal(t *testing.T, x Fixture) {
 	observer.ctx, observer.access.UserID = operator, owner.ID
 	beforeSnapshot := verificationPublicState(t, &observer)
 	beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, v.access.TaskID, order.ID)
-	disposition := &store.VerificationRecoveryDisposition{
-		ContextID: v.contextID, RunID: v.runID, OperationIDs: []string{op.ID},
-		InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied",
-		Reason: "Operator inspected provider state and authorizes one retry.",
-	}
+	disposition := &store.VerificationRecovery{Reason: "Operator inspected provider state and authorizes one retry.", Dispositions: []store.VerificationRecoveryDisposition{{ContextID: v.contextID, RunID: v.runID, OperationIDs: []string{op.ID},
+		InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied"}}}
 	want := "was superseded by same-stage successor"
 	requestID := "disposition-refuse-" + v.access.TaskID
 	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), st, order.ID, requestID, time.Hour)

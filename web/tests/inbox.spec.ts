@@ -2555,7 +2555,7 @@ test('the plan context splits the plan at its headings beside the choices that d
   await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
 })
 
-function dispositionFixture(binding: boolean): Fixture {
+function dispositionFixture(stated: boolean): Fixture {
   const fixture = decisionsFixture()
   fixture.items = [
     {
@@ -2572,8 +2572,10 @@ function dispositionFixture(binding: boolean): Fixture {
     },
   ]
   const choices = [
-    { ...choice('applied', 'Yes, it applied…', '/v1/work-orders/wo-verify/recover'), capability: 'operate_gates' },
-    { ...choice('not_applied', 'No, it didn’t…', '/v1/work-orders/wo-verify/recover'), capability: 'operate_gates' },
+    {
+      ...choice('record_dispositions', 'Record dispositions…', '/v1/work-orders/wo-verify/recover'),
+      capability: 'operate_gates',
+    },
   ]
   fixture.actions = {
     'T-verify': {
@@ -2585,57 +2587,99 @@ function dispositionFixture(binding: boolean): Fixture {
       question: 'Did the change apply?',
       choices,
       deadline: null,
-      details: binding
+      details: stated
         ? {
-            disposition: {
-              context_id: 'ctx-1',
-              run_id: 'run-1',
-              operation_ids: ['op-1', 'op-2'],
-              input_digest: 'sha256:abc',
-            },
+            dispositions: [
+              {
+                context_id: 'ctx-1',
+                run_id: 'run-1',
+                operation_ids: ['op-1', 'op-2'],
+                input_digest: 'sha256:abc',
+                subject: 'kit:secrets/rotate',
+                state: 'blocked',
+              },
+              {
+                context_id: 'ctx-2',
+                run_id: 'run-2',
+                operation_ids: [],
+                input_digest: 'sha256:def',
+                subject: 'ordinary:health-check',
+                state: 'failed',
+              },
+            ],
           }
-        : { refusals: [{ choice: 'applied', text: 'No unresolved operation to dispose of.' }] },
+        : {
+            refusals: [
+              {
+                choice: 'record_dispositions',
+                text: 'verify order wo-verify has no unresolved operations and no retry-gated attempts to dispose',
+              },
+            ],
+          },
     },
   }
   return fixture
 }
 
-test('a verification disposition posts the server binding with the operator reason', async ({ page }) => {
+// The one record_dispositions choice answers every attempt of the stated set
+// in one request (component-next-action invariant 15; DEC-133(1)).
+test('a verification disposition posts one answer for each stated attempt with the operator reason', async ({
+  page,
+}) => {
   const harness = await serve(page, dispositionFixture(true))
   await page.goto('/w/demo/inbox')
   const card = decisionDetail(page)
   await expect(card.locator('[data-context-heading]')).toHaveText('Operation log')
-  await card.getByRole('button', { name: 'Yes, it applied…' }).click()
+  await card.getByRole('button', { name: 'Record dispositions…' }).click()
   // The composer's own submit drops the trigger's trailing ellipsis.
-  const send = card.locator('[data-next-action-choices]').getByRole('button', { name: 'Yes, it applied', exact: true })
+  const send = card
+    .locator('[data-next-action-choices]')
+    .getByRole('button', { name: 'Record dispositions', exact: true })
   await expect(send).toBeDisabled()
+  await card
+    .getByRole('group', { name: 'kit:secrets/rotate' })
+    .getByRole('radio', { name: 'Applied', exact: true })
+    .check()
   await card.getByRole('textbox', { name: 'Reason' }).fill('New secret version printed; health check unreachable.')
+  await expect(send).toBeDisabled()
+  await card.getByRole('group', { name: 'ordinary:health-check' }).getByRole('radio', { name: 'Not applied' }).check()
   await send.click()
   await expect.poll(() => harness.posts.length).toBe(1)
   const [post] = harness.posts
   expect(new URL(post.url()).pathname).toBe('/v1/work-orders/wo-verify/recover')
   const body = post.postDataJSON()
   expect(body.verification).toEqual({
-    context_id: 'ctx-1',
-    run_id: 'run-1',
-    operation_ids: ['op-1', 'op-2'],
-    input_digest: 'sha256:abc',
-    disposition: 'applied',
     reason: 'New secret version printed; health check unreachable.',
+    dispositions: [
+      {
+        context_id: 'ctx-1',
+        run_id: 'run-1',
+        operation_ids: ['op-1', 'op-2'],
+        input_digest: 'sha256:abc',
+        disposition: 'applied',
+      },
+      {
+        context_id: 'ctx-2',
+        run_id: 'run-2',
+        operation_ids: [],
+        input_digest: 'sha256:def',
+        disposition: 'not_applied',
+      },
+    ],
   })
   expect(post.headers()['x-idempotency-key']).toBe(body.request_id)
 })
 
-test('without a binding the disposition choices stay disabled with the server refusal', async ({ page }) => {
+test('without a disposition set the choice stays disabled with the server refusal', async ({ page }) => {
   const harness = await serve(page, dispositionFixture(false))
   await page.goto('/w/demo/inbox')
   const card = decisionDetail(page)
-  await expect(card.getByRole('button', { name: 'Yes, it applied…' })).toBeDisabled()
+  await expect(card.getByRole('button', { name: 'Record dispositions…' })).toBeDisabled()
   // The reasons sit beside the choices; the IDs disclosure repeats the raw details.
   const choices = card.locator('[data-next-action-choices]')
-  await expect(choices.getByText('No unresolved operation to dispose of.')).toBeVisible()
-  await expect(card.getByRole('button', { name: 'No, it didn’t…' })).toBeDisabled()
-  await expect(choices.getByText('Take this from the task page.')).toBeVisible()
+  await expect(
+    choices.getByText('verify order wo-verify has no unresolved operations and no retry-gated attempts to dispose'),
+  ).toBeVisible()
   expect(harness.posts).toHaveLength(0)
 })
 

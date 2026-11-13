@@ -86,13 +86,13 @@ func answerChoices() []ChoiceSpec {
 	}
 }
 
-// dispositionChoices require operate_gates, the capability
-// AuthorizeVerificationRecovery checks; each asks for the reason the
-// recovery route requires (feature-operator-next-action NA-3, NA-4).
+// dispositionChoices is the one choice of row 11. It requires operate_gates,
+// the capability AuthorizeVerificationRecovery checks, and takes applied or
+// not applied for each entry of the disposition set and one reason in one
+// request (component-next-action invariants 8, 9, and 15; DEC-133(1)).
 func dispositionChoices() []ChoiceSpec {
 	return []ChoiceSpec{
-		{ID: "applied", Label: "Yes, it applied…", Effect: "Records the change as applied.", Method: "POST", Path: "/v1/work-orders/{order_id}/recover", Capability: core.CapabilityOperateGates},
-		{ID: "not_applied", Label: "No, it didn't…", Effect: "Records the change as not applied.", Method: "POST", Path: "/v1/work-orders/{order_id}/recover", Capability: core.CapabilityOperateGates},
+		{ID: "record_dispositions", Label: "Record dispositions…", Effect: "Records whether each change applied, then recovers the order.", Method: "POST", Path: "/v1/work-orders/{order_id}/recover", Capability: core.CapabilityOperateGates},
 	}
 }
 
@@ -453,7 +453,7 @@ func refuseChoiceText(in Input, spec ChoiceSpec, order *core.WorkOrder) string {
 			return "no order to recover"
 		}
 		return core.NextActionRecoverRefusal(*order)
-	case "applied", "not_applied":
+	case "record_dispositions":
 		if order == nil {
 			return "no order to recover"
 		}
@@ -505,13 +505,13 @@ func refuseChoiceText(in Input, spec ChoiceSpec, order *core.WorkOrder) string {
 	}
 }
 
-// dispositionRefusal withholds the applied and not-applied choices unless the
-// selected verify order has a binding the recovery validator accepts
-// (feature-operator-next-action NA-3, Disposition binding).
+// dispositionRefusal withholds the record_dispositions choice unless the
+// selected verify order has a disposition set the recovery validator accepts
+// (component-next-action invariants 7 and 15).
 func dispositionRefusal(in Input, order core.WorkOrder) string {
 	input, ok := in.Dispositions[order.ID]
 	switch {
-	case ok && input.Binding != nil:
+	case ok && len(input.Set) > 0:
 		return ""
 	case ok && input.Refusal != "":
 		return input.Refusal

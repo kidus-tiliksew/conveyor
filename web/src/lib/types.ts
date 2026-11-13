@@ -1496,9 +1496,9 @@ export interface NextActionDetails {
   check_hold_reason?: string
   check_read_failure?: string
   check_remedy?: string
-  // Row 11's binding for the verification recover body (component-next-action
-  // invariant 15).
-  disposition?: NextActionDisposition
+  // Row 11's disposition set: one entry for each attempt that needs an
+  // answer, in the server's order (component-next-action invariant 15).
+  dispositions?: NextActionDisposition[]
   // Row 16's pending task-context proposals in choice order, and the origin of
   // a monitor-filed task (component-next-action invariants 12, 16).
   context_proposals?: NextActionContextProposal[]
@@ -1529,12 +1529,20 @@ export interface NextActionMonitorOrigin {
   observed_at?: string
 }
 
+// One attempt of a verify order's disposition set. The client copies the
+// four binding fields into its recovery request and shows subject and state.
 export interface NextActionDisposition {
   context_id: string
   run_id: string
   operation_ids: string[]
   input_digest: string
+  // kit:<kit-id>/<exercise-id> or ordinary:<obligation-id>
+  subject: string
+  state: string
 }
+
+// The operator's answer for one attempt of the disposition set.
+export type DispositionAnswer = 'applied' | 'not_applied'
 
 export interface NextActionCompact {
   label: string

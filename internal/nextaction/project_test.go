@@ -192,7 +192,7 @@ func TestDecisionWording(t *testing.T) {
 		{"job failure", "Job failure", "", "The failure stays at the human gate.", gate(core.GateKindJobFailure, nil), []string{"Ask for changes…", "Reject"}},
 		{"merge execution", "Merge branch", "Merge pull request #1312?", "Conveyor does not merge it.", Input{Task: core.Task{ID: "t", State: core.TaskApproved, MergeApproval: true}, PullRequest: 1312, Blocks: dependents, Now: now}, []string{"Merge", "Request changes…", "Close…"}},
 		{"parked", "Decide on a parked task", "Put it back, or close it?", "It stays parked.", Input{Task: core.Task{ID: "t", State: core.TaskParked, RecoveryStage: core.StageImplement}, Markers: Markers{ParkCommand: "triage.park"}, Now: now}, []string{"Recover", "Close", "Start over"}},
-		{"verification disposition", "Confirm an outcome", "Did the change apply? The verify agent could not observe the result.", "The verify order stays at the checkpoint.", dispositionInput(now, &Disposition{ContextID: "ctx", RunID: "run", OperationIDs: []string{"op"}, InputDigest: "digest"}), []string{"Yes, it applied…", "No, it didn't…"}},
+		{"verification disposition", "Confirm an outcome", "Did the change apply? The verify agent could not observe the result.", "The verify order stays at the checkpoint.", dispositionInput(now, []Disposition{{ContextID: "ctx", RunID: "run", OperationIDs: []string{"op"}, InputDigest: "digest"}}), []string{"Record dispositions…"}},
 		{"agent question", "Agent question", "Answer the agent?", "The order stays released.", Input{Task: core.Task{ID: "t", State: core.TaskRunning}, Markers: Markers{CheckpointDecision: true}, Orders: []core.WorkOrder{{ID: "q", State: core.WorkOrderQueued, LastAttemptID: "a", LastAttemptOutcome: "released"}}, Now: now}, []string{"Answer…"}},
 	}
 	for _, tc := range cases {
@@ -227,7 +227,7 @@ func TestDecisionWording(t *testing.T) {
 	for _, kind := range Kinds() {
 		entry, _ := Lookup(kind, "", "", "")
 		for _, choice := range entry.Choices {
-			typed := choice.ID == "redirect" || choice.ID == "decline" || choice.ID == "request_changes" || choice.ID == "answer" || choice.ID == "applied" || choice.ID == "not_applied" || ((kind == KindMergeExecution || kind == KindCheckHold) && choice.ID == "close")
+			typed := choice.ID == "redirect" || choice.ID == "decline" || choice.ID == "request_changes" || choice.ID == "answer" || choice.ID == "record_dispositions" || ((kind == KindMergeExecution || kind == KindCheckHold) && choice.ID == "close")
 			if typed != strings.HasSuffix(choice.Label, "…") {
 				t.Fatalf("%s choice %s label %q: ellipsis must mark typed input", kind, choice.ID, choice.Label)
 			}
@@ -275,59 +275,66 @@ func TestBlocksNeverChangeTheStatement(t *testing.T) {
 	}
 }
 
-// TestDispositionBinding proves details.disposition appears only on row 10,
-// copied from the selected verify order's binding, with applied and
-// not_applied allowed by operate_gates alone. Without a binding both choices
-// are omitted and refused with the assembler's reason. A higher row never
-// carries the binding (feature-operator-next-action NA-3, Disposition
-// binding; req-operator-next-action AC-1.4, AC-2.2).
-func TestDispositionBinding(t *testing.T) {
+// TestDispositionSet proves details.dispositions appears only on row 11,
+// copied in order from the selected verify order's disposition set without
+// aliasing it, with the one record_dispositions choice allowed by
+// operate_gates alone. Without a set the choice is omitted and refused with
+// the assembler's reason. A higher row never carries the set
+// (component-next-action invariants 7, 8, 9, and 15; DEC-133(1)).
+func TestDispositionSet(t *testing.T) {
 	now := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
-	binding := &Disposition{ContextID: "ctx", RunID: "run", OperationIDs: []string{"op-a", "op-b"}, InputDigest: "digest"}
-	in := dispositionInput(now, binding)
-	got := Project(in)
-	if got.Kind != KindVerificationDisposition || !reflect.DeepEqual(got.Details.Disposition, binding) || got.Details.Disposition == binding {
-		t.Fatalf("row 10 = %s disposition %+v", got.Kind, got.Details.Disposition)
+	set := []Disposition{
+		{ContextID: "ctx-a", RunID: "run-1", OperationIDs: []string{}, InputDigest: "digest-1", Subject: "kit:provider/login", State: "blocked"},
+		{ContextID: "ctx-b", RunID: "run-2", OperationIDs: []string{"op-a", "op-b"}, InputDigest: "digest-2", Subject: "ordinary:checkout", State: "running"},
 	}
-	for _, id := range []string{"applied", "not_applied"} {
-		choice, ok := choiceByID(got, id)
-		if !ok || choice.Capability != string(core.CapabilityOperateGates) || choice.Allowed || choice.Path != "/v1/work-orders/v/recover" {
-			t.Fatalf("choice %s = %+v ok=%t", id, choice, ok)
+	in := dispositionInput(now, set)
+	got := Project(in)
+	if got.Kind != KindVerificationDisposition || !reflect.DeepEqual(got.Details.Dispositions, set) || &got.Details.Dispositions[1].OperationIDs[0] == &set[1].OperationIDs[0] {
+		t.Fatalf("row 11 = %s dispositions %+v", got.Kind, got.Details.Dispositions)
+	}
+	if len(got.Choices) != 1 {
+		t.Fatalf("row 11 choices = %+v, want record_dispositions only", got.Choices)
+	}
+	choice, ok := choiceByID(got, "record_dispositions")
+	if !ok || choice.Capability != string(core.CapabilityOperateGates) || choice.Allowed || choice.Path != "/v1/work-orders/v/recover" || choice.Method != "POST" {
+		t.Fatalf("record_dispositions = %+v ok=%t", choice, ok)
+	}
+	for _, retired := range []string{"applied", "not_applied"} {
+		if hasChoice(got, retired) || hasRefusal(got, retired) {
+			t.Fatalf("row 11 still states the retired choice %s", retired)
 		}
 	}
 	in.Capabilities = map[core.Capability]bool{core.CapabilityRecoverWork: true}
-	if choice, _ := choiceByID(Project(in), "applied"); choice.Allowed {
+	if choice, _ := choiceByID(Project(in), "record_dispositions"); choice.Allowed {
 		t.Fatal("recover_work allowed a disposition")
 	}
 	in.Capabilities = map[core.Capability]bool{core.CapabilityOperateGates: true}
-	if choice, _ := choiceByID(Project(in), "not_applied"); !choice.Allowed {
+	if choice, _ := choiceByID(Project(in), "record_dispositions"); !choice.Allowed {
 		t.Fatal("operate_gates did not allow a disposition")
 	}
 
 	refused := dispositionInput(now, nil)
-	refused.Dispositions = map[string]DispositionInput{"v": {Refusal: "verification checkpoint ctx has no unresolved operations to dispose"}}
+	refused.Dispositions = map[string]DispositionInput{"v": {Refusal: "verify order v has no unresolved operations and no retry-gated attempts to dispose"}}
 	missing := Project(refused)
-	if missing.Details.Disposition != nil || hasChoice(missing, "applied") || hasChoice(missing, "not_applied") {
-		t.Fatalf("unbound row 10 offered %+v disposition %+v", missing.Choices, missing.Details.Disposition)
+	if missing.Details.Dispositions != nil || hasChoice(missing, "record_dispositions") {
+		t.Fatalf("row 11 without a set offered %+v dispositions %+v", missing.Choices, missing.Details.Dispositions)
 	}
-	for _, id := range []string{"applied", "not_applied"} {
-		if !hasRefusalText(missing, id, "no unresolved operations") {
-			t.Fatalf("refusals = %+v, want %s refused for missing operations", missing.Details.Refusals, id)
-		}
+	if !hasRefusalText(missing, "record_dispositions", "no unresolved operations") {
+		t.Fatalf("refusals = %+v, want record_dispositions refused for an empty set", missing.Details.Refusals)
 	}
-	if absent := Project(dispositionInput(now, nil)); hasChoice(absent, "applied") || !hasRefusal(absent, "not_applied") {
-		t.Fatalf("row 10 without an assembled binding offered %+v", absent.Choices)
+	if absent := Project(dispositionInput(now, nil)); hasChoice(absent, "record_dispositions") || !hasRefusal(absent, "record_dispositions") {
+		t.Fatalf("row 11 without an assembled set offered %+v", absent.Choices)
 	}
 
-	question := dispositionInput(now, binding)
+	question := dispositionInput(now, set)
 	question.Markers.CheckpointDecision = true
-	if got := Project(question); got.Kind != KindAgentQuestion || got.Details.Disposition != nil || !hasSecondary(got, KindVerificationDisposition) {
-		t.Fatalf("row 9 = %s disposition %+v", got.Kind, got.Details.Disposition)
+	if got := Project(question); got.Kind != KindAgentQuestion || got.Details.Dispositions != nil || !hasSecondary(got, KindVerificationDisposition) {
+		t.Fatalf("row 10 = %s dispositions %+v", got.Kind, got.Details.Dispositions)
 	}
 	for name, other := range map[string]Input{"gate": gateInput(core.GateKindPlanApproval, now), "stalled": timedOut(now), "working": claimedAndQueued(now)} {
-		other.Dispositions = map[string]DispositionInput{"v": {Binding: binding}, "o": {Binding: binding}, "c": {Binding: binding}}
-		if got := Project(other); got.Details.Disposition != nil {
-			t.Fatalf("%s row carried the binding", name)
+		other.Dispositions = map[string]DispositionInput{"v": {Set: set}, "o": {Set: set}, "c": {Set: set}}
+		if got := Project(other); got.Details.Dispositions != nil {
+			t.Fatalf("%s row carried the set", name)
 		}
 	}
 }
@@ -381,10 +388,10 @@ func verifyRefused(now time.Time) Input {
 	return Input{Task: core.Task{ID: "t", State: core.TaskRunning, NextStage: core.StageImplement, SetupContract: core.Task{}.SetupContract}, Orders: []core.WorkOrder{{ID: "v", State: core.WorkOrderQueued, Stage: core.StageVerify, HeadSHA: "abc"}}, Now: now}
 }
 
-func dispositionInput(now time.Time, binding *Disposition) Input {
+func dispositionInput(now time.Time, set []Disposition) Input {
 	in := Input{Task: core.Task{ID: "t", State: core.TaskRunning}, Markers: Markers{VerificationDisposition: true}, Orders: []core.WorkOrder{{ID: "v", State: core.WorkOrderQueued, Stage: core.StageVerify, LastAttemptID: "a", LastAttemptOutcome: "released"}}, Now: now}
-	if binding != nil {
-		in.Dispositions = map[string]DispositionInput{"v": {Binding: binding}}
+	if set != nil {
+		in.Dispositions = map[string]DispositionInput{"v": {Set: set}}
 	}
 	return in
 }
@@ -434,13 +441,13 @@ func choiceByID(na NextAction, id string) (Choice, bool) {
 	return Choice{}, false
 }
 
-// TestCompactIgnoresDispositionBinding proves the row-10 binding and its
+// TestCompactIgnoresDispositionSet proves the row-11 disposition set and its
 // refusal feed only details and choices, never a compact field, so a
 // compact-only list read may skip the per-order verification read
-// (store.NextActionOptions.CompactOnly; feature-operator-next-action NA-3).
-func TestCompactIgnoresDispositionBinding(t *testing.T) {
+// (store.NextActionOptions.CompactOnly; component-next-action invariant 15).
+func TestCompactIgnoresDispositionSet(t *testing.T) {
 	now := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
-	bound := dispositionInput(now, &Disposition{ContextID: "ctx", RunID: "run", OperationIDs: []string{"op"}, InputDigest: "digest"})
+	bound := dispositionInput(now, []Disposition{{ContextID: "ctx", RunID: "run", OperationIDs: []string{"op"}, InputDigest: "digest"}, {ContextID: "ctx", RunID: "run-2", OperationIDs: []string{}, InputDigest: "digest"}})
 	unread := dispositionInput(now, nil)
 	unread.Dispositions = nil
 	refused := dispositionInput(now, nil)

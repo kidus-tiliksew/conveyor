@@ -383,6 +383,11 @@ func TestVerificationNoKitSubmissionSurface(t *testing.T) {
 	}
 }
 
+// The recover route decodes its verification object strictly: the former
+// single-attempt object, an unknown or duplicate field, and a dispositions
+// value that is not a list are invalid requests, and a well-formed object from
+// a caller without operate_gates is refused before any change
+// (component-verification-service invariant 45; DEC-133(1)).
 func TestVerificationRecoveryStrictAndWorkerRefusal(t *testing.T) {
 	s, ctx, id := verificationHTTPFixture(t)
 	before, err := s.Store.ListEvents(ctx, "verification-http")
@@ -396,7 +401,14 @@ func TestVerificationRecoveryStrictAndWorkerRefusal(t *testing.T) {
 		{`{"request_id":"r","verification":{"actor":"user:forged"}}`, 400},
 		{`{"request_id":"r","request_id":"other"}`, 400},
 		{`{"request_id":"r"} {"direction":"other"}`, 400},
-		{`{"request_id":"r","verification":{"context_id":"context","run_id":"run","operation_ids":[],"input_digest":"digest","disposition":"not_applied","reason":"operator claim"}}`, 409},
+		// The former single-attempt object is refused as an invalid request
+		// (component-verification-service invariant 45; DEC-133(1)).
+		{`{"request_id":"r","verification":{"context_id":"context","run_id":"run","operation_ids":[],"input_digest":"digest","disposition":"not_applied","reason":"operator claim"}}`, 400},
+		{`{"request_id":"r","verification":{"reason":"operator claim","disposition":"applied","dispositions":[]}}`, 400},
+		{`{"request_id":"r","verification":{"reason":"operator claim","dispositions":[{"context_id":"context","run_id":"run","operation_ids":[],"input_digest":"digest","disposition":"applied","reason":"entry reason"}]}}`, 400},
+		{`{"request_id":"r","verification":{"reason":"operator claim","dispositions":[{"context_id":"context","run_id":"run","run_id":"other","operation_ids":[],"input_digest":"digest","disposition":"applied"}]}}`, 400},
+		{`{"request_id":"r","verification":{"reason":"operator claim","dispositions":{"context_id":"context"}}}`, 400},
+		{`{"request_id":"r","verification":{"reason":"operator claim","dispositions":[{"context_id":"context","run_id":"run","operation_ids":[],"input_digest":"digest","disposition":"not_applied"}]}}`, 409},
 	} {
 		route := chi.NewRouteContext()
 		route.URLParams.Add("id", id)
