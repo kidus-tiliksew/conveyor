@@ -1760,9 +1760,7 @@ test('a queued task the next action offers no redispatch for keeps the card in p
   )
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  const sentence = timeline.getByText(
-    'Waiting for an agent to pick this task up. If none does, this button offers it to agents again.',
-  )
+  const sentence = timeline.getByText('Waiting for an agent to pick this task up.', { exact: true })
   await expect(sentence).toBeVisible()
   // The sentence names no internal term; Redispatch stays the button label.
   await expect(sentence).not.toContainText(/enqueue|dispatch/i)
@@ -2166,11 +2164,7 @@ for (const surface of surfaces) {
     const timeline = page.getByRole('region', { name: 'Execution event timeline' })
     // The redispatch card loads with the timeline, so the absence checks below
     // never run against an unloaded timeline.
-    await expect(
-      timeline.getByText(
-        'Waiting for an agent to pick this task up. If none does, this button offers it to agents again.',
-      ),
-    ).toBeVisible()
+    await expect(timeline.getByText('Waiting for an agent to pick this task up.', { exact: true })).toBeVisible()
     await expect(timeline.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
 
     await expect(timeline.locator('li[data-order-entry]')).toHaveCount(0)
@@ -2182,6 +2176,28 @@ for (const surface of surfaces) {
     await expect(card.getByText('Waiting for an agent', { exact: true })).toBeVisible()
     await expect(card.getByText('Waiting for an agent to claim this task.', { exact: true })).toBeVisible()
   })
+}
+
+// Visual record for the pull request: a queued task's redispatch card on the
+// task page and the full task page, at 375 px and at a desktop width.
+for (const surface of surfaces) {
+  for (const width of [375, 1280]) {
+    test(`queued redispatch card screenshots on the ${surface.name} at ${width} px`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 })
+      await mockAPI(page, queuedPlanAndImplementation, queuedOrdersAction)
+      await page.goto(surface.url)
+      const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+      const sentence = timeline.getByText('Waiting for an agent to pick this task up.', { exact: true })
+      await expect(sentence).toBeVisible()
+      await expect(timeline.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
+      await page.evaluate(() => document.fonts.ready)
+      await expectNoSidewaysScroll(page)
+      // The card sits in a bounded scroll region, so bring it into view first.
+      await sentence.scrollIntoViewIfNeeded()
+      const slug = surface.name === 'Board sheet' ? 'sheet' : 'full'
+      await capture(page, testInfo, `redispatch-queued-${slug}-${width}.png`)
+    })
+  }
 }
 
 const queuedVerifyAndReview = activity({
