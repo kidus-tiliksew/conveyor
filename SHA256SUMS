@@ -1,0 +1,10 @@
+9acff0fd4bf01b5d0a1becac187944a95031220a5df65897b448843cba211328  1-make-build/manifest.json
+29bc3e7e42e37fea63edc86c34fe275531c011e11dfd6c606afb35b90618bd61  2-make-vet/manifest.json
+3d530fe4cd03c1633d870e46d84c4f57a72c6cc0dfafb362997fcfc9bb027ff9  3-make-fmt-check/manifest.json
+376eb3c531fb69003c72970c99763c8831096f7196c53e712656a06fd4ca95f1  4-setpriv-make-test-go/manifest.json
+48b4184f3c2f85b8e13c2d0f341e30519c6d486d2ad42dad32f5b4984d7004fd  5-setpriv-make-test-ui/manifest.json
+86c02f1070e71b0469299b6bd644a679f976bd730dc6a381e4d42becf8877ed2  1-make-build/command.log
+12428484bc6a7a5f77eacbe702f12a47b1db0731597467242f489872ec1318ac  2-make-vet/command.log
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  3-make-fmt-check/command.log
+f8c127b7ce5ba8f22ff2de2a50045e83b423077e0e0f1f6ae5d63f3d346db8ab  4-setpriv-make-test-go/command.log
+c95871120958b99f23831ea6adcda66d6815ba2724ef302f5622ce091b9456d9  5-setpriv-make-test-ui/command.log
