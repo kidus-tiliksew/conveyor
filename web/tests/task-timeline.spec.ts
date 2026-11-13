@@ -2187,10 +2187,13 @@ for (const surface of surfaces) {
       await mockAPI(page, queuedPlanAndImplementation, queuedOrdersAction)
       await page.goto(surface.url)
       const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-      await expect(timeline.getByText('Waiting for an agent to pick this task up.', { exact: true })).toBeVisible()
+      const sentence = timeline.getByText('Waiting for an agent to pick this task up.', { exact: true })
+      await expect(sentence).toBeVisible()
       await expect(timeline.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
       await page.evaluate(() => document.fonts.ready)
       await expectNoSidewaysScroll(page)
+      // The card sits in a bounded scroll region, so bring it into view first.
+      await sentence.scrollIntoViewIfNeeded()
       const slug = surface.name === 'Board sheet' ? 'sheet' : 'full'
       await capture(page, testInfo, `redispatch-queued-${slug}-${width}.png`)
     })
