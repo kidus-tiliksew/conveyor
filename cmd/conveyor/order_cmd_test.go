@@ -182,7 +182,7 @@ func TestOrderRecoverDispositionsFromNextAction(t *testing.T) {
 	if _, present := requests[2].body["direction"]; present {
 		t.Fatalf("empty direction was sent: %+v", requests[2].body)
 	}
-	for _, line := range []string{"verification authorization recovery:ff-72a154", "run run-a: applied (kit:provider/login)", "run run-b: not_applied (ordinary:checkout)", "next verifier: conveyor kit verify --replay-authorization recovery:ff-72a154"} {
+	for _, line := range []string{"verification authorization recovery:ff-72a154", "run run-a: applied (kit:provider/login)", "run run-b: not_applied (ordinary:checkout)", "next verifier: conveyor kit verify uses these authorizations and needs no flag"} {
 		if !strings.Contains(out.String(), line) {
 			t.Fatalf("output %q lacks %q", out.String(), line)
 		}
@@ -299,6 +299,20 @@ func TestOrderRecoverDispositionFlags(t *testing.T) {
 	entries := requests[0].body["verification"].(map[string]any)["dispositions"].([]any)
 	if len(entries) != 2 || entries[0].(map[string]any)["disposition"] != "applied" || entries[1].(map[string]any)["disposition"] != "unknown" {
 		t.Fatalf("dispositions = %#v", entries)
+	}
+}
+
+// TestOrderRecoverHelpNamesNoKitVerifyFlag pins that the recover help teaches
+// only the recovery command: the next verification run needs no flag of
+// conveyor kit verify (component-verification-service invariant 19;
+// DEC-133(3)).
+func TestOrderRecoverHelpNamesNoKitVerifyFlag(t *testing.T) {
+	help := orderRecoverCmd().Long
+	if strings.Contains(help, "--replay-authorization") || strings.Contains(help, "kit verify --") {
+		t.Fatalf("recover help names a kit verify flag:\n%s", help)
+	}
+	if !strings.Contains(help, "The next verification run uses these authorizations. It needs no flag.") {
+		t.Fatalf("recover help does not say that the next run needs no flag:\n%s", help)
 	}
 }
 

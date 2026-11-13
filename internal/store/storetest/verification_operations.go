@@ -41,6 +41,8 @@ func verificationPublicState(t *testing.T, v *verificationFixture) any {
 }
 
 func runVerificationOperations(t *testing.T, x Fixture) {
+	t.Run("ServerSelectsRecoveryAuthorizations", func(t *testing.T) { runServerSelectsRecoveryAuthorizations(t, x) })
+	t.Run("OperationAuthorizationServesOneReprepare", func(t *testing.T) { runOperationAuthorizationServesOneReprepare(t, x) })
 	t.Run("AppliedAndUnknownReconciliation", func(t *testing.T) { runVerificationReconciliation(t, x) })
 	t.Run("OperatorCheckpoint", func(t *testing.T) { runVerificationCheckpoint(t, x) })
 	t.Run("Checkpoints", func(t *testing.T) { runVerificationCheckpoints(t, x) })
@@ -127,19 +129,20 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 		v.contextID = contextReceipt.ID
 		registered = v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
 		v.subject.ContractDigest = registered.Digest
-		authorization := "recovery:operation-recovery"
-		start := store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: "successor-start", Attempt: &store.VerificationAttempt{Subject: v.subject, SafeInputs: map[string]json.RawMessage{}, ReplayAuthorizationID: authorization}}
+		start := store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: "successor-start", Attempt: &store.VerificationAttempt{Subject: v.subject, SafeInputs: map[string]json.RawMessage{}}}
 		if _, err = x.Backend.ApplyVerification(v.ctx, v.command(start)); err == nil {
 			t.Fatal("disposition silently replaced reconciliation")
 		}
 		GrantVerificationFixture(t, x.Backend, x.Context, v.access.TaskID, v.access.WorkOrderID, v.contextID, "successor-reconciliation", v.subject, nil)
-		v.apply(t, store.VerificationCommand{Kind: store.VerificationReconcileOperation, Operation: &store.VerificationOperation{ID: op.ID}, ReplayAuthorizationID: authorization, Observation: &store.VerificationOperationObservation{State: "not_applied", Source: "fresh provider read", CapturedAt: time.Now().UTC()}})
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationReconcileOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "not_applied", Source: "fresh provider read", CapturedAt: time.Now().UTC()}})
+		assertOperationAuthorization(t, &observer, oldContext, op.ID, "")
 		started := v.apply(t, start)
 		v.runID = started.ID
-		prepared := v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, ReplayAuthorizationID: authorization, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
+		prepared := v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
 		if prepared.ID != op.ID {
 			t.Fatal("successor replaced operation identity")
 		}
+		assertOperationAuthorization(t, &observer, oldContext, op.ID, started.ID)
 		before := verificationPublicState(t, &v)
 		stale := store.VerificationCommand{Access: oldAccess, ContextID: oldContext, RunID: oldRun, Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "dispatching", Source: "stale", CapturedAt: time.Now().UTC()}}
 		if _, err = x.Backend.ApplyVerification(v.ctx, stale); err == nil {
@@ -153,6 +156,7 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 		if !v.apply(t, c).DispatchAuthorized || v.apply(t, c).DispatchAuthorized {
 			t.Fatal("retry authorization was not one use")
 		}
+		refuseConsumedReconciliation(t, x, &v, &observer, op.ID)
 		observation.State = "completed"
 		observation.CapturedAt = time.Now().UTC()
 		observation.ProviderReference = "provider-resource-42"
@@ -883,15 +887,15 @@ func runNextActionGatedAttemptBinding(t *testing.T, x Fixture) {
 
 	// Context C: the authorization admits exactly one successor start.
 	reclaim("snapshot-recovered")
-	refused(start("snapshot-recovered-bare", ""))
-	authorization := "recovery:snapshot-recovery"
-	started := v.apply(t, start("snapshot-recovered", authorization))
+	// The server selects the authorization, so the start names none
+	// (component-verification-service invariant 19; DEC-133(3)).
+	started := v.apply(t, start("snapshot-recovered", ""))
 	if !started.LaunchAuthorized {
 		t.Fatal("recovery authorization did not admit the successor attempt")
 	}
 	v.runID = started.ID
 	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "snapshot mismatch"}})
-	refused(start("snapshot-recovered-reuse", authorization))
+	refused(start("snapshot-recovered-reuse", ""))
 }
 
 // runVerificationRetryGateScope pins the order scope of the
@@ -980,15 +984,14 @@ func runVerificationRetryGateScope(t *testing.T, x Fixture) {
 		v.subject.ContractDigest = r.Digest
 		// The successor context belongs to the same order, so the gate still
 		// reads the original attempt.
-		refused(t, &v, start("gated-successor-bare", "", v.subject), store.VerificationCodeRetryAuthorizationRequired)
-		authorization := "recovery:gate-recovery"
-		started := v.apply(t, start("gated-successor", authorization, v.subject))
+		// The server selects the operator's authorization on that attempt.
+		started := v.apply(t, start("gated-successor", "", v.subject))
 		if !started.LaunchAuthorized {
 			t.Fatal("recovery authorization did not admit the successor attempt")
 		}
 		v.runID = started.ID
 		failed(t, &v)
-		refused(t, &v, start("gated-successor-reuse", authorization, v.subject), store.VerificationCodeRetryAuthorizationRequired)
+		refused(t, &v, start("gated-successor-reuse", "", v.subject), store.VerificationCodeRetryAuthorizationRequired)
 		observer := v
 		observer.ctx, observer.access = operator, store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}
 		for _, attempt := range observer.snapshotFor(t, oldContext).Attempts {
@@ -1087,10 +1090,9 @@ func runVerificationRetryGateScope(t *testing.T, x Fixture) {
 				t.Fatalf("legacy replay with %q = %+v", id, replay)
 			}
 		}
-		// The gate still checks the authorization itself.
-		refused(t, &m.v, start("legacy-gated-bare", "", m.gated), store.VerificationCodeRetryAuthorizationRequired)
-		refused(t, &m.v, start("legacy-gated-other", "recovery:another-request", m.gated), store.VerificationCodeRetryAuthorizationRequired)
-		started := m.v.apply(t, start("legacy-gated", m.authorization, m.gated))
+		// The server selects the gated attempt's own authorization, so the
+		// start names none (component-verification-service invariant 19).
+		started := m.v.apply(t, start("legacy-gated", "", m.gated))
 		if !started.LaunchAuthorized {
 			t.Fatal("a historical attempt of another subject refused the gated start")
 		}
@@ -1465,6 +1467,289 @@ func runRecoveryDisposesEveryGatedSubject(t *testing.T, x Fixture) {
 			}
 		}
 	}
+}
+
+// serverSelectedStart starts subject under key with no authorization in the
+// command. The server selects the authorization that a gated start consumes
+// (component-verification-service invariant 19; DEC-133(3)).
+func serverSelectedStart(key string, subject core.VerificationSubject) store.VerificationCommand {
+	return store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: key, Attempt: &store.VerificationAttempt{Subject: subject, SafeInputs: map[string]json.RawMessage{}, Environment: recoveryFixtureEnvironment}}
+}
+
+// operationAuthorizationSuccessor returns the Successor of the one operator
+// authorization that operation opID records. The observer reads the
+// operation's original context with operator access.
+func operationAuthorizationSuccessor(t *testing.T, observer *verificationFixture, contextID, opID string) *core.VerificationBinding {
+	t.Helper()
+	for _, op := range observer.snapshotFor(t, contextID).Operations {
+		if op.ID == opID {
+			if len(op.Recovery) != 1 {
+				t.Fatalf("operation %s authorizations = %+v, want one", opID, op.Recovery)
+			}
+			return op.Recovery[0].Successor
+		}
+	}
+	t.Fatalf("operation %s is missing from context %s", opID, contextID)
+	return nil
+}
+
+// assertOperationAuthorization checks the operation's one authorization: a
+// reconciliation leaves it unused (runID ""), and a re-preparation binds it to
+// the run that re-prepared (component-verification-service invariants 25 and
+// 45).
+func assertOperationAuthorization(t *testing.T, observer *verificationFixture, contextID, opID, runID string) {
+	t.Helper()
+	successor := operationAuthorizationSuccessor(t, observer, contextID, opID)
+	if runID == "" {
+		if successor != nil {
+			t.Fatalf("operation %s authorization was consumed by %+v, want it unused", opID, successor)
+		}
+		return
+	}
+	if successor == nil || successor.RunID != runID {
+		t.Fatalf("operation %s authorization successor = %+v, want run %s", opID, successor, runID)
+	}
+}
+
+// refuseConsumedReconciliation checks that a reconciliation after the
+// re-preparation consumed the operation's authorization is refused and leaves
+// every record unchanged (component-verification-service invariant 25).
+func refuseConsumedReconciliation(t *testing.T, x Fixture, v, observer *verificationFixture, opID string) {
+	t.Helper()
+	before := verificationPublicState(t, observer)
+	_, err := x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationReconcileOperation, Operation: &store.VerificationOperation{ID: opID}, Observation: &store.VerificationOperationObservation{State: "not_applied", Source: "late provider read", CapturedAt: time.Now().UTC()}}))
+	if !errors.Is(err, store.ErrVerificationState) {
+		t.Fatalf("reconciliation under a consumed authorization: %v, want %v", err, store.ErrVerificationState)
+	}
+	if !reflect.DeepEqual(before, verificationPublicState(t, observer)) {
+		t.Fatal("refused reconciliation changed the aggregate")
+	}
+}
+
+// runServerSelectsRecoveryAuthorizations covers the verifier side of one
+// recovery with two dispositions. No start names an authorization. In the
+// successor context the runner starts safe_to_replay subjects before, between,
+// and after the two operator_action_required subjects. Each gated start is
+// admitted, records recovery:<request_id>, and binds only its own subject's
+// authorization, although both authorizations share that ID. A safe start and
+// a receipt replay consume nothing. A second gated start without a fresh
+// authorization is refused and changes nothing (component-verification-service
+// invariants 19 and 45; DEC-133(3); req-verification-kits AC-3.4).
+func runServerSelectsRecoveryAuthorizations(t *testing.T, x Fixture) {
+	v := newVerificationFixture(t, x, true)
+	gated := []store.VerificationObligation{
+		recoveryFixtureObligation("login-"+v.access.TaskID, "operator_action_required", ""),
+		recoveryFixtureObligation("checkout-"+v.access.TaskID, "operator_action_required", ""),
+	}
+	var safe []store.VerificationObligation
+	for i := 0; i < 3; i++ {
+		safe = append(safe, recoveryFixtureObligation(fmt.Sprintf("read-%d-%s", i, v.access.TaskID), "safe_to_replay", ""))
+	}
+	gatedSubjects := make([]core.VerificationSubject, len(gated))
+	safeSubjects := make([]core.VerificationSubject, len(safe))
+	register := func() {
+		for i := range gated {
+			gatedSubjects[i] = recoveryFixtureRegister(t, &v, gated[i])
+		}
+		for i := range safe {
+			safeSubjects[i] = recoveryFixtureRegister(t, &v, safe[i])
+		}
+	}
+	register()
+	originals := make([]string, len(gated))
+	for i, subject := range append(append([]core.VerificationSubject{}, gatedSubjects...), safeSubjects...) {
+		r := v.apply(t, serverSelectedStart(fmt.Sprintf("first-%d", i), subject))
+		if !r.LaunchAuthorized {
+			t.Fatalf("first start %d was not authorized", i)
+		}
+		v.runID = r.ID
+		state := "failed"
+		if i < len(gated) {
+			originals[i], state = r.ID, "blocked"
+		}
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: state, Explanation: "fixture environment unavailable"}})
+	}
+	for _, attempt := range v.snapshot(t).Attempts {
+		if attempt.ReplayAuthorizationID != "" {
+			t.Fatalf("first start %s records authorization %q", attempt.ID, attempt.ReplayAuthorizationID)
+		}
+	}
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: verificationFixtureCoverage(v.snapshot(t)), Feedback: "Two exercises need an operator", RequiredAction: "Restore the fixtures and authorize one retry of each"}})
+	order, err := x.Backend.GetWorkOrder(x.Context, v.access.WorkOrderID)
+	requireOK(t, err)
+	oldContext := v.contextID
+	action := projectVerificationDisposition(t, x, order.TaskID, map[core.Capability]bool{core.CapabilityOperateGates: true})
+	if len(action.Details.Dispositions) != 2 {
+		t.Fatalf("dispositions = %+v, want both gated attempts", action.Details.Dispositions)
+	}
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	requestID := "selected-recovery"
+	request := recoveryFixtureRequest("Operator restored both fixtures and authorizes one retry of each.", action.Details.Dispositions, "applied", "not_applied")
+	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, request), x.Backend, order.ID, requestID, time.Hour)
+	requireOK(t, err)
+	authorization := "recovery:" + requestID
+
+	recoveryFixtureReclaim(t, x, &v, "selected-successor")
+	register()
+	observer := v
+	observer.ctx, observer.access.UserID = operator, owner.ID
+	successors := make([]string, len(gated))
+	// assertBindings checks each gated attempt's one authorization against the
+	// successors started so far.
+	assertBindings := func() {
+		t.Helper()
+		for _, attempt := range observer.snapshotFor(t, oldContext).Attempts {
+			for i, original := range originals {
+				if attempt.ID != original {
+					continue
+				}
+				if len(attempt.Recovery) != 1 || attempt.Recovery[0].ID != authorization {
+					t.Fatalf("attempt %s authorizations = %+v, want one %s", original, attempt.Recovery, authorization)
+				}
+				got := attempt.Recovery[0].Successor
+				if successors[i] == "" && got != nil {
+					t.Fatalf("authorization of %s was consumed by %+v before its subject started", original, got)
+				}
+				if successors[i] != "" && (got == nil || got.RunID != successors[i]) {
+					t.Fatalf("authorization of %s successor = %+v, want its own successor %s", original, got, successors[i])
+				}
+			}
+		}
+	}
+	// stored returns the authorization ID that attempt runID records.
+	stored := func(runID string) string {
+		t.Helper()
+		for _, attempt := range v.snapshot(t).Attempts {
+			if attempt.ID == runID {
+				return attempt.ReplayAuthorizationID
+			}
+		}
+		t.Fatalf("attempt %s is missing", runID)
+		return ""
+	}
+	type step struct {
+		key     string
+		subject core.VerificationSubject
+		gated   int
+	}
+	steps := []step{
+		{"selected-safe-0", safeSubjects[0], -1},
+		{"selected-gated-0", gatedSubjects[0], 0},
+		{"selected-safe-1", safeSubjects[1], -1},
+		{"selected-gated-1", gatedSubjects[1], 1},
+		{"selected-safe-2", safeSubjects[2], -1},
+	}
+	for _, s := range steps {
+		r := v.apply(t, serverSelectedStart(s.key, s.subject))
+		if !r.LaunchAuthorized {
+			t.Fatalf("start %s was not authorized", s.key)
+		}
+		want := ""
+		if s.gated >= 0 {
+			successors[s.gated], want = r.ID, authorization
+		}
+		if got := stored(r.ID); got != want {
+			t.Fatalf("start %s records authorization %q, want %q", s.key, got, want)
+		}
+		assertBindings()
+		replay := v.apply(t, serverSelectedStart(s.key, s.subject))
+		if replay.ID != r.ID || replay.LaunchAuthorized {
+			t.Fatalf("replay of %s = %+v, want %s without a launch", s.key, replay, r.ID)
+		}
+		assertBindings()
+		v.runID = r.ID
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "fixture assertion failed"}})
+	}
+	for i, subject := range gatedSubjects {
+		c := serverSelectedStart(fmt.Sprintf("selected-gated-again-%d", i), subject)
+		before := verificationPublicState(t, &observer)
+		_, err = x.Backend.ApplyVerification(v.ctx, v.command(c))
+		var refusal *store.VerificationRefusal
+		if !errors.As(err, &refusal) || refusal.Code != store.VerificationCodeRetryAuthorizationRequired || refusal.Field != "subject" {
+			t.Fatalf("second gated start %d: %v, want %s on field subject", i, err, store.VerificationCodeRetryAuthorizationRequired)
+		}
+		if !reflect.DeepEqual(before, verificationPublicState(t, &observer)) {
+			t.Fatalf("refused second gated start %d changed the aggregate", i)
+		}
+	}
+	again := v.apply(t, serverSelectedStart("selected-safe-again", safeSubjects[0]))
+	if !again.LaunchAuthorized || stored(again.ID) != "" {
+		t.Fatal("a safe start after both gated retries was refused or recorded an authorization")
+	}
+	assertBindings()
+}
+
+// runOperationAuthorizationServesOneReprepare covers the operation side with
+// no caller ID. A reconciliation selects the operation's authorization and
+// leaves it unused. The re-preparation that follows consumes it. A later
+// recovery that names only the attempt admits a fresh start, but that start
+// cannot re-prepare the operation, because its one authorization is consumed
+// (component-verification-service invariants 25 and 45; DEC-133(3)).
+func runOperationAuthorizationServesOneReprepare(t *testing.T, x Fixture) {
+	v := newVerificationFixture(t, x)
+	digest := verificationSHA([]byte("{}"))
+	obligation := recoveryFixtureObligation("provider-"+v.access.TaskID, "operator_action_required", "step")
+	v.subject = recoveryFixtureRegister(t, &v, obligation)
+	v.start(t, "provider-original")
+	key := "provider-operation-" + v.runID
+	prepare := store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: digest}}
+	op := v.apply(t, prepare)
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "provider acknowledgement lost"}})
+	oldContext, oldRun := v.contextID, v.runID
+	recoveryFixtureLoseClaim(t, x, &v)
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	first := &store.VerificationRecovery{Reason: "Operator read the provider and found no change.", Dispositions: []store.VerificationRecoveryDisposition{{ContextID: oldContext, RunID: oldRun, OperationIDs: []string{op.ID}, InputDigest: digest, Disposition: "not_applied"}}}
+	_, err := RecoverWorkOrder(store.WithVerificationRecovery(operator, first), x.Backend, v.access.WorkOrderID, "provider-recovery", time.Hour)
+	requireOK(t, err)
+	observer := v
+	observer.ctx, observer.access.UserID = operator, owner.ID
+
+	recoveryFixtureReclaim(t, x, &v, "provider-successor")
+	v.subject.ContractDigest = recoveryFixtureRegister(t, &v, obligation).ContractDigest
+	GrantVerificationFixture(t, x.Backend, x.Context, v.access.TaskID, v.access.WorkOrderID, v.contextID, "provider-reconciliation", v.subject, nil)
+	reconcile := store.VerificationCommand{Kind: store.VerificationReconcileOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "not_applied", Source: "fresh provider read", CapturedAt: time.Now().UTC()}}
+	v.apply(t, reconcile)
+	assertOperationAuthorization(t, &observer, oldContext, op.ID, "")
+	// An identical reconciliation replay appends nothing and consumes nothing.
+	v.apply(t, reconcile)
+	assertOperationAuthorization(t, &observer, oldContext, op.ID, "")
+	started := v.apply(t, serverSelectedStart("provider-successor", v.subject))
+	if !started.LaunchAuthorized {
+		t.Fatal("the attempt authorization did not admit the successor start")
+	}
+	v.runID = started.ID
+	if prepared := v.apply(t, prepare); prepared.ID != op.ID {
+		t.Fatal("the re-preparation replaced the operation identity")
+	}
+	assertOperationAuthorization(t, &observer, oldContext, op.ID, started.ID)
+	// The same run's receipt replay consumes nothing more.
+	v.apply(t, prepare)
+	assertOperationAuthorization(t, &observer, oldContext, op.ID, started.ID)
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "the provider call was not sent"}})
+
+	// The operation is resolved as not_applied, so a second recovery names
+	// only the successor attempt and issues no operation authorization.
+	recoveryFixtureLoseClaim(t, x, &v)
+	second := &store.VerificationRecovery{Reason: "Operator authorizes one more retry.", Dispositions: []store.VerificationRecoveryDisposition{{ContextID: v.contextID, RunID: started.ID, OperationIDs: []string{}, InputDigest: digest, Disposition: "not_applied"}}}
+	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, second), x.Backend, v.access.WorkOrderID, "provider-second-recovery", time.Hour)
+	requireOK(t, err)
+	recoveryFixtureReclaim(t, x, &v, "provider-third")
+	v.subject.ContractDigest = recoveryFixtureRegister(t, &v, obligation).ContractDigest
+	third := v.apply(t, serverSelectedStart("provider-third", v.subject))
+	if !third.LaunchAuthorized {
+		t.Fatal("the second attempt authorization did not admit a start")
+	}
+	v.runID = third.ID
+	before := verificationPublicState(t, &observer)
+	if _, err = x.Backend.ApplyVerification(v.ctx, v.command(prepare)); !errors.Is(err, store.ErrVerificationState) {
+		t.Fatalf("a fresh second re-preparation under a consumed authorization: %v, want %v", err, store.ErrVerificationState)
+	}
+	if !reflect.DeepEqual(before, verificationPublicState(t, &observer)) {
+		t.Fatal("the refused re-preparation changed the aggregate")
+	}
+	assertOperationAuthorization(t, &observer, oldContext, op.ID, started.ID)
 }
 
 // runRecoveryDisposesAttemptsAcrossContexts covers a disposition set that

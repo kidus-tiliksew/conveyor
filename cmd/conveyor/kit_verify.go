@@ -24,7 +24,7 @@ import (
 )
 
 type kitVerifyOptions struct {
-	inputsPath, retryKey, replayAuthorization        string
+	inputsPath, retryKey                             string
 	configPath, contextID, coveragePath, attemptRoot string
 	// configSource records how configPath was selected; only operator-selected
 	// sources may supply verification_toolchains records.
@@ -52,7 +52,6 @@ func kitVerifyCmd() *cobra.Command {
 	}}
 	c.Flags().StringVar(&o.inputsPath, "inputs", "", "JSON safe input maps keyed by kit:<id>:<exercise> or ordinary:<id>")
 	c.Flags().StringVar(&o.retryKey, "retry-key", "", "explicit new attempt key after replay admission")
-	c.Flags().StringVar(&o.replayAuthorization, "replay-authorization", "", "operator recovery authorization for this retry")
 	c.Flags().BoolVar(&o.withUI, "ui", false, "launch the optional loopback kit UI")
 	c.Flags().StringVar(&o.configPath, "config", defaultLocalConfigPath(), "local configuration file")
 	c.Flags().StringVar(&o.contextID, "context-id", "", "prepared verification context (otherwise prepare the current claim)")
@@ -63,25 +62,25 @@ func kitVerifyCmd() *cobra.Command {
 }
 
 type kitVerifier struct {
-	retryKey, replayAuthorization string
-	inputs                        map[string]map[string]json.RawMessage
-	safeInputs                    map[string]json.RawMessage
-	withUI                        bool
-	uiRoot                        string
-	ui                            *verification.UI
-	rpc                           kitRPC
-	root                          string
-	order                         core.WorkOrder
-	task                          core.Task
-	snapshot                      store.VerificationSnapshot
-	config                        *config.Config
-	configPath, configSource      string
-	configRefusal                 string
-	toolchain                     *kitToolchain
-	tools                         *kitToolResolution
-	coverage                      store.VerificationCoverage
-	output                        io.Writer
-	redactor                      *redact.Redactor
+	retryKey                 string
+	inputs                   map[string]map[string]json.RawMessage
+	safeInputs               map[string]json.RawMessage
+	withUI                   bool
+	uiRoot                   string
+	ui                       *verification.UI
+	rpc                      kitRPC
+	root                     string
+	order                    core.WorkOrder
+	task                     core.Task
+	snapshot                 store.VerificationSnapshot
+	config                   *config.Config
+	configPath, configSource string
+	configRefusal            string
+	toolchain                *kitToolchain
+	tools                    *kitToolResolution
+	coverage                 store.VerificationCoverage
+	output                   io.Writer
+	redactor                 *redact.Redactor
 	// onDrain, when set by a test, runs as the post-exit drain starts.
 	onDrain func()
 	// relayCheckout and relayLive, when set by a test, stand in for the
@@ -99,7 +98,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 	if rpc.order == "" || rpc.session == "" || rpc.claimToken == "" || rpc.client.workspace == "" {
 		return fmt.Errorf("kit verify requires the exact launcher work order, session, claim token and workspace")
 	}
-	v := &kitVerifier{retryKey: o.retryKey, replayAuthorization: o.replayAuthorization, inputs: map[string]map[string]json.RawMessage{}, withUI: o.withUI, rpc: rpc, root: root, output: output, redactor: redact.New(append(kitParentSecrets(), rpc.client.token, rpc.claimToken))}
+	v := &kitVerifier{retryKey: o.retryKey, inputs: map[string]map[string]json.RawMessage{}, withUI: o.withUI, rpc: rpc, root: root, output: output, redactor: redact.New(append(kitParentSecrets(), rpc.client.token, rpc.claimToken))}
 	var contract struct {
 		Order core.WorkOrder `json:"work_order"`
 		Task  core.Task      `json:"task"`
@@ -562,7 +561,7 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	}
 	v.toolchain, v.tools = &toolchain, &tools
 	var receipt store.VerificationReceipt
-	if err = v.rpc.call(ctx, "start_verification_attempt", workorder.VerificationStartRequest{ContextID: vc.ID, StartKey: startKey, Subject: subject.Subject, LocalActions: local, GrantID: grant.ID, EffectiveActions: effective, EffectivePermissions: e.Permissions, SafeInputs: v.safeInputs, Environment: environment, Coverage: v.coverage, ReplayAuthorizationID: v.replayAuthorization}, &receipt); err != nil {
+	if err = v.rpc.call(ctx, "start_verification_attempt", workorder.VerificationStartRequest{ContextID: vc.ID, StartKey: startKey, Subject: subject.Subject, LocalActions: local, GrantID: grant.ID, EffectiveActions: effective, EffectivePermissions: e.Permissions, SafeInputs: v.safeInputs, Environment: environment, Coverage: v.coverage}, &receipt); err != nil {
 		return err
 	}
 	if !receipt.LaunchAuthorized {

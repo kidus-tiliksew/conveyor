@@ -37,7 +37,8 @@ func orderRecoverCmd() *cobra.Command {
 		Long: "Posts {request_id, direction} to POST /v1/work-orders/{id}/recover. The request ID is generated when omitted and is also sent as X-Request-Id and X-Idempotency-Key.\n\n" +
 			"--disposition records one answer for each attempt in the disposition set of a verify order. The command reads the set from the next action of the order's task (details.dispositions) and sends one entry for each attempt, with that disposition and the --reason text. " +
 			"Each --run <run-id>=<disposition> gives one attempt a different answer. The command sends nothing when the next action states no set, or when --run names an attempt that is not in the set. " +
-			"The server records the authorization recovery:<request_id> on each attempt in the set.",
+			"The server records the authorization recovery:<request_id> on each attempt in the set. " +
+			"The next verification run uses these authorizations. It needs no flag.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			flags := cmd.Flags()
@@ -300,7 +301,7 @@ func runOrderRecover(c *client, w io.Writer, orderID, direction, requestID strin
 		for i, entry := range verification.Dispositions {
 			human += fmt.Sprintf("\n  run %s: %s (%s)", entry.RunID, entry.Disposition, set[i].Subject)
 		}
-		human += fmt.Sprintf("\nnext verifier: conveyor kit verify --replay-authorization %s ...", authorization)
+		human += "\nnext verifier: conveyor kit verify uses these authorizations and needs no flag"
 	}
 	return writeOrderResult(w, response, asJSON, human)
 }
