@@ -8,3 +8,13 @@
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  3-make-fmt-check/command.log
 f8c127b7ce5ba8f22ff2de2a50045e83b423077e0e0f1f6ae5d63f3d346db8ab  4-setpriv-make-test-go/command.log
 c95871120958b99f23831ea6adcda66d6815ba2724ef302f5622ce091b9456d9  5-setpriv-make-test-ui/command.log
+f0d2565bf551fff8b9a59eeeddec381e9b1d000b83b7b0ea13a6ab434c435707  head-bccd6446/1-make-build/manifest.json
+bc54096c621ad161bfac896125ac31ebb644296a5510713089ceaa7f2f1ae797  head-bccd6446/2-make-vet/manifest.json
+4b7ec6e35b75f3bf2a7e10b024e0b792f16089d8000f0a240534a4a9515f25c5  head-bccd6446/3-make-fmt-check/manifest.json
+95d52203a32687719985408bff0defe6f912769ffe01cfbffcb3ccae926befd6  head-bccd6446/4-setpriv-make-test-go/manifest.json
+de574f68da96dfe0468b4e251f23e45b1264c69fbb56958a1b21b88d0b9c05c6  head-bccd6446/5-setpriv-make-test-ui/manifest.json
+88c9f5cdf6bac342166cb03e958023c70d4d04c13f3f95967a88e7e4084b0a86  head-bccd6446/1-make-build/command.log
+12428484bc6a7a5f77eacbe702f12a47b1db0731597467242f489872ec1318ac  head-bccd6446/2-make-vet/command.log
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  head-bccd6446/3-make-fmt-check/command.log
+20c85b623064c2540287584bb7862704c80e908b31f05243bdbcb8b4bf243c49  head-bccd6446/4-setpriv-make-test-go/command.log
+8e1818b37911d9fd63e6488f74b48a811656fab6b606af1f36894df8510651c7  head-bccd6446/5-setpriv-make-test-ui/command.log
