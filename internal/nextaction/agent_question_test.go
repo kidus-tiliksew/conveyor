@@ -172,7 +172,7 @@ func TestAgentQuestionResumedOrderProjectsAsQueuedWork(t *testing.T) {
 		if hasSecondary(got, KindAgentQuestion) {
 			t.Fatalf("class %q resumed: secondary %+v includes agent_question", class, got.Details.Secondary)
 		}
-		for _, id := range []string{"answer", "recover", "applied", "not_applied"} {
+		for _, id := range []string{"answer", "recover", "record_dispositions"} {
 			if hasChoice(got, id) {
 				t.Fatalf("class %q resumed: offered %s in %+v", class, id, got.Choices)
 			}

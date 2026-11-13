@@ -1,5 +1,5 @@
 import { defaultReasonCode, planRevisionReasonCodes } from '../../lib/contracts'
-import type { NextActionDetails } from '../../lib/types'
+import type { DispositionAnswer, NextActionDetails } from '../../lib/types'
 
 // The request body each server choice needs, keyed by the choice id the
 // server's catalogue states (internal/nextaction/choices.go). The server owns
@@ -13,36 +13,56 @@ export interface ChoiceBody {
   // Acts the server deduplicates by request id carry one per send.
   idempotent?: boolean
   // `details` is the next action's own; a body built from server state reads it there.
-  body: (input: string, requestId: string, details?: NextActionDetails) => Record<string, unknown> | undefined
+  // `answers` holds the operator's answer for each attempt of a disposition set, by run ID.
+  body: (
+    input: string,
+    requestId: string,
+    details?: NextActionDetails,
+    answers?: Record<string, DispositionAnswer>,
+  ) => Record<string, unknown> | undefined
   // Why the act cannot be sent from the state the server stated, or undefined when it can.
   unavailable?: (details?: NextActionDetails) => string | undefined
   // An act whose request a dedicated dialog builds: the choice opens that
   // dialog instead of posting `body`.
   dialog?: 'restart'
+  // An act whose composer asks for one answer for each attempt of the
+  // disposition set, above its typed input.
+  composer?: 'dispositions'
 }
 
-// A verification disposition posts the binding the server states at row 11
-// with the operator's reason (component-next-action invariant 15). Without the
-// binding the act stays disabled with the server's refusal.
-const disposition = (value: 'applied' | 'not_applied'): ChoiceBody => ({
+// Recording dispositions answers every attempt of the disposition set the
+// server states at row 11, with one reason, in one request
+// (component-next-action invariant 15; DEC-133(1)). The client copies each
+// entry's binding and reads no verification record. Without a set the act
+// stays disabled with the server's refusal.
+const recordDispositions: ChoiceBody = {
   input: { label: 'Reason', required: true },
   idempotent: true,
+  composer: 'dispositions',
   unavailable: (details) =>
-    details?.disposition
+    details?.dispositions?.length
       ? undefined
-      : (details?.refusals?.find((refusal) => refusal.choice === value)?.text ?? 'Take this from the task page.'),
-  body: (input, requestId, details) => ({
-    request_id: requestId,
-    verification: details?.disposition && {
-      context_id: details.disposition.context_id,
-      run_id: details.disposition.run_id,
-      operation_ids: details.disposition.operation_ids,
-      input_digest: details.disposition.input_digest,
-      disposition: value,
-      reason: input.trim(),
-    },
-  }),
-})
+      : (details?.refusals?.find((refusal) => refusal.choice === 'record_dispositions')?.text ??
+        'Take this from the task page.'),
+  body: (input, requestId, details, answers) => {
+    const entries = details?.dispositions ?? []
+    if (entries.length === 0 || entries.some((entry) => !answers?.[entry.run_id]))
+      throw new Error('Record an answer for each attempt.')
+    return {
+      request_id: requestId,
+      verification: {
+        reason: input.trim(),
+        dispositions: entries.map((entry) => ({
+          context_id: entry.context_id,
+          run_id: entry.run_id,
+          operation_ids: entry.operation_ids ?? [],
+          input_digest: entry.input_digest,
+          disposition: answers?.[entry.run_id],
+        })),
+      },
+    }
+  },
+}
 
 const review = (action: string, reasonCode: string) => (input: string) => ({
   action,
@@ -87,8 +107,7 @@ export const choiceBodies: Record<string, ChoiceBody> = {
     idempotent: true,
     body: (input, requestId) => ({ request_id: requestId, reason: input.trim() }),
   },
-  applied: disposition('applied'),
-  not_applied: disposition('not_applied'),
+  record_dispositions: recordDispositions,
 }
 
 // A task-context proposal choice names its target in the id

@@ -2833,3 +2833,231 @@ test('the merge_approval gate withholds the merge when only a waiver can complet
   await expect(gate.locator('[data-merge-status]')).toHaveCount(0)
   await expect(gate.locator('[data-choice="approve"]')).toHaveCount(0)
 })
+
+// Row 11 states the order's disposition set, and the card lists every entry
+// with an Applied and a Not applied control, preselects none, takes one
+// reason, and sends one request (component-next-action invariant 15;
+// component-verification-service invariant 45; DEC-133(1)).
+const dispositionSet = [
+  {
+    context_id: 'ctx-a',
+    run_id: 'run-login-1',
+    operation_ids: [],
+    input_digest: 'sha256:login',
+    subject: 'kit:staging-fixtures/login',
+    state: 'blocked',
+  },
+  {
+    context_id: 'ctx-b',
+    run_id: 'run-checkout-2',
+    operation_ids: ['op-charge'],
+    input_digest: 'sha256:checkout',
+    subject: 'ordinary:checkout-charges-card',
+    state: 'running',
+  },
+]
+
+function dispositionAction(
+  dispositions: typeof dispositionSet | null = dispositionSet,
+  allowed = true,
+  refusal = '',
+): NextAction {
+  return {
+    label: 'Confirm an outcome',
+    actor: 'operator',
+    kind: 'verification_disposition',
+    judgment: true,
+    summary: 'Verification needs a disposition.',
+    question: 'Did the change apply? The verify agent could not observe the result.',
+    if_ignored: 'The verify order stays at the checkpoint.',
+    deadline: null,
+    choices: [
+      {
+        id: 'record_dispositions',
+        label: 'Record dispositions…',
+        effect: 'Records whether each change applied, then recovers the order.',
+        method: 'POST',
+        path: '/v1/work-orders/card-task-verify-1/recover',
+        capability: 'operate_gates',
+        allowed,
+      },
+    ],
+    current_order: {
+      id: 'card-task-verify-1',
+      stage: 'verify',
+      state: 'queued',
+      queue_deadline: null,
+      execution_deadline: null,
+      lease_expires_at: null,
+    },
+    details: {
+      ...(dispositions ? { dispositions } : {}),
+      ...(refusal ? { refusals: [{ choice: 'record_dispositions', text: refusal }] } : {}),
+    },
+  }
+}
+
+function dispositionCard(page: Page) {
+  const card = page.getByRole('region', { name: 'Next action' })
+  return {
+    card,
+    open: () => card.getByRole('button', { name: 'Record dispositions…' }),
+    send: () =>
+      card.locator('[data-next-action-choices]').getByRole('button', { name: 'Record dispositions', exact: true }),
+    entry: (subject: string) => card.getByRole('group', { name: subject }),
+    reason: () => card.getByRole('textbox', { name: 'Reason' }),
+  }
+}
+
+test('the disposition card lists every attempt without a preselected answer and sends one request', async ({
+  page,
+}) => {
+  const posts = await mockAPI(
+    page,
+    () => activity('running', dispositionAction()),
+    () => dispositionAction(),
+  )
+  await page.goto(`/w/demo/tasks/${taskId}`)
+  const d = dispositionCard(page)
+  await d.open().click()
+  const entries = d.card.locator('[data-disposition-entry]')
+  await expect(entries).toHaveCount(2)
+  await expect(entries.nth(0)).toContainText('kit:staging-fixtures/login')
+  await expect(entries.nth(0)).toContainText('blocked · no unresolved operations · run run-login-1')
+  await expect(entries.nth(1)).toContainText('ordinary:checkout-charges-card')
+  await expect(entries.nth(1)).toContainText('running · 1 unresolved operation · run run-checkout-2')
+  // No answer is preselected, so Send waits for an answer to each attempt
+  // and for the reason.
+  await expect(d.card.getByRole('radio', { checked: true })).toHaveCount(0)
+  await expect(d.send()).toBeDisabled()
+  await d.entry('kit:staging-fixtures/login').getByRole('radio', { name: 'Not applied' }).check()
+  await d.reason().fill('Fixture account restored; the charge never reached the provider.')
+  await expect(d.card.getByText('1 of 2 answered.')).toBeVisible()
+  await expect(d.send()).toBeDisabled()
+  await d.entry('ordinary:checkout-charges-card').getByRole('radio', { name: 'Applied', exact: true }).check()
+  await expect(d.card.getByText('2 of 2 answered.')).toBeVisible()
+  // A double click sends once.
+  await d.send().dblclick()
+  await expect.poll(() => posts.length).toBe(1)
+  await page.waitForTimeout(200)
+  expect(posts).toHaveLength(1)
+  expect(posts[0].method).toBe('POST')
+  expect(posts[0].path).toBe('/v1/work-orders/card-task-verify-1/recover')
+  const body = posts[0].body as { request_id: string; verification: unknown }
+  expect(body.request_id).toBeTruthy()
+  expect(body.verification).toEqual({
+    reason: 'Fixture account restored; the charge never reached the provider.',
+    dispositions: [
+      {
+        context_id: 'ctx-a',
+        run_id: 'run-login-1',
+        operation_ids: [],
+        input_digest: 'sha256:login',
+        disposition: 'not_applied',
+      },
+      {
+        context_id: 'ctx-b',
+        run_id: 'run-checkout-2',
+        operation_ids: ['op-charge'],
+        input_digest: 'sha256:checkout',
+        disposition: 'applied',
+      },
+    ],
+  })
+})
+
+test('closing the disposition composer or a new set clears every answer', async ({ page }) => {
+  let action = dispositionAction()
+  const posts = await mockAPI(
+    page,
+    () => activity('running', action),
+    () => action,
+  )
+  // The task moved under the operator: the server refuses the first send, and
+  // the refetched statement names another attempt.
+  let refused = 0
+  await page.route('**/v1/work-orders/card-task-verify-1/recover**', async (route) => {
+    refused++
+    action = dispositionAction([
+      dispositionSet[0],
+      { ...dispositionSet[1], run_id: 'run-checkout-3', state: 'blocked', operation_ids: [] },
+    ])
+    await route.fulfill({ status: 409, body: 'run run-checkout-2 is not in the disposition set' })
+  })
+  await page.goto(`/w/demo/tasks/${taskId}`)
+  const d = dispositionCard(page)
+  await d.open().click()
+  await d.entry('kit:staging-fixtures/login').getByRole('radio', { name: 'Applied', exact: true }).check()
+  // Cancel discards the answers; opening again starts with none.
+  await d.card.getByRole('button', { name: 'Cancel' }).click()
+  await d.open().click()
+  await expect(d.card.getByRole('radio', { checked: true })).toHaveCount(0)
+
+  await d.entry('kit:staging-fixtures/login').getByRole('radio', { name: 'Applied', exact: true }).check()
+  await d.entry('ordinary:checkout-charges-card').getByRole('radio', { name: 'Applied', exact: true }).check()
+  await d.reason().fill('Both changes applied.')
+  await d.send().click()
+  await expect.poll(() => refused).toBe(1)
+  await expect(d.card.getByText('run run-checkout-2 is not in the disposition set')).toBeVisible()
+  await expect(d.card.locator('[data-disposition-entry="run-checkout-3"]')).toBeVisible()
+  await expect(d.card.getByRole('radio', { checked: true })).toHaveCount(0)
+  await expect(d.send()).toBeDisabled()
+  expect(posts).toHaveLength(0)
+})
+
+test('the disposition choice needs operate gates and a stated set', async ({ page }) => {
+  let action = dispositionAction(dispositionSet, false)
+  const posts = await mockAPI(
+    page,
+    () => activity('running', action),
+    () => action,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}`)
+  const d = dispositionCard(page)
+  await expect(d.open()).toBeDisabled()
+  await expect(d.card.locator('[data-choice-reason="record_dispositions"]')).toHaveText(
+    'Record dispositions…: Needs the operate gates capability.',
+  )
+
+  action = dispositionAction(
+    null,
+    true,
+    'verify order card-task-verify-1 has no unresolved operations and no retry-gated attempts to dispose',
+  )
+  await page.reload()
+  await expect(d.open()).toBeDisabled()
+  await expect(d.card.locator('[data-choice-reason="record_dispositions"]')).toHaveText(
+    'Record dispositions…: verify order card-task-verify-1 has no unresolved operations and no retry-gated attempts to dispose',
+  )
+  expect(posts).toHaveLength(0)
+})
+
+for (const viewport of [
+  { name: 'mobile', width: 375, height: 1200 },
+  { name: 'desktop', width: 1280, height: 1000 },
+]) {
+  test(`capture the disposition card with two entries at ${viewport.width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await mockAPI(
+      page,
+      () => activity('running', dispositionAction()),
+      () => dispositionAction(),
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const d = dispositionCard(page)
+    await d.open().click()
+    await d.entry('kit:staging-fixtures/login').getByRole('radio', { name: 'Not applied' }).check()
+    const entries = d.card.locator('[data-disposition-entry]')
+    await expect(entries).toHaveCount(2)
+    // Every entry and its controls fit the card at this width.
+    const cardBox = await d.card.boundingBox()
+    for (const box of await Promise.all((await entries.all()).map((entry) => entry.boundingBox()))) {
+      expect(box && cardBox && box.x + box.width <= cardBox.x + cardBox.width + 1).toBeTruthy()
+    }
+    await d.card.scrollIntoViewIfNeeded()
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const name = `disposition-card-two-entries-${viewport.name}.png`
+    const image = await d.card.screenshot({ path: shots ? `${shots}/${name}` : undefined, animations: 'disabled' })
+    await testInfo.attach(name, { body: image, contentType: 'image/png' })
+  })
+}

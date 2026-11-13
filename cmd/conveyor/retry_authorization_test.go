@@ -104,7 +104,7 @@ func newRetryAuthorizationStore(t *testing.T, head string, gated verification.Ex
 	if err = storetest.UpdateWorkOrder(ctx, b, order, core.WorkOrderCmdRelease); err != nil {
 		t.Fatal(err)
 	}
-	disposition := &store.VerificationRecoveryDisposition{ContextID: s.oldContext, RunID: s.oldRun, OperationIDs: []string{}, InputDigest: store.VerificationSafeInputDigest(map[string]json.RawMessage{}), Disposition: "not_applied", Reason: "Operator restored the environment and authorizes one retry."}
+	disposition := &store.VerificationRecovery{Reason: "Operator restored the environment and authorizes one retry.", Dispositions: []store.VerificationRecoveryDisposition{{ContextID: s.oldContext, RunID: s.oldRun, OperationIDs: []string{}, InputDigest: store.VerificationSafeInputDigest(map[string]json.RawMessage{}), Disposition: "not_applied"}}}
 	if _, err = storetest.RecoverWorkOrder(store.WithVerificationRecovery(s.operator, disposition), b, order.ID, "runner-recovery", time.Hour); err != nil {
 		t.Fatal(err)
 	}

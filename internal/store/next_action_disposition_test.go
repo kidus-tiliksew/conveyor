@@ -10,14 +10,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// Row 10 asks for a verification disposition only while a verify order is
+// Row 11 asks for a verification disposition only while a verify order is
 // queued and released at its sealed checkpoint, and then always names that
 // verify order, even when a later review order waits unclaimed. A verify
 // order that was recovered and has moved on keeps its checkpoint for history;
-// that historical checkpoint never selects row 10, so the task is never left
-// at a disposition whose applied and not-applied choices are both refused
-// with no order to recover (feature-operator-next-action NA-3 row 10; task
-// 261030-54fbd3).
+// that historical checkpoint never selects row 11, so the task is never left
+// at a disposition whose record_dispositions choice is refused with no order
+// to recover (component-next-action invariant 15; task 261030-54fbd3).
 func TestVerificationDispositionNamesTheOrderAtTheCheckpoint(t *testing.T) {
 	f := newBatchFixture(t)
 	sealed := func(task core.Task) func(*core.WorkOrder) {

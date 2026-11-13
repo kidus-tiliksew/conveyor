@@ -207,6 +207,7 @@ derives one. `--json` writes the server body verbatim.
 | `confirm:task_context:<kind>:<target>` or `dismiss:task_context:<kind>:<target>` | `conveyor task context confirm\|dismiss <task-id> <kind> <target>`, with kind and target read from the choice's route and shell-quoted when needed |
 | `recover` on `/v1/work-orders/{order_id}/recover` | `conveyor order recover <order-id>` |
 | `answer` | `conveyor order recover <order-id> --direction "<answer>"` |
+| `record_dispositions` | `conveyor order recover <order-id> --disposition <applied\|not_applied> --reason "<reason>"` |
 | `recover` or `redispatch` on `/v1/tasks/{id}/redispatch` | `conveyor order redispatch <current-order-id>` when a current order exists |
 | any other choice | none; the rendered `method path` prints with "use the dashboard" |
 
@@ -289,7 +290,7 @@ the server body verbatim.
 
 | Command | What it does |
 |---|---|
-| `conveyor order recover <order-id>` | Post `{request_id, direction}` to `POST /v1/work-orders/{id}/recover`. Optional `--direction <text>`, `--request-id <id>`, and `--json`. |
+| `conveyor order recover <order-id>` | Post `{request_id, direction}` to `POST /v1/work-orders/{id}/recover`. Optional `--direction <text>`, `--request-id <id>`, and `--json`. `--disposition applied\|not_applied\|unknown --reason <text>` reads the disposition set from the next action of the order's task and adds a `verification` object with one entry for each attempt in the set. A repeatable `--run <run-id>=<disposition>` gives one attempt a different answer. The command sends nothing when the next action states no set or when `--run` names an attempt outside the set. On success it prints each run with its disposition. |
 | `conveyor order redispatch <order-id>` | Resolve the order's task from `GET /v1/work-orders/{id}`, which serves an order in any state, then post to `POST /v1/tasks/{task_id}/redispatch`. On a 404 the command searches `GET /v1/work-orders` once, so a server without the exact read still resolves a live order. An order found by neither read exits `1` with `work order <id> not found`. Optional `--request-id <id>` and `--json`. |
 | `conveyor order retire <order-id> --reason <text>` | Read the order from `GET /v1/work-orders/{id}`, with the same list fallback on a 404, then post `{reason, request_id}` to `POST /v1/work-orders/{id}/preempt`, which retires a queued or stale order to `cancelled`, except a review seat, which the command and the route both refuse. Prints `retired work order <id>: state cancelled (request <id>)`. Optional `--request-id <id>` and `--json`. |
 

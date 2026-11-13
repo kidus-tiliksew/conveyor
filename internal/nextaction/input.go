@@ -99,9 +99,9 @@ type Input struct {
 	// Blockers on the dependent side (feature-operator-next-action NA-3,
 	// Dependents).
 	Blocks []BlockerRef
-	// Dispositions is the row-10 recovery binding read from the sealed
-	// verification checkpoint of a verify order, keyed by that order's ID
-	// (feature-operator-next-action NA-3, Disposition binding).
+	// Dispositions is row 11's disposition set of a verify order released at
+	// a sealed verification checkpoint, keyed by that order's ID
+	// (component-next-action invariant 15).
 	Dispositions   map[string]DispositionInput
 	MergeConflict  MergeConflict
 	MergeReadiness *MergeReadiness
@@ -143,21 +143,29 @@ type Input struct {
 	GateSource string
 }
 
-// Disposition is the verification body binding a client sends to
-// POST /v1/work-orders/{id}/recover with a disposition and a reason
-// (feature-operator-next-action NA-3; component-verification-service).
+// Disposition is one entry of a verify order's disposition set. A client
+// copies context_id, run_id, operation_ids, and input_digest into one entry of
+// the verification object it sends to POST /v1/work-orders/{id}/recover, with
+// the operator's disposition. subject and state describe the attempt and are
+// never sent (component-next-action invariant 15;
+// component-verification-service invariant 45).
 type Disposition struct {
 	ContextID    string   `json:"context_id"`
 	RunID        string   `json:"run_id"`
 	OperationIDs []string `json:"operation_ids"`
 	InputDigest  string   `json:"input_digest"`
+	// Subject is kit:<kit-id>/<exercise-id> or ordinary:<obligation-id>.
+	Subject string `json:"subject"`
+	// State is the attempt's state.
+	State string `json:"state"`
 }
 
-// DispositionInput is the assembler's reading of one verify order's sealed
-// checkpoint: a binding the recovery validator accepts, or the refusal that
-// explains why none can be offered.
+// DispositionInput is the assembler's reading of one verify order's
+// disposition set: the whole set, ordered by attempt start time and then run
+// ID, which the recovery validator accepts, or the refusal that explains why
+// it cannot be stated.
 type DispositionInput struct {
-	Binding *Disposition
+	Set     []Disposition
 	Refusal string
 }
 
@@ -417,8 +425,9 @@ type Details struct {
 	Secondary        []Secondary                               `json:"secondary,omitempty"`
 	Refusals         []Refusal                                 `json:"refusals,omitempty"`
 	MergeReadiness   string                                    `json:"merge_readiness,omitempty"`
-	// Disposition is present only on verification_disposition.
-	Disposition *Disposition `json:"disposition,omitempty"`
+	// Dispositions is present only on verification_disposition, and only on a
+	// full read: a compact read skips it (component-next-action invariant 15).
+	Dispositions []Disposition `json:"dispositions,omitempty"`
 	// ContextProposals and MonitorOrigin are present only on context_proposal.
 	ContextProposals []ContextProposalDetail `json:"context_proposals,omitempty"`
 	MonitorOrigin    *MonitorOrigin          `json:"monitor_origin,omitempty"`

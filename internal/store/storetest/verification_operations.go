@@ -49,6 +49,8 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 	t.Run("NextActionDispositionBinding", func(t *testing.T) { runNextActionDispositionBinding(t, x) })
 	t.Run("NextActionGatedAttemptBinding", func(t *testing.T) { runNextActionGatedAttemptBinding(t, x) })
 	t.Run("RetryGateScopedToVerifyOrder", func(t *testing.T) { runVerificationRetryGateScope(t, x) })
+	t.Run("OneRecoveryDisposesEveryGatedSubject", func(t *testing.T) { runRecoveryDisposesEveryGatedSubject(t, x) })
+	t.Run("OneRecoveryDisposesAttemptsAcrossContexts", func(t *testing.T) { runRecoveryDisposesAttemptsAcrossContexts(t, x) })
 	t.Run("OperatorRecoveryBindsSuccessorAndConsumesAuthorization", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
 		obligation := store.VerificationObligation{ID: "recovery-" + v.access.TaskID, Description: "Recover one external mutation", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "recovery", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
@@ -76,7 +78,7 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 		order.SessionID, order.AttemptID, order.ClaimantID, order.WorkerID, order.ClientTokenHash = "", "", "", "", ""
 		order.LeaseExpiresAt = time.Time{}
 		requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRelease))
-		disposition := &store.VerificationRecoveryDisposition{ContextID: oldContext, RunID: oldRun, OperationIDs: []string{op.ID}, InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied", Reason: "Operator inspected provider state and authorizes one retry."}
+		disposition := &store.VerificationRecovery{Reason: "Operator inspected provider state and authorizes one retry.", Dispositions: []store.VerificationRecoveryDisposition{{ContextID: oldContext, RunID: oldRun, OperationIDs: []string{op.ID}, InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied"}}}
 		operator, owner := bootstrapOwner(t, x)
 		operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
 		observer := v
@@ -647,12 +649,12 @@ func sealVerificationCheckpoint(t *testing.T, v *verificationFixture, withOperat
 	return order, operationID
 }
 
-// projectVerificationDisposition projects the task with row 10 selected. A
-// sealed release also records the checkpoint's decision_request, which row 9
+// projectVerificationDisposition projects the task with row 11 selected. A
+// sealed release also records the checkpoint's decision_request, which row 10
 // (agent_question) outranks, so the projection reads the same stored order
-// with only that agent-question marker withheld; the binding itself comes
-// from the backend's verification records
-// (feature-operator-next-action NA-3, Disposition binding).
+// with only that agent-question marker withheld; the disposition set itself
+// comes from the backend's verification records (component-next-action
+// invariant 15).
 func projectVerificationDisposition(t *testing.T, x Fixture, taskID string, caps map[core.Capability]bool) nextaction.NextAction {
 	t.Helper()
 	task, err := x.Backend.GetTask(x.Context, taskID)
@@ -675,15 +677,16 @@ func projectVerificationDisposition(t *testing.T, x Fixture, taskID string, caps
 	return action
 }
 
-// runNextActionDispositionBinding proves that row 10's details.disposition
+// runNextActionDispositionBinding proves that row 11's details.dispositions
 // names the sealed checkpoint's context, the attempt that recorded its
-// unresolved operation, that operation, and the attempt's safe-input digest,
-// so a recovery built only from those fields, a disposition, and a reason
-// passes PrepareVerificationRecovery on the ordinary recovery path. Row 9
-// never carries the binding, the response exposes no verification record,
-// and a checkpoint without an unresolved operation offers neither
-// disposition (feature-operator-next-action NA-3; req-operator-next-action
-// AC-1.4, AC-2.2; component-verification-service).
+// unresolved operation, that operation, the attempt's safe-input digest,
+// subject, and state, so a recovery built only from those fields, a
+// disposition, and a reason passes PrepareVerificationRecovery on the
+// ordinary recovery path. Row 10 never carries the set, the response exposes
+// no verification record, and a checkpoint without an unresolved operation
+// or a retry-gated attempt withholds record_dispositions with a refusal
+// (component-next-action invariants 7, 8, and 15;
+// component-verification-service invariant 45).
 func runNextActionDispositionBinding(t *testing.T, x Fixture) {
 	gates := map[core.Capability]bool{core.CapabilityOperateGates: true}
 	v := newVerificationFixture(t, x, true)
@@ -691,16 +694,19 @@ func runNextActionDispositionBinding(t *testing.T, x Fixture) {
 
 	question, err := store.ReadNextAction(x.Context, x.Backend, order.TaskID, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: gates})
 	requireOK(t, err)
-	if question.Kind != nextaction.KindAgentQuestion || question.Details.Disposition != nil {
-		t.Fatalf("sealed checkpoint = %s disposition %+v, want agent_question without a binding", question.Kind, question.Details.Disposition)
+	if question.Kind != nextaction.KindAgentQuestion || question.Details.Dispositions != nil {
+		t.Fatalf("sealed checkpoint = %s dispositions %+v, want agent_question without a set", question.Kind, question.Details.Dispositions)
 	}
 
 	action := projectVerificationDisposition(t, x, order.TaskID, gates)
-	want := &nextaction.Disposition{ContextID: v.contextID, RunID: v.runID, OperationIDs: []string{operationID}, InputDigest: verificationSHA([]byte("{}"))}
-	if !reflect.DeepEqual(action.Details.Disposition, want) {
-		t.Fatalf("disposition = %+v, want %+v (refusals %+v)", action.Details.Disposition, want, action.Details.Refusals)
+	want := []nextaction.Disposition{{ContextID: v.contextID, RunID: v.runID, OperationIDs: []string{operationID}, InputDigest: verificationSHA([]byte("{}")), Subject: "ordinary:disposition-" + order.TaskID, State: "blocked"}}
+	if !reflect.DeepEqual(action.Details.Dispositions, want) {
+		t.Fatalf("dispositions = %+v, want %+v (refusals %+v)", action.Details.Dispositions, want, action.Details.Refusals)
 	}
-	for _, id := range []string{"applied", "not_applied"} {
+	if len(action.Choices) != 1 {
+		t.Fatalf("choices = %+v, want record_dispositions only", action.Choices)
+	}
+	for _, id := range []string{"record_dispositions"} {
 		found := false
 		for _, choice := range action.Choices {
 			if choice.ID == id {
@@ -713,7 +719,7 @@ func runNextActionDispositionBinding(t *testing.T, x Fixture) {
 	}
 	recoverOnly := projectVerificationDisposition(t, x, order.TaskID, map[core.Capability]bool{core.CapabilityRecoverWork: true})
 	for _, choice := range recoverOnly.Choices {
-		if (choice.ID == "applied" || choice.ID == "not_applied") && choice.Allowed {
+		if choice.ID == "record_dispositions" && choice.Allowed {
 			t.Fatalf("recover_work alone allowed %s", choice.ID)
 		}
 	}
@@ -727,7 +733,7 @@ func runNextActionDispositionBinding(t *testing.T, x Fixture) {
 
 	operator, owner := bootstrapOwner(t, x)
 	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
-	disposition := &store.VerificationRecoveryDisposition{ContextID: want.ContextID, RunID: want.RunID, OperationIDs: want.OperationIDs, InputDigest: want.InputDigest, Disposition: "not_applied", Reason: "Operator inspected the provider; the change did not apply."}
+	disposition := &store.VerificationRecovery{Reason: "Operator inspected the provider; the change did not apply.", Dispositions: []store.VerificationRecoveryDisposition{{ContextID: want[0].ContextID, RunID: want[0].RunID, OperationIDs: want[0].OperationIDs, InputDigest: want[0].InputDigest, Disposition: "not_applied"}}}
 	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), x.Backend, order.ID, "disposition-recovery-"+order.ID, time.Hour)
 	requireOK(t, err)
 	events, err := x.Backend.ListEvents(x.Context, order.TaskID)
@@ -746,9 +752,9 @@ func runNextActionDispositionBinding(t *testing.T, x Fixture) {
 	empty := newVerificationFixture(t, x, true)
 	bare, _ := sealVerificationCheckpoint(t, &empty, false)
 	gated := projectVerificationDisposition(t, x, bare.TaskID, gates)
-	wantGated := &nextaction.Disposition{ContextID: empty.contextID, RunID: empty.runID, OperationIDs: []string{}, InputDigest: verificationSHA([]byte("{}"))}
-	if !reflect.DeepEqual(gated.Details.Disposition, wantGated) {
-		t.Fatalf("gated disposition = %+v, want %+v (refusals %+v)", gated.Details.Disposition, wantGated, gated.Details.Refusals)
+	wantGated := []nextaction.Disposition{{ContextID: empty.contextID, RunID: empty.runID, OperationIDs: []string{}, InputDigest: verificationSHA([]byte("{}")), Subject: "ordinary:disposition-" + bare.TaskID, State: "blocked"}}
+	if !reflect.DeepEqual(gated.Details.Dispositions, wantGated) {
+		t.Fatalf("gated dispositions = %+v, want %+v (refusals %+v)", gated.Details.Dispositions, wantGated, gated.Details.Refusals)
 	}
 
 	// A checkpoint with neither an unresolved operation nor a retry-gated
@@ -761,10 +767,10 @@ func runNextActionDispositionBinding(t *testing.T, x Fixture) {
 	replayable.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "blocked", Explanation: "Fixture account locked"}})
 	replayable.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: verificationFixtureCoverage(replayable.snapshot(t)), Feedback: "Fixture account locked", RequiredAction: "Unlock the fixture account"}})
 	unbound := projectVerificationDisposition(t, x, replayable.access.TaskID, gates)
-	if unbound.Details.Disposition != nil {
-		t.Fatalf("checkpoint without unresolved operations or a gated attempt bound %+v", unbound.Details.Disposition)
+	if unbound.Details.Dispositions != nil {
+		t.Fatalf("checkpoint without unresolved operations or a gated attempt stated %+v", unbound.Details.Dispositions)
 	}
-	for _, id := range []string{"applied", "not_applied"} {
+	for _, id := range []string{"record_dispositions"} {
 		for _, choice := range unbound.Choices {
 			if choice.ID == id {
 				t.Fatalf("choice %s offered without an unresolved operation", id)
@@ -784,11 +790,10 @@ func runNextActionDispositionBinding(t *testing.T, x Fixture) {
 // ordinary operator_action_required obligation succeeds in context A, the
 // claim is lost with A unsealed, and a later context B of the same verify
 // order seals operator_action_required with no attempt and no operation.
-// Row 10 binds A's run with no operations and the run's input digest, and a
-// recovery built from that binding admits exactly one successor start
-// (feature-operator-next-action NA-3, Disposition binding;
-// component-verification-service, Operator checkpoint and recovery;
-// req-verification-kits AC-3.4).
+// Row 11 states A's run with no operations and the run's input digest, and a
+// recovery built from that entry admits exactly one successor start
+// (component-next-action invariant 15; component-verification-service
+// invariant 45; req-verification-kits AC-3.4).
 func runNextActionGatedAttemptBinding(t *testing.T, x Fixture) {
 	gates := map[core.Capability]bool{core.CapabilityOperateGates: true}
 	v := newVerificationFixture(t, x, true)
@@ -856,11 +861,11 @@ func runNextActionGatedAttemptBinding(t *testing.T, x Fixture) {
 	}
 
 	action := projectVerificationDisposition(t, x, order.TaskID, gates)
-	want := &nextaction.Disposition{ContextID: contextA, RunID: runA, OperationIDs: []string{}, InputDigest: verificationSHA([]byte("{}"))}
-	if !reflect.DeepEqual(action.Details.Disposition, want) {
-		t.Fatalf("disposition = %+v, want %+v (refusals %+v)", action.Details.Disposition, want, action.Details.Refusals)
+	want := []nextaction.Disposition{{ContextID: contextA, RunID: runA, OperationIDs: []string{}, InputDigest: verificationSHA([]byte("{}")), Subject: "ordinary:queue-snapshot-tests", State: "succeeded"}}
+	if !reflect.DeepEqual(action.Details.Dispositions, want) {
+		t.Fatalf("dispositions = %+v, want %+v (refusals %+v)", action.Details.Dispositions, want, action.Details.Refusals)
 	}
-	raw, err := json.Marshal(action.Details.Disposition)
+	raw, err := json.Marshal(action.Details.Dispositions)
 	requireOK(t, err)
 	if !strings.Contains(string(raw), `"operation_ids":[]`) {
 		t.Fatalf("binding JSON %s does not encode operation_ids as []", raw)
@@ -868,7 +873,7 @@ func runNextActionGatedAttemptBinding(t *testing.T, x Fixture) {
 
 	operator, owner := bootstrapOwner(t, x)
 	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
-	disposition := &store.VerificationRecoveryDisposition{ContextID: want.ContextID, RunID: want.RunID, OperationIDs: want.OperationIDs, InputDigest: want.InputDigest, Disposition: "applied", Reason: "The obligation succeeded before the claim was lost; authorize one retry."}
+	disposition := &store.VerificationRecovery{Reason: "The obligation succeeded before the claim was lost; authorize one retry.", Dispositions: []store.VerificationRecoveryDisposition{{ContextID: want[0].ContextID, RunID: want[0].RunID, OperationIDs: want[0].OperationIDs, InputDigest: want[0].InputDigest, Disposition: "applied"}}}
 	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), x.Backend, order.ID, "snapshot-recovery", time.Hour)
 	requireOK(t, err)
 
@@ -958,7 +963,7 @@ func runVerificationRetryGateScope(t *testing.T, x Fixture) {
 		requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRelease))
 		operator, owner := bootstrapOwner(t, x)
 		operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
-		disposition := &store.VerificationRecoveryDisposition{ContextID: oldContext, RunID: oldRun, OperationIDs: []string{}, InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied", Reason: "Operator restored the environment and authorizes one retry."}
+		disposition := &store.VerificationRecovery{Reason: "Operator restored the environment and authorizes one retry.", Dispositions: []store.VerificationRecoveryDisposition{{ContextID: oldContext, RunID: oldRun, OperationIDs: []string{}, InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied"}}}
 		_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), x.Backend, order.ID, "gate-recovery", time.Hour)
 		requireOK(t, err)
 		claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "gate-successor", ClientToken: "gate-successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: order.ServedRequirementSnapshot, Governance: order.GovernanceSnapshot}
@@ -1140,7 +1145,7 @@ func newRetryGateMixedFixture(t *testing.T, x Fixture, scope []core.Verification
 	requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRelease))
 	operator, owner := bootstrapOwner(t, x)
 	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
-	disposition := &store.VerificationRecoveryDisposition{ContextID: m.oldContext, RunID: m.oldRun, OperationIDs: []string{}, InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied", Reason: "Operator restored the environment and authorizes one retry."}
+	disposition := &store.VerificationRecovery{Reason: "Operator restored the environment and authorizes one retry.", Dispositions: []store.VerificationRecoveryDisposition{{ContextID: m.oldContext, RunID: m.oldRun, OperationIDs: []string{}, InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied"}}}
 	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), x.Backend, order.ID, "mixed-recovery", time.Hour)
 	requireOK(t, err)
 	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "mixed-successor", ClientToken: "mixed-successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: order.ServedRequirementSnapshot, Governance: order.GovernanceSnapshot}
@@ -1257,4 +1262,274 @@ func verifyOrderAtHead(t *testing.T, x Fixture, v verificationFixture, head stri
 	next.contextID = next.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "later-verify", Context: &store.VerificationContext{ReviewScope: o.ReviewScope, BaselineSHA: o.BaselineSHA, Revisions: next.revisions, GoverningPins: next.pins, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": next.revisions[0].Repository, "revision": head, "state": "no_manifest"})}}}).ID
 	next.apply(t, store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, Stage: "verify", ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Kits: []verification.KitReceipt{}}, Subjects: []store.VerificationSubjectContract{}}})
 	return next
+}
+
+// recoveryFixtureEnvironment is the environment every recovery fixture start
+// reports.
+var recoveryFixtureEnvironment = core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}
+
+// recoveryFixtureStart starts subject under key, carrying authorization the
+// way the kit runner sends it today.
+func recoveryFixtureStart(key, authorization string, subject core.VerificationSubject) store.VerificationCommand {
+	return store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: key, Attempt: &store.VerificationAttempt{Subject: subject, SafeInputs: map[string]json.RawMessage{}, ReplayAuthorizationID: authorization, Environment: recoveryFixtureEnvironment}}
+}
+
+// recoveryFixtureObligation is an ordinary obligation with the retry policy
+// and, when step is not empty, one external operation.
+func recoveryFixtureObligation(id, policy, step string) store.VerificationObligation {
+	exercise := verification.Exercise{ID: id, Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: policy}
+	if policy == "safe_to_replay" {
+		exercise.SafetyBasis = "read-only observation"
+	}
+	if step != "" {
+		exercise.Operations = []verification.Operation{{ID: step, TargetBinding: "fixture"}}
+	}
+	return store.VerificationObligation{ID: id, Description: "Recovery fixture " + id, Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: exercise}
+}
+
+// recoveryFixtureRegister registers the obligation in the fixture's current
+// context and returns its subject.
+func recoveryFixtureRegister(t *testing.T, v *verificationFixture, obligation store.VerificationObligation) core.VerificationSubject {
+	t.Helper()
+	r := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
+	return core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: r.Digest}
+}
+
+// recoveryFixtureReclaim claims the released verify order under session and
+// creates a successor context in the fixture.
+func recoveryFixtureReclaim(t *testing.T, x Fixture, v *verificationFixture, session string) {
+	t.Helper()
+	order, err := x.Backend.GetWorkOrder(x.Context, v.access.WorkOrderID)
+	requireOK(t, err)
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: session, ClientToken: session + "-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: order.ServedRequirementSnapshot, Governance: order.GovernanceSnapshot}
+	order, err = ClaimWorkOrder(x.Context, x.Backend, order.ID, claim)
+	requireOK(t, err)
+	v.access = store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: session}, ClientToken: claim.ClientToken}
+	v.contextID, v.runID = "", ""
+	v.contextID = v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: session, Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins}}).ID
+}
+
+// recoveryFixtureLoseClaim releases the claimed verify order as a lost claim
+// does, with retry suppressed so that only an operator recovery requeues it.
+func recoveryFixtureLoseClaim(t *testing.T, x Fixture, v *verificationFixture) {
+	t.Helper()
+	order, err := x.Backend.GetWorkOrder(x.Context, v.access.WorkOrderID)
+	requireOK(t, err)
+	order.State, order.LastAttemptID, order.LastAttemptOutcome, order.RetrySuppressed = core.WorkOrderQueued, order.AttemptID, core.WorkOrderOutcomeReleased, true
+	order.SessionID, order.AttemptID, order.ClaimantID, order.WorkerID, order.ClientTokenHash = "", "", "", "", ""
+	order.LeaseExpiresAt = time.Time{}
+	requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRelease))
+}
+
+// recoveryFixtureRequest builds one recovery from disposition entries, with
+// one disposition per entry in entry order.
+func recoveryFixtureRequest(reason string, entries []nextaction.Disposition, dispositions ...string) *store.VerificationRecovery {
+	r := &store.VerificationRecovery{Reason: reason, Dispositions: []store.VerificationRecoveryDisposition{}}
+	for i, e := range entries {
+		r.Dispositions = append(r.Dispositions, store.VerificationRecoveryDisposition{ContextID: e.ContextID, RunID: e.RunID, OperationIDs: e.OperationIDs, InputDigest: e.InputDigest, Disposition: dispositions[i]})
+	}
+	return r
+}
+
+// recoveryFixtureAuthorized counts the task's verification.recovery_authorized
+// events.
+func recoveryFixtureAuthorized(t *testing.T, x Fixture, taskID string) int {
+	t.Helper()
+	events, err := x.Backend.ListEvents(x.Context, taskID)
+	requireOK(t, err)
+	n := 0
+	for _, event := range events {
+		if event.Kind == "verification.recovery_authorized" {
+			n++
+		}
+	}
+	return n
+}
+
+// runRecoveryDisposesEveryGatedSubject reproduces the reported defect: a
+// verify order ends two operator_action_required subjects and three
+// safe_to_replay subjects and seals an operator checkpoint. Row 11 states
+// both gated attempts, and one recovery built from that statement records an
+// authorization on both attempts and appends two events, or records nothing
+// when it omits a member or names one attempt twice. In the successor
+// context both gated starts sent with recovery:<request_id> launch, and each
+// original attempt names its own successor (component-verification-service
+// invariants 19 and 45; component-next-action invariant 15; DEC-133(1), (2);
+// req-verification-kits AC-3.4).
+func runRecoveryDisposesEveryGatedSubject(t *testing.T, x Fixture) {
+	v := newVerificationFixture(t, x, true)
+	digest := verificationSHA([]byte("{}"))
+	var obligations []store.VerificationObligation
+	for _, name := range []string{"login", "checkout"} {
+		obligations = append(obligations, recoveryFixtureObligation(name+"-"+v.access.TaskID, "operator_action_required", ""))
+	}
+	for i := 0; i < 3; i++ {
+		obligations = append(obligations, recoveryFixtureObligation(fmt.Sprintf("read-%d-%s", i, v.access.TaskID), "safe_to_replay", ""))
+	}
+	subjects := make([]core.VerificationSubject, len(obligations))
+	originals := make([]string, len(obligations))
+	for i := range obligations {
+		subjects[i] = recoveryFixtureRegister(t, &v, obligations[i])
+	}
+	// The gated subjects block on the fixture environment; the safe ones fail.
+	for i := range obligations {
+		r := v.apply(t, recoveryFixtureStart(fmt.Sprintf("first-%d", i), "", subjects[i]))
+		v.runID, originals[i] = r.ID, r.ID
+		state := "failed"
+		if i < 2 {
+			state = "blocked"
+		}
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: state, Explanation: "fixture environment unavailable"}})
+	}
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: verificationFixtureCoverage(v.snapshot(t)), Feedback: "Two exercises need an operator", RequiredAction: "Restore the fixtures and authorize one retry of each"}})
+	order, err := x.Backend.GetWorkOrder(x.Context, v.access.WorkOrderID)
+	requireOK(t, err)
+	if order.State != core.WorkOrderQueued || order.Checkpoint == nil || order.Checkpoint.Verification == nil {
+		t.Fatalf("sealed checkpoint order = %+v", order)
+	}
+	oldContext := v.contextID
+
+	action := projectVerificationDisposition(t, x, order.TaskID, map[core.Capability]bool{core.CapabilityOperateGates: true})
+	want := []nextaction.Disposition{
+		{ContextID: oldContext, RunID: originals[0], OperationIDs: []string{}, InputDigest: digest, Subject: "ordinary:" + obligations[0].ID, State: "blocked"},
+		{ContextID: oldContext, RunID: originals[1], OperationIDs: []string{}, InputDigest: digest, Subject: "ordinary:" + obligations[1].ID, State: "blocked"},
+	}
+	if !reflect.DeepEqual(action.Details.Dispositions, want) {
+		t.Fatalf("dispositions = %+v, want both gated attempts %+v (refusals %+v)", action.Details.Dispositions, want, action.Details.Refusals)
+	}
+
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	observer := v
+	observer.ctx, observer.access.UserID = operator, owner.ID
+	reason := "Operator restored both fixtures and authorizes one retry of each."
+	refused := map[string]*store.VerificationRecovery{
+		"omitted member":    recoveryFixtureRequest(reason, want[:1], "applied"),
+		"duplicate attempt": recoveryFixtureRequest(reason, []nextaction.Disposition{want[0], want[0], want[1]}, "applied", "applied", "not_applied"),
+	}
+	for name, request := range refused {
+		before := verificationPublicState(t, &observer)
+		if _, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, request), x.Backend, order.ID, "refused-"+strings.ReplaceAll(name, " ", "-"), time.Hour); !errors.Is(err, store.ErrVerificationInvalid) {
+			t.Fatalf("%s: recover err = %v, want an invalid recovery refusal", name, err)
+		}
+		if !reflect.DeepEqual(before, verificationPublicState(t, &observer)) {
+			t.Fatalf("%s: refused recovery changed the aggregate", name)
+		}
+	}
+
+	requestID := "batch-recovery"
+	request := recoveryFixtureRequest(reason, action.Details.Dispositions, "applied", "not_applied")
+	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, request), x.Backend, order.ID, requestID, time.Hour)
+	requireOK(t, err)
+	if n := recoveryFixtureAuthorized(t, x, order.TaskID); n != 2 {
+		t.Fatalf("recovery appended %d recovery_authorized events, want 2", n)
+	}
+	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, request), x.Backend, order.ID, requestID, time.Hour)
+	requireOK(t, err)
+	if n := recoveryFixtureAuthorized(t, x, order.TaskID); n != 2 {
+		t.Fatalf("replay appended events: %d recovery_authorized events, want 2", n)
+	}
+	changed := recoveryFixtureRequest(reason, action.Details.Dispositions, "not_applied", "not_applied")
+	if _, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, changed), x.Backend, order.ID, requestID, time.Hour); err == nil {
+		t.Fatal("a replay with a changed disposition was accepted")
+	}
+
+	recoveryFixtureReclaim(t, x, &v, "batch-successor")
+	for i := range obligations {
+		subjects[i].ContractDigest = recoveryFixtureRegister(t, &v, obligations[i]).ContractDigest
+	}
+	authorization := "recovery:" + requestID
+	successors := map[string]string{}
+	// The runner starts every subject with the ID; the safe_to_replay starts
+	// are not gated and leave both authorizations unused.
+	for i := len(obligations) - 1; i >= 0; i-- {
+		r := v.apply(t, recoveryFixtureStart(fmt.Sprintf("successor-%d", i), authorization, subjects[i]))
+		if !r.LaunchAuthorized {
+			t.Fatalf("successor start of %s was not authorized", obligations[i].ID)
+		}
+		successors[originals[i]] = r.ID
+		v.runID = r.ID
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "fixture assertion failed"}})
+	}
+	for _, attempt := range observer.snapshotFor(t, oldContext).Attempts {
+		for i, entry := range want {
+			if attempt.ID != entry.RunID {
+				continue
+			}
+			if len(attempt.Recovery) != 1 || attempt.Recovery[0].ID != authorization || attempt.Recovery[0].Disposition != request.Dispositions[i].Disposition || attempt.Recovery[0].Successor == nil || attempt.Recovery[0].Successor.RunID != successors[attempt.ID] {
+				t.Fatalf("attempt %s authorizations = %+v, want one bound to its own successor %s", attempt.ID, attempt.Recovery, successors[attempt.ID])
+			}
+		}
+	}
+}
+
+// runRecoveryDisposesAttemptsAcrossContexts covers a disposition set that
+// spans two contexts of one verify order: a gated attempt that ended in the
+// first context, and a still-running attempt with an unresolved operation in
+// the second. One recovery with mixed dispositions authorizes both, cancels
+// the running attempt, authorizes its operation, and resolves no operation
+// (component-verification-service invariant 45; DEC-133(1), (2)).
+func runRecoveryDisposesAttemptsAcrossContexts(t *testing.T, x Fixture) {
+	v := newVerificationFixture(t, x)
+	digest := verificationSHA([]byte("{}"))
+	gated := recoveryFixtureObligation("gated-"+v.access.TaskID, "operator_action_required", "")
+	mutating := recoveryFixtureObligation("mutating-"+v.access.TaskID, "operator_action_required", "step")
+	gatedSubject := recoveryFixtureRegister(t, &v, gated)
+	r := v.apply(t, recoveryFixtureStart("context-a", "", gatedSubject))
+	v.runID = r.ID
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "fixture environment unavailable"}})
+	contextA, runA := v.contextID, r.ID
+	order, err := x.Backend.GetWorkOrder(x.Context, v.access.WorkOrderID)
+	requireOK(t, err)
+	order.State, order.LastAttemptID, order.LastAttemptOutcome = core.WorkOrderQueued, order.AttemptID, core.WorkOrderOutcomeExpired
+	order.SessionID, order.AttemptID, order.ClaimantID, order.WorkerID, order.ClientTokenHash = "", "", "", "", ""
+	order.LeaseExpiresAt = time.Time{}
+	requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRelease))
+
+	recoveryFixtureReclaim(t, x, &v, "cross-context")
+	recoveryFixtureRegister(t, &v, gated)
+	mutatingSubject := recoveryFixtureRegister(t, &v, mutating)
+	r = v.apply(t, recoveryFixtureStart("context-b", "", mutatingSubject))
+	v.runID = r.ID
+	op := v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "context-b-step", Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: digest}})
+	contextB, runB := v.contextID, r.ID
+	recoveryFixtureLoseClaim(t, x, &v)
+
+	entries := []nextaction.Disposition{
+		{ContextID: contextA, RunID: runA, OperationIDs: []string{}, InputDigest: digest},
+		{ContextID: contextB, RunID: runB, OperationIDs: []string{op.ID}, InputDigest: digest},
+	}
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	observer := v
+	observer.ctx, observer.access.UserID = operator, owner.ID
+	reason := "Operator inspected the provider and the fixture environment."
+	before := verificationPublicState(t, &observer)
+	if _, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, recoveryFixtureRequest(reason, entries[1:], "not_applied")), x.Backend, order.ID, "cross-omitted", time.Hour); !errors.Is(err, store.ErrVerificationInvalid) {
+		t.Fatalf("recovery without the earlier context's attempt: %v, want an invalid recovery refusal", err)
+	}
+	if !reflect.DeepEqual(before, verificationPublicState(t, &observer)) {
+		t.Fatal("refused cross-context recovery changed the aggregate")
+	}
+	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, recoveryFixtureRequest(reason, entries, "applied", "not_applied")), x.Backend, order.ID, "cross-recovery", time.Hour)
+	requireOK(t, err)
+	if n := recoveryFixtureAuthorized(t, x, v.access.TaskID); n != 2 {
+		t.Fatalf("cross-context recovery appended %d recovery_authorized events, want 2", n)
+	}
+	for _, attempt := range observer.snapshotFor(t, contextA).Attempts {
+		if attempt.ID == runA && (len(attempt.Recovery) != 1 || attempt.Recovery[0].Disposition != "applied" || attempt.Recovery[0].Original.ContextID != contextA) {
+			t.Fatalf("context A attempt authorizations = %+v", attempt.Recovery)
+		}
+	}
+	snapshot := observer.snapshotFor(t, contextB)
+	for _, attempt := range snapshot.Attempts {
+		if attempt.ID == runB && (attempt.State != "cancelled" || attempt.EndedAt == nil || len(attempt.Recovery) != 1 || attempt.Recovery[0].Disposition != "not_applied") {
+			t.Fatalf("running attempt after recovery = state %s, authorizations %+v; want cancelled with one authorization", attempt.State, attempt.Recovery)
+		}
+	}
+	for _, operation := range snapshot.Operations {
+		if operation.ID == op.ID && (len(operation.Recovery) != 1 || operation.Recovery[0].ID != "recovery:cross-recovery" || operation.Recovery[0].Disposition != "not_applied") {
+			t.Fatalf("operation authorizations = %+v", operation.Recovery)
+		}
+	}
 }

@@ -491,8 +491,8 @@ func TestBatchedProjectionMatchesFullHistoryOracle(t *testing.T) {
 				t.Fatalf("parked reason=%q", action.Details.ReasonCode)
 			}
 		case nextaction.KindVerificationDisposition:
-			if len(action.Details.Refusals) == 0 && action.Details.Disposition == nil {
-				t.Fatalf("disposition carries neither a binding nor a refusal: %+v", action.Details)
+			if len(action.Details.Refusals) == 0 && len(action.Details.Dispositions) == 0 {
+				t.Fatalf("disposition carries neither a set nor a refusal: %+v", action.Details)
 			}
 		case nextaction.KindBlocked:
 			if len(action.BlockedBy) != 1 {

@@ -122,45 +122,80 @@ func TestOrderRecoverRequestID(t *testing.T) {
 	}
 }
 
-// Tests for conveyor order recover --disposition (component-verification-service,
-// Operator checkpoint and recovery; feature-operator-next-action NA-8).
+// Tests for conveyor order recover --disposition: the command reads the
+// disposition set from the next action of the order's task and sends one
+// entry for each attempt (component-verification-service invariant 45;
+// component-next-action invariant 15; DEC-133(4)).
 
-func TestOrderRecoverVerificationDisposition(t *testing.T) {
-	c, seen := serveOrders(t, okJSON)
+const dispositionOrders = `[{"id":"t-verify-2","task_id":"t","state":"queued","stage":"verify"}]`
+
+const dispositionNextAction = `{"kind":"verification_disposition","current_order":{"id":"t-verify-2","stage":"verify","state":"queued"},"choices":[{"id":"record_dispositions","method":"POST","path":"/v1/work-orders/t-verify-2/recover"}],"details":{"dispositions":[` +
+	`{"context_id":"ctx-a","run_id":"run-a","operation_ids":[],"input_digest":"digest-a","subject":"kit:provider/login","state":"blocked"},` +
+	`{"context_id":"ctx-b","run_id":"run-b","operation_ids":["op-1","op-2"],"input_digest":"digest-b","subject":"ordinary:checkout","state":"running"}]}}`
+
+// serveDispositions answers the order read, the task's next action with
+// nextAction, and the recover POST.
+func serveDispositions(t *testing.T, nextAction string) (*client, func() []orderRequest) {
+	t.Helper()
+	return serveOrders(t, func(w http.ResponseWriter, r *http.Request) {
+		if serveOrderReads(t, w, r, dispositionOrders, false) {
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/t/next-action" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(nextAction))
+			return
+		}
+		okJSON(w, r)
+	})
+}
+
+func posted(requests []orderRequest) []orderRequest {
+	var out []orderRequest
+	for _, r := range requests {
+		if r.method == http.MethodPost {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func TestOrderRecoverDispositionsFromNextAction(t *testing.T) {
+	c, seen := serveDispositions(t, dispositionNextAction)
 	var out bytes.Buffer
-	verification := &orderRecoverVerification{ContextID: "ctx-a", RunID: "run-a", InputDigest: "digest-a", Disposition: "applied", Reason: "The obligation succeeded before the claim was lost."}
-	if err := runOrderRecover(c, &out, "t-verify-2", "", "ff-72a154", verification, false); err != nil {
+	disposition := &orderRecoverDisposition{Default: "applied", Runs: []string{"run-b=not_applied"}, Reason: "Operator restored the fixtures."}
+	if err := runOrderRecover(c, &out, "t-verify-2", "", "ff-72a154", disposition, false); err != nil {
 		t.Fatal(err)
 	}
 	requests := seen()
-	if len(requests) != 1 || requests[0].path != "/v1/work-orders/t-verify-2/recover" || requests[0].body["request_id"] != "ff-72a154" {
+	if len(requests) != 3 || requests[1].path != "/v1/tasks/t/next-action" || requests[2].method != http.MethodPost || requests[2].path != "/v1/work-orders/t-verify-2/recover" || requests[2].body["request_id"] != "ff-72a154" {
 		t.Fatalf("requests = %+v", requests)
 	}
-	body, ok := requests[0].body["verification"].(map[string]any)
-	if !ok {
-		t.Fatalf("verification object missing: %+v", requests[0].body)
+	want := map[string]any{"reason": "Operator restored the fixtures.", "dispositions": []any{
+		map[string]any{"context_id": "ctx-a", "run_id": "run-a", "operation_ids": []any{}, "input_digest": "digest-a", "disposition": "applied"},
+		map[string]any{"context_id": "ctx-b", "run_id": "run-b", "operation_ids": []any{"op-1", "op-2"}, "input_digest": "digest-b", "disposition": "not_applied"},
+	}}
+	if got := requests[2].body["verification"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("verification = %#v, want %#v", got, want)
 	}
-	want := map[string]any{"context_id": "ctx-a", "run_id": "run-a", "operation_ids": []any{}, "input_digest": "digest-a", "disposition": "applied", "reason": "The obligation succeeded before the claim was lost."}
-	if !reflect.DeepEqual(body, want) {
-		t.Fatalf("verification = %#v, want %#v", body, want)
+	if _, present := requests[2].body["direction"]; present {
+		t.Fatalf("empty direction was sent: %+v", requests[2].body)
 	}
-	if _, present := requests[0].body["direction"]; present {
-		t.Fatalf("empty direction was sent: %+v", requests[0].body)
-	}
-	for _, line := range []string{"verification authorization recovery:ff-72a154 (applied, run run-a)", "conveyor kit verify --replay-authorization recovery:ff-72a154"} {
+	for _, line := range []string{"verification authorization recovery:ff-72a154", "run run-a: applied (kit:provider/login)", "run run-b: not_applied (ordinary:checkout)", "next verifier: conveyor kit verify --replay-authorization recovery:ff-72a154"} {
 		if !strings.Contains(out.String(), line) {
 			t.Fatalf("output %q lacks %q", out.String(), line)
 		}
 	}
 
 	out.Reset()
-	operations := &orderRecoverVerification{ContextID: "ctx-a", RunID: "run-a", OperationIDs: []string{"op-1", "op-2"}, InputDigest: "digest-a", Disposition: "not_applied", Reason: "Provider shows no change."}
-	if err := runOrderRecover(c, &out, "t-verify-2", "retry the exercise", "", operations, true); err != nil {
+	if err := runOrderRecover(c, &out, "t-verify-2", "retry the exercise", "", &orderRecoverDisposition{Default: "unknown", Reason: "Provider unreachable."}, true); err != nil {
 		t.Fatal(err)
 	}
-	second := seen()[1]
-	if got := second.body["verification"].(map[string]any)["operation_ids"]; !reflect.DeepEqual(got, []any{"op-1", "op-2"}) {
-		t.Fatalf("operation_ids = %#v", got)
+	second := posted(seen())[1]
+	for _, entry := range second.body["verification"].(map[string]any)["dispositions"].([]any) {
+		if entry.(map[string]any)["disposition"] != "unknown" {
+			t.Fatalf("default disposition not applied to every entry: %#v", second.body["verification"])
+		}
 	}
 	if second.body["direction"] != "retry the exercise" {
 		t.Fatalf("direction = %v", second.body["direction"])
@@ -169,74 +204,100 @@ func TestOrderRecoverVerificationDisposition(t *testing.T) {
 		t.Fatalf("--json output = %q, want the server body verbatim", out.String())
 	}
 
+	before := len(seen())
 	if err := runOrderRecover(c, &out, "t-verify-2", "", "", nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, present := seen()[2].body["verification"]; present {
-		t.Fatalf("recovery without --disposition sent a verification object: %+v", seen()[2].body)
+	plain := seen()[before:]
+	if len(plain) != 1 || plain[0].method != http.MethodPost {
+		t.Fatalf("recovery without --disposition read the next action: %+v", plain)
+	}
+	if _, present := plain[0].body["verification"]; present {
+		t.Fatalf("recovery without --disposition sent a verification object: %+v", plain[0].body)
 	}
 }
 
-func TestOrderRecoverVerificationRefusesBeforeSending(t *testing.T) {
-	c, seen := serveOrders(t, okJSON)
-	complete := orderRecoverVerification{ContextID: "ctx-a", RunID: "run-a", InputDigest: "digest-a", Disposition: "applied", Reason: "reason"}
-	cases := map[string]struct {
-		mutate func(*orderRecoverVerification)
+func TestOrderRecoverDispositionsRefuseBeforeSending(t *testing.T) {
+	complete := orderRecoverDisposition{Default: "applied", Reason: "reason"}
+	flagCases := map[string]struct {
+		mutate func(*orderRecoverDisposition)
 		want   string
 	}{
-		"missing context": {func(v *orderRecoverVerification) { v.ContextID = "" }, "--context-id"},
-		"missing run":     {func(v *orderRecoverVerification) { v.RunID = " " }, "--run-id"},
-		"missing digest":  {func(v *orderRecoverVerification) { v.InputDigest = "" }, "--input-digest"},
-		"missing reason":  {func(v *orderRecoverVerification) { v.Reason = "" }, "--reason"},
-		"no disposition":  {func(v *orderRecoverVerification) { v.Disposition = "" }, "require --disposition"},
-		"bad disposition": {func(v *orderRecoverVerification) { v.Disposition = "skipped" }, "applied, not_applied, or unknown"},
+		"no disposition":           {func(d *orderRecoverDisposition) { d.Default = "" }, "require --disposition"},
+		"bad disposition":          {func(d *orderRecoverDisposition) { d.Default = "skipped" }, "applied, not_applied, or unknown"},
+		"missing reason":           {func(d *orderRecoverDisposition) { d.Reason = " " }, "requires --reason"},
+		"malformed run":            {func(d *orderRecoverDisposition) { d.Runs = []string{"run-a"} }, "<run-id>=<disposition>"},
+		"empty run value":          {func(d *orderRecoverDisposition) { d.Runs = []string{"run-a="} }, "<run-id>=<disposition>"},
+		"bad run value":            {func(d *orderRecoverDisposition) { d.Runs = []string{"run-a=skipped"} }, "applied, not_applied, or unknown"},
+		"run named twice":          {func(d *orderRecoverDisposition) { d.Runs = []string{"run-a=applied", "run-a=not_applied"} }, "more than once"},
+		"run outside set":          {func(d *orderRecoverDisposition) { d.Runs = []string{"run-z=not_applied"} }, "run-z: the run is not in the disposition set"},
+		"one override outside set": {func(d *orderRecoverDisposition) { d.Runs = []string{"run-b=not_applied", "run-z=applied"} }, "run-z"},
 	}
-	for name, tc := range cases {
+	c, seen := serveDispositions(t, dispositionNextAction)
+	for name, tc := range flagCases {
 		t.Run(name, func(t *testing.T) {
-			v := complete
-			tc.mutate(&v)
-			err := runOrderRecover(c, io.Discard, "t-verify-2", "", "", &v, false)
+			d := complete
+			tc.mutate(&d)
+			err := runOrderRecover(c, io.Discard, "t-verify-2", "", "", &d, false)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
 		})
 	}
-	if requests := seen(); len(requests) != 0 {
-		t.Fatalf("refused recoveries sent %d requests", len(requests))
+	if requests := posted(seen()); len(requests) != 0 {
+		t.Fatalf("refused recoveries sent %d posts", len(requests))
+	}
+
+	statements := map[string]struct {
+		nextAction string
+		want       string
+	}{
+		"no set": {`{"kind":"verification_disposition","current_order":{"id":"t-verify-2"},"details":{"refusals":[{"choice":"record_dispositions","text":"verify order t-verify-2 has no unresolved operations and no retry-gated attempts to dispose"}]}}`,
+			"states no disposition set for work order t-verify-2: verify order t-verify-2 has no unresolved operations"},
+		"another kind":  {`{"kind":"queued","current_order":{"id":"t-verify-2"},"details":{}}`, "does not ask for dispositions on work order t-verify-2"},
+		"another order": {`{"kind":"verification_disposition","current_order":{"id":"t-verify-1"},"details":{"dispositions":[{"context_id":"ctx","run_id":"run-a","operation_ids":[],"input_digest":"d","subject":"ordinary:o","state":"blocked"}]}}`, "does not ask for dispositions on work order t-verify-2"},
+	}
+	for name, tc := range statements {
+		t.Run(name, func(t *testing.T) {
+			c, seen := serveDispositions(t, tc.nextAction)
+			err := runOrderRecover(c, io.Discard, "t-verify-2", "", "", &orderRecoverDisposition{Default: "applied", Reason: "reason"}, false)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "nothing was sent") {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if requests := posted(seen()); len(requests) != 0 {
+				t.Fatalf("refused recovery sent %+v", requests)
+			}
+		})
 	}
 }
 
-func TestOrderRecoverVerificationFlags(t *testing.T) {
-	c, seen := serveOrders(t, okJSON)
-	stderr, code := runConveyorMain(t, c.base, "order", "recover", "t-verify-2", "--disposition", "applied", "--context-id", "ctx-a", "--run-id", "run-a")
-	if code != 1 || !strings.Contains(stderr, "--disposition requires --input-digest, --reason") {
-		t.Fatalf("exit=%d stderr=%q", code, stderr)
+func TestOrderRecoverDispositionFlags(t *testing.T) {
+	c, seen := serveDispositions(t, dispositionNextAction)
+	for _, retired := range [][]string{{"--context-id", "ctx-a"}, {"--run-id", "run-a"}, {"--input-digest", "digest-a"}, {"--operation-id", "op-1"}} {
+		args := append([]string{"order", "recover", "t-verify-2", "--disposition", "applied", "--reason", "r"}, retired...)
+		stderr, code := runConveyorMain(t, c.base, args...)
+		if code != 1 || !strings.Contains(stderr, "unknown flag: "+retired[0]) {
+			t.Fatalf("%s: exit=%d stderr=%q", retired[0], code, stderr)
+		}
 	}
-	stderr, code = runConveyorMain(t, c.base, "order", "recover", "t-verify-2", "--run-id", "run-a")
+	stderr, code := runConveyorMain(t, c.base, "order", "recover", "t-verify-2", "--run", "run-a=applied")
 	if code != 1 || !strings.Contains(stderr, "require --disposition") {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
 	if requests := seen(); len(requests) != 0 {
 		t.Fatalf("refused recoveries sent %d requests", len(requests))
 	}
-	stderr, code = runConveyorMain(t, c.base, "order", "recover", "t-verify-2", "--request-id", "r-1", "--disposition", "not_applied", "--context-id", "ctx-a", "--run-id", "run-a", "--input-digest", "digest-a", "--reason", "No change observed.", "--operation-id", "op-1", "--operation-id", "op-2")
+	stderr, code = runConveyorMain(t, c.base, "order", "recover", "t-verify-2", "--request-id", "r-1", "--disposition", "not_applied", "--run", "run-a=applied", "--run", "run-b=unknown", "--reason", "No change observed.")
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
-	requests := seen()
-	if len(requests) != 1 {
-		t.Fatalf("requests = %+v", requests)
+	requests := posted(seen())
+	if len(requests) != 1 || requests[0].body["request_id"] != "r-1" {
+		t.Fatalf("posts = %+v", requests)
 	}
-	want := map[string]any{"context_id": "ctx-a", "run_id": "run-a", "operation_ids": []any{"op-1", "op-2"}, "input_digest": "digest-a", "disposition": "not_applied", "reason": "No change observed."}
-	if got := requests[0].body["verification"]; !reflect.DeepEqual(got, want) {
-		t.Fatalf("verification = %#v, want %#v", got, want)
-	}
-	stderr, code = runConveyorMain(t, c.base, "order", "recover", "t-verify-2", "--disposition", "applied", "--context-id", "ctx-a", "--run-id", "run-a", "--input-digest", "digest-a", "--reason", "Succeeded before claim loss.")
-	if code != 0 {
-		t.Fatalf("exit=%d stderr=%q", code, stderr)
-	}
-	if got := seen()[1].body["verification"].(map[string]any)["operation_ids"]; !reflect.DeepEqual(got, []any{}) {
-		t.Fatalf("operation_ids = %#v, want []", got)
+	entries := requests[0].body["verification"].(map[string]any)["dispositions"].([]any)
+	if len(entries) != 2 || entries[0].(map[string]any)["disposition"] != "applied" || entries[1].(map[string]any)["disposition"] != "unknown" {
+		t.Fatalf("dispositions = %#v", entries)
 	}
 }
 

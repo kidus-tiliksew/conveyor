@@ -19,10 +19,9 @@ func TestRecoverRouteChoicesFollowTheRouteEligibility(t *testing.T) {
 		t.Fatalf("route refusal = %q, want %q", got, routeText)
 	}
 	sets := map[string][]ChoiceSpec{
-		"answer":      answerChoices(),
-		"recover":     stalledChoices(),
-		"applied":     dispositionChoices(),
-		"not_applied": dispositionChoices(),
+		"answer":              answerChoices(),
+		"recover":             stalledChoices(),
+		"record_dispositions": dispositionChoices(),
 	}
 	in := Input{Task: core.Task{ID: "t", State: core.TaskRunning}, Capabilities: allCaps(), Now: now}
 	for id, specs := range sets {
@@ -55,21 +54,21 @@ func TestRecoverRouteChoicesFollowTheRouteEligibility(t *testing.T) {
 		}
 	}
 
-	// Row 10 on a verify order the route refuses lists neither disposition.
+	// Row 11 on a verify order the route refuses withholds record_dispositions.
 	verify := Input{
 		Task:         core.Task{ID: "t", State: core.TaskRunning},
 		Markers:      Markers{VerificationDisposition: true},
 		Orders:       []core.WorkOrder{{ID: "v", State: core.WorkOrderQueued, Stage: core.StageVerify}},
-		Dispositions: map[string]DispositionInput{"v": {Binding: &Disposition{ContextID: "ctx", RunID: "run", OperationIDs: []string{"op"}}}},
+		Dispositions: map[string]DispositionInput{"v": {Set: []Disposition{{ContextID: "ctx", RunID: "run", OperationIDs: []string{"op"}}}}},
 		Capabilities: allCaps(), Now: now,
 	}
 	got := Project(verify)
 	if got.Kind != KindVerificationDisposition {
 		t.Fatalf("kind = %s, want verification_disposition", got.Kind)
 	}
-	for _, id := range []string{"applied", "not_applied"} {
+	for _, id := range []string{"record_dispositions"} {
 		if hasChoice(got, id) || !hasRefusalText(got, id, "work order v is not released, expired, or retry-suppressed") {
-			t.Fatalf("row 10 %s: choices %+v refusals %+v", id, got.Choices, got.Details.Refusals)
+			t.Fatalf("row 11 %s: choices %+v refusals %+v", id, got.Choices, got.Details.Refusals)
 		}
 	}
 }
