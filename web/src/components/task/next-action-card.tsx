@@ -129,6 +129,7 @@ export function NextActionCard({
           {execution && execution.title !== action.label && <ExecutionTitle state={execution} />}
           {action.kind === 'parked' && <NextActionParkReason item={item} />}
           {action.question && <p className="text-sm text-muted">{action.question}</p>}
+          {action.kind === 'verification_disposition' && <DispositionCheckpointRequest action={action} />}
           <CheckStatusList action={action} />
           {execution && <ExecutionFactRows state={execution} routeVariant={routeVariant} />}
           {!gateOpen &&
@@ -147,6 +148,25 @@ export function NextActionCard({
           <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
         </CardContent>
       </Card>
+    </section>
+  )
+}
+
+// A verify order released at its sealed verification checkpoint states its
+// decision request in details.checkpoint. The card prints the server's text
+// as written, above the disposition entries that the choice opens
+// (component-next-action invariant 15; DEC-133(1)).
+function DispositionCheckpointRequest({ action }: { action: NextAction }) {
+  const request = action.details?.checkpoint?.trim()
+  if (!request) return null
+  return (
+    <section
+      aria-label="Verification checkpoint request"
+      data-checkpoint-request
+      className="rounded-lg border border-border px-3 py-2.5"
+    >
+      <h3 className="text-xs font-medium text-muted">The verify agent asks</h3>
+      <p className="mt-1 whitespace-pre-wrap break-words text-sm">{request}</p>
     </section>
   )
 }

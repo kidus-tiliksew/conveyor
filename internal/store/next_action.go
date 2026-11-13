@@ -37,9 +37,11 @@ type NextActionOptions struct {
 	OpenTasksLoaded bool
 	OpenTasks       []core.Task
 	// CompactOnly marks a caller that consumes only nextaction.CompactFrom.
-	// The row-10 disposition binding feeds only details and choices, so its
-	// per-order verification read is skipped; every compact field is
-	// projected from the same input (feature-operator-next-action NA-3).
+	// Row 11's disposition set feeds only details and choices, so its
+	// verification read is skipped, except for a sealed verify order whose
+	// set decides between row 10 and row 11 (nextaction.DispositionDecidesRow);
+	// every compact field is projected from the same input as a full read
+	// (component-next-action invariant 15).
 	CompactOnly bool
 	// TrustedAuthors returns the live trusted_authors list of a task's
 	// repository (req-risk-based-review AC-9.3). Nil reads the empty list.
@@ -178,10 +180,13 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	var disposed []int
 	for i, task := range tasks {
 		action := nextaction.Project(inputs[i])
-		// Row 10 reads its selected order's sealed checkpoint only when it
-		// wins, so no other row ever carries the binding
-		// (feature-operator-next-action NA-3, Disposition binding).
-		if action.Kind == nextaction.KindVerificationDisposition && action.CurrentOrder != nil && !opts.CompactOnly {
+		// Row 11 reads its selected order's disposition set only when it
+		// wins, so no other row ever carries the set. A compact read skips
+		// the set unless the set decides between row 10 and row 11 for the
+		// sealed verify order row 11 selects; then it reads the set for that
+		// one order, so a compact read and a full read state the same
+		// compact fields (component-next-action invariant 15).
+		if action.Kind == nextaction.KindVerificationDisposition && action.CurrentOrder != nil && (!opts.CompactOnly || nextaction.DispositionDecidesRow(inputs[i])) {
 			disposed = append(disposed, i)
 		}
 		out[task.ID] = action

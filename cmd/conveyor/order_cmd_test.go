@@ -20,6 +20,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -634,5 +635,75 @@ func TestOrderRetireServerRefusalPassthrough(t *testing.T) {
 	stderr, code := runConveyorMain(t, c.base, "order", "retire", "o-1", "--reason", "obsolete")
 	if code != 1 || !strings.Contains(stderr, "409 Conflict: "+refusal) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+}
+
+// sealedCheckpointNextAction is the statement the projection states for a
+// verify order released at its sealed verification checkpoint with the
+// decision request the seal writes and a disposition set of two attempts:
+// verification_disposition with details.checkpoint and details.dispositions
+// (component-next-action invariant 15).
+func sealedCheckpointNextAction(t *testing.T) (string, []nextaction.Disposition) {
+	t.Helper()
+	request := "Two exercises need an operator\nRequired operator action: Restore the fixtures"
+	set := []nextaction.Disposition{
+		{ContextID: "ctx-a", RunID: "run-a", OperationIDs: []string{}, InputDigest: "digest-a", Subject: "ordinary:login", State: "blocked"},
+		{ContextID: "ctx-a", RunID: "run-b", OperationIDs: []string{"op-1"}, InputDigest: "digest-b", Subject: "ordinary:checkout", State: "blocked"},
+	}
+	order := core.WorkOrder{ID: "t-verify-2", TaskID: "t", Stage: core.StageVerify, State: core.WorkOrderQueued, LastAttemptID: "attempt-1", LastAttemptOutcome: core.WorkOrderOutcomeReleased, RetrySuppressed: true,
+		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: request, Verification: &core.WorkOrderVerificationCheckpoint{ContextID: "ctx-a", OperationIDs: []string{"op-1"}}}}
+	action := nextaction.Project(nextaction.Input{
+		Task:         core.Task{ID: "t", State: core.TaskRunning},
+		Markers:      nextaction.Markers{CheckpointDecision: true, Checkpoint: request, VerificationDisposition: true},
+		Orders:       []core.WorkOrder{order},
+		Dispositions: map[string]nextaction.DispositionInput{order.ID: {Set: set}},
+		Capabilities: map[core.Capability]bool{core.CapabilityOperateGates: true},
+		Now:          time.Now().UTC(),
+	})
+	if action.Kind != nextaction.KindVerificationDisposition || action.Details.Checkpoint != request || len(action.Details.Dispositions) != len(set) {
+		t.Fatalf("sealed checkpoint statement = %s checkpoint %q dispositions %+v", action.Kind, action.Details.Checkpoint, action.Details.Dispositions)
+	}
+	raw, err := json.Marshal(action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw), set
+}
+
+// At a sealed verify checkpoint whose next action states a set, `conveyor
+// order recover --disposition --reason` sends one recovery request with one
+// entry for each member of the set, using the existing flags only
+// (component-next-action invariant 15; DEC-133(1)).
+func TestOrderRecoverDispositionsAtSealedCheckpoint(t *testing.T) {
+	statement, set := sealedCheckpointNextAction(t)
+	c, seen := serveDispositions(t, statement)
+	stderr, code := runConveyorMain(t, c.base, "order", "recover", "t-verify-2", "--disposition", "not_applied", "--reason", "Operator inspected both fixtures.")
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+	requests := posted(seen())
+	if len(requests) != 1 || requests[0].path != "/v1/work-orders/t-verify-2/recover" {
+		t.Fatalf("posts = %+v, want one recovery of t-verify-2", requests)
+	}
+	verification, _ := requests[0].body["verification"].(map[string]any)
+	if verification["reason"] != "Operator inspected both fixtures." {
+		t.Fatalf("verification = %#v", verification)
+	}
+	entries, _ := verification["dispositions"].([]any)
+	if len(entries) != len(set) {
+		t.Fatalf("dispositions = %#v, want one entry for each of %d members", entries, len(set))
+	}
+	for i, member := range set {
+		operations := make([]any, 0, len(member.OperationIDs))
+		for _, id := range member.OperationIDs {
+			operations = append(operations, id)
+		}
+		want := map[string]any{"context_id": member.ContextID, "run_id": member.RunID, "operation_ids": operations, "input_digest": member.InputDigest, "disposition": "not_applied"}
+		if !reflect.DeepEqual(entries[i], want) {
+			t.Fatalf("entry %d = %#v, want %#v", i, entries[i], want)
+		}
+	}
+	if _, present := requests[0].body["direction"]; present {
+		t.Fatalf("recovery sent a direction: %+v", requests[0].body)
 	}
 }
