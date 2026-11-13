@@ -4,6 +4,8 @@ This branch holds only retained validation records for task 261113-328ebf (PR #1
 
 Each `head-<sha>/` directory is one complete set of the approved plan's local commands, run in the dedicated task worktree at that head (`before.git.head` and `after.git.head` in each manifest).
 
+- `head-2a46c81b/`: head `2a46c81b787cec6df4d4f8b4fba9f16da8ecb5b7`, the merge of `origin/main` at `f4d3f078` (PR #1638 of task 261113-f7a398) into the task branch. This is the submitted head of PR #1639.
+- `head-856a608f/`: head `856a608fbfda311a1510a66560e8ae4da451d537`, two test-only commits after `d726d62c`, before the merge.
 - `head-d726d62c/`: head `d726d62c7b091465b90d36404ce67f6fa746c19f`, the first pushed head of PR #1639, on base `e98b2f01`.
 
 Before the runs, the task cache was prepared with `prepare-cache`, and `CONVEYOR_TASK_CACHE`, `GOCACHE`, `GOTMPDIR`, `TMPDIR`, `PLAYWRIGHT_BROWSERS_PATH`, and `npm_config_cache` were exported, as docs/validation-evidence.md requires.
@@ -17,7 +19,7 @@ Done criterion 8 of approved plan v3 names these commands:
 
 The helper's policy `command` must start with `make`. For attempt 4 the `setpriv --inh-caps=-all --ambient-caps=-all` prefix therefore wraps the helper: `setpriv --inh-caps=-all --ambient-caps=-all python3 scripts/validation_evidence.py run --timeout 590 --policy <policy>`. `make` and every child then run without inheritable or ambient capabilities. In this sandbox the user's `CapEff` is `0000000000000004` (CAP_DAC_READ_SEARCH) without the prefix and `0000000000000000` under it. Each policy `command` is the plan's argv exactly. Attempts 1 to 3 ran as `python3 scripts/validation_evidence.py run --timeout 580 --policy <policy>`.
 
-Outcome at `head-d726d62c/`:
+Every set has the same outcome. The table describes each of them:
 
 | Attempt | Policy command | Exit | Outcome | Result in the log |
 |---|---|---|---|---|
