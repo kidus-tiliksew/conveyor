@@ -186,6 +186,12 @@ const layoutTask = {
     approved: true,
     created_at: '2026-10-05T12:00:00Z',
     approved_at: '2026-10-05T13:36:00Z',
+    // The read carries these plan facts, and the plan card shows none of them
+    // (DEC-134).
+    base_commit: '0123456789abcdef0123456789abcdef01234567',
+    review_seats: 3,
+    risk_tier: 'medium',
+    risk_reason: 'The change touches the shared process inspector.',
   },
 }
 const draftLayoutTask = {
@@ -357,20 +363,36 @@ async function expectIconOnlyExplorer(explorer: Locator) {
   expect(label?.width ?? 0).toBeLessThanOrEqual(1)
 }
 
-// "Execution plan" and its approval badge each render on a single line. The
-// approval or draft time sits behind the badge (DEC-127(1)).
+// The plan card header holds only "Execution plan", the version, and the
+// approval badge. All three share one line inside the header, each label
+// unbroken, with the badge directly after the version. The approval or draft
+// time sits behind the badge (DEC-127(1); DEC-134).
 async function expectPlanHeaderUnbroken(page: Page) {
-  const title = page.getByRole('heading', { name: 'Execution plan', exact: true })
+  const header = page.locator('[data-plan-header]')
+  await expect(header).toHaveText(/^Execution planv2(Approved|Awaiting approval)$/)
+  for (const hook of ['data-plan-facts', 'data-plan-base-commit', 'data-plan-risk']) {
+    await expect(page.locator(`[${hook}]`)).toHaveCount(0)
+  }
+  const title = header.getByRole('heading', { name: 'Execution plan', exact: true })
   const lineHeight = await title.evaluate((node) => Number.parseFloat(getComputedStyle(node).lineHeight))
   const titleBox = await title.boundingBox()
   if (!titleBox) throw new Error('the plan title is not rendered')
   expect(titleBox.height).toBeLessThan(lineHeight * 1.5)
-  const badge = page.locator('[data-plan-status]').getByRole('button', { name: /\. (Approved|Drafted) / })
+  const versionBox = await header.getByText('v2', { exact: true }).boundingBox()
+  if (!versionBox) throw new Error('the plan version is not rendered')
+  const badge = header.locator('[data-plan-status]').getByRole('button', { name: /\. (Approved|Drafted) / })
   const badgeText = badge.locator('span').first()
   const badgeLine = await badgeText.evaluate((node) => Number.parseFloat(getComputedStyle(node).lineHeight))
   const badgeBox = await badgeText.boundingBox()
   if (!badgeBox) throw new Error('the plan approval badge is not rendered')
   expect(badgeBox.height).toBeLessThan(badgeLine * 1.5)
+  const middle = (box: { y: number; height: number }) => box.y + box.height / 2
+  for (const box of [versionBox, badgeBox]) expect(Math.abs(middle(box) - middle(titleBox))).toBeLessThanOrEqual(4)
+  expect(badgeBox.x).toBeGreaterThanOrEqual(versionBox.x + versionBox.width - 0.5)
+  expect(badgeBox.x - (versionBox.x + versionBox.width)).toBeLessThanOrEqual(16)
+  const headerBox = await header.boundingBox()
+  if (!headerBox) throw new Error('the plan header is not rendered')
+  expect(badgeBox.x + badgeBox.width).toBeLessThanOrEqual(headerBox.x + headerBox.width + 0.5)
 }
 
 // The task-detail activity tabs sit inside the surface at phone width, with
