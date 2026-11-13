@@ -1,0 +1,6 @@
+411f320ea339e821588abfd2bafb40b6b88084e3ad3499f89e32a52bdf23ae81  ./A-with-capability-plan-command/command.log
+8ee9ffbc87d8e10a5927a227047690f7f902dc4f3a0f7f8ab29ecd19cf9c3699  ./A-with-capability-plan-command/manifest.json
+11965e8a258fe869700c36587d50705a1b8d869e4a99a1a1a2d0e60e9287bfd6  ./B-setpriv-plan-command/command.log
+802872503b12fdf38618133e558144af8b96355e80b3b0cf258ab3634e7decba  ./B-setpriv-plan-command/manifest.json
+a156a21f1434e142dfe8f689d0598fa24b3a721a2765f6f79419664d02375dd2  ./C-setpriv-plan-command-makeoverrides/command.log
+a34def267ab6033e686acaf38a551588974380a202fb428cf88263e23689c646  ./C-setpriv-plan-command-makeoverrides/manifest.json
