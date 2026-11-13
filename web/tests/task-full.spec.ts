@@ -9296,6 +9296,10 @@ const planCard = (page: Page) =>
 // The sheet slides in; boxes are read only once it rests.
 async function openTaskDetail(page: Page, path: string) {
   await page.goto(path)
+  // The detail loads behind pulsing skeletons. Wait for the plan card so the
+  // skeletons stop before the sheet is measured; an infinite skeleton pulse
+  // never lets the sheet settle.
+  await expect(page.getByRole('heading', { name: 'Execution plan', exact: true })).toBeVisible()
   if (!path.endsWith('/full')) await waitForSheetSettled(page.getByRole('dialog', { name: 'Task detail' }))
 }
 
