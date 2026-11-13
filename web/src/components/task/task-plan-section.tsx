@@ -8,8 +8,8 @@ import { TaskPlanActs } from './task-plan-acts'
 // Task detail's plan section, the same on the Board sheet and the full route
 // (component-web-task-surfaces invariants 32, 60). It always renders, headed by
 // the served plan state's label. The current plan version, when one exists,
-// follows with its origin, base commit, and approval; without one the label
-// stands alone. The operator's plan acts sit beside the label
+// follows with its title, version, and approval; without one the label stands
+// alone. The operator's plan acts sit beside the label
 // (invariants 61, 62; req-task-plan-state AC-1.4).
 export function TaskPlanSection({
   item,
@@ -37,7 +37,6 @@ export function TaskPlanSection({
           collapsible={variant !== 'full'}
           overflowExpandable
           routeVariant={variant}
-          minimumSeatCount={item.summaries?.review_seat_policy?.minimum_seat_count}
           planState={planState}
         />
       )}

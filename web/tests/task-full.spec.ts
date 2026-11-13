@@ -9178,10 +9178,48 @@ test('review seat metadata stays with its historical round', async ({ page }) =>
   await expect(panel).not.toContainText('minimum')
 })
 
-test('planned review seats appear on the displayed plan version', async ({ page }) => {
+// The plan card header holds only the title, the version, and the approval
+// badge. The badge follows the version directly, and every item shares one
+// line inside the header. The card shows no seat count, seat minimum, base
+// commit, or plan risk tier (component-web-task-surfaces invariant 60; DEC-134).
+async function expectPlanHeaderOnly(scope: Locator, approval: string) {
+  const header = scope.locator('[data-plan-header]')
+  await expect(header).toHaveText(`Execution planv1${approval}`)
+  for (const hook of [
+    'data-plan-facts',
+    'data-plan-provenance',
+    'data-plan-base-commit',
+    'data-plan-risk',
+    'data-plan-risk-reason',
+  ]) {
+    await expect(scope.locator(`[${hook}]`)).toHaveCount(0)
+  }
+  await expect(scope.getByText(/^Review: \d+ seats?/)).toHaveCount(0)
+  await expect(scope.getByText(/\(minimum \d+\)/)).toHaveCount(0)
+  const box = async (locator: Locator) => {
+    const rect = await locator.boundingBox()
+    if (!rect) throw new Error('a plan header item is not rendered')
+    return rect
+  }
+  const middle = (rect: { y: number; height: number }) => rect.y + rect.height / 2
+  const headerBox = await box(header)
+  const title = await box(header.getByRole('heading', { name: 'Execution plan', exact: true }))
+  const count = await box(header.getByText('v1', { exact: true }))
+  const badge = await box(header.locator('[data-plan-status]').getByText(approval, { exact: true }))
+  for (const item of [count, badge]) expect(Math.abs(middle(item) - middle(title))).toBeLessThanOrEqual(4)
+  expect(count.x).toBeGreaterThanOrEqual(title.x + title.width - 0.5)
+  expect(badge.x).toBeGreaterThanOrEqual(count.x + count.width - 0.5)
+  expect(badge.x - (count.x + count.width)).toBeLessThanOrEqual(16)
+  expect(title.x).toBeGreaterThanOrEqual(headerBox.x)
+  expect(badge.x + badge.width).toBeLessThanOrEqual(headerBox.x + headerBox.width + 0.5)
+  expect(await header.evaluate((node) => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(0)
+}
+
+test('the plan card shows no planned review seats or seat minimum', async ({ page }) => {
   const taskId = 'seat-plan'
   let reviewSeats: number | null = 4
-  // The approved plan's count (3) differs from the displayed draft's (4).
+  // The read carries the displayed draft's count (4), the approved plan's
+  // count (3), and the minimum (2). The card shows none of them (DEC-134).
   await page.route(`**/v1/tasks/${taskId}/activity*`, (route) =>
     route.fulfill({
       json: seatPanelItem(taskId, {
@@ -9197,24 +9235,24 @@ test('planned review seats appear on the displayed plan version', async ({ page 
   )
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const plan = page.getByRole('region', { name: 'Execution plan' })
-  await expect(plan.getByText('Review: 4 seats (minimum 2)', { exact: true })).toBeVisible()
-  await expect(plan.getByText(/Review: 3 seats/)).toHaveCount(0)
+  await expectPlanHeaderOnly(plan, 'Awaiting approval')
 
-  // The Board sheet shows the same line.
+  // The Board sheet shows the same header. The running task's timeline pulses,
+  // so the sheet never settles; every check compares items within one header.
   await page.goto(`/w/demo/tasks/${taskId}`)
-  await expect(page.getByText('Review: 4 seats (minimum 2)', { exact: true })).toBeVisible()
+  await expectPlanHeaderOnly(page.getByRole('region', { name: 'Execution plan' }), 'Awaiting approval')
 
-  // A version without a count shows no line.
+  // A version without a count shows the same header.
   reviewSeats = null
   await page.goto(`/w/demo/tasks/${taskId}/full`)
-  await expect(page.getByRole('region', { name: 'Execution plan' }).getByText('Execution plan')).toBeVisible()
-  await expect(page.getByText(/^Review: \d+ seat/)).toHaveCount(0)
+  await expectPlanHeaderOnly(page.getByRole('region', { name: 'Execution plan' }), 'Awaiting approval')
 })
 
 // ---- Plan card header and Properties at phone width (task 261109-7b7c2b) ----
 
-// An approved plan with one planned seat and a seat minimum of one, with a
-// short Approach above a list whose first entry wraps at phone width.
+// An approved plan with one planned seat and a seat minimum of one, which the
+// card does not show, with a short Approach above a list whose first entry
+// wraps at phone width.
 function phonePlanItem(taskId: string) {
   const item = seatPanelItem(taskId, {
     orders: [],
@@ -9258,6 +9296,10 @@ const planCard = (page: Page) =>
 // The sheet slides in; boxes are read only once it rests.
 async function openTaskDetail(page: Page, path: string) {
   await page.goto(path)
+  // The detail loads behind pulsing skeletons. Wait for the plan card so the
+  // skeletons stop before the sheet is measured; an infinite skeleton pulse
+  // never lets the sheet settle.
+  await expect(page.getByRole('heading', { name: 'Execution plan', exact: true })).toBeVisible()
   if (!path.endsWith('/full')) await waitForSheetSettled(page.getByRole('dialog', { name: 'Task detail' }))
 }
 
@@ -9280,15 +9322,13 @@ test('plan card header stays inside the card at phone width on the sheet and the
     await openTaskDetail(page, path)
     const card = planCard(page)
     const status = card.locator('[data-plan-status]')
-    const seats = status.getByText('Review: 1 seat (minimum 1)', { exact: true })
     const badge = status.getByText('Approved', { exact: true })
-    await expect(seats).toBeVisible()
     await expect(badge).toBeVisible()
-    // The seat count stays on screen. The approval time sits behind the badge
-    // (component-web-task-surfaces invariant 60; DEC-127(1)).
-    await expect(status).toHaveText('Review: 1 seat (minimum 1)Approved')
-    const cardBox = await card.boundingBox()
-    for (const part of [seats, badge]) expectInside(await part.boundingBox(), cardBox)
+    // The header holds the title, the version, and the badge on one line. The
+    // approval time sits behind the badge (component-web-task-surfaces
+    // invariant 60; DEC-127(1); DEC-134).
+    await expectPlanHeaderOnly(card, 'Approved')
+    expectInside(await badge.boundingBox(), await card.boundingBox())
     await status.getByRole('button', { name: /^Approved\. Approved / }).focus()
     const time = status.locator('[data-plan-approval-time]')
     await expect(time).toHaveText(/^Approved /)
@@ -9297,12 +9337,12 @@ test('plan card header stays inside the card at phone width on the sheet and the
     await page.keyboard.press('Escape')
   }
 
-  // At desktop width the status line keeps to the title's line.
+  // At desktop width the header keeps the same one line.
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto(`/w/demo/tasks/${taskId}/full`)
-  const title = await planCard(page).getByRole('heading', { name: 'Execution plan' }).boundingBox()
-  const badge = await planCard(page).locator('[data-plan-status]').getByText('Approved', { exact: true }).boundingBox()
-  expect(Math.abs(title!.y + title!.height / 2 - (badge!.y + badge!.height / 2))).toBeLessThan(4)
+  for (const path of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`]) {
+    await openTaskDetail(page, path)
+    await expectPlanHeaderOnly(planCard(page), 'Approved')
+  }
 })
 
 test('collapsed plan ends at a block boundary at phone width', async ({ page }) => {
