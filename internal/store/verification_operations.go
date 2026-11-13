@@ -109,7 +109,7 @@ func verificationOperationMutation(c VerificationCommand, rows []VerificationRow
 					}
 				}
 				if old.RetryPolicy == "operator_action_required" && row.State == "not_applied" {
-					if err := consumeOperationAuthorization(&old, c.ReplayAuthorizationID, binding); err != nil {
+					if err := consumeOperationAuthorization(&old, binding); err != nil {
 						return err
 					}
 				}
@@ -179,16 +179,38 @@ func verificationOperationMutation(c VerificationCommand, rows []VerificationRow
 	return appendVerificationOperationObservation(c, row, v, obs, actor, now, redactor, out)
 }
 
-func consumeOperationAuthorization(op *VerificationOperation, id string, binding core.VerificationBinding) error {
-	for i := range op.Recovery {
-		a := &op.Recovery[i]
-		if a.ID == id && id != "" && a.Disposition == "not_applied" && a.InputDigest == op.InputDigest && sameVerificationAuthority(a.Original, binding) && a.Successor == nil {
-			copy := binding
-			a.Successor = &copy
-			return nil
+// consumeOperationAuthorization binds the operation's own earliest unused
+// not_applied authorization to a re-preparation. The server selects it, and
+// record order breaks a tie in time. Only re-preparation consumes an operation
+// authorization (component-verification-service invariants 25 and 45;
+// DEC-133(3)).
+func consumeOperationAuthorization(op *VerificationOperation, binding core.VerificationBinding) error {
+	selected := operationAuthorization(op, "not_applied", func(a VerificationOperationAuthorization) bool {
+		return sameVerificationAuthority(a.Original, binding)
+	})
+	if selected < 0 {
+		return ErrVerificationState
+	}
+	copy := binding
+	op.Recovery[selected].Successor = &copy
+	return nil
+}
+
+// operationAuthorization returns the index of the operation's earliest
+// authorization that no re-preparation has consumed, whose disposition equals
+// disposition, whose input digest matches the operation, and that passes
+// accept. It returns -1 when none qualifies.
+func operationAuthorization(op *VerificationOperation, disposition string, accept func(VerificationOperationAuthorization) bool) int {
+	selected := -1
+	for i, a := range op.Recovery {
+		if a.Successor != nil || a.Disposition != disposition || a.InputDigest != op.InputDigest || !accept(a) {
+			continue
+		}
+		if selected < 0 || a.At.Before(op.Recovery[selected].At) {
+			selected = i
 		}
 	}
-	return ErrVerificationState
+	return selected
 }
 
 func reconcileVerificationOperation(c VerificationCommand, rows []VerificationRow, binding core.VerificationBinding, actor string, now time.Time, redactor *redact.Redactor, out *VerificationMutation) error {
@@ -234,13 +256,11 @@ func reconcileVerificationOperation(c VerificationCommand, rows []VerificationRo
 		return ErrVerificationAccess
 	}
 	if op.RetryPolicy == "operator_action_required" {
-		authorized := false
-		for _, a := range op.Recovery {
-			if a.ID == c.ReplayAuthorizationID && a.ID != "" && a.InputDigest == op.InputDigest && a.Disposition == c.Observation.State {
-				authorized = true
-			}
-		}
-		if !authorized {
+		// component-verification-service invariant 25: the server selects an
+		// operation authorization that no re-preparation has consumed, with the
+		// outcome as its disposition. The reconciliation leaves it for one
+		// re-preparation, so it binds no Successor here.
+		if operationAuthorization(&op, c.Observation.State, func(VerificationOperationAuthorization) bool { return true }) < 0 {
 			return ErrVerificationState
 		}
 	}

@@ -210,8 +210,6 @@ type VerificationCommand struct {
 	Coverage            *VerificationCoverage
 	Submission          *VerificationSubmission
 
-	ReplayAuthorizationID string
-
 	Access                VerificationAccess
 	Kind                  string
 	ContextID, RunID, Key string

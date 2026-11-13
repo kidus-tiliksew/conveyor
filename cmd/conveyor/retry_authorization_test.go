@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -25,9 +26,10 @@ import (
 )
 
 // retryAuthorizationStore is a volatile backend holding one verify order
-// whose first context ended an operator_action_required attempt and three
-// safe_to_replay attempts. An operator recovered the gated attempt with a
-// disposition, and the order was claimed again with a successor context.
+// whose first context ended two operator_action_required attempts and three
+// safe_to_replay attempts. An operator recovered both gated attempts with one
+// recovery of two dispositions, and the order was claimed again with a
+// successor context.
 type retryAuthorizationStore struct {
 	b                    store.Backend
 	service              *workorder.Service
@@ -35,14 +37,15 @@ type retryAuthorizationStore struct {
 	ownerID              string
 	order                core.WorkOrder
 	access               store.VerificationAccess
-	oldContext, oldRun   string
+	oldContext           string
+	oldRuns              map[string]string
 	contextID            string
-	gated                string
+	gated                []string
 	obligations          []store.VerificationObligation
 	authorization, token string
 }
 
-func newRetryAuthorizationStore(t *testing.T, head string, gated verification.Exercise, safe []verification.Exercise) *retryAuthorizationStore {
+func newRetryAuthorizationStore(t *testing.T, head string, gated, safe []verification.Exercise) *retryAuthorizationStore {
 	t.Helper()
 	b := store.NewVolatileBackend()
 	t.Cleanup(b.Close)
@@ -62,7 +65,7 @@ func newRetryAuthorizationStore(t *testing.T, head string, gated verification.Ex
 		t.Fatal(err)
 	}
 	requirements := []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the state", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
-	s := &retryAuthorizationStore{b: b, service: &workorder.Service{Store: b, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}, worker: store.WithActor(ctx, store.Actor{ID: store.UserActorID("worker"), Role: core.ActorUser}), authorization: "recovery:runner-recovery"}
+	s := &retryAuthorizationStore{b: b, service: &workorder.Service{Store: b, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}, worker: store.WithActor(ctx, store.Actor{ID: store.UserActorID("worker"), Role: core.ActorUser}), authorization: "recovery:runner-recovery", oldRuns: map[string]string{}}
 	s.claim(t, ctx, order.ID, "first", "first-token", requirements)
 	if _, err := b.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Test", Email: "owner@example.test", DisplayName: "Owner"}, "retry-operator-token"); err != nil {
 		t.Fatal(err)
@@ -76,8 +79,10 @@ func newRetryAuthorizationStore(t *testing.T, head string, gated verification.Ex
 	if _, err = b.GrantWorkspaceRole(s.operator, owner.Email, "demo", core.WorkspaceRoleOperator); err != nil {
 		t.Fatal(err)
 	}
-	s.gated = gated.ID
-	s.obligations = append(s.obligations, store.VerificationObligation{ID: gated.ID, Description: "Exercise retried only on operator authority", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: gated})
+	for _, e := range gated {
+		s.gated = append(s.gated, e.ID)
+		s.obligations = append(s.obligations, store.VerificationObligation{ID: e.ID, Description: "Exercise retried only on operator authority", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: e})
+	}
 	for _, e := range safe {
 		s.obligations = append(s.obligations, store.VerificationObligation{ID: e.ID, Description: "Exercise that is safe to replay", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: e})
 	}
@@ -86,14 +91,14 @@ func newRetryAuthorizationStore(t *testing.T, head string, gated verification.Ex
 	for i, subject := range s.subjects(t) {
 		start := store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: fmt.Sprintf("first-%d", i), Attempt: &store.VerificationAttempt{Subject: subject, GrantID: s.grant(t, subject), EffectiveActions: []core.VerificationPermission{}, SafeInputs: map[string]json.RawMessage{}, Environment: core.VerificationEnvironment{Target: "repo", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}}}
 		r := s.apply(t, start)
-		if subject.ObligationID == s.gated {
-			s.oldRun = r.ID
+		if slices.Contains(s.gated, subject.ObligationID) {
+			s.oldRuns[subject.ObligationID] = r.ID
 		}
 		s.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, RunID: r.ID, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "environment unavailable"}})
 	}
 	s.oldContext = s.contextID
-	// The order is released at a checkpoint and an operator recovers the
-	// gated attempt with a disposition.
+	// The order is released at a checkpoint and an operator recovers both
+	// gated attempts with one recovery of two dispositions (DEC-133(1)).
 	order, err = b.GetWorkOrder(ctx, order.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +109,11 @@ func newRetryAuthorizationStore(t *testing.T, head string, gated verification.Ex
 	if err = storetest.UpdateWorkOrder(ctx, b, order, core.WorkOrderCmdRelease); err != nil {
 		t.Fatal(err)
 	}
-	disposition := &store.VerificationRecovery{Reason: "Operator restored the environment and authorizes one retry.", Dispositions: []store.VerificationRecoveryDisposition{{ContextID: s.oldContext, RunID: s.oldRun, OperationIDs: []string{}, InputDigest: store.VerificationSafeInputDigest(map[string]json.RawMessage{}), Disposition: "not_applied"}}}
+	disposition := &store.VerificationRecovery{Reason: "Operator restored the environment and authorizes one retry of each.", Dispositions: []store.VerificationRecoveryDisposition{}}
+	for i, id := range s.gated {
+		value := []string{"applied", "not_applied"}[i%2]
+		disposition.Dispositions = append(disposition.Dispositions, store.VerificationRecoveryDisposition{ContextID: s.oldContext, RunID: s.oldRuns[id], OperationIDs: []string{}, InputDigest: store.VerificationSafeInputDigest(map[string]json.RawMessage{}), Disposition: value})
+	}
 	if _, err = storetest.RecoverWorkOrder(store.WithVerificationRecovery(s.operator, disposition), b, order.ID, "runner-recovery", time.Hour); err != nil {
 		t.Fatal(err)
 	}
@@ -113,8 +122,10 @@ func newRetryAuthorizationStore(t *testing.T, head string, gated verification.Ex
 	for _, subject := range s.subjects(t) {
 		s.grant(t, subject)
 	}
-	if a := s.recovered(t); a.Successor != nil {
-		t.Fatalf("recovery authorization already consumed: %+v", a.Successor)
+	for _, id := range s.gated {
+		if a := s.recovered(t, id); a.Successor != nil {
+			t.Fatalf("recovery authorization of %s already consumed: %+v", id, a.Successor)
+		}
 	}
 	return s
 }
@@ -200,22 +211,23 @@ func (s *retryAuthorizationStore) grant(t *testing.T, subject core.VerificationS
 	return r.ID
 }
 
-// recovered returns the one authorization on the recovered gated attempt.
-func (s *retryAuthorizationStore) recovered(t *testing.T) store.VerificationReplayAuthorization {
+// recovered returns the one authorization on the recovered attempt of the
+// gated obligation id.
+func (s *retryAuthorizationStore) recovered(t *testing.T, id string) store.VerificationReplayAuthorization {
 	t.Helper()
 	snapshot, err := s.b.ReadVerification(s.operator, store.VerificationAccess{TaskID: s.access.TaskID, UserID: s.ownerID}, s.oldContext)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, attempt := range snapshot.Attempts {
-		if attempt.ID == s.oldRun {
+		if attempt.ID == s.oldRuns[id] {
 			if len(attempt.Recovery) != 1 || attempt.Recovery[0].ID != s.authorization {
 				t.Fatalf("recovered attempt authorizations = %+v", attempt.Recovery)
 			}
 			return attempt.Recovery[0]
 		}
 	}
-	t.Fatalf("recovered attempt %s is missing", s.oldRun)
+	t.Fatalf("recovered attempt %s of %s is missing", s.oldRuns[id], id)
 	return store.VerificationReplayAuthorization{}
 }
 
@@ -252,6 +264,9 @@ func serveRealStarts(t *testing.T, s *retryAuthorizationStore, f *kitExecutionFi
 			t.Error(err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
+		}
+		if _, ok := call.Params.Arguments["replay_authorization_id"]; ok {
+			t.Errorf("the runner sent replay_authorization_id on %s", call.Params.Name)
 		}
 		if call.Params.Name != "start_verification_attempt" {
 			response, err := http.Post(fixtureURL+r.URL.Path, "application/json", bytes.NewReader(body))
@@ -300,14 +315,15 @@ func serveRealStarts(t *testing.T, s *retryAuthorizationStore, f *kitExecutionFi
 	}
 }
 
-// TestKitVerifyReplayAuthorizationStartsEverySubject is the runner
-// regression for one operator retry authorization: a single
-// `conveyor kit verify --replay-authorization recovery:<request_id>` run
-// sends the ID on every subject. The safe_to_replay subjects start first and
-// consume nothing, and the operator_action_required subject is then admitted
-// through the real store (component-verification-service invariant 19;
+// TestKitVerifyStartsEverySubjectAfterOneRecovery is the runner regression
+// for one recovery with two dispositions: a single `conveyor kit verify` run
+// with no authorization flag starts every subject. No request carries an
+// authorization. The safe_to_replay subjects consume nothing, and the server
+// admits both operator_action_required subjects with their own
+// authorizations (component-verification-service invariant 19;
+// component-verification-runner Public surfaces; DEC-133(3);
 // req-verification-kits AC-3.4).
-func TestKitVerifyReplayAuthorizationStartsEverySubject(t *testing.T) {
+func TestKitVerifyStartsEverySubjectAfterOneRecovery(t *testing.T) {
 	exercise := func(id, policy string) verification.Exercise {
 		e := verification.Exercise{ID: id, Kind: "script", Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}, RetryPolicy: policy}
 		if policy == "safe_to_replay" {
@@ -315,10 +331,11 @@ func TestKitVerifyReplayAuthorizationStartsEverySubject(t *testing.T) {
 		}
 		return e
 	}
-	// Obligations are listed by ID, so the gated subject starts last.
-	gated := exercise("z-gated", "operator_action_required")
-	safe := []verification.Exercise{exercise("a-safe-0", "safe_to_replay"), exercise("a-safe-1", "safe_to_replay"), exercise("a-safe-2", "safe_to_replay")}
-	f := newKitExecutionFixture(t, gated)
+	// Obligations are listed by ID, so the safe subjects start before,
+	// between, and after the gated ones.
+	gated := []verification.Exercise{exercise("b-gated-0", "operator_action_required"), exercise("d-gated-1", "operator_action_required")}
+	safe := []verification.Exercise{exercise("a-safe-0", "safe_to_replay"), exercise("c-safe-1", "safe_to_replay"), exercise("e-safe-2", "safe_to_replay")}
+	f := newKitExecutionFixture(t, gated[0])
 	options := ordinaryKitVerifyOptions(t, f, "no_manifest")
 	s := newRetryAuthorizationStore(t, f.order.HeadSHA, gated, safe)
 
@@ -344,41 +361,58 @@ func TestKitVerifyReplayAuthorizationStartsEverySubject(t *testing.T) {
 	if err = os.WriteFile(options.coveragePath, core.JSONPayload(s.coverage(t)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	options.replayAuthorization = s.authorization
 
 	if err = verifyKits(t.Context(), rpc, f.v.root, "task", options, &f.output); err != nil {
 		t.Fatalf("kit verify: %v\n%s", err, f.output.String())
 	}
 	recorded := starts()
-	if len(recorded) != 1+len(safe) {
-		t.Fatalf("runner made %d starts, want %d", len(recorded), 1+len(safe))
+	if len(recorded) != len(gated)+len(safe) {
+		t.Fatalf("runner made %d starts, want %d", len(recorded), len(gated)+len(safe))
 	}
 	runs := map[string]string{}
+	var order []string
 	for i, start := range recorded {
 		if start.err != nil || !start.receipt.LaunchAuthorized {
 			t.Fatalf("start %d of %s: receipt %+v, error %v", i, start.request.Subject.ObligationID, start.receipt, start.err)
 		}
-		if start.request.ReplayAuthorizationID != s.authorization {
-			t.Fatalf("start of %s sent authorization %q, want %q", start.request.Subject.ObligationID, start.request.ReplayAuthorizationID, s.authorization)
-		}
 		runs[start.request.Subject.ObligationID] = start.receipt.ID
+		order = append(order, start.request.Subject.ObligationID)
 	}
-	if last := recorded[len(recorded)-1].request.Subject.ObligationID; last != gated.ID {
-		t.Fatalf("the runner started %s last, want the gated subject after every ungated one", last)
+	if want := []string{"a-safe-0", "b-gated-0", "c-safe-1", "d-gated-1", "e-safe-2"}; !slices.Equal(order, want) {
+		t.Fatalf("the runner started %v, want %v", order, want)
 	}
 	for _, attempt := range s.snapshot(t).Attempts {
 		want := ""
-		if attempt.Subject.ObligationID == gated.ID {
+		if slices.Contains(s.gated, attempt.Subject.ObligationID) {
 			want = s.authorization
 		}
 		if attempt.ID != runs[attempt.Subject.ObligationID] || attempt.ReplayAuthorizationID != want {
 			t.Fatalf("attempt %s of %s records authorization %q, want %q", attempt.ID, attempt.Subject.ObligationID, attempt.ReplayAuthorizationID, want)
 		}
 	}
-	if a := s.recovered(t); a.Successor == nil || a.Successor.RunID != runs[gated.ID] {
-		t.Fatalf("authorization successor = %+v, want the gated run %s", a.Successor, runs[gated.ID])
+	for _, id := range s.gated {
+		if a := s.recovered(t, id); a.Successor == nil || a.Successor.RunID != runs[id] {
+			t.Fatalf("authorization of %s successor = %+v, want its own run %s", id, a.Successor, runs[id])
+		}
 	}
 	if strings.Contains(f.output.String(), "operator_action_required") {
 		t.Fatalf("the run printed an operator checkpoint:\n%s", f.output.String())
+	}
+}
+
+// TestKitVerifyRefusesReplayAuthorizationFlag pins that the runner names no
+// operator authorization: the removed flag fails as unknown
+// (component-verification-runner Public surfaces).
+func TestKitVerifyRefusesReplayAuthorizationFlag(t *testing.T) {
+	c := kitVerifyCmd()
+	c.SetArgs([]string{"task", "--replay-authorization", "recovery:request"})
+	c.SetOut(io.Discard)
+	c.SetErr(io.Discard)
+	err := c.Execute()
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --replay-authorization") {
+		t.Fatalf("kit verify --replay-authorization: %v, want an unknown flag error", err)
+	}
+	if c.Flags().Lookup("replay-authorization") != nil {
+		t.Fatal("kit verify still defines --replay-authorization")
 	}
 }

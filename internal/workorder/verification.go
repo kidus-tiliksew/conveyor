@@ -50,17 +50,16 @@ type VerificationObligationRequest struct {
 	Contract             verification.Exercise `json:"contract"`
 }
 type VerificationStartRequest struct {
-	LocalActions          []core.VerificationPermission `json:"local_actions,omitempty"`
-	GrantID               string                        `json:"grant_id"`
-	EffectiveActions      []core.VerificationPermission `json:"effective_actions"`
-	Coverage              store.VerificationCoverage    `json:"coverage"`
-	ContextID             string                        `json:"context_id"`
-	StartKey              string                        `json:"start_key"`
-	Subject               core.VerificationSubject      `json:"subject"`
-	Environment           core.VerificationEnvironment  `json:"environment"`
-	EffectivePermissions  []verification.Permission     `json:"effective_permissions"`
-	SafeInputs            map[string]json.RawMessage    `json:"safe_inputs"`
-	ReplayAuthorizationID string                        `json:"replay_authorization_id,omitempty"`
+	LocalActions         []core.VerificationPermission `json:"local_actions,omitempty"`
+	GrantID              string                        `json:"grant_id"`
+	EffectiveActions     []core.VerificationPermission `json:"effective_actions"`
+	Coverage             store.VerificationCoverage    `json:"coverage"`
+	ContextID            string                        `json:"context_id"`
+	StartKey             string                        `json:"start_key"`
+	Subject              core.VerificationSubject      `json:"subject"`
+	Environment          core.VerificationEnvironment  `json:"environment"`
+	EffectivePermissions []verification.Permission     `json:"effective_permissions"`
+	SafeInputs           map[string]json.RawMessage    `json:"safe_inputs"`
 }
 type VerificationOutcomeRequest struct {
 	ContextID   string `json:"context_id"`
@@ -113,17 +112,15 @@ type VerificationOperationRequest struct {
 	Source                string    `json:"source,omitempty"`
 	CapturedAt            time.Time `json:"captured_at,omitempty"`
 	ProviderReference     string    `json:"provider_reference,omitempty"`
-	ReplayAuthorizationID string    `json:"replay_authorization_id,omitempty"`
 }
 
 type VerificationReconcileRequest struct {
-	ContextID             string    `json:"context_id"`
-	OperationID           string    `json:"operation_id"`
-	Outcome               string    `json:"outcome"`
-	Source                string    `json:"source"`
-	CapturedAt            time.Time `json:"captured_at"`
-	ProviderReference     string    `json:"provider_reference,omitempty"`
-	ReplayAuthorizationID string    `json:"replay_authorization_id,omitempty"`
+	ContextID         string    `json:"context_id"`
+	OperationID       string    `json:"operation_id"`
+	Outcome           string    `json:"outcome"`
+	Source            string    `json:"source"`
+	CapturedAt        time.Time `json:"captured_at"`
+	ProviderReference string    `json:"provider_reference,omitempty"`
 }
 
 type VerificationSubmitRequest struct {
@@ -282,7 +279,7 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 	command := store.VerificationCommand{Access: a}
 	switch r := request.(type) {
 	case *VerificationOperationRequest:
-		command.ContextID, command.RunID, command.Key, command.ReplayAuthorizationID = r.ContextID, r.RunID, r.Key, r.ReplayAuthorizationID
+		command.ContextID, command.RunID, command.Key = r.ContextID, r.RunID, r.Key
 		command.Operation = &store.VerificationOperation{ID: r.OperationID, StepID: r.StepID, Target: r.Target, InputDigest: r.InputDigest, IdempotencyScope: r.IdempotencyScope, IdempotencyValidUntil: r.IdempotencyValidUntil}
 		switch r.Action {
 		case "prepare":
@@ -294,7 +291,7 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 			return nil, store.ErrVerificationInvalid
 		}
 	case *VerificationReconcileRequest:
-		command.Kind, command.ContextID, command.ReplayAuthorizationID = store.VerificationReconcileOperation, r.ContextID, r.ReplayAuthorizationID
+		command.Kind, command.ContextID = store.VerificationReconcileOperation, r.ContextID
 		command.Operation = &store.VerificationOperation{ID: r.OperationID}
 		command.Observation = &store.VerificationOperationObservation{State: r.Outcome, Source: r.Source, CapturedAt: r.CapturedAt, ProviderReference: r.ProviderReference}
 	case *VerificationSubmitRequest:
@@ -329,7 +326,7 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 			}
 			return nil, store.VerificationRequestShapeRefusal("subject", verificationRuleSubject)
 		}
-		command.Attempt = &store.VerificationAttempt{LocalActions: r.LocalActions, GrantID: r.GrantID, EffectiveActions: r.EffectiveActions, Subject: r.Subject, Environment: r.Environment, SafeInputs: r.SafeInputs, EffectivePermissions: r.EffectivePermissions, ReplayAuthorizationID: r.ReplayAuthorizationID}
+		command.Attempt = &store.VerificationAttempt{LocalActions: r.LocalActions, GrantID: r.GrantID, EffectiveActions: r.EffectiveActions, Subject: r.Subject, Environment: r.Environment, SafeInputs: r.SafeInputs, EffectivePermissions: r.EffectivePermissions}
 	case *VerificationOutcomeRequest:
 		command.Kind, command.ContextID, command.RunID = store.VerificationTerminateAttempt, r.ContextID, r.RunID
 		command.Attempt = &store.VerificationAttempt{State: r.State, Explanation: r.Explanation, ExitCode: r.ExitCode}

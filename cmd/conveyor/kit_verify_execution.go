@@ -309,7 +309,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		}
 		key := fmt.Sprintf("%x", sha256.Sum256(core.JSONPayload([]any{v.task.ID, core.VerificationOperationSubject(subject), op.ID, op.TargetBinding, vc.Revisions})))
 		var receipt store.VerificationReceipt
-		if err := v.rpc.call(launchCtx, "prepare_verification_operation", workorder.VerificationOperationRequest{ContextID: vc.ID, RunID: runID, Action: "prepare", Key: key, StepID: op.ID, Target: op.TargetBinding, InputDigest: store.VerificationSafeInputDigest(v.safeInputValues()), ReplayAuthorizationID: v.replayAuthorization}, &receipt); err != nil {
+		if err := v.rpc.call(launchCtx, "prepare_verification_operation", workorder.VerificationOperationRequest{ContextID: vc.ID, RunID: runID, Action: "prepare", Key: key, StepID: op.ID, Target: op.TargetBinding, InputDigest: store.VerificationSafeInputDigest(v.safeInputValues())}, &receipt); err != nil {
 			return err
 		}
 		operations[op.ID] = receipt.ID
