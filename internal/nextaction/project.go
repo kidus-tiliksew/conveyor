@@ -213,39 +213,42 @@ func checkHoldBuild(in Input) built {
 // req-operator-next-action AC-1.6).
 //
 // A verify order released at its sealed verification checkpoint carries a
-// decision request too. When row 11 selects that same order and its
-// disposition set has at least one entry, row 11 takes the order and row 10
-// does not match, so the operator records the dispositions instead of an
-// answer that recovers the order without them. An empty or refused set keeps
-// row 10 (component-next-action invariant 3 row 10, invariant 15; DEC-133(1)).
+// decision request too. When its disposition set has at least one entry, row
+// 11 takes the order and row 10 does not match, so the operator records the
+// dispositions instead of an answer that recovers the order without them. An
+// empty or refused set keeps row 10 (component-next-action invariant 3 row
+// 10, invariant 15; DEC-133(1)).
 func agentQuestion(in Input) bool {
 	order := latestQueued(in.Orders)
 	if !in.Markers.CheckpointDecision || order == nil || order.LastAttemptOutcome != core.WorkOrderOutcomeReleased {
 		return false
 	}
-	return !dispositionFirst(in, *order)
-}
-
-// dispositionFirst reports whether row 11 takes order's decision request:
-// order is the verify order row 11 selects, still released at its sealed
-// verification checkpoint, and its disposition set is either stated with at
-// least one entry and no refusal or not read. The assembler reads the set only
-// after a first projection selects row 11, and a compact read never reads it,
-// so an unread set keeps row 11. The assembler's second projection then holds
-// the read set, and an empty or refused set returns the order to row 10
-// (component-next-action invariant 15).
-func dispositionFirst(in Input, order core.WorkOrder) bool {
-	if !AtVerificationCheckpoint(order) || !verificationDisposition(in) {
-		return false
-	}
-	if selected := dispositionOrder(in.Orders); selected == nil || selected.ID != order.ID {
-		return false
+	if !DispositionDecidesRow(in) {
+		return true
 	}
 	input, read := in.Dispositions[order.ID]
 	if !read {
-		return true
+		// Not read yet: the assembler's first projection selects row 11, so
+		// the assembler reads the set and projects again with it.
+		return false
 	}
-	return len(input.Set) > 0 && input.Refusal == ""
+	return len(input.Set) == 0 || input.Refusal != ""
+}
+
+// DispositionDecidesRow reports whether the disposition set decides between
+// row 10 and row 11: the latest queued order is the verify order row 11
+// selects, still released at its sealed verification checkpoint, and it
+// carries the decision request row 10 would ask. Only then does the set
+// change a compact field, so the assembler reads the set for this one order
+// on a compact read too, and every other compact read still skips it
+// (component-next-action invariant 15).
+func DispositionDecidesRow(in Input) bool {
+	order := latestQueued(in.Orders)
+	if !in.Markers.CheckpointDecision || order == nil || !AtVerificationCheckpoint(*order) || !verificationDisposition(in) {
+		return false
+	}
+	selected := dispositionOrder(in.Orders)
+	return selected != nil && selected.ID == order.ID
 }
 
 // agentQuestionBuild presents the latest queued order's checkpoint. An

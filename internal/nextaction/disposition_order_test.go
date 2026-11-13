@@ -140,9 +140,9 @@ func TestSealedCheckpointOffersDispositionsBeforeTheQuestion(t *testing.T) {
 		t.Fatalf("details = %+v, want no agent_question secondary or release outcome", got.Details)
 	}
 
-	// The assembler's first projection and every compact read hold no set.
-	// Row 11 keeps the order, so the assembler reads the set, and the compact
-	// fields match the statement with a set.
+	// The assembler's first projection holds no set. Row 11 keeps the order,
+	// so the assembler reads the set, on a compact read too, and projects
+	// again.
 	unread := Project(sealedCheckpointInput(now, nil))
 	if unread.Kind != KindVerificationDisposition || unread.Details.Checkpoint != got.Details.Checkpoint || hasChoice(unread, "record_dispositions") || !hasRefusal(unread, "record_dispositions") {
 		t.Fatalf("unread set = %s checkpoint %q choices %+v, want row 11 with record_dispositions withheld", unread.Kind, unread.Details.Checkpoint, unread.Choices)
@@ -214,5 +214,88 @@ func TestSealedCheckpointPrecedenceIsNarrow(t *testing.T) {
 	bare.Markers.CheckpointDecision, bare.Markers.Checkpoint = false, ""
 	if got := Project(bare); got.Kind != KindVerificationDisposition || got.Details.Checkpoint != "" || !reflect.DeepEqual(got.Details.Dispositions, set) {
 		t.Fatalf("no decision request = %s checkpoint %q, want verification_disposition without checkpoint text", got.Kind, got.Details.Checkpoint)
+	}
+}
+
+// assembleForTest runs the assembler's two projections: the first without a
+// set, then, when row 11 wins and the read reads the set, a second with the
+// set the store would state. A compact read reads the set only when
+// DispositionDecidesRow holds (component-next-action invariant 15).
+func assembleForTest(in Input, input DispositionInput, compact bool) NextAction {
+	in.Dispositions = nil
+	first := Project(in)
+	if first.Kind != KindVerificationDisposition || first.CurrentOrder == nil || (compact && !DispositionDecidesRow(in)) {
+		return first
+	}
+	in.Dispositions = map[string]DispositionInput{first.CurrentOrder.ID: input}
+	return Project(in)
+}
+
+// A compact read and a full read of the same sealed checkpoint state the same
+// compact fields for a usable set, an empty set, and a refused set, with and
+// without the decision request. A usable set with a decision request states
+// row 11; an empty or refused set with one states row 10.
+func TestSealedCheckpointCompactParity(t *testing.T) {
+	now := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+	set := sealedCheckpointSet()
+	inputs := map[string]DispositionInput{
+		"usable set":         {Set: set},
+		"empty set":          {Refusal: "verify order verify-1 has no unresolved operations and no retry-gated attempts to dispose"},
+		"refused set":        {Refusal: "verification records are not readable from this store"},
+		"set with a refusal": {Set: set, Refusal: "verification records are not readable from this store"},
+	}
+	for name, input := range inputs {
+		for _, question := range []bool{true, false} {
+			in := sealedCheckpointInput(now, nil)
+			if !question {
+				in.Orders[0].Checkpoint.DecisionRequest = ""
+				in.Markers.CheckpointDecision, in.Markers.Checkpoint = false, ""
+			}
+			full := assembleForTest(in, input, false)
+			compact := assembleForTest(in, input, true)
+			if !reflect.DeepEqual(CompactFrom(compact), CompactFrom(full)) {
+				t.Fatalf("%s question=%t: compact %+v, full %+v", name, question, CompactFrom(compact), CompactFrom(full))
+			}
+			want := KindVerificationDisposition
+			if question && (len(input.Set) == 0 || input.Refusal != "") {
+				want = KindAgentQuestion
+			}
+			if full.Kind != want {
+				t.Fatalf("%s question=%t: kind %s, want %s", name, question, full.Kind, want)
+			}
+		}
+	}
+}
+
+// DispositionDecidesRow holds only for the sealed verify order row 11
+// selects while it is the latest queued order and carries a decision
+// request; every other shape lets a compact read skip the set.
+func TestDispositionDecidesRow(t *testing.T) {
+	now := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+	if !DispositionDecidesRow(sealedCheckpointInput(now, nil)) {
+		t.Fatal("a sealed verify order with a decision request does not decide the row")
+	}
+	for name, mutate := range map[string]func(*Input){
+		"no decision request": func(in *Input) {
+			in.Orders[0].Checkpoint.DecisionRequest = ""
+			in.Markers.CheckpointDecision = false
+		},
+		"no verification checkpoint": func(in *Input) {
+			in.Orders[0].Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: "Confirm."}
+		},
+		"recovered": func(in *Input) { in.Orders[0].LastAttemptOutcome = "" },
+		"claimed":   func(in *Input) { in.Orders[0].State = core.WorkOrderClaimed },
+		"later queued question": func(in *Input) {
+			in.Orders = append(in.Orders, core.WorkOrder{ID: "implement-2", Stage: core.StageImplement, State: core.WorkOrderQueued, LastAttemptOutcome: core.WorkOrderOutcomeReleased, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Which branch?"}})
+		},
+		"implement question": func(in *Input) {
+			*in = checkpointInput(now, "", nil, nil)
+		},
+	} {
+		in := sealedCheckpointInput(now, nil)
+		mutate(&in)
+		if DispositionDecidesRow(in) {
+			t.Fatalf("%s: decides the row", name)
+		}
 	}
 }

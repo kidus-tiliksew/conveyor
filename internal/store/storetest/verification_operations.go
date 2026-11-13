@@ -52,6 +52,7 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 	t.Run("OneRecoveryDisposesEveryGatedSubject", func(t *testing.T) { runRecoveryDisposesEveryGatedSubject(t, x) })
 	t.Run("OneRecoveryDisposesAttemptsAcrossContexts", func(t *testing.T) { runRecoveryDisposesAttemptsAcrossContexts(t, x) })
 	t.Run("SealedCheckpointOffersDispositionsFirst", func(t *testing.T) { runSealedCheckpointOffersDispositionsFirst(t, x) })
+	t.Run("SealedCheckpointCompactParity", func(t *testing.T) { runSealedCheckpointCompactParity(t, x) })
 	t.Run("OperatorRecoveryBindsSuccessorAndConsumesAuthorization", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
 		obligation := store.VerificationObligation{ID: "recovery-" + v.access.TaskID, Description: "Recover one external mutation", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "recovery", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
@@ -1543,8 +1544,8 @@ func runRecoveryDisposesAttemptsAcrossContexts(t *testing.T, x Fixture) {
 // states verification_disposition, not agent_question: details.checkpoint
 // carries the decision request, details.dispositions carries both attempts,
 // the one choice is record_dispositions, and agent_question is no secondary
-// match. A compact read states the same compact fields without reading the
-// set. A recovery built from the stated set requeues the order, a new claim
+// match. A compact read, which reads the set of this one order, states the
+// same compact fields. A recovery built from the stated set requeues the order, a new claim
 // opens a successor context, and a gated start sent with the recovery's
 // authorization launches. A sealed checkpoint whose set is refused keeps its
 // decision request at agent_question (component-next-action invariant 3 row
@@ -1639,4 +1640,91 @@ func runSealedCheckpointOffersDispositionsFirst(t *testing.T, x Fixture) {
 	if question.Kind != nextaction.KindAgentQuestion || question.Details.Checkpoint == "" || question.Details.Dispositions != nil {
 		t.Fatalf("refused set = %s checkpoint %q dispositions %+v, want agent_question with the decision request", question.Kind, question.Details.Checkpoint, question.Details.Dispositions)
 	}
+	requireSealedCompactParity(t, x.Backend, x.Context, replayable.access.TaskID, question)
+}
+
+// sealedCheckpointRecordsHidden reads the backend's tasks and orders but
+// exposes neither verification record reader, so the assembler cannot state
+// a disposition set and refuses it.
+type sealedCheckpointRecordsHidden struct{ store.Store }
+
+// requireSealedCompactParity reads taskID with CompactOnly and requires the
+// same compact fields as the full statement (component-next-action
+// invariant 15).
+func requireSealedCompactParity(t *testing.T, st store.Store, ctx context.Context, taskID string, full nextaction.NextAction) {
+	t.Helper()
+	task, err := st.GetTask(ctx, taskID)
+	requireOK(t, err)
+	compact, err := store.ReadNextActions(ctx, st, []core.Task{task}, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: map[core.Capability]bool{core.CapabilityOperateGates: true}, CompactOnly: true})
+	requireOK(t, err)
+	if got, want := nextaction.CompactFrom(compact[taskID]), nextaction.CompactFrom(full); !reflect.DeepEqual(got, want) {
+		t.Fatalf("compact = %+v, full = %+v", got, want)
+	}
+}
+
+// runSealedCheckpointCompactParity seals real operator_action_required
+// checkpoints, each with the decision request the seal writes, and requires a
+// compact read and a full read to state the same kind, label, summary, and
+// every other compact field for a usable set, an empty set, and a refused
+// set. A usable set states verification_disposition; an empty or refused set
+// states agent_question with the decision request (component-next-action
+// invariant 3 row 10, invariant 15; DEC-133(1)).
+func runSealedCheckpointCompactParity(t *testing.T, x Fixture) {
+	gates := map[core.Capability]bool{core.CapabilityOperateGates: true}
+	read := func(t *testing.T, st store.Store, taskID string) nextaction.NextAction {
+		t.Helper()
+		action, err := store.ReadNextAction(x.Context, st, taskID, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: gates})
+		requireOK(t, err)
+		return action
+	}
+	sealGated := func(t *testing.T) verificationFixture {
+		t.Helper()
+		v := newVerificationFixture(t, x, true)
+		for i, name := range []string{"login", "checkout"} {
+			subject := recoveryFixtureRegister(t, &v, recoveryFixtureObligation("parity-"+name+"-"+v.access.TaskID, "operator_action_required", ""))
+			v.runID = v.apply(t, recoveryFixtureStart(fmt.Sprintf("parity-%d", i), "", subject)).ID
+			v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "blocked", Explanation: "fixture environment unavailable"}})
+		}
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: verificationFixtureCoverage(v.snapshot(t)), Feedback: "Two exercises need an operator", RequiredAction: "Restore the fixtures"}})
+		return v
+	}
+
+	t.Run("UsableSet", func(t *testing.T) {
+		v := sealGated(t)
+		full := read(t, x.Backend, v.access.TaskID)
+		if full.Kind != nextaction.KindVerificationDisposition || len(full.Details.Dispositions) != 2 || full.Details.Checkpoint == "" {
+			t.Fatalf("usable set = %s dispositions %+v checkpoint %q, want verification_disposition with both members", full.Kind, full.Details.Dispositions, full.Details.Checkpoint)
+		}
+		requireSealedCompactParity(t, x.Backend, x.Context, v.access.TaskID, full)
+	})
+
+	t.Run("EmptySet", func(t *testing.T) {
+		// A safe_to_replay attempt with no operation leaves no member to
+		// dispose, so the set is empty and stated as a refusal.
+		v := newVerificationFixture(t, x, true)
+		v.subject = recoveryFixtureRegister(t, &v, recoveryFixtureObligation("parity-replay-"+v.access.TaskID, "safe_to_replay", ""))
+		v.start(t, "parity-replay")
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "blocked", Explanation: "Fixture account locked"}})
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: verificationFixtureCoverage(v.snapshot(t)), Feedback: "Fixture account locked", RequiredAction: "Unlock the fixture account"}})
+		full := read(t, x.Backend, v.access.TaskID)
+		if full.Kind != nextaction.KindAgentQuestion || full.Details.Checkpoint == "" || full.Details.Dispositions != nil {
+			t.Fatalf("empty set = %s checkpoint %q dispositions %+v, want agent_question with the decision request", full.Kind, full.Details.Checkpoint, full.Details.Dispositions)
+		}
+		requireSealedCompactParity(t, x.Backend, x.Context, v.access.TaskID, full)
+	})
+
+	t.Run("RefusedSet", func(t *testing.T) {
+		// The same two-member checkpoint read through a store that cannot
+		// read verification records: the set is refused, not guessed.
+		v := sealGated(t)
+		hidden := sealedCheckpointRecordsHidden{x.Backend}
+		full := read(t, hidden, v.access.TaskID)
+		if full.Kind != nextaction.KindAgentQuestion || full.Details.Checkpoint == "" || full.Details.Dispositions != nil {
+			t.Fatalf("refused set = %s checkpoint %q dispositions %+v, want agent_question with the decision request", full.Kind, full.Details.Checkpoint, full.Details.Dispositions)
+		}
+		requireSealedCompactParity(t, hidden, x.Context, v.access.TaskID, full)
+		if usable := read(t, x.Backend, v.access.TaskID); usable.Kind != nextaction.KindVerificationDisposition {
+			t.Fatalf("the same checkpoint with its records = %s, want verification_disposition", usable.Kind)
+		}
+	})
 }
