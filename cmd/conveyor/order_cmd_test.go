@@ -254,8 +254,8 @@ func TestOrderRecoverDispositionsRefuseBeforeSending(t *testing.T) {
 	}{
 		"no set": {`{"kind":"verification_disposition","current_order":{"id":"t-verify-2"},"details":{"refusals":[{"choice":"record_dispositions","text":"verify order t-verify-2 has no unresolved operations and no retry-gated attempts to dispose"}]}}`,
 			"states no disposition set for work order t-verify-2: verify order t-verify-2 has no unresolved operations"},
-		"another kind":  {`{"kind":"queued","current_order":{"id":"t-verify-2"},"details":{}}`, "does not ask for dispositions on work order t-verify-2"},
-		"another order": {`{"kind":"verification_disposition","current_order":{"id":"t-verify-1"},"details":{"dispositions":[{"context_id":"ctx","run_id":"run-a","operation_ids":[],"input_digest":"d","subject":"ordinary:o","state":"blocked"}]}}`, "does not ask for dispositions on work order t-verify-2"},
+		"another kind":  {`{"kind":"agent_question","current_order":{"id":"t-verify-2"},"details":{}}`, "is agent_question on work order t-verify-2, so it does not ask for dispositions on work order t-verify-2"},
+		"another order": {`{"kind":"verification_disposition","current_order":{"id":"t-verify-1"},"details":{"dispositions":[{"context_id":"ctx","run_id":"run-a","operation_ids":[],"input_digest":"d","subject":"ordinary:o","state":"blocked"}]}}`, "is verification_disposition on work order t-verify-1, so it does not ask for dispositions on work order t-verify-2"},
 	}
 	for name, tc := range statements {
 		t.Run(name, func(t *testing.T) {

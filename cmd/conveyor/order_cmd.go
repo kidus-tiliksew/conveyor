@@ -169,7 +169,11 @@ func readOrderDispositionSet(c *client, orderID string) ([]orderDispositionEntry
 		}
 	}
 	if action.Kind != "verification_disposition" || action.CurrentOrder == nil || action.CurrentOrder.ID != orderID {
-		return nil, fmt.Errorf("the next action of task %s does not ask for dispositions on work order %s; nothing was sent", order.TaskID, orderID)
+		current := "no order"
+		if action.CurrentOrder != nil && action.CurrentOrder.ID != "" {
+			current = "work order " + action.CurrentOrder.ID
+		}
+		return nil, fmt.Errorf("the next action of task %s is %s on %s, so it does not ask for dispositions on work order %s; nothing was sent", order.TaskID, action.Kind, current, orderID)
 	}
 	if len(action.Details.Dispositions) == 0 {
 		return nil, fmt.Errorf("the next action of task %s states no disposition set for work order %s%s; nothing was sent", order.TaskID, orderID, refusal)

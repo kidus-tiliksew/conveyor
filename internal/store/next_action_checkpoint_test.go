@@ -264,8 +264,8 @@ func TestVerificationRecoveryRequiresTheWholeDispositionSet(t *testing.T) {
 		}
 	}
 	// The recorded authorizations are unused, so the set is now empty.
-	if got := verificationDispositionBinding(task, order, recorded); got.Set != nil {
-		t.Fatalf("set after recovery = %+v", got.Set)
+	if got, err := verificationDispositionSet(task, order, recorded); err != nil || len(got) != 0 {
+		t.Fatalf("set after recovery = %+v, err = %v", got, err)
 	}
 }
 
