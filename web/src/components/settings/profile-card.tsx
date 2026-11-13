@@ -5,8 +5,8 @@ import { fetchCallerIdentity, updateOwnDisplayName } from '../../lib/api'
 import type { CallerIdentity } from '../../lib/types'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Input } from '../ui/input'
+import { SettingsRow, SummaryLine } from './settings-row'
 
 export function ProfileCard() {
   const { workspace } = useWorkspaceSelection()
@@ -49,41 +49,47 @@ export function ProfileCard() {
     },
   })
 
+  const savedName = identity.data?.display_name
+  const summary = identity.isPending ? (
+    'Reading your profile…'
+  ) : identity.isError ? (
+    'Conveyor could not read your profile.'
+  ) : (
+    <>
+      <SummaryLine className="text-foreground">{savedName || 'No display name'}</SummaryLine>
+      {draft !== null && draft !== savedName && <SummaryLine>You have an unsaved name.</SummaryLine>}
+    </>
+  )
+
   return (
-    <Card className="mt-4">
-      <CardHeader>
-        <CardTitle>Profile</CardTitle>
-        <UserRound className="size-4 text-faint" />
-      </CardHeader>
-      <CardContent>
-        <p className="mb-4 text-sm leading-6 text-muted">This is the name teammates see in workspace member lists.</p>
-        <form
-          className="max-w-sm space-y-3"
-          aria-label="Update profile"
-          onSubmit={(event) => {
-            event.preventDefault()
-            setMessage('')
-            update.mutate(displayName)
-          }}
-        >
-          <Input
-            aria-label="Display name"
-            autoComplete="name"
-            maxLength={128}
-            value={displayName}
-            onChange={(event) => setDraft(event.target.value)}
-            disabled={identity.isPending}
-          />
-          <Button type="submit" disabled={update.isPending || !displayName.trim()}>
-            {update.isPending ? 'Saving…' : 'Save profile'}
-          </Button>
-          {message && (
-            <p className={`text-sm ${failed ? 'text-failure' : 'text-positive'}`} role="status">
-              {message}
-            </p>
-          )}
-        </form>
-      </CardContent>
-    </Card>
+    <SettingsRow icon={UserRound} title="Profile" action="Change" summary={summary}>
+      <p className="mb-4 text-sm leading-6 text-muted">This is the name teammates see in workspace member lists.</p>
+      <form
+        className="max-w-sm space-y-3"
+        aria-label="Update profile"
+        onSubmit={(event) => {
+          event.preventDefault()
+          setMessage('')
+          update.mutate(displayName)
+        }}
+      >
+        <Input
+          aria-label="Display name"
+          autoComplete="name"
+          maxLength={128}
+          value={displayName}
+          onChange={(event) => setDraft(event.target.value)}
+          disabled={identity.isPending}
+        />
+        <Button type="submit" disabled={update.isPending || !displayName.trim()}>
+          {update.isPending ? 'Saving…' : 'Save profile'}
+        </Button>
+        {message && (
+          <p className={`text-sm ${failed ? 'text-failure' : 'text-positive'}`} role="status">
+            {message}
+          </p>
+        )}
+      </form>
+    </SettingsRow>
   )
 }

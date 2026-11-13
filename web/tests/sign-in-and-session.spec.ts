@@ -1,5 +1,6 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
+import { openSettingsRow } from './helpers/settings'
 
 const invitationToken = 'cv_signin_invite-once'
 const invitationURL = `/sign-in#token=${invitationToken}`
@@ -203,6 +204,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
   await page.goto('/w/demo/workspace')
   await expect(page.getByText('Chosen Member')).toBeVisible()
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Access tokens')
 
   const tokenForm = page.getByRole('form', { name: 'Create an access token' })
   await tokenForm.getByLabel('Token name').fill('My laptop')
@@ -331,6 +333,8 @@ test('a returning user signs in with a password and resets it through an operato
   expect(passwordSignInProved).toBe(true)
 
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Profile')
+  await openSettingsRow(page, 'Password')
   const profileForm = page.getByRole('form', { name: 'Update profile' })
   // The loaded name first, so the typed name replaces it rather than racing it.
   await expect(profileForm.getByLabel('Display name')).toHaveValue('Returning User')
@@ -410,6 +414,7 @@ test('a later identity read never overwrites a display name the user is editing'
   const state = await routeProfile(page)
   await page.clock.install({ time: new Date('2026-10-30T12:00:00Z') })
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Profile')
   const field = page.getByRole('form', { name: 'Update profile' }).getByLabel('Display name')
   await expect(field).toHaveValue('Returning User')
   await field.fill('Renamed User')
@@ -425,7 +430,7 @@ test('a later identity read never overwrites a display name the user is editing'
   await expect.poll(() => state.identityReads).toBeGreaterThan(reads)
   // The card renders in the commit that delivers the new identity, so the
   // field below is read after the Profile card has rendered that identity.
-  await expect(page.getByText('Workspace GitHub App', { exact: true })).toBeVisible()
+  await expect(page.getByText('GitHub App', { exact: true })).toBeVisible()
   expect(await field.inputValue()).toBe('Renamed User')
 
   await page.getByRole('button', { name: 'Save profile' }).click()
@@ -455,6 +460,7 @@ test('the display name field is never editable before it shows the loaded name',
     .getByRole('link', { name: 'Settings', exact: true })
   await expect(settings).toBeVisible()
   await settings.click()
+  await openSettingsRow(page, 'Profile')
   const field = page.getByRole('form', { name: 'Update profile' }).getByLabel('Display name')
   await expect(field).toHaveValue('Returning User')
   const states = await page.evaluate(

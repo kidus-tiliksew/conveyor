@@ -3,11 +3,14 @@ import { Building2 } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { createWorkspaceGitHubAppManifest, disconnectWorkspaceGitHubApp, fetchWorkspaceGitHubApp } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
+import type { WorkspaceGitHubAppStatus } from '../../lib/types'
+import { fullTime } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { Badge } from '../ui/badge'
 import { Dialog } from '../ui/dialog'
 import { Input } from '../ui/input'
+import { SettingsRow, SummaryLine } from './settings-row'
 import { WorkspaceGitHubWebhookPanel } from './workspace-github-webhook-panel'
 
 export function WorkspaceGitHubAppCard() {
@@ -72,13 +75,31 @@ export function WorkspaceGitHubAppCard() {
   const closeDialog = () => {
     if (!disconnect.isPending) setConfirmDisconnect(false)
   }
+  // The closed row states facts only from a read that is current: while a
+  // read is in flight or after it failed, it says so and never repeats the
+  // cached status (component-web-dashboard invariant 27).
+  const reading = status.isPending || status.isFetching
+  const shown = !reading && status.isSuccess ? status.data : undefined
+  const needsAttention =
+    shown !== undefined &&
+    (!shown.connected || shown.repositories.some((repository) => !repository.covered) || !shown.webhook?.configured)
+  const summary = reading ? (
+    <SummaryLine>Reading the GitHub connection…</SummaryLine>
+  ) : status.isError ? (
+    <SummaryLine>Conveyor could not read the GitHub connection.</SummaryLine>
+  ) : shown ? (
+    <GitHubAppSummary status={shown} />
+  ) : null
+
   return (
-    <Card className="mt-4">
-      <CardHeader>
-        <CardTitle>Workspace GitHub App</CardTitle>
-        <Building2 className="size-4 text-faint" />
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <SettingsRow
+      icon={Building2}
+      title="GitHub App"
+      action="Manage"
+      summary={summary}
+      badge={needsAttention ? <Badge variant="attention">Needs attention</Badge> : undefined}
+    >
+      <div className="space-y-4">
         {status.isPending && <p className="text-sm text-muted">Loading GitHub connection…</p>}
         {status.error && (
           <p className="text-sm text-failure" role="alert">
@@ -181,7 +202,7 @@ export function WorkspaceGitHubAppCard() {
             {errorMessage(connect.error)}
           </p>
         )}
-      </CardContent>
+      </div>
       {confirmDisconnect && (
         <Dialog label="Disconnect GitHub App" onClose={closeDialog}>
           <div className="space-y-4 p-5">
@@ -205,6 +226,39 @@ export function WorkspaceGitHubAppCard() {
           </div>
         </Dialog>
       )}
-    </Card>
+    </SettingsRow>
+  )
+}
+
+// The connection facts of the closed row (req-delivery-and-forge AC-1.5;
+// req-quiet-idle-runtime AC-3.6).
+function GitHubAppSummary({ status }: { status: WorkspaceGitHubAppStatus }) {
+  if (!status.connected) return <SummaryLine>No GitHub App is connected.</SummaryLine>
+  const webhook = status.webhook
+  return (
+    <>
+      <SummaryLine>
+        <span className="text-foreground">{status.app_slug}</span>
+        {' · '}
+        {status.installation_account ? `Installed on ${status.installation_account}` : 'Not installed yet'}
+      </SummaryLine>
+      {status.repositories.length === 0 && <SummaryLine>No repositories registered.</SummaryLine>}
+      {status.repositories.map((repository) => (
+        <SummaryLine key={repository.name}>
+          {repository.name}:{' '}
+          <span className={repository.covered ? 'text-positive' : 'text-attention'}>
+            {repository.covered ? 'covered' : 'not covered'}
+          </span>
+        </SummaryLine>
+      ))}
+      <SummaryLine className={webhook?.configured ? undefined : 'text-attention'}>
+        {webhook?.configured ? 'Webhook delivery configured' : 'Webhook delivery not configured'}
+      </SummaryLine>
+      <SummaryLine>
+        {webhook?.last_delivery_at
+          ? `Last delivery accepted ${fullTime(webhook.last_delivery_at)}`
+          : 'No delivery has arrived yet'}
+      </SummaryLine>
+    </>
   )
 }

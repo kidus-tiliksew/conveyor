@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
+import { mockSettingsPage } from './helpers/settings'
 
 async function mockShellAPIs(page: Page) {
   await page.route('**/v1/**', async (route: Route) => {
@@ -132,4 +133,27 @@ test('malformed or inaccessible theme storage falls back to System', async ({ br
   await inaccessible.goto('/')
   await expect.poll(() => inaccessible.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
   await inaccessible.close()
+})
+
+// Settings has its own Theme row in the This browser group. It and the sidebar
+// control use one theme store, so each shows a change made in the other at
+// once, without a reload (component-web-dashboard invariant 19).
+test('the Settings theme row and the sidebar control stay in step', async ({ page }) => {
+  await mockSettingsPage(page)
+  await page.emulateMedia({ colorScheme: 'light' })
+  await page.goto('/w/demo/settings')
+  const row = page.getByRole('region', { name: 'This browser', exact: true }).getByRole('group', { name: 'Theme' })
+  const sidebar = page.getByRole('combobox', { name: 'Theme' })
+  await expect(row.getByRole('button')).toHaveText(['System', 'Light', 'Dark'])
+  await expect(row.getByRole('button', { name: 'Light' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(sidebar).toHaveValue('light')
+
+  await row.getByRole('button', { name: 'Dark' }).click()
+  await expect(sidebar).toHaveValue('dark')
+  await expect.poll(() => themeState(page)).toMatchObject({ choice: 'dark', effective: 'dark' })
+
+  await sidebar.selectOption('system')
+  await expect(row.getByRole('button', { name: 'System' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(row.getByRole('button', { name: 'Dark' })).toHaveAttribute('aria-pressed', 'false')
+  await expect.poll(() => themeState(page)).toMatchObject({ choice: 'system', effective: 'light' })
 })

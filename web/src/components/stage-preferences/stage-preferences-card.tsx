@@ -8,6 +8,7 @@ import {
   emptyEntry,
   emptyStages,
   type SingleStageKey,
+  type StagePreferenceEntry,
   type StagePreferenceStages,
   type StagePreferences,
   sameStages,
@@ -16,8 +17,8 @@ import {
   stagesForSave,
 } from '../../lib/stage-preferences'
 import { Button } from '../ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
-import { describeEntry, EntryFields } from './entry-fields'
+import { SettingsRow, SummaryLine } from '../settings/settings-row'
+import { describeEntry, EntryFields, summarizeEntry } from './entry-fields'
 import { ReviewEditor } from './review-editor'
 
 // The person's stage preferences on Settings (component-stage-preferences;
@@ -132,13 +133,23 @@ export function StagePreferencesCard() {
     setStatus(null)
   }
 
+  // The closed row shows the saved set only while the latest read succeeded,
+  // and says when edits wait unsaved in the closed form.
+  const summary = (
+    <>
+      {current.isPending && <SummaryLine>Reading your stage preferences…</SummaryLine>}
+      {readFailed && <SummaryLine>Conveyor could not read your saved stage preferences.</SummaryLine>}
+      {saved && <StageSummary stages={saved.stages} />}
+      <SummaryLine>They apply in every workspace.</SummaryLine>
+      {draft && (conflict || !unchanged) && (
+        <SummaryLine className="font-medium text-attention">You have unsaved changes.</SummaryLine>
+      )}
+    </>
+  )
+
   return (
-    <Card className="mt-4">
-      <CardHeader>
-        <CardTitle>Stage preferences</CardTitle>
-        <SlidersHorizontal className="size-4 text-faint" />
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <SettingsRow icon={SlidersHorizontal} title="Stage preferences" action="Change" summary={summary}>
+      <div className="space-y-4">
         <div className="space-y-1 text-sm leading-6 text-muted">
           <p>Your agent sessions use these choices when they start an agent for a stage.</p>
           <p>
@@ -323,8 +334,26 @@ export function StagePreferencesCard() {
             {status.text}
           </p>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </SettingsRow>
+  )
+}
+
+// One line per stage and per review seat, for the closed row: harness · model ·
+// effort, or Not set (req-stage-preferences AC-2.1).
+function StageSummary({ stages }: { stages: StagePreferenceStages }) {
+  const review = stages.review
+  const line = (label: string, entry: StagePreferenceEntry | null) => (
+    <SummaryLine key={label}>
+      <span className="text-foreground">{label}:</span> {summarizeEntry(entry)}
+    </SummaryLine>
+  )
+  return (
+    <>
+      {singleStages.map((stage) => line(stageLabels[stage], stages[stage]))}
+      {line('Review primary', review?.primary ?? null)}
+      {review?.seats.map((seat, index) => line(`Review seat ${index + 1}`, seat))}
+    </>
   )
 }
 

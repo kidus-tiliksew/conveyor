@@ -1,5 +1,6 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
+import { issuedTokenValue, mockSettingsPage, openSettingsRow, settingsRowHeader } from './helpers/settings'
 
 const workspaceConfig = {
   workspace: 'demo',
@@ -447,6 +448,7 @@ test('a token secret is shown once, is never re-rendered, and the token can be r
   })
 
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Access tokens')
   const card = page.getByRole('form', { name: 'Create an access token' })
   await expect(page.getByText('Laptop CLI')).toBeVisible()
   await expect(page.getByText(/Last used/)).toBeVisible()
@@ -484,6 +486,7 @@ test('a token secret is shown once, is never re-rendered, and the token can be r
 
   // A reload proves the value was never persisted anywhere the surface reads.
   await page.reload()
+  await openSettingsRow(page, 'Access tokens')
   await expect(page.getByText('Release runner')).toBeVisible()
   await expect(page.getByText(secret)).toHaveCount(0)
 
@@ -492,4 +495,51 @@ test('a token secret is shown once, is never re-rendered, and the token can be r
   expect(deleteRequests).toEqual(['pat_deployment', 'pat_new'])
   await expect(page.getByText('Revoked')).toHaveCount(2)
   await expect(page.getByText(secret)).toHaveCount(0)
+})
+
+// The closed Access tokens row on Settings counts the tokens that are not
+// revoked and names their latest use. A new token value that the person has
+// not dismissed stays in component state while the row is closed, and the
+// closed row says that it waits (component-web-dashboard invariant 26).
+test('the closed tokens row counts active tokens, says when there is none, and keeps a new value', async ({ page }) => {
+  const state = await mockSettingsPage(page)
+  state.tokens = state.tokens.map((item) => ({ ...item, revoked_at: '2026-11-01T00:00:00Z' }))
+  await page.goto('/w/demo/settings')
+  const header = settingsRowHeader(page, 'Access tokens')
+  await expect(header).toContainText('You have no access token.')
+
+  const region = await openSettingsRow(page, 'Access tokens')
+  const form = region.getByRole('form', { name: 'Create an access token' })
+  await form.getByLabel('Token name').fill('Release runner')
+  await form.getByRole('button', { name: 'Create token' }).click()
+  await expect(region.getByText(issuedTokenValue)).toBeVisible()
+
+  // Closing the row hides the value and keeps it until Done.
+  await header.click()
+  await expect(page.getByText(issuedTokenValue)).toBeHidden()
+  await expect(header).not.toContainText(issuedTokenValue)
+  await expect(header).toContainText('Open this row to copy your new token.')
+  await expect(header).toContainText('1 token · Never used')
+  await openSettingsRow(page, 'Access tokens')
+  await expect(region.getByText(issuedTokenValue)).toBeVisible()
+  await region.getByRole('button', { name: 'Done' }).click()
+  await expect(page.getByText(issuedTokenValue)).toHaveCount(0)
+  await header.click()
+  await expect(header).not.toContainText('Open this row to copy your new token.')
+  // The value reached no browser storage.
+  const stored = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))
+  expect(stored).not.toContain(issuedTokenValue)
+})
+
+test('the welcome page opens the Access tokens row and leaves the other rows closed', async ({ page }) => {
+  await mockSettingsPage(page)
+  await page.goto('/w/demo/settings?welcome=true')
+  await expect(page.getByText('Welcome to Conveyor')).toBeVisible()
+  await expect(settingsRowHeader(page, 'Access tokens')).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByRole('form', { name: 'Create an access token' })).toBeVisible()
+  for (const title of ['Profile', 'Password', 'Connect a coding agent', 'Stage preferences', 'GitHub App'])
+    await expect(settingsRowHeader(page, title)).toHaveAttribute('aria-expanded', 'false')
+
+  await page.goto('/w/demo/settings')
+  await expect(settingsRowHeader(page, 'Access tokens')).toHaveAttribute('aria-expanded', 'false')
 })

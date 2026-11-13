@@ -2,6 +2,7 @@ import { expect, type Page, test } from '@playwright/test'
 import type { WorkspaceGitHubAppStatus, WorkspaceGitHubWebhookStatus } from '../src/lib/types'
 import { callerIdentity } from './helpers/caller-identity'
 import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
+import { openSettingsRow, settingsRowHeader } from './helpers/settings'
 
 // The webhook projection in the shape GET …/github-app serves it
 // (internal/httpapi/workspace_github_app.go#gitHubWebhookView).
@@ -155,7 +156,8 @@ for (const organization of ['', 'demo-org']) {
       await route.fulfill({ contentType: 'text/html', body: '<h1>GitHub app registration</h1>' })
     })
     await page.goto('/w/demo/settings')
-    await expect(page.getByText('Workspace GitHub App', { exact: true })).toBeVisible()
+    await openSettingsRow(page, 'GitHub App')
+    await expect(page.getByText('GitHub App', { exact: true })).toBeVisible()
     // A disconnected App has no webhook to set up.
     await expect(page.getByRole('region', { name: 'Webhook delivery' })).toHaveCount(0)
     await expect(page.getByLabel('GitHub token', { exact: true })).toHaveCount(0)
@@ -185,6 +187,7 @@ test('connected status shows mixed coverage and disconnect requires confirmation
   const state = await mockApp(page)
   state.status = { ...connected }
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'GitHub App')
   await expect(page.getByText('conveyor-demo', { exact: true })).toBeVisible()
   await expect(page.getByText('Installed on demo-org')).toBeVisible()
   const repositories = page.getByRole('list', { name: 'Repository coverage' })
@@ -218,9 +221,12 @@ test('setup return selects the returned workspace and refreshes status, includin
 }) => {
   const state = await mockApp(page)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'GitHub App')
   await expect(page.getByRole('button', { name: 'Connect GitHub', exact: true })).toBeVisible()
   state.status = { ...connected, app_slug: 'conveyor-second' }
   await page.goto('/w/demo/settings?workspace=second')
+  await expect(page).toHaveURL(/\/w\/second\/settings/)
+  await openSettingsRow(page, 'GitHub App')
   await expect(page.getByText('conveyor-second', { exact: true })).toBeVisible()
   await expect.poll(() => state.gets.at(-1)).toBe('/v1/workspaces/second/github-app')
   state.status = { ...disconnected }
@@ -234,6 +240,7 @@ test('an app without an installation offers the server installation remedy', asy
   const state = await mockApp(page)
   state.status = { ...connected, installation_account: '', repositories: [] }
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'GitHub App')
   await expect(page.getByText('Not installed yet.')).toBeVisible()
   await expect(page.getByText('No repositories registered.')).toBeVisible()
   await expect(page.getByRole('link', { name: 'Manage on GitHub' })).toHaveAttribute(
@@ -249,6 +256,7 @@ for (const method of ['GET', 'POST', 'DELETE']) {
     state.error = 'Connect the GitHub App in workspace settings for repository backend.'
     if (method === 'DELETE') state.status = { ...connected }
     await page.goto('/w/demo/settings')
+    await openSettingsRow(page, 'GitHub App')
     if (method === 'POST') await page.getByRole('button', { name: 'Connect GitHub', exact: true }).click()
     if (method === 'DELETE') {
       await page.getByRole('button', { name: 'Disconnect', exact: true }).click()
@@ -266,7 +274,8 @@ test('members cannot see or fetch the workspace GitHub App card', async ({ page 
   const state = await mockApp(page, 'contributor')
   await page.goto('/w/demo/settings')
   await expect(page.getByLabel('Display name', { exact: true })).toHaveValue('Ada')
-  await expect(page.getByText('Workspace GitHub App', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('GitHub App', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: /^Workspace:/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Connect GitHub', exact: true })).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Webhook delivery' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Generate secret', exact: true })).toHaveCount(0)
@@ -278,6 +287,7 @@ test('machine-only status errors show readable failure copy', async ({ page }) =
   const state = await mockApp(page)
   state.failMethod = 'GET'
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'GitHub App')
   await expect(page.getByRole('alert')).toHaveText('Could not load the GitHub connection.')
   await expect(page.locator('body')).not.toContainText('github_app_permission')
 })
@@ -292,6 +302,7 @@ test('missing public URL refuses connection without navigating to GitHub', async
     await route.abort()
   })
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'GitHub App')
   const settingsURL = page.url()
   await page.getByRole('button', { name: 'Connect GitHub', exact: true }).click()
   await expect(page.getByRole('alert')).toContainText(state.error)
@@ -339,6 +350,7 @@ test('webhook panel shows unconfigured delivery, the receiver URL, events, and s
   const state = await mockApp(page)
   state.status = { ...connected, webhook: { ...unconfiguredWebhook } }
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'GitHub App')
   const panel = page.getByRole('region', { name: 'Webhook delivery' })
   await expect(panel.getByText('Webhook delivery is not configured', { exact: true })).toBeVisible()
   await expect(panel.getByTestId('webhook-last-delivery')).toHaveText('No delivery accepted yet')
@@ -373,6 +385,7 @@ test('webhook panel shows configured delivery and the last accepted delivery tim
   const state = await mockApp(page)
   state.status = { ...connected, installation_account: '', webhook: { ...configuredWebhook } }
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'GitHub App')
   const panel = page.getByRole('region', { name: 'Webhook delivery' })
   await expect(panel.getByText('Webhook delivery is configured', { exact: true })).toBeVisible()
   const lastDelivery = panel.getByTestId('webhook-last-delivery').locator('time')
@@ -401,6 +414,7 @@ test('webhook panel without a receiver URL names the public URL remedy', async (
   const state = await mockApp(page)
   state.status = { ...connected, webhook: { ...unconfiguredWebhook, receiver_url: '' } }
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'GitHub App')
   const panel = page.getByRole('region', { name: 'Webhook delivery' })
   await expect(panel.getByRole('status')).toContainText('CONVEYOR_PUBLIC_URL')
   await expect(panel.getByLabel('Receiver URL', { exact: true })).toHaveCount(0)
@@ -415,6 +429,7 @@ test('generated webhook secret shows once, is replaced on regenerate, and leaves
   const state = await mockApp(page)
   state.status = { ...connected, webhook: { ...unconfiguredWebhook } }
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'GitHub App')
   await page.getByRole('button', { name: 'Generate secret', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Generate webhook secret' })
   await expect(dialog).toBeVisible()
@@ -474,10 +489,83 @@ test('a failed webhook secret request shows the server error and no secret', asy
   state.failMethod = 'SECRET'
   state.error = 'Connect the GitHub App before generating a webhook secret.'
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'GitHub App')
   await page.getByRole('button', { name: 'Generate secret', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Generate webhook secret' })
   await dialog.getByRole('button', { name: 'Generate', exact: true }).click()
   await expect(dialog.getByRole('alert')).toHaveText(state.error)
   await expect(dialog.getByLabel('Webhook secret', { exact: true })).toHaveCount(0)
   expect(state.secretPosts).toBe(1)
+})
+
+// The closed GitHub App row (component-web-dashboard invariant 27;
+// req-delivery-and-forge AC-1.5; req-quiet-idle-runtime AC-3.6). It states the
+// connection facts without opening, marks a gap with the attention badge, and
+// states no fact from a cached read while a read is in flight or failed.
+test('the closed row shows coverage and webhook facts and marks gaps for attention', async ({ page }) => {
+  const state = await mockApp(page)
+  state.status = { ...connected, webhook: { ...unconfiguredWebhook } }
+  await page.goto('/w/demo/settings')
+  const header = settingsRowHeader(page, 'GitHub App')
+  await expect(header).toHaveAttribute('aria-expanded', 'false')
+  await expect(header).toContainText('conveyor-demo · Installed on demo-org')
+  await expect(header).toContainText('frontend: covered')
+  await expect(header).toContainText('backend: not covered')
+  await expect(header).toContainText('Webhook delivery not configured')
+  await expect(header).toContainText('No delivery has arrived yet')
+  await expect(header.getByText('Needs attention')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Disconnect', exact: true })).toHaveCount(0)
+})
+
+test('the closed row marks a disconnected app and an unconfigured webhook for attention', async ({ page }) => {
+  const state = await mockApp(page)
+  await page.goto('/w/demo/settings')
+  const header = settingsRowHeader(page, 'GitHub App')
+  await expect(header).toContainText('No GitHub App is connected.')
+  await expect(header.getByText('Needs attention')).toBeVisible()
+
+  // Every repository covered, but no webhook delivery yet.
+  state.status = { ...connected, repositories: [{ name: 'frontend', covered: true }] }
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
+  await expect(header).toContainText('frontend: covered')
+  await expect(header.getByText('Needs attention')).toBeVisible()
+
+  // Covered and configured: nothing needs attention.
+  state.status = { ...connected, repositories: [{ name: 'frontend', covered: true }], webhook: configuredWebhook }
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
+  await expect(header).toContainText('Webhook delivery configured')
+  await expect(header).toContainText('Last delivery accepted')
+  await expect(header.getByText('Needs attention')).toHaveCount(0)
+})
+
+test('the closed row never states cached facts while a read is pending or failed', async ({ page }) => {
+  const state = await mockApp(page)
+  state.status = { ...connected, webhook: configuredWebhook }
+  let release: () => void = () => {}
+  await page.goto('/w/demo/settings')
+  const header = settingsRowHeader(page, 'GitHub App')
+  await expect(header).toContainText('conveyor-demo')
+
+  // A pending read states that it is reading, not the cached app.
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.route('**/v1/workspaces/demo/github-app', async (route) => {
+    await held
+    await route.fallback()
+  })
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
+  await expect(header).toContainText('Reading the GitHub connection…')
+  await expect(header).not.toContainText('conveyor-demo')
+  await expect(header.getByText('Needs attention')).toHaveCount(0)
+  release()
+  await expect(header).toContainText('conveyor-demo')
+
+  // A failed read says so, and the cached facts stay out of the closed row.
+  state.failMethod = 'GET'
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
+  await expect(header).toContainText('Conveyor could not read the GitHub connection.')
+  await expect(header).not.toContainText('conveyor-demo')
+  await expect(header).not.toContainText('covered')
+  await expect(header.getByText('Needs attention')).toHaveCount(0)
 })

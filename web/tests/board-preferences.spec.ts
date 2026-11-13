@@ -104,7 +104,7 @@ test('the stage progress switch is off by default and persists across reloads wi
 }) => {
   const writes = await mockAPI(page)
   await page.goto('/w/demo/settings')
-  await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'This browser' })).toBeVisible()
   await expect(toggle(page)).toHaveAttribute('aria-checked', 'false')
   await toggle(page).click()
   await expect(toggle(page)).toHaveAttribute('aria-checked', 'true')

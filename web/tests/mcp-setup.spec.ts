@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
+import { mockSettingsPage, openSettingsRow, settingsRowHeader } from './helpers/settings'
 
 async function routeDashboard(page: Page) {
   await page.addInitScript(() => {
@@ -176,7 +177,33 @@ test('Tasks MCP action stays usable at a narrow viewport', async ({ page }) => {
 
   await dialog.getByRole('button', { name: 'Done' }).click()
   await page.goto('/w/demo/settings')
-  const settings = page.getByText('MCP work-order server').locator('..').locator('..')
+  const settings = await openSettingsRow(page, 'Connect a coding agent')
   await expect(settings).toContainText(endpoint)
   await expect(settings).toContainText('Bearer <CONVEYOR_API_TOKEN>')
+})
+
+// The closed Connect a coding agent row shows the endpoint and copies it
+// without opening. Open, it shows the endpoint and the connection
+// configuration with a placeholder, never a token value.
+test('the Settings endpoint copies from the closed row and the open row shows a placeholder', async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await mockSettingsPage(page)
+  await page.goto('/w/demo/settings')
+  const endpoint = `${new URL(page.url()).origin}/mcp`
+  const header = settingsRowHeader(page, 'Connect a coding agent')
+  await expect(header).toContainText(endpoint)
+  await page.getByRole('button', { name: 'Copy MCP endpoint' }).click()
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(endpoint)
+  await expect(header).toHaveAttribute('aria-expanded', 'false')
+
+  const region = await openSettingsRow(page, 'Connect a coding agent')
+  await expect(region).toContainText('one of your access tokens')
+  await expect(region).not.toContainText('above')
+  await expect(region.locator('pre')).toContainText('Bearer <CONVEYOR_API_TOKEN>')
+  await region.getByRole('button', { name: 'Copy connection configuration' }).click()
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('Bearer <CONVEYOR_API_TOKEN>')
+  await expect(page.getByRole('button', { name: 'Copy MCP endpoint' })).toHaveCount(0)
 })
