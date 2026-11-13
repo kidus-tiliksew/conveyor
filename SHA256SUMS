@@ -1,0 +1,8 @@
+7282e02590fb477433da9e0adef2f57262e0a09e24d8afa683cd5e4a936a249c  head-d726d62c/1-make-build/command.log
+4c2b02a67ec5737ee1f0253e64bf9bcc82c3954d2368c8d624fe1cd7e260093a  head-d726d62c/1-make-build/manifest.json
+12428484bc6a7a5f77eacbe702f12a47b1db0731597467242f489872ec1318ac  head-d726d62c/2-make-vet/command.log
+4eaba9df764ad817592ced3ee85734e2e5e2846bee7f4d06316ee51fdefa1be0  head-d726d62c/2-make-vet/manifest.json
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  head-d726d62c/3-make-fmt-check/command.log
+38cf6727f6af3b8179921f85d1d45e8f5d6b9cb25359aea96ebb3f2d87a50a8d  head-d726d62c/3-make-fmt-check/manifest.json
+d22502d4111fe2e4dc0fe0ab95550cc6d5ba46903459587613e1fbbf50fa6405  head-d726d62c/4-setpriv-make-test-go/command.log
+45fe0892203ead3582de136e2c90346f558bc9ae68ae7c3f3a253eeb0f0a4eab  head-d726d62c/4-setpriv-make-test-go/manifest.json
