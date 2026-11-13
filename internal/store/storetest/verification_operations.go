@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -1011,6 +1012,194 @@ func runVerificationRetryGateScope(t *testing.T, x Fixture) {
 		register(t, &next, verification.Operation{ID: "step", TargetBinding: "fixture"})
 		refused(t, &next, start("gated-operation-next-order", "", next.subject), store.VerificationCodeOperationUnresolved)
 	})
+
+	t.Run("UngatedStartsLeaveAuthorizationUnused", func(t *testing.T) {
+		m := newRetryGateMixedFixture(t, x, scope, register, start, failed, 3)
+		// A first start under operator_action_required is ungated, so the
+		// incidental ID it carried is not recorded.
+		for _, attempt := range m.observer.snapshotFor(t, m.oldContext).Attempts {
+			if attempt.ReplayAuthorizationID != "" {
+				t.Fatalf("first start %s recorded authorization %q", attempt.ID, attempt.ReplayAuthorizationID)
+			}
+		}
+		// The kit runner sends the operator's ID on every subject of one run.
+		// Each start that the gate does not gate is admitted, records no ID,
+		// and leaves the gated attempt's authorization unused.
+		for i, subject := range m.safe {
+			key := fmt.Sprintf("mixed-safe-%d", i)
+			r := m.v.apply(t, start(key, m.authorization, subject))
+			if !r.LaunchAuthorized {
+				t.Fatalf("ungated start %s was not authorized", key)
+			}
+			m.assertStored(t, r.ID, "")
+			m.assertUnused(t)
+			// A start-key replay launches nothing, with or without the ID.
+			for _, id := range []string{m.authorization, ""} {
+				replay := m.v.apply(t, start(key, id, subject))
+				if replay.ID != r.ID || replay.LaunchAuthorized {
+					t.Fatalf("replay of %s with %q = %+v, want %s without launch", key, id, replay, r.ID)
+				}
+			}
+			m.assertUnused(t)
+		}
+		started := m.v.apply(t, start("mixed-gated", m.authorization, m.gated))
+		if !started.LaunchAuthorized {
+			t.Fatal("the gated start was refused after the ungated starts")
+		}
+		m.assertStored(t, started.ID, m.authorization)
+		m.assertSuccessor(t, started.ID)
+		replay := m.v.apply(t, start("mixed-gated", m.authorization, m.gated))
+		if replay.ID != started.ID || replay.LaunchAuthorized {
+			t.Fatalf("gated replay = %+v, want %s without launch", replay, started.ID)
+		}
+		m.assertSuccessor(t, started.ID)
+		m.v.runID = started.ID
+		failed(t, &m.v)
+		refused(t, &m.v, start("mixed-gated-reuse", m.authorization, m.gated), store.VerificationCodeRetryAuthorizationRequired)
+		m.assertSuccessor(t, started.ID)
+	})
+
+	t.Run("LegacyAttemptIDDoesNotRefuseGatedStart", func(t *testing.T) {
+		if x.SeedVerificationAttemptAuthorization == nil {
+			t.Fatal("conformance fixture must provide SeedVerificationAttemptAuthorization for the retry gate legacy-row case (component-verification-service invariant 19)")
+		}
+		m := newRetryGateMixedFixture(t, x, scope, register, start, failed, 1)
+		safe := m.v.apply(t, start("legacy-safe", m.authorization, m.safe[0]))
+		m.v.runID = safe.ID
+		failed(t, &m.v)
+		// A row written before this change holds the operator's ID on an
+		// attempt of another subject.
+		x.SeedVerificationAttemptAuthorization(t, x.Context, safe.ID, m.authorization)
+		m.assertStored(t, safe.ID, m.authorization)
+		m.assertUnused(t)
+		// The historical row still answers its own start-key replay.
+		for _, id := range []string{m.authorization, ""} {
+			if replay := m.v.apply(t, start("legacy-safe", id, m.safe[0])); replay.ID != safe.ID || replay.LaunchAuthorized {
+				t.Fatalf("legacy replay with %q = %+v", id, replay)
+			}
+		}
+		// The gate still checks the authorization itself.
+		refused(t, &m.v, start("legacy-gated-bare", "", m.gated), store.VerificationCodeRetryAuthorizationRequired)
+		refused(t, &m.v, start("legacy-gated-other", "recovery:another-request", m.gated), store.VerificationCodeRetryAuthorizationRequired)
+		started := m.v.apply(t, start("legacy-gated", m.authorization, m.gated))
+		if !started.LaunchAuthorized {
+			t.Fatal("a historical attempt of another subject refused the gated start")
+		}
+		m.assertStored(t, started.ID, m.authorization)
+		m.assertSuccessor(t, started.ID)
+		m.assertStored(t, safe.ID, m.authorization)
+		m.v.runID = started.ID
+		failed(t, &m.v)
+		refused(t, &m.v, start("legacy-gated-reuse", m.authorization, m.gated), store.VerificationCodeRetryAuthorizationRequired)
+	})
+}
+
+// retryGateMixedFixture is one verify order whose first context ended one
+// operator_action_required attempt and several safe_to_replay attempts. An
+// operator recovered the gated attempt with a disposition, and the same
+// order was claimed again with a successor context.
+type retryGateMixedFixture struct {
+	v, observer        verificationFixture
+	gated              core.VerificationSubject
+	safe               []core.VerificationSubject
+	oldContext, oldRun string
+	authorization      string
+}
+
+func newRetryGateMixedFixture(t *testing.T, x Fixture, scope []core.VerificationRevision, register func(*testing.T, *verificationFixture, ...verification.Operation) store.VerificationObligation, start func(string, string, core.VerificationSubject) store.VerificationCommand, failed func(*testing.T, *verificationFixture), safeCount int) retryGateMixedFixture {
+	t.Helper()
+	m := retryGateMixedFixture{v: newVerificationFixtureTask(t, x, scope, nil, true), authorization: "recovery:mixed-recovery"}
+	v := &m.v
+	gatedObligation := register(t, v)
+	m.gated = v.subject
+	var obligations []store.VerificationObligation
+	for i := 0; i < safeCount; i++ {
+		obligation := store.VerificationObligation{ID: fmt.Sprintf("safe-%d-%s", i, v.access.TaskID), Description: "Exercise that is safe to replay", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: fmt.Sprintf("safe-%d", i), Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only observation"}}
+		r := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
+		obligations = append(obligations, obligation)
+		m.safe = append(m.safe, core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: r.Digest})
+	}
+	// Every first start carries the ID, as one runner invocation sends it.
+	for i, subject := range append([]core.VerificationSubject{m.gated}, m.safe...) {
+		r := v.apply(t, start(fmt.Sprintf("mixed-first-%d", i), m.authorization, subject))
+		if !r.LaunchAuthorized {
+			t.Fatalf("first start of %s was not authorized", subject.ObligationID)
+		}
+		v.runID = r.ID
+		if subject == m.gated {
+			m.oldRun = r.ID
+		}
+		failed(t, v)
+	}
+	m.oldContext = v.contextID
+	order, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
+	requireOK(t, err)
+	order.State, order.LastAttemptID, order.LastAttemptOutcome, order.RetrySuppressed = core.WorkOrderQueued, order.AttemptID, "released", true
+	order.SessionID, order.AttemptID, order.ClaimantID, order.WorkerID, order.ClientTokenHash = "", "", "", "", ""
+	order.LeaseExpiresAt = time.Time{}
+	requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRelease))
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	disposition := &store.VerificationRecoveryDisposition{ContextID: m.oldContext, RunID: m.oldRun, OperationIDs: []string{}, InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied", Reason: "Operator restored the environment and authorizes one retry."}
+	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), x.Backend, order.ID, "mixed-recovery", time.Hour)
+	requireOK(t, err)
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "mixed-successor", ClientToken: "mixed-successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: order.ServedRequirementSnapshot, Governance: order.GovernanceSnapshot}
+	order, err = ClaimWorkOrder(x.Context, x.Backend, order.ID, claim)
+	requireOK(t, err)
+	v.access = store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: claim.SessionID}, ClientToken: claim.ClientToken}
+	v.contextID, v.runID = "", ""
+	v.contextID = v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "mixed-successor", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins}}).ID
+	m.gated.ContractDigest = v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &gatedObligation}).Digest
+	for i := range obligations {
+		m.safe[i].ContractDigest = v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligations[i]}).Digest
+	}
+	m.observer = m.v
+	m.observer.ctx, m.observer.access = operator, store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}
+	m.assertUnused(t)
+	return m
+}
+
+// recovered returns the recovered gated attempt and its one authorization.
+func (m *retryGateMixedFixture) recovered(t *testing.T) store.VerificationReplayAuthorization {
+	t.Helper()
+	for _, attempt := range m.observer.snapshotFor(t, m.oldContext).Attempts {
+		if attempt.ID == m.oldRun {
+			if len(attempt.Recovery) != 1 || attempt.Recovery[0].ID != m.authorization {
+				t.Fatalf("recovered attempt authorizations = %+v", attempt.Recovery)
+			}
+			return attempt.Recovery[0]
+		}
+	}
+	t.Fatalf("recovered attempt %s is missing", m.oldRun)
+	return store.VerificationReplayAuthorization{}
+}
+
+func (m *retryGateMixedFixture) assertUnused(t *testing.T) {
+	t.Helper()
+	if a := m.recovered(t); a.Successor != nil {
+		t.Fatalf("authorization consumed by %+v", a.Successor)
+	}
+}
+
+func (m *retryGateMixedFixture) assertSuccessor(t *testing.T, runID string) {
+	t.Helper()
+	if a := m.recovered(t); a.Successor == nil || a.Successor.RunID != runID {
+		t.Fatalf("authorization successor = %+v, want run %s", a.Successor, runID)
+	}
+}
+
+// assertStored checks the authorization ID that attempt runID records.
+func (m *retryGateMixedFixture) assertStored(t *testing.T, runID, want string) {
+	t.Helper()
+	for _, attempt := range m.observer.snapshotFor(t, m.v.contextID).Attempts {
+		if attempt.ID == runID {
+			if attempt.ReplayAuthorizationID != want {
+				t.Fatalf("attempt %s records authorization %q, want %q", runID, attempt.ReplayAuthorizationID, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("attempt %s is missing", runID)
 }
 
 // verifyOrderAfterResubmission follows a feedback seal: it claims the

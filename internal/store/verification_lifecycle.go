@@ -245,6 +245,14 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 				old := verificationDecode[VerificationAttempt](row)
 				if old.StartKey == c.Key {
 					original := old
+					if !verificationAttemptAdmittedByGate(rows, original.ID) {
+						// An ungated start records no authorization, and a row
+						// written before that rule may hold the caller's
+						// incidental ID. Neither side's ID takes part in the
+						// replay comparison (component-verification-service
+						// invariant 19).
+						old.ReplayAuthorizationID, v.ReplayAuthorizationID = "", ""
+					}
 					old.ID = ""
 					old.State = "running"
 					old.StartedAt = time.Time{}
@@ -275,6 +283,13 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 		if latest != nil && latest.EndedAt == nil {
 			return verificationRefusal(ErrVerificationState, VerificationCodeAttemptRunning, "subject", verificationRemedyAttempt, "attempt %s of %s is still %s.", latest.ID, verificationSubjectName(v.Subject), latest.State)
 		}
+		if gated == nil || contract.RetryPolicy != "operator_action_required" {
+			// component-verification-service invariant 19: an ungated start
+			// consumes no authorization, so the attempt records none, whatever
+			// ID the request carries. The kit runner sends one ID on every
+			// subject of a run (req-verification-kits AC-3.4).
+			v.ReplayAuthorizationID = ""
+		}
 		if gated != nil {
 			if contract.RetryPolicy == "operator_action_required" {
 				authorized := false
@@ -300,11 +315,10 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 				if !authorized {
 					return verificationRefusal(ErrVerificationState, VerificationCodeRetryAuthorizationRequired, "replay_authorization_id", verificationRemedyRetry, "the latest attempt %s of %s has retry policy operator_action_required and no unused operator authorization matches.", gated.ID, verificationSubjectName(v.Subject))
 				}
-				for _, row := range rows {
-					if row.Table == "verification_attempts" && verificationDecode[VerificationAttempt](row).ReplayAuthorizationID == v.ReplayAuthorizationID {
-						return ErrVerificationState
-					}
-				}
+				// The Successor binding below keeps the authorization
+				// single-use. Another attempt that records the same ID refuses
+				// nothing: one recovery records its ID on every attempt it
+				// names (component-verification-service invariant 45).
 			}
 		}
 		for _, row := range rows {
@@ -407,6 +421,23 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 }
 func verificationOperationResolved(state string) bool {
 	return state == "applied" || state == "not_applied" || state == "completed"
+}
+
+// verificationAttemptAdmittedByGate reports whether the retry gate admitted
+// attempt id: an operator authorization names it as its successor
+// (component-verification-service invariant 19).
+func verificationAttemptAdmittedByGate(rows []VerificationRow, id string) bool {
+	for _, row := range rows {
+		if row.Table != "verification_attempts" {
+			continue
+		}
+		for _, authorization := range verificationDecode[VerificationAttempt](row).Recovery {
+			if authorization.Successor != nil && authorization.Successor.RunID == id {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func verificationPublicationMutation(c VerificationCommand, v VerificationPublication, rows []VerificationRow, now time.Time, out *VerificationMutation) error {
