@@ -141,3 +141,36 @@ func SeedSetupContractForTest(t *testing.T, st Backend, taskID, raw string) {
 	task.SetupContract = setup
 	m.tasks[taskID] = task
 }
+
+// SeedVerificationAttemptAuthorizationForTest sets one stored attempt's
+// ReplayAuthorizationID, as an ungated start wrote it before ungated starts
+// stopped recording the caller's ID; no public writer can
+// (component-verification-service invariant 19).
+func SeedVerificationAttemptAuthorizationForTest(t *testing.T, st Backend, ctx context.Context, attemptID, authorizationID string) {
+	t.Helper()
+	ws, ok := WorkspaceFromContext(ctx)
+	if !ok {
+		t.Fatal("seed requires a workspace context")
+	}
+	m := st.(*volatileMemory).memory
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := ws + "\x00verification_attempts\x00" + attemptID
+	row, ok := m.verificationRows[key]
+	if !ok {
+		t.Fatal("seed requires an existing attempt")
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(row.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	id, err := json.Marshal(authorizationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body["ReplayAuthorizationID"] = id
+	if row.Body, err = json.Marshal(body); err != nil {
+		t.Fatal(err)
+	}
+	m.verificationRows[key] = row
+}

@@ -278,6 +278,16 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				if rows, err := result.RowsAffected(); err != nil || rows != 1 {
 					t.Fatalf("seed stored hold rows=%d err=%v", rows, err)
 				}
+			}, SeedVerificationAttemptAuthorization: func(t *testing.T, ctx context.Context, attemptID, authorizationID string) {
+				// A row an ungated start wrote before this rule; no public
+				// writer sets it (component-verification-service invariant 19).
+				result, err := st.db.ExecContext(ctx, `UPDATE verification_attempts SET body=JSON_SET_STRING(body,'ReplayAuthorizationID',?) WHERE workspace_id=? AND id=?`, authorizationID, ws, attemptID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+					t.Fatalf("seed attempt authorization rows=%d err=%v", rows, err)
+				}
 			}, SeedDashboardSessionTimes: func(t *testing.T, ctx context.Context, sessionID string, lastUsedAgo, expiresIn time.Duration) {
 				// No public writer sets a session's stored times
 				// (component-identity-membership).

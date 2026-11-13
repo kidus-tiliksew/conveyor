@@ -91,6 +91,8 @@ func TestMemoryConformance(t *testing.T) {
 				store.SeedSetupContractForTest(t, st, taskID, raw)
 			}, SeedStoredTaskHold: func(t *testing.T, _ context.Context, taskID string) {
 				store.SeedStoredTaskHoldForTest(t, st, taskID)
+			}, SeedVerificationAttemptAuthorization: func(t *testing.T, ctx context.Context, attemptID, authorizationID string) {
+				store.SeedVerificationAttemptAuthorizationForTest(t, st, ctx, attemptID, authorizationID)
 			}, SeedDashboardSessionTimes: func(t *testing.T, _ context.Context, sessionID string, lastUsedAgo, expiresIn time.Duration) {
 				store.SeedDashboardSessionTimesForTest(t, st, sessionID, lastUsedAgo, expiresIn)
 			}, DashboardSessionTimes: func(t *testing.T, _ context.Context, sessionID string) (time.Time, time.Time) {

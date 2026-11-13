@@ -289,6 +289,26 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				if err != nil || tag.RowsAffected() != 1 {
 					t.Fatalf("seed stored hold rows=%d err=%v", tag.RowsAffected(), err)
 				}
+			}, SeedVerificationAttemptAuthorization: func(t *testing.T, ctx context.Context, attemptID, authorizationID string) {
+				// A row an ungated start wrote before this rule. The retention
+				// guard refuses ordinary attempt updates, so only this isolated
+				// transaction changes its trigger mode
+				// (component-verification-service invariant 19).
+				tx, err := st.pool.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = tx.Rollback(ctx) }()
+				if _, err = tx.Exec(ctx, "SET LOCAL session_replication_role = replica"); err != nil {
+					t.Fatal(err)
+				}
+				tag, err := tx.Exec(ctx, `UPDATE verification_attempts SET body=jsonb_set(body,'{ReplayAuthorizationID}',to_jsonb($3::text)) WHERE workspace_id=$1 AND id=$2`, workspace, attemptID, authorizationID)
+				if err != nil || tag.RowsAffected() != 1 {
+					t.Fatalf("seed attempt authorization rows=%d err=%v", tag.RowsAffected(), err)
+				}
+				if err = tx.Commit(ctx); err != nil {
+					t.Fatal(err)
+				}
 			}, SeedDashboardSessionTimes: func(t *testing.T, ctx context.Context, sessionID string, lastUsedAgo, expiresIn time.Duration) {
 				// No public writer sets a session's stored times
 				// (component-identity-membership).

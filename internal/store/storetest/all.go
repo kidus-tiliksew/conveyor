@@ -59,6 +59,13 @@ type Fixture struct {
 	// No public writer can; each backend seeds it directly in its test
 	// binary. The hold-retirement cases require it and never skip.
 	SeedStoredTaskHold func(t *testing.T, ctx context.Context, taskID string)
+	// SeedVerificationAttemptAuthorization sets one stored attempt's
+	// ReplayAuthorizationID, modelling a row that an ungated start wrote
+	// before ungated starts stopped recording the caller's ID. No public
+	// writer can, so each test binary seeds it directly. The retry gate's
+	// legacy-row case requires it and never skips
+	// (component-verification-service invariant 19).
+	SeedVerificationAttemptAuthorization func(t *testing.T, ctx context.Context, attemptID, authorizationID string)
 	// SeedWorkspaceConfigYAML replaces the bound workspace's stored
 	// configuration document with raw YAML without changing its version,
 	// modelling a row an earlier release wrote, and WorkspaceConfigYAML
