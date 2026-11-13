@@ -2,6 +2,7 @@ import { expect, type Locator, type Page, test } from '@playwright/test'
 import type { StagePreferenceStages, StagePreferences } from '../src/lib/stage-preferences'
 import { callerIdentity } from './helpers/caller-identity'
 import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
+import { openSettingsRow, settingsRowHeader } from './helpers/settings'
 
 // The Settings stage preferences card (component-stage-preferences;
 // component-web-dashboard invariant 25; req-stage-preferences AC-2.1, AC-2.4).
@@ -119,6 +120,7 @@ async function fillEntry(page: Page, label: string, harness: string, model: stri
 test('a person with no saved preferences sees every stage unset', async ({ page }) => {
   const state = await mockSettings(page)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await expect(page.getByText('These preferences apply in every workspace.')).toBeVisible()
   for (const name of ['Plan', 'Implement', 'Verify', 'Review']) {
     await expect(stage(page, name).getByText('Not set').first()).toBeVisible()
@@ -131,6 +133,7 @@ test('a person with no saved preferences sees every stage unset', async ({ page 
 test('the card sets each stage and edits review seats, then saves the whole set', async ({ page }) => {
   const state = await mockSettings(page)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await page.getByRole('button', { name: 'Set plan' }).click()
   await fillEntry(page, 'Plan', ' codex ', 'gpt-6.1-sol', 'medium')
   await page.getByRole('button', { name: 'Set verify' }).click()
@@ -179,6 +182,7 @@ test('the card sets each stage and edits review seats, then saves the whole set'
 test('review keeps at most eight seat entries, and an empty review is saved as unset', async ({ page }) => {
   const state = await mockSettings(page, savedSet, 4)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await expect(page.getByLabel('Review seat 2 model', { exact: true })).toHaveValue('claude-sonnet-5-5')
   for (let seat = 3; seat <= 8; seat++) {
     await page.getByRole('button', { name: 'Add seat' }).click()
@@ -198,6 +202,7 @@ test('review keeps at most eight seat entries, and an empty review is saved as u
 test('a stale save keeps the draft and shows the current set beside it', async ({ page }) => {
   const state = await mockSettings(page, savedSet, 3)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await page.getByLabel('Plan model', { exact: true }).fill('gpt-7')
   // Another session saves first: the PUT finds version 4 and answers 412.
   const elsewhere: StagePreferenceStages = {
@@ -231,6 +236,7 @@ test('a stale save keeps the draft and shows the current set beside it', async (
 test('discarding a stale draft shows the current set', async ({ page }) => {
   const state = await mockSettings(page, savedSet, 3)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await page.getByLabel('Implement harness', { exact: true }).fill('cursor')
   const elsewhere: StagePreferenceStages = { ...savedSet, implement: { harness: 'codex', model: 'other', effort: '' } }
   state.putAnswers.push({ status: 412, json: { error: 'version_conflict', message: 'changed' }, changeTo: elsewhere })
@@ -246,6 +252,7 @@ test('discarding a stale draft shows the current set', async ({ page }) => {
 test('a stale save whose follow-up reads fail never resolves against the cached set', async ({ page }) => {
   const state = await mockSettings(page, savedSet, 3)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await page.getByLabel('Plan model', { exact: true }).fill('gpt-7')
   // Another session saved version 4. The PUT answers 412, and the read that
   // follows and its one automatic retry both fail.
@@ -300,6 +307,7 @@ test('a stale save whose follow-up reads fail never resolves against the cached 
 test('a failed save over a freshly read set can be retried against that set', async ({ page }) => {
   const state = await mockSettings(page, savedSet, 3)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await page.getByLabel('Plan model', { exact: true }).fill('gpt-7')
   const elsewhere: StagePreferenceStages = {
     ...savedSet,
@@ -327,6 +335,7 @@ test('a failed save over a freshly read set can be retried against that set', as
 test('discarding after a failed and then successful read shows the real new set', async ({ page }) => {
   const state = await mockSettings(page, savedSet, 3)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await page.getByLabel('Implement harness', { exact: true }).fill('cursor')
   const elsewhere: StagePreferenceStages = { ...savedSet, implement: { harness: 'codex', model: 'other', effort: '' } }
   state.putAnswers.push({ status: 412, json: { error: 'version_conflict', message: 'changed' }, changeTo: elsewhere })
@@ -346,6 +355,7 @@ test('a failed refetch with a draft keeps the draft and never shows the cached s
   await installQueryClientProbe(page)
   const state = await mockSettings(page, savedSet, 3)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await page.getByLabel('Plan model', { exact: true }).fill('gpt-7')
   // The set changed elsewhere, and the next reads fail.
   state.set = {
@@ -383,6 +393,7 @@ test('a failed refetch with a draft still saves the draft against its own versio
   await installQueryClientProbe(page)
   const state = await mockSettings(page, savedSet, 3)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await page.getByLabel('Plan model', { exact: true }).fill('gpt-7')
   state.getFailures = 2
   await withQueryClient(
@@ -433,6 +444,7 @@ test('read, validation, and store failures are reported and keep the draft', asy
   // The first read and its one automatic retry fail.
   state.getFailures = 2
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await expect(
     page.getByRole('alert').getByText('Conveyor could not read your stage preferences. Try again.'),
   ).toBeVisible()
@@ -473,8 +485,10 @@ test('read, validation, and store failures are reported and keep the draft', asy
 test('the same set shows in every workspace', async ({ page }) => {
   await mockSettings(page, savedSet, 6)
   await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await expect(page.getByLabel('Implement model', { exact: true })).toHaveValue('claude-opus-5-5')
   await page.goto('/w/second/settings')
+  await openSettingsRow(page, 'Stage preferences')
   await expect(page.getByLabel('Implement model', { exact: true })).toHaveValue('claude-opus-5-5')
   await expect(page.getByLabel('Review seat 1 effort', { exact: true })).toHaveValue('medium')
 })
@@ -495,6 +509,7 @@ for (const width of [375, 1280]) {
     }
     const state = await mockSettings(page, savedSet, 3)
     await page.goto('/w/demo/settings')
+    await openSettingsRow(page, 'Stage preferences')
     await expect(page.getByLabel('Review seat 2 model', { exact: true })).toHaveValue('claude-sonnet-5-5')
     // The page never scrolls sideways.
     const overflow = await page.evaluate(
@@ -522,7 +537,118 @@ for (const width of [375, 1280]) {
 
     await mockSettings(page)
     await page.goto('/w/demo/settings')
+    await openSettingsRow(page, 'Stage preferences')
     await expect(stage(page, 'Plan').getByText('Not set')).toBeVisible()
     await shoot(card(page), `stage-preferences-unset-${width}.png`)
   })
 }
+
+// The closed Stage preferences row on Settings (req-stage-preferences AC-2.1):
+// one line per stage and per review seat, "Not set" for an unset stage, and
+// the statement that the set applies in every workspace, without opening.
+test('the closed row shows every stage, each seat, and the every-workspace statement', async ({ page }) => {
+  await mockSettings(page, savedSet, 3)
+  await page.goto('/w/demo/settings')
+  const header = settingsRowHeader(page, 'Stage preferences')
+  await expect(header).toHaveAttribute('aria-expanded', 'false')
+  for (const line of [
+    'Plan: codex · gpt-6.1-sol · medium',
+    'Implement: claude-code · claude-opus-5-5 · high',
+    'Verify: Not set',
+    'Review primary: claude-code · claude-opus-5-5',
+    'Review seat 1: codex · gpt-6.1-sol · medium',
+    'Review seat 2: claude-code · claude-sonnet-5-5',
+    'They apply in every workspace.',
+  ])
+    await expect(header).toContainText(line)
+  await expect(page.getByLabel('Plan harness', { exact: true })).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Set verify' })).toHaveCount(0)
+})
+
+test('the closed row shows Not set for every stage of an empty set', async ({ page }) => {
+  await mockSettings(page)
+  await page.goto('/w/demo/settings')
+  const header = settingsRowHeader(page, 'Stage preferences')
+  for (const stage of ['Plan', 'Implement', 'Verify', 'Review primary'])
+    await expect(header).toContainText(`${stage}: Not set`)
+  await expect(header).not.toContainText('Review seat')
+  await expect(header).toContainText('They apply in every workspace.')
+})
+
+test('a failed read never shows the cached set in the closed row', async ({ page }) => {
+  await installQueryClientProbe(page)
+  const state = await mockSettings(page, savedSet, 3)
+  await page.goto('/w/demo/settings')
+  const header = settingsRowHeader(page, 'Stage preferences')
+  await expect(header).toContainText('Plan: codex')
+  state.getFailures = 2
+  await withQueryClient(
+    page,
+    (client) =>
+      (client as unknown as { refetchQueries(filter: { queryKey: readonly unknown[] }): Promise<void> }).refetchQueries(
+        { queryKey: ['stage-preferences'] },
+      ),
+    undefined,
+  )
+  await expect(header).toContainText('Conveyor could not read your saved stage preferences.')
+  await expect(header).not.toContainText('Plan: codex')
+  await expect(header).toContainText('They apply in every workspace.')
+})
+
+test('unsaved edits and the stale-save panel survive closing and reopening the row', async ({ page }) => {
+  const state = await mockSettings(page, savedSet, 3)
+  await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
+  const header = settingsRowHeader(page, 'Stage preferences')
+  await page.getByLabel('Plan model', { exact: true }).fill('gpt-7')
+
+  // A closed row with an unsaved edit says so, and keeps the edit.
+  await header.click()
+  await expect(header).toContainText('You have unsaved changes.')
+  await expect(header).toContainText('Plan: codex · gpt-6.1-sol · medium')
+  await openSettingsRow(page, 'Stage preferences')
+  await expect(page.getByLabel('Plan model', { exact: true })).toHaveValue('gpt-7')
+
+  // A stale save keeps its panel and base version across close and reopen.
+  state.putAnswers.push({
+    status: 412,
+    json: { error: 'version_conflict', message: 'changed' },
+    changeTo: { ...savedSet, verify: { harness: 'opencode', model: 'saved-elsewhere', effort: '' } },
+  })
+  await page.getByRole('button', { name: 'Save stage preferences' }).click()
+  const conflict = page.getByRole('region', { name: 'Saved stage preferences' })
+  await expect(conflict.getByText('saved-elsewhere')).toBeVisible()
+  await header.click()
+  await expect(header).toContainText('You have unsaved changes.')
+  await expect(conflict).toHaveCount(0)
+  await openSettingsRow(page, 'Stage preferences')
+  await expect(conflict.getByText('saved-elsewhere')).toBeVisible()
+  await expect(page.getByLabel('Plan model', { exact: true })).toHaveValue('gpt-7')
+  await conflict.getByRole('button', { name: 'Save my changes' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Stage preferences saved.' })).toBeVisible()
+  expect(state.puts.map((put) => put.ifMatch)).toEqual(['"3"', '"4"'])
+  expect(state.puts[1].body.stages.plan?.model).toBe('gpt-7')
+})
+
+test('each entry keeps harness, model, and effort on one line at 375 px', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 1600 })
+  await mockSettings(page, savedSet, 3)
+  await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
+  for (const label of ['Plan', 'Implement', 'Review primary', 'Review seat 1', 'Review seat 2']) {
+    const [harness, model, effort] = await Promise.all(
+      ['harness', 'model', 'effort'].map((name) => page.getByLabel(`${label} ${name}`, { exact: true }).boundingBox()),
+    )
+    expect(Math.abs(harness!.y - model!.y)).toBeLessThanOrEqual(1)
+    expect(Math.abs(harness!.y - effort!.y)).toBeLessThanOrEqual(1)
+    expect(effort!.width).toBeLessThan(harness!.width)
+    expect(effort!.width).toBeLessThan(model!.width)
+    await expect(page.getByLabel(`${label} effort`, { exact: true })).toHaveAttribute('placeholder', 'Optional')
+  }
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  )
+  expect(overflow).toBeLessThanOrEqual(0)
+  const scroll = page.getByTestId('settings-scroll')
+  expect(await scroll.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(0)
+})

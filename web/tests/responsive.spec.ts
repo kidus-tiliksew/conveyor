@@ -5,6 +5,7 @@ import { expect, type Locator, type Page } from '@playwright/test'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
+import { mockSettingsPage, openSettingsRow, settingsRowHeader, settingsRowTitles } from './helpers/settings'
 import { waitForSheetSettled } from './helpers/sheet'
 
 // Task detail opens on its Timeline tab; pin it so a persisted Flow choice
@@ -720,4 +721,203 @@ test.describe('desktop', () => {
     }
     expect(lineageReads).toEqual([])
   })
+})
+
+// Settings: four groups of rows that open in place (component-web-dashboard,
+// Settings). Every row starts closed and shows what is set now; its controls
+// stay hidden from sight, the tab order, and assistive technology until the
+// person opens it.
+test.describe('Settings', () => {
+  const groups = ['Account', 'Agents', 'This browser', 'Workspace: Demo']
+  const rows = ['Profile', 'Password', 'Access tokens', 'Connect a coding agent', 'Stage preferences', 'GitHub App']
+  const actions: Record<string, string> = {
+    Profile: 'Change',
+    Password: 'Change',
+    'Access tokens': 'Manage',
+    'Connect a coding agent': 'Show',
+    'Stage preferences': 'Change',
+    'GitHub App': 'Manage',
+  }
+
+  for (const width of [375, 1280]) {
+    test(`the groups, rows, and closed states at ${width} px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 })
+      await mockSettingsPage(page)
+      await page.goto('/w/demo/settings')
+      const scroll = page.getByTestId('settings-scroll')
+      await expect(scroll.getByRole('heading', { level: 2 })).toHaveText(groups)
+      expect(await settingsRowTitles(page)).toEqual(rows)
+      const browser = page.getByRole('region', { name: 'This browser', exact: true })
+      await expect(browser.getByRole('group', { name: 'Theme' })).toBeVisible()
+      await expect(browser.getByRole('switch', { name: 'Show stage progress on cards' })).toBeVisible()
+
+      for (const title of rows) {
+        const header = settingsRowHeader(page, title)
+        await expect(header).toHaveAttribute('aria-expanded', 'false')
+        await expect(header).toHaveAccessibleName(`${title} ${actions[title]}`)
+        const region = page.locator(`#${await header.getAttribute('aria-controls')}`)
+        await expect(region).toBeHidden()
+        const box = await header.boundingBox()
+        expect(box!.height).toBeGreaterThanOrEqual(44)
+      }
+
+      // The closed rows state what is set now.
+      await expect(settingsRowHeader(page, 'Profile')).toContainText('Ada Lovelace')
+      await expect(settingsRowHeader(page, 'Password')).toContainText('Change the password you use to sign in.')
+      const lastUsed = await page.evaluate(() =>
+        new Date('2026-11-13T07:30:00Z').toLocaleString('en', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+        }),
+      )
+      // The revoked token counts for neither the number nor the last use.
+      await expect(settingsRowHeader(page, 'Access tokens')).toContainText(`2 tokens · Last used ${lastUsed}`)
+      const endpoint = `${new URL(page.url()).origin}/mcp`
+      await expect(settingsRowHeader(page, 'Connect a coding agent')).toContainText(endpoint)
+      await expect(page.getByRole('button', { name: 'Copy MCP endpoint' })).toBeVisible()
+      const stages = settingsRowHeader(page, 'Stage preferences')
+      for (const line of [
+        'Plan: codex · gpt-6.1-sol · medium',
+        'Implement: claude-code · claude-opus-5-5 · high',
+        'Verify: claude-code · claude-sonnet-5-5',
+        'Review primary: claude-code · claude-opus-5-5 · high',
+        'Review seat 1: codex · gpt-6.1-sol · high',
+        'Review seat 2: claude-code · claude-fable-5-2',
+        'They apply in every workspace.',
+      ])
+        await expect(stages).toContainText(line)
+      const github = settingsRowHeader(page, 'GitHub App')
+      await expect(github).toContainText('conveyor-demo · Installed on demo-org')
+      await expect(github).toContainText('conveyor: covered')
+      await expect(github).toContainText('Webhook delivery configured')
+      await expect(github).toContainText('Last delivery accepted')
+      await expect(github.getByText('Needs attention')).toHaveCount(0)
+
+      // No closed row shows a form field or an action.
+      await expect(page.getByLabel('Display name', { exact: true })).toBeHidden()
+      await expect(page.getByLabel('Current password')).toBeHidden()
+      await expect(page.getByRole('form', { name: 'Create an access token' })).toHaveCount(0)
+      await expect(page.getByLabel('Plan harness', { exact: true })).toBeHidden()
+      await expect(page.getByRole('button', { name: 'Save stage preferences' })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: 'Disconnect', exact: true })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: 'Generate secret' })).toHaveCount(0)
+
+      // From 1024 px the group title sits left of its rows; below, above them.
+      const title = await scroll.getByRole('heading', { name: 'Account' }).boundingBox()
+      const first = await settingsRowHeader(page, 'Profile').boundingBox()
+      if (width >= 1024) expect(title!.x + title!.width).toBeLessThan(first!.x)
+      else expect(title!.y + title!.height).toBeLessThanOrEqual(first!.y)
+
+      // The page never scrolls sideways.
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      )
+      expect(overflow).toBeLessThanOrEqual(0)
+      expect(await scroll.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(0)
+    })
+  }
+
+  test('the Workspace group is absent without manage_workspace', async ({ page }) => {
+    const state = await mockSettingsPage(page, { role: 'contributor' })
+    await page.goto('/w/demo/settings')
+    const scroll = page.getByTestId('settings-scroll')
+    await expect(scroll.getByRole('heading', { level: 2 })).toHaveText(groups.slice(0, 3))
+    await expect.poll(() => settingsRowTitles(page)).toEqual(rows.slice(0, 5))
+    expect(state.gets).not.toContain('/v1/workspaces/demo/github-app')
+  })
+
+  test('with every row closed the page is at most 1500 px tall at 390 px wide', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 664 })
+    await mockSettingsPage(page)
+    await page.goto('/w/demo/settings')
+    await expect(settingsRowHeader(page, 'GitHub App')).toContainText('conveyor: covered')
+    await expect(settingsRowHeader(page, 'Stage preferences')).toContainText('Review seat 2')
+    await expect(settingsRowHeader(page, 'Access tokens')).toContainText('2 tokens')
+    const height = await page.getByTestId('settings-scroll').evaluate((element) => element.scrollHeight)
+    testInfo.annotations.push({ type: 'settings-closed-height-390', description: `${height}px` })
+    expect(height).toBeLessThanOrEqual(1500)
+  })
+
+  test('rows open and close by pointer and by keyboard, each on its own', async ({ page }) => {
+    await mockSettingsPage(page)
+    await page.goto('/w/demo/settings')
+    const profile = settingsRowHeader(page, 'Profile')
+    const password = settingsRowHeader(page, 'Password')
+
+    // A closed row's controls are out of the tab order.
+    await profile.focus()
+    await page.keyboard.press('Tab')
+    await expect(password).toBeFocused()
+
+    await profile.click()
+    await expect(profile).toHaveAttribute('aria-expanded', 'true')
+    await expect(profile).toHaveAccessibleName('Profile Close')
+    const region = page.getByRole('region', { name: 'Profile', exact: true })
+    await expect(region.getByLabel('Display name', { exact: true })).toBeVisible()
+    await expect(password).toHaveAttribute('aria-expanded', 'false')
+
+    await password.focus()
+    await page.keyboard.press('Enter')
+    await expect(password).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.getByLabel('Current password')).toBeVisible()
+    // Opening one row leaves the other open.
+    await expect(profile).toHaveAttribute('aria-expanded', 'true')
+    // An open row's controls follow its header in the tab order.
+    await page.keyboard.press('Tab')
+    await expect(page.getByLabel('Current password')).toBeFocused()
+
+    await password.focus()
+    await page.keyboard.press('Space')
+    await expect(password).toHaveAttribute('aria-expanded', 'false')
+    await expect(page.getByLabel('Current password')).toBeHidden()
+
+    await profile.click()
+    await expect(profile).toHaveAttribute('aria-expanded', 'false')
+    await expect(page.getByLabel('Display name', { exact: true })).toBeHidden()
+    await expect(page.getByRole('region', { name: 'Profile', exact: true })).toHaveCount(0)
+  })
+
+  test('a display name draft survives closing and reopening its row', async ({ page }) => {
+    const state = await mockSettingsPage(page)
+    await page.goto('/w/demo/settings')
+    const region = await openSettingsRow(page, 'Profile')
+    const field = region.getByLabel('Display name', { exact: true })
+    await expect(field).toHaveValue('Ada Lovelace')
+    await field.fill('Ada King')
+    const header = settingsRowHeader(page, 'Profile')
+    await header.click()
+    await expect(header).toContainText('Ada Lovelace')
+    await expect(header).toContainText('You have an unsaved name.')
+    await openSettingsRow(page, 'Profile')
+    await expect(field).toHaveValue('Ada King')
+    expect(state.writes).toEqual([])
+  })
+
+  // Visual record for the pull request: Settings with every row closed and
+  // with the Stage preferences row open, at 375 px and at a desktop width.
+  // Each image is attached to the Playwright report, which CI uploads, and is
+  // written to SETTINGS_SCREENSHOT_DIR when it is set, else to the test's
+  // output directory. No image is committed.
+  for (const width of [375, 1280]) {
+    test(`settings screenshots at ${width} px`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width, height: 2400 })
+      const directory = process.env.SETTINGS_SCREENSHOT_DIR
+      const target = (name: string) => (directory ? `${directory}/${name}` : testInfo.outputPath(name))
+      const shoot = async (name: string) => {
+        await page.screenshot({ path: target(name) })
+        await testInfo.attach(name, { path: target(name), contentType: 'image/png' })
+      }
+      await mockSettingsPage(page)
+      await page.goto('/w/demo/settings')
+      await expect(settingsRowHeader(page, 'GitHub App')).toContainText('conveyor: covered')
+      await expect(settingsRowHeader(page, 'Stage preferences')).toContainText('Review seat 2')
+      await shoot(`settings-closed-${width}.png`)
+      const region = await openSettingsRow(page, 'Stage preferences')
+      await expect(region.getByLabel('Review seat 2 model', { exact: true })).toHaveValue('claude-fable-5-2')
+      await shoot(`settings-stage-preferences-open-${width}.png`)
+    })
+  }
 })

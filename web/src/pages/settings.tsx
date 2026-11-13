@@ -1,12 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
 import { useLocation, useNavigate, useSearch } from '@tanstack/react-router'
-import { CheckCircle2, PlugZap, Terminal } from 'lucide-react'
+import { CheckCircle2 } from 'lucide-react'
 import { useEffect } from 'react'
-import { useWorkspaceSelection } from '../components/app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { BoardPreferencesCard } from '../components/settings/board-preferences-card'
+import { ConnectAgentRow } from '../components/settings/connect-agent-row'
 import { PasswordCard } from '../components/settings/password-card'
 import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
 import { ProfileCard } from '../components/settings/profile-card'
+import { SettingsGroup } from '../components/settings/settings-group'
+import { ThemeRow } from '../components/settings/theme-row'
 import { WorkspaceGitHubAppCard } from '../components/settings/workspace-github-app-card'
 import { StagePreferencesCard } from '../components/stage-preferences/stage-preferences-card'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -37,14 +40,16 @@ export function SettingsPage() {
   }, [returnedWorkspace, returnWorkspaceKnown, workspace, navigate, welcome])
   const cliCommand = 'export CONVEYOR_API_TOKEN="<paste-your-token>"'
   const endpoint = mcpEndpoint(window.location.origin)
+  const canManage = useWorkspaceCapability('manage_workspace')
+  const workspaceName = workspaces.data?.find((item) => item.id === workspace)?.name || workspace
   const mcpConfig = mcpConnectionConfig(endpoint).replace('<CONVEYOR_API_TOKEN>', '<paste-your-token>')
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader title="Settings" description="Your access and connection settings." />
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl px-4 py-6 sm:px-6 sm:py-8">
+      <div className="min-h-0 flex-1 overflow-y-auto" data-testid="settings-scroll">
+        <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 sm:py-8">
           {welcome && (
-            <Card className="mt-6 border-primary/30 bg-primary-soft/30">
+            <Card className="mb-8 border-primary/30 bg-primary-soft/30">
               <CardHeader>
                 <CardTitle>Welcome to Conveyor</CardTitle>
                 <CheckCircle2 className="size-4 text-positive" />
@@ -74,28 +79,32 @@ export function SettingsPage() {
             </Card>
           )}
 
-          <ProfileCard />
-          <PasswordCard />
-          <PersonalTokensCard />
-          <StagePreferencesCard />
-          <BoardPreferencesCard />
-          {(!returnWorkspaceKnown || returnedWorkspace === workspace) && <WorkspaceGitHubAppCard key={workspace} />}
-          <Card className="mt-4">
-            <CardHeader>
-              <CardTitle>MCP work-order server</CardTitle>
-              {welcome ? <Terminal className="size-4 text-faint" /> : <PlugZap className="size-4 text-primary" />}
-            </CardHeader>
-            <CardContent className="space-y-2 text-sm leading-6 text-muted">
-              <p>
-                Connect each operator-owned coding-agent session to{' '}
-                <code className="font-mono text-xs text-foreground">{endpoint}</code> using the bearer token above.
-                Start a fresh session for review: Conveyor rejects self-review at claim time.
-              </p>
-              <pre className="overflow-x-auto rounded-md bg-background p-3 font-mono text-xs text-foreground">
-                {mcpConnectionConfig(endpoint)}
-              </pre>
-            </CardContent>
-          </Card>
+          <div className="space-y-8 lg:space-y-10">
+            <SettingsGroup title="Account" description="How you sign in and how teammates see you.">
+              <ProfileCard />
+              <PasswordCard />
+              <PersonalTokensCard defaultOpen={Boolean(welcome)} />
+            </SettingsGroup>
+            <SettingsGroup
+              title="Agents"
+              description="How your coding-agent sessions reach Conveyor and what they start."
+            >
+              <ConnectAgentRow endpoint={endpoint} />
+              <StagePreferencesCard />
+            </SettingsGroup>
+            <SettingsGroup title="This browser" description="Display choices saved on this device only.">
+              <ThemeRow />
+              <BoardPreferencesCard />
+            </SettingsGroup>
+            {canManage && (!returnWorkspaceKnown || returnedWorkspace === workspace) && (
+              <SettingsGroup
+                title={`Workspace: ${workspaceName}`}
+                description="Shared by everyone in this workspace. Only people who manage the workspace see this."
+              >
+                <WorkspaceGitHubAppCard key={workspace} />
+              </SettingsGroup>
+            )}
+          </div>
         </div>
       </div>
     </div>

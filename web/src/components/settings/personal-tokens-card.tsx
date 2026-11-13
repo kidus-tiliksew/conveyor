@@ -6,10 +6,10 @@ import { errorMessage } from '../../lib/errors'
 import { fullTime } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { CopyButton } from '../ui/copy-button'
 import { Dialog } from '../ui/dialog'
 import { Input } from '../ui/input'
+import { SettingsRow, SummaryLine } from './settings-row'
 
 function lifecycleSummary(created: string, lastUsed?: string) {
   const createdText = `Created ${fullTime(created)}`
@@ -25,7 +25,7 @@ const deploymentRevokeConfirmation = 'REVOKE DEPLOYMENT CREDENTIAL'
  * written to a query cache, never stored, and no listing response carries it,
  * so leaving this screen is the same as losing it.
  */
-export function PersonalTokensCard() {
+export function PersonalTokensCard({ defaultOpen = false }: { defaultOpen?: boolean }) {
   const queryClient = useQueryClient()
   const [label, setLabel] = useState('')
   const [issuedValue, setIssuedValue] = useState('')
@@ -62,13 +62,35 @@ export function PersonalTokensCard() {
     setDeploymentRevokeText('')
   }
 
+  // The closed row counts tokens that are not revoked and names the latest use
+  // among them, from the same listing the open row shows.
+  const active = tokens.data?.filter((item) => !item.revoked_at) ?? []
+  const lastUsed = active.reduce<string | undefined>(
+    (latest, item) =>
+      item.last_used_at && (!latest || Date.parse(item.last_used_at) > Date.parse(latest)) ? item.last_used_at : latest,
+    undefined,
+  )
+  const summary = (
+    <>
+      {tokens.isPending && <SummaryLine>Reading your tokens…</SummaryLine>}
+      {tokens.isError && <SummaryLine>Conveyor could not read your tokens.</SummaryLine>}
+      {tokens.isSuccess && active.length === 0 && <SummaryLine>You have no access token.</SummaryLine>}
+      {tokens.isSuccess && active.length > 0 && (
+        <SummaryLine>
+          <span className="text-foreground">{active.length === 1 ? '1 token' : `${active.length} tokens`}</span>
+          {' · '}
+          {lastUsed ? `Last used ${fullTime(lastUsed)}` : 'Never used'}
+        </SummaryLine>
+      )}
+      {issuedValue && (
+        <SummaryLine className="font-medium text-attention">Open this row to copy your new token.</SummaryLine>
+      )}
+    </>
+  )
+
   return (
-    <Card className="mt-4">
-      <CardHeader>
-        <CardTitle>Your access tokens</CardTitle>
-        <KeyRound className="size-4 text-faint" />
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <SettingsRow icon={KeyRound} title="Access tokens" action="Manage" summary={summary} defaultOpen={defaultOpen}>
+      <div className="space-y-3">
         <p className="text-sm leading-6 text-muted">
           Tokens sign in as you, from the CLI or an agent session. They are yours alone — nobody else can see or revoke
           them.
@@ -161,7 +183,7 @@ export function PersonalTokensCard() {
         {revoke.error && (
           <p className="text-sm text-failure">{errorMessage(revoke.error, 'Could not revoke that token.')}</p>
         )}
-      </CardContent>
+      </div>
       {deploymentRevokeToken && (
         <Dialog onClose={closeDeploymentRevoke} label="Revoke deployment credential">
           <div className="border-b border-border px-5 py-4">
@@ -208,6 +230,6 @@ export function PersonalTokensCard() {
           </form>
         </Dialog>
       )}
-    </Card>
+    </SettingsRow>
   )
 }
