@@ -369,13 +369,39 @@ func runConflictFixTakeover(t *testing.T, st store.Store) {
 	x.mergeAutomatically(t, true)
 	x.requireForgeFailure(t, "later merge failure", mergeFailure("Required status check is expected"))
 
+	// The refresh round's review publication fails before the merge lands:
+	// that independent failure outlives the merge resolution on every read.
+	x.failReviewPublication(t, refresh, "comment refused")
+
 	x.mergeErr = nil
 	x.mergeAutomatically(t, false)
 	if got := x.current(t).State; got != core.TaskMerged {
 		t.Fatalf("task = %s, want merged", got)
 	}
-	x.requireForgeFailure(t, "confirmed merge", nil)
+	x.requireForgeFailure(t, "confirmed merge", &store.ForgeFailure{Surface: "GitHub review publication", Detail: "comment refused"})
 	x.requireAction(t, nextaction.ActorNone, nextaction.KindTerminal, "")
+}
+
+// failReviewPublication records the review order's publication as failed
+// through the publication commands.
+func (x *takeover) failReviewPublication(t *testing.T, reviewOrderID, detail string) {
+	t.Helper()
+	order := x.order(t, reviewOrderID)
+	if err := x.st.QueueReviewPublication(x.ctx, core.ReviewPublication{
+		ReviewWorkOrderID: order.ID, TaskID: order.TaskID, JobID: order.JobID, Verdict: "approve", ReasonCode: "verified",
+		Summary: "approve", ReviewerSession: order.SessionID, ReviewRound: order.ReviewRound, ReviewSeat: order.ReviewSeat,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	publication, err := x.st.GetReviewPublication(x.ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication.State, publication.Attempts = core.ReviewPublicationFailed, publication.Attempts+1
+	publication.ForgeErrorCategory, publication.LastError = "forge_permission", detail
+	if err = x.st.UpdateReviewPublication(x.ctx, publication); err != nil {
+		t.Fatalf("fail review publication: %v", err)
+	}
 }
 
 // runSubmittedHeadTakeover: with the merge gate on, the operator's merge is
