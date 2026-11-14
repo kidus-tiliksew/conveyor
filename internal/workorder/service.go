@@ -335,6 +335,11 @@ func (s *Service) claim(ctx context.Context, id string, claim core.WorkOrderClai
 		return core.WorkOrder{}, err
 	}
 	route, ok := cfg.Routing.Stages[string(order.Stage)]
+	if order.Stage == core.StageRisk {
+		// A risk order takes the review stage's timeout, so the policy
+		// gains no stage key (feature-risk-based-review RR-11).
+		route, ok = cfg.Routing.Stages[string(core.StageReview)]
+	}
 	timeout := route.Timeout
 	if order.ExecutionTimeoutText != "" {
 		var parseErr error
@@ -457,7 +462,9 @@ func frozenStageTimeout(task core.Task, stage core.Stage) string {
 		return strings.TrimSpace(timeouts.Implement)
 	case core.StageVerify:
 		return strings.TrimSpace(timeouts.Verify)
-	case core.StageReview:
+	case core.StageReview, core.StageRisk:
+		// A risk order takes the review stage's frozen timeout
+		// (feature-risk-based-review RR-11).
 		return strings.TrimSpace(timeouts.Review)
 	default:
 		return ""

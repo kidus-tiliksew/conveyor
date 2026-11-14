@@ -56,15 +56,19 @@ const (
 	StageImplement Stage = "implement"
 	StageReview    Stage = "review"
 	StageVerify    Stage = "verify"
-	StageGate      Stage = "gate"
-	StageMerge     Stage = "merge"
-	StageMonitor   Stage = "monitor"
+	// StageRisk is the risk order stage: a separate session rates a plan
+	// version or a head (feature-risk-based-review RR-11;
+	// req-risk-based-review REQ-12).
+	StageRisk    Stage = "risk"
+	StageGate    Stage = "gate"
+	StageMerge   Stage = "merge"
+	StageMonitor Stage = "monitor"
 )
 
 // ValidWorkOrderStage is the closed executor-stage vocabulary (DEC-43;
-// component-work-orders).
+// component-work-orders; feature-risk-based-review RR-11).
 func ValidWorkOrderStage(stage Stage) bool {
-	return stage == StageSpec || stage == StageImplement || stage == StageVerify || stage == StageReview
+	return stage == StageSpec || stage == StageImplement || stage == StageVerify || stage == StageReview || stage == StageRisk
 }
 
 func InitialStage(level EscalationLevel) Stage {

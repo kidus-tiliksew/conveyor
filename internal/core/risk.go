@@ -11,21 +11,24 @@ import (
 )
 
 // RiskSource names where a recorded rating comes from. The list is closed:
-// plan, path rule, reviewer, and person (req-risk-based-review AC-5.6;
-// component-risk-review, Extension rules).
+// plan, path rule, reviewer, person, and risk agent (req-risk-based-review
+// AC-5.6; component-risk-review, Extension rules). Plan and reviewer ratings
+// were recorded from a plan's tier line or a review seat before risk orders;
+// they stay readable and keep counting (AC-5.6).
 type RiskSource string
 
 const (
-	RiskSourcePlan     RiskSource = "plan"
-	RiskSourcePathRule RiskSource = "path_rule"
-	RiskSourceReviewer RiskSource = "reviewer"
-	RiskSourcePerson   RiskSource = "person"
+	RiskSourcePlan      RiskSource = "plan"
+	RiskSourcePathRule  RiskSource = "path_rule"
+	RiskSourceReviewer  RiskSource = "reviewer"
+	RiskSourcePerson    RiskSource = "person"
+	RiskSourceRiskAgent RiskSource = "risk_agent"
 )
 
-// Valid reports whether s is one of the four closed sources.
+// Valid reports whether s is one of the five closed sources.
 func (s RiskSource) Valid() bool {
 	switch s {
-	case RiskSourcePlan, RiskSourcePathRule, RiskSourceReviewer, RiskSourcePerson:
+	case RiskSourcePlan, RiskSourcePathRule, RiskSourceReviewer, RiskSourcePerson, RiskSourceRiskAgent:
 		return true
 	}
 	return false
@@ -41,7 +44,8 @@ const MaxRiskReasonRunes = 1000
 // RiskRating is one recorded rating of a task. Ratings are append-only and
 // unique per task and Key: a path rating once per head, a reviewer rating
 // once per review work order (its round and seat), a plan rating once per
-// plan version, and a person raise once per raised tier
+// plan version, a risk agent rating once per risk order, and a person raise
+// once per raised tier
 // (feature-risk-based-review RR-3, RR-8; component-risk-review, State and
 // failure model).
 type RiskRating struct {
@@ -68,8 +72,22 @@ type RiskRating struct {
 	ReviewRound       int    `json:"review_round,omitempty"`
 	ReviewSeat        int    `json:"review_seat,omitempty"`
 	ReviewerModel     string `json:"reviewer_model,omitempty"`
-	// PlanVersion names the approved plan version of a plan rating.
+	// PlanVersion names the approved plan version of a plan rating, or the
+	// plan version a risk agent rated.
 	PlanVersion int `json:"plan_version,omitempty"`
+	// Risk agent fields name the completed risk order, the model its session
+	// reported, and for a head the changed paths the rating covered
+	// (req-risk-based-review AC-5.6, AC-12.2; feature-risk-based-review RR-11).
+	// A head rating also carries HeadSHA, BaseSHA, and MatchedRules.
+	RiskWorkOrderID string   `json:"risk_work_order_id,omitempty"`
+	RiskModel       string   `json:"risk_model,omitempty"`
+	CoveredPaths    []string `json:"covered_paths,omitempty"`
+	// PlanPending marks a risk agent rating of a plan version that is not
+	// approved. It is derived on every read from the task's plan versions and
+	// never decides anything stored: such a rating stays readable and counts
+	// toward the tier only once that version is approved, in either order
+	// (req-risk-based-review AC-4.3, AC-5.5).
+	PlanPending bool `json:"plan_pending,omitempty"`
 	// ActorID names the person of a raise, and PreviousTier the task's tier
 	// before it (AC-6.1).
 	ActorID      string          `json:"actor_id,omitempty"`
@@ -91,6 +109,10 @@ func PersonRiskKey(tier riskpolicy.Tier) string { return "person:" + string(tier
 
 // PlanRiskKey is the uniqueness key of an approved plan version's rating.
 func PlanRiskKey(version int) string { return fmt.Sprintf("plan:%d", version) }
+
+// RiskAgentKey is the uniqueness key of a completed risk order's rating. One
+// risk order records at most one rating.
+func RiskAgentKey(riskWorkOrderID string) string { return "risk_agent:" + riskWorkOrderID }
 
 // ValidateRiskReason checks a stated rating reason: one non-blank line of at
 // most MaxRiskReasonRunes runes (req-risk-based-review AC-5.2, AC-6.1).
@@ -131,7 +153,7 @@ func (r RiskRating) Validate() error {
 		return errors.New("risk rating task_id is required")
 	}
 	if !r.Source.Valid() {
-		return errors.New("risk rating source must be plan, path_rule, reviewer, or person")
+		return errors.New("risk rating source must be plan, path_rule, reviewer, person, or risk_agent")
 	}
 	if !r.Tier.Valid() {
 		return errors.New("risk rating tier must be low, medium, or high")
@@ -158,6 +180,13 @@ func (r RiskRating) Validate() error {
 	case RiskSourcePlan:
 		if r.PlanVersion <= 0 || r.Key != PlanRiskKey(r.PlanVersion) {
 			return errors.New("plan risk rating requires its plan version")
+		}
+	case RiskSourceRiskAgent:
+		if r.RiskWorkOrderID == "" || r.Key != RiskAgentKey(r.RiskWorkOrderID) {
+			return errors.New("risk agent rating requires its risk order")
+		}
+		if (r.PlanVersion > 0) == (r.HeadSHA != "") {
+			return errors.New("risk agent rating rates exactly one plan version or one head")
 		}
 	}
 	return nil
@@ -192,18 +221,33 @@ func RiskRatedPayload(r RiskRating) map[string]any {
 		payload["new_tier"] = r.Tier
 	case RiskSourcePlan:
 		payload["plan_version"] = r.PlanVersion
+	case RiskSourceRiskAgent:
+		payload["risk_work_order_id"] = r.RiskWorkOrderID
+		payload["risk_model"] = r.RiskModel
+		if r.PlanVersion > 0 {
+			payload["plan_version"] = r.PlanVersion
+		} else {
+			covered := r.CoveredPaths
+			if covered == nil {
+				covered = []string{}
+			}
+			payload["base_sha"] = r.BaseSHA
+			payload["covered_paths"] = covered
+		}
 	}
 	return payload
 }
 
 // RiskTierOf returns a task's tier over its recorded ratings and the rating
 // that set it: the earliest rating at the highest tier. A task with no rating
-// has no tier, and ok is false (req-risk-based-review AC-5.5).
+// has no tier, and ok is false (req-risk-based-review AC-5.5). A risk agent
+// rating of a plan version that is not approved does not count
+// (req-risk-based-review AC-4.3).
 func RiskTierOf(ratings []RiskRating) (RiskRating, bool) {
 	var setter RiskRating
 	found := false
 	for _, rating := range ratings {
-		if !rating.Tier.Valid() {
+		if !rating.Tier.Valid() || rating.PlanPending {
 			continue
 		}
 		if !found || rating.Tier.Rank() > setter.Tier.Rank() {

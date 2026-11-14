@@ -2007,6 +2007,12 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		}
 		order.ModelEnforcement = "self-reported"
 	}
+	// A risk order is claimable only by a session independent of the task's
+	// planning, implementation, and review (req-risk-based-review AC-12.1;
+	// feature-risk-based-review RR-11). The refusal writes nothing.
+	if err := m.riskClaimRefusalLocked(ctx, order, claim); err != nil {
+		return core.WorkOrder{}, err
+	}
 	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {
 		order.ExecutionDeadline = order.ExecutionStartedAt.Add(claim.ExecutionTimeout)
 		m.workOrders[id] = order
@@ -2042,7 +2048,14 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	}
 	order.Claimable = false
 	m.workOrders[id] = order
-	if task := m.tasks[order.TaskID]; task.State == core.TaskQueued {
+	claimHash := ""
+	if claim.ClientToken != "" {
+		claimHash = tokenHash(claim.ClientToken)
+	}
+	m.recordClaimIdentityLocked(ctx, order, claimHash)
+	// A risk order stands beside the serial stage, so its claim leaves the
+	// task state as it is (feature-risk-based-review RR-11).
+	if task := m.tasks[order.TaskID]; task.State == core.TaskQueued && order.Stage != core.StageRisk {
 		from := task.State
 		state, taskErr := core.TransitionTask(from, core.TaskOrderClaim)
 		if taskErr != nil {

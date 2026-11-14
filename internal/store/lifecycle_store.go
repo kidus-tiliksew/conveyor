@@ -256,7 +256,9 @@ func workOrderRecoveryRefusal(task core.Task, order core.WorkOrder, taskOrders [
 	laterThanTarget := func(candidate core.WorkOrder) bool {
 		return candidate.CreatedAt.After(order.CreatedAt) || candidate.CreatedAt.Equal(order.CreatedAt) && candidate.ID > order.ID
 	}
-	if order.Stage != core.StageReview {
+	// Review seats and risk orders run beside their peers, so a later order of
+	// the same stage does not supersede them (feature-risk-based-review RR-11).
+	if order.Stage != core.StageReview && order.Stage != core.StageRisk {
 		for _, candidate := range taskOrders {
 			if candidate.ID == order.ID || candidate.Stage != order.Stage || candidate.State == core.WorkOrderCancelled {
 				continue

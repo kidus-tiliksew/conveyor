@@ -195,6 +195,7 @@ func SortRiskRatings(ratings []core.RiskRating) {
 }
 
 func cloneRiskRating(rating core.RiskRating) core.RiskRating {
+	rating.CoveredPaths = slices.Clone(rating.CoveredPaths)
 	rating.MatchedRules = slices.Clone(rating.MatchedRules)
 	if rating.MatchedRules == nil {
 		rating.MatchedRules = []riskpolicy.RuleMatch{}
@@ -239,13 +240,14 @@ func (m *memory) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, s
 	if err != nil {
 		return core.RiskRating{}, err
 	}
-	prepared, err := PrepareRiskRaise(task, m.riskRatings[key], raise, time.Now())
+	existing := m.riskRatingsLocked(ctx, task)
+	prepared, err := PrepareRiskRaise(task, existing, raise, time.Now())
 	if err != nil {
 		return core.RiskRating{}, err
 	}
 	// The raise and any seats it adds commit together, so the open round
 	// cannot settle short of the new count (req-risk-based-review AC-7.2).
-	ratings := append(slices.Clone(m.riskRatings[key]), prepared)
+	ratings := append(existing, prepared)
 	plan, add, err := m.planRiskSeatsLocked(ctx, task, ratings, PersonRiskSeatTrigger(prepared), seats)
 	if err != nil {
 		return core.RiskRating{}, err
@@ -260,6 +262,11 @@ func (m *memory) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, s
 	// raise reopens the task's policy statuses in its own write
 	// (req-risk-based-review AC-10.1; component-git-delivery invariant 37).
 	m.reopenReviewPolicyStatusesLocked(ctx, key, task)
+	// A raise to high cancels the task's open risk orders in the same act
+	// (req-risk-based-review AC-12.3; feature-risk-based-review RR-15).
+	if RiskTierReachesHigh(ratings) {
+		m.cancelRiskOrdersLocked(ctx, task.ID, "", RiskTierHighCancelReason, prepared.CreatedAt)
+	}
 	return cloneRiskRating(prepared), nil
 }
 
@@ -270,7 +277,7 @@ func (m *memory) riskRatingsLocked(ctx context.Context, task core.Task) []core.R
 	if !ok && workspace != task.Workspace {
 		ratings = m.riskRatings[memoryScopedKey{workspace: task.Workspace, id: task.ID}]
 	}
-	return slices.Clone(ratings)
+	return m.countedRiskRatingsLocked(ratings, task.ID)
 }
 
 // planRiskSeatsLocked plans the seats an enforcing task's raised tier adds to
@@ -309,7 +316,7 @@ func (m *memory) ListTaskRiskRatings(ctx context.Context, taskID string) ([]core
 		return nil, err
 	}
 	ratings := make([]core.RiskRating, 0, len(m.riskRatings[key]))
-	for _, rating := range m.riskRatings[key] {
+	for _, rating := range m.countedRiskRatingsLocked(m.riskRatings[key], taskID) {
 		ratings = append(ratings, cloneRiskRating(rating))
 	}
 	SortRiskRatings(ratings)
