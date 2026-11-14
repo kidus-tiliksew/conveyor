@@ -116,6 +116,13 @@ JOIN LATERAL (
     SELECT w.state, w.last_attempt_outcome, w.last_failure_message
     FROM work_orders w
     WHERE w.workspace_id = t.workspace_id AND w.task_id = t.id
+      AND NOT (
+          w.stage = 'risk'
+          AND COALESCE(t.setup_contract #>> '{risk,mode}', '') = 'record'
+          AND EXISTS (
+              SELECT 1 FROM work_orders other
+              WHERE other.workspace_id = t.workspace_id AND other.task_id = t.id
+                AND other.stage <> 'risk' AND other.state IN ('queued', 'claimed')))
     ORDER BY w.created_at DESC, w.id DESC
     LIMIT 1
 ) latest ON true

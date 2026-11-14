@@ -66,7 +66,7 @@ poll failed.
 decodes the next_action embedded in GET /v1/tasks/{id}; the wait ends with
 reason reached when next_action.actor is operator, when the task is merged,
 closed, or parked (terminal), or when next_action.current_order.stage equals
-the named work-order stage (spec, implement, verify, review). A task that turns
+the named work-order stage (spec, implement, verify, review, risk). A task that turns
 terminal before another target ends with reason terminal. Every observed
 change of actor, kind, or current order stage prints one line:
 <observed_at> <label>: actor=<actor> kind=<kind> stage=<stage>
@@ -158,7 +158,7 @@ func parseTaskWaitTarget(raw string) (taskWaitTarget, error) {
 	case strings.HasPrefix(raw, "stage="):
 		target.stage = core.Stage(strings.TrimPrefix(raw, "stage="))
 		if !core.ValidWorkOrderStage(target.stage) {
-			return taskWaitTarget{}, fmt.Errorf("--until stage=%s: unknown work-order stage (want spec, implement, verify, or review)", target.stage)
+			return taskWaitTarget{}, fmt.Errorf("--until stage=%s: unknown work-order stage (want spec, implement, verify, review, or risk)", target.stage)
 		}
 	default:
 		return taskWaitTarget{}, fmt.Errorf("--until must be operator, terminal, or stage=<stage>, got %q", raw)
@@ -457,8 +457,11 @@ const (
 	taskWaitGateCheckHold      = "check_hold"
 )
 
-// taskWaitStageOrder ranks claimable stages the way a session works them.
-var taskWaitStageOrder = map[core.Stage]int{core.StageSpec: 0, core.StageImplement: 1, core.StageVerify: 2, core.StageReview: 3}
+// taskWaitStageOrder ranks claimable stages the way a session works them. A
+// risk order ranks last: ordinary work beside it is reported first, and a lone
+// claimable risk order is reported, so its creation ends a wait
+// (feature-risk-based-review RR-15, RR-16).
+var taskWaitStageOrder = map[core.Stage]int{core.StageSpec: 0, core.StageImplement: 1, core.StageVerify: 2, core.StageReview: 3, core.StageRisk: 4}
 
 // taskWaitAwaitingGate maps the next action of an awaiting_human task to the
 // reported gate kind; any other kind is a human recovery gate.
@@ -529,7 +532,8 @@ func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() 
 }
 
 // taskWaitNextOrder selects the task's queued, claimable order of a known
-// stage: spec, implement, verify, then review, then the oldest queue entry.
+// stage: spec, implement, verify, review, then risk, then the oldest queue
+// entry.
 func taskWaitNextOrder(orders []core.WorkOrder, taskID string) *taskWaitOrder {
 	var eligible []core.WorkOrder
 	for _, order := range orders {

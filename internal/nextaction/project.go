@@ -36,6 +36,10 @@ func Project(in Input) NextAction {
 	if in.Now.IsZero() {
 		in.Now = time.Now().UTC()
 	}
+	// Every row selects its order from the same view, so a record-mode risk
+	// order never displaces another open order of the task
+	// (feature-risk-based-review RR-15).
+	in.Orders = SelectableOrders(in.Task, in.Orders)
 	rows := rules()
 	var winner *built
 	var secondary []Secondary
@@ -65,6 +69,7 @@ func rules() []rule {
 		{match: parkedFailFinal, build: func(in Input) built {
 			return built{actor: ActorOperator, kind: KindDispatchExhausted, reason: "dispatch.fail_final", order: currentOrder(in)}
 		}},
+		{match: planRiskWait, build: planRiskWaitBuild},
 		{match: awaitingGate, build: gateBuild},
 		{match: conflictExhausted, build: func(in Input) built {
 			return built{actor: ActorOperator, kind: KindMergeConflict, reason: "merge_conflict_exhausted", order: currentOrder(in)}
@@ -243,6 +248,9 @@ func agentQuestion(in Input) bool {
 // on a compact read too, and every other compact read still skips it
 // (component-next-action invariant 15).
 func DispositionDecidesRow(in Input) bool {
+	// The assembler calls this on its unprojected input, so it reads the
+	// same order view as Project.
+	in.Orders = SelectableOrders(in.Task, in.Orders)
 	order := latestQueued(in.Orders)
 	if !in.Markers.CheckpointDecision || order == nil || !AtVerificationCheckpoint(*order) || !verificationDisposition(in) {
 		return false

@@ -118,7 +118,13 @@ type Input struct {
 	// RiskApprovals is the approval evaluation of an enforcing task that is
 	// approved or at the merge gate and requires one or more approvals, and
 	// nil for every other task (req-risk-based-review AC-11.1).
-	RiskApprovals  *RiskApprovals
+	RiskApprovals *RiskApprovals
+	// PlanRiskOrder is the risk order of the plan version that waits at an
+	// enforcing task's plan approval gate, read fresh by the assembler, and
+	// nil for every other task. Only a queued or claimed order of the version
+	// the gate holds selects the plan risk wait row (req-risk-based-review
+	// AC-11.3; feature-risk-based-review RR-16).
+	PlanRiskOrder  *PlanRiskOrderRef
 	Recommendation string
 	Assignee       *core.TaskAssignee
 	Capabilities   map[core.Capability]bool
@@ -267,6 +273,13 @@ type CitedDocument struct {
 
 type SpecRef struct {
 	Version int
+}
+
+// PlanRiskOrderRef is the risk order that rates one plan version: the
+// version its subject names and the order as the task's order read states it.
+type PlanRiskOrderRef struct {
+	PlanVersion int
+	Order       core.WorkOrder
 }
 
 type ProposalRef struct {
