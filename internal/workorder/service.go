@@ -651,6 +651,15 @@ func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reaso
 	if target.HeadSHA != recordedHead {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: PR head changed from %s to %s and requires implementation handoff", store.ErrReviewRetryConflict, recordedHead, target.HeadSHA)
 	}
+	// An enforcing task's retried round waits for its head's risk order like
+	// every other round; the retry command repeats the check in its
+	// transaction (feature-risk-based-review RR-12; req-risk-based-review
+	// AC-5.10).
+	if held, holdErr := dispatch.ReviewRoundHeldByRiskOrder(ctx, s.Store, task, target.HeadSHA); holdErr != nil {
+		return store.ReviewRoundRetryResult{}, holdErr
+	} else if held {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: %w", store.ErrReviewRetryConflict, store.ErrReviewRoundHeldByRiskOrder)
+	}
 	// The retried round resolves through RS-2 and therefore carries the
 	// retried round's seat count, additions included
 	// (feature-review-seat-minimum RS-2, RS-6).

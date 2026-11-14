@@ -370,8 +370,20 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, obs
 	// The refresh head's path minimums are recorded before its approval is
 	// marked stale and its refresh is dispatched or skipped
 	// (req-risk-based-review AC-5.1).
-	if err := d.recordRefreshPathRisk(ctx, cfg, task, observed); err != nil {
+	rated, err := d.recordRefreshPathRisk(ctx, cfg, task, observed)
+	if err != nil {
 		return err
+	}
+	// A refresh that reviews the head creates its risk order, and cancels
+	// earlier heads' open risk orders, before its approval is marked stale
+	// and its round is dispatched. Creation replays by subject, so a retry
+	// after a later failure finds the same order (feature-risk-based-review
+	// RR-12; req-risk-based-review AC-5.8, AC-5.11).
+	skipped := scope == config.RefreshReviewNone && !conflict && !task.SetupContract.VerifyStage
+	if !skipped {
+		if err = d.ensureRefreshHeadRiskOrder(ctx, cfg, task, observed, rated); err != nil {
+			return err
+		}
 	}
 	created, err := d.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, newHead, scope, reason)
 	if err != nil {
@@ -380,7 +392,7 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, obs
 	if !created {
 		return nil
 	}
-	if scope == config.RefreshReviewNone && !conflict && !task.SetupContract.VerifyStage {
+	if skipped {
 		return d.Store.SkipTaskRefresh(ctx, task.ID, newHead, "clean-update")
 	}
 	command := core.TaskRefreshReview

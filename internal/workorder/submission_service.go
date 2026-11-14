@@ -247,6 +247,17 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 			return nil, err
 		}
 	}
+	// After the path rating, the head's risk order request names the head,
+	// its observed base commit, and its complete changed paths. The
+	// submission command decides the need from the ratings and risk orders it
+	// reads in its own transaction (feature-risk-based-review RR-12;
+	// component-risk-review invariant 12).
+	var headRisk *store.HeadRiskOrderRequest
+	if pathsRead {
+		if headRisk, err = dispatch.HeadRiskOrderRequest(ctx, s.Store, cfg, task, headSHA, target.Base.SHA, paths); err != nil {
+			return nil, err
+		}
+	}
 	if pathsRead {
 		if _, err = s.Store.AttachSubmissionGovernance(ctx, task.ID, task.Repo, paths, store.SubmissionGovernanceAttribution{WorkOrderID: order.ID, SessionID: session}); err != nil {
 			return nil, fmt.Errorf("attach submission governance: %w", err)
@@ -283,7 +294,11 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		}
 	}
 	freshness := s.refreshContext(ctx, order, "", "context.verdict_refresh_observed")
-	if err = s.completeImplementationSubmission(ctx, order, headSHA, repo.GitHub != "", documentationEvidence, store.SubmissionReviewSeats{Declared: reviewSeats}); err != nil {
+	if err = s.completeImplementationSubmission(ctx, order, headSHA, repo.GitHub != "", documentationEvidence, store.SubmissionReviewSeats{Declared: reviewSeats}, headRisk); err != nil {
+		return nil, err
+	}
+	riskWorkOrderID, err := s.submittedHeadRiskOrder(ctx, task.ID, headRisk)
+	if err != nil {
 		return nil, err
 	}
 	// Only a fix dispatched from the approved head refreshes that approval. A
@@ -319,7 +334,29 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	if nextStage == core.StageVerify {
 		result["next_stage"] = nextStage
 	}
+	// The result names the risk order the submission created
+	// (req-risk-based-review AC-12.6).
+	if riskWorkOrderID != "" {
+		result["risk_work_order_id"] = riskWorkOrderID
+	}
 	return withReviewSeatsResult(result, reviewSeats, true), nil
+}
+
+// submittedHeadRiskOrder names the open risk order of the submitted head and
+// base, or nothing when the head needed none: the mode is off, the tier is
+// high, or a completed head risk order already covered every changed path.
+func (s *Service) submittedHeadRiskOrder(ctx context.Context, taskID string, request *store.HeadRiskOrderRequest) (string, error) {
+	if request == nil {
+		return "", nil
+	}
+	orders, err := s.Store.ListTaskRiskOrders(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	if order, ok := store.HeadRiskOrderFor(orders, request.Subject.HeadSHA); ok && order.Subject.Key() == request.Subject.Key() && order.Open() {
+		return order.Order.ID, nil
+	}
+	return "", nil
 }
 
 func (s *Service) discoverDocumentationPolicy(ctx context.Context, slug, revision string) github.DocumentationPolicyDiscovery {
@@ -527,12 +564,14 @@ func (s *Service) submissionJobReady(ctx context.Context, order core.WorkOrder) 
 }
 
 // completeImplementationSubmission records the submitted order and completes
-// its own job atomically; a completion failure leaves neither written.
-func (s *Service) completeImplementationSubmission(ctx context.Context, order core.WorkOrder, headSHA string, documentationChecked bool, documentation *core.DocumentationGateEvidence, reviewSeats store.SubmissionReviewSeats) error {
+// its own job atomically, with the head's risk order effects when headRisk is
+// set; a completion failure leaves none of them written
+// (feature-risk-based-review RR-12).
+func (s *Service) completeImplementationSubmission(ctx context.Context, order core.WorkOrder, headSHA string, documentationChecked bool, documentation *core.DocumentationGateEvidence, reviewSeats store.SubmissionReviewSeats, headRisk *store.HeadRiskOrderRequest) error {
 	order.State = core.WorkOrderSubmitted
 	order.HeadSHA = headSHA
 	_, err := taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdSubmitForReview, func(lease taskops.TaskLease) (core.Job, error) {
-		return s.Store.SubmitImplementationCommand(ctx, lease, store.ImplementationSubmission{Order: order, EndedAt: time.Now().UTC(), DocumentationChecked: documentationChecked, DocumentationEvidence: documentation, ReviewSeats: reviewSeats})
+		return s.Store.SubmitImplementationCommand(ctx, lease, store.ImplementationSubmission{Order: order, EndedAt: time.Now().UTC(), DocumentationChecked: documentationChecked, DocumentationEvidence: documentation, ReviewSeats: reviewSeats, HeadRisk: headRisk})
 	})
 	return err
 }
@@ -645,7 +684,7 @@ func (s *Service) completeDispatchedRefresh(ctx context.Context, cfg *config.Con
 	}); err != nil {
 		return nil, err
 	}
-	if err := s.completeImplementationSubmission(ctx, order, head, documentationChecked, documentation, store.SubmissionReviewSeats{Unused: reviewSeats}); err != nil {
+	if err := s.completeImplementationSubmission(ctx, order, head, documentationChecked, documentation, store.SubmissionReviewSeats{Unused: reviewSeats}, nil); err != nil {
 		return nil, err
 	}
 	result := map[string]any{"pr_url": s.recordedPRURL(ctx, task.ID), "review_execution": cfg.Routing.Stages["review"].Execution, "await_review": true, "refresh_already_dispatched": true}
@@ -715,6 +754,17 @@ func (s *Service) submissionReplayResult(ctx context.Context, order core.WorkOrd
 	}
 	if task.SetupContract.VerifyStage {
 		result["next_stage"] = core.StageVerify
+	}
+	// A replay names the head's risk order from durable state and creates
+	// none (req-risk-based-review AC-12.6).
+	if task.SetupContract.Risk.Enabled() && !refreshed {
+		orders, riskErr := s.Store.ListTaskRiskOrders(ctx, task.ID)
+		if riskErr != nil {
+			return nil, riskErr
+		}
+		if risk, ok := store.HeadRiskOrderFor(orders, order.HeadSHA); ok {
+			result["risk_work_order_id"] = risk.Order.ID
+		}
 	}
 	// The replay reports the recorded declaration and never rewrites it
 	// (feature-review-seat-minimum RS-4).

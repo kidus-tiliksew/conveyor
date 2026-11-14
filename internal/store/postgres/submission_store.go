@@ -354,7 +354,16 @@ func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.T
 				return err
 			}
 		}
-		return insertEvent(ctx, q, core.Event{TaskID: completed.TaskID, JobID: completed.ID, Kind: "job.updated", Payload: core.JSONPayload(completed)})
+		if err = insertEvent(ctx, q, core.Event{TaskID: completed.TaskID, JobID: completed.ID, Kind: "job.updated", Payload: core.JSONPayload(completed)}); err != nil {
+			return err
+		}
+		// The head's risk order is created, and earlier heads' open risk
+		// orders cancelled, in the act that completes the implement order
+		// (feature-risk-based-review RR-12).
+		if request.HeadRisk != nil {
+			_, err = applyHeadRiskOrderTx(ctx, tx, q, order.TaskID, *request.HeadRisk)
+		}
+		return err
 	})
 	if err != nil {
 		return core.Job{}, err

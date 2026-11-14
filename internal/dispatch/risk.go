@@ -121,29 +121,49 @@ func riskReasonText(text string) string {
 	return text
 }
 
+// refreshPathRead is the changed-path list a refresh's path rating read, so
+// the head's risk order copies the same list. read is false when the head
+// was rated earlier and nothing was read now.
+type refreshPathRead struct {
+	paths []string
+	read  bool
+}
+
 // recordRefreshPathRisk rates a refresh head before its approval is marked
 // stale and its refresh is dispatched or skipped (req-risk-based-review
-// AC-5.1; feature-risk-based-review RR-3).
-func (d *Dispatcher) recordRefreshPathRisk(ctx context.Context, cfg *config.Config, task core.Task, observed github.PullRequest) error {
+// AC-5.1; feature-risk-based-review RR-3). It returns the changed paths it
+// read in full.
+func (d *Dispatcher) recordRefreshPathRisk(ctx context.Context, cfg *config.Config, task core.Task, observed github.PullRequest) (refreshPathRead, error) {
 	if !task.SetupContract.Risk.Enabled() {
-		return nil
+		return refreshPathRead{}, nil
 	}
 	repo, _ := cfg.Repo(task.Repo)
+	var rated refreshPathRead
 	_, _, err := RecordHeadPathRisk(ctx, d.Store, HeadPathRiskInput{
 		Task: task, Repository: repo.GitHub, BaseSHA: observed.BaseSHA, HeadSHA: observed.HeadSHA,
 		Declaration: d.DiscoverRiskDeclaration,
 		ChangedPaths: func(ctx context.Context) ([]string, error) {
-			changedPaths := d.ReviewChangedPaths
-			if changedPaths == nil {
-				changedPaths = ReviewBranchChangedPaths
+			paths, err := d.refreshChangedPaths(ctx, cfg, task, observed)
+			if err == nil {
+				rated = refreshPathRead{paths: paths, read: true}
 			}
-			comparison := task
-			comparison.ReviewedHeadSHA, comparison.BaseBranch = observed.HeadSHA, observed.BaseSHA
-			if observed.BaseSHA == "" {
-				return nil, fmt.Errorf("the pull request base commit is unknown")
-			}
-			return changedPaths(ctx, cfg, comparison)
+			return paths, err
 		},
 	})
-	return err
+	return rated, err
+}
+
+// refreshChangedPaths reads a refresh head's complete changed paths against
+// the observed base commit.
+func (d *Dispatcher) refreshChangedPaths(ctx context.Context, cfg *config.Config, task core.Task, observed github.PullRequest) ([]string, error) {
+	changedPaths := d.ReviewChangedPaths
+	if changedPaths == nil {
+		changedPaths = ReviewBranchChangedPaths
+	}
+	comparison := task
+	comparison.ReviewedHeadSHA, comparison.BaseBranch = observed.HeadSHA, observed.BaseSHA
+	if observed.BaseSHA == "" {
+		return nil, fmt.Errorf("the pull request base commit is unknown")
+	}
+	return changedPaths(ctx, cfg, comparison)
 }

@@ -96,7 +96,8 @@ func insertReviewRoundSeatsTx(ctx context.Context, tx *sql.Tx, record store.Revi
 
 // policyHandoffSeatInputsTx loads PlanTaskPolicyChange's seat inputs inside
 // the policy-change transaction.
-func policyHandoffSeatInputsTx(ctx context.Context, tx *sql.Tx, taskID string) (store.PolicyHandoffSeatInputs, error) {
+func policyHandoffSeatInputsTx(ctx context.Context, tx *sql.Tx, task core.Task) (store.PolicyHandoffSeatInputs, error) {
+	taskID := task.ID
 	events, err := documentTaskEvents(ctx, tx, taskID)
 	if err != nil {
 		return store.PolicyHandoffSeatInputs{}, err
@@ -113,7 +114,15 @@ func policyHandoffSeatInputsTx(ctx context.Context, tx *sql.Tx, taskID string) (
 	if err != nil {
 		return store.PolicyHandoffSeatInputs{}, err
 	}
-	return store.PolicyHandoffSeatInputs{Events: events, Records: records, PlannedSeatCount: planned, RiskRatings: ratings}, nil
+	inputs := store.PolicyHandoffSeatInputs{Events: events, Records: records, PlannedSeatCount: planned, RiskRatings: ratings}
+	// Risk orders are read only for an enforcing task (component-risk-review
+	// invariant 13).
+	if store.RiskRoundHoldApplies(task) {
+		if inputs.RiskOrders, err = taskRiskOrdersTx(ctx, tx, taskID); err != nil {
+			return store.PolicyHandoffSeatInputs{}, err
+		}
+	}
+	return inputs, nil
 }
 
 // seatCountFromNull and nullSeatCount map nullable seat counts.
@@ -317,4 +326,22 @@ func (s *Store) addRiskSeatsTx(ctx context.Context, tx *sql.Tx, task core.Task, 
 		return err
 	}
 	return s.applyReviewSeatAdditionTx(ctx, tx, plan)
+}
+
+// reviewRoundRiskHoldTx refuses a round of head with
+// store.ErrReviewRoundHeldByRiskOrder while an enforcing task's risk order for
+// that head is open. It reads no risk order unless the task enforces
+// (component-risk-review invariant 13).
+func reviewRoundRiskHoldTx(ctx context.Context, tx *sql.Tx, task core.Task, head string) error {
+	if !store.RiskRoundHoldApplies(task) {
+		return nil
+	}
+	orders, err := taskRiskOrdersTx(ctx, tx, task.ID)
+	if err != nil {
+		return err
+	}
+	if held, ok := store.ReviewRoundRiskHold(task, orders, head); ok {
+		return store.ReviewRoundHeldError(held)
+	}
+	return nil
 }

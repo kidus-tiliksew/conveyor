@@ -383,6 +383,11 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 				return fmt.Errorf("invalid review round member %d", i)
 			}
 		}
+		// An enforcing task's round waits for its head's risk order
+		// (feature-risk-based-review RR-12; req-risk-based-review AC-5.10).
+		if err = reviewRoundRiskHoldTx(ctx, tx, workspace(ctx), task, store.ReviewRoundHead(orders)); err != nil {
+			return err
+		}
 		if err = checkReviewRoundSeatsTx(ctx, tx, workspace(ctx), task, seats, len(orders)); err != nil {
 			return err
 		}
@@ -653,6 +658,13 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		if job.TaskID != request.TaskID || job.Stage != core.StageReview || order.TaskID != request.TaskID || order.JobID != job.ID || order.Stage != core.StageReview || order.ReviewRound != newRound || order.ReviewSeat != i+1 {
 			return store.ReviewRoundRetryResult{}, fmt.Errorf("invalid review retry member %d", i)
 		}
+	}
+	retryHead := store.ReviewRoundHead(orders)
+	if retryHead == "" {
+		retryHead = request.PRHead
+	}
+	if err = reviewRoundRiskHoldTx(ctx, tx, workspaceID, taskFromDB(before), retryHead); err != nil {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: %w", store.ErrReviewRetryConflict, err)
 	}
 	if err = checkReviewRoundSeatsTx(ctx, tx, workspaceID, taskFromDB(before), seats, len(orders)); err != nil {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: %w", store.ErrReviewRetryConflict, err)

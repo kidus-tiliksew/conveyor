@@ -86,7 +86,7 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 	// claimed attempts and in-flight review verdicts block.
 	var claimedAttempt, inFlightVerdict bool
 	if err = tx.QueryRow(ctx, `SELECT
-			EXISTS (SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state='claimed'),
+			EXISTS (SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state='claimed' AND stage<>'risk'),
 			EXISTS (SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND state='submitted')`, workspaceID, task.ID).Scan(&claimedAttempt, &inFlightVerdict); err != nil {
 		return store.SetupChangeResult{}, err
 	}
@@ -114,7 +114,7 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 	if err != nil {
 		return store.SetupChangeResult{}, err
 	}
-	seatInputs, err := policyHandoffSeatInputsTx(ctx, tx, q, workspaceID, task.ID)
+	seatInputs, err := policyHandoffSeatInputsTx(ctx, tx, q, workspaceID, task)
 	if err != nil {
 		return store.SetupChangeResult{}, err
 	}

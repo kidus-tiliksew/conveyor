@@ -151,9 +151,11 @@ func (s *Store) CompleteRiskOrderCommand(ctx context.Context, lease taskops.Task
 		}
 		result = store.CountedRiskRating(counted, rating)
 		if store.RiskTierReachesHigh(counted) {
-			_, err = cancelRiskOrdersTx(ctx, tx, order.TaskID, "", store.RiskTierHighCancelReason, now)
+			if _, err = cancelRiskOrdersTx(ctx, tx, order.TaskID, "", store.RiskTierHighCancelReason, now); err != nil {
+				return err
+			}
 		}
-		return err
+		return s.wakeTaskAfterRiskOrderTx(ctx, tx, task)
 	})
 	if err != nil {
 		return core.RiskRating{}, err
@@ -188,6 +190,15 @@ func (s *Store) CancelRiskOrderCommand(ctx context.Context, lease taskops.TaskLe
 				return err
 			}
 			cancelled = len(ids) == 1
+			if cancelled {
+				task, taskErr := getTaskRow(ctx, tx, order.TaskID)
+				if taskErr != nil {
+					return taskErr
+				}
+				if err = s.wakeTaskAfterRiskOrderTx(ctx, tx, task); err != nil {
+					return err
+				}
+			}
 		}
 		var err error
 		result, err = getOrderRow(ctx, tx, order.ID)
@@ -423,4 +434,95 @@ func riskClaimCheckTx(ctx context.Context, tx *sql.Tx, order core.WorkOrder, ses
 		return nil, err
 	}
 	return store.RiskClaimCheck(order, sessionID, tokenHash, ledger, taskOrders, events)
+}
+
+// wakeTaskAfterRiskOrderTx enqueues an enforcing task's dispatch job in the
+// caller's transaction when one of its risk orders completed or was cancelled
+// while the task is queued, so a review round that waited for the order opens
+// with the tier as it then stands (feature-risk-based-review RR-12;
+// req-risk-based-review AC-5.10). A task that does not enforce has no round
+// waiting, so nothing is enqueued (component-risk-review invariant 13).
+func (s *Store) wakeTaskAfterRiskOrderTx(ctx context.Context, tx *sql.Tx, task core.Task) error {
+	if !store.RiskRoundHoldApplies(task) {
+		return nil
+	}
+	current, err := getTaskRow(ctx, tx, task.ID)
+	if err != nil {
+		return err
+	}
+	if current.State != core.TaskQueued {
+		return nil
+	}
+	_, err = s.enqueueTaskTx(ctx, tx, task.ID, documentWorkspace(ctx))
+	return err
+}
+
+// applyHeadRiskOrderTx applies a head handoff's risk effects inside taskTx:
+// it cancels open risk orders of other heads and creates the head's risk order
+// when it needs one, from ratings and orders read in the same transaction
+// (feature-risk-based-review RR-12; req-risk-based-review AC-5.8, AC-5.9,
+// AC-5.11).
+func (s *Store) applyHeadRiskOrderTx(ctx context.Context, tx *sql.Tx, taskID string, request store.HeadRiskOrderRequest) (store.HeadRiskOrderResult, error) {
+	task, err := getTaskRow(ctx, tx, taskID)
+	if err != nil {
+		return store.HeadRiskOrderResult{}, err
+	}
+	ratings, err := listRiskRatings(ctx, tx, taskID)
+	if err != nil {
+		return store.HeadRiskOrderResult{}, err
+	}
+	if ratings, err = markPendingPlanRiskRatings(ctx, tx, taskID, ratings); err != nil {
+		return store.HeadRiskOrderResult{}, err
+	}
+	orders, err := taskRiskOrdersTx(ctx, tx, taskID)
+	if err != nil {
+		return store.HeadRiskOrderResult{}, err
+	}
+	plan, err := store.PlanHeadRiskOrder(task, ratings, orders, request)
+	if err != nil {
+		return store.HeadRiskOrderResult{}, err
+	}
+	now := request.Now.UTC()
+	if request.Now.IsZero() {
+		now = time.Now().UTC()
+	}
+	result := store.HeadRiskOrderResult{Cancelled: []string{}}
+	for _, id := range plan.CancelIDs {
+		ids, cancelErr := cancelRiskOrdersTx(ctx, tx, taskID, id, store.RiskEarlierHeadCancelReason, now)
+		if cancelErr != nil {
+			return store.HeadRiskOrderResult{}, cancelErr
+		}
+		result.Cancelled = append(result.Cancelled, ids...)
+	}
+	if plan.Create != nil {
+		if result.Order, result.Created, err = s.createRiskOrderTx(ctx, tx, task, *plan.Create); err != nil {
+			return store.HeadRiskOrderResult{}, err
+		}
+	} else if existing, ok := store.HeadRiskOrderFor(orders, request.Subject.HeadSHA); ok && existing.Subject.Key() == request.Subject.Key() {
+		result.Order = existing.Order
+	}
+	return result, nil
+}
+
+func (s *Store) EnsureHeadRiskOrderCommand(ctx context.Context, lease taskops.TaskLease, request store.HeadRiskOrderRequest) (store.HeadRiskOrderResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "EnsureHeadRiskOrderCommand")
+	if _, err := store.RequireActor(ctx); err != nil {
+		return store.HeadRiskOrderResult{}, err
+	}
+	if err := request.Validate(); err != nil {
+		return store.HeadRiskOrderResult{}, err
+	}
+	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
+		return store.HeadRiskOrderResult{}, fmt.Errorf("head risk order requires a valid taskops lease")
+	}
+	var result store.HeadRiskOrderResult
+	err := s.taskTx(ctx, request.TaskID, func(tx *sql.Tx) error {
+		var err error
+		result, err = s.applyHeadRiskOrderTx(ctx, tx, request.TaskID, request)
+		return err
+	})
+	if err != nil {
+		return store.HeadRiskOrderResult{}, err
+	}
+	return result, nil
 }

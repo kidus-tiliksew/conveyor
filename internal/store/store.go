@@ -136,6 +136,7 @@ type TaskStore interface {
 	GetDocumentationGateEvidence(context.Context, string, string) (core.DocumentationGateEvidence, error)
 	RiskRatingStore
 	RiskOrderStore
+	HeadRiskOrderStore
 	TaskApprovalStore
 	ReviewPolicyStatusStore
 	CreateTask(ctx context.Context, t core.Task) error

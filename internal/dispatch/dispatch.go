@@ -550,6 +550,27 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 			return nil
 		}
 	}
+	baseline, head := task.RefreshBaselineSHA, task.RefreshHeadSHA
+	comparisonRecorded := false
+	if !task.ApprovalStale {
+		events, eventErr := d.Store.ListCompactEvents(ctx, task.ID)
+		if eventErr != nil {
+			return eventErr
+		}
+		if comparison, compareErr := RecordedReviewComparison(task, events); compareErr == nil {
+			baseline, head, comparisonRecorded = comparison.BaseBranch, comparison.ReviewedHeadSHA, true
+		}
+	}
+	// An enforcing task's round waits while its head's risk order is queued
+	// or claimed. The check comes before seat resolution, because the tier
+	// can still rise; completing or cancelling the risk order enqueues the
+	// task, and this dispatch then resolves the seats with the tier as it
+	// stands. Under record and off no risk order is read
+	// (feature-risk-based-review RR-12; req-risk-based-review AC-1.6, AC-5.10;
+	// component-risk-review invariant 13).
+	if held, holdErr := ReviewRoundHeldByRiskOrder(ctx, d.Store, task, head); holdErr != nil || held {
+		return holdErr
+	}
 	// The round's seat count comes from RS-2 resolution, not the frozen policy
 	// length (feature-review-seat-minimum RS-2; DEC-77). The store command
 	// revalidates it inside the task transaction.
@@ -561,20 +582,18 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 	if err != nil {
 		return err
 	}
-	if !task.ApprovalStale {
-		events, eventErr := d.Store.ListCompactEvents(ctx, task.ID)
-		if eventErr != nil {
-			return eventErr
-		}
-		if comparison, compareErr := RecordedReviewComparison(task, events); compareErr == nil {
-			for i := range orders {
-				orders[i].BaselineSHA, orders[i].HeadSHA = comparison.BaseBranch, comparison.ReviewedHeadSHA
-			}
+	if comparisonRecorded {
+		for i := range orders {
+			orders[i].BaselineSHA, orders[i].HeadSHA = baseline, head
 		}
 	}
 	if _, err = taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (struct{}, error) {
 		return struct{}{}, d.Store.CreateReviewRoundCommand(ctx, lease, task.ID, seats, jobs, orders)
 	}); err != nil {
+		// The store rechecked the hold in its transaction and wrote nothing.
+		if errors.Is(err, store.ErrReviewRoundHeldByRiskOrder) {
+			return nil
+		}
 		return err
 	}
 	if task.ApprovalStale {

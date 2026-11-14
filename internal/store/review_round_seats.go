@@ -85,6 +85,8 @@ type ReviewRoundSeatInputs struct {
 	// submitted implement order.
 	ImplementationWorkOrderID string
 	DeclaredSeatCount         *int
+	// ImplementationHeadSHA is the head that implement order submitted.
+	ImplementationHeadSHA string
 	// DeclarationConsumed is true when any persisted round record names the
 	// implementation order, so its declaration fires once.
 	DeclarationConsumed bool
@@ -97,6 +99,10 @@ type ReviewRoundSeatInputs struct {
 	// RiskSeatCount is the agent reviews an enforcing task's tier requires,
 	// and 0 for any other task (RiskSeatCount; req-risk-based-review REQ-7).
 	RiskSeatCount int
+	// DeclaredRiskSeatCount is the agent reviews the tier required when the
+	// submission admitted DeclaredSeatCount (RiskSeatCountAtSubmission), and
+	// 0 for a task that does not enforce.
+	DeclaredRiskSeatCount int
 }
 
 // ReviewRoundSeatResolution is the resolved seat count of one new round and
@@ -163,7 +169,13 @@ func ResolveReviewRoundSeats(in ReviewRoundSeatInputs) ReviewRoundSeatResolution
 	floor := ReviewSeatFloor(minimum, in.PlannedSeatCount, in.RiskSeatCount)
 	result := ReviewRoundSeatResolution{MinimumSeatCount: minimum, FloorSeatCount: floor, ImplementationWorkOrderID: in.ImplementationWorkOrderID}
 	switch {
-	// A declaration below the floor resolves as declared, and the
+	// A declaration that the submission admitted and that a later risk
+	// rating's agent reviews now exceed opens the tier's count with source
+	// risk (feature-risk-based-review RR-12; req-review-gates-evidence
+	// AC-2.3; req-risk-based-review AC-5.10, AC-7.1).
+	case in.ImplementationWorkOrderID != "" && in.DeclaredSeatCount != nil && !in.DeclarationConsumed && riskRaisedAboveDeclaration(in, minimum, floor):
+		result.SeatCount, result.Source = in.RiskSeatCount, ReviewSeatSourceRisk
+	// Every other declaration below the floor resolves as declared, and the
 	// round-building command refuses it (AC-2.3, AC-2.6).
 	case in.ImplementationWorkOrderID != "" && in.DeclaredSeatCount != nil && !in.DeclarationConsumed:
 		result.SeatCount, result.Source = *in.DeclaredSeatCount, ReviewSeatSourceDeclared
@@ -180,6 +192,20 @@ func ResolveReviewRoundSeats(in ReviewRoundSeatInputs) ReviewRoundSeatResolution
 		result.SeatCount, result.Source = minimum, ReviewSeatSourceMinimum
 	}
 	return result
+}
+
+// riskRaisedAboveDeclaration reports a declared count below the floor only
+// because a risk rating recorded after its submission raised the tier: the
+// declaration met the minimum, the planned count, and the tier's agent reviews
+// when the submission admitted it, and the tier's agent reviews now set the
+// floor. A declaration below a non-risk floor, or below the floor its own
+// submission saw, stays declared and is refused.
+func riskRaisedAboveDeclaration(in ReviewRoundSeatInputs, minimum, floor int) bool {
+	declared := *in.DeclaredSeatCount
+	if declared >= floor || in.RiskSeatCount != floor {
+		return false
+	}
+	return declared >= ReviewSeatFloor(minimum, in.PlannedSeatCount, in.DeclaredRiskSeatCount)
 }
 
 // ReviewRoundSeatInputsFor builds the resolution inputs for round from the
@@ -200,6 +226,7 @@ func ReviewRoundSeatInputsFor(minimum, round int, orders []core.WorkOrder, event
 	if implementation != nil {
 		in.ImplementationWorkOrderID = implementation.ID
 		in.DeclaredSeatCount = copySeatCount(implementation.DeclaredReviewSeats)
+		in.ImplementationHeadSHA = implementation.HeadSHA
 	}
 	recorded := map[int]ReviewRoundSeats{}
 	for _, record := range records {
@@ -278,7 +305,7 @@ func LoadReviewRoundSeatInputs(ctx context.Context, reader ReviewRoundSeatReader
 		if err != nil {
 			return ReviewRoundSeatInputs{}, err
 		}
-		in.RiskSeatCount = RiskSeatCount(task, ratings)
+		ApplyRiskSeatInputs(&in, task, ratings)
 	}
 	return in, nil
 }
@@ -342,6 +369,10 @@ type PolicyHandoffSeatInputs struct {
 	PlannedSeatCount *int
 	// RiskRatings are the task's ratings, read only for an enforcing task.
 	RiskRatings []core.RiskRating
+	// RiskOrders are the task's risk orders, read only for an enforcing
+	// task, so a handoff to review can wait for its head's risk order
+	// (feature-risk-based-review RR-12; component-risk-review invariant 13).
+	RiskOrders []core.RiskOrder
 }
 
 func copySeatCount(value *int) *int {
