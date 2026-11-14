@@ -354,6 +354,9 @@ func RunAll(t *testing.T, factory Factory) {
 	run("PlanRiskOrders", func(t *testing.T) {
 		RunPlanRiskOrderConformance(t, factory.fresh(t, nil))
 	})
+	run("RiskWaitNextAction", func(t *testing.T) {
+		RunRiskWaitNextActionConformance(t, factory.fresh(t, nil))
+	})
 	run("RiskEnforcement", func(t *testing.T) {
 		RunRiskEnforcementConformance(t, factory.fresh(t, nil))
 	})
