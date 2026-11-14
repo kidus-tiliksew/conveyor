@@ -130,13 +130,9 @@ func runQueueReentryPins(t *testing.T, x Fixture) {
 		if _, err = RedispatchWorkOrder(ctx, st, order.ID, time.Hour); err == nil || !strings.Contains(err.Error(), "is not stale") {
 			t.Fatalf("redispatch of a waiting order err=%v, want not stale", err)
 		}
-		stored, err := st.ListTaskWorkOrdersStored(ctx, order.TaskID)
-		requireOK(t, err)
-		for _, candidate := range stored {
-			if candidate.ID == order.ID {
-				requireExecutionPins(t, "waiting order", candidate)
-			}
-		}
+		// storedOrder fails when the stored read omits the order, so a lost
+		// order cannot pass the pin check.
+		requireExecutionPins(t, "waiting order", storedOrder(t, x, order))
 	})
 	t.Run("RecoveryAfterTimeout", func(t *testing.T) {
 		for _, refreeze := range []*store.RecoveryRefreeze{nil, {ExecutionTimeoutText: "2h"}} {

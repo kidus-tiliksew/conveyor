@@ -741,11 +741,17 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx *sql.Tx, o core.W
 // work_order.redispatched is recorded, and no recovery is counted. The state
 // guard makes a repeated or concurrent tick change nothing
 // (component-work-orders invariant 5).
+//
+// It returns the caller's order with only the repaired fields changed, never
+// a reread row, so a value the caller set earlier in the same command, such as
+// a claim's model enforcement label, stays for the caller's own write
+// (component-work-orders invariant 11; component-review invariant 15).
 func (s *Store) normalizeLegacyStaleTx(ctx context.Context, tx *sql.Tx, o core.WorkOrder, now time.Time) (core.WorkOrder, error) {
 	if _, err := core.TransitionWorkOrder(o.State, core.WorkOrderCmdRedispatch); err != nil {
 		return core.WorkOrder{}, err
 	}
 	normalized := store.NormalizeLegacyStaleWorkOrder(o, now)
+	normalized.UpdatedAt = now
 	result, err := tx.ExecContext(ctx, `UPDATE work_orders SET state='queued',retry_suppressed=?,retry_suppression_reason=?,next_automatic_recovery_at=?,updated_at=? WHERE workspace_id=? AND id=? AND state='stale'`,
 		normalized.RetrySuppressed, normalized.RetrySuppressionReason, nullableTimeValue(normalized.NextAutomaticRecoveryAt), now, documentWorkspace(ctx), o.ID)
 	if err != nil {
@@ -756,12 +762,12 @@ func (s *Store) normalizeLegacyStaleTx(ctx context.Context, tx *sql.Tx, o core.W
 		return core.WorkOrder{}, err
 	}
 	if changed == 0 {
-		return getOrderRow(ctx, tx, o.ID)
+		return normalized, nil
 	}
 	if err = taskEvent(ctx, tx, store.LegacyStaleNormalizedEvent(normalized, now)); err != nil {
 		return core.WorkOrder{}, err
 	}
-	return getOrderRow(ctx, tx, o.ID)
+	return normalized, nil
 }
 
 func (s *Store) transitionWorkOrderTx(ctx context.Context, tx *sql.Tx, o core.WorkOrder, command core.WorkOrderCommand, kind string, now time.Time) (core.WorkOrder, error) {

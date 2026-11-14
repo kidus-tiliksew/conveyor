@@ -651,9 +651,16 @@ func assembleInput(ctx context.Context, task core.Task, orders []core.WorkOrder,
 // scheduled next_automatic_recovery_at is the retry time of the order's next
 // window-local attempt, and the exhaustion suppression reason marks the order
 // the operator must recover. Orders with neither are absent.
+//
+// A stored stale order is read as the queued order the clock returns it to,
+// so an age-only schedule or exhaustion it still holds projects nothing,
+// whether or not the caller projected the order first (component-work-orders
+// invariant 5).
 func AutomaticRecoveryFor(orders []core.WorkOrder) map[string]nextaction.AutomaticRecovery {
 	out := map[string]nextaction.AutomaticRecovery{}
+	now := time.Now().UTC()
 	for _, order := range orders {
+		order = core.NormalizeLegacyStaleWorkOrder(order, now)
 		exhausted := order.RetrySuppressed && order.RetrySuppressionReason == core.AutomaticRecoveryExhaustedReason
 		if order.NextAutomaticRecoveryAt.IsZero() && !exhausted {
 			continue

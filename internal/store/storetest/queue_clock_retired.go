@@ -34,6 +34,75 @@ func runQueueClockRetired(t *testing.T, x Fixture) {
 	t.Run("StoredStaleKeepsGenuineFailure", func(t *testing.T) { runStoredStaleKeepsGenuineFailure(t, x) })
 	t.Run("StoredStaleConcurrentTicks", func(t *testing.T) { runStoredStaleConcurrentTicks(t, x) })
 	t.Run("StoredStaleClaimedBeforeTheClock", func(t *testing.T) { runStoredStaleClaimedBeforeTheClock(t, x) })
+	t.Run("StoredStaleSeatKeepsModelLabel", func(t *testing.T) { runStoredStaleSeatKeepsModelLabel(t, x) })
+}
+
+// runStoredStaleSeatKeepsModelLabel claims a stored stale review seat and a
+// stored stale verify order, each with an empty model enforcement label,
+// before any clock fire. The claim returns each to queued in the same act,
+// and the label the claim assigns survives that return on the returned order,
+// the stored order, and the work_order.claimed event. A review claim is
+// self-reported on every backend; a verify claim must carry the same label as
+// a claim of a verify order that never went stale on the same backend
+// (component-work-orders invariants 5 and 11; component-review invariant 15).
+func runStoredStaleSeatKeepsModelLabel(t *testing.T, x Fixture) {
+	verifyTask := func(task *core.Task) {
+		task.ReviewedHeadSHA = "verify-head"
+		task.SetupContract.VerifyStage = true
+	}
+	claimFor := func(order core.WorkOrder) (core.WorkOrder, error) {
+		session := "label-" + order.ID
+		return ClaimWorkOrder(x.Context, x.Backend, order.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("label-owner"), OwnerUserID: "label-owner",
+			SessionID: session, ClientToken: session + "-token", Agent: "claude-code", Model: "model-" + session, Lease: time.Hour, ExecutionTimeout: time.Hour})
+	}
+	control, err := claimFor(waitingOrder(t, x, core.StageVerify, verifyTask))
+	requireOK(t, err)
+	_, seats := ffRound(t, x, 1, false)
+	for _, item := range []struct {
+		name  string
+		order core.WorkOrder
+		label string
+	}{
+		{"review seat", seats[0], "self-reported"},
+		{"verify order", waitingOrder(t, x, core.StageVerify, verifyTask), control.ModelEnforcement},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			order := item.order
+			if stored := storedOrder(t, x, order); stored.ModelEnforcement != "" {
+				t.Fatalf("fixture label=%q, want empty", stored.ModelEnforcement)
+			}
+			seedStoredStale(t, x, order, false, time.Time{})
+			claimed, err := claimFor(order)
+			requireOK(t, err)
+			if claimed.State != core.WorkOrderClaimed || claimed.ModelEnforcement != item.label {
+				t.Fatalf("returned order state=%s label=%q, want claimed and %q", claimed.State, claimed.ModelEnforcement, item.label)
+			}
+			if stored := storedOrder(t, x, order); stored.State != core.WorkOrderClaimed || stored.ModelEnforcement != item.label {
+				t.Fatalf("stored order state=%s label=%q, want claimed and %q", stored.State, stored.ModelEnforcement, item.label)
+			}
+			events, err := x.Backend.ListEvents(x.Context, order.TaskID)
+			requireOK(t, err)
+			claims := 0
+			for _, event := range events {
+				if event.Kind != "work_order.claimed" {
+					continue
+				}
+				var payload core.WorkOrder
+				requireOK(t, json.Unmarshal(event.Payload, &payload))
+				if payload.ID != order.ID {
+					continue
+				}
+				if payload.ModelEnforcement != item.label {
+					t.Fatalf("work_order.claimed label=%q, want %q", payload.ModelEnforcement, item.label)
+				}
+				claims++
+			}
+			if claims != 1 {
+				t.Fatalf("work_order.claimed events=%d, want 1", claims)
+			}
+			requireOneNormalization(t, x, order)
+		})
+	}
 }
 
 // runStoredStaleClaimedBeforeTheClock claims a stored stale order before any

@@ -1909,24 +1909,29 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 // checkpoint, pins, and attempt history stay, one work_order.redispatched is
 // recorded, and no recovery is counted. The state guard makes a repeated or
 // concurrent tick change nothing (component-work-orders invariant 5).
+//
+// It returns the caller's order with only the repaired fields changed, never
+// a reread row, so a value the caller set earlier in the same command stays
+// for the caller's own write (component-work-orders invariant 11).
 func (s *Store) normalizeLegacyStaleTx(ctx context.Context, tx pgx.Tx, order core.WorkOrder, now time.Time) (core.WorkOrder, error) {
 	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRedispatch); transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
 	}
 	normalized := store.NormalizeLegacyStaleWorkOrder(order, now)
-	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',retry_suppressed=$1,retry_suppression_reason=$2,
-		next_automatic_recovery_at=$3,updated_at=$4 WHERE workspace_id=$5 AND id=$6 AND state='stale' RETURNING `+workOrderColumns,
-		normalized.RetrySuppressed, normalized.RetrySuppressionReason, nullableTimeValue(normalized.NextAutomaticRecoveryAt), now, workspace(ctx), order.ID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", workspace(ctx), order.ID))
-	}
+	normalized.UpdatedAt = now
+	tag, err := tx.Exec(ctx, `UPDATE work_orders SET state='queued',retry_suppressed=$1,retry_suppression_reason=$2,
+		next_automatic_recovery_at=$3,updated_at=$4 WHERE workspace_id=$5 AND id=$6 AND state='stale'`,
+		normalized.RetrySuppressed, normalized.RetrySuppressionReason, nullableTimeValue(normalized.NextAutomaticRecoveryAt), now, workspace(ctx), order.ID)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if err = insertEvent(ctx, s.queries.WithTx(tx), store.LegacyStaleNormalizedEvent(updated, now)); err != nil {
+	if tag.RowsAffected() == 0 {
+		return normalized, nil
+	}
+	if err = insertEvent(ctx, s.queries.WithTx(tx), store.LegacyStaleNormalizedEvent(normalized, now)); err != nil {
 		return core.WorkOrder{}, err
 	}
-	return updated, nil
+	return normalized, nil
 }
 
 func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx pgx.Tx, order core.WorkOrder, now time.Time) (core.WorkOrder, error) {
