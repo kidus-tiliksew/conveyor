@@ -13,7 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// maxStagePreferenceBody bounds a whole-set PUT. Nine entries at their byte
+// maxStagePreferenceBody bounds a whole-set PUT. Thirteen entries at their byte
 // limits fit in a few kilobytes.
 const maxStagePreferenceBody = 64 << 10
 

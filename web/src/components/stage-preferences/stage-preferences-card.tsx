@@ -7,11 +7,11 @@ import {
   draftProblem,
   emptyEntry,
   emptyStages,
-  type SingleStageKey,
   type StagePreferenceEntry,
   type StagePreferenceStages,
   type StagePreferences,
   sameStages,
+  singleStageKeys,
   stageLabels,
   stagePreferencesQueryKey,
   stagesForSave,
@@ -34,8 +34,6 @@ type Status = { text: string; failed: boolean } | null
 // the conflict; a failed one never falls back to the cached set
 // (component-stage-preferences, State and failure).
 type FreshRead = { kind: 'reading' } | { kind: 'failed'; message: string } | { kind: 'read'; set: StagePreferences }
-
-const singleStages: SingleStageKey[] = ['plan', 'implement', 'verify']
 
 export function StagePreferencesCard() {
   const queryClient = useQueryClient()
@@ -230,7 +228,7 @@ export function StagePreferencesCard() {
             }}
           >
             {conflict && draft && <h3 className="text-sm font-medium text-foreground">Your unsaved changes</h3>}
-            {singleStages.map((stage) => {
+            {singleStageKeys.map((stage) => {
               const entry = shown[stage]
               return (
                 <section key={stage} aria-label={`${stageLabels[stage]} stage`} className="space-y-2">
@@ -350,7 +348,7 @@ function StageSummary({ stages }: { stages: StagePreferenceStages }) {
   )
   return (
     <>
-      {singleStages.map((stage) => line(stageLabels[stage], stages[stage]))}
+      {singleStageKeys.map((stage) => line(stageLabels[stage], stages[stage]))}
       {line('Review primary', review?.primary ?? null)}
       {review?.seats.map((seat, index) => line(`Review seat ${index + 1}`, seat))}
     </>
@@ -362,7 +360,7 @@ function SavedSummary({ stages }: { stages: StagePreferenceStages }) {
   const review = stages.review
   return (
     <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
-      {singleStages.map((stage) => (
+      {singleStageKeys.map((stage) => (
         <div key={stage} className="contents">
           <dt className="text-muted">{stageLabels[stage]}</dt>
           <dd className="min-w-0 break-words text-foreground">{describeEntry(stages[stage])}</dd>

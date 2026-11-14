@@ -54,6 +54,7 @@ export const settingsStages = {
   plan: { harness: 'codex', model: 'gpt-6.1-sol', effort: 'medium' },
   implement: { harness: 'claude-code', model: 'claude-opus-5-5', effort: 'high' },
   verify: { harness: 'claude-code', model: 'claude-sonnet-5-5', effort: '' },
+  risk: { harness: 'claude-code', model: 'claude-haiku-5-5', effort: 'low' },
   review: {
     primary: { harness: 'claude-code', model: 'claude-opus-5-5', effort: 'high' },
     seats: [

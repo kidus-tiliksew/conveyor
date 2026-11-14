@@ -805,6 +805,7 @@ test.describe('Settings', () => {
         'Plan: codex · gpt-6.1-sol · medium',
         'Implement: claude-code · claude-opus-5-5 · high',
         'Verify: claude-code · claude-sonnet-5-5',
+        'Risk: claude-code · claude-haiku-5-5 · low',
         'Review primary: claude-code · claude-opus-5-5 · high',
         'Review seat 1: codex · gpt-6.1-sol · high',
         'Review seat 2: claude-code · claude-fable-5-2',

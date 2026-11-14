@@ -23,12 +23,14 @@ type ReviewStagePreference struct {
 	Seats   []StagePreferenceEntry `json:"seats"`
 }
 
-// StagePreferenceStages holds exactly the four stage keys. Nil means the stage
-// is unset (component-stage-preferences, Public surfaces).
+// StagePreferenceStages holds exactly the five stage keys. Nil means the stage
+// is unset (component-stage-preferences, Public surfaces). Risk is the risk
+// agent's entry (req-stage-preferences AC-1.1; DEC-135(13)).
 type StagePreferenceStages struct {
 	Plan      *StagePreferenceEntry  `json:"plan"`
 	Implement *StagePreferenceEntry  `json:"implement"`
 	Verify    *StagePreferenceEntry  `json:"verify"`
+	Risk      *StagePreferenceEntry  `json:"risk"`
 	Review    *ReviewStagePreference `json:"review"`
 }
 
@@ -61,11 +63,11 @@ type StagePreferenceStore interface {
 	UpdateStagePreferences(ctx context.Context, userID string, apply StagePreferenceUpdate) (StagePreferences, error)
 }
 
-// StagePreferenceColumns is the stored form of one set's four stages: each
+// StagePreferenceColumns is the stored form of one set's five stages: each
 // column holds a stage's JSON value, or nil when the stage is unset. The
 // durable backends share it so every backend stores the same bytes.
 type StagePreferenceColumns struct {
-	Plan, Implement, Verify, Review []byte
+	Plan, Implement, Verify, Risk, Review []byte
 }
 
 // EncodeStagePreferenceColumns encodes each stage of stages for storage.
@@ -83,6 +85,7 @@ func EncodeStagePreferenceColumns(stages StagePreferenceStages) (StagePreference
 	columns.Plan = encode(stages.Plan, stages.Plan == nil)
 	columns.Implement = encode(stages.Implement, stages.Implement == nil)
 	columns.Verify = encode(stages.Verify, stages.Verify == nil)
+	columns.Risk = encode(stages.Risk, stages.Risk == nil)
 	columns.Review = encode(stages.Review, stages.Review == nil)
 	if err != nil {
 		return StagePreferenceColumns{}, fmt.Errorf("encode stage preferences: %w", err)
@@ -91,7 +94,8 @@ func EncodeStagePreferenceColumns(stages StagePreferenceStages) (StagePreference
 }
 
 // DecodeStagePreferenceColumns decodes the stored columns. A nil, empty, or
-// JSON null column is an unset stage.
+// JSON null column is an unset stage, so a row saved before the risk column
+// existed reads risk as unset.
 func DecodeStagePreferenceColumns(columns StagePreferenceColumns) (StagePreferenceStages, error) {
 	var stages StagePreferenceStages
 	decode := func(raw []byte, target any) error {
@@ -107,6 +111,7 @@ func DecodeStagePreferenceColumns(columns StagePreferenceColumns) (StagePreferen
 		{columns.Plan, &stages.Plan},
 		{columns.Implement, &stages.Implement},
 		{columns.Verify, &stages.Verify},
+		{columns.Risk, &stages.Risk},
 		{columns.Review, &stages.Review},
 	} {
 		if err := decode(column.raw, column.target); err != nil {
@@ -129,7 +134,7 @@ func CloneStagePreferenceStages(stages StagePreferenceStages) StagePreferenceSta
 		copied := *value
 		return &copied
 	}
-	cloned := StagePreferenceStages{Plan: entry(stages.Plan), Implement: entry(stages.Implement), Verify: entry(stages.Verify)}
+	cloned := StagePreferenceStages{Plan: entry(stages.Plan), Implement: entry(stages.Implement), Verify: entry(stages.Verify), Risk: entry(stages.Risk)}
 	if stages.Review != nil {
 		cloned.Review = &ReviewStagePreference{Primary: entry(stages.Review.Primary), Seats: append([]StagePreferenceEntry{}, stages.Review.Seats...)}
 	}

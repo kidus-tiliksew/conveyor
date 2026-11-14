@@ -2,11 +2,15 @@
 // use for each stage (component-stage-preferences; req-stage-preferences).
 // One set per person applies in every workspace, so its cache key carries no
 // workspace. The requests live in api.ts with the rest of the contract layer
-// (component-web-dashboard invariant 9).
+// (component-web-dashboard invariant 9). Risk is the risk agent's stage and
+// shows between Verify and Review (DEC-135(13)).
 
-export const stageKeys = ['plan', 'implement', 'verify', 'review'] as const
+export const stageKeys = ['plan', 'implement', 'verify', 'risk', 'review'] as const
 export type StageKey = (typeof stageKeys)[number]
 export type SingleStageKey = Exclude<StageKey, 'review'>
+
+/** The stages that hold one entry, in display order. */
+export const singleStageKeys: SingleStageKey[] = ['plan', 'implement', 'verify', 'risk']
 
 export const maxReviewSeats = 8
 export const maxNameBytes = 128
@@ -27,6 +31,7 @@ export interface StagePreferenceStages {
   plan: StagePreferenceEntry | null
   implement: StagePreferenceEntry | null
   verify: StagePreferenceEntry | null
+  risk: StagePreferenceEntry | null
   review: ReviewStagePreference | null
 }
 
@@ -45,11 +50,12 @@ export const stageLabels: Record<StageKey, string> = {
   plan: 'Plan',
   implement: 'Implement',
   verify: 'Verify',
+  risk: 'Risk',
   review: 'Review',
 }
 
 export function emptyStages(): StagePreferenceStages {
-  return { plan: null, implement: null, verify: null, review: null }
+  return { plan: null, implement: null, verify: null, risk: null, review: null }
 }
 
 export function emptyEntry(): StagePreferenceEntry {
@@ -63,6 +69,8 @@ export function copyStages(stages: StagePreferenceStages): StagePreferenceStages
     plan: entry(stages.plan),
     implement: entry(stages.implement),
     verify: entry(stages.verify),
+    // A set read from a server without the risk stage has no risk key.
+    risk: entry(stages.risk ?? null),
     review: stages.review
       ? { primary: entry(stages.review.primary), seats: (stages.review.seats ?? []).map((seat) => ({ ...seat })) }
       : null,
@@ -81,6 +89,7 @@ export function stagesForSave(stages: StagePreferenceStages): StagePreferenceSta
     plan: entry(stages.plan),
     implement: entry(stages.implement),
     verify: entry(stages.verify),
+    risk: entry(stages.risk ?? null),
     review:
       review && (review.primary || review.seats.length > 0)
         ? { primary: entry(review.primary), seats: review.seats.map((seat) => entry(seat) as StagePreferenceEntry) }
@@ -123,7 +132,7 @@ function entryProblem(label: string, entry: StagePreferenceEntry | null): string
  * own words, or null (component-stage-preferences invariant 2).
  */
 export function draftProblem(stages: StagePreferenceStages): string | null {
-  for (const stage of ['plan', 'implement', 'verify'] as const) {
+  for (const stage of singleStageKeys) {
     const problem = entryProblem(stageLabels[stage], stages[stage])
     if (problem) return problem
   }
