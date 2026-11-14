@@ -99,6 +99,110 @@ func TestReviewRoundRiskHold(t *testing.T) {
 	}
 }
 
+// TestReviewRoundDispatchComparison proves the head a review round reviews:
+// the refresh pair while the approval is stale, the newest submission
+// comparison that names both commits otherwise, and the refresh pair when
+// none is recorded (feature-risk-based-review RR-12).
+func TestReviewRoundDispatchComparison(t *testing.T) {
+	opened := func(base, head string) core.Event {
+		return core.Event{Kind: SubmissionComparisonEventKind, Payload: core.JSONPayload(map[string]any{"base_sha": base, "head_sha": head})}
+	}
+	events := []core.Event{opened("b1", "h1"), {Kind: "review.completed", Payload: []byte(`{"head_sha":"other"}`)}, opened("b2", "h2"), opened("", "h3"), {Kind: SubmissionComparisonEventKind, Payload: []byte(`not json`)}}
+	fresh := core.Task{RefreshBaselineSHA: "rb", RefreshHeadSHA: "rh"}
+	stale := core.Task{ApprovalStale: true, RefreshBaselineSHA: "rb", RefreshHeadSHA: "rh"}
+	for _, tc := range []struct {
+		name       string
+		task       core.Task
+		events     []core.Event
+		base, head string
+		recorded   bool
+	}{
+		{name: "LatestCompleteSubmission", task: fresh, events: events, base: "b2", head: "h2", recorded: true},
+		{name: "NoSubmissionKeepsTheRefreshPair", task: fresh, events: events[1:2], base: "rb", head: "rh"},
+		{name: "StaleApprovalReviewsTheRefreshHead", task: stale, events: events, base: "rb", head: "rh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, head, recorded := ReviewRoundDispatchComparison(tc.task, tc.events)
+			if base != tc.base || head != tc.head || recorded != tc.recorded {
+				t.Fatalf("comparison=(%q,%q,%t), want (%q,%q,%t)", base, head, recorded, tc.base, tc.head, tc.recorded)
+			}
+		})
+	}
+	if _, _, ok := RecordedSubmissionComparison(nil); ok {
+		t.Fatal("no events recorded a comparison")
+	}
+}
+
+// TestQueuedReviewRiskHold proves the reconcile hold: it holds an enforcing
+// queued review task while the risk order of the head dispatch would review
+// is open, holds nothing for a terminal, missing, plan, or other-head order,
+// reads nothing for record, off, or a task outside review, reads no
+// comparison while the approval is stale, and returns a read error rather
+// than no hold (feature-risk-based-review RR-12, RR-13; req-risk-based-review
+// AC-1.6, AC-5.10; component-risk-review invariant 13).
+func TestQueuedReviewRiskHold(t *testing.T) {
+	submitted := func(head string) []core.Event {
+		return []core.Event{{Kind: SubmissionComparisonEventKind, Payload: core.JSONPayload(map[string]any{"base_sha": "base", "head_sha": head})}}
+	}
+	queued := func(mode riskpolicy.Mode, next core.Stage) core.Task {
+		task := riskTaskWith(mode, riskpolicy.DefaultTable())
+		task.State, task.NextStage = core.TaskQueued, next
+		return task
+	}
+	enforce := queued(riskpolicy.ModeEnforce, core.StageReview)
+	stale := enforce
+	stale.ApprovalStale, stale.RefreshBaselineSHA, stale.RefreshHeadSHA = true, "h1", "h2"
+	plan := core.RiskOrder{Order: core.WorkOrder{ID: "plan", Stage: core.StageRisk, State: core.WorkOrderQueued}, Subject: core.RiskOrderSubject{PlanVersion: 1}}
+	for _, tc := range []struct {
+		name            string
+		task            core.Task
+		events          []core.Event
+		orders          []core.RiskOrder
+		held            bool
+		comparisonReads int
+		orderReads      int
+	}{
+		{name: "Queued", task: enforce, events: submitted("h1"), orders: []core.RiskOrder{headRiskOrder("task", "r", "h1", core.WorkOrderQueued)}, held: true, comparisonReads: 1, orderReads: 1},
+		{name: "Claimed", task: enforce, events: submitted("h1"), orders: []core.RiskOrder{headRiskOrder("task", "r", "h1", core.WorkOrderClaimed)}, held: true, comparisonReads: 1, orderReads: 1},
+		{name: "Completed", task: enforce, events: submitted("h1"), orders: []core.RiskOrder{headRiskOrder("task", "r", "h1", core.WorkOrderCompleted)}, comparisonReads: 1, orderReads: 1},
+		{name: "Cancelled", task: enforce, events: submitted("h1"), orders: []core.RiskOrder{headRiskOrder("task", "r", "h1", core.WorkOrderCancelled)}, comparisonReads: 1, orderReads: 1},
+		{name: "Missing", task: enforce, events: submitted("h1"), comparisonReads: 1, orderReads: 1},
+		{name: "OtherHead", task: enforce, events: submitted("h1"), orders: []core.RiskOrder{headRiskOrder("task", "r", "h0", core.WorkOrderQueued)}, comparisonReads: 1, orderReads: 1},
+		{name: "PlanOrder", task: enforce, events: submitted("h1"), orders: []core.RiskOrder{plan}, comparisonReads: 1, orderReads: 1},
+		{name: "NoHeadReadsNoOrder", task: enforce, comparisonReads: 1},
+		{name: "StaleApprovalHoldsTheRefreshHead", task: stale, events: submitted("h1"), orders: []core.RiskOrder{headRiskOrder("task", "r", "h2", core.WorkOrderQueued)}, held: true, orderReads: 1},
+		{name: "StaleApprovalIgnoresTheSubmittedHead", task: stale, events: submitted("h1"), orders: []core.RiskOrder{headRiskOrder("task", "r", "h1", core.WorkOrderQueued)}, orderReads: 1},
+		{name: "RecordReadsNothing", task: queued(riskpolicy.ModeRecord, core.StageReview), events: submitted("h1"), orders: []core.RiskOrder{headRiskOrder("task", "r", "h1", core.WorkOrderQueued)}},
+		{name: "OffReadsNothing", task: queued("", core.StageReview), events: submitted("h1"), orders: []core.RiskOrder{headRiskOrder("task", "r", "h1", core.WorkOrderQueued)}},
+		{name: "ImplementReadsNothing", task: queued(riskpolicy.ModeEnforce, core.StageImplement), events: submitted("h1"), orders: []core.RiskOrder{headRiskOrder("task", "r", "h1", core.WorkOrderQueued)}},
+		{name: "TriageReadsNothing", task: queued(riskpolicy.ModeEnforce, core.StageTriage), orders: []core.RiskOrder{plan}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			comparisonReads, orderReads := 0, 0
+			order, held, err := QueuedReviewRiskHold(tc.task,
+				func() ([]core.Event, error) { comparisonReads++; return tc.events, nil },
+				func() ([]core.RiskOrder, error) { orderReads++; return tc.orders, nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if held != tc.held || comparisonReads != tc.comparisonReads || orderReads != tc.orderReads {
+				t.Fatalf("held=%t comparison reads=%d order reads=%d, want %t %d %d", held, comparisonReads, orderReads, tc.held, tc.comparisonReads, tc.orderReads)
+			}
+			if held && order.ID != "r" {
+				t.Fatalf("held by %+v, want r", order)
+			}
+		})
+	}
+	failed := errors.New("read failed")
+	if _, held, err := QueuedReviewRiskHold(enforce, func() ([]core.Event, error) { return nil, failed }, nil); !errors.Is(err, failed) || held {
+		t.Fatalf("comparison read error held=%t err=%v", held, err)
+	}
+	if _, held, err := QueuedReviewRiskHold(enforce, func() ([]core.Event, error) { return submitted("h1"), nil },
+		func() ([]core.RiskOrder, error) { return nil, failed }); !errors.Is(err, failed) || held {
+		t.Fatalf("risk order read error held=%t err=%v", held, err)
+	}
+}
+
 // TestDeclaredCountBelowARaisedRiskFloor proves that a declared count the
 // submission admitted resolves to the tier's agent reviews with source risk
 // when a later risk rating raised the floor, and that every other declaration

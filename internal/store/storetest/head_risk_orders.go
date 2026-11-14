@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -409,6 +410,289 @@ func RunHeadRiskOrderConformance(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		if cancelled.State != core.TaskClosed || orderState(t, claimed) != core.WorkOrderCancelled {
 			t.Fatalf("closed task=%s risk order=%s", cancelled.State, orderState(t, claimed))
+		}
+	})
+
+	// Durable start-up reconcile applies the dispatch hold: an enforcing
+	// queued review task whose head risk order is queued or claimed is not
+	// drift, so reconcile enqueues nothing and reports no repair for it. Once
+	// the order ends, or for record and off tasks, other heads, a missing
+	// order, and plan orders, reconcile repairs a lost dispatch as before
+	// (feature-risk-based-review RR-12, RR-13; req-risk-based-review AC-1.6,
+	// AC-5.10; component-risk-review invariant 13; component-durable-queue
+	// "Reconciliation between tasks and jobs"). The memory backend keeps no
+	// durable queue to reconcile.
+	if !st.IsDurable() {
+		return
+	}
+	reconcileCtx, repairs := countReconciled(ctx, st)
+	reconcile := func(t *testing.T, ticks int) {
+		t.Helper()
+		for range ticks {
+			_, err := st.ReconcileQueuedTasks(reconcileCtx)
+			requireOK(t, err)
+		}
+	}
+	requireRepairs := func(t *testing.T, taskID string, want int) {
+		t.Helper()
+		got, err := repairs(taskID)
+		requireOK(t, err)
+		if got != want {
+			t.Fatalf("task %s repairs=%d, want %d", taskID, got, want)
+		}
+	}
+	requireDispatch := func(t *testing.T, taskID string, active bool) {
+		t.Helper()
+		if job, _ := dispatchJob(t, taskID); job.Active() != active {
+			t.Fatalf("task %s dispatch job active=%t, want %t: %+v", taskID, job.Active(), active, job)
+		}
+	}
+	// submitHead records the head's pull request and submits it, as the
+	// implementation submission does, then moves the task to a queued review
+	// whose dispatch job already ran and wrote nothing.
+	submitHead := func(t *testing.T, task core.Task, head string, withRisk bool, paths ...string) {
+		t.Helper()
+		implement := claimedImplement(t, task.ID)
+		requireOK(t, st.RecordVerificationPullRequest(ctx, core.Event{TaskID: task.ID, JobID: implement.JobID, Kind: store.SubmissionComparisonEventKind,
+			Payload: core.JSONPayload(map[string]any{"url": "https://github.com/fixture/reconcile/pull/1", "number": 1, "base_sha": "base-" + head, "head_sha": head,
+				"repository": "fixture/reconcile", "work_order_id": implement.ID})}))
+		var risk *store.HeadRiskOrderRequest
+		if withRisk {
+			if len(paths) == 0 {
+				paths = []string{"a.go"}
+			}
+			r := request(task.ID, head, paths...)
+			risk = &r
+		}
+		requireOK(t, submit(t, implement, head, risk))
+		queueTask(t, task.ID)
+	}
+	headOrder := func(t *testing.T, taskID, head string) core.RiskOrder {
+		t.Helper()
+		order, ok := store.HeadRiskOrderFor(riskOrders(t, taskID), head)
+		if !ok {
+			t.Fatalf("task %s has no risk order for head %s", taskID, head)
+		}
+		return order
+	}
+
+	t.Run("ReconcileLeavesARiskHeldReviewTaskAlone", func(t *testing.T) {
+		for _, scenario := range []string{"queued-then-cancelled", "claimed-then-completed"} {
+			t.Run(scenario, func(t *testing.T) {
+				task := fileTask(t, &enforce, core.TaskRunning, core.StageImplement)
+				submitHead(t, task, "h1", true)
+				order := headOrder(t, task.ID, "h1")
+				if scenario == "claimed-then-completed" {
+					claimRisk(t, order.Order.ID, "reconcile-held-"+task.ID)
+				}
+				reconcile(t, 3)
+				requireRepairs(t, task.ID, 0)
+				requireDispatch(t, task.ID, false)
+				if reviewOrders(t, task.ID) != 0 {
+					t.Fatalf("a held task got review orders: %d", reviewOrders(t, task.ID))
+				}
+				if scenario == "claimed-then-completed" {
+					completeRisk(t, task.ID, order.Order.ID, "reconcile-held-"+task.ID, riskpolicy.TierLow)
+				} else {
+					cancelRisk(t, task.ID, order.Order.ID)
+				}
+				// The end of the risk order wakes the task in its own act.
+				requireDispatch(t, task.ID, true)
+				reconcile(t, 2)
+				requireRepairs(t, task.ID, 0)
+				// A wake whose dispatch ended without a round is real drift
+				// now, and reconcile repairs it once.
+				finishDispatch(t, task.ID)
+				reconcile(t, 3)
+				requireRepairs(t, task.ID, 1)
+				requireDispatch(t, task.ID, true)
+				requireOK(t, openRound(t, task.ID, "h1", 1))
+			})
+		}
+	})
+
+	t.Run("ReconcileRepairsReviewTasksNoRiskOrderHolds", func(t *testing.T) {
+		missing := fileTask(t, &enforce, core.TaskRunning, core.StageImplement)
+		submitHead(t, missing, "h1", false)
+		if orders := riskOrders(t, missing.ID); len(orders) != 0 {
+			t.Fatalf("missing-order task has risk orders %+v", orders)
+		}
+		otherHead := fileTask(t, &enforce, core.TaskRunning, core.StageImplement)
+		older := ensure(t, request(otherHead.ID, "h0", "a.go"))
+		submitHead(t, otherHead, "h1", false)
+		recordQueued := fileTask(t, &record, core.TaskRunning, core.StageImplement)
+		submitHead(t, recordQueued, "h1", true)
+		recordClaimed := fileTask(t, &record, core.TaskRunning, core.StageImplement)
+		submitHead(t, recordClaimed, "h1", true)
+		recordClaimedOrder := headOrder(t, recordClaimed.ID, "h1")
+		claimRisk(t, recordClaimedOrder.Order.ID, "reconcile-record-"+recordClaimed.ID)
+		off := fileTask(t, nil, core.TaskRunning, core.StageImplement)
+		submitHead(t, off, "h1", true)
+		// An ordinary order hold stays: the round of h1 is open.
+		roundOpen := fileTask(t, &enforce, core.TaskRunning, core.StageImplement)
+		submitHead(t, roundOpen, "h1", true)
+		roundOrder := headOrder(t, roundOpen.ID, "h1")
+		cancelRisk(t, roundOpen.ID, roundOrder.Order.ID)
+		finishDispatch(t, roundOpen.ID)
+		requireOK(t, openRound(t, roundOpen.ID, "h1", 1))
+		finishDispatch(t, roundOpen.ID)
+
+		reconcile(t, 3)
+		for _, id := range []string{missing.ID, otherHead.ID, recordQueued.ID, recordClaimed.ID, off.ID} {
+			requireRepairs(t, id, 1)
+			requireDispatch(t, id, true)
+		}
+		requireRepairs(t, roundOpen.ID, 0)
+		requireDispatch(t, roundOpen.ID, false)
+		// Reconcile ends no risk order.
+		if got := orderState(t, older.Order.ID); got != core.WorkOrderQueued {
+			t.Fatalf("other-head order state=%s, want queued", got)
+		}
+		if got := orderState(t, headOrder(t, recordQueued.ID, "h1").Order.ID); got != core.WorkOrderQueued {
+			t.Fatalf("record order state=%s, want queued", got)
+		}
+		if got := orderState(t, recordClaimedOrder.Order.ID); got != core.WorkOrderClaimed {
+			t.Fatalf("record claimed order state=%s, want claimed", got)
+		}
+	})
+
+	t.Run("ReconcileHoldsTheRefreshHead", func(t *testing.T) {
+		task := fileTask(t, &enforce, core.TaskRunning, core.StageImplement)
+		submitHead(t, task, "h1", true)
+		first := headOrder(t, task.ID, "h1")
+		claimRisk(t, first.Order.ID, "reconcile-refresh-"+task.ID)
+		completeRisk(t, task.ID, first.Order.ID, "reconcile-refresh-"+task.ID, riskpolicy.TierLow)
+		finishDispatch(t, task.ID)
+		// The refresh creates the new head's risk order, then marks the
+		// approval stale, as dispatch's refresh does. The submitted head's
+		// order is completed, so only the refresh head can hold the round.
+		refreshed := ensure(t, request(task.ID, "h2", "a.go", "b.go"))
+		if !refreshed.Created {
+			t.Fatalf("refresh head order=%+v", refreshed)
+		}
+		changed, err := st.MarkTaskApprovalStale(ctx, task.ID, "h1", "h2", config.RefreshReviewDelta, "merge-conflict")
+		requireOK(t, err)
+		if !changed {
+			t.Fatal("the approval did not become stale")
+		}
+		finishDispatch(t, task.ID)
+		reconcile(t, 3)
+		requireRepairs(t, task.ID, 0)
+		requireDispatch(t, task.ID, false)
+		cancelRisk(t, task.ID, refreshed.Order.ID)
+		requireDispatch(t, task.ID, true)
+		finishDispatch(t, task.ID)
+		reconcile(t, 3)
+		requireRepairs(t, task.ID, 1)
+	})
+
+	t.Run("ReconcileGivesPlanRiskOrdersNoDispatchHold", func(t *testing.T) {
+		planning := func(t *testing.T, state core.TaskState, next core.Stage) core.Task {
+			t.Helper()
+			id := core.NewTaskID()
+			task := core.Task{ID: id, Workspace: x.Workspace, Source: "api", Repo: "conveyor", Title: id, Body: "Reconcile plan risk " + id, BaseBranch: "main",
+				Branch: "conveyor/task-" + id, State: state, NextStage: next, PlanState: core.PlanNeeded, PolicyVersion: 1,
+				CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+			task.SetupContract = config.PolicyContract{MaxBounces: 3, Risk: &riskpolicy.Policy{Mode: riskpolicy.ModeEnforce, Tiers: riskpolicy.DefaultTable()}}
+			requireOK(t, st.CreateTask(ctx, task))
+			return task
+		}
+		planOrder := func(t *testing.T, taskID string) core.RiskOrder {
+			t.Helper()
+			for _, order := range riskOrders(t, taskID) {
+				if order.Subject.PlanVersion > 0 && order.Open() {
+					return order
+				}
+			}
+			t.Fatalf("task %s has no open plan risk order", taskID)
+			return core.RiskOrder{}
+		}
+		// A plan that waits for approval leaves the queue: the task waits
+		// for a person, so reconcile neither holds nor repairs it, and the
+		// approval still waits for the plan's risk order.
+		awaiting := planning(t, core.TaskRunning, core.StageSpec)
+		_, err := taskops.New(st).Perform(ctx, awaiting.ID, taskops.Command{
+			Kind: core.TaskGateSpec, RecoveryStage: core.StageImplement, ProjectStages: true,
+			PlanState:   &taskops.PlanStateMove{To: core.PlanAwaitingApproval, Cause: core.PlanCausePlanSubmitted},
+			PlanVersion: &core.SpecVersion{Content: planRiskPlan("", ""), Acceptance: []byte(`[]`), Decomposition: []byte(`[]`), Agent: "codex", Model: "planner"},
+		})
+		requireOK(t, err)
+		awaitingOrder := planOrder(t, awaiting.ID)
+		// A plan attached at triage keeps the task queued with an open plan
+		// risk order. The order holds the plan approval, not the dispatch.
+		triage := planning(t, core.TaskQueued, core.StageTriage)
+		_, err = taskops.ExecuteSetupChange(ctx, st, triage.ID, func(lease taskops.TaskLease) (store.AttachPlanResult, error) {
+			return st.AttachTaskPlanCommand(ctx, lease, store.AttachPlanRequest{TaskID: triage.ID, RequestID: "reconcile-attach-" + triage.ID, Reason: "operator plan", Plan: planRiskPlan("", "")})
+		})
+		requireOK(t, err)
+		triageOrder := planOrder(t, triage.ID)
+		current, err := st.GetTask(ctx, triage.ID)
+		requireOK(t, err)
+		if current.State != core.TaskQueued || current.NextStage != core.StageTriage {
+			t.Fatalf("attached triage task=%s/%s, want queued at triage", current.State, current.NextStage)
+		}
+		finishDispatch(t, triage.ID)
+
+		reconcile(t, 3)
+		requireRepairs(t, awaiting.ID, 0)
+		requireRepairs(t, triage.ID, 1)
+		requireDispatch(t, triage.ID, true)
+		var refusal *store.PlanRiskRatingOpenError
+		if err := st.ApproveSpecVersion(ctx, awaiting.ID, 1); !errors.As(err, &refusal) || refusal.WorkOrderID != awaitingOrder.Order.ID {
+			t.Fatalf("approval with an open plan risk order: %v", err)
+		}
+		for _, id := range []string{awaitingOrder.Order.ID, triageOrder.Order.ID} {
+			if got := orderState(t, id); got != core.WorkOrderQueued {
+				t.Fatalf("plan risk order %s state=%s, want queued", id, got)
+			}
+		}
+	})
+
+	t.Run("ReconcileRacesTheRiskOrderEnd", func(t *testing.T) {
+		task := fileTask(t, &enforce, core.TaskRunning, core.StageImplement)
+		submitHead(t, task, "h1", true)
+		order := headOrder(t, task.ID, "h1")
+		session := "reconcile-race-" + task.ID
+		claimRisk(t, order.Order.ID, session)
+		const reconcilers = 6
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		errs := make(chan error, reconcilers+1)
+		for range reconcilers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if _, err := st.ReconcileQueuedTasks(reconcileCtx); err != nil {
+					errs <- err
+				}
+			}()
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdSubmitRiskRating, func(lease taskops.TaskLease) (core.RiskRating, error) {
+				return st.CompleteRiskOrderCommand(ctx, lease, store.RiskOrderCompleteRequest{WorkOrderID: order.Order.ID,
+					Claim: core.WorkOrderClaimIdentity{ClaimantID: "run:risk-agent", SessionID: session}, Tier: riskpolicy.TierLow, Reason: "rated low"})
+			})
+			if err != nil {
+				errs <- err
+			}
+		}()
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatalf("concurrent reconcile and risk completion: %v", err)
+		}
+		// Whichever commits first, the task is dispatched once: by the wake
+		// of the completion, never by a reconcile repair beside it.
+		requireDispatch(t, task.ID, true)
+		reconcile(t, 3)
+		requireRepairs(t, task.ID, 0)
+		if got := orderState(t, order.Order.ID); got != core.WorkOrderCompleted {
+			t.Fatalf("risk order state=%s, want completed", got)
 		}
 	})
 }

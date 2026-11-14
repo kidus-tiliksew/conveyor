@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -142,6 +144,81 @@ func ReviewRoundRiskHold(task core.Task, orders []core.RiskOrder, head string) (
 		}
 	}
 	return core.WorkOrder{}, false
+}
+
+// SubmissionComparisonEventKind is the task event that records a submitted
+// head with the base commit its pull request compares against.
+const SubmissionComparisonEventKind = "pull_request.opened"
+
+// RecordedSubmissionComparison returns the base and head commits of the
+// latest recorded submission comparison in events, oldest first: the newest
+// pull_request.opened event that names both commits. Review input reads and
+// the round's head use this pair, never a mutable branch name.
+func RecordedSubmissionComparison(events []core.Event) (base, head string, ok bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != SubmissionComparisonEventKind {
+			continue
+		}
+		var target struct {
+			Base string `json:"base_sha"`
+			Head string `json:"head_sha"`
+		}
+		if json.Unmarshal(events[i].Payload, &target) == nil && target.Base != "" && target.Head != "" {
+			return target.Base, target.Head, true
+		}
+	}
+	return "", "", false
+}
+
+// ReviewRoundDispatchComparison returns the commit pair that the next review
+// round of task reviews. While the approval is stale, the round reviews the
+// refresh baseline and head. Otherwise, it reviews the latest recorded
+// submission comparison in events, and recorded reports that one was found.
+// Without one, the refresh pair stands. Dispatch builds the round from this
+// pair, and durable reconcile asks the same question, so the two always name
+// the same head (feature-risk-based-review RR-12).
+func ReviewRoundDispatchComparison(task core.Task, events []core.Event) (baseline, head string, recorded bool) {
+	if !task.ApprovalStale {
+		if base, submitted, ok := RecordedSubmissionComparison(events); ok {
+			return base, submitted, true
+		}
+	}
+	return task.RefreshBaselineSHA, task.RefreshHeadSHA, false
+}
+
+// QueuedReviewRiskHold reports whether durable reconcile leaves a queued task
+// alone because its next review round waits for that round's head risk
+// order, and returns the order. It applies the hold that dispatch applies
+// before it builds a round: ReviewRoundRiskHold for the head that
+// ReviewRoundDispatchComparison names. It calls no reader unless the task's
+// next stage is review and its frozen mode is enforce. It calls
+// readComparisons only while the approval is fresh, and readRiskOrders only
+// when a head is known. A read error is returned and never treated as no
+// hold. A completed, cancelled, or missing order, a plan order, and an order
+// of another head hold nothing (feature-risk-based-review RR-12, RR-13;
+// req-risk-based-review AC-1.6, AC-5.10; component-risk-review invariant 13;
+// component-durable-queue "Reconciliation between tasks and jobs").
+func QueuedReviewRiskHold(task core.Task, readComparisons func() ([]core.Event, error), readRiskOrders func() ([]core.RiskOrder, error)) (core.WorkOrder, bool, error) {
+	if task.NextStage != core.StageReview || !RiskRoundHoldApplies(task) {
+		return core.WorkOrder{}, false, nil
+	}
+	var events []core.Event
+	if !task.ApprovalStale {
+		var err error
+		if events, err = readComparisons(); err != nil {
+			return core.WorkOrder{}, false, fmt.Errorf("read recorded review comparisons: %w", err)
+		}
+	}
+	_, head, _ := ReviewRoundDispatchComparison(task, events)
+	if strings.TrimSpace(head) == "" {
+		return core.WorkOrder{}, false, nil
+	}
+	orders, err := readRiskOrders()
+	if err != nil {
+		return core.WorkOrder{}, false, fmt.Errorf("read risk orders: %w", err)
+	}
+	order, held := ReviewRoundRiskHold(task, orders, head)
+	return order, held, nil
 }
 
 // ReviewRoundHead is the head a new round's seat orders review: the first

@@ -550,17 +550,16 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 			return nil
 		}
 	}
-	baseline, head := task.RefreshBaselineSHA, task.RefreshHeadSHA
-	comparisonRecorded := false
+	// Durable reconcile names the same head through the same selection, so it
+	// holds a task exactly when this dispatch would wait for its risk order
+	// (feature-risk-based-review RR-12).
+	var events []core.Event
 	if !task.ApprovalStale {
-		events, eventErr := d.Store.ListCompactEvents(ctx, task.ID)
-		if eventErr != nil {
-			return eventErr
-		}
-		if comparison, compareErr := RecordedReviewComparison(task, events); compareErr == nil {
-			baseline, head, comparisonRecorded = comparison.BaseBranch, comparison.ReviewedHeadSHA, true
+		if events, err = d.Store.ListCompactEvents(ctx, task.ID); err != nil {
+			return err
 		}
 	}
+	baseline, head, comparisonRecorded := store.ReviewRoundDispatchComparison(task, events)
 	// An enforcing task's round waits while its head's risk order is queued
 	// or claimed. The check comes before seat resolution, because the tier
 	// can still rise; completing or cancelling the risk order enqueues the
