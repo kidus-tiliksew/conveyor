@@ -104,6 +104,7 @@ func (s *Store) CompleteRiskOrderCommand(ctx context.Context, lease taskops.Task
 		if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdSubmitRiskRating)) {
 			return fmt.Errorf("risk order completion requires a valid taskops lease")
 		}
+		store.RiskCompletionRead(ctx, order.ID, order.State)
 		task, ratings, err := riskTaskTx(ctx, tx, order.TaskID)
 		if err != nil {
 			return err

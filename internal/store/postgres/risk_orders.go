@@ -134,6 +134,9 @@ func (s *Store) CompleteRiskOrderCommand(ctx context.Context, lease taskops.Task
 		if err != nil {
 			return err
 		}
+		// The task-operation lock and the order row lock stay held from this
+		// read to the write, so no cancellation or raise commits in between.
+		store.RiskCompletionRead(ctx, risk.Order.ID, risk.Order.State)
 		now := request.Now.UTC()
 		if request.Now.IsZero() {
 			now = time.Now().UTC()

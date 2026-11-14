@@ -193,7 +193,7 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), VerificationClaimReads: verificationClaimReads(ws), DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
+			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), VerificationClaimReads: verificationClaimReads(ws), NestedTaskCommandsInterleave: true, DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
 				t.Helper()
 				if _, err := st.db.ExecContext(ctx, `UPDATE users SET status='deactivated' WHERE id=?`, userID); err != nil {
 					t.Fatal(err)
