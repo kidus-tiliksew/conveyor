@@ -20,6 +20,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
+	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -280,6 +281,18 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				return raw
 			}, SeedSetupContract: func(t *testing.T, ctx context.Context, taskID, raw string) {
 				if _, err := st.pool.Exec(ctx, `UPDATE tasks SET setup_contract=$1::jsonb WHERE workspace_id=$2 AND id=$3`, raw, workspace, taskID); err != nil {
+					t.Fatal(err)
+				}
+			}, SeedRiskRating: func(t *testing.T, ctx context.Context, rating core.RiskRating) {
+				// A reviewer rating a verdict recorded before verdicts stopped
+				// stating a tier; no public writer accepts the source
+				// (feature-risk-based-review RR-14).
+				if err := st.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+					if err := lockWorkOrderTaskTx(ctx, tx, workspace, rating.TaskID); err != nil {
+						return err
+					}
+					return insertRiskRatingTx(ctx, tx, q, rating)
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}, SeedStoredTaskHold: func(t *testing.T, ctx context.Context, taskID string) {

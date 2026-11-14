@@ -107,41 +107,6 @@ func PrepareRiskRaise(task core.Task, existing []core.RiskRating, raise core.Ris
 	return numberRiskRating(existing, raise, now), nil
 }
 
-// ReviewerRiskRating returns the reviewer rating a verdict records, and false
-// when the verdict states no tier. Acceptance calls it only for a decision not
-// yet completed; the head, seat, and model come from the claimed review order,
-// never from the verdict (req-risk-based-review AC-5.3).
-func ReviewerRiskRating(task core.Task, existing []core.RiskRating, decision core.ReviewDecision, now time.Time) (core.RiskRating, bool, error) {
-	if decision.RiskTier == "" {
-		return core.RiskRating{}, false, nil
-	}
-	if !task.SetupContract.Risk.Enabled() {
-		return core.RiskRating{}, false, ErrRiskNotEnabled
-	}
-	if err := core.ValidateStatedRisk("risk_tier", "risk_reason", decision.RiskTier, decision.RiskReason); err != nil {
-		return core.RiskRating{}, false, Refuse(err)
-	}
-	head := decision.HeadSHA
-	if head == "" {
-		head = decision.ReviewedCommitSHA
-	}
-	rating := core.RiskRating{
-		TaskID: task.ID, Key: core.ReviewerRiskKey(decision.ReviewWorkOrderID), Source: core.RiskSourceReviewer,
-		Tier: riskpolicy.Tier(decision.RiskTier), HeadSHA: head, Reason: decision.RiskReason,
-		MatchedRules: []riskpolicy.RuleMatch{}, ReviewWorkOrderID: decision.ReviewWorkOrderID,
-		ReviewRound: decision.ReviewRound, ReviewSeat: decision.ReviewSeat, ReviewerModel: decision.ReviewerModel,
-	}
-	if err := rating.Validate(); err != nil {
-		return core.RiskRating{}, false, err
-	}
-	for _, recorded := range existing {
-		if recorded.Key == rating.Key {
-			return recorded, false, nil
-		}
-	}
-	return numberRiskRating(existing, rating, now), true, nil
-}
-
 func numberRiskRating(existing []core.RiskRating, rating core.RiskRating, now time.Time) core.RiskRating {
 	seq := 0
 	for _, recorded := range existing {
@@ -294,19 +259,6 @@ func (m *memory) ListTaskRiskRatings(ctx context.Context, taskID string) ([]core
 	}
 	SortRiskRatings(ratings)
 	return ratings, nil
-}
-
-// recordReviewerRiskLocked records a verdict's reviewer rating inside the
-// memory verdict acceptance.
-func (m *memory) recordReviewerRiskLocked(ctx context.Context, task core.Task, decision core.ReviewDecision) error {
-	workspace, _ := WorkspaceFromContext(ctx)
-	key := memoryScopedKey{workspace: workspace, id: task.ID}
-	rating, created, err := ReviewerRiskRating(task, m.riskRatings[key], decision, time.Now())
-	if err != nil || !created {
-		return err
-	}
-	m.insertRiskRatingLocked(ctx, key, rating)
-	return nil
 }
 
 func (m *memory) insertRiskRatingLocked(ctx context.Context, key memoryScopedKey, rating core.RiskRating) {

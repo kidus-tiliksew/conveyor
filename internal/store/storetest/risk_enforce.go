@@ -16,15 +16,16 @@ import (
 )
 
 // RunRiskEnforcementConformance proves on every backend that an enforcing
-// task's tier sets its review seat floor with the source risk, that a tier
-// raised by a seat's verdict or a person's raise adds seats to the open round
-// in the same act and never to a settled round, that fail-fast settlement
-// still settles and cancels the added seats, that concurrent raises and final
-// verdicts serialize, and that acceptance takes the merge gate whenever one
-// or more human approvals are required. Off and record tasks keep their seats
-// and edges (req-risk-based-review REQ-7, AC-7.1, AC-7.2, AC-8.1, AC-8.2,
-// AC-8.6, AC-1.6; req-review-gates-evidence AC-2.1, AC-2.3, AC-2.6, AC-2.7;
-// feature-risk-based-review RR-5, RR-6).
+// task's tier sets its review seat floor with the source risk, that a
+// person's raise adds seats to the open round in the same act and never to a
+// settled round, that an accepted verdict records no rating and adds no seat,
+// that fail-fast settlement still settles and cancels the added seats, that
+// concurrent raises and final verdicts serialize, and that acceptance takes
+// the merge gate whenever one or more human approvals are required. Off and
+// record tasks keep their seats and edges (req-risk-based-review REQ-7,
+// AC-7.1, AC-7.2, AC-8.1, AC-8.2, AC-8.6, AC-1.6, AC-5.7;
+// req-review-gates-evidence AC-2.1, AC-2.3, AC-2.6, AC-2.7;
+// feature-risk-based-review RR-5, RR-6, RR-14).
 func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	enforce := riskpolicy.Policy{Mode: riskpolicy.ModeEnforce, Tiers: riskpolicy.DefaultTable()}
@@ -77,12 +78,11 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 		})
 		return err
 	}
-	verdict := func(task core.Task, head string, round, seat int, outcome, tier string) core.ReviewDecision {
+	verdict := func(task core.Task, head string, round, seat int, outcome string) core.ReviewDecision {
 		id := fmt.Sprintf("%s-review-%d-seat-%d", task.ID, round, seat)
 		decision := core.ReviewDecision{TaskID: task.ID, JobID: id, ReviewWorkOrderID: id, ReviewRound: round, ReviewSeat: seat,
 			Verdict: outcome, ReasonCode: "verified", Summary: "risk seat", MaxBounces: 3, ReviewedCommitSHA: head, HeadSHA: head,
-			ReviewerModel: fmt.Sprintf("model-%d", seat), PolicyVersion: 1, MergeApproval: task.MergeApproval,
-			RiskTier: tier, RiskReason: "seat states " + tier, WorkspaceReviewSeats: 1, SeatQueueTimeout: time.Hour}
+			ReviewerModel: fmt.Sprintf("model-%d", seat), PolicyVersion: 1, MergeApproval: task.MergeApproval}
 		if outcome == "changes_requested" {
 			decision.ReasonCode, decision.Feedback = "fix", "fix the change"
 		}
@@ -132,6 +132,12 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 	}
 	accept := func(decision core.ReviewDecision) error {
 		return taskops.New(st).AcceptReviewDecision(ctx, decision)
+	}
+	ratingCount := func(t *testing.T, taskID string) int {
+		t.Helper()
+		ratings, err := st.ListTaskRiskRatings(ctx, taskID)
+		requireOK(t, err)
+		return len(ratings)
 	}
 	raise := func(taskID string, tier riskpolicy.Tier) error {
 		_, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: taskID, Tier: tier, Reason: "operator raise to " + string(tier), ActorID: "user:operator"},
@@ -187,43 +193,38 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 		}
 	})
 
-	t.Run("VerdictRaisingTheTierAddsASeatBeforeSettling", func(t *testing.T) {
+	t.Run("VerdictRecordsNoRatingAndAddsNoSeat", func(t *testing.T) {
 		task := fileTask(t, taskOptions{policy: &enforce})
 		rate(t, task.ID, "head-v", riskpolicy.TierLow, 0)
 		requireOK(t, openRound(t, task, "head-v", 1, resolve(t, task, 1)))
-		requireOK(t, accept(verdict(task, "head-v", 1, 1, "approve", "high")))
-		orders := roundOrders(t, task.ID, 1)
-		if len(orders) != 2 || orders[1].ReviewSeat != 2 || orders[1].State != core.WorkOrderQueued || !orders[1].Claimable || orders[1].HeadSHA != "head-v" {
-			t.Fatalf("round orders=%+v, want an added queued seat 2", orders)
+		ratings := ratingCount(t, task.ID)
+		rated := len(eventsOf(t, task.ID, core.RiskRatedEvent))
+		requireOK(t, accept(verdict(task, "head-v", 1, 1, "approve")))
+		if got := len(roundOrders(t, task.ID, 1)); got != 1 || len(eventsOf(t, task.ID, "review.seats_added")) != 0 {
+			t.Fatalf("verdict left %d seats and %d additions, want 1 seat and none", got, len(eventsOf(t, task.ID, "review.seats_added")))
 		}
-		if recorded := record1(t, task.ID, 1); recorded.SeatCount != 2 || recorded.SeatCountSource != store.ReviewSeatSourceRisk {
-			t.Fatalf("record=%+v, want 2 seats from risk", recorded)
+		if got := ratingCount(t, task.ID); got != ratings || len(eventsOf(t, task.ID, core.RiskRatedEvent)) != rated {
+			t.Fatalf("verdict changed the ratings from %d to %d", ratings, got)
 		}
-		added := eventsOf(t, task.ID, "review.seats_added")
-		if len(added) != 1 {
-			t.Fatalf("review.seats_added events=%d, want 1", len(added))
+		completed := eventsOf(t, task.ID, "review.completed")
+		if len(completed) != 1 {
+			t.Fatalf("review.completed=%d, want 1", len(completed))
 		}
 		var payload map[string]any
-		requireOK(t, json.Unmarshal(added[0].Payload, &payload))
-		if payload["source"] != "risk" || payload["risk_tier"] != "high" || payload["seat_count"] != float64(2) || payload["prior_seat_count"] != float64(1) {
-			t.Fatalf("seats_added payload=%v", payload)
+		requireOK(t, json.Unmarshal(completed[0].Payload, &payload))
+		if _, ok := payload["risk_tier"]; ok {
+			t.Fatalf("review.completed carries a tier: %v", payload)
 		}
-		if len(eventsOf(t, task.ID, "review.round_completed")) != 0 || stateOf(t, task.ID).State != core.TaskRunning {
-			t.Fatal("the round settled short of the added seat")
+		if _, ok := payload["risk_reason"]; ok {
+			t.Fatalf("review.completed carries a reason: %v", payload)
 		}
-		// A replayed verdict adds no second seat.
-		requireOK(t, accept(verdict(task, "head-v", 1, 1, "approve", "high")))
-		if got := len(roundOrders(t, task.ID, 1)); got != 2 {
-			t.Fatalf("replayed verdict left %d seats, want 2", got)
+		if len(eventsOf(t, task.ID, "review.round_completed")) != 1 || stateOf(t, task.ID).State != core.TaskApproved {
+			t.Fatal("a gate-off enforcing low task did not settle and take review.accept")
 		}
-		requireOK(t, accept(verdict(task, "head-v", 1, 2, "approve", "high")))
-		if completed := eventsOf(t, task.ID, "review.round_completed"); len(completed) != 1 {
-			t.Fatalf("round_completed=%d, want 1 after both seats approved", len(completed))
-		}
-		// High requires two human approvals, so the gate-off task waits at
-		// the merge gate (AC-8.2).
-		if got := stateOf(t, task.ID); got.State != core.TaskAwaiting || got.GateKind != core.GateKindMergeApproval {
-			t.Fatalf("task state=%s gate=%s, want awaiting merge approval", got.State, got.GateKind)
+		// A replayed verdict records nothing more.
+		requireOK(t, accept(verdict(task, "head-v", 1, 1, "approve")))
+		if got := ratingCount(t, task.ID); got != ratings || len(roundOrders(t, task.ID, 1)) != 1 {
+			t.Fatalf("replayed verdict changed ratings to %d or seats", got)
 		}
 	})
 
@@ -231,7 +232,8 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 		task := fileTask(t, taskOptions{policy: &enforce, failFast: true})
 		rate(t, task.ID, "head-f", riskpolicy.TierMedium, 0)
 		requireOK(t, openRound(t, task, "head-f", 1, resolve(t, task, 1)))
-		requireOK(t, accept(verdict(task, "head-f", 1, 1, "changes_requested", "high")))
+		requireOK(t, raise(task.ID, riskpolicy.TierHigh))
+		requireOK(t, accept(verdict(task, "head-f", 1, 1, "changes_requested")))
 		orders := roundOrders(t, task.ID, 1)
 		if len(orders) != 2 || orders[1].State != core.WorkOrderCancelled {
 			t.Fatalf("round orders=%+v, want an added seat cancelled by the settlement", orders)
@@ -254,7 +256,7 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 		task := fileTask(t, taskOptions{policy: &enforce})
 		rate(t, task.ID, "head-s", riskpolicy.TierLow, 0)
 		requireOK(t, openRound(t, task, "head-s", 1, resolve(t, task, 1)))
-		requireOK(t, accept(verdict(task, "head-s", 1, 1, "approve", "low")))
+		requireOK(t, accept(verdict(task, "head-s", 1, 1, "approve")))
 		if stateOf(t, task.ID).State != core.TaskApproved {
 			t.Fatal("a gate-off enforcing low task did not take review.accept")
 		}
@@ -287,11 +289,11 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 		if got := len(roundOrders(t, task.ID, 1)); got != 2 {
 			t.Fatalf("refused raise left %d seats", got)
 		}
-		requireOK(t, accept(verdict(task, "head-p", 1, 1, "approve", "low")))
+		requireOK(t, accept(verdict(task, "head-p", 1, 1, "approve")))
 		if len(eventsOf(t, task.ID, "review.round_completed")) != 0 {
 			t.Fatal("the round settled before the added seat answered")
 		}
-		requireOK(t, accept(verdict(task, "head-p", 1, 2, "approve", "low")))
+		requireOK(t, accept(verdict(task, "head-p", 1, 2, "approve")))
 		if len(eventsOf(t, task.ID, "review.round_completed")) != 1 {
 			t.Fatal("the round did not settle after every seat approved")
 		}
@@ -323,11 +325,8 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 					rate(t, task.ID, "head-a", tc.tier, tc.approvals)
 				}
 				requireOK(t, openRound(t, task, "head-a", 1, store.ReviewRoundSeatResolution{SeatCount: 1, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: 1, FloorSeatCount: 1}))
-				decision := verdict(task, "head-a", 1, 1, "approve", string(tc.tier))
+				decision := verdict(task, "head-a", 1, 1, "approve")
 				decision.ReviewKind = tc.kind
-				if tc.policy == nil {
-					decision.RiskTier, decision.RiskReason = "", ""
-				}
 				requireOK(t, accept(decision))
 				got := stateOf(t, task.ID)
 				if got.State != tc.state {
@@ -350,7 +349,7 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 			start := make(chan struct{})
 			wg.Add(2)
 			go func() { defer wg.Done(); <-start; errs[0] = raise(task.ID, riskpolicy.TierHigh) }()
-			go func() { defer wg.Done(); <-start; errs[1] = accept(verdict(task, "head-c", 1, 1, "approve", "medium")) }()
+			go func() { defer wg.Done(); <-start; errs[1] = accept(verdict(task, "head-c", 1, 1, "approve")) }()
 			close(start)
 			wg.Wait()
 			for _, err := range errs {
@@ -363,7 +362,7 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 					if j == 0 {
 						requireOK(t, raise(task.ID, riskpolicy.TierHigh))
 					} else {
-						requireOK(t, accept(verdict(task, "head-c", 1, 1, "approve", "medium")))
+						requireOK(t, accept(verdict(task, "head-c", 1, 1, "approve")))
 					}
 				}
 			}
@@ -383,15 +382,14 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 		}
 	})
 
-	t.Run("ConcurrentVerdictsAddSeatsOnce", func(t *testing.T) {
-		wide := riskpolicy.Policy{Mode: riskpolicy.ModeEnforce, Tiers: riskpolicy.Table{
-			Low: riskpolicy.Requirement{AgentReviews: 1}, Medium: riskpolicy.Requirement{AgentReviews: 1, HumanApprovals: 1}, High: riskpolicy.Requirement{AgentReviews: 3, HumanApprovals: 2}}}
-		task := fileTask(t, taskOptions{policy: &wide})
+	t.Run("ConcurrentVerdictsAddNoSeats", func(t *testing.T) {
+		task := fileTask(t, taskOptions{policy: &enforce})
 		rate(t, task.ID, "head-d", riskpolicy.TierLow, 0)
 		carried := store.ReviewRoundSeatResolution{SeatCount: 2, Source: store.ReviewSeatSourceCarried, MinimumSeatCount: 1, FloorSeatCount: 1}
 		requireOK(t, openRound(t, task, "head-d", 1, carried))
-		// Both seats state high at once; high requires 3 agent reviews, so
-		// exactly one seat is added however the verdicts interleave.
+		ratings := ratingCount(t, task.ID)
+		// Both seats answer at once; the round settles once with its two
+		// seats, and neither verdict records a rating or adds a seat.
 		var wg sync.WaitGroup
 		errs := make([]error, 2)
 		start := make(chan struct{})
@@ -400,26 +398,25 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 			go func(i int) {
 				defer wg.Done()
 				<-start
-				errs[i] = accept(verdict(task, "head-d", 1, i+1, "approve", "high"))
+				errs[i] = accept(verdict(task, "head-d", 1, i+1, "approve"))
 			}(i)
 		}
 		close(start)
 		wg.Wait()
 		for i, err := range errs {
 			if errors.Is(err, store.ErrRetryable) {
-				err = accept(verdict(task, "head-d", 1, i+1, "approve", "high"))
+				err = accept(verdict(task, "head-d", 1, i+1, "approve"))
 			}
 			requireOK(t, err)
 		}
-		if got := len(roundOrders(t, task.ID, 1)); got != 3 || len(eventsOf(t, task.ID, "review.seats_added")) != 1 {
-			t.Fatalf("round has %d seats and %d additions, want 3 seats from one addition", got, len(eventsOf(t, task.ID, "review.seats_added")))
+		if got := len(roundOrders(t, task.ID, 1)); got != 2 || len(eventsOf(t, task.ID, "review.seats_added")) != 0 {
+			t.Fatalf("round has %d seats and %d additions, want 2 seats and none", got, len(eventsOf(t, task.ID, "review.seats_added")))
 		}
-		if len(eventsOf(t, task.ID, "review.round_completed")) != 0 {
-			t.Fatal("the round settled before the added seat answered")
+		if got := ratingCount(t, task.ID); got != ratings {
+			t.Fatalf("verdicts changed the ratings from %d to %d", ratings, got)
 		}
-		requireOK(t, accept(verdict(task, "head-d", 1, 3, "approve", "high")))
 		if len(eventsOf(t, task.ID, "review.round_completed")) != 1 {
-			t.Fatal("the round did not settle after the added seat approved")
+			t.Fatal("the round did not settle once after both seats approved")
 		}
 	})
 
@@ -427,7 +424,7 @@ func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 		task := fileTask(t, taskOptions{policy: &record})
 		rate(t, task.ID, "head-r", riskpolicy.TierLow, 0)
 		requireOK(t, openRound(t, task, "head-r", 1, resolve(t, task, 1)))
-		requireOK(t, accept(verdict(task, "head-r", 1, 1, "approve", "high")))
+		requireOK(t, accept(verdict(task, "head-r", 1, 1, "approve")))
 		if got := len(roundOrders(t, task.ID, 1)); got != 1 || len(eventsOf(t, task.ID, "review.round_completed")) != 1 {
 			t.Fatalf("record round has %d seats, want 1 and settled", got)
 		}

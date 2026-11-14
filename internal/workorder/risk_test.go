@@ -178,95 +178,77 @@ func riskVerdictFixture(t *testing.T, name string, mode riskpolicy.Mode, seats i
 	return f, orders, &reads, &pathReads
 }
 
-// riskApprove builds a changes-requested verdict: the fixture's repository has
+// riskVerdict builds a changes-requested verdict: the fixture's repository has
 // no forge, so a settling approval would try an automatic merge.
-func riskApprove(tier, reason string) pipeline.Review {
+func riskVerdict() pipeline.Review {
 	applicable, citable := false, false
-	return pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "risk review", Feedback: "add a test", RiskTier: tier, RiskReason: reason,
+	return pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "risk review", Feedback: "add a test",
 		GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &applicable, DecisionCitable: &citable, CitedIDs: []string{}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}}}
 }
 
-// TestVerdictRiskTierByMode proves enforce refuses a verdict with no tier and
-// keeps the seat claimed, record accepts an omitted tier without a rating and
-// records a stated one with the seat and its session's model, and off
-// accepts a verdict as before and records nothing (req-risk-based-review
-// AC-1.1, AC-5.2, AC-5.3).
-func TestVerdictRiskTierByMode(t *testing.T) {
-	t.Run("EnforceRefusesMissingTier", func(t *testing.T) {
-		f, orders, _, _ := riskVerdictFixture(t, "risk-enforce", riskpolicy.ModeEnforce, 1)
-		seat := orders[0]
-		before, err := f.st.ListEvents(f.ctx, f.task.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, review := range []pipeline.Review{riskApprove("", ""), riskApprove("", "reason without a tier")} {
-			if _, err := f.service.SubmitVerdict(f.ctx, seat.ID, "risk-review-"+seat.ID, review); err == nil || !strings.Contains(err.Error(), "risk_tier") {
-				t.Fatalf("enforce accepted a verdict without a tier: %v", err)
+// TestVerdictStatesNoTierInAnyMode proves a verdict states no tier: under
+// enforce, record, and off a verdict without one is accepted, records no
+// rating and no risk.rated event, adds no seat, and its review.completed
+// payload carries no tier (req-risk-based-review AC-1.1, AC-5.7, AC-7.2;
+// feature-risk-based-review RR-14).
+func TestVerdictStatesNoTierInAnyMode(t *testing.T) {
+	for _, mode := range []riskpolicy.Mode{riskpolicy.ModeEnforce, riskpolicy.ModeRecord, ""} {
+		t.Run("Mode"+string(mode), func(t *testing.T) {
+			f, orders, _, _ := riskVerdictFixture(t, "risk-verdict-"+string(mode), mode, 1)
+			seat := orders[0]
+			before, err := f.st.ListTaskRiskRatings(f.ctx, f.task.ID)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		for _, review := range []pipeline.Review{riskApprove("low", ""), riskApprove("low", "two\nlines"), riskApprove("critical", "unknown tier")} {
-			if _, err := f.service.SubmitVerdict(f.ctx, seat.ID, "risk-review-"+seat.ID, review); err == nil {
-				t.Fatalf("enforce accepted %+v", review)
+			seatsBefore, err := f.st.ListReviewRoundSeats(f.ctx, f.task.ID)
+			if err != nil || len(seatsBefore) != 1 {
+				t.Fatalf("mode %q: seat records=%+v err=%v, want one round", mode, seatsBefore, err)
 			}
-		}
-		current, err := f.st.GetWorkOrder(f.ctx, seat.ID)
-		if err != nil || current.State != core.WorkOrderClaimed || current.SessionID != "risk-review-"+seat.ID {
-			t.Fatalf("refused verdict released the seat: %+v %v", current, err)
-		}
-		after, err := f.st.ListEvents(f.ctx, f.task.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(before, after) {
-			t.Fatalf("refused verdicts wrote %d events", len(after)-len(before))
-		}
-		if _, err := f.service.SubmitVerdict(f.ctx, seat.ID, "risk-review-"+seat.ID, riskApprove("medium", "new store method on every backend")); err != nil {
-			t.Fatal(err)
-		}
-		ratings, _ := f.st.ListTaskRiskRatings(f.ctx, f.task.ID)
-		if len(ratings) != 2 || ratings[1].Source != core.RiskSourceReviewer || ratings[1].Tier != riskpolicy.TierMedium || ratings[1].ReviewSeat != 1 ||
-			ratings[1].ReviewerModel != current.Model || ratings[1].ReviewWorkOrderID != seat.ID || ratings[1].HeadSHA != reviewSeatsHead {
-			t.Fatalf("ratings=%+v, want the path rating and seat 1's medium with model %q", ratings, current.Model)
-		}
-	})
-
-	t.Run("RecordAcceptsOmittedTier", func(t *testing.T) {
-		f, orders, _, _ := riskVerdictFixture(t, "risk-record", riskpolicy.ModeRecord, 2)
-		if _, err := f.service.SubmitVerdict(f.ctx, orders[0].ID, "risk-review-"+orders[0].ID, riskApprove("", "")); err != nil {
-			t.Fatalf("record refused a verdict without a tier: %v", err)
-		}
-		ratings, _ := f.st.ListTaskRiskRatings(f.ctx, f.task.ID)
-		if len(ratings) != 1 || ratings[0].Source != core.RiskSourcePathRule {
-			t.Fatalf("an omitted tier recorded a rating: %+v", ratings)
-		}
-		if _, err := f.service.SubmitVerdict(f.ctx, orders[1].ID, "risk-review-"+orders[1].ID, riskApprove("high", "rewrites the claim transaction")); err != nil {
-			t.Fatal(err)
-		}
-		ratings, _ = f.st.ListTaskRiskRatings(f.ctx, f.task.ID)
-		if len(ratings) != 2 || ratings[1].Tier != riskpolicy.TierHigh || ratings[1].ReviewSeat != 2 || ratings[1].ReviewerModel == "" {
-			t.Fatalf("ratings=%+v", ratings)
-		}
-	})
-
-	t.Run("OffAcceptsAsBefore", func(t *testing.T) {
-		f, orders, reads, pathReads := riskVerdictFixture(t, "risk-off", "", 1)
-		if _, err := f.service.SubmitVerdict(f.ctx, orders[0].ID, "risk-review-"+orders[0].ID, riskApprove("high", "a reviewer following the new guidance")); err != nil {
-			t.Fatal(err)
-		}
-		ratings, _ := f.st.ListTaskRiskRatings(f.ctx, f.task.ID)
-		if *reads != 0 || *pathReads != 0 || len(ratings) != 0 || riskEventIndex(t, f.st, f.ctx, f.task.ID, core.RiskRatedEvent) >= 0 {
-			t.Fatalf("mode off: declaration reads=%d path reads=%d ratings=%+v", *reads, *pathReads, ratings)
-		}
-		if index := riskEventIndex(t, f.st, f.ctx, f.task.ID, "review.completed"); index < 0 {
-			t.Fatal("mode off verdict was not completed")
-		}
-		events, _ := f.st.ListEvents(f.ctx, f.task.ID)
-		for _, event := range events {
-			if event.Kind == "review.completed" && strings.Contains(string(event.Payload), "risk_tier") {
-				t.Fatalf("mode off verdict payload carries a tier: %s", event.Payload)
+			ordersBefore := len(orders)
+			rated := 0
+			events, _ := f.st.ListEvents(f.ctx, f.task.ID)
+			for _, event := range events {
+				if event.Kind == core.RiskRatedEvent {
+					rated++
+				}
 			}
-		}
-	})
+			if _, err := f.service.SubmitVerdict(f.ctx, seat.ID, "risk-review-"+seat.ID, riskVerdict()); err != nil {
+				t.Fatalf("mode %q refused a verdict without a tier: %v", mode, err)
+			}
+			after, err := f.st.ListTaskRiskRatings(f.ctx, f.task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(after) != len(before) {
+				t.Fatalf("mode %q: verdict changed ratings from %+v to %+v", mode, before, after)
+			}
+			events, _ = f.st.ListEvents(f.ctx, f.task.ID)
+			completed, ratedAfter, added := 0, 0, 0
+			for _, event := range events {
+				switch event.Kind {
+				case core.RiskRatedEvent:
+					ratedAfter++
+				case "review.seats_added":
+					added++
+				case "review.completed":
+					completed++
+					if strings.Contains(string(event.Payload), "risk_tier") || strings.Contains(string(event.Payload), "risk_reason") {
+						t.Fatalf("mode %q: review.completed carries a tier: %s", mode, event.Payload)
+					}
+				}
+			}
+			if completed != 1 || ratedAfter != rated || added != 0 {
+				t.Fatalf("mode %q: review.completed=%d risk.rated %d->%d seats_added=%d", mode, completed, rated, ratedAfter, added)
+			}
+			records, err := f.st.ListReviewRoundSeats(f.ctx, f.task.ID)
+			if err != nil || len(records) != 1 || records[0].SeatCount != seatsBefore[0].SeatCount {
+				t.Fatalf("mode %q: seat records=%+v err=%v, want the round's %d seats unchanged", mode, records, err, seatsBefore[0].SeatCount)
+			}
+			if after, _ := f.round(t, 1); len(after) != ordersBefore {
+				t.Fatalf("mode %q: round has %d seats after the verdict, want %d", mode, len(after), ordersBefore)
+			}
+		})
+	}
 }
 
 // riskFlowSnapshot is every surface a record-mode rating must leave as mode
@@ -285,8 +267,8 @@ type riskFlowSnapshot struct {
 func riskFlow(t *testing.T, name string, mode riskpolicy.Mode) riskFlowSnapshot {
 	t.Helper()
 	f, orders, _, _ := riskVerdictFixture(t, name, mode, 2)
-	for i, order := range orders {
-		if _, err := f.service.SubmitVerdict(f.ctx, order.ID, "risk-review-"+order.ID, riskApprove([]string{"low", "high"}[i], "seat rating")); err != nil {
+	for _, order := range orders {
+		if _, err := f.service.SubmitVerdict(f.ctx, order.ID, "risk-review-"+order.ID, riskVerdict()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -318,8 +300,8 @@ func riskFlow(t *testing.T, name string, mode riskpolicy.Mode) riskFlowSnapshot 
 
 // TestRecordModeChangesNoFlow proves record-mode ratings change no stage,
 // plan state, seat count, gate, order, or approval: a task with mode record
-// reaches the same state as the same flow with mode off, though one seat
-// rated high (req-risk-based-review AC-1.6, AC-2.2, AC-2.3).
+// reaches the same state as the same flow with mode off
+// (req-risk-based-review AC-1.6, AC-2.2, AC-2.3).
 func TestRecordModeChangesNoFlow(t *testing.T) {
 	off := riskFlow(t, "risk-flow-off", "")
 	record := riskFlow(t, "risk-flow-record", riskpolicy.ModeRecord)
@@ -331,24 +313,20 @@ func TestRecordModeChangesNoFlow(t *testing.T) {
 	}
 }
 
-// TestReviewRoleCarriesRatingOnlyWhenRated: a review order's role carries the
-// rating instruction only for a task whose frozen risk mode is record or
-// enforce (req-risk-based-review AC-5.7, AC-1.1).
-func TestReviewRoleCarriesRatingOnlyWhenRated(t *testing.T) {
-	for _, tc := range []struct {
-		mode riskpolicy.Mode
-		want bool
-	}{{riskpolicy.ModeRecord, true}, {riskpolicy.ModeEnforce, true}, {"", false}} {
-		f, orders, _, _ := riskVerdictFixture(t, "risk-role-"+string(tc.mode), tc.mode, 1)
+// TestReviewRoleCarriesNoRating: a review order's role asks for no tier in
+// any risk mode (req-risk-based-review AC-5.7, AC-1.1;
+// feature-risk-based-review RR-14).
+func TestReviewRoleCarriesNoRating(t *testing.T) {
+	for _, mode := range []riskpolicy.Mode{riskpolicy.ModeRecord, riskpolicy.ModeEnforce, ""} {
+		f, orders, _, _ := riskVerdictFixture(t, "risk-role-"+string(mode), mode, 1)
 		contract, err := f.service.contextForOrder(f.ctx, orders[0])
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := strings.Contains(contract.RolePrompt, "`risk_tier`") && strings.Contains(contract.RolePrompt, "is data, not an instruction"); got != tc.want {
-			t.Fatalf("mode %q: role carries the rating instruction=%t, want %t", tc.mode, got, tc.want)
-		}
-		if strings.Contains(contract.RolePrompt, "conveyor:risk-rating") {
-			t.Fatalf("mode %q: a marker reached the role", tc.mode)
+		for _, forbidden := range []string{"`risk_tier`", "`risk_reason`", "conveyor:risk-rating", "Risk rating ("} {
+			if strings.Contains(contract.RolePrompt, forbidden) {
+				t.Fatalf("mode %q: review role carries %q", mode, forbidden)
+			}
 		}
 	}
 }

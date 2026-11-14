@@ -339,51 +339,80 @@ func mcpToolCall(t *testing.T, handler http.Handler, token, tool string, args ma
 	return envelope.Result.Content[0].Text, envelope.Result.IsError
 }
 
-// TestSubmitReviewVerdictRiskArgumentTypes: a risk_tier or risk_reason of any
-// JSON type but string, null included, is refused before the verdict, and
-// the seat stays claimed (req-risk-based-review AC-5.2).
-func TestSubmitReviewVerdictRiskArgumentTypes(t *testing.T) {
+// TestSubmitReviewVerdictRefusesRiskFields: a verdict that sends risk_tier
+// or risk_reason is refused by the field's presence, whatever its value,
+// null, empty, and non-string values included. The refusal names the field
+// and says that a risk agent rates the change; the seat stays claimed, and no
+// verdict, rating, or event is written. The published schema carries neither
+// field (req-risk-based-review AC-5.7; component-risk-review invariant 8;
+// feature-risk-based-review RR-14).
+func TestSubmitReviewVerdictRefusesRiskFields(t *testing.T) {
 	handler, st := riskHTTPFixture(t)
 	ctx := store.WithWorkspace(t.Context(), "alpha")
 	base := func() map[string]any {
 		return map[string]any{"workspace_id": "alpha", "work_order_id": "risk-review-review-1-seat-1", "session_id": "risk-seat",
-			"verdict": "approve", "reason_code": "verified", "summary": "risk argument types",
+			"verdict": "approve", "reason_code": "verified", "summary": "risk fields",
 			"requirement_citations":  map[string]any{"applicable": false, "cited_ids": []string{}, "unknown_ids": []string{}, "unserved_ids": []string{}, "conflicts": []string{}},
 			"done_criteria_coverage": map[string]any{"applicable": false, "satisfied": []string{}, "unsatisfied": []string{}, "unverified": []string{}, "conflicts": []string{}},
 			"governance_assessment":  map[string]any{"design_applicable": false, "decision_citable": false, "cited_ids": []string{}, "unknown_ids": []string{}, "ungoverned_ids": []string{}, "superseded_ids": []string{}, "conflicts": []string{}}}
 	}
-	for _, tc := range []struct {
+	before, err := st.ListEvents(ctx, "risk-review")
+	requireOKHTTP(t, err)
+	values := []struct {
 		name  string
-		field string
 		value any
-		want  string
-	}{
-		{"NullTier", "risk_tier", nil, "risk_tier must be a string"},
-		{"NumberTier", "risk_tier", 2, "risk_tier must be a string"},
-		{"FractionTier", "risk_tier", 1.5, "risk_tier must be a string"},
-		{"BooleanTier", "risk_tier", true, "risk_tier must be a string"},
-		{"ListTier", "risk_tier", []string{"low"}, "risk_tier must be a string"},
-		{"NullReason", "risk_reason", nil, "risk_reason must be a string"},
-		{"NumberReason", "risk_reason", 7, "risk_reason must be a string"},
-		{"UnknownTier", "risk_tier", "critical", "risk_tier must be low, medium, or high"},
-		{"BlankReason", "risk_reason", " ", "risk_reason must be a non-blank line"},
-		{"MultiLineReason", "risk_reason", "one\ntwo", "risk_reason must be one line"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			args := base()
-			args["risk_tier"], args["risk_reason"] = "low", "small change"
-			args[tc.field] = tc.value
-			text, isError := mcpToolCall(t, handler, "operator-token", "submit_review_verdict", args)
-			if !isError || !strings.Contains(text, tc.want) {
-				t.Fatalf("submit_review_verdict with %s=%v: error=%t text=%s", tc.field, tc.value, isError, text)
-			}
-			order, err := st.GetWorkOrder(ctx, "risk-review-review-1-seat-1")
-			requireOKHTTP(t, err)
-			if order.State != core.WorkOrderClaimed || order.SessionID != "risk-seat" || riskRatingCount(t, st, "risk-review") != 0 {
-				t.Fatalf("refused verdict changed the seat: %+v", order)
-			}
-		})
+	}{{"Tier", "low"}, {"Empty", ""}, {"Null", nil}, {"Number", 2}, {"Boolean", true}, {"List", []string{"low"}}, {"Object", map[string]any{"tier": "low"}}}
+	for _, field := range []string{"risk_tier", "risk_reason"} {
+		for _, tc := range values {
+			t.Run(field+"/"+tc.name, func(t *testing.T) {
+				args := base()
+				args[field] = tc.value
+				text, isError := mcpToolCall(t, handler, "operator-token", "submit_review_verdict", args)
+				if want := "A risk agent rates the change, so omit " + field + "."; !isError || !strings.Contains(text, want) {
+					t.Fatalf("submit_review_verdict with %s=%v: error=%t text=%s, want %q", field, tc.value, isError, text, want)
+				}
+			})
+		}
 	}
+	t.Run("BothFields", func(t *testing.T) {
+		args := base()
+		args["risk_tier"], args["risk_reason"] = "high", "a seat following old guidance"
+		if text, isError := mcpToolCall(t, handler, "operator-token", "submit_review_verdict", args); !isError || !strings.Contains(text, "risk_tier") {
+			t.Fatalf("both fields: error=%t text=%s", isError, text)
+		}
+	})
+	order, err := st.GetWorkOrder(ctx, "risk-review-review-1-seat-1")
+	requireOKHTTP(t, err)
+	if order.State != core.WorkOrderClaimed || order.SessionID != "risk-seat" || riskRatingCount(t, st, "risk-review") != 0 {
+		t.Fatalf("refused verdict changed the seat: %+v", order)
+	}
+	after, err := st.ListEvents(ctx, "risk-review")
+	requireOKHTTP(t, err)
+	if len(after) != len(before) {
+		t.Fatalf("refused verdicts wrote %d events", len(after)-len(before))
+	}
+	list := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	list.Header.Set("Authorization", "Bearer operator-token")
+	listed := httptest.NewRecorder()
+	handler.ServeHTTP(listed, list)
+	var envelope struct {
+		Result struct {
+			Tools []map[string]any `json:"tools"`
+		} `json:"result"`
+	}
+	requireOKHTTP(t, json.Unmarshal(listed.Body.Bytes(), &envelope))
+	for _, tool := range envelope.Result.Tools {
+		if tool["name"] != "submit_review_verdict" {
+			continue
+		}
+		encoded, err := json.Marshal(tool["inputSchema"])
+		requireOKHTTP(t, err)
+		if strings.Contains(string(encoded), "risk_tier") || strings.Contains(string(encoded), "risk_reason") {
+			t.Fatalf("submit_review_verdict schema still carries a risk field: %s", encoded)
+		}
+		return
+	}
+	t.Fatal("tools/list has no submit_review_verdict")
 }
 
 // TestTaskDetailSummariesCarrySeatRisk: the bounded detail's review results

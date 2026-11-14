@@ -7,30 +7,26 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 )
 
-// TestValidateStatedRisk covers the one-line reason and closed tier rules a
-// verdict and a raise share (req-risk-based-review AC-5.2, AC-6.1;
-// component-risk-review invariant 1).
-func TestValidateStatedRisk(t *testing.T) {
+// TestValidateRiskReason covers the one-line reason rules that a person's
+// raise and a risk order's completion share (req-risk-based-review AC-6.1,
+// AC-12.2).
+func TestValidateRiskReason(t *testing.T) {
 	for _, tc := range []struct {
-		tier, reason string
-		ok           bool
+		reason string
+		ok     bool
 	}{
-		{"", "", true},
-		{"low", "small change", true},
-		{"high", strings.Repeat("x", MaxRiskReasonRunes), true},
-		{"", "reason without a tier", false},
-		{"low", "", false},
-		{"low", " \t", false},
-		{"low", "two\nlines", false},
-		{"low", "carriage\rreturn", false},
-		{"low", "line separator", false},
-		{"low", "nul\x00byte", false},
-		{"low", strings.Repeat("x", MaxRiskReasonRunes+1), false},
-		{"critical", "unknown tier", false},
-		{"Low", "wrong case", false},
+		{"small change", true},
+		{strings.Repeat("x", MaxRiskReasonRunes), true},
+		{"", false},
+		{" \t", false},
+		{"two\nlines", false},
+		{"carriage\rreturn", false},
+		{"line\u2028separator", false},
+		{"nul\x00byte", false},
+		{strings.Repeat("x", MaxRiskReasonRunes+1), false},
 	} {
-		if err := ValidateStatedRisk("risk_tier", "risk_reason", tc.tier, tc.reason); (err == nil) != tc.ok {
-			t.Fatalf("tier=%q reason=%q err=%v, want ok=%t", tc.tier, tc.reason, err, tc.ok)
+		if err := ValidateRiskReason("reason", tc.reason); (err == nil) != tc.ok {
+			t.Fatalf("reason=%q err=%v, want ok=%t", tc.reason, err, tc.ok)
 		}
 	}
 }

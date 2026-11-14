@@ -819,7 +819,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		return Context{}, err
 	}
 	if order.Stage == core.StageReview {
-		role = pack.MCPReviewRole(pack.WithRiskRating(role, task.SetupContract.Risk.Enabled()))
+		role = pack.MCPReviewRole(role)
 	}
 	// A risk order delivers exactly the subject it stored: one plan version,
 	// or one head through the review order's comparison and diff reader
@@ -1814,18 +1814,6 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
 		return nil, err
-	}
-	// Under enforce a verdict states its tier and reason, and a verdict
-	// without them is refused before any write, so the seat stays claimed.
-	// Under record an omitted tier is accepted and no rating is recorded.
-	// Under off the verdict is accepted as it was before risk review and a
-	// stated tier is not recorded (req-risk-based-review AC-1.1, AC-5.2;
-	// feature-risk-based-review RR-3).
-	switch {
-	case task.SetupContract.Risk.Enforcing() && validated.RiskTier == "":
-		return nil, store.Refusef("review risk_tier and risk_reason are required: the task's risk mode is enforce; rate the head you reviewed as low, medium, or high with a one-line reason")
-	case !task.SetupContract.Risk.Enabled():
-		validated.RiskTier, validated.RiskReason = "", ""
 	}
 	documentation, documentationErr := s.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)
 	var documentationEvidence *core.DocumentationGateEvidence

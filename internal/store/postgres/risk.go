@@ -177,20 +177,3 @@ func insertRiskRatingTx(ctx context.Context, tx pgx.Tx, q *db.Queries, rating co
 	}
 	return insertEvent(ctx, q, store.RiskRatedEvent(rating))
 }
-
-// recordReviewerRiskTx records a verdict's reviewer rating inside the
-// PostgreSQL verdict transaction, which already holds the task lock.
-func recordReviewerRiskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task core.Task, decision core.ReviewDecision) error {
-	if decision.RiskTier == "" {
-		return nil
-	}
-	existing, err := listRiskRatings(ctx, tx, task.ID)
-	if err != nil {
-		return err
-	}
-	rating, created, err := store.ReviewerRiskRating(task, existing, decision, time.Now())
-	if err != nil || !created {
-		return err
-	}
-	return insertRiskRatingTx(ctx, tx, q, rating)
-}
