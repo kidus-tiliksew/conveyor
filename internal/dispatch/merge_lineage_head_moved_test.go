@@ -75,3 +75,15 @@ func TestCheckStatusDeadlineBesideTheRetryPostgresIntegration(t *testing.T) {
 }
 
 func memoryStore(*testing.T) store.Store { return store.NewMemory() }
+
+// A failed merge stops being the forge failure once the factory or an agent
+// takes it over, on the volatile store and PostgreSQL. SingleStore runs the
+// same suite (task 261114-38bea5; req-operator-next-action AC-1.1).
+func TestMergeFailureTakeover(t *testing.T) {
+	mergelineagefixture.RunMergeFailureTakeover(t, memoryStore)
+}
+
+func TestMergeFailureTakeoverPostgresIntegration(t *testing.T) {
+	raw := disposablePostgresURL(t, "Merge failure takeover")
+	mergelineagefixture.RunMergeFailureTakeover(t, func(t *testing.T) store.Store { return postgresSchemaBackend(t, raw, "takeover_") })
+}

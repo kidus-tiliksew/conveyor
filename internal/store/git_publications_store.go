@@ -24,22 +24,80 @@ type ForgeFailure struct {
 	AutomaticRetryExhausted bool      `json:"automatic_retry_exhausted"`
 }
 
+// ForgeFailureEventKinds lists every event kind LatestForgeFailure reads. A
+// backend that filters a task's events before the reduction selects these
+// kinds, and of work_order.updated only an implement order's update to
+// submitted, so every backend reduces the same facts (component-next-action;
+// component-submission-merge).
+var ForgeFailureEventKinds = []string{
+	"github_issue.publication_retry", "github_issue.publication_failed", "github_issue.publication_published",
+	"review.publication_retry", "review.publication_failed", "review.publication_published",
+	"merge.failed", "merge.confirmed", "merge.reconciled",
+	"merge.blocked", "merge.conflict_cleared", "merge.conflict_fix_dispatched",
+	"merge.conflict_recovery_blocked", "merge.conflict_dispatch_exhausted",
+	"work_order.updated",
+}
+
+// forgeFailureSubmission is the part of a work_order.updated payload that
+// records a completed implementation submission.
+type forgeFailureSubmission struct {
+	ID      string              `json:"id"`
+	Stage   core.Stage          `json:"stage"`
+	State   core.WorkOrderState `json:"state"`
+	HeadSHA string              `json:"head_sha"`
+}
+
+// implementationSubmission reports the order ID and head of a
+// work_order.updated event that records an implement order submitted with a
+// head. Any other update, or a payload that does not decode, reports false.
+func implementationSubmission(event core.Event) (string, string, bool) {
+	if event.Kind != "work_order.updated" {
+		return "", "", false
+	}
+	var order forgeFailureSubmission
+	if json.Unmarshal(event.Payload, &order) != nil || order.Stage != core.StageImplement || order.State != core.WorkOrderSubmitted {
+		return "", "", false
+	}
+	id, head := strings.TrimSpace(order.ID), strings.TrimSpace(order.HeadSHA)
+	if id == "" || head == "" {
+		return "", "", false
+	}
+	return id, head, true
+}
+
 // LatestForgeFailure reduces durable projection events to the current
 // operator-actionable GitHub failure.
+//
+// A merge failure stays the operator's until a later event shows that the
+// factory or an agent took it over: a dispatched conflict fix, a completed
+// implementation submission whose head replaces the failed head, or a
+// confirmed or reconciled merge. A merge request, an opened conflict episode,
+// a cleared conflict, a failed or exhausted conflict dispatch, and an opened
+// pull request do not answer it, and a later merge failure is the operator's
+// again (req-operator-next-action AC-1.1; DEC-117(3); component-next-action;
+// component-submission-merge).
 func LatestForgeFailure(events []core.Event) *ForgeFailure {
 	var issue *ForgeFailure
 	issueAutomatic := false
 	reviews := make(map[string]*ForgeFailure)
 	reviewAutomatic := make(map[string]bool)
 	var merge *ForgeFailure
+	// mergeHead is the head the open merge failure belongs to: the head its
+	// payload names, or else the newest submitted head before it.
+	mergeHead := ""
+	submittedHead := ""
+	submittedOrders := make(map[string]bool)
 	var conflict *ForgeFailure
 	for _, event := range events {
 		var payload struct {
 			ReviewWorkOrderID  string `json:"review_work_order_id"`
+			WorkOrderID        string `json:"work_order_id"`
 			ForgeErrorCategory string `json:"forge_error_category"`
 			LastError          string `json:"last_error"`
 			Error              string `json:"error"`
 			Automatic          bool   `json:"automatic"`
+			HeadSHA            string `json:"head_sha"`
+			ExpectedHeadSHA    string `json:"expected_head_sha"`
 		}
 		reviewKey := func() string {
 			if payload.ReviewWorkOrderID != "" {
@@ -76,11 +134,37 @@ func LatestForgeFailure(events []core.Event) *ForgeFailure {
 		case "merge.failed":
 			if json.Unmarshal(event.Payload, &payload) == nil {
 				merge = &ForgeFailure{Category: payload.ForgeErrorCategory, Detail: payload.Error, Surface: "GitHub merge", At: event.At}
+				mergeHead = strings.TrimSpace(payload.HeadSHA)
+				if mergeHead == "" {
+					mergeHead = strings.TrimSpace(payload.ExpectedHeadSHA)
+				}
+				if mergeHead == "" {
+					mergeHead = submittedHead
+				}
 			}
 		case "merge.confirmed", "merge.reconciled":
-			merge = nil
-		case "merge.blocked", "merge.conflict_cleared", "merge.conflict_fix_dispatched":
+			merge, mergeHead = nil, ""
+		case "merge.conflict_fix_dispatched":
+			// The dispatch records the conflict order it created in the same
+			// transaction, so the order now owns the failed merge.
 			conflict = nil
+			if json.Unmarshal(event.Payload, &payload) == nil && strings.TrimSpace(payload.WorkOrderID) != "" {
+				merge, mergeHead = nil, ""
+			}
+		case "merge.blocked", "merge.conflict_cleared":
+			conflict = nil
+		case "work_order.updated":
+			// Each implement order counts once, at its first update to
+			// submitted; a later update of the same order is no new head.
+			id, head, ok := implementationSubmission(event)
+			if !ok || submittedOrders[id] {
+				continue
+			}
+			submittedOrders[id] = true
+			submittedHead = head
+			if merge != nil && head != mergeHead {
+				merge, mergeHead = nil, ""
+			}
 		case "merge.conflict_recovery_blocked":
 			if json.Unmarshal(event.Payload, &payload) == nil {
 				conflict = &ForgeFailure{Category: "interrupted_review_recovery", Detail: payload.Error, Surface: "Merge conflict recovery", At: event.At}

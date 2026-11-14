@@ -38,3 +38,9 @@ func TestCheckStatusDeadlineSingleStoreIntegration(t *testing.T) {
 func TestCheckStatusDeadlineBesideTheRetrySingleStoreIntegration(t *testing.T) {
 	mergelineagefixture.RunCheckStatusDeadlineRetry(t, func(t *testing.T) store.Backend { return integrationStore(t) })
 }
+
+// SingleStore twin of TestMergeFailureTakeover (task 261114-38bea5;
+// req-operator-next-action AC-1.1).
+func TestMergeFailureTakeoverSingleStoreIntegration(t *testing.T) {
+	mergelineagefixture.RunMergeFailureTakeover(t, func(t *testing.T) store.Store { return integrationStore(t) })
+}

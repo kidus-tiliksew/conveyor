@@ -178,7 +178,10 @@ func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []strin
 var (
 	activityMarkerReviewKinds  = []string{"work_order.claimed", "work_order.lease_renewed", "work_order.released", "review.completed", "review.accepted", "task.setup.changed"}
 	activityMarkerRequestKinds = []string{"pipeline.bounced", "work_order.claimed"}
-	activityMarkerForgeKinds   = []string{"github_issue.publication_failed", "github_issue.publication_published", "review.publication_failed", "review.publication_published", "merge.failed", "merge.confirmed", "merge.reconciled"}
+	// The forge failure kinds are the ones store.LatestForgeFailure reads;
+	// of work_order.updated the query selects only an implement submission
+	// (component-next-action; component-submission-merge).
+	activityMarkerForgeKinds = store.ForgeFailureEventKinds
 )
 
 // listActivityMarkers folds the markers from one order selection projected
@@ -305,7 +308,8 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	// The folds below read no snapshot key, so the query leaves historical
 	// snapshot bodies in the database (component-task-lifecycle, Compact event
 	// reads).
-	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,` + compactEventPayloadColumn + `,e.at FROM events_columnstore e WHERE e.workspace_id=? AND e.task_id IS NOT NULL AND e.kind IN (` + taskMapMarks(len(kinds)) + `)`
+	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,` + compactEventPayloadColumn + `,e.at FROM events_columnstore e WHERE e.workspace_id=? AND e.task_id IS NOT NULL AND e.kind IN (` + taskMapMarks(len(kinds)) + `)` +
+		` AND (e.kind<>'work_order.updated' OR (JSON_EXTRACT_STRING(e.payload_json,'stage')='implement' AND JSON_EXTRACT_STRING(e.payload_json,'state')='submitted'))`
 	markerArgs := append([]any{documentWorkspace(ctx)}, taskMapArgs(kinds)...)
 	if len(taskIDs) > 0 {
 		markerQuery += ` AND e.task_id IN (` + taskMapMarks(len(taskIDs)) + `)`
