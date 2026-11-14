@@ -303,4 +303,31 @@ type TaskRisk struct {
 	ApprovalHead       string       `json:"approval_head,omitempty"`
 	ApprovalsSatisfied bool         `json:"approvals_satisfied"`
 	Ratings            []RiskRating `json:"ratings"`
+	// Orders lists the task's risk orders, oldest first, with what each
+	// rates and its state, so every task read names the same orders
+	// (req-risk-based-review AC-11.2; feature-risk-based-review RR-16).
+	Orders []TaskRiskOrder `json:"orders"`
+}
+
+// TaskRiskOrder is one risk order on the task read: the order, its state,
+// what it rates, and the model its claiming session reported
+// (req-risk-based-review AC-5.6, AC-11.2).
+type TaskRiskOrder struct {
+	WorkOrderID string           `json:"work_order_id"`
+	State       WorkOrderState   `json:"state"`
+	Claimable   bool             `json:"claimable"`
+	Subject     RiskOrderSubject `json:"subject"`
+	Model       string           `json:"model,omitempty"`
+	CreatedAt   time.Time        `json:"created_at"`
+}
+
+// TaskRiskOrders projects a task's risk orders for the task read. It returns
+// an empty list, never nil, for a task with none.
+func TaskRiskOrders(orders []RiskOrder) []TaskRiskOrder {
+	out := make([]TaskRiskOrder, 0, len(orders))
+	for _, order := range orders {
+		out = append(out, TaskRiskOrder{WorkOrderID: order.Order.ID, State: order.Order.State, Claimable: order.Order.Claimable,
+			Subject: order.Subject, Model: order.Order.Model, CreatedAt: order.CreatedAt})
+	}
+	return out
 }

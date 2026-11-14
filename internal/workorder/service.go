@@ -97,6 +97,10 @@ type Context struct {
 	ReviewComparison       *dispatch.ReviewComparison `json:"review_comparison,omitempty"`
 	Diff                   string                     `json:"diff,omitempty"`
 	PullRequestDescription string                     `json:"pull_request_description"`
+	// RiskOrder is a risk order's subject, plan version or head paths and
+	// rules, and frozen tier table (req-risk-based-review AC-12.5;
+	// feature-risk-based-review RR-11).
+	RiskOrder *RiskContract `json:"risk_order,omitempty"`
 }
 
 // PlanRevisionContext carries the durable request that caused a plan-stage
@@ -261,6 +265,9 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder, hist
 			store.ApplyRecoveryRefusal(&order, ctxn.task, ctxn.orders, ctxn.pendingPlanRevision)
 		}
 		out = append(out, order)
+	}
+	if err = s.projectRiskSubjects(ctx, out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -814,6 +821,19 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	if order.Stage == core.StageReview {
 		role = pack.MCPReviewRole(pack.WithRiskRating(role, task.SetupContract.Risk.Enabled()))
 	}
+	// A risk order delivers exactly the subject it stored: one plan version,
+	// or one head through the review order's comparison and diff reader
+	// (req-risk-based-review AC-12.5; feature-risk-based-review RR-11). A
+	// subject that cannot be read fails the contract instead of rating
+	// another one.
+	var riskContract *RiskContract
+	var riskReview reviewMaterial
+	if order.Stage == core.StageRisk {
+		if riskContract, riskReview, err = s.riskMaterialForOrder(ctx, order, task); err != nil {
+			return Context{}, err
+		}
+		role += pack.RiskOrderContract(riskContract.Subject, riskContract.Mode, riskContract.Tiers, len(riskContract.MatchedRules))
+	}
 	if order.Stage == core.StageVerify {
 		role += "\n\n# Submitted revision\n\n" + order.HeadSHA + "\n\n# Verification obligations\n\nThe verification service supplies the obligations for this revision. This placeholder grants no completed result.\n"
 	}
@@ -848,7 +868,9 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			}
 			servedRequirements = servedAuthority.Requirements
 		}
-	} else {
+	} else if order.Stage != core.StageRisk {
+		// A risk order rates its subject and cites no requirement, so it
+		// resolves no served requirement (feature-risk-based-review RR-11).
 		servedAuthority, resolveErr := store.ServedRequirementsForTask(ctx, s.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 		if resolveErr != nil {
 			var budgetErr *store.AuthorityBudgetError
@@ -899,6 +921,9 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			return Context{}, err
 		}
 	}
+	if order.Stage == core.StageRisk {
+		review = riskReview
+	}
 	if governance != nil {
 		references := core.ProjectGovernanceReferences(*governance, task.Repo, store.TaskDesignProvenance(events), core.DiffChangedPaths(review.diff))
 		role = pack.WithGovernanceContract(role, order.Stage, references, pack.GovernanceDeliveryMCP)
@@ -922,7 +947,11 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		// Spec work has repository/base context but never receives a branch.
 		result.Task.Branch = ""
 	}
-	if order.Stage == core.StageSpec {
+	if order.Stage == core.StageRisk {
+		// The risk order carries its own plan version in risk_order.plan and
+		// no approved plan, so the session rates only its subject.
+		result.RiskOrder = riskContract
+	} else if order.Stage == core.StageSpec {
 		if spec, ok, getErr := s.Store.GetLatestSpecVersion(ctx, task.ID); getErr != nil {
 			return Context{}, getErr
 		} else if ok {
@@ -1017,14 +1046,21 @@ func (s *Service) reviewMaterialForOrder(ctx context.Context, order core.WorkOrd
 			return reviewMaterial{}, compareErr
 		}
 	}
-	diff, err := s.reviewDiffBetween(ctx, repo.GitHub, comparison.BaselineSHA, comparison.HeadSHA)
+	return s.reviewMaterialFor(ctx, repo.GitHub, task.Branch, comparison)
+}
+
+// reviewMaterialFor reads one comparison's diff and the branch's pull request
+// description. Review orders and head risk orders share it, so the factory
+// has one diff reader (feature-risk-based-review RR-11).
+func (s *Service) reviewMaterialFor(ctx context.Context, repo, branch string, comparison dispatch.ReviewComparison) (reviewMaterial, error) {
+	diff, err := s.reviewDiffBetween(ctx, repo, comparison.BaselineSHA, comparison.HeadSHA)
 	if err != nil {
 		return reviewMaterial{}, err
 	}
 	if len(diff) > 25<<20 {
 		return reviewMaterial{}, fmt.Errorf("review diff exceeds the 25 MiB input limit")
 	}
-	description, _ := s.reviewPRDescription(ctx, repo.GitHub, task.Branch)
+	description, _ := s.reviewPRDescription(ctx, repo, branch)
 	return reviewMaterial{diff: diff, comparison: &comparison, description: description}, nil
 }
 
