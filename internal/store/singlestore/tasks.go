@@ -1788,14 +1788,16 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 		byID := map[string]core.WorkOrder{}
 		for _, o := range orders {
 			byID[o.ID] = o
-			if o.State == core.WorkOrderClaimed {
+			// A claimed risk order stands beside the stage and blocks nothing
+			// (feature-risk-based-review RR-12).
+			if o.State == core.WorkOrderClaimed && o.Stage != core.StageRisk {
 				return fmt.Errorf("%w: task has a claimed attempt", store.ErrSetupChangeConflict)
 			}
 			if o.Stage == core.StageReview && o.State == core.WorkOrderSubmitted {
 				return fmt.Errorf("%w: task has an in-flight review verdict", store.ErrSetupChangeConflict)
 			}
 		}
-		seatInputs, err := policyHandoffSeatInputsTx(ctx, tx, t.ID)
+		seatInputs, err := policyHandoffSeatInputsTx(ctx, tx, t)
 		if err != nil {
 			return err
 		}

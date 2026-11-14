@@ -1198,6 +1198,12 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 			return fmt.Errorf("%w: job %s already exists", ErrDispatchJobConflict, job.ID)
 		}
 	}
+	// An enforcing task's round waits for its head's risk order; the hold is
+	// rechecked here, in the act that writes the round
+	// (feature-risk-based-review RR-12; req-risk-based-review AC-5.10).
+	if err := m.reviewRoundRiskHoldLocked(ctx, task, ReviewRoundHead(orders)); err != nil {
+		return err
+	}
 	if err := CheckReviewRoundSeats(seats, task.SetupContract, m.approvedPlannedSeatsLocked(taskID), RiskSeatCount(task, m.riskRatingsLocked(ctx, task)), m.reviewRoundSeatsLocked(task.Workspace, taskID), len(orders)); err != nil {
 		return err
 	}
@@ -1388,6 +1394,13 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 	}
 	if m.reviewRoundSeatsExistLocked(task.Workspace, request.TaskID, newRound) {
 		return ReviewRoundRetryResult{}, fmt.Errorf("%w: review round %d is already recorded", ErrReviewRetryConflict, newRound)
+	}
+	head := ReviewRoundHead(orders)
+	if head == "" {
+		head = request.PRHead
+	}
+	if err := m.reviewRoundRiskHoldLocked(ctx, task, head); err != nil {
+		return ReviewRoundRetryResult{}, fmt.Errorf("%w: %w", ErrReviewRetryConflict, err)
 	}
 	if err := CheckReviewRoundSeats(seats, task.SetupContract, m.approvedPlannedSeatsLocked(request.TaskID), RiskSeatCount(task, m.riskRatingsLocked(ctx, task)), m.reviewRoundSeatsLocked(task.Workspace, request.TaskID), len(orders)); err != nil {
 		return ReviewRoundRetryResult{}, fmt.Errorf("%w: %w", ErrReviewRetryConflict, err)
@@ -2575,4 +2588,19 @@ func (m *memory) firstOrderDirectionLocked(taskID, current string) string {
 		return direction
 	}
 	return current
+}
+
+// reviewRoundRiskHoldLocked refuses a round of head with
+// ErrReviewRoundHeldByRiskOrder while an enforcing task's risk order for that
+// head is open. It reads no risk order for any other task
+// (component-risk-review invariant 13).
+func (m *memory) reviewRoundRiskHoldLocked(ctx context.Context, task core.Task, head string) error {
+	if !RiskRoundHoldApplies(task) {
+		return nil
+	}
+	workspace, _ := WorkspaceFromContext(ctx)
+	if held, ok := ReviewRoundRiskHold(task, m.taskRiskOrdersLocked(workspace, task.ID), head); ok {
+		return ReviewRoundHeldError(held)
+	}
+	return nil
 }

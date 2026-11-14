@@ -198,8 +198,10 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 			continue
 		}
 		// Submitted spec/implement attempts are delivered, not executing; only
-		// claimed attempts and in-flight review verdicts block.
-		if order.State == core.WorkOrderClaimed {
+		// claimed attempts and in-flight review verdicts block. A claimed risk
+		// order stands beside the stage and blocks nothing
+		// (feature-risk-based-review RR-12).
+		if order.State == core.WorkOrderClaimed && order.Stage != core.StageRisk {
 			return SetupChangeResult{}, fmt.Errorf("%w: task %s has a claimed attempt", ErrSetupChangeConflict, request.TaskID)
 		}
 		if order.Stage == core.StageReview && order.State == core.WorkOrderSubmitted {
@@ -209,7 +211,7 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 	}
 	request, err = PlanTaskPolicyChange(task, orders, request, PolicyHandoffSeatInputs{
 		Events: m.events[task.ID], Records: m.reviewRoundSeatsLocked(task.Workspace, task.ID), PlannedSeatCount: m.approvedPlannedSeatsLocked(task.ID),
-		RiskRatings: m.riskRatingsLocked(ctx, task),
+		RiskRatings: m.riskRatingsLocked(ctx, task), RiskOrders: m.policyHandoffRiskOrdersLocked(workspace, task),
 	})
 	if err != nil {
 		return SetupChangeResult{}, err
@@ -396,4 +398,13 @@ func CurrentReviewOrders(orders []core.WorkOrder, events []core.Event) []core.Wo
 		}
 	}
 	return result
+}
+
+// policyHandoffRiskOrdersLocked reads a task's risk orders for a policy
+// handoff only when the task enforces (component-risk-review invariant 13).
+func (m *memory) policyHandoffRiskOrdersLocked(workspace string, task core.Task) []core.RiskOrder {
+	if !RiskRoundHoldApplies(task) {
+		return nil
+	}
+	return m.taskRiskOrdersLocked(workspace, task.ID)
 }

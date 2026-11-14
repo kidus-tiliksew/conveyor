@@ -99,6 +99,12 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	r.PriorReviewRound, r.ResultingReviewRound = 0, 0
 	r.ReviewRoundSeats = nil
 	for _, order := range orders {
+		// A claimed risk order stands beside the task's serial stage, so it
+		// neither blocks a policy change nor is moved by one
+		// (feature-risk-based-review RR-11, RR-12).
+		if order.Stage == core.StageRisk {
+			continue
+		}
 		if order.State == core.WorkOrderClaimed || (order.Stage == core.StageReview && order.State == core.WorkOrderSubmitted) {
 			return r, fmt.Errorf("%w: task has an executing attempt or in-flight review verdict", ErrSetupChangeConflict)
 		}
@@ -163,13 +169,24 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 		}
 	}
 	r.NextStage, r.ReviewTransition = target, "policy_handoff"
+	// While an enforcing task's risk order for the submitted head is open,
+	// the handoff keeps that head at review and opens no round: no job, seat
+	// order, or round record. Completing or cancelling the risk order
+	// enqueues the task, and its dispatch opens the round with the tier as it
+	// then stands (feature-risk-based-review RR-12; req-risk-based-review
+	// AC-5.10).
+	if target == core.StageReview && RiskRoundHoldApplies(task) {
+		if _, held := ReviewRoundRiskHold(task, seats.RiskOrders, core.VerifyStageHead(task)); held {
+			return r, nil
+		}
+	}
 	now := time.Now().UTC()
 	count := 1
 	timeout := r.Setup.StageTimeouts.Verify
 	if target == core.StageReview {
 		minimum := ReviewSeatMinimum(r.Setup, r.WorkspaceReviewSeats)
 		in := ReviewRoundSeatInputsFor(minimum, reviewRound, orders, seats.Events, seats.Records, seats.PlannedSeatCount)
-		in.RiskSeatCount = RiskSeatCount(task, seats.RiskRatings)
+		ApplyRiskSeatInputs(&in, task, seats.RiskRatings)
 		resolved := ResolveReviewRoundSeats(in)
 		if resolved.SeatCount < resolved.FloorSeatCount {
 			return r, fmt.Errorf("%w: review round %d seat count %d is below the seat floor %d", ErrSetupChangeConflict, reviewRound, resolved.SeatCount, resolved.FloorSeatCount)

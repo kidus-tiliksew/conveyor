@@ -152,6 +152,12 @@ type ImplementationSubmission struct {
 	DocumentationChecked  bool
 	DocumentationEvidence *core.DocumentationGateEvidence
 	ReviewSeats           SubmissionReviewSeats
+	// HeadRisk asks for the submitted head's risk order. When it is set, the
+	// command cancels open risk orders of earlier heads and creates the
+	// head's risk order when it needs one, in the same transaction as the
+	// order and job completion (feature-risk-based-review RR-12;
+	// req-risk-based-review AC-5.8, AC-5.9, AC-5.11).
+	HeadRisk *HeadRiskOrderRequest
 }
 
 // SubmissionReviewSeats is a submission's admitted review seat declaration
@@ -214,6 +220,16 @@ func NormalizeImplementationSubmission(ctx context.Context, request Implementati
 		return request, err
 	}
 	request.ReviewSeats = seats
+	if request.HeadRisk != nil {
+		headRisk := *request.HeadRisk
+		if headRisk.TaskID != order.TaskID || headRisk.Subject.HeadSHA != order.HeadSHA {
+			return request, fmt.Errorf("head risk order request must name the submitted task and head")
+		}
+		if err = headRisk.Validate(); err != nil {
+			return request, err
+		}
+		request.HeadRisk = &headRisk
+	}
 	return request, ctx.Err()
 }
 
@@ -391,6 +407,15 @@ func (m *memory) SubmitImplementationCommand(ctx context.Context, lease taskops.
 	if current, ok := m.workOrders[order.ID]; !ok || current.TaskID != order.TaskID || current.JobID != order.JobID || current.Stage != core.StageImplement {
 		return core.Job{}, fmt.Errorf("work order %s does not match its submission", order.ID)
 	}
+	if request.HeadRisk != nil {
+		task, ok := m.tasks[order.TaskID]
+		if !ok {
+			return core.Job{}, fmt.Errorf("task %s: %w", order.TaskID, ErrNotFound)
+		}
+		if _, err := m.planHeadRiskOrderLocked(ctx, task, *request.HeadRisk); err != nil {
+			return core.Job{}, err
+		}
+	}
 	if err := m.updateWorkOrderSubmissionLocked(ctx, lease, order, request.ReviewSeats, core.WorkOrderCmdSubmitForReview); err != nil {
 		return core.Job{}, err
 	}
@@ -416,6 +441,11 @@ func (m *memory) SubmitImplementationCommand(ctx context.Context, lease taskops.
 	job.State, job.EndedAt = core.JobDone, ended
 	m.jobs[job.TaskID][index] = job
 	m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job)})
+	if request.HeadRisk != nil {
+		if _, err := m.applyHeadRiskOrderLocked(ctx, m.tasks[order.TaskID], *request.HeadRisk); err != nil {
+			return core.Job{}, err
+		}
+	}
 	return job, nil
 }
 
