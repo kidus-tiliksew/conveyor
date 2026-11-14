@@ -41,6 +41,14 @@ func (s *Server) taskRisk(ctx context.Context, task core.Task) (*core.TaskRisk, 
 		}
 	}
 	projection := store.ProjectTaskRisk(task, ratings, store.ReviewSeatMinimum(task.SetupContract, workspaceSeats))
+	// Every task read names the same risk orders with what each rates and
+	// its state (req-risk-based-review AC-11.2; feature-risk-based-review
+	// RR-16).
+	orders, err := s.Store.ListTaskRiskOrders(scoped, task.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list risk orders: %w", err)
+	}
+	projection.Orders = core.TaskRiskOrders(orders)
 	// An enforcing task's approval count and author conditions come from the
 	// same evaluation the merge act uses (req-risk-based-review AC-11.2).
 	evaluation, err := s.taskApprovalEvaluation(scoped, task)

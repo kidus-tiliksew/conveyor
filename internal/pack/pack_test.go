@@ -58,7 +58,7 @@ func TestExplicitPackOverrideWinsAndNeverFallsBack(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "roles"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, role := range []string{"triage", "planning", "spec", "implement", "verify", "review"} {
+	for _, role := range []string{"triage", "planning", "spec", "implement", "verify", "review", "risk"} {
 		if err := os.WriteFile(filepath.Join(dir, "roles", role+".md"), []byte("custom "+role), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -993,8 +993,8 @@ func TestStageRolesCarryCitationScopeStatement(t *testing.T) {
 		}
 		checked++
 	}
-	if checked != 4 {
-		t.Fatalf("checked %d work-order stage roles, want 4", checked)
+	if checked != 5 {
+		t.Fatalf("checked %d work-order stage roles, want 5", checked)
 	}
 }
 
@@ -1050,6 +1050,7 @@ func TestRolePromptsStateReadableTimelineText(t *testing.T) {
 		"implement": "Open every progress message, release reason, and checkpoint `decision_request` with a plain sentence. It states what happened and what happens next.",
 		"verify":    "Open every progress message, release reason, and `submit_verification` `feedback` with a plain sentence. It states what happened and what happens next.",
 		"review":    "Open the verdict `summary`, progress messages, and release reasons with a plain sentence. It states what happened and what happens next.",
+		"risk":      "Open every progress message and release reason with a plain sentence. It states what happened and what happens next.",
 	}
 	shared := []string{
 		"That sentence names no work-order or session ID, file path, migration number, commit SHA, or REQ-n, AC-n.m, or DEC-n ID.",

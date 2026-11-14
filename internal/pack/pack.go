@@ -20,7 +20,10 @@ import (
 
 type Loader struct{ Dir string }
 
-var pipelineStages = []core.Stage{core.StageTriage, core.StageSpec, core.StageImplement, core.StageVerify, core.StageReview}
+// pipelineStages lists the stages that load one role file each. The risk
+// stage's role file is pack/roles/risk.md (feature-risk-based-review RR-11;
+// component-cli-onboarding).
+var pipelineStages = []core.Stage{core.StageTriage, core.StageSpec, core.StageImplement, core.StageVerify, core.StageReview, core.StageRisk}
 
 type Bundle struct {
 	roles        map[core.Stage]string

@@ -394,6 +394,9 @@ func taskCmd() *cobra.Command {
 			if line := riskSummaryLine(risk); line != "" {
 				fmt.Fprintln(cmd.ErrOrStderr(), line)
 			}
+			for _, line := range riskOrderLines(risk) {
+				fmt.Fprintln(cmd.ErrOrStderr(), line)
+			}
 			if t.SupersededBy != "" {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Started over as %s\n", t.SupersededBy)
 			}
