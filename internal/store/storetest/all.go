@@ -149,6 +149,23 @@ type Fixture struct {
 	// the volatile backend transfers no bytes and leaves it nil
 	// (component-persistence, Database read accounting).
 	DrainReadBytes func() map[string]uint64
+	// NestedTaskCommandsInterleave is true when a command started under a
+	// WithTaskSideEffectLock context skips the task-operation lock that the
+	// context already owns, so a second command of that context commits while
+	// the first is inside its transaction: SingleStore. The risk order cases
+	// then commit a cancellation, a raise, or a release inside a completion's
+	// read-to-write window. That is the order a commit spanning partitions
+	// produces when it releases the lock before the completion reads its
+	// order row (component-persistence invariant 8). The volatile backend and
+	// PostgreSQL leave it false: their completion holds the lock across that
+	// window, and the cases prove that the other command waits.
+	NestedTaskCommandsInterleave bool
+	// AwaitTaskOperationWaiter returns once the backend reports a session
+	// waiting on the task's task-operation lock, read from the database and
+	// not inferred from elapsed time, and fails when done closes first.
+	// PostgreSQL provides it. The volatile backend's lock is in-process and
+	// has no such report, so it leaves it nil.
+	AwaitTaskOperationWaiter func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{})
 }
 
 // requireStoredTaskHoldSeed returns the fixture's historical hold seed or

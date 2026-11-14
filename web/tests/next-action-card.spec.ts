@@ -3136,3 +3136,308 @@ test('the disposition card without a decision request shows no request box', asy
   await expect(d.open()).toBeVisible()
   await expect(d.card.locator('[data-checkpoint-request]')).toHaveCount(0)
 })
+
+// An enforcing task that waits for a risk order (req-risk-based-review AC-11.3;
+// feature-risk-based-review RR-16). Each statement is the server's: at plan
+// approval the plan risk row names the agent and the risk order and offers no
+// approval, and a review round that waits for a head's risk order takes the
+// queued and working rows with their risk-stage wording. The card prints the
+// statement as served, offers no approval the server would refuse, and the
+// timeline names the risk order with its subject. The plan card shows no
+// rating (DEC-134(2)).
+const riskWaitBase = '0f1e2d3c4b5a69788796a5b4c3d2e1f012345678'
+const riskWaitHead = '9a8b7c6d5e4f30211203f4e5d6c7b8a912345678'
+
+type RiskWait = {
+  name: string
+  wait: 'plan' | 'review'
+  state: 'queued' | 'claimed'
+  label: string
+  summary: string
+}
+
+const riskWaits: RiskWait[] = [
+  {
+    name: 'plan approval waits for a queued risk order',
+    wait: 'plan',
+    state: 'queued',
+    label: 'Waiting for a risk rating',
+    summary: 'Plan approval waits for a risk rating. The risk order is waiting for an agent.',
+  },
+  {
+    name: 'plan approval waits for a claimed risk order',
+    wait: 'plan',
+    state: 'claimed',
+    label: 'Rating plan risk',
+    summary: 'An agent is rating the risk of the plan. Plan approval waits for this rating.',
+  },
+  {
+    name: 'the review round waits for a queued risk order',
+    wait: 'review',
+    state: 'queued',
+    label: 'Queued',
+    summary: 'The risk order is waiting for an agent to rate the risk.',
+  },
+  {
+    name: 'the review round waits for a claimed risk order',
+    wait: 'review',
+    state: 'claimed',
+    label: 'Working',
+    summary: 'An agent is rating the risk of this task.',
+  },
+]
+
+const riskWaitOrderId = `${taskId}-risk-2`
+
+function riskWaitOrder(wait: RiskWait): WorkOrder {
+  const claimed = wait.state === 'claimed'
+  return {
+    id: riskWaitOrderId,
+    task_id: taskId,
+    job_id: riskWaitOrderId,
+    stage: 'risk',
+    state: wait.state,
+    claimable: !claimed,
+    queue_entered_at: '2026-10-12T09:00:00Z',
+    queue_deadline: '2026-10-13T09:00:00Z',
+    redispatch_count: 0,
+    tokens_in: 0,
+    tokens_out: 0,
+    usage_reported: false,
+    self_reported: false,
+    ...(wait.wait === 'review' ? { head_sha: riskWaitHead, baseline_sha: riskWaitBase } : {}),
+    ...(claimed
+      ? {
+          claimed_by: 'run:usr_operator',
+          agent: 'codex',
+          model: 'gpt-6.1-sol',
+          session_id: 'sess-risk',
+          attempt_id: 'attempt-risk',
+          execution_started_at: '2026-10-12T09:30:00Z',
+          execution_deadline: '2026-10-12T10:30:00Z',
+          lease_expires_at: '2026-10-12T10:30:00Z',
+        }
+      : {}),
+    created_at: '2026-10-12T09:00:00Z',
+    updated_at: '2026-10-12T09:30:00Z',
+  }
+}
+
+function riskWaitAction(wait: RiskWait): NextAction {
+  const claimed = wait.state === 'claimed'
+  const order = riskWaitOrder(wait)
+  return {
+    label: wait.label,
+    actor: 'agent',
+    kind: claimed ? 'working' : 'queued',
+    judgment: false,
+    summary: wait.summary,
+    if_ignored: claimed ? 'The attempt continues.' : 'It stays in the queue.',
+    deadline: claimed ? '2026-10-12T10:30:00Z' : '2026-10-13T09:00:00Z',
+    choices: [],
+    current_order: {
+      id: order.id,
+      stage: 'risk',
+      state: wait.state,
+      queue_deadline: order.queue_deadline,
+      execution_deadline: order.execution_deadline ?? null,
+      lease_expires_at: order.lease_expires_at ?? null,
+    },
+    ...(claimed
+      ? {
+          attempt: {
+            harness: 'codex',
+            model: 'gpt-6.1-sol',
+            claimed_by: 'run:usr_operator',
+            session_id: 'sess-risk',
+            attempt_id: 'attempt-risk',
+            claimed_at: '2026-10-12T09:30:00Z',
+            last_check_in: '2026-10-12T09:40:00Z',
+            lease_expires_at: '2026-10-12T10:30:00Z',
+          },
+        }
+      : {}),
+    details:
+      wait.wait === 'plan'
+        ? { reason_code: 'plan_risk_rating', order_ids: [order.id], secondary: [{ kind: 'plan_approval' }] }
+        : { order_ids: [order.id] },
+  } as NextAction
+}
+
+function riskWaitActivity(wait: RiskWait) {
+  const action = riskWaitAction(wait)
+  const order = riskWaitOrder(wait)
+  // Plan version 1's risk order completed with a rating before this wait.
+  const rated: WorkOrder = {
+    ...riskWaitOrder({ ...wait, state: 'claimed' }),
+    id: `${taskId}-risk-1`,
+    job_id: `${taskId}-risk-1`,
+    state: 'completed',
+    model: 'claude-opus-5-5',
+    agent: 'claude-code',
+    head_sha: undefined,
+    baseline_sha: undefined,
+    queue_entered_at: '2026-10-12T08:30:00Z',
+    execution_started_at: '2026-10-12T08:35:00Z',
+    created_at: '2026-10-12T08:30:00Z',
+    updated_at: '2026-10-12T08:40:00Z',
+  }
+  const base = activity(wait.wait === 'plan' ? 'awaiting_human' : 'running', action, [rated, order])
+  const subject = wait.wait === 'plan' ? { plan_version: 2 } : { head_sha: riskWaitHead, base_sha: riskWaitBase }
+  return {
+    ...base,
+    events: [],
+    task: { ...base.task, plan_state: wait.wait === 'plan' ? 'awaiting_approval' : 'completed' },
+    jobs: [
+      {
+        id: rated.id,
+        task_id: taskId,
+        stage: 'risk',
+        harness: 'external-mcp',
+        model_tier: 'operator-owned',
+        runner: 'external',
+        confinement: 'none',
+        tokens_in: 0,
+        tokens_out: 0,
+        state: 'done',
+        started_at: '2026-10-12T08:35:00Z',
+        ended_at: '2026-10-12T08:40:00Z',
+      },
+      {
+        id: order.id,
+        task_id: taskId,
+        stage: 'risk',
+        harness: 'external-mcp',
+        model_tier: 'operator-owned',
+        runner: 'external',
+        confinement: 'none',
+        tokens_in: 0,
+        tokens_out: 0,
+        state: wait.state === 'claimed' ? 'running' : 'pending',
+        ...(wait.state === 'claimed' ? { started_at: '2026-10-12T09:30:00Z' } : {}),
+      },
+    ],
+    // The plan version awaiting approval. Its card shows no rating, though
+    // plan version 1 holds a completed risk agent rating.
+    spec: {
+      task_id: taskId,
+      version: 2,
+      content: '## Approach\nRate the plan before approval.',
+      acceptance_count: 0,
+      acceptance: [],
+      decomposition: [],
+      approved: wait.wait !== 'plan',
+      origin: 'plan_order',
+      created_at: '2026-10-12T08:50:00Z',
+    },
+    risk: {
+      mode: 'enforce',
+      tier: 'medium',
+      source: 'risk_agent',
+      reason: 'The plan changes how the merge gate counts approvals.',
+      required_agent_reviews: 1,
+      required_human_approvals: 1,
+      calculated_agent_reviews: 1,
+      calculated_human_approvals: 1,
+      recorded_approvals: 0,
+      author_approval_needed: false,
+      ratings: [
+        {
+          seq: 1,
+          task_id: taskId,
+          key: `risk_agent:${taskId}-risk-1`,
+          source: 'risk_agent',
+          tier: 'medium',
+          reason: 'The plan changes how the merge gate counts approvals.',
+          matched_rules: [],
+          plan_version: 1,
+          risk_work_order_id: `${taskId}-risk-1`,
+          risk_model: 'claude-opus-5-5',
+          created_at: '2026-10-12T08:40:00Z',
+        },
+      ],
+      orders: [
+        {
+          work_order_id: `${taskId}-risk-1`,
+          state: 'completed',
+          claimable: false,
+          subject: { plan_version: 1 },
+          model: 'claude-opus-5-5',
+          created_at: '2026-10-12T08:30:00Z',
+        },
+        {
+          work_order_id: order.id,
+          state: order.state,
+          claimable: order.claimable,
+          subject,
+          ...(order.model ? { model: order.model } : {}),
+          created_at: order.created_at,
+        },
+      ],
+    },
+  }
+}
+
+for (const wait of riskWaits) {
+  for (const viewport of [
+    { name: 'mobile', width: 375, height: 1200 },
+    { name: 'desktop', width: 1280, height: 1000 },
+  ]) {
+    test(`${wait.name} at ${viewport.width} px`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height })
+      const posts = await mockAPI(
+        page,
+        () => riskWaitActivity(wait),
+        () => riskWaitAction(wait),
+      )
+      await page.goto(`/w/demo/tasks/${taskId}/full`)
+      const banner = page.locator('[data-passive-banner]')
+      await expect(banner).toBeVisible()
+      await expect(banner.getByRole('heading', { name: wait.summary, exact: true })).toBeVisible()
+      await expect(banner).toContainText(wait.label)
+      // The statement fits the page: nothing scrolls sideways or clips.
+      const box = await banner.boundingBox()
+      expect(box?.x ?? -1).toBeGreaterThanOrEqual(0)
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(viewport.width)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width)
+      // No person is asked for an approval the server would refuse.
+      await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: /\bapprove\b/i })).toHaveCount(0)
+      // The timeline names the risk order the task waits for.
+      const entry = page.locator(`[data-order-id="${riskWaitOrderId}"]`)
+      await expect(entry.locator('[data-risk-subject]')).toHaveText(
+        wait.wait === 'plan' ? 'Plan version 2' : `Head ${riskWaitHead.slice(0, 7)}`,
+      )
+      await expect(entry).toContainText(wait.state === 'claimed' ? 'In progress' : 'Queued')
+      // The earlier plan version's order shows its own rating as the chip alone.
+      const rated = page.locator(`[data-order-id="${taskId}-risk-1"]`)
+      await expect(rated.locator('[data-risk-subject]')).toHaveText('Plan version 1')
+      await expect(rated.locator('[data-risk-order-rating="medium"] button')).toHaveText('Medium')
+      // The plan card shows no rating.
+      const plan = page.getByRole('region', { name: 'Execution plan' })
+      await expect(plan).toBeVisible()
+      await expect(plan.locator('[data-plan-risk], [data-risk-tier], [data-risk-order-rating]')).toHaveCount(0)
+      await page.evaluate(() => window.scrollTo(0, 0))
+      const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+      const name = `risk-wait-${wait.wait}-${wait.state}-${viewport.name}.png`
+      const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+      await testInfo.attach(name, { body: image, contentType: 'image/png' })
+      expect(posts).toEqual([])
+    })
+  }
+}
+
+// On the Flow view the card names the risk stage of the claimed order.
+test('the next-action card names the risk stage of a claimed risk order', async ({ page }) => {
+  const wait = riskWaits[3]
+  await mockAPI(
+    page,
+    () => riskWaitActivity(wait),
+    () => riskWaitAction(wait),
+  )
+  await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'flow'))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  await expect(card.locator('[data-execution-status="progressing"]')).toHaveText('Risk rating · Progressing')
+  await expect(card.getByRole('heading', { name: wait.summary, exact: true })).toBeVisible()
+})

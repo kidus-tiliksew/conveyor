@@ -72,6 +72,7 @@ const runningWords: Record<string, string> = {
   spec: 'planning now',
   review: 'reviewing now',
   verify: 'verifying now',
+  risk: 'rating the risk now',
 }
 
 // The avatar label's second part for a job or order of one stage.

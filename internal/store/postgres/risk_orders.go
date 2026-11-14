@@ -134,6 +134,9 @@ func (s *Store) CompleteRiskOrderCommand(ctx context.Context, lease taskops.Task
 		if err != nil {
 			return err
 		}
+		// The task-operation lock and the order row lock stay held from this
+		// read to the write, so no cancellation or raise commits in between.
+		store.RiskCompletionRead(ctx, risk.Order.ID, risk.Order.State)
 		now := request.Now.UTC()
 		if request.Now.IsZero() {
 			now = time.Now().UTC()
@@ -153,7 +156,15 @@ func (s *Store) CompleteRiskOrderCommand(ctx context.Context, lease taskops.Task
 			return err
 		}
 		if tag.RowsAffected() != 1 {
-			return store.ErrWorkOrderClaimLost
+			// The task-operation lock and riskOrderTx's row lock make this
+			// unreachable from another command. The order's own state still
+			// classifies the loss, so a cancellation never reads as a lost
+			// claim (req-risk-based-review AC-12.2, AC-12.3).
+			var state string
+			if err = tx.QueryRow(ctx, `SELECT state FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), order.ID).Scan(&state); err != nil {
+				return notFound(err, "work order %s", order.ID)
+			}
+			return store.LostRiskCompletionError(core.WorkOrderState(state))
 		}
 		if _, err = tx.Exec(ctx, `UPDATE jobs SET state='done',ended_at=$1,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
 			return err

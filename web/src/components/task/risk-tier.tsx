@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { RiskSource, RiskTier, TaskRisk } from '../../lib/types'
+import type { RiskRating, RiskSource, RiskTier, TaskRisk } from '../../lib/types'
 import { Badge } from '../ui/badge'
 import { Disclosure } from '../ui/disclosure'
 
@@ -12,11 +12,19 @@ import { Disclosure } from '../ui/disclosure'
 
 const tierLabels: Record<RiskTier, string> = { low: 'Low', medium: 'Medium', high: 'High' }
 
+// plan and reviewer stay for ratings recorded before risk orders
+// (req-risk-based-review AC-5.6). risk_agent names a completed risk order's
+// rating (feature-risk-based-review RR-16).
 const sourceLabels: Record<RiskSource, string> = {
   plan: 'the plan',
   path_rule: 'path rules',
   reviewer: 'a reviewer',
   person: 'a person',
+  risk_agent: 'a risk agent',
+}
+
+export function riskSourceText(source: RiskSource | undefined): string | undefined {
+  return source ? `From ${sourceLabels[source] ?? source}` : undefined
 }
 
 export function riskTierLabel(tier: RiskTier | undefined): string {
@@ -98,7 +106,7 @@ function sentences(parts: Array<string | null | undefined>): string {
 // 66). The merge gate card keeps its own approval count on screen
 // (req-risk-based-review AC-8.2).
 export function RiskTierValue({ risk }: { risk: TaskRisk }) {
-  const source = risk.source ? `From ${sourceLabels[risk.source]}` : undefined
+  const source = riskSourceText(risk.source)
   const recorded = risk.mode === 'record' ? 'Recorded only' : undefined
   const needs = riskNeedsText(risk)
   const approvals = riskApprovalText(risk)
@@ -124,6 +132,43 @@ export function RiskTierValue({ risk }: { risk: TaskRisk }) {
               {needs}
             </span>
             <RiskApprovals risk={risk} />
+          </span>
+        }
+      />
+    </span>
+  )
+}
+
+// One risk order's own rating on its timeline entry: the tier chip alone,
+// with the source, the reason, and the model the risk agent's session
+// reported behind it (DEC-127(1), (2); component-web-task-surfaces invariant
+// 66; req-risk-based-review AC-5.6). A rating without a reported model shows
+// none.
+export function RiskOrderRating({ rating }: { rating: RiskRating }) {
+  const source = riskSourceText(rating.source)
+  const model = rating.risk_model?.trim() ? `Reported model ${rating.risk_model.trim()}` : undefined
+  return (
+    <span className="inline-flex min-w-0" data-risk-order-rating={rating.tier}>
+      <RiskTierDisclosure
+        tier={rating.tier}
+        label={sentences([`Risk tier ${riskTierLabel(rating.tier)}`, source, rating.reason, model])}
+        content={
+          <span className="flex min-w-0 flex-col gap-1" data-risk-order-rating-details>
+            {source && (
+              <span className="text-muted" data-risk-order-rating-source>
+                {source}
+              </span>
+            )}
+            {rating.reason && (
+              <span className="whitespace-normal break-words text-foreground/85" data-risk-order-rating-reason>
+                {rating.reason}
+              </span>
+            )}
+            {model && (
+              <span className="whitespace-normal break-words text-muted" data-risk-order-rating-model>
+                {model}
+              </span>
+            )}
           </span>
         }
       />

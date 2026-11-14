@@ -7,6 +7,7 @@ import {
   failedTriage,
   historyNoteEntries,
   type PanelSeat,
+  riskSubjectText,
   type TimelineEntry,
   userRequestChangesReason,
 } from '../../lib/activity'
@@ -53,7 +54,7 @@ import {
 import { hasReviewRoundRetry, ReviewRoundRetryCard } from './review-round-retry-card'
 import { ReviewRoundSummary } from './review-round-summary'
 import { ReviewSeatAdd } from './review-seat-add'
-import { SeatRiskTier } from './risk-tier'
+import { RiskOrderRating, SeatRiskTier } from './risk-tier'
 import {
   interventionUserId,
   jobClaimantUserId,
@@ -697,6 +698,8 @@ function panelDot(seats: PanelSeat[], resolution: { verdict: string } | undefine
 const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], string> = {
   active: 'animate-pulse bg-primary',
   alarm: 'bg-attention-dot',
+  waiting: 'bg-edge',
+  done: 'bg-positive',
 }
 
 function TimelineRow({
@@ -832,8 +835,25 @@ function TimelineRow({
           },
         ]
       : []
+    // A risk order names what it rates, and a rated one shows its own tier
+    // chip in place of the state badge (feature-risk-based-review RR-16;
+    // DEC-127(2)).
+    const subject = entry.risk ? riskSubjectText(entry.risk.subject) : undefined
+    const subjectTitle = entry.risk?.subject?.head_sha
+      ? [
+          `Head ${entry.risk.subject.head_sha}`,
+          entry.risk.subject.base_sha ? `base ${entry.risk.subject.base_sha}` : undefined,
+        ]
+          .filter(Boolean)
+          .join(' on ')
+      : undefined
     return (
-      <li className="relative pl-7" data-order-entry={entry.order.state}>
+      <li
+        className="relative pl-7"
+        data-order-entry={entry.order.state}
+        data-order-stage={entry.order.stage}
+        data-order-id={entry.order.id}
+      >
         {rail(people, orderDots[entry.tone])}
         <div className="min-w-0 px-1 py-1.5">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -842,7 +862,17 @@ function TimelineRow({
             >
               {entry.title}
             </span>
-            <Badge variant={entry.badge.variant}>{entry.badge.label}</Badge>
+            {subject && (
+              <span
+                className="min-w-0 break-words text-xs text-muted"
+                title={subjectTitle}
+                data-risk-subject={entry.risk?.subject?.plan_version ? 'plan' : 'head'}
+              >
+                {subject}
+              </span>
+            )}
+            {entry.risk?.rating && <RiskOrderRating rating={entry.risk.rating} />}
+            {entry.badge && <Badge variant={entry.badge.variant}>{entry.badge.label}</Badge>}
             <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
           </div>
           {entry.detail && <p className="mt-0.5 break-words text-xs text-muted">{entry.detail}</p>}

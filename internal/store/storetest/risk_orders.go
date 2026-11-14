@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -687,6 +688,248 @@ func RunRiskOrderConformance(t *testing.T, x Fixture) {
 			default:
 				t.Fatalf("complete err=%v order=%+v", completeErr, final)
 			}
+		}
+	})
+
+	completeIn := func(c context.Context, taskID string, request store.RiskOrderCompleteRequest) (core.RiskRating, error) {
+		return taskops.ExecuteWorkOrder(c, st, taskID, core.WorkOrderCmdSubmitRiskRating, func(lease taskops.TaskLease) (core.RiskRating, error) {
+			return st.CompleteRiskOrderCommand(c, lease, request)
+		})
+	}
+	// completions counts the work_order.updated events that completed the
+	// order, the completion's own event.
+	completions := func(t *testing.T, taskID, orderID string) int {
+		t.Helper()
+		events, err := st.ListEvents(ctx, taskID)
+		requireOK(t, err)
+		n := 0
+		for _, event := range events {
+			var payload core.WorkOrder
+			if event.Kind == "work_order.updated" && json.Unmarshal(event.Payload, &payload) == nil && payload.ID == orderID && payload.State == core.WorkOrderCompleted {
+				n++
+			}
+		}
+		return n
+	}
+	agentRatings := func(t *testing.T, taskID string) int {
+		t.Helper()
+		n := 0
+		for _, rating := range ratings(t, taskID) {
+			if rating.Source == core.RiskSourceRiskAgent {
+				n++
+			}
+		}
+		return n
+	}
+	// requireCancelledFirst checks the effects of a completion that lost to a
+	// cancellation: exactly ErrWorkOrderCancelled, never a lost claim, the
+	// order cancelled, and no risk agent rating or completion event.
+	requireCancelledFirst := func(t *testing.T, taskID, orderID string, completeErr error) {
+		t.Helper()
+		if !errors.Is(completeErr, store.ErrWorkOrderCancelled) || errors.Is(completeErr, store.ErrWorkOrderClaimLost) {
+			t.Fatalf("completion after the cancellation err=%v, want exactly %v", completeErr, store.ErrWorkOrderCancelled)
+		}
+		if final := order(t, orderID); final.State != core.WorkOrderCancelled || final.SessionID != "" {
+			t.Fatalf("order after the cancellation=%+v", final)
+		}
+		if agent, done := agentRatings(t, taskID), completions(t, taskID, orderID); agent != 0 || done != 0 {
+			t.Fatalf("a cancelled order recorded %d risk agent ratings and %d completion events", agent, done)
+		}
+	}
+	// requireCompletedFirst checks the effects of a completion that committed
+	// before a cancellation: one risk agent rating and one completion event.
+	requireCompletedFirst := func(t *testing.T, taskID, orderID string, completeErr error) {
+		t.Helper()
+		requireOK(t, completeErr)
+		if final := order(t, orderID); final.State != core.WorkOrderCompleted {
+			t.Fatalf("order after the completion=%+v", final)
+		}
+		if agent, done := agentRatings(t, taskID), completions(t, taskID, orderID); agent != 1 || done != 1 {
+			t.Fatalf("completion recorded %d risk agent ratings and %d completion events, want 1 and 1", agent, done)
+		}
+	}
+	// A risk order completion competes with two acts that cancel it: a
+	// cancellation, for example by a later head, and a raise to high
+	// (req-risk-based-review AC-4.9, AC-5.11, AC-12.3). Each runs through
+	// the same store command that production calls.
+	type competitor struct {
+		name string
+		run  func(c context.Context, taskID, orderID string) error
+	}
+	competitors := []competitor{
+		{"Cancellation", func(c context.Context, taskID, orderID string) error {
+			_, err := taskops.ExecuteWorkOrder(c, st, taskID, core.WorkOrderCmdCancel, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+				order, made, err := st.CancelRiskOrderCommand(c, lease, store.RiskOrderCancelRequest{WorkOrderID: orderID, Reason: "a later head was submitted"})
+				if err == nil && order.State != core.WorkOrderCompleted && !made {
+					err = errors.New("the cancellation cancelled nothing")
+				}
+				return order, err
+			})
+			return err
+		}},
+		{"RaiseToHigh", func(c context.Context, taskID, _ string) error {
+			_, err := st.RaiseTaskRiskTier(c, core.RiskRating{TaskID: taskID, Tier: riskpolicy.TierHigh, Reason: "touches billing", ActorID: "user:operator"}, store.RiskSeatSettings{})
+			return err
+		}},
+	}
+
+	// Each commit order gives one exact answer. A completion after a
+	// committed cancellation returns ErrWorkOrderCancelled and records
+	// nothing; a cancellation after a committed completion cancels nothing
+	// and the rating stands (req-risk-based-review AC-12.2, AC-12.3).
+	t.Run("CommitOrdersGiveExactResults", func(t *testing.T) {
+		for _, c := range competitors {
+			t.Run(c.name+"First", func(t *testing.T) {
+				task := fileTask(t, &record, core.StageReview)
+				risk := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-first")})
+				_, err := claim(risk.ID, "rater-first", "rater-first-token")
+				requireOK(t, err)
+				requireOK(t, c.run(ctx, task.ID, risk.ID))
+				_, err = completeIn(ctx, task.ID, store.RiskOrderCompleteRequest{WorkOrderID: risk.ID, Claim: identity("rater-first"), Tier: riskpolicy.TierLow, Reason: "late"})
+				requireCancelledFirst(t, task.ID, risk.ID, err)
+			})
+			t.Run("CompletionBefore"+c.name, func(t *testing.T) {
+				task := fileTask(t, &record, core.StageReview)
+				risk := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-second")})
+				_, err := claim(risk.ID, "rater-second", "rater-second-token")
+				requireOK(t, err)
+				_, err = completeIn(ctx, task.ID, store.RiskOrderCompleteRequest{WorkOrderID: risk.ID, Claim: identity("rater-second"), Tier: riskpolicy.TierLow, Reason: "first"})
+				requireOK(t, c.run(ctx, task.ID, risk.ID))
+				requireCompletedFirst(t, task.ID, risk.ID, err)
+			})
+		}
+	})
+
+	// A competitor that commits after the completion read the order and
+	// before it wrote is the race CI saw on SingleStore: the completion's
+	// conditional write then changes no row. Where the backend admits that
+	// window, the completion must answer ErrWorkOrderCancelled and record
+	// nothing. Where the backend's lock spans the window, the competitor
+	// waits, the completion commits first, and the competitor then finds the
+	// order completed (component-risk-review invariant 12;
+	// component-persistence invariants 7 and 8).
+	t.Run("CompetitorInsideCompletionWindow", func(t *testing.T) {
+		for _, c := range competitors {
+			t.Run(c.name, func(t *testing.T) {
+				for round := 0; round < 3; round++ {
+					task := fileTask(t, &record, core.StageReview)
+					risk := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-window")})
+					_, err := claim(risk.ID, "rater-window", "rater-window-token")
+					requireOK(t, err)
+					request := store.RiskOrderCompleteRequest{WorkOrderID: risk.ID, Claim: identity("rater-window"), Tier: riskpolicy.TierLow, Reason: "inside the window"}
+					fired := 0
+					if x.NestedTaskCommandsInterleave {
+						var competitorErr, completeErr error
+						requireOK(t, st.WithTaskSideEffectLock(ctx, task.ID, func(lockCtx context.Context) error {
+							hookCtx := store.WithRiskCompletionReadHook(lockCtx, func(id string, read core.WorkOrderState) {
+								if id != risk.ID {
+									return
+								}
+								fired++
+								if read != core.WorkOrderClaimed {
+									t.Errorf("completion read state %s, want claimed", read)
+								}
+								competitorErr = c.run(lockCtx, task.ID, risk.ID)
+							})
+							_, completeErr = completeIn(hookCtx, task.ID, request)
+							return nil
+						}))
+						if fired != 1 {
+							t.Fatalf("the completion read hook fired %d times, want 1", fired)
+						}
+						requireOK(t, competitorErr)
+						requireCancelledFirst(t, task.ID, risk.ID, completeErr)
+						continue
+					}
+					done := make(chan struct{})
+					var competitorErr error
+					hookCtx := store.WithRiskCompletionReadHook(ctx, func(id string, read core.WorkOrderState) {
+						if id != risk.ID {
+							return
+						}
+						fired++
+						entered := make(chan struct{})
+						go func() {
+							defer close(done)
+							close(entered)
+							competitorErr = c.run(ctx, task.ID, risk.ID)
+						}()
+						<-entered
+						if x.AwaitTaskOperationWaiter != nil {
+							waitCtx, cancelWait := context.WithTimeout(ctx, 30*time.Second)
+							defer cancelWait()
+							x.AwaitTaskOperationWaiter(t, waitCtx, task.ID, done)
+						}
+						select {
+						case <-done:
+							t.Errorf("the %s committed inside the completion's read-to-write window", c.name)
+						default:
+						}
+					})
+					_, completeErr := completeIn(hookCtx, task.ID, request)
+					<-done
+					if fired != 1 {
+						t.Fatalf("the completion read hook fired %d times, want 1", fired)
+					}
+					requireOK(t, competitorErr)
+					requireCompletedFirst(t, task.ID, risk.ID, completeErr)
+				}
+			})
+		}
+		// A release inside the window is a lost claim, not a cancellation:
+		// the classification reads the order's state and never maps every
+		// changed row to ErrWorkOrderCancelled. Only a backend that admits
+		// the window can reach it.
+		if !x.NestedTaskCommandsInterleave {
+			return
+		}
+		t.Run("Release", func(t *testing.T) {
+			task := fileTask(t, &record, core.StageReview)
+			risk := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-release")})
+			_, err := claim(risk.ID, "rater-release", "rater-release-token")
+			requireOK(t, err)
+			var releaseErr, completeErr error
+			requireOK(t, st.WithTaskSideEffectLock(ctx, task.ID, func(lockCtx context.Context) error {
+				hookCtx := store.WithRiskCompletionReadHook(lockCtx, func(id string, _ core.WorkOrderState) {
+					if id != risk.ID {
+						return
+					}
+					_, releaseErr = taskops.ExecuteWorkOrder(lockCtx, st, task.ID, core.WorkOrderCmdRelease, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+						return st.ReleaseWorkerClaimCommand(lockCtx, lease, risk.ID, identity("rater-release"),
+							core.WorkOrderRelease{SessionID: "rater-release", Reason: "harness crashed", Outcome: core.WorkOrderOutcomeChildFailure,
+								FailureDetail: "harness crashed", InitialRetryDelay: time.Millisecond, MaximumRetryDelay: time.Millisecond})
+					})
+				})
+				_, completeErr = completeIn(hookCtx, task.ID, store.RiskOrderCompleteRequest{WorkOrderID: risk.ID, Claim: identity("rater-release"), Tier: riskpolicy.TierLow, Reason: "released"})
+				return nil
+			}))
+			requireOK(t, releaseErr)
+			if !errors.Is(completeErr, store.ErrWorkOrderClaimLost) || errors.Is(completeErr, store.ErrWorkOrderCancelled) {
+				t.Fatalf("completion after the release err=%v, want exactly %v", completeErr, store.ErrWorkOrderClaimLost)
+			}
+			if final := order(t, risk.ID); final.State != core.WorkOrderQueued || agentRatings(t, task.ID) != 0 || completions(t, task.ID, risk.ID) != 0 {
+				t.Fatalf("released order=%+v recorded a rating or a completion", final)
+			}
+		})
+	})
+
+	// A claim lost for any other reason still answers ErrWorkOrderClaimLost:
+	// another session, and a lease that ended before the completion.
+	t.Run("OtherClaimLossStaysClaimLost", func(t *testing.T) {
+		task := fileTask(t, &record, core.StageReview)
+		risk := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-lost")})
+		claimed, err := claim(risk.ID, "rater-lost", "rater-lost-token")
+		requireOK(t, err)
+		for _, request := range []store.RiskOrderCompleteRequest{
+			{WorkOrderID: risk.ID, Claim: identity("another-session"), Tier: riskpolicy.TierLow, Reason: "not mine"},
+			{WorkOrderID: risk.ID, Claim: identity("rater-lost"), Tier: riskpolicy.TierLow, Reason: "too late", Now: claimed.LeaseExpiresAt.Add(time.Minute)},
+		} {
+			if _, err := completeIn(ctx, task.ID, request); !errors.Is(err, store.ErrWorkOrderClaimLost) || errors.Is(err, store.ErrWorkOrderCancelled) {
+				t.Fatalf("completion %+v err=%v, want exactly %v", request.Claim, err, store.ErrWorkOrderClaimLost)
+			}
+		}
+		if still := order(t, risk.ID); still.State != core.WorkOrderClaimed || agentRatings(t, task.ID) != 0 {
+			t.Fatalf("a lost claim changed the order %+v or recorded a rating", still)
 		}
 	})
 

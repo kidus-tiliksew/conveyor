@@ -5,6 +5,8 @@ import type {
   Intervention,
   Job,
   NextAction,
+  RiskOrderSubject,
+  RiskRating,
   RiskTier,
   Task,
   TaskAssignee,
@@ -16,6 +18,7 @@ import type {
   TaskReviewRound,
   TaskReviewRoundSummary,
   TaskReviewSeatMetadata,
+  TaskRisk,
   TaskSummaries,
   WorkOrder,
   WorkOrderVerificationCheckpointGround,
@@ -457,7 +460,7 @@ export type CurrentExecutionKind =
   | 'verification_checkpoint'
   | 'checkpoint_decision'
 
-export type CurrentExecutionStage = 'Plan' | 'Implementation' | 'Review' | 'Verification'
+export type CurrentExecutionStage = 'Plan' | 'Implementation' | 'Review' | 'Verification' | 'Risk rating'
 
 // Which of a state's lines carry information beyond the server's summary. The
 // next-action card prints only the marked ones beside that summary, so a fact
@@ -575,7 +578,9 @@ export function deriveCurrentExecutionState(
         ? 'Review'
         : order.stage === 'verify'
           ? 'Verification'
-          : 'Implementation'
+          : order.stage === 'risk'
+            ? 'Risk rating'
+            : 'Implementation'
   switch (action.kind) {
     case 'working':
       if (order.state !== 'claimed') return undefined
@@ -874,10 +879,14 @@ export type TimelineEntry =
       key: string
       // The stage label alone; the state reads from the badge.
       title: string
-      badge: { label: string; variant: 'default' | 'accent' | 'attention' }
+      // Absent only for a rated risk order, whose tier chip stands alone.
+      badge?: { label: string; variant: 'default' | 'accent' | 'attention' }
       detail?: string
-      tone: 'active' | 'alarm'
+      tone: 'active' | 'alarm' | 'waiting' | 'done'
       order: WorkOrder
+      // A risk order's subject and its own rating (feature-risk-based-review
+      // RR-16).
+      risk?: RiskOrderFacts
     }
   | { type: 'intervention'; at: string; intervention: Intervention }
   | {
@@ -1589,7 +1598,12 @@ const genericSummaries = new Set([
 // A work-order entry's header reads the stage label, then a state badge; one
 // muted detail line follows (component-web-task-surfaces, Work-order timeline
 // entries).
-function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEntry, { type: 'order' }> | undefined {
+function orderEntry(
+  order: WorkOrder,
+  hasJobEntry: boolean,
+  risk?: TaskRisk,
+): Extract<TimelineEntry, { type: 'order' }> | undefined {
+  if (order.stage === 'risk') return riskOrderEntry(order, risk)
   const stage = workOrderStageLabels[order.stage] ?? stageLabels[order.stage] ?? order.stage
   const base = { type: 'order' as const, at: order.queue_entered_at, key: `order-${order.id}`, order, title: stage }
   switch (order.state) {
@@ -1603,24 +1617,138 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
         detail: [order.claimed_by, order.agent, order.model].filter(Boolean).join(' · ') || undefined,
       }
     case 'stale':
-      return {
-        ...base,
-        tone: 'alarm',
-        badge: { label: 'Stale', variant: 'attention' },
-        detail: 'No agent claimed it before queue retention elapsed. Redispatch to offer it again.',
-      }
     case 'timed_out':
-      return {
-        ...base,
-        at: order.execution_deadline ?? order.queue_entered_at,
-        tone: 'alarm',
-        badge: { label: 'Timed out', variant: 'attention' },
-        detail: 'The execution deadline elapsed before the agent finished; the retry policy applies.',
-      }
+      return { ...base, ...expiredOrderParts(order) }
     default:
       // queued: the next-action card states the wait.
       // submitted/completed/cancelled: the job entry and review events tell it.
       return undefined
+  }
+}
+
+// The parts of a stale or timed-out order's entry.
+function expiredOrderParts(order: WorkOrder) {
+  return order.state === 'stale'
+    ? {
+        tone: 'alarm' as const,
+        badge: { label: 'Stale', variant: 'attention' as const },
+        detail: 'No agent claimed it before queue retention elapsed. Redispatch to offer it again.',
+      }
+    : {
+        at: order.execution_deadline ?? order.queue_entered_at,
+        tone: 'alarm' as const,
+        badge: { label: 'Timed out', variant: 'attention' as const },
+        detail: 'The execution deadline elapsed before the agent finished; the retry policy applies.',
+      }
+}
+
+// What one risk order rates and the rating it recorded, if any
+// (feature-risk-based-review RR-11, RR-16; req-risk-based-review AC-5.6).
+export interface RiskOrderFacts {
+  subject?: RiskOrderSubject
+  rating?: RiskRating
+}
+
+function knownSubject(subject: RiskOrderSubject | undefined): subject is RiskOrderSubject {
+  return Boolean(subject && ((subject.plan_version ?? 0) > 0 || subject.head_sha))
+}
+
+// What a risk order rates: the task read's risk.orders entry for the order,
+// else the work-order list's risk_subject, else the head and base the order
+// itself carries. A plan version comes only from the first two.
+export function riskOrderSubject(order: WorkOrder, risk: TaskRisk | undefined): RiskOrderSubject | undefined {
+  const served = risk?.orders?.find((candidate) => candidate.work_order_id === order.id)?.subject
+  if (knownSubject(served)) return served
+  if (knownSubject(order.risk_subject)) return order.risk_subject
+  if (order.head_sha) return { head_sha: order.head_sha, base_sha: order.baseline_sha }
+  return undefined
+}
+
+function ratingRates(rating: RiskRating, subject: RiskOrderSubject): boolean {
+  if ((subject.plan_version ?? 0) > 0) return rating.plan_version === subject.plan_version
+  if (rating.head_sha !== subject.head_sha) return false
+  return !subject.base_sha || !rating.base_sha || rating.base_sha === subject.base_sha
+}
+
+// The risk order's own rating: the risk_agent rating that names this order
+// and rates its subject. The task's tier, or another order's rating, is never
+// shown as this order's rating. With no served subject, the rating's own
+// subject names what it rates.
+export function riskOrderFacts(order: WorkOrder, risk: TaskRisk | undefined): RiskOrderFacts {
+  const subject = riskOrderSubject(order, risk)
+  const rating = risk?.ratings?.find(
+    (candidate) =>
+      candidate.source === 'risk_agent' &&
+      candidate.risk_work_order_id === order.id &&
+      (!subject || ratingRates(candidate, subject)),
+  )
+  if (subject) return { subject, rating }
+  if (!rating) return {}
+  return {
+    rating,
+    subject:
+      (rating.plan_version ?? 0) > 0
+        ? { plan_version: rating.plan_version }
+        : rating.head_sha
+          ? { head_sha: rating.head_sha, base_sha: rating.base_sha }
+          : undefined,
+  }
+}
+
+// "Plan version 2" or "Head 1a2b3c4", the subject a risk order rates.
+export function riskSubjectText(subject: RiskOrderSubject | undefined): string | undefined {
+  if (!subject) return undefined
+  if ((subject.plan_version ?? 0) > 0) return `Plan version ${subject.plan_version}`
+  if (subject.head_sha) return `Head ${subject.head_sha.slice(0, 7)}`
+  return undefined
+}
+
+// A risk order runs beside the task's serial stage and can wait while another
+// stage works, so each of its states is an entry: queued and in progress name
+// the order, a rated order shows its own tier chip, and a cancelled order
+// says so. Its job adds no entry of its own (feature-risk-based-review RR-16;
+// req-risk-based-review AC-1.6).
+function riskOrderEntry(order: WorkOrder, risk: TaskRisk | undefined): Extract<TimelineEntry, { type: 'order' }> {
+  const facts = riskOrderFacts(order, risk)
+  const base = {
+    type: 'order' as const,
+    at: order.queue_entered_at,
+    key: `order-${order.id}`,
+    order,
+    title: workOrderStageLabels.risk,
+    risk: facts,
+  }
+  if (facts.rating) return { ...base, at: facts.rating.created_at || order.updated_at || base.at, tone: 'done' }
+  switch (order.state) {
+    case 'queued':
+      return { ...base, tone: 'waiting', badge: { label: 'Queued', variant: 'default' } }
+    case 'claimed':
+      return {
+        ...base,
+        at: order.execution_started_at ?? order.queue_entered_at,
+        tone: 'active',
+        badge: { label: 'In progress', variant: 'accent' },
+        detail: [order.claimed_by, order.agent, order.model].filter(Boolean).join(' · ') || undefined,
+      }
+    case 'stale':
+    case 'timed_out':
+      return { ...base, ...expiredOrderParts(order) }
+    case 'cancelled':
+      return {
+        ...base,
+        at: order.updated_at ?? base.at,
+        tone: 'waiting',
+        badge: { label: 'Cancelled', variant: 'default' },
+      }
+    default:
+      // A completed order whose rating the read does not hold shows no
+      // invented tier.
+      return {
+        ...base,
+        at: order.updated_at ?? base.at,
+        tone: 'done',
+        badge: { label: 'Completed', variant: 'default' },
+      }
   }
 }
 
@@ -1654,6 +1782,8 @@ const finishedOrderStates = new Set<WorkOrder['state']>(['submitted', 'completed
 
 // A later order for the same stage and seat replaced this one.
 function supersededOrder(order: WorkOrder, orders: WorkOrder[]): boolean {
+  // Each risk order rates its own subject, so a later one replaces none.
+  if (order.stage === 'risk') return false
   const entered = Date.parse(order.queue_entered_at)
   return orders.some(
     (other) =>
@@ -1740,6 +1870,8 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   for (const job of item.jobs) {
     if (!job.started_at || panels.jobIds.has(job.id)) continue
     const order = orderByJob.get(job.id)
+    // A risk order's own entry tells its story, rating included.
+    if (job.stage === 'risk' && order) continue
     const results = item.summaries?.job_results?.[job.id]
     const text = jobSummary(job, results)
     let summary = text.text
@@ -1769,7 +1901,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
     const activity = agentActivityNote(order, orders, progressShown)
     if (activity) entries.push(activity)
     if (panels.orderIds.has(order.id)) continue
-    const entry = orderEntry(order, startedJobs.has(order.job_id))
+    const entry = orderEntry(order, startedJobs.has(order.job_id), item.risk)
     if (entry) entries.push(entry)
   }
   for (const event of item.events) {
