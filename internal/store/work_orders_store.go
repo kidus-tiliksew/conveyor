@@ -2007,6 +2007,13 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		}
 		order.ModelEnforcement = "self-reported"
 	}
+	// A risk order is claimable only by a session independent of the task's
+	// planning, implementation, and review (req-risk-based-review AC-12.1;
+	// feature-risk-based-review RR-11). The refusal writes nothing.
+	tokenHistoryGaps, err := m.riskClaimCheckLocked(ctx, order, claim)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
 	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {
 		order.ExecutionDeadline = order.ExecutionStartedAt.Add(claim.ExecutionTimeout)
 		m.workOrders[id] = order
@@ -2042,7 +2049,14 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	}
 	order.Claimable = false
 	m.workOrders[id] = order
-	if task := m.tasks[order.TaskID]; task.State == core.TaskQueued {
+	claimHash := ""
+	if claim.ClientToken != "" {
+		claimHash = tokenHash(claim.ClientToken)
+	}
+	m.recordClaimIdentityLocked(ctx, order, claimHash)
+	// A risk order stands beside the serial stage, so its claim leaves the
+	// task state as it is (feature-risk-based-review RR-11).
+	if task := m.tasks[order.TaskID]; task.State == core.TaskQueued && order.Stage != core.StageRisk {
 		from := task.State
 		state, taskErr := core.TransitionTask(from, core.TaskOrderClaim)
 		if taskErr != nil {
@@ -2057,6 +2071,11 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	// write (component-work-orders, Claim admission).
 	delete(m.claimFailures, order.ID)
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: WorkOrderEventPayload(order)})
+	// An admitted risk claim records any earlier token history it could not
+	// verify on the risk order's activity (req-risk-based-review AC-12.1).
+	if event, incomplete := RiskTokenHistoryIncomplete(order, tokenHistoryGaps, now); incomplete {
+		m.appendEventLocked(ctx, event)
+	}
 	return order, nil
 }
 
@@ -2529,6 +2548,12 @@ func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version 
 	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
 	if ratePlanned {
 		m.insertRiskRatingLocked(ctx, ratingKey, planRating)
+	}
+	// An approval can make a risk agent rating of this version count, so a
+	// tier that reaches high cancels the open risk orders in the same act
+	// (req-risk-based-review AC-4.3, AC-12.3).
+	if task, ok := m.tasks[taskID]; ok {
+		m.cancelRiskOrdersIfHighLocked(ctx, task, versions[len(versions)-1].ApprovedAt)
 	}
 	// A person's plan approval sets planning completed in the transaction
 	// that records it (component-task-lifecycle invariant 54;

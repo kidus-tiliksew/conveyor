@@ -135,6 +135,7 @@ type TaskStore interface {
 	RecordDocumentationGateEvidence(context.Context, core.DocumentationGateEvidence) error
 	GetDocumentationGateEvidence(context.Context, string, string) (core.DocumentationGateEvidence, error)
 	RiskRatingStore
+	RiskOrderStore
 	TaskApprovalStore
 	ReviewPolicyStatusStore
 	CreateTask(ctx context.Context, t core.Task) error
@@ -700,6 +701,8 @@ type memory struct {
 	staged                      *[]changes.Notice
 	documentationEvidence       map[memoryScopedKey]map[string]core.DocumentationGateEvidence
 	riskRatings                 map[memoryScopedKey][]core.RiskRating
+	riskOrders                  map[string]memoryRiskOrder
+	claimIdentities             map[memoryScopedKey][]ClaimIdentity
 	taskApprovals               map[memoryScopedKey][]core.TaskApproval
 	reviewPolicyStatuses        map[memoryScopedKey]map[string]core.ReviewPolicyStatus
 	verificationDeliveries      map[string]core.VerificationDelivery

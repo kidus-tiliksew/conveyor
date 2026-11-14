@@ -67,7 +67,16 @@ func (s *Store) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, se
 		// it reopens the task's policy statuses in the same transaction
 		// (req-risk-based-review AC-10.1; component-git-delivery
 		// invariant 37).
-		return s.reopenReviewPolicyStatusesTx(ctx, tx, q, task)
+		if err = s.reopenReviewPolicyStatusesTx(ctx, tx, q, task); err != nil {
+			return err
+		}
+		// A raise to high cancels the task's open risk orders in the same
+		// transaction (req-risk-based-review AC-12.3;
+		// feature-risk-based-review RR-15).
+		if store.RiskTierReachesHigh(append(existing, result)) {
+			_, err = cancelRiskOrdersTx(ctx, tx, q, task.ID, "", store.RiskTierHighCancelReason, result.CreatedAt)
+		}
+		return err
 	})
 	if err != nil {
 		return core.RiskRating{}, err
@@ -108,8 +117,34 @@ func listRiskRatings(ctx context.Context, querier riskRowQuerier, taskID string)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	rows.Close()
 	store.SortRiskRatings(ratings)
-	return ratings, nil
+	return markPendingPlanRiskRatings(ctx, querier, taskID, ratings)
+}
+
+// markPendingPlanRiskRatings derives each risk agent plan rating's
+// PlanPending from the task's approved plan versions
+// (req-risk-based-review AC-4.3).
+func markPendingPlanRiskRatings(ctx context.Context, querier riskRowQuerier, taskID string, ratings []core.RiskRating) ([]core.RiskRating, error) {
+	approved := map[int]bool{}
+	if store.RiskRatingsNeedPlanApprovals(ratings) {
+		rows, err := querier.Query(ctx, `SELECT s.version FROM task_specs s JOIN tasks t ON t.id=s.task_id WHERE s.task_id=$1 AND t.workspace_id=$2 AND s.approved`, taskID, workspace(ctx))
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var version int
+			if err := rows.Scan(&version); err != nil {
+				return nil, err
+			}
+			approved[version] = true
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return store.MarkPendingPlanRiskRatings(ratings, func(version int) bool { return approved[version] }), nil
 }
 
 // riskTaskTx takes the task's operation lock and reads the task and its

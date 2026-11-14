@@ -149,7 +149,13 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version i
 		if err := approvePlanStateTx(ctx, tx, q, taskID); err != nil {
 			return err
 		}
-		return recordPlanRiskTx(ctx, tx, q, taskID, version, approved.Content)
+		if err := recordPlanRiskTx(ctx, tx, q, taskID, version, approved.Content); err != nil {
+			return err
+		}
+		// An approval can make a risk agent rating of this version count, so
+		// a tier that reaches high cancels the open risk orders in the same
+		// transaction (req-risk-based-review AC-4.3, AC-12.3).
+		return cancelRiskOrdersIfHighTx(ctx, tx, q, taskID, time.Now().UTC())
 	})
 }
 
@@ -1275,7 +1281,9 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 			return core.WorkOrder{}, err
 		}
 	}
-	if order.Stage != core.StageReview {
+	// Review seats and risk orders run beside their peers
+	// (feature-risk-based-review RR-11).
+	if order.Stage != core.StageReview && order.Stage != core.StageRisk {
 		var activeSiblingID string
 		activeErr := tx.QueryRow(ctx, `SELECT id FROM work_orders
 			WHERE workspace_id=$1 AND task_id=$2 AND (stage=$3 OR ($3='verify' AND stage='implement') OR ($3='implement' AND stage='verify')) AND id<>$4 AND state='claimed'
@@ -1420,6 +1428,13 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		}
 		order.ModelEnforcement = "self-reported"
 	}
+	// A risk order is claimable only by a session independent of the task's
+	// planning, implementation, and review (req-risk-based-review AC-12.1).
+	// The refusal returns before any write, so the order stays claimable.
+	tokenHistoryGaps, err := riskClaimCheckTx(ctx, tx, order, claim.SessionID, hash, taskOrders)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
 	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {
 		order.ExecutionDeadline = order.ExecutionStartedAt.Add(claim.ExecutionTimeout)
 		if !order.ExecutionDeadline.After(now) {
@@ -1477,11 +1492,16 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		started_at=COALESCE(started_at,$2), updated_at=$2 WHERE id=$3`, claim.Model, executionStarted, order.JobID); err != nil {
 		return core.WorkOrder{}, err
 	}
+	if err = recordClaimIdentityTx(ctx, tx, order, hash, now); err != nil {
+		return core.WorkOrder{}, err
+	}
 	var taskState core.TaskState
 	if err = tx.QueryRow(ctx, `SELECT state FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), order.TaskID).Scan(&taskState); err != nil {
 		return core.WorkOrder{}, err
 	}
-	if taskState == core.TaskQueued {
+	// A risk order stands beside the serial stage, so its claim leaves the
+	// task state as it is (feature-risk-based-review RR-11).
+	if taskState == core.TaskQueued && order.Stage != core.StageRisk {
 		nextTaskState, transitionErr := core.TransitionTask(taskState, core.TaskOrderClaim)
 		if transitionErr != nil {
 			return core.WorkOrder{}, transitionErr
@@ -1500,6 +1520,13 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	}
 	if err := insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: store.WorkOrderEventPayload(order)}); err != nil {
 		return core.WorkOrder{}, err
+	}
+	// An admitted risk claim records any earlier token history it could not
+	// verify on the risk order's activity (req-risk-based-review AC-12.1).
+	if event, incomplete := store.RiskTokenHistoryIncomplete(order, tokenHistoryGaps, now); incomplete {
+		if err := insertEvent(ctx, q, event); err != nil {
+			return core.WorkOrder{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return core.WorkOrder{}, err
