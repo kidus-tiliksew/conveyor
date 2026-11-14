@@ -1266,7 +1266,12 @@ func TestRepoInitIntoEmptyDirectoryWritesRiskAgentRules(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	root := t.TempDir()
+	// repo init reports paths under the resolved root, so resolve a
+	// symlinked temporary directory, such as /var on macOS, first.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
 		t.Fatalf("root is not empty: %v %v", entries, err)
 	}

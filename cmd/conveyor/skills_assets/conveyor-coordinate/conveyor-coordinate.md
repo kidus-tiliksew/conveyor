@@ -314,7 +314,9 @@ order with stage `risk` (req-agent-coordination AC-1.8).
   for an order whose thread holds its claim or has submitted its rating.
 - **Replace a thread only for a claimable order.** When a risk thread ends
   without a rating, read the order again. Start a new thread when the order is
-  claimable again. Start none for a cancelled order. Conveyor cancels a risk
+  claimable again. Start none when the thread released the order because it
+  could not read the subject: report that failure to the operator. Start none
+  for a cancelled order. Conveyor cancels a risk
   order when a later plan version or head replaces its subject, when the tier
   reaches high, or when the task merges or closes.
 - **Count it against concurrency.** Each risk thread counts against your

@@ -2039,6 +2039,8 @@ var riskAgentRules = map[string][]string{
 		// Duplicates, cancellation, refusal, and lease loss.
 		"Never start a second agent for a risk order whose agent holds its claim or has submitted its rating.",
 		"When the order is cancelled, start no agent for it.",
+		"When the agent released the order because it could not read the subject, start no new agent for it.",
+		"In every case, then return to [Start verifier and reviewer agents](#start-verifier-and-reviewer-agents).",
 		"**Claim refused.** When Conveyor refuses the claim, stop.",
 		"**Claim lost or order cancelled.** When renewal fails, or a rating is refused with a claim error, stop. Your rating does not count.",
 		"**No response.** When the call fails before a response arrives, send the same tier and reason again under the same claim.",
@@ -2068,6 +2070,7 @@ var riskAgentRules = map[string][]string{
 		"Pass none of the planner's or implementer's reasoning, no transcript, no proposed tier, and none of your own assessment (req-agent-coordination AC-1.4).",
 		"Never give a risk order to the planner, implementer, or reviewer thread.",
 		"Never start a second thread for an order whose thread holds its claim or has submitted its rating.",
+		"Start none when the thread released the order because it could not read the subject: report that failure to the operator.",
 		"Each risk thread counts against your concurrency limit while it runs, the same as any other thread.",
 		"Do not record a plan approval then.",
 		"**Record.** Nothing waits.",

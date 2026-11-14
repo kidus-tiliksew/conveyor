@@ -658,6 +658,10 @@ rating. Read `list_work_orders` again:
 - When the order is claimable again, start a new agent for it. A released
   order returns to the queue. An order whose claim expired returns after the
   factory recovers it.
+- When the agent released the order because it could not read the subject,
+  start no new agent for it. The agent's report or the order's
+  `last_failure_message` shows the reason. Report the failure to the operator
+  and wait for an instruction.
 - When the order is cancelled, start no agent for it. Start one for the order
   that replaced it, if one exists.
 - When you cannot start the `risk` harness or model, report the failure to
@@ -1050,8 +1054,9 @@ that submitted it. Each call waits up to `timeout_seconds`, at most 600.
    - Never resolve a conflict by rewriting history.
 5. Validate, commit, set the [CLI environment](#cli-environment) to the new
    order and session, and run `conveyor submit <task-id>`.
-6. When the result names `risk_work_order_id`, go to
-   [Start a risk agent](#start-a-risk-agent). Then return to
+6. When the result names `risk_work_order_id`, start a risk agent as
+   [Start a risk agent](#start-a-risk-agent) describes. In every case, then
+   return to
    [Start verifier and reviewer agents](#start-verifier-and-reviewer-agents).
 
 Never apply feedback through an already submitted order or outside a live
