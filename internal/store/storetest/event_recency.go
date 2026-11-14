@@ -752,8 +752,12 @@ func runPlanRevisionRefusalRecency(t *testing.T, x Fixture) {
 	if _, err := RecoverWorkOrder(ctx, st, order.ID, "plan-revision-recency-"+order.ID, time.Hour); err == nil || err.Error() != want {
 		t.Fatalf("recover err=%v want %q", err, want)
 	}
-	if _, err := RedispatchWorkOrder(ctx, st, order.ID, time.Hour); err == nil || err.Error() != want {
-		t.Fatalf("redispatch err=%v want %q", err, want)
+	// The order waited past its stored queue deadline unclaimed and never went
+	// stale, so redispatch finds nothing to redispatch. This replaces the
+	// retired expectation that redispatch of a queue-clock stale order reached
+	// the plan-revision refusal (component-work-orders invariant 5).
+	if _, err := RedispatchWorkOrder(ctx, st, order.ID, time.Hour); err == nil || !strings.Contains(err.Error(), "is not stale") {
+		t.Fatalf("redispatch err=%v want a waiting order that is not stale", err)
 	}
 }
 

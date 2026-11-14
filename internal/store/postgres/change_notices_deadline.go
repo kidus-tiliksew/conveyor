@@ -26,12 +26,10 @@ const nextDeadlineSQL = `
 SELECT 'deadline', min(d), NULL::text FROM (
 	SELECT lease_expires_at AS d FROM work_orders
 		WHERE workspace_id=$1 AND state='claimed' AND lease_expires_at > $2
-	UNION ALL SELECT queue_deadline FROM work_orders
-		WHERE workspace_id=$1 AND state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline > $2
 	UNION ALL SELECT execution_deadline FROM work_orders
 		WHERE workspace_id=$1 AND state IN ('queued','claimed') AND execution_deadline > $2
 	UNION ALL SELECT next_automatic_recovery_at FROM work_orders
-		WHERE workspace_id=$1 AND state IN ('queued','claimed','stale','timed_out') AND next_automatic_recovery_at > $2
+		WHERE workspace_id=$1 AND state IN ('queued','claimed','timed_out') AND next_automatic_recovery_at > $2
 	UNION ALL SELECT check_status_deadline FROM tasks
 		WHERE workspace_id=$1 AND state='approved' AND NOT merge_approval AND check_status_deadline > $2
 	UNION ALL SELECT next_attempt_at FROM verification_publication_deliveries

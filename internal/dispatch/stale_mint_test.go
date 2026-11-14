@@ -65,7 +65,9 @@ func requireOrderIDs(t *testing.T, ctx context.Context, st store.Store, taskID s
 	return orders
 }
 
-// expireQueue moves the order's queue deadline into the past so it reads stale.
+// expireQueue moves the order's stored queue deadline into the past. The
+// order still reads queued and claimable: an order nobody claimed has no
+// queue clock (component-work-orders invariant 5).
 func expireQueue(t *testing.T, ctx context.Context, st store.Store, id string) {
 	t.Helper()
 	order, err := st.GetWorkOrder(ctx, id)
@@ -77,8 +79,23 @@ func expireQueue(t *testing.T, ctx context.Context, st store.Store, id string) {
 	if err = storetest.UpdateWorkOrder(ctx, st, order); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := st.GetWorkOrder(ctx, id); got.State != core.WorkOrderStale {
-		t.Fatalf("order %s state=%s want stale", id, got.State)
+	if got, _ := st.GetWorkOrder(ctx, id); got.State != core.WorkOrderQueued || !got.Claimable {
+		t.Fatalf("order %s state=%s claimable=%t want queued and claimable", id, got.State, got.Claimable)
+	}
+}
+
+// requireWaiting proves the order waits in place with no automatic recovery
+// scheduled, counted, or exhausted and no stale or redispatch audit.
+func requireWaiting(t *testing.T, ctx context.Context, st store.Store, taskID, id string) {
+	t.Helper()
+	got, err := st.GetWorkOrder(ctx, id)
+	if err != nil || got.State != core.WorkOrderQueued || !got.Claimable || got.RetrySuppressed || got.RedispatchCount != 0 || got.AutomaticRecoveryCount != 0 || !got.NextAutomaticRecoveryAt.IsZero() {
+		t.Fatalf("order %s=%+v err=%v, want it waiting in place", id, got, err)
+	}
+	for _, kind := range []string{"work_order.stale", "work_order.redispatched", "work_order.recovered", "work_order.recovery_exhausted"} {
+		if n, _ := countOrderEvents(t, ctx, st, taskID, kind); n != 0 {
+			t.Fatalf("order %s recorded %d %s events, want none", id, n, kind)
+		}
 	}
 }
 
@@ -103,61 +120,26 @@ func countOrderEvents(t *testing.T, ctx context.Context, st store.Store, taskID,
 	return n, automatic
 }
 
-func TestStaleOrderIsRedispatchedNotReissued(t *testing.T) {
+// An order nobody claimed waits past its stored queue deadline: redelivered
+// dispatch mints no successor, and ticks of the order clock, a day apart,
+// schedule, count, redispatch, and exhaust nothing. This replaces the retired
+// expectation that the clock marked it stale, redispatched it to the bound,
+// and escalated it (req-task-lifecycle-and-queue AC-9.5; component-work-orders
+// invariant 5; DEC-117(2)).
+func TestWaitingOrderIsNotReissuedOrRedispatched(t *testing.T) {
 	ctx, st, d, task := staleMintFixture(t, "stale-holds")
 	orderID := task.ID + "-implement-1"
 	clock := taskops.New(st)
-	for round := 1; ; round++ {
-		expireQueue(t, ctx, st, orderID)
-		// The daily reissue: a dispatch run over a stale order must not mint.
+	expireQueue(t, ctx, st, orderID)
+	for round := range 4 {
 		if err := d.DispatchNow(ctx, task.ID); err != nil {
 			t.Fatal(err)
 		}
 		requireOrderIDs(t, ctx, st, task.ID, orderID)
-		if _, err := clock.TickOrderClock(ctx, time.Now().UTC()); err != nil {
+		if _, err := clock.TickOrderClock(ctx, time.Now().UTC().Add(time.Duration(round)*25*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
-		scheduled, err := st.GetWorkOrder(ctx, orderID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if scheduled.RetrySuppressed {
-			// Past the DEC-62 bound the order escalates once and keeps holding
-			// the stage for the operator (AC-5.2).
-			if round != config.DefaultRecoveryPolicy().AutomaticRecoveries+1 || scheduled.RetrySuppressionReason != core.AutomaticRecoveryExhaustedReason {
-				t.Fatalf("round %d exhausted=%+v", round, scheduled)
-			}
-			break
-		}
-		if scheduled.NextAutomaticRecoveryAt.IsZero() {
-			t.Fatalf("round %d stale order not scheduled: %+v", round, scheduled)
-		}
-		if _, err = clock.TickOrderClock(ctx, scheduled.NextAutomaticRecoveryAt); err != nil {
-			t.Fatal(err)
-		}
-		recovered, err := st.GetWorkOrder(ctx, orderID)
-		if err != nil || recovered.State != core.WorkOrderQueued || recovered.AutomaticRecoveryCount != round {
-			t.Fatalf("round %d recovered=%+v err=%v", round, recovered, err)
-		}
-		if n, automatic := countOrderEvents(t, ctx, st, task.ID, "work_order.redispatched"); n != round || automatic != round {
-			t.Fatalf("round %d redispatched events=%d automatic=%d", round, n, automatic)
-		}
-		if err = d.DispatchNow(ctx, task.ID); err != nil {
-			t.Fatal(err)
-		}
-		requireOrderIDs(t, ctx, st, task.ID, orderID)
-	}
-	for range 3 {
-		if err := d.DispatchNow(ctx, task.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := clock.TickOrderClock(ctx, time.Now().UTC().Add(48*time.Hour)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	requireOrderIDs(t, ctx, st, task.ID, orderID)
-	if n, _ := countOrderEvents(t, ctx, st, task.ID, "work_order.recovery_exhausted"); n != 1 {
-		t.Fatalf("recovery_exhausted events=%d", n)
+		requireWaiting(t, ctx, st, task.ID, orderID)
 	}
 }
 
@@ -357,34 +339,24 @@ func TestMergeConflictAdmissionUsesProjectedClaimState(t *testing.T) {
 	}
 }
 
-// A stale review seat is a recoverable stop like any other order: redelivered
-// dispatch reuses the round and the order clock redispatches the seat, so no
-// second live round is minted (component-work-orders; DEC-62).
-func TestStaleReviewSeatIsRedispatchedNotReRounded(t *testing.T) {
+// A review seat nobody claimed waits past its stored queue deadline like any
+// other order: redelivered dispatch reuses the round, and the order clock
+// leaves the seat alone, so no second live round is minted. This replaces the
+// retired expectation that the clock marked the seat stale and redispatched it
+// (component-work-orders invariant 5; DEC-117(2)).
+func TestWaitingReviewSeatIsNotReRounded(t *testing.T) {
 	ctx, st, d, task := staleMintFixtureAt(t, "stale-seat", core.StageReview)
 	seat := task.ID + "-review-1-seat-1"
 	expireQueue(t, ctx, st, seat)
-	if err := d.DispatchNow(ctx, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	requireOrderIDs(t, ctx, st, task.ID, seat)
 	clock := taskops.New(st)
-	if _, err := clock.TickOrderClock(ctx, time.Now().UTC()); err != nil {
-		t.Fatal(err)
+	for round := range 3 {
+		if err := d.DispatchNow(ctx, task.ID); err != nil {
+			t.Fatal(err)
+		}
+		requireOrderIDs(t, ctx, st, task.ID, seat)
+		if _, err := clock.TickOrderClock(ctx, time.Now().UTC().Add(time.Duration(round)*25*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		requireWaiting(t, ctx, st, task.ID, seat)
 	}
-	scheduled, err := st.GetWorkOrder(ctx, seat)
-	if err != nil || scheduled.NextAutomaticRecoveryAt.IsZero() {
-		t.Fatalf("seat not scheduled=%+v err=%v", scheduled, err)
-	}
-	if _, err = clock.TickOrderClock(ctx, scheduled.NextAutomaticRecoveryAt); err != nil {
-		t.Fatal(err)
-	}
-	recovered, err := st.GetWorkOrder(ctx, seat)
-	if err != nil || recovered.State != core.WorkOrderQueued || recovered.AutomaticRecoveryCount != 1 {
-		t.Fatalf("seat recovered=%+v err=%v", recovered, err)
-	}
-	if err = d.DispatchNow(ctx, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	requireOrderIDs(t, ctx, st, task.ID, seat)
 }

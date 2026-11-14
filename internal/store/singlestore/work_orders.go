@@ -734,6 +734,42 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx *sql.Tx, o core.W
 	err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.expired", At: now, Payload: core.JSONPayload(map[string]any{"attempt_id": attempt, "outcome": o.LastAttemptOutcome, "release_cause": core.WorkOrderReleaseCauseLeaseLoss, "retry_suppressed": o.RetrySuppressed})})
 	return o, err
 }
+
+// normalizeLegacyStaleTx returns a stored order that still holds the retired
+// stale value to queued under the caller's task lock and locked order rows:
+// the queue position, checkpoint, pins, and attempt history stay, one
+// work_order.redispatched is recorded, and no recovery is counted. The state
+// guard makes a repeated or concurrent tick change nothing
+// (component-work-orders invariant 5).
+//
+// It returns the caller's order with only the repaired fields changed, never
+// a reread row, so a value the caller set earlier in the same command, such as
+// a claim's model enforcement label, stays for the caller's own write
+// (component-work-orders invariant 11; component-review invariant 15).
+func (s *Store) normalizeLegacyStaleTx(ctx context.Context, tx *sql.Tx, o core.WorkOrder, now time.Time) (core.WorkOrder, error) {
+	if _, err := core.TransitionWorkOrder(o.State, core.WorkOrderCmdRedispatch); err != nil {
+		return core.WorkOrder{}, err
+	}
+	normalized := store.NormalizeLegacyStaleWorkOrder(o, now)
+	normalized.UpdatedAt = now
+	result, err := tx.ExecContext(ctx, `UPDATE work_orders SET state='queued',retry_suppressed=?,retry_suppression_reason=?,next_automatic_recovery_at=?,updated_at=? WHERE workspace_id=? AND id=? AND state='stale'`,
+		normalized.RetrySuppressed, normalized.RetrySuppressionReason, nullableTimeValue(normalized.NextAutomaticRecoveryAt), now, documentWorkspace(ctx), o.ID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if changed == 0 {
+		return normalized, nil
+	}
+	if err = taskEvent(ctx, tx, store.LegacyStaleNormalizedEvent(normalized, now)); err != nil {
+		return core.WorkOrder{}, err
+	}
+	return normalized, nil
+}
+
 func (s *Store) transitionWorkOrderTx(ctx context.Context, tx *sql.Tx, o core.WorkOrder, command core.WorkOrderCommand, kind string, now time.Time) (core.WorkOrder, error) {
 	state, err := core.TransitionWorkOrder(o.State, command)
 	if err != nil {
@@ -778,8 +814,8 @@ func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) 
 	} else {
 		bound = policy.AutomaticRecoveries
 	}
-	query := `SELECT DISTINCT task_id FROM work_orders WHERE workspace_id=? AND ((state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline<=?) OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?) OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline<=?)`
-	args := []any{documentWorkspace(ctx), now, now, now}
+	query := `SELECT DISTINCT task_id FROM work_orders WHERE workspace_id=? AND ((state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline<=?) OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?) OR state='stale'`
+	args := []any{documentWorkspace(ctx), now, now}
 	if bound != 0 {
 		query += automaticRecoveryElapsedSQL
 		args = append(args, now, now)
@@ -853,6 +889,13 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 			return err
 		}
 		for _, o := range orders {
+			if o.State == core.WorkOrderStale {
+				if _, err = s.normalizeLegacyStaleTx(ctx, tx, o, now); err != nil {
+					return err
+				}
+				count++
+				continue
+			}
 			if o.State != core.WorkOrderQueued && o.State != core.WorkOrderClaimed {
 				continue
 			}
@@ -880,8 +923,6 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 				_, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdTimeout, "work_order.timed_out", now)
 			} else if o.State == core.WorkOrderClaimed && !o.LeaseExpiresAt.After(now) {
 				_, err = s.expireWorkOrderClaimTx(ctx, tx, o, now)
-			} else if o.State == core.WorkOrderQueued && o.ExecutionStartedAt.IsZero() && o.QueueBlockedAt.IsZero() && !o.QueueDeadline.IsZero() && !o.QueueDeadline.After(now) {
-				_, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdMarkStale, "work_order.stale", now)
 			} else {
 				continue
 			}
@@ -1177,7 +1218,10 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		if err != nil {
 			return err
 		}
-		if o.State == core.WorkOrderQueued {
+		// A stored stale order is a queued order the clock has not yet
+		// returned (component-work-orders invariant 5), so it meets the same
+		// refusals.
+		if o.State == core.WorkOrderQueued || o.State == core.WorkOrderStale {
 			if err := store.WorkOrderRecoveryRefusal(task, o, siblings); err != nil {
 				return err
 			}
@@ -1263,15 +1307,15 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 			lifecycleErr = fmt.Errorf("%w: %s", store.ErrWorkOrderTimedOut, id)
 			return nil
 		}
-		if o.State == core.WorkOrderQueued && o.ExecutionStartedAt.IsZero() && !o.QueueDeadline.IsZero() && !o.QueueDeadline.After(now) {
-			if _, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdMarkStale, "work_order.stale", now); err != nil {
+		// No queue deadline refuses a claim. A stored stale order returns to
+		// queued in the claim's transaction and is then claimed in its queue
+		// position; a refused claim leaves that return to the next clock fire
+		// (component-work-orders invariant 5; req-task-lifecycle-and-queue
+		// AC-9.5).
+		if o.State == core.WorkOrderStale {
+			if o, err = s.normalizeLegacyStaleTx(ctx, tx, o, now); err != nil {
 				return err
 			}
-			lifecycleErr = fmt.Errorf("%w: %s", store.ErrWorkOrderStale, id)
-			return nil
-		}
-		if o.State == core.WorkOrderStale {
-			return fmt.Errorf("%w: %s", store.ErrWorkOrderStale, id)
 		}
 		if o.State == core.WorkOrderTimedOut {
 			return fmt.Errorf("%w: %s", store.ErrWorkOrderTimedOut, id)
@@ -1450,12 +1494,6 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 		if err = s.orderSupersessionGuardTx(ctx, tx, projected); err != nil {
 			return err
 		}
-		if o.State == core.WorkOrderQueued && o.ExecutionStartedAt.IsZero() && !o.QueueDeadline.IsZero() && !o.QueueDeadline.After(now) {
-			o, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdMarkStale, "work_order.stale", now)
-			if err != nil {
-				return err
-			}
-		}
 		if o.State != core.WorkOrderStale {
 			return fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
 		}
@@ -1569,12 +1607,6 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		}
 		if refusal := core.WorkOrderRecoverStateRefusal(projected); refusal != "" {
 			return store.Refuse(errors.New(refusal))
-		}
-		if o.State == core.WorkOrderQueued && o.ExecutionStartedAt.IsZero() && !o.QueueDeadline.IsZero() && !o.QueueDeadline.After(now) {
-			o, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdMarkStale, "work_order.stale", now)
-			if err != nil {
-				return err
-			}
 		}
 		prior := o
 		transient := 0

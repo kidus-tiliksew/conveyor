@@ -59,6 +59,15 @@ type Fixture struct {
 	// No public writer can; each backend seeds it directly in its test
 	// binary. The hold-retirement cases require it and never skip.
 	SeedStoredTaskHold func(t *testing.T, ctx context.Context, taskID string)
+	// SeedStoredStaleWorkOrder sets one stored order to the retired stale
+	// value, as a row the retired queue clock left would read. With exhausted
+	// it also stores the automatic-recovery exhaustion that clock could leave
+	// (retry_suppressed with reason automatic recovery exhausted, a count of
+	// two, a window started an hour ago, and no next automatic recovery
+	// time), and a non-zero scheduledAt stores that next automatic recovery
+	// time. No command writes stale any more (component-work-orders
+	// invariant 5).
+	SeedStoredStaleWorkOrder func(t *testing.T, ctx context.Context, orderID string, exhausted bool, scheduledAt time.Time)
 	// SeedRiskRating inserts one numbered risk rating row and its risk.rated
 	// event, modelling a rating with source reviewer that a review verdict
 	// recorded before verdicts stopped stating a tier. No public writer
@@ -423,6 +432,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"TaskTitleRedaction", true, runTaskTitleRedaction},
 		{"RedactionCounts", true, runRedactionCounts},
 		{"WorkOrderClocks", true, runWorkOrderClocks},
+		{"QueueClockRetired", true, runQueueClockRetired},
 		{"QueueReentryPins", true, runQueueReentryPins},
 		{"ReviewRounds", true, runReviewRounds},
 		{"ReviewAcceptance", true, runReviewAcceptance},

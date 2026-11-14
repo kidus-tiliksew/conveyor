@@ -579,7 +579,11 @@ func TestConflictFixDispatchIsIdempotentAndCarriesFrozenContract(t *testing.T) {
 }
 
 func TestConflictFixTerminalAttemptsPermitOneEpisodeLocalReplacement(t *testing.T) {
-	for _, terminalState := range []string{"submitted", "cancelled", "stale", "timed_out", "expired"} {
+	// A stored stale fix order is no longer a terminal attempt: it is a
+	// waiting order the clock returns to the queue (component-work-orders
+	// invariant 5), so TestConflictFixStoredStaleAttemptStaysLive replaces
+	// its retired case here.
+	for _, terminalState := range []string{"submitted", "cancelled", "timed_out", "expired"} {
 		t.Run(terminalState, func(t *testing.T) {
 			ctx, st, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
 			if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
@@ -608,9 +612,6 @@ func TestConflictFixTerminalAttemptsPermitOneEpisodeLocalReplacement(t *testing.
 			case "cancelled":
 				first.State = core.WorkOrderCancelled
 				err = storetest.For(st).UpdateWorkOrder(ctx, first, core.WorkOrderCmdCancel)
-			case "stale":
-				first.State = core.WorkOrderStale
-				err = storetest.For(st).UpdateWorkOrder(ctx, first, core.WorkOrderCmdMarkStale)
 			case "timed_out":
 				first.State = core.WorkOrderTimedOut
 				err = storetest.For(st).UpdateWorkOrder(ctx, first, core.WorkOrderCmdTimeout)
@@ -632,6 +633,37 @@ func TestConflictFixTerminalAttemptsPermitOneEpisodeLocalReplacement(t *testing.
 				t.Fatalf("first=%+v second=%+v orders=%+v interventions=%+v", first, second, orders, interventions)
 			}
 		})
+	}
+}
+
+// A conflict-fix order that holds the retired stale value reads as the queued
+// order the clock returns it to, so it stays the live fix and the readiness
+// read mints no replacement. This replaces the retired expectation that a
+// stale fix permitted one replacement (component-work-orders invariant 5).
+func TestConflictFixStoredStaleAttemptStaysLive(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	first, err := d.DispatchConflictFix(ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.State = core.WorkOrderStale
+	if err = storetest.For(st).UpdateWorkOrder(ctx, first, core.WorkOrderCmdMarkStale); err != nil {
+		t.Fatal(err)
+	}
+	second, err := d.DispatchConflictFix(ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+	interventions, _ := st.ListInterventions(ctx, task.ID)
+	if second.ID != first.ID || len(orders) != 1 || orders[0].State != core.WorkOrderQueued || len(interventions) != 1 {
+		t.Fatalf("first=%+v second=%+v orders=%+v interventions=%+v", first, second, orders, interventions)
 	}
 }
 

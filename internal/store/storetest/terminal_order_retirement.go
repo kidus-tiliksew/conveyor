@@ -161,10 +161,17 @@ func RunTerminalOrderClockConformance(t *testing.T, x Fixture) {
 	now = time.Now().UTC()
 	candidates, err := st.ListElapsedWorkOrderTaskIDs(ctx, now)
 	requireOK(t, err)
-	for _, want := range []string{orphan, closedOrphan, open} {
+	for _, want := range []string{orphan, closedOrphan} {
 		if !containsString(candidates, want) {
 			t.Fatalf("clock candidates=%v, missing %s", candidates, want)
 		}
+	}
+	// An open task's order waiting past its stored queue deadline has no due
+	// transition, so the clock does not select it. This replaces the retired
+	// expectation that it was a candidate the tick marked stale
+	// (component-work-orders invariant 5).
+	if containsString(candidates, open) {
+		t.Fatalf("clock candidates=%v include the waiting order's task %s", candidates, open)
 	}
 	if containsString(candidates, foreignOrphan) {
 		t.Fatalf("clock candidates=%v include another workspace's task %s", candidates, foreignOrphan)
@@ -175,8 +182,8 @@ func RunTerminalOrderClockConformance(t *testing.T, x Fixture) {
 	}
 	requireTerminalRetirement(t, x, orphan, "", []string{queued, stale, timedOut}, nil)
 	requireTerminalRetirement(t, x, closedOrphan, "", []string{closedQueued}, nil)
-	if order, getErr := st.GetWorkOrder(ctx, openOrder); getErr != nil || order.State != core.WorkOrderStale {
-		t.Fatalf("open task order=%+v err=%v, want stale", order, getErr)
+	if order, getErr := st.GetWorkOrder(ctx, openOrder); getErr != nil || order.State != core.WorkOrderQueued || !order.Claimable {
+		t.Fatalf("open task order=%+v err=%v, want queued and claimable", order, getErr)
 	}
 	if order, getErr := st.GetWorkOrder(away, foreignQueued); getErr != nil || order.State != core.WorkOrderQueued {
 		t.Fatalf("foreign orphan=%+v err=%v, want untouched until its workspace ticks", order, getErr)

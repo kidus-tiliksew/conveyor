@@ -58,7 +58,7 @@ func TestPlanRiskWaitWinsOverTheGateRow(t *testing.T) {
 		kind, label, sum string
 		deadline         time.Time
 	}{
-		{core.WorkOrderQueued, KindQueued, "Waiting for a risk rating", "Plan approval waits for a risk rating. The risk order is waiting for an agent.", riskWaitNow.Add(23 * time.Hour)},
+		{core.WorkOrderQueued, KindQueued, "Waiting for a risk rating", "Plan approval waits for a risk rating. The risk order is waiting for an agent.", time.Time{}},
 		{core.WorkOrderClaimed, KindWorking, "Rating plan risk", "An agent is rating the risk of the plan. Plan approval waits for this rating.", riskWaitNow.Add(time.Hour)},
 	} {
 		t.Run(string(tc.state), func(t *testing.T) {
@@ -73,7 +73,10 @@ func TestPlanRiskWaitWinsOverTheGateRow(t *testing.T) {
 			if len(na.Details.OrderIDs) != 1 || na.Details.OrderIDs[0] != "t-risk-1" || na.Details.ReasonCode != PlanRiskRating || na.Details.GateKind != "" {
 				t.Fatalf("details=%+v", na.Details)
 			}
-			if na.Deadline == nil || !na.Deadline.Equal(tc.deadline) {
+			// A queued risk order waits with no deadline, as every queued order
+			// does; a claimed one carries its execution deadline
+			// (component-next-action invariant 14; DEC-117(2)).
+			if tc.deadline.IsZero() && na.Deadline != nil || !tc.deadline.IsZero() && (na.Deadline == nil || !na.Deadline.Equal(tc.deadline)) {
 				t.Fatalf("deadline=%v want %v", na.Deadline, tc.deadline)
 			}
 			// The gate row still matches and is recorded as secondary.

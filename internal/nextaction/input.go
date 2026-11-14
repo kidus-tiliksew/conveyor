@@ -43,7 +43,6 @@ const (
 
 const (
 	StallRetrySuppressed            = "retry_suppressed"
-	StallStale                      = "stale"
 	StallTimedOut                   = "timed_out"
 	StallUnclaimable                = "unclaimable"
 	StallDispatchFailing            = "dispatch_failing"

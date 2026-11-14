@@ -607,9 +607,12 @@ func (d *Dispatcher) conflictDispatchState(ctx context.Context, taskID string, e
 	return mergeConflictDispatchState{Failures: state.Failures, NextRetryAt: state.NextRetryAt, Exhausted: state.Exhausted, RecoveryBlocked: state.RecoveryBlocked}, nil
 }
 
+// terminalConflictFixAttempt reports a fix order that ended. A stored stale
+// order is a waiting order the clock returns to the queue, so it never ends an
+// attempt (component-work-orders invariant 5).
 func terminalConflictFixAttempt(order core.WorkOrder) bool {
 	switch order.State {
-	case core.WorkOrderCancelled, core.WorkOrderStale, core.WorkOrderTimedOut:
+	case core.WorkOrderCancelled, core.WorkOrderTimedOut:
 		return true
 	case core.WorkOrderQueued, core.WorkOrderCompleted:
 		return order.RetrySuppressed || order.LastAttemptOutcome != "" || order.LastFailureMessage != ""

@@ -27,12 +27,14 @@ func TestEventDeadlineNotice(t *testing.T) {
 		want    time.Time
 		none    bool
 	}{
-		{name: "queued order raises its queue deadline", kind: "work_order.created", payload: order(func(o *core.WorkOrder) { o.State = core.WorkOrderQueued }), want: queue},
+		// An order nobody has claimed has no queue clock, so its stored
+		// queue_deadline raises nothing (component-work-orders invariant 5).
+		{name: "queued order raises nothing for its stored queue deadline", kind: "work_order.created", payload: order(func(o *core.WorkOrder) { o.State = core.WorkOrderQueued }), none: true},
 		{name: "blocked queued order raises nothing", kind: "work_order.updated", payload: order(func(o *core.WorkOrder) { o.State, o.QueueBlockedAt = core.WorkOrderQueued, at }), none: true},
 		{name: "claimed order raises the earlier of lease and execution deadline", kind: "work_order.claimed", payload: order(func(o *core.WorkOrder) {
 			o.State, o.LeaseExpiresAt, o.ExecutionStartedAt, o.ExecutionDeadline = core.WorkOrderClaimed, lease, at, execution
 		}), want: lease},
-		{name: "stale order without a recovery time is due at once", kind: "work_order.stale", payload: order(func(o *core.WorkOrder) { o.State = core.WorkOrderStale }), want: at},
+		{name: "stored stale order is no recoverable stop and raises nothing", kind: "work_order.stale", payload: order(func(o *core.WorkOrder) { o.State = core.WorkOrderStale }), none: true},
 		{name: "timed-out order with a recovery time raises it", kind: "work_order.recovery_scheduled", payload: order(func(o *core.WorkOrder) {
 			o.State, o.NextAutomaticRecoveryAt = core.WorkOrderTimedOut, recovery
 		}), want: recovery},
@@ -62,8 +64,9 @@ func TestEventDeadlineNotice(t *testing.T) {
 			o.Stage, o.State, o.LastAttemptID = core.StageVerify, core.WorkOrderQueued, "attempt-1"
 		}), want: at},
 		{name: "superseded verification cancel without a stage is due at once", kind: "work_order.cancelled", payload: core.JSONPayload(map[string]any{"work_order_id": "o", "reason": "superseded verification head"}), want: at},
-		{name: "a new verify order without an attempt keeps its queue deadline", kind: "work_order.created", payload: order(func(o *core.WorkOrder) { o.Stage, o.State = core.StageVerify, core.WorkOrderQueued }), want: queue},
-		{name: "released implement order keeps its queue deadline", kind: "work_order.released", payload: order(func(o *core.WorkOrder) { o.State = core.WorkOrderQueued }), want: queue},
+		{name: "a new verify order without an attempt raises nothing", kind: "work_order.created", payload: order(func(o *core.WorkOrder) { o.Stage, o.State = core.StageVerify, core.WorkOrderQueued }), none: true},
+		{name: "released implement order raises nothing for its stored queue deadline", kind: "work_order.released", payload: order(func(o *core.WorkOrder) { o.State = core.WorkOrderQueued }), none: true},
+		{name: "a payload naming only a queue deadline raises nothing", kind: "work_order.updated", payload: core.JSONPayload(map[string]any{"queue_deadline": queue}), none: true},
 		{name: "a claimed verify order keeps its lease", kind: "work_order.claimed", payload: order(func(o *core.WorkOrder) {
 			o.Stage, o.State, o.LeaseExpiresAt, o.ExecutionStartedAt, o.ExecutionDeadline = core.StageVerify, core.WorkOrderClaimed, lease, at, execution
 		}), want: lease},

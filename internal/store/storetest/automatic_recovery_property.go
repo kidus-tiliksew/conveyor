@@ -19,13 +19,17 @@ func runAutomaticRecoveryProperty(t *testing.T, st store.Store, ctx context.Cont
 	bound := config.DefaultAutomaticRecoveries
 	states := []core.TaskState{core.TaskClaiming, core.TaskQueued, core.TaskRunning, core.TaskAwaiting, core.TaskApproved, core.TaskParked}
 	stages := []core.Stage{core.StageSpec, core.StageImplement, core.StageVerify, core.StageReview}
-	conditions := []string{"timed_out", "stale", "expired", "retry_limit", "claimed_lease"}
+	// "waiting" is an order nobody claimed; it replaces the retired "stale"
+	// condition, which the queue clock marked and recovery redispatched
+	// (component-work-orders invariant 5).
+	conditions := []string{"timed_out", "waiting", "expired", "retry_limit", "claimed_lease"}
 	type tracked struct {
-		id       string
-		taskID   string
-		eligible bool
-		label    string
-		before   core.WorkOrder
+		id        string
+		taskID    string
+		eligible  bool
+		condition string
+		label     string
+		before    core.WorkOrder
 	}
 	var orders []tracked
 	for _, state := range states {
@@ -37,7 +41,7 @@ func runAutomaticRecoveryProperty(t *testing.T, st store.Store, ctx context.Cont
 				id, taskID := seedPropertyOrder(t, st, ctx, workspace, state, stage, true)
 				applyPropertyCondition(t, st, ctx, id, condition)
 				eligible := state == core.TaskQueued || state == core.TaskRunning
-				orders = append(orders, tracked{id: id, taskID: taskID, eligible: eligible, label: string(state) + "/" + string(stage) + "/" + condition})
+				orders = append(orders, tracked{id: id, taskID: taskID, eligible: eligible, condition: condition, label: string(state) + "/" + string(stage) + "/" + condition})
 			}
 		}
 	}
@@ -94,20 +98,17 @@ func runAutomaticRecoveryProperty(t *testing.T, st store.Store, ctx context.Cont
 			if got.RetrySuppressionReason == core.AutomaticRecoveryExhaustedReason {
 				continue
 			}
-			pending = true
-			recoverableNow := got.State == core.WorkOrderTimedOut || got.State == core.WorkOrderStale ||
+			recoverableNow := got.State == core.WorkOrderTimedOut ||
 				(got.State == core.WorkOrderQueued && (got.LastAttemptOutcome == core.WorkOrderOutcomeExpired || (got.RetrySuppressed && got.RetrySuppressionReason == core.AttemptRetriesExhaustedReason))) ||
 				(got.State == core.WorkOrderClaimed && !got.LeaseExpiresAt.IsZero() && !got.LeaseExpiresAt.After(now))
-			var due time.Time
-			switch {
-			case !got.NextAutomaticRecoveryAt.IsZero() && got.NextAutomaticRecoveryAt.After(now):
+			if !recoverableNow && got.NextAutomaticRecoveryAt.IsZero() {
+				// A waiting order has no clock to wait for.
+				continue
+			}
+			pending = true
+			due := now.Add(time.Second)
+			if !got.NextAutomaticRecoveryAt.IsZero() && got.NextAutomaticRecoveryAt.After(now) {
 				due = got.NextAutomaticRecoveryAt
-			case recoverableNow:
-				due = now.Add(time.Second)
-			case got.State == core.WorkOrderQueued && !got.QueueDeadline.IsZero() && got.QueueDeadline.After(now):
-				due = got.QueueDeadline.Add(time.Second)
-			default:
-				due = now.Add(time.Second)
 			}
 			if next.IsZero() || due.After(next) {
 				next = due
@@ -133,8 +134,18 @@ func runAutomaticRecoveryProperty(t *testing.T, st store.Store, ctx context.Cont
 			}
 			continue
 		}
-		if got.AutomaticRecoveryCount > bound || acts > bound || exhausted != 1 || (acts > bound && exhausted > 0) {
-			t.Fatalf("%s both or over bound count=%d acts=%d exhausted=%d bound=%d order=%+v", item.label, got.AutomaticRecoveryCount, acts, exhausted, bound, got)
+		// One mechanical stop gets one automatic recovery, and the recovered
+		// order then waits unclaimed, which schedules, counts, and exhausts
+		// nothing more. An order that only waited gets none. These replace
+		// the retired expectation that the queue clock kept stopping the
+		// recovered order until the bound exhausted it (component-work-orders
+		// invariants 5 and 46; DEC-117(2)).
+		wantActs := 1
+		if item.condition == "waiting" {
+			wantActs = 0
+		}
+		if got.AutomaticRecoveryCount > bound || acts != wantActs || got.AutomaticRecoveryCount != wantActs || exhausted != 0 || got.State != core.WorkOrderQueued || !got.NextAutomaticRecoveryAt.IsZero() {
+			t.Fatalf("%s count=%d acts=%d exhausted=%d bound=%d, want %d recoveries and an order waiting with nothing scheduled: order=%+v", item.label, got.AutomaticRecoveryCount, acts, exhausted, bound, wantActs, got)
 		}
 		if !exhaustedAt.IsZero() {
 			for _, event := range listAutomaticRecoveryEvents(t, st, ctx, item.taskID) {
@@ -182,14 +193,7 @@ func applyPropertyCondition(t *testing.T, st store.Store, ctx context.Context, i
 		if _, err := taskops.New(st).TickOrderClock(ctx, time.Now().UTC().Add(time.Second)); err != nil {
 			t.Fatal(err)
 		}
-	case "stale":
-		persisted, err := st.GetWorkOrder(ctx, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = UpdateWorkOrder(ctx, st, persisted, core.WorkOrderCmdMarkStale); err != nil {
-			t.Fatal(err)
-		}
+	case "waiting":
 	case "expired":
 		if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "expire-" + id, ClientToken: "expire-" + id, Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)

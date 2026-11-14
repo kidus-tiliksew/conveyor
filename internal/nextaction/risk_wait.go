@@ -41,7 +41,7 @@ func planRiskWaitOrder(in Input) *core.WorkOrder {
 // a judgment and offers no approval.
 func planRiskWaitBuild(in Input) built {
 	order := planRiskWaitOrder(in)
-	row := built{actor: ActorAgent, kind: KindQueued, reason: PlanRiskRating, variant: PlanRiskRating, order: order, deadline: queueDeadline(*order)}
+	row := built{actor: ActorAgent, kind: KindQueued, reason: PlanRiskRating, variant: PlanRiskRating, order: order}
 	if order.State == core.WorkOrderClaimed {
 		row.kind, row.deadline = KindWorking, executionDeadline(*order)
 	}

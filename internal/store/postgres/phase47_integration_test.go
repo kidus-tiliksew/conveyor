@@ -291,12 +291,18 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: staleJob.ID, TaskID: staleTaskID, JobID: staleJob.ID, Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: time.Now().Add(-2 * time.Hour), QueueDeadline: time.Now().Add(-time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if stale, getErr := st.GetWorkOrder(ctx, staleJob.ID); getErr != nil || stale.State != core.WorkOrderStale || stale.Claimable {
-		t.Fatalf("stale=%+v err=%v", stale, getErr)
+	// An order nobody claimed waits past its stored queue deadline: it reads
+	// queued and claimable, and redispatch finds nothing stale. This replaces
+	// the retired expectation that it read stale and redispatch gave it a new
+	// queue window (component-work-orders invariant 5).
+	if waiting, getErr := st.GetWorkOrder(ctx, staleJob.ID); getErr != nil || waiting.State != core.WorkOrderQueued || !waiting.Claimable {
+		t.Fatalf("waiting=%+v err=%v", waiting, getErr)
 	}
-	redispatched, err := storetest.For(st).RedispatchWorkOrder(ctx, staleJob.ID, 24*time.Hour)
-	if err != nil || redispatched.State != core.WorkOrderQueued || !redispatched.Claimable || redispatched.RedispatchCount != 1 || !redispatched.ExecutionStartedAt.IsZero() {
-		t.Fatalf("redispatched=%+v err=%v", redispatched, err)
+	if _, err = storetest.For(st).RedispatchWorkOrder(ctx, staleJob.ID, 24*time.Hour); err == nil || !strings.Contains(err.Error(), "is not stale") {
+		t.Fatalf("redispatch of a waiting order err=%v", err)
+	}
+	if waiting, getErr := st.GetWorkOrder(ctx, staleJob.ID); getErr != nil || waiting.State != core.WorkOrderQueued || waiting.RedispatchCount != 0 {
+		t.Fatalf("waiting after refused redispatch=%+v err=%v", waiting, getErr)
 	}
 	publication := core.ReviewPublication{ReviewWorkOrderID: task.ID + "-review", TaskID: task.ID, JobID: task.ID + "-review", Verdict: "approve", ReasonCode: "approved", Summary: "passes", ReviewerModel: "gpt", ReviewerSession: "distinct", SameModelAsImplementer: "true", RequiredEffort: "high"}
 	if err = st.QueueReviewPublication(ctx, publication); err != nil {

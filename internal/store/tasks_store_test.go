@@ -263,8 +263,15 @@ func TestStalledTaskDerivesOnlyActionableNonTerminalOrders(t *testing.T) {
 	if stalled == nil || stalled.WorkOrder.ID != "retry" || stalled.LastFailure == "" {
 		t.Fatalf("stalled=%+v", stalled)
 	}
-	if got := StalledTask([]core.WorkOrder{{ID: "expired", State: core.WorkOrderStale, LastFailureDetail: "queue wait exceeded"}}); got == nil || got.Reason != "queue deadline expired" || got.LastFailure != "queue wait exceeded" {
-		t.Fatalf("expired order stalled=%+v", got)
+	// Waiting unclaimed is no stall: an order past the former queue deadline
+	// and a stored stale order both read as waiting (req-task-lifecycle-and-queue
+	// AC-9.4, AC-9.5).
+	past := time.Now().UTC().Add(-24 * time.Hour)
+	if got := StalledTask([]core.WorkOrder{{ID: "waiting", State: core.WorkOrderQueued, QueueEnteredAt: past.Add(-24 * time.Hour), QueueDeadline: past}}); got != nil {
+		t.Fatalf("waiting order stalled=%+v", got)
+	}
+	if got := StalledTask([]core.WorkOrder{{ID: "legacy", State: core.WorkOrderStale, LastFailureDetail: "queue wait exceeded"}}); got != nil {
+		t.Fatalf("stored stale order stalled=%+v", got)
 	}
 	if got := StalledTask([]core.WorkOrder{{ID: "loop", State: core.WorkOrderQueued, AutomaticRetryCount: 2, LastFailureMessage: "dispatch failed"}}); got == nil || got.Reason != "dispatch is failing repeatedly" {
 		t.Fatalf("loop stalled=%+v", got)

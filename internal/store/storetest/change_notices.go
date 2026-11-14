@@ -200,10 +200,14 @@ func runNextDeadline(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		return stored
 	}
+	// An order nobody has claimed has no queue clock: its stored
+	// queue_deadline is no deadline. This replaces the retired expectation
+	// that NextDeadline returns it (component-work-orders invariant 5;
+	// req-task-lifecycle-and-queue AC-9.5).
 	queued := order(base.Add(3 * time.Hour))
 	next, ok, err := st.NextDeadline(ctx, time.Time{})
-	if err != nil || !ok || !next.Equal(queued.QueueDeadline) {
-		t.Fatalf("queued NextDeadline=%s ok=%t err=%v, want queue deadline %s", next, ok, err, queued.QueueDeadline)
+	if err != nil || ok {
+		t.Fatalf("queued NextDeadline=%s ok=%t err=%v, want none for stored queue deadline %s", next, ok, err, queued.QueueDeadline)
 	}
 
 	// A claim records the lease and the execution deadline; the earlier one
@@ -237,14 +241,14 @@ func runNextDeadline(t *testing.T, x Fixture) {
 		t.Fatalf("claimed NextDeadline=%s ok=%t err=%v, want lease %s", next, ok, err, lease)
 	}
 	// after excludes the earliest: the next one is the execution deadline,
-	// then the queued order's queue deadline.
+	// and the queued order's stored queue deadline follows as nothing.
 	next, ok, err = st.NextDeadline(ctx, lease)
 	if err != nil || !ok || !next.Equal(claimedOrder.ExecutionDeadline) {
 		t.Fatalf("NextDeadline after the lease=%s ok=%t err=%v, want execution deadline %s", next, ok, err, claimedOrder.ExecutionDeadline)
 	}
 	next, ok, err = st.NextDeadline(ctx, claimedOrder.ExecutionDeadline)
-	if err != nil || !ok || !next.Equal(queued.QueueDeadline) {
-		t.Fatalf("NextDeadline after the execution deadline=%s ok=%t err=%v, want %s", next, ok, err, queued.QueueDeadline)
+	if err != nil || ok {
+		t.Fatalf("NextDeadline after the execution deadline=%s ok=%t err=%v, want none before stored queue deadline %s", next, ok, err, queued.QueueDeadline)
 	}
 
 	// A cancelled order records no deadline.

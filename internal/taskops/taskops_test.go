@@ -66,39 +66,61 @@ func TestReadsArePureAndOrderClockPersistsCanonicalCommands(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	now := time.Now().UTC()
-	task := core.Task{ID: "order-clock", Workspace: "demo", State: core.TaskRunning}
-	order := core.WorkOrder{
-		ID: "order-clock-implement-1", TaskID: task.ID, JobID: "order-clock-implement-1",
-		Stage: core.StageImplement, State: core.WorkOrderQueued,
-		QueueEnteredAt: now.Add(-time.Hour), QueueDeadline: now.Add(-time.Minute),
+	seed := func(taskID string) core.WorkOrder {
+		t.Helper()
+		task := core.Task{ID: taskID, Workspace: "demo", State: core.TaskRunning}
+		order := core.WorkOrder{
+			ID: taskID + "-implement-1", TaskID: task.ID, JobID: taskID + "-implement-1",
+			Stage: core.StageImplement, State: core.WorkOrderQueued,
+			QueueEnteredAt: now.Add(-time.Hour), QueueDeadline: now.Add(-time.Minute),
+		}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+		return order
 	}
-	if err := st.CreateTask(ctx, task); err != nil {
+	// An order nobody claimed reads as queued past its stored queue deadline,
+	// and the clock has nothing to persist for it (component-work-orders
+	// invariant 5). This replaces the retired expectation that reads
+	// projected it stale and the clock persisted work_order.stale.
+	waiting := seed("order-clock-waiting")
+	// A claimed order past its execution deadline reads as timed_out, and only
+	// the clock persists that transition (component-work-orders invariant 8).
+	timing := seed("order-clock")
+	if _, err := storetest.ClaimWorkOrder(ctx, st, timing.ID, core.WorkOrderClaim{SessionID: "clock", ClientToken: "clock", Lease: time.Hour, ExecutionTimeout: time.Nanosecond}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
-		t.Fatal(err)
-	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
-		t.Fatal(err)
-	}
-	before, _ := st.CountEvents(ctx, task.ID, "work_order.stale")
-	projected, err := st.GetWorkOrder(ctx, order.ID)
-	if err != nil || projected.State != core.WorkOrderStale {
+	time.Sleep(time.Millisecond)
+	before, _ := st.CountEvents(ctx, timing.TaskID, "work_order.timed_out")
+	projected, err := st.GetWorkOrder(ctx, timing.ID)
+	if err != nil || projected.State != core.WorkOrderTimedOut {
 		t.Fatalf("projected=%+v err=%v", projected, err)
 	}
-	_, _ = st.ListWorkOrders(ctx)
-	_, _ = st.ListTaskWorkOrders(ctx, task.ID)
-	afterReads, _ := st.CountEvents(ctx, task.ID, "work_order.stale")
-	if afterReads != before {
-		t.Fatalf("observational reads emitted %d stale events, before=%d", afterReads, before)
+	if read, err := st.GetWorkOrder(ctx, waiting.ID); err != nil || read.State != core.WorkOrderQueued || !read.Claimable {
+		t.Fatalf("waiting read=%+v err=%v", read, err)
 	}
-	count, err := taskops.New(st).TickOrderClock(ctx, now)
+	_, _ = st.ListWorkOrders(ctx)
+	_, _ = st.ListTaskWorkOrders(ctx, timing.TaskID)
+	afterReads, _ := st.CountEvents(ctx, timing.TaskID, "work_order.timed_out")
+	if afterReads != before {
+		t.Fatalf("observational reads emitted %d timed_out events, before=%d", afterReads, before)
+	}
+	count, err := taskops.New(st).TickOrderClock(ctx, time.Now().UTC())
 	if err != nil || count != 1 {
 		t.Fatalf("clock count=%d err=%v", count, err)
 	}
-	afterTick, _ := st.CountEvents(ctx, task.ID, "work_order.stale")
+	afterTick, _ := st.CountEvents(ctx, timing.TaskID, "work_order.timed_out")
 	if afterTick != before+1 {
-		t.Fatalf("clock stale events=%d before=%d", afterTick, before)
+		t.Fatalf("clock timed_out events=%d before=%d", afterTick, before)
+	}
+	if stale, _ := st.CountEvents(ctx, waiting.TaskID, "work_order.stale"); stale != 0 {
+		t.Fatalf("waiting order stale events=%d, want none", stale)
 	}
 }
 

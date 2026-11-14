@@ -277,6 +277,30 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+			}, SeedStoredStaleWorkOrder: func(t *testing.T, ctx context.Context, orderID string, exhausted bool, scheduledAt time.Time) {
+				// A row the retired queue clock left; no command writes stale
+				// any more (component-work-orders invariant 5).
+				query := `UPDATE work_orders SET state='stale'`
+				args := []any{}
+				if exhausted {
+					query += `,retry_suppressed=TRUE,retry_suppression_reason='automatic recovery exhausted',automatic_recovery_count=2,automatic_recovery_window_started_at=?`
+					args = append(args, time.Now().UTC().Add(-time.Hour))
+				}
+				if !scheduledAt.IsZero() {
+					query += `,next_automatic_recovery_at=?`
+					args = append(args, scheduledAt.UTC())
+				} else if exhausted {
+					query += `,next_automatic_recovery_at=NULL`
+				}
+				query += ` WHERE workspace_id=? AND id=?`
+				args = append(args, ws, orderID)
+				result, err := st.db.ExecContext(ctx, query, args...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+					t.Fatalf("seed stored stale rows=%d err=%v", rows, err)
+				}
 			}, SeedStoredTaskHold: func(t *testing.T, ctx context.Context, taskID string) {
 				// A row written before the hold retirement; no public writer
 				// sets the column (DEC-125(3); component-persistence).

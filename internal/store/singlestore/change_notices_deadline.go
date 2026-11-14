@@ -28,12 +28,10 @@ const nextDeadlineSQL = `
 SELECT 'deadline' AS kind, MIN(d) AS at, CAST(NULL AS CHAR) AS config_yaml FROM (
 	SELECT lease_expires_at AS d FROM work_orders
 		WHERE workspace_id=? AND state='claimed' AND lease_expires_at > ?
-	UNION ALL SELECT queue_deadline AS d FROM work_orders
-		WHERE workspace_id=? AND state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline > ?
 	UNION ALL SELECT execution_deadline AS d FROM work_orders
 		WHERE workspace_id=? AND state IN ('queued','claimed') AND execution_deadline > ?
 	UNION ALL SELECT next_automatic_recovery_at AS d FROM work_orders
-		WHERE workspace_id=? AND state IN ('queued','claimed','stale','timed_out') AND next_automatic_recovery_at > ?
+		WHERE workspace_id=? AND state IN ('queued','claimed','timed_out') AND next_automatic_recovery_at > ?
 	UNION ALL SELECT check_status_deadline AS d FROM tasks
 		WHERE workspace_id=? AND state='approved' AND merge_approval=FALSE AND check_status_deadline > ?
 	UNION ALL SELECT next_attempt_at AS d FROM verification_publication_deliveries
@@ -59,7 +57,7 @@ func (s *Store) NextDeadline(ctx context.Context, after time.Time) (time.Time, b
 	if bound.Before(deadlineFloor) {
 		bound = deadlineFloor
 	}
-	rows, err := documentRows(ctx, s.db, nextDeadlineSQL, ws, bound, ws, bound, ws, bound, ws, bound, ws, bound, ws, bound, ws, bound, ws, ws, ws)
+	rows, err := documentRows(ctx, s.db, nextDeadlineSQL, ws, bound, ws, bound, ws, bound, ws, bound, ws, bound, ws, bound, ws, ws, ws)
 	if err != nil {
 		return time.Time{}, false, err
 	}

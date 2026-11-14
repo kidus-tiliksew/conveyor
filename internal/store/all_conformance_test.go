@@ -91,6 +91,8 @@ func TestMemoryConformance(t *testing.T) {
 				store.SeedSetupContractForTest(t, st, taskID, raw)
 			}, SeedStoredTaskHold: func(t *testing.T, _ context.Context, taskID string) {
 				store.SeedStoredTaskHoldForTest(t, st, taskID)
+			}, SeedStoredStaleWorkOrder: func(t *testing.T, _ context.Context, orderID string, exhausted bool, scheduledAt time.Time) {
+				store.SeedStoredStaleWorkOrderForTest(t, st, orderID, exhausted, scheduledAt)
 			}, SeedRiskRating: func(t *testing.T, ctx context.Context, rating core.RiskRating) {
 				store.SeedRiskRatingForTest(t, st, ctx, rating)
 			}, SeedVerificationAttemptAuthorization: func(t *testing.T, ctx context.Context, attemptID, authorizationID string) {

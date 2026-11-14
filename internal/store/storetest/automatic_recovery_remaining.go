@@ -227,81 +227,61 @@ func runWindowRollover(t *testing.T, st store.Store, ctx context.Context, worksp
 	}
 }
 
+// runOperatorRedispatchReset proves that an order nobody claimed never reaches
+// automatic-recovery exhaustion, so it never needs an operator reset: ticks
+// past its stored queue deadline and through whole recovery windows record no
+// stale state, schedule, recovery, or exhaustion, and the redispatch command
+// finds nothing to redispatch. Its first claim's lease loss is then a genuine
+// mechanical stop that recovers automatically under one fresh request ID.
+// This replaces the retired expectation that the clock marked the order
+// stale, redispatched it to the bound, exhausted it, and needed an operator
+// redispatch to reset it (component-work-orders invariants 5, 46 to 48;
+// DEC-117(1), (2)).
 func runOperatorRedispatchReset(t *testing.T, st store.Store, ctx context.Context, workspace string) {
 	t.Helper()
 	restoreQueueTimeout := setWorkOrderQueueTimeout(t, st, ctx, time.Minute)
 	defer restoreQueueTimeout()
 	id := seedStaleOrder(t, st, ctx, workspace)
-	at := time.Now().UTC()
-	for range 2 {
-		if _, err := taskops.New(st).TickOrderClock(ctx, at); err != nil {
-			t.Fatal(err)
-		}
-		scheduled, err := st.GetWorkOrder(ctx, id)
-		if err != nil || scheduled.NextAutomaticRecoveryAt.IsZero() {
-			t.Fatalf("stale schedule=%+v err=%v", scheduled, err)
-		}
-		if _, err = taskops.New(st).TickOrderClock(ctx, scheduled.NextAutomaticRecoveryAt); err != nil {
-			t.Fatal(err)
-		}
-		current, err := st.GetWorkOrder(ctx, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		at = current.QueueDeadline.Add(time.Second)
-	}
-	if _, err := taskops.New(st).TickOrderClock(ctx, at); err != nil {
-		t.Fatal(err)
-	}
-	exhausted, err := st.GetWorkOrder(ctx, id)
-	if err != nil || exhausted.RetrySuppressionReason != core.AutomaticRecoveryExhaustedReason {
-		t.Fatalf("stale exhausted=%+v err=%v", exhausted, err)
-	}
-	events, err := st.ListEvents(ctx, exhausted.TaskID)
+	before, err := st.GetWorkOrder(ctx, id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	exhaustedEvents := 0
+	at := time.Now().UTC()
+	for range 4 {
+		if _, err = taskops.New(st).TickOrderClock(ctx, at); err != nil {
+			t.Fatal(err)
+		}
+		waiting, err := st.GetWorkOrder(ctx, id)
+		if err != nil || waiting.State != core.WorkOrderQueued || !waiting.NextAutomaticRecoveryAt.IsZero() || waiting.AutomaticRecoveryCount != 0 || waiting.RetrySuppressed || waiting.RedispatchCount != 0 || !waiting.QueueEnteredAt.Equal(before.QueueEnteredAt) {
+			t.Fatalf("waiting order after a tick at %s=%+v err=%v", at, waiting, err)
+		}
+		at = at.Add(25 * time.Hour)
+	}
+	if ids := automaticRequestIDs(t, st, ctx, before.TaskID); len(ids) != 0 {
+		t.Fatalf("waiting order automatic request ids=%v, want none", ids)
+	}
+	events, err := st.ListEvents(ctx, before.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, event := range events {
-		if event.Kind != "work_order.recovery_exhausted" {
-			continue
-		}
-		exhaustedEvents++
-		var payload struct {
-			Reason string `json:"reason"`
-		}
-		if err = json.Unmarshal(event.Payload, &payload); err != nil || payload.Reason != core.AutomaticRecoveryExhaustedReason {
-			t.Fatalf("exhausted event=%s err=%v", event.Payload, err)
+		switch event.Kind {
+		case "work_order.stale", "work_order.recovery_exhausted", "work_order.redispatched", "work_order.recovered":
+			t.Fatalf("waiting order recorded %s: %s", event.Kind, event.Payload)
 		}
 	}
-	if exhaustedEvents != 1 {
-		t.Fatalf("exhausted events=%d", exhaustedEvents)
+	if _, err = RedispatchWorkOrder(ctx, st, id, time.Hour); err == nil || !strings.Contains(err.Error(), "is not stale") {
+		t.Fatalf("operator redispatch of a waiting order err=%v, want not stale", err)
 	}
-	beforeIDs := automaticRequestIDs(t, st, ctx, exhausted.TaskID)
-	reset, err := RedispatchWorkOrder(ctx, st, id, time.Hour)
-	if err != nil || reset.AutomaticRecoveryCount != 0 || reset.RetrySuppressed {
-		t.Fatalf("operator redispatch=%+v err=%v", reset, err)
-	}
-	if _, err = ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "after-reset", ClientToken: "after-reset-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "after-wait", ClientToken: "after-wait-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	recovered := recoverAutomatically(t, st, ctx, id)
 	if recovered.AutomaticRecoveryCount != 1 {
-		t.Fatalf("recovery after redispatch=%+v", recovered)
+		t.Fatalf("recovery after the first claim=%+v", recovered)
 	}
-	afterIDs := automaticRequestIDs(t, st, ctx, recovered.TaskID)
-	seen := map[string]bool{}
-	for _, requestID := range beforeIDs {
-		seen[requestID] = true
-	}
-	var fresh []string
-	for _, requestID := range afterIDs {
-		if !seen[requestID] {
-			fresh = append(fresh, requestID)
-		}
-	}
-	if len(fresh) != 1 {
-		t.Fatalf("post-reset request ids=%v before=%v after=%v", fresh, beforeIDs, afterIDs)
+	if ids := automaticRequestIDs(t, st, ctx, recovered.TaskID); len(ids) != 1 {
+		t.Fatalf("request ids after the first claim's recovery=%v, want one", ids)
 	}
 }
 
@@ -515,6 +495,8 @@ func seedRunningOrder(t *testing.T, st store.Store, ctx context.Context, workspa
 	return id
 }
 
+// seedStaleOrder files an order nobody has claimed whose stored queue deadline
+// has passed: the retired queue clock would have marked it stale.
 func seedStaleOrder(t *testing.T, st store.Store, ctx context.Context, workspace string) string {
 	t.Helper()
 	now := time.Now().UTC()

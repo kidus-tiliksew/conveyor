@@ -137,9 +137,11 @@ func workOrderEventCommand(event core.Event, from core.WorkOrderState) (core.Wor
 	case "work_order.stale":
 		return core.WorkOrderCmdMarkStale, true
 	case "work_order.redispatched":
-		// W14 is stale -> queued for never-claimed queue timeouts. Historical
-		// queued recovery events were state-preserving metadata resets, so they
-		// carry no lifecycle command (component-task-lifecycle).
+		// W14 is stale -> queued: the retired queue clock's redispatch, and
+		// the clock's return of a stored stale order (component-work-orders
+		// invariant 5). Historical queued recovery events were
+		// state-preserving metadata resets, so they carry no lifecycle command
+		// (component-task-lifecycle).
 		if from == core.WorkOrderQueued {
 			return "", true
 		}

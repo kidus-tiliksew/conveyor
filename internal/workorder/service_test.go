@@ -2716,8 +2716,18 @@ func TestOperatorRecoveryRetainsFrozenSetupWhenNamedDefinitionIsMissing(t *testi
 	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
-	if persisted, err := st.GetWorkOrder(ctx, order.ID); err != nil || persisted.State != core.WorkOrderStale {
-		t.Fatalf("stale order=%+v err=%v", persisted, err)
+	// A never-claimed order no longer goes stale, so the recoverable order is
+	// one whose claim timed out. This replaces the retired queue-clock stale
+	// fixture (component-work-orders invariant 5).
+	if _, err := storetest.ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "missing-setup", ClientToken: "missing-setup", Lease: time.Hour, ExecutionTimeout: time.Nanosecond}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	if _, err := taskops.New(st).TickOrderClock(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if persisted, err := st.GetWorkOrder(ctx, order.ID); err != nil || persisted.State != core.WorkOrderTimedOut {
+		t.Fatalf("timed-out order=%+v err=%v", persisted, err)
 	}
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
 		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour}, nil
@@ -2737,19 +2747,25 @@ func TestOperatorRecoveryRetainsFrozenSetupWhenNamedDefinitionIsMissing(t *testi
 	}
 }
 
-func TestStaleQueuedOrderIsListedNonClaimableAndRejected(t *testing.T) {
+// An order nobody claimed that waits past its stored queue deadline is listed
+// queued and claimable, and the service claims it. This replaces the retired
+// expectation that it was listed stale, unclaimable, and refused with
+// ErrWorkOrderStale (req-task-lifecycle-and-queue AC-9.5; component-work-orders
+// invariant 5).
+func TestWaitingQueuedOrderIsListedClaimableAndClaimed(t *testing.T) {
 	t.Parallel()
-	ctx, st, service, order := newLifecycleService(t, "stale")
+	ctx, st, service, order := newLifecycleService(t, "waiting")
 	order.QueueDeadline = time.Now().Add(-time.Second)
 	if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	orders, err := service.List(ctx)
-	if err != nil || len(orders) != 1 || orders[0].State != core.WorkOrderStale || orders[0].Claimable {
+	if err != nil || len(orders) != 1 || orders[0].State != core.WorkOrderQueued || !orders[0].Claimable {
 		t.Fatalf("orders = %+v err=%v", orders, err)
 	}
-	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "agent", Agent: "codex", Model: "gpt"}); !errors.Is(err, store.ErrWorkOrderStale) {
-		t.Fatalf("stale claim error = %v", err)
+	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "agent", Agent: "codex", Model: "gpt"})
+	if err != nil || claimed.State != core.WorkOrderClaimed || !claimed.QueueEnteredAt.Equal(order.QueueEnteredAt) {
+		t.Fatalf("claim = %+v err=%v, want the order claimed in its queue position", claimed, err)
 	}
 }
 

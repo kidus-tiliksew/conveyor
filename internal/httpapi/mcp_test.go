@@ -860,9 +860,12 @@ func TestMCPRedispatchWorkOrderIsNotOffered(t *testing.T) {
 		t.Fatalf("%s still has a capability", retiredTool)
 	}
 
+	// The fixture order waited past its stored queue deadline unclaimed, so
+	// it stays queued and claimable: the retired queue clock no longer marks
+	// it stale (component-work-orders invariant 5).
 	beforeOrder, err := st.GetWorkOrder(ctx, order.ID)
-	if err != nil || beforeOrder.State != core.WorkOrderStale {
-		t.Fatalf("fixture order=%+v err=%v, want stale", beforeOrder, err)
+	if err != nil || beforeOrder.State != core.WorkOrderQueued || !beforeOrder.Claimable {
+		t.Fatalf("fixture order=%+v err=%v, want queued and claimable", beforeOrder, err)
 	}
 	beforeEvents, err := st.ListEvents(ctx, task.ID)
 	if err != nil {
@@ -895,9 +898,11 @@ func TestMCPRedispatchWorkOrderIsNotOffered(t *testing.T) {
 	if !reflect.DeepEqual(beforeOrder, afterOrder) || len(afterEvents) != len(beforeEvents) {
 		t.Fatalf("refused call changed state: order %+v -> %+v, events %d -> %d", beforeOrder, afterOrder, len(beforeEvents), len(afterEvents))
 	}
-	// Control: the order was redispatchable, so the name alone caused the refusal.
-	if redispatched, err := storetest.RedispatchWorkOrder(ctx, st, order.ID, time.Hour); err != nil || redispatched.RedispatchCount != 1 {
-		t.Fatalf("store redispatch after the refusal = %+v err=%v", redispatched, err)
+	// Control: the order is still claimable in place, so the name alone
+	// caused the refusal. This replaces the retired control, which
+	// redispatched a queue-clock stale order through the store.
+	if claimed, err := storetest.ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "after-refusal", ClientToken: "after-refusal", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil || claimed.RedispatchCount != 0 {
+		t.Fatalf("claim after the refusal = %+v err=%v", claimed, err)
 	}
 }
 

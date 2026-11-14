@@ -133,19 +133,30 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 	if err = CreateWorkOrder(ctx, st, core.WorkOrder{ID: staleID, TaskID: staleTask, JobID: staleID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now.Add(-time.Minute), QueueDeadline: now.Add(-time.Second)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = taskops.New(st).TickOrderClock(ctx, now); err != nil {
+	// An order nobody claimed is waiting, not stopped: ticks past its stored
+	// queue deadline, and past the time a recovery would have run, leave it
+	// queued in place with nothing scheduled or counted. This replaces the
+	// retired expectation that the clock marked it stale, scheduled a
+	// recovery, and redispatched it (component-work-orders invariants 5 and
+	// 46; DEC-117(2)).
+	for _, at := range []time.Time{now, now.Add(time.Hour), now.Add(72 * time.Hour)} {
+		if _, err = taskops.New(st).TickOrderClock(ctx, at); err != nil {
+			t.Fatal(err)
+		}
+		waiting, err := st.GetWorkOrder(ctx, staleID)
+		if err != nil || waiting.State != core.WorkOrderQueued || !waiting.Claimable || !waiting.NextAutomaticRecoveryAt.IsZero() || waiting.AutomaticRecoveryCount != 0 || waiting.RedispatchCount != 0 || waiting.RetrySuppressed {
+			t.Fatalf("waiting order after a tick at %s=%+v err=%v", at, waiting, err)
+		}
+	}
+	waitingEvents, err := st.ListEvents(ctx, staleTask)
+	if err != nil {
 		t.Fatal(err)
 	}
-	stale, err := st.GetWorkOrder(ctx, staleID)
-	if err != nil || stale.State != core.WorkOrderStale || stale.NextAutomaticRecoveryAt.IsZero() {
-		t.Fatalf("stale schedule=%+v err=%v", stale, err)
-	}
-	if _, err = taskops.New(st).TickOrderClock(ctx, stale.NextAutomaticRecoveryAt); err != nil {
-		t.Fatal(err)
-	}
-	redispatched, err := st.GetWorkOrder(ctx, staleID)
-	if err != nil || redispatched.State != core.WorkOrderQueued || redispatched.AutomaticRecoveryCount != 1 {
-		t.Fatalf("stale redispatch=%+v err=%v", redispatched, err)
+	for _, event := range waitingEvents {
+		switch event.Kind {
+		case "work_order.stale", "work_order.redispatched", "work_order.recovered", "work_order.recovery_exhausted":
+			t.Fatalf("waiting order recorded %s: %s", event.Kind, event.Payload)
+		}
 	}
 	runAutomaticRecoveryRemaining(t, st, ctx, workspace)
 }

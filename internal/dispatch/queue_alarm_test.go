@@ -31,6 +31,9 @@ type alarmHarness struct {
 	ctx context.Context
 	st  store.Backend
 	hub *changes.Hub
+
+	runtime     *logqueue.Runtime
+	farDeadline time.Time
 }
 
 func newAlarmHarness(t *testing.T) *alarmHarness {
@@ -41,8 +44,15 @@ func newAlarmHarness(t *testing.T) *alarmHarness {
 	}
 	st := store.NewVolatileBackend()
 	h := &alarmHarness{t: t, ctx: store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test"), st: st, hub: st.Changes()}
-	// A far deadline: the alarm sleeps until it once the runtime starts.
+	// A far deadline: the alarm sleeps until it once the runtime starts. A
+	// queued order's stored queue deadline is no deadline
+	// (component-work-orders invariant 5), so the far deadline is the lease
+	// of a claimed order.
 	far := h.order(time.Now().UTC().Add(time.Hour))
+	if _, err := storetest.ClaimWorkOrder(h.ctx, st, far.ID, core.WorkOrderClaim{SessionID: "far", ClientToken: "far-token", ClaimantID: core.TaskRunClaimantID("usr-far"), OwnerUserID: "usr-far", Lease: time.Hour, ExecutionTimeout: 2 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	far = h.state(far.ID)
 	d := New(st, cfg, nil)
 	runtime, err := testRuntime(t, st.Log(), d, &ShutdownMarker{}, []string{"test"}, map[string]*config.Config{"test": cfg}, nil)
 	if err != nil {
@@ -56,7 +66,9 @@ func newAlarmHarness(t *testing.T) *alarmHarness {
 		defer cancel()
 		_ = runtime.StopAndCancel(ctx)
 	})
-	h.waitSleeping(runtime, far.QueueDeadline)
+	h.farDeadline = far.LeaseExpiresAt
+	h.waitSleeping(runtime, h.farDeadline)
+	h.runtime = runtime
 	return h
 }
 
@@ -148,11 +160,24 @@ func TestDeadlineAlarmAppliesLeaseExpiry(t *testing.T) {
 	h.within("lease expiry", lease, at)
 }
 
-func TestDeadlineAlarmAppliesQueueDeadline(t *testing.T) {
+// A queued order's stored queue deadline arms no alarm and changes nothing
+// when it passes: the order waits, queued and claimable. This replaces the
+// retired expectation that the alarm fired at the queue deadline and marked
+// the order stale (component-work-orders invariant 5;
+// req-task-lifecycle-and-queue AC-9.5).
+func TestDeadlineAlarmIgnoresStoredQueueDeadline(t *testing.T) {
 	h := newAlarmHarness(t)
-	order := h.order(time.Now().UTC().Add(1500 * time.Millisecond))
-	at := h.applied(order.TaskID, "queue deadline", func() bool { return h.state(order.ID).State == core.WorkOrderStale })
-	h.within("queue deadline", order.QueueDeadline, at)
+	order := h.order(time.Now().UTC().Add(500 * time.Millisecond))
+	time.Sleep(time.Until(order.QueueDeadline) + time.Second)
+	if target, armed := h.runtime.AlarmTarget("test"); !armed || !target.Equal(h.farDeadline) {
+		t.Fatalf("alarm target=%s armed=%t, want the far deadline %s", target, armed, h.farDeadline)
+	}
+	if got := h.state(order.ID); got.State != core.WorkOrderQueued || !got.Claimable || got.RedispatchCount != 0 {
+		t.Fatalf("order after its stored queue deadline=%+v, want it waiting", got)
+	}
+	if stale, err := h.st.CountEvents(h.ctx, order.TaskID, "work_order.stale"); err != nil || stale != 0 {
+		t.Fatalf("stale events=%d err=%v, want none", stale, err)
+	}
 }
 
 func TestDeadlineAlarmAppliesPublicationRetry(t *testing.T) {

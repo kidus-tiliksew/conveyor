@@ -339,7 +339,6 @@ func init() {
 	}
 	for _, reason := range []struct{ code, label, summary string }{
 		{StallRetrySuppressed, "Retry suppressed", "Automatic retry is suppressed."},
-		{StallStale, "Stale", "The queue deadline expired before anyone claimed it."},
 		{StallTimedOut, "Timed out", "The execution deadline passed."},
 		{StallUnclaimable, "Unclaimable", "No eligible claimant can take this order."},
 		{StallDispatchFailing, "Dispatch failing", "Dispatch is failing repeatedly."},
@@ -423,7 +422,7 @@ func Kinds() []string {
 }
 
 func StallReasons() []string {
-	return []string{StallRetrySuppressed, StallStale, StallTimedOut, StallUnclaimable, StallDispatchFailing, StallAutomaticRecoveryExhausted, StallClaimFailing}
+	return []string{StallRetrySuppressed, StallTimedOut, StallUnclaimable, StallDispatchFailing, StallAutomaticRecoveryExhausted, StallClaimFailing}
 }
 
 func ReleaseOutcomes() []string {

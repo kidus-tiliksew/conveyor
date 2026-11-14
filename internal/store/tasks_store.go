@@ -217,9 +217,12 @@ type StalledState struct {
 
 func StalledTask(orders []core.WorkOrder) *StalledState {
 	for i := len(orders) - 1; i >= 0; i-- {
-		order := orders[i]
+		// Waiting unclaimed is never a stall: a stored stale order reads as the
+		// queued order the clock returns (req-task-lifecycle-and-queue AC-9.4,
+		// AC-9.5).
+		order := core.NormalizeLegacyStaleWorkOrder(orders[i], time.Now().UTC())
 		switch order.State {
-		case core.WorkOrderQueued, core.WorkOrderStale, core.WorkOrderTimedOut:
+		case core.WorkOrderQueued, core.WorkOrderTimedOut:
 		default:
 			continue
 		}
@@ -229,8 +232,6 @@ func StalledTask(orders []core.WorkOrder) *StalledState {
 			reason = "dependency reached a terminal state without merging"
 		case order.RetrySuppressed:
 			reason = "automatic retry is suppressed"
-		case order.State == core.WorkOrderStale:
-			reason = "queue deadline expired"
 		case order.AutomaticRetryCount >= 2 && strings.TrimSpace(order.LastFailureMessage) != "":
 			reason = "dispatch is failing repeatedly"
 		}

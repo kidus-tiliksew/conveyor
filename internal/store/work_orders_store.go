@@ -1694,8 +1694,14 @@ func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requiremen
 // persists the same canonical commands asynchronously. The copy owns its
 // declared review seat count, so a reader cannot mutate stored state through
 // it (feature-review-seat-minimum RS-2, RS-4).
+//
+// No clock reads queue_deadline: an order nobody has claimed waits with no
+// deadline, and a stored order still holding the retired stale value reads as
+// the queued order the clock persists (component-work-orders invariants 5 and
+// 8; req-task-lifecycle-and-queue AC-9.5).
 func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 	order.DeclaredReviewSeats = copySeatCount(order.DeclaredReviewSeats)
+	order = NormalizeLegacyStaleWorkOrder(order, now)
 	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
 		!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
 		if order.State == core.WorkOrderClaimed {
@@ -1722,12 +1728,6 @@ func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 		return order
 	}
 	if order.State == core.WorkOrderQueued && !order.QueueBlockedAt.IsZero() {
-		order.Claimable = false
-		return order
-	}
-	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
-		order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
-		order.State = core.WorkOrderStale
 		order.Claimable = false
 		return order
 	}
@@ -1811,12 +1811,14 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 		elapsedExecution := (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
 			!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)
 		elapsedClaim := order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.IsZero() && !order.LeaseExpiresAt.After(now)
-		elapsedQueue := order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
-			order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now)
+		// No queue deadline selects clock work; a stored stale order is
+		// selected so the clock returns it to queued (component-work-orders
+		// invariant 5).
+		legacyStale := order.State == core.WorkOrderStale
 		// A released authority conflict is a candidate whatever the recovery
 		// bound (feature-bounded-automatic-recovery AR-3a).
 		answered := AnsweredAuthorityCandidate(m.tasks[order.TaskID], order)
-		if elapsedExecution || elapsedClaim || elapsedQueue || answered || m.automaticRecoveryCandidateLocked(order, now) {
+		if elapsedExecution || elapsedClaim || legacyStale || answered || m.automaticRecoveryCandidateLocked(order, now) {
 			seen[order.TaskID] = struct{}{}
 		}
 	}
@@ -1910,7 +1912,9 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 			claimOrders = append(claimOrders, candidate)
 		}
 	}
-	if order.State == core.WorkOrderQueued {
+	// A stored stale order is a queued order the clock has not yet returned
+	// (component-work-orders invariant 5), so it meets the same refusals.
+	if order.State == core.WorkOrderQueued || order.State == core.WorkOrderStale {
 		if err := WorkOrderRecoveryRefusal(m.tasks[order.TaskID], order, claimOrders); err != nil {
 			return core.WorkOrder{}, err
 		}
@@ -2293,15 +2297,17 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		}
 		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "outcome": order.LastAttemptOutcome, "release_cause": core.WorkOrderReleaseCauseLeaseLoss, "retry_suppressed": order.RetrySuppressed}), At: now})
 	}
-	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
-		order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
-		next, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdMarkStale)
-		if err != nil {
+	if order.State == core.WorkOrderStale {
+		// A stored stale order from the retired queue clock returns to queued
+		// in its queue position with one work_order.redispatched and no
+		// recovery counted (component-work-orders invariant 5).
+		if _, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRedispatch); err != nil {
 			return order
 		}
-		order.State, order.Claimable, order.UpdatedAt = next, false, now
+		order = NormalizeLegacyStaleWorkOrder(order, now)
+		order.UpdatedAt = now
 		m.workOrders[order.ID] = order
-		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.stale", Payload: WorkOrderEventPayload(order), At: now})
+		m.appendEventLocked(ctx, LegacyStaleNormalizedEvent(order, now))
 		return order
 	}
 	order.Claimable = order.ClaimableAt(now)
