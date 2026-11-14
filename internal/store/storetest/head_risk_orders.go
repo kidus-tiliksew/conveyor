@@ -528,6 +528,33 @@ func RunHeadRiskOrderConformance(t *testing.T, x Fixture) {
 		claimRisk(t, recordClaimedOrder.Order.ID, "reconcile-record-"+recordClaimed.ID)
 		off := fileTask(t, nil, core.TaskRunning, core.StageImplement)
 		submitHead(t, off, "h1", true)
+		// A plan risk order holds a plan approval, never a review round: a
+		// task that took a plan at triage and then advanced to review with
+		// its plan order still open is repaired.
+		planAtReview := fileTask(t, &enforce, core.TaskQueued, core.StageTriage)
+		_, err := taskops.ExecuteSetupChange(ctx, st, planAtReview.ID, func(lease taskops.TaskLease) (store.AttachPlanResult, error) {
+			return st.AttachTaskPlanCommand(ctx, lease, store.AttachPlanRequest{TaskID: planAtReview.ID, RequestID: "reconcile-plan-review-" + planAtReview.ID, Reason: "operator plan", Plan: planRiskPlan("", "")})
+		})
+		requireOK(t, err)
+		var planAtReviewOrder core.RiskOrder
+		for _, order := range riskOrders(t, planAtReview.ID) {
+			if order.Subject.PlanVersion > 0 && order.Open() {
+				planAtReviewOrder = order
+			}
+		}
+		if planAtReviewOrder.Order.ID == "" {
+			t.Fatalf("plan-at-review task has no open plan risk order: %+v", riskOrders(t, planAtReview.ID))
+		}
+		requireOK(t, st.RecordVerificationPullRequest(ctx, core.Event{TaskID: planAtReview.ID, Kind: store.SubmissionComparisonEventKind,
+			Payload: core.JSONPayload(map[string]any{"base_sha": "base-h1", "head_sha": "h1", "repository": "fixture/reconcile", "number": 2})}))
+		_, err = taskops.New(st).Perform(ctx, planAtReview.ID, taskops.Command{Kind: core.TaskDispatchStart})
+		requireOK(t, err)
+		_, err = taskops.New(st).Perform(ctx, planAtReview.ID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true})
+		requireOK(t, err)
+		finishDispatch(t, planAtReview.ID)
+		if current, err := st.GetTask(ctx, planAtReview.ID); err != nil || current.State != core.TaskQueued || current.NextStage != core.StageReview {
+			t.Fatalf("plan-at-review task=%+v err=%v, want queued at review", current, err)
+		}
 		// An ordinary order hold stays: the round of h1 is open.
 		roundOpen := fileTask(t, &enforce, core.TaskRunning, core.StageImplement)
 		submitHead(t, roundOpen, "h1", true)
@@ -538,7 +565,7 @@ func RunHeadRiskOrderConformance(t *testing.T, x Fixture) {
 		finishDispatch(t, roundOpen.ID)
 
 		reconcile(t, 3)
-		for _, id := range []string{missing.ID, otherHead.ID, recordQueued.ID, recordClaimed.ID, off.ID} {
+		for _, id := range []string{missing.ID, otherHead.ID, recordQueued.ID, recordClaimed.ID, off.ID, planAtReview.ID} {
 			requireRepairs(t, id, 1)
 			requireDispatch(t, id, true)
 		}
@@ -553,6 +580,9 @@ func RunHeadRiskOrderConformance(t *testing.T, x Fixture) {
 		}
 		if got := orderState(t, recordClaimedOrder.Order.ID); got != core.WorkOrderClaimed {
 			t.Fatalf("record claimed order state=%s, want claimed", got)
+		}
+		if got := orderState(t, planAtReviewOrder.Order.ID); got != core.WorkOrderQueued {
+			t.Fatalf("plan order state=%s, want queued", got)
 		}
 	})
 
