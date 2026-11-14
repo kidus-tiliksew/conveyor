@@ -624,8 +624,14 @@ func assembleInput(ctx context.Context, task core.Task, orders []core.WorkOrder,
 		ApplyRecoveryRefusal(&orders[i], task, orders, pendingRevision)
 	}
 	conflict := MergeConflictFromHistory(history.MergeConflict, orders)
+	// The order-dependent markers read the same order view that every
+	// next-action selector reads, so a record-mode risk order never hides
+	// the checkpoint of the order the agent question selects. Input.Orders
+	// keeps every order for the inputs that read orders by ID
+	// (feature-risk-based-review RR-15).
+	selectable := nextaction.SelectableOrders(task, orders)
 	input := nextaction.Input{
-		Task: task, Orders: orders, Markers: markersFromHistory(marker, history.ParkCommand, orders), Assignee: task.Assignee,
+		Task: task, Orders: orders, Markers: markersFromHistory(marker, history.ParkCommand, selectable), Assignee: task.Assignee,
 		PendingProposals: pendingProposalRefs(proposals),
 		MergeConflict:    conflict, Recovery: AutomaticRecoveryFor(orders),
 		Now: opts.Now, Capabilities: opts.Capabilities, LiveClaimants: opts.LiveClaimants,

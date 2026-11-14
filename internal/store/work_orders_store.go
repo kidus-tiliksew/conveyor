@@ -13,6 +13,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -1691,14 +1692,20 @@ func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requiremen
 		if attached[requirementID] {
 			continue
 		}
-		var latest *core.WorkOrder
+		// The latest order is read from the view the next action selects
+		// from, so a record-mode risk order never hides a checkpoint that
+		// the task's agent question states (feature-risk-based-review RR-15).
+		var taskOrders []core.WorkOrder
 		for _, order := range m.workOrders {
-			if order.TaskID != task.ID || latest != nil &&
-				(latest.CreatedAt.After(order.CreatedAt) || latest.CreatedAt.Equal(order.CreatedAt) && latest.ID >= order.ID) {
-				continue
+			if order.TaskID == task.ID {
+				taskOrders = append(taskOrders, order)
 			}
-			copy := order
-			latest = &copy
+		}
+		sortWorkOrders(taskOrders)
+		taskOrders = nextaction.SelectableOrders(task, taskOrders)
+		var latest *core.WorkOrder
+		if len(taskOrders) > 0 {
+			latest = &taskOrders[len(taskOrders)-1]
 		}
 		if latest == nil || latest.State != core.WorkOrderQueued ||
 			latest.LastAttemptOutcome != core.WorkOrderOutcomeReleased ||

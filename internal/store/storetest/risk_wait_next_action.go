@@ -1,6 +1,9 @@
 package storetest
 
 import (
+	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,5 +185,112 @@ func RunRiskWaitNextActionConformance(t *testing.T, x Fixture) {
 		if current, err := st.GetWorkOrder(ctx, risk.Order.ID); err != nil || current.State != core.WorkOrderQueued {
 			t.Fatalf("risk order=%+v err=%v, want it still queued", current, err)
 		}
+	})
+
+	headRisk := func(t *testing.T, taskID, head string) core.WorkOrder {
+		t.Helper()
+		order, err := taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+			created, made, createErr := st.CreateRiskOrderCommand(ctx, lease, store.RiskOrderCreateRequest{TaskID: taskID, Subject: core.RiskOrderSubject{HeadSHA: head, BaseSHA: "base-" + head}})
+			if createErr == nil && !made {
+				t.Fatalf("no risk order was created for head %s", head)
+			}
+			return created, createErr
+		})
+		requireOK(t, err)
+		return order
+	}
+	requireLatest := func(t *testing.T, taskID, orderID string) {
+		t.Helper()
+		orders, err := st.ListTaskWorkOrders(ctx, taskID)
+		requireOK(t, err)
+		if len(orders) == 0 || orders[len(orders)-1].ID != orderID {
+			t.Fatalf("task orders=%+v, want %s newest", orders, orderID)
+		}
+	}
+	requireCompactParity := func(t *testing.T, taskID string, full nextaction.NextAction) {
+		t.Helper()
+		task, err := st.GetTask(ctx, taskID)
+		requireOK(t, err)
+		compact, err := store.ReadNextActions(ctx, st, []core.Task{task}, store.NextActionOptions{
+			Capabilities: map[core.Capability]bool{core.CapabilityOperateGates: true}, CompactOnly: true,
+		})
+		requireOK(t, err)
+		if got, want := nextaction.CompactFrom(compact[taskID]), nextaction.CompactFrom(full); !reflect.DeepEqual(got, want) {
+			t.Fatalf("compact=%+v, full=%+v", got, want)
+		}
+	}
+
+	// An ordinary order released at a real operator checkpoint, followed by
+	// a newer record-mode risk order: the agent question still names the
+	// ordinary order, the compact read agrees, and the requirement page
+	// still offers the task as paused at a checkpoint.
+	t.Run("RecordRiskOrderNeverHidesACheckpoint", func(t *testing.T) {
+		_, implement := approvedRecordTask(t)
+		session := "risk-wait-checkpoint"
+		claim(t, implement.ID, session)
+		request := "Confirm which plan step governs the wait."
+		_, err := ReleaseWorkerClaim(ctx, st, implement.ID, "run:risk-wait", core.WorkOrderRelease{
+			SessionID: session, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
+			Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: request},
+		})
+		requireOK(t, err)
+		risk := headRisk(t, implement.TaskID, "checkpoint-head")
+		requireLatest(t, implement.TaskID, risk.ID)
+		na := read(t, implement.TaskID)
+		if na.Kind != nextaction.KindAgentQuestion || na.Actor != nextaction.ActorOperator || na.CurrentOrder == nil || na.CurrentOrder.ID != implement.ID || na.Details.Checkpoint != request {
+			t.Fatalf("next action %s/%s order %+v checkpoint %q, want the agent question on %s", na.Actor, na.Kind, na.CurrentOrder, na.Details.Checkpoint, implement.ID)
+		}
+		requireCompactParity(t, implement.TaskID, na)
+		candidates, err := st.ListCheckpointContextCandidates(ctx, "req-risk-wait-unattached")
+		requireOK(t, err)
+		found := false
+		for _, candidate := range candidates {
+			found = found || candidate.ID == implement.TaskID
+		}
+		if !found {
+			t.Fatalf("checkpoint candidates=%+v, want task %s", candidates, implement.TaskID)
+		}
+	})
+
+	// A verify order sealed at its verification checkpoint, followed by a
+	// newer record-mode risk order: the disposition and agent-question rows
+	// read the verify order, and the compact read states the same row as the
+	// full read. With an empty disposition set the row is the agent
+	// question; with a usable set it is the disposition.
+	t.Run("RecordRiskOrderNeverHidesASealedVerificationCheckpoint", func(t *testing.T) {
+		scope := []core.VerificationRevision{{Repository: "conveyor", RemoteIdentity: "https://example.test/conveyor", SHA: strings.Repeat("a", 40)}}
+		record := func(task *core.Task) {
+			task.SetupContract.Risk = &riskpolicy.Policy{Mode: riskpolicy.ModeRecord, Tiers: riskpolicy.DefaultTable()}
+		}
+		t.Run("EmptySet", func(t *testing.T) {
+			v := newVerificationFixtureTask(t, x, scope, record, true)
+			v.subject = recoveryFixtureRegister(t, &v, recoveryFixtureObligation("risk-wait-replay-"+v.access.TaskID, "safe_to_replay", ""))
+			v.start(t, "risk-wait-replay")
+			v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "blocked", Explanation: "Fixture account locked"}})
+			v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: verificationFixtureCoverage(v.snapshot(t)), Feedback: "Fixture account locked", RequiredAction: "Unlock the fixture account"}})
+			risk := headRisk(t, v.access.TaskID, "sealed-empty-head")
+			requireLatest(t, v.access.TaskID, risk.ID)
+			na := read(t, v.access.TaskID)
+			if na.Kind != nextaction.KindAgentQuestion || na.CurrentOrder == nil || na.CurrentOrder.ID != v.access.WorkOrderID || na.Details.Checkpoint == "" {
+				t.Fatalf("empty set = %s on %+v checkpoint %q, want the agent question on %s", na.Kind, na.CurrentOrder, na.Details.Checkpoint, v.access.WorkOrderID)
+			}
+			requireCompactParity(t, v.access.TaskID, na)
+		})
+		t.Run("UsableSet", func(t *testing.T) {
+			v := newVerificationFixtureTask(t, x, scope, record, true)
+			for i, name := range []string{"login", "checkout"} {
+				subject := recoveryFixtureRegister(t, &v, recoveryFixtureObligation("risk-wait-"+name+"-"+v.access.TaskID, "operator_action_required", ""))
+				v.runID = v.apply(t, recoveryFixtureStart(fmt.Sprintf("risk-wait-%d", i), "", subject)).ID
+				v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "blocked", Explanation: "fixture environment unavailable"}})
+			}
+			v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: verificationFixtureCoverage(v.snapshot(t)), Feedback: "Two exercises need an operator", RequiredAction: "Restore the fixtures"}})
+			risk := headRisk(t, v.access.TaskID, "sealed-usable-head")
+			requireLatest(t, v.access.TaskID, risk.ID)
+			na := read(t, v.access.TaskID)
+			if na.Kind != nextaction.KindVerificationDisposition || na.CurrentOrder == nil || na.CurrentOrder.ID != v.access.WorkOrderID || len(na.Details.Dispositions) != 2 {
+				t.Fatalf("usable set = %s on %+v dispositions %+v, want the disposition on %s", na.Kind, na.CurrentOrder, na.Details.Dispositions, v.access.WorkOrderID)
+			}
+			requireCompactParity(t, v.access.TaskID, na)
+		})
 	})
 }

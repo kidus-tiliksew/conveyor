@@ -248,6 +248,9 @@ func agentQuestion(in Input) bool {
 // on a compact read too, and every other compact read still skips it
 // (component-next-action invariant 15).
 func DispositionDecidesRow(in Input) bool {
+	// The assembler calls this on its unprojected input, so it reads the
+	// same order view as Project.
+	in.Orders = SelectableOrders(in.Task, in.Orders)
 	order := latestQueued(in.Orders)
 	if !in.Markers.CheckpointDecision || order == nil || !AtVerificationCheckpoint(*order) || !verificationDisposition(in) {
 		return false

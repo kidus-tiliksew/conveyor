@@ -211,30 +211,24 @@ func TestRecordRiskOrderNeverDisplacesAnotherOpenOrder(t *testing.T) {
 	}
 }
 
-// The filter reaches every order selector, not only the queued row: a
-// record-mode risk order queued after an implementation order released at its
-// checkpoint never hides the agent question, and the risk order is never the
-// stated order of a factory row.
+// The filter reaches every order selector, not only the queued row: the
+// caller's orders stay whole, and a factory row whose task holds an
+// unclaimable implementation order states that order, not a claimed
+// record-mode risk order. The agent question and the disposition rows are
+// reached from real store commands in the store conformance suite
+// (RunRiskWaitNextActionConformance), because their markers come from the
+// store assembler.
 func TestRecordRiskOrderStaysOutOfEverySelector(t *testing.T) {
-	released := core.WorkOrder{ID: "t-implement-1", TaskID: "t", Stage: core.StageImplement, State: core.WorkOrderQueued,
-		LastAttemptOutcome: core.WorkOrderOutcomeReleased, QueueEnteredAt: riskWaitNow.Add(-2 * time.Hour)}
-	in := Input{Task: riskTask(riskpolicy.ModeRecord, core.TaskRunning, ""), Orders: []core.WorkOrder{released, riskOrder("t-risk-1", core.WorkOrderQueued)},
-		Markers: Markers{CheckpointDecision: true, Checkpoint: "Which way?"}, Now: riskWaitNow}
-	na := Project(in)
-	if na.Kind != KindAgentQuestion || na.CurrentOrder == nil || na.CurrentOrder.ID != "t-implement-1" {
-		t.Fatalf("next action %s order %+v, want the agent question on the implementation order", na.Kind, na.CurrentOrder)
-	}
-	if got := SelectableOrders(in.Task, in.Orders); len(got) != 1 || got[0].ID != "t-implement-1" {
+	task := riskTask(riskpolicy.ModeRecord, core.TaskRunning, "")
+	notYet := core.WorkOrder{ID: "t-implement-2", TaskID: "t", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: riskWaitNow.Add(-2 * time.Hour)}
+	orders := []core.WorkOrder{notYet, riskOrder("t-risk-1", core.WorkOrderClaimed)}
+	if got := SelectableOrders(task, orders); len(got) != 1 || got[0].ID != "t-implement-2" {
 		t.Fatalf("selectable orders=%+v", got)
 	}
-	// The caller's slice keeps every order.
-	if len(in.Orders) != 2 {
-		t.Fatalf("Project changed the caller's orders: %+v", in.Orders)
+	na := Project(Input{Task: task, Orders: orders, Now: riskWaitNow})
+	if len(orders) != 2 {
+		t.Fatalf("Project changed the caller's orders: %+v", orders)
 	}
-	// A factory row whose task holds an unclaimable implementation order
-	// states that order, not the queued risk order.
-	notYet := core.WorkOrder{ID: "t-implement-2", TaskID: "t", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: riskWaitNow.Add(-2 * time.Hour)}
-	na = Project(Input{Task: riskTask(riskpolicy.ModeRecord, core.TaskRunning, ""), Orders: []core.WorkOrder{notYet, riskOrder("t-risk-1", core.WorkOrderClaimed)}, Now: riskWaitNow})
 	if na.Actor != ActorFactory || na.CurrentOrder == nil || na.CurrentOrder.ID != "t-implement-2" {
 		t.Fatalf("next action %s/%s order %+v, want the factory naming the implementation order", na.Actor, na.Kind, na.CurrentOrder)
 	}
