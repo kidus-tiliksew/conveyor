@@ -277,6 +277,20 @@ func PrepareRiskOrderCompletion(task core.Task, ratings []core.RiskRating, risk 
 	return numberRiskRating(ratings, rating, now), true, nil
 }
 
+// LostRiskCompletionError classifies a risk order completion whose conditional
+// write changed no row, from the order's state read again in the same
+// transaction. A cancellation, including a raise to high, that committed
+// first answers ErrWorkOrderCancelled, as PrepareRiskOrderCompletion answers
+// for an order it reads cancelled. Every other loss answers
+// ErrWorkOrderClaimLost (req-risk-based-review AC-12.2, AC-12.3;
+// component-risk-review invariant 12).
+func LostRiskCompletionError(current core.WorkOrderState) error {
+	if current == core.WorkOrderCancelled {
+		return ErrWorkOrderCancelled
+	}
+	return ErrWorkOrderClaimLost
+}
+
 type riskCompletionReadHookKey struct{}
 
 // WithRiskCompletionReadHook runs fn after a backend's CompleteRiskOrderCommand
