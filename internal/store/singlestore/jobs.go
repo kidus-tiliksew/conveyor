@@ -171,32 +171,13 @@ func scanSpec(row interface{ Scan(...any) error }) (core.SpecVersion, error) {
 }
 func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "CreateSpecVersion")
-	if spec.CreatedAt.IsZero() {
-		spec.CreatedAt = time.Now().UTC()
-	}
 	if err := store.PrepareSpecVersionOrigin(&spec); err != nil {
 		return core.SpecVersion{}, err
 	}
 	err := s.taskTx(ctx, spec.TaskID, func(tx *sql.Tx) error {
-		if _, err := getTaskRow(ctx, tx, spec.TaskID); err != nil {
-			return err
-		}
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0)+1 FROM task_specs WHERE workspace_id=? AND task_id=?`, documentWorkspace(ctx), spec.TaskID).Scan(&spec.Version); err != nil {
-			return err
-		}
-		if len(spec.Acceptance) == 0 {
-			spec.Acceptance = json.RawMessage(`[]`)
-		}
-		if len(spec.Decomposition) == 0 {
-			spec.Decomposition = json.RawMessage(`[]`)
-		}
-		spec.Approved = false
-		spec.ApprovedAt = time.Time{}
-		_, err := writeRow(ctx, tx, rowWrite{table: "task_specs", operation: "INSERT", values: specRowValues(ctx, spec)})
-		if err != nil {
-			return err
-		}
-		return taskEvent(ctx, tx, core.Event{TaskID: spec.TaskID, Kind: "spec.version_created", Payload: core.JSONPayload(map[string]any{"version": spec.Version, "acceptance_count": spec.AcceptanceCount})})
+		var err error
+		spec, err = insertSpecVersionTx(ctx, tx, spec)
+		return err
 	})
 	if err != nil {
 		return core.SpecVersion{}, err
@@ -256,6 +237,12 @@ func approveSpecTx(ctx context.Context, tx *sql.Tx, id string, version int) erro
 func (s *Store) ApproveSpecVersion(ctx context.Context, id string, version int) error {
 	ctx = dbmetrics.WithReadLabel(ctx, "ApproveSpecVersion")
 	return s.taskTx(ctx, id, func(tx *sql.Tx) error {
+		// Under enforce the approval waits for the version's open risk order
+		// and changes nothing; no plan text is read (req-risk-based-review
+		// AC-4.8; feature-risk-based-review RR-13).
+		if err := planApprovalRiskRefusalTx(ctx, tx, id, version); err != nil {
+			return err
+		}
 		if err := approveSpecTx(ctx, tx, id, version); err != nil {
 			return err
 		}
@@ -263,9 +250,6 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, id string, version int) 
 			return err
 		}
 		if err := approvePlanStateTx(ctx, tx, id); err != nil {
-			return err
-		}
-		if err := recordPlanRiskTx(ctx, tx, id, version); err != nil {
 			return err
 		}
 		// An approval can make a risk agent rating of this version count, so

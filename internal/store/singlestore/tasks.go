@@ -185,7 +185,7 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 	if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(ctx, t), At: t.CreatedAt}); err != nil {
 		return err
 	}
-	if err = recordIntakePlanStateTx(ctx, tx, t, approver); err != nil {
+	if err = s.recordIntakePlanStateTx(ctx, tx, t, approver); err != nil {
 		return err
 	}
 	for _, id := range ids {
@@ -216,8 +216,10 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 // recordIntakePlanStateTx appends the intake plan-state move and, for a task
 // filed with a plan, plan version 1 and any filer approval, inside the
 // creating transaction (component-task-lifecycle invariant 20;
-// component-plan-state invariants 2 and 3).
-func recordIntakePlanStateTx(ctx context.Context, tx *sql.Tx, t core.Task, approver store.Actor) error {
+// component-plan-state invariants 2 and 3). A plan filed for approval gets
+// its risk order in the same transaction, and a plan the filer approves gets
+// none (req-risk-based-review AC-4.7; feature-risk-based-review RR-13).
+func (s *Store) recordIntakePlanStateTx(ctx context.Context, tx *sql.Tx, t core.Task, approver store.Actor) error {
 	if err := taskEvent(ctx, tx, store.IntakePlanStateEvent(t)); err != nil {
 		return err
 	}
@@ -236,6 +238,10 @@ func recordIntakePlanStateTx(ctx context.Context, tx *sql.Tx, t core.Task, appro
 		return err
 	}
 	if !spec.Approved {
+		if request, ok := store.PlanRiskOrderRequest(t, nil, spec.Version, t.CreatedAt); ok {
+			_, _, err := s.createRiskOrderTx(ctx, tx, t, request)
+			return err
+		}
 		return nil
 	}
 	intervention := store.IntakePlanApproval(t, approver)
@@ -245,10 +251,7 @@ func recordIntakePlanStateTx(ctx context.Context, tx *sql.Tx, t core.Task, appro
 	if err := taskEvent(ctx, tx, store.InterventionEvent(intervention)); err != nil {
 		return err
 	}
-	if err := taskEvent(ctx, tx, store.IntakePlanApprovedEvent(spec)); err != nil {
-		return err
-	}
-	return recordIntakePlanRiskTx(ctx, tx, t)
+	return taskEvent(ctx, tx, store.IntakePlanApprovedEvent(spec))
 }
 
 func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
@@ -991,6 +994,12 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 			return notFound(err, "task %s", taskID)
 		}
 		parent := parentRow
+		// A legacy materializing approval waits for the version's open risk
+		// order under enforce, as an ordinary approval does
+		// (req-risk-based-review AC-4.8).
+		if err = planApprovalRiskRefusalTx(ctx, tx, taskID, version); err != nil {
+			return err
+		}
 		var decompositionJSON []byte
 		if err = tx.QueryRowContext(ctx, `SELECT decomposition FROM task_specs
 			WHERE task_id=? AND version=? AND workspace_id=?
@@ -1207,6 +1216,19 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, c
 		if err != nil {
 			return err
 		}
+		if err = store.ValidateTaskCommandPlanVersion(command); err != nil {
+			return err
+		}
+		if command.PlanVersion != nil {
+			// The submitted plan version commits with its plan-state move and
+			// its risk order (taskops.Command.PlanVersion;
+			// req-task-plan-state AC-1.2).
+			spec := *command.PlanVersion
+			spec.TaskID = id
+			if _, err = insertSpecVersionTx(ctx, tx, spec); err != nil {
+				return err
+			}
+		}
 		var final *core.TaskApproval
 		if command.FinalApproval != nil {
 			prepared, prepareErr := store.PrepareFinalTaskApproval(before, command.Kind, *command.FinalApproval, time.Now())
@@ -1255,6 +1277,11 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, c
 		}
 		if planMove != nil {
 			if err := taskEvent(ctx, tx, *planMove); err != nil {
+				return err
+			}
+		}
+		if planMove != nil || command.PlanVersion != nil {
+			if err := s.applyPlanRiskMoveTx(ctx, tx, id, before.PlanState, command.PlanState.Cause, command.PlanVersion != nil, time.Now().UTC()); err != nil {
 				return err
 			}
 		}

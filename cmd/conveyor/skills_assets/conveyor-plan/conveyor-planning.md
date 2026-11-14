@@ -124,15 +124,13 @@ specifies the mechanism; this section directs the session.
    approved under the operator's approval of the item at the digest that
    covers the plan, and a changed plan file needs a new approval (AC-4.7;
    `req-task-plan-state` AC-2.3; DEC-125(6)).
-6. A plan file states its risk tier as one line under its `## Risks`
-   heading: `Risk tier: <low|medium|high> — <reason>`, with the tier in
-   lowercase, an em dash (—), and a one-line reason. `conveyor plan check`
-   fails a malformed line. It gives a warning for a plan file with no line,
-   because the workspace's risk mode is read only at push: the push is
-   refused when the mode is enforce, and accepted when it is record or off.
+6. Do not write a risk tier in a plan file. `conveyor plan check` and push
+   apply no tier rule. A risk agent rates each plan version that waits for a
+   person's approval. When the workspace's risk mode is enforce, that approval
+   waits for the rating. A plan that push files as approved gets no rating.
    The risk policy never changes a task's plan state. A plan state comes only
    from the item and the operator, as steps 4 and 5 state
-   (`req-risk-based-review` REQ-4, AC-4.2, AC-4.6).
+   (`req-risk-based-review` REQ-4, AC-4.6, AC-4.7, AC-4.8).
 
 ### Present and approve
 

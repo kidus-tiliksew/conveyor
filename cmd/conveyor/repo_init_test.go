@@ -1218,3 +1218,42 @@ func TestRepoInitPreservedLinkPreimage(t *testing.T) {
 		}
 	}
 }
+
+// feature-risk-based-review RR-13: the plan tier line leaves the planning and
+// filing playbooks that full installation copies, and guidance-only
+// installation writes only root guidance, which carries no tier text, so its
+// output is unchanged by the removal.
+func TestRepoInitGuidanceOnlyAndPlaybooksCarryNoPlanTierRule(t *testing.T) {
+	for _, asset := range []string{"skills_assets/conveyor-plan/conveyor-planning.md", "skills_assets/conveyor-file-tasks/conveyor-task-filing.md"} {
+		content, err := embeddedSkills.ReadFile(asset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(content), "Risk tier: <low|medium|high>") || !strings.Contains(string(content), "risk tier") {
+			t.Fatalf("%s still states the plan tier line, or no longer says a plan states none", asset)
+		}
+	}
+	root := t.TempDir()
+	t.Chdir(root)
+	mustGit(t, root, "init", "-b", "main")
+	command := repoCmd()
+	command.SetArgs([]string{"init", "--guidance-only"})
+	var out bytes.Buffer
+	command.SetOut(&out)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	written := []string{}
+	for path, content := range repoFixtureSnapshot(t, root) {
+		if path == ".git" || strings.HasPrefix(path, ".git/") {
+			continue
+		}
+		written = append(written, path)
+		if strings.Contains(content, "Risk tier") {
+			t.Fatalf("%s carries plan tier text", path)
+		}
+	}
+	if len(written) != 1 || written[0] != "AGENTS.md" {
+		t.Fatalf("guidance-only wrote %v, want root guidance only", written)
+	}
+}
