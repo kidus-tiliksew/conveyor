@@ -165,6 +165,12 @@ func RunRiskOrderConformance(t *testing.T, x Fixture) {
 			len(listed[0].MatchedRules) != 1 || listed[0].MatchedRules[0].Description != "GitHub Actions workflows" || !slices.Equal(listed[0].MatchedRules[0].Paths, rules[0].Paths) {
 			t.Fatalf("head risk order did not round-trip: %+v", listed[0])
 		}
+		// A caller that changes a listed order's lists changes nothing stored.
+		listed[0].ChangedPaths[0] = "changed.go"
+		listed[0].MatchedRules[0].Paths[0] = "changed.go"
+		if again := riskOrders(t, task.ID); again[0].ChangedPaths[0] != ".github/workflows/ci.yml" || again[0].MatchedRules[0].Paths[0] != ".github/workflows/ci.yml" {
+			t.Fatalf("a caller changed the stored risk order: %+v", again[0])
+		}
 		if listed[1].Subject.PlanVersion != 2 || listed[1].Subject.Kind() != riskpolicy.RiskSubjectPlan || len(listed[1].ChangedPaths) != 0 || listed[1].ChangedPaths == nil {
 			t.Fatalf("plan risk order did not round-trip: %+v", listed[1])
 		}
@@ -414,8 +420,8 @@ func RunRiskOrderConformance(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		rating, err := complete(t, task.ID, store.RiskOrderCompleteRequest{WorkOrderID: planOrder.ID, Claim: identity("rater-plan"), Tier: riskpolicy.TierHigh, Reason: "the plan rewrites billing"})
 		requireOK(t, err)
-		if rating.PlanVersion != version.Version || rating.HeadSHA != "" || rating.CoveredPaths != nil {
-			t.Fatalf("plan rating=%+v", rating)
+		if rating.PlanVersion != version.Version || rating.HeadSHA != "" || rating.CoveredPaths != nil || !rating.PlanPending {
+			t.Fatalf("plan rating=%+v, want a pending rating of the plan version", rating)
 		}
 		listed := ratings(t, task.ID)
 		if len(listed) != 1 || !listed[0].PlanPending {
@@ -429,8 +435,20 @@ func RunRiskOrderConformance(t *testing.T, x Fixture) {
 		if got := order(t, headOrder.ID); got.State != core.WorkOrderQueued {
 			t.Fatalf("head order after an unapproved high plan rating=%+v", got)
 		}
-		mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-plan-2")})
+		second := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-plan-2")})
+		_, err = claim(second.ID, "rater-plan-2", "rater-plan-2-token")
+		requireOK(t, err)
 		requireOK(t, st.ApproveSpecVersion(ctx, task.ID, version.Version))
+		// The approval makes the high rating count, so it cancels every open
+		// risk order in the same act (AC-12.3).
+		for _, id := range []string{headOrder.ID, second.ID} {
+			if got := order(t, id); got.State != core.WorkOrderCancelled {
+				t.Fatalf("risk order %s after the approval reached high=%+v", id, got)
+			}
+		}
+		if got := order(t, planOrder.ID); got.State != core.WorkOrderCompleted {
+			t.Fatalf("rated plan order after approval=%+v", got)
+		}
 		listed = ratings(t, task.ID)
 		if len(listed) != 1 || listed[0].PlanPending {
 			t.Fatalf("approved plan rating=%+v, want counting", listed)

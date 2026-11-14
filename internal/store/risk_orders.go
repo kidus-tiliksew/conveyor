@@ -230,7 +230,7 @@ func PrepareRiskOrderCompletion(task core.Task, ratings []core.RiskRating, risk 
 	case core.WorkOrderCompleted:
 		for _, rating := range ratings {
 			if rating.Key == key && order.SessionID != "" && order.SessionID == request.Claim.SessionID && order.ClaimantID == request.Claim.ClaimantID {
-				return rating, false, nil
+				return cloneRiskRating(rating), false, nil
 			}
 		}
 		return core.RiskRating{}, false, ErrWorkOrderClaimLost
@@ -295,6 +295,18 @@ func RiskOrderCancelledPayload(id, attemptID, sessionID string, from core.WorkOr
 		"id": id, "attempt_id": attemptID, "session_id": sessionID, "state": core.WorkOrderCancelled,
 		"from": from, "command": core.WorkOrderCmdCancel, "reason": reason, "stage": core.StageRisk,
 	})
+}
+
+// CountedRiskRating returns a copy of rating with PlanPending as the counted
+// ratings derive it, so a completion returns what a later read returns.
+func CountedRiskRating(counted []core.RiskRating, rating core.RiskRating) core.RiskRating {
+	for _, recorded := range counted {
+		if recorded.Key == rating.Key {
+			rating.PlanPending = recorded.PlanPending
+			break
+		}
+	}
+	return cloneRiskRating(rating)
 }
 
 // RiskTierReachesHigh reports whether ratings, as counted, give the task the
@@ -605,10 +617,21 @@ func (m *memory) CompleteRiskOrderCommand(ctx context.Context, lease taskops.Tas
 	m.insertRiskRatingLocked(ctx, memoryScopedKey{workspace: workspace, id: task.ID}, rating)
 	// A rating that brings the tier to high cancels every other open risk
 	// order in the same act (req-risk-based-review AC-12.3).
-	if RiskTierReachesHigh(m.riskRatingsLocked(ctx, task)) {
+	counted := m.riskRatingsLocked(ctx, task)
+	if RiskTierReachesHigh(counted) {
 		m.cancelRiskOrdersLocked(ctx, task.ID, "", RiskTierHighCancelReason, now)
 	}
-	return cloneRiskRating(rating), nil
+	return CountedRiskRating(counted, rating), nil
+}
+
+// cancelRiskOrdersIfHighLocked cancels the task's open risk orders when its
+// counted tier is high. An act that can make the tier high, such as a plan
+// approval that makes a risk agent plan rating count, calls it in its own
+// critical section (req-risk-based-review AC-12.3).
+func (m *memory) cancelRiskOrdersIfHighLocked(ctx context.Context, task core.Task, at time.Time) {
+	if RiskTierReachesHigh(m.riskRatingsLocked(ctx, task)) {
+		m.cancelRiskOrdersLocked(ctx, task.ID, "", RiskTierHighCancelReason, at)
+	}
 }
 
 func (m *memory) CancelRiskOrderCommand(ctx context.Context, lease taskops.TaskLease, request RiskOrderCancelRequest) (core.WorkOrder, bool, error) {

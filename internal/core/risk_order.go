@@ -84,10 +84,12 @@ func (o RiskOrder) Clone() RiskOrder {
 	if o.ChangedPaths == nil {
 		o.ChangedPaths = []string{}
 	}
-	o.MatchedRules = slices.Clone(o.MatchedRules)
-	if o.MatchedRules == nil {
-		o.MatchedRules = []riskpolicy.RuleMatch{}
+	rules := make([]riskpolicy.RuleMatch, len(o.MatchedRules))
+	for i, rule := range o.MatchedRules {
+		rule.Paths = slices.Clone(rule.Paths)
+		rules[i] = rule
 	}
+	o.MatchedRules = rules
 	return o
 }
 

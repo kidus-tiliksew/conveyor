@@ -2543,6 +2543,12 @@ func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version 
 	if ratePlanned {
 		m.insertRiskRatingLocked(ctx, ratingKey, planRating)
 	}
+	// An approval can make a risk agent rating of this version count, so a
+	// tier that reaches high cancels the open risk orders in the same act
+	// (req-risk-based-review AC-4.3, AC-12.3).
+	if task, ok := m.tasks[taskID]; ok {
+		m.cancelRiskOrdersIfHighLocked(ctx, task, versions[len(versions)-1].ApprovedAt)
+	}
 	// A person's plan approval sets planning completed in the transaction
 	// that records it (component-task-lifecycle invariant 54;
 	// component-plan-state invariant 3; req-task-plan-state AC-1.3).

@@ -149,7 +149,13 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version i
 		if err := approvePlanStateTx(ctx, tx, q, taskID); err != nil {
 			return err
 		}
-		return recordPlanRiskTx(ctx, tx, q, taskID, version, approved.Content)
+		if err := recordPlanRiskTx(ctx, tx, q, taskID, version, approved.Content); err != nil {
+			return err
+		}
+		// An approval can make a risk agent rating of this version count, so
+		// a tier that reaches high cancels the open risk orders in the same
+		// transaction (req-risk-based-review AC-4.3, AC-12.3).
+		return cancelRiskOrdersIfHighTx(ctx, tx, q, taskID, time.Now().UTC())
 	})
 }
 

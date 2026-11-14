@@ -196,7 +196,7 @@ func SortRiskRatings(ratings []core.RiskRating) {
 
 func cloneRiskRating(rating core.RiskRating) core.RiskRating {
 	rating.CoveredPaths = slices.Clone(rating.CoveredPaths)
-	rating.MatchedRules = slices.Clone(rating.MatchedRules)
+	rating.MatchedRules = cloneRuleMatches(rating.MatchedRules)
 	if rating.MatchedRules == nil {
 		rating.MatchedRules = []riskpolicy.RuleMatch{}
 	}

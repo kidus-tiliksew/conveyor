@@ -171,6 +171,7 @@ func (s *Store) CompleteRiskOrderCommand(ctx context.Context, lease taskops.Task
 		if err != nil {
 			return err
 		}
+		result = store.CountedRiskRating(counted, rating)
 		if store.RiskTierReachesHigh(counted) {
 			_, err = cancelRiskOrdersTx(ctx, tx, q, taskID, "", store.RiskTierHighCancelReason, now)
 		}
@@ -312,6 +313,19 @@ func cancelRiskOrdersTx(ctx context.Context, tx pgx.Tx, q *db.Queries, taskID, o
 		cancelled = append(cancelled, order.id)
 	}
 	return cancelled, nil
+}
+
+// cancelRiskOrdersIfHighTx cancels the task's open risk orders when its
+// counted tier is high, in the caller's transaction, which holds
+// lockWorkOrderTaskTx. A plan approval that makes a risk agent plan rating
+// count calls it (req-risk-based-review AC-4.3, AC-12.3).
+func cancelRiskOrdersIfHighTx(ctx context.Context, tx pgx.Tx, q *db.Queries, taskID string, at time.Time) error {
+	counted, err := listRiskRatings(ctx, tx, taskID)
+	if err != nil || !store.RiskTierReachesHigh(counted) {
+		return err
+	}
+	_, err = cancelRiskOrdersTx(ctx, tx, q, taskID, "", store.RiskTierHighCancelReason, at)
+	return err
 }
 
 // riskOrderTx reads one risk order and its subject row, locking the order.
