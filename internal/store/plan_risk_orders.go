@@ -100,12 +100,15 @@ type PlanRiskMove struct {
 //
 // A move out of planning completed cancels nothing, so the rating of an
 // approved version still counts when its order completes later (AC-4.3).
-func PlanRiskMoveFor(from, to core.PlanState, cause core.PlanStateCause) PlanRiskMove {
+// recorded is true when the same act records a new plan version: a version
+// recorded while the task already waits at plan awaiting approval enters that
+// state too, and replaces the earlier version.
+func PlanRiskMoveFor(from, to core.PlanState, cause core.PlanStateCause, recorded bool) PlanRiskMove {
 	switch {
+	case to == core.PlanAwaitingApproval && (from != to || recorded):
+		return PlanRiskMove{Create: true, Cancel: PlanRiskReplacedReason}
 	case from == to:
 		return PlanRiskMove{}
-	case to == core.PlanAwaitingApproval:
-		return PlanRiskMove{Create: true, Cancel: PlanRiskReplacedReason}
 	case from == core.PlanAwaitingApproval && to != core.PlanCompleted:
 		if cause == core.PlanCausePlanRedirected {
 			return PlanRiskMove{Cancel: PlanRiskRedirectedReason}
@@ -187,10 +190,11 @@ func (m *memory) planApprovalRiskRefusalLocked(ctx context.Context, taskID strin
 }
 
 // applyPlanRiskMoveLocked applies PlanRiskMoveFor to a plan-state move that
-// task, as it now stands, has just taken from the state from. It runs under
-// m.mu in the critical section of the move.
-func (m *memory) applyPlanRiskMoveLocked(ctx context.Context, task core.Task, from core.PlanState, cause core.PlanStateCause, at time.Time) error {
-	move := PlanRiskMoveFor(from, task.PlanState, cause)
+// task, as it now stands, has just taken from the state from, or to a plan
+// version the act recorded. It runs under m.mu in the critical section of the
+// act.
+func (m *memory) applyPlanRiskMoveLocked(ctx context.Context, task core.Task, from core.PlanState, cause core.PlanStateCause, recorded bool, at time.Time) error {
+	move := PlanRiskMoveFor(from, task.PlanState, cause, recorded)
 	if !move.Create && move.Cancel == "" {
 		return nil
 	}

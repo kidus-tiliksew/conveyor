@@ -34,13 +34,14 @@ func planApprovalRiskRefusalTx(ctx context.Context, tx *sql.Tx, taskID string, v
 }
 
 // applyPlanRiskMoveTx applies store.PlanRiskMoveFor to a plan-state move from
-// the state from that the caller's taskTx has just written.
-func (s *Store) applyPlanRiskMoveTx(ctx context.Context, tx *sql.Tx, taskID string, from core.PlanState, cause core.PlanStateCause, at time.Time) error {
+// the state from that the caller's taskTx has just written, or to a plan
+// version it recorded.
+func (s *Store) applyPlanRiskMoveTx(ctx context.Context, tx *sql.Tx, taskID string, from core.PlanState, cause core.PlanStateCause, recorded bool, at time.Time) error {
 	task, err := getTaskRow(ctx, tx, taskID)
 	if err != nil {
 		return err
 	}
-	move := store.PlanRiskMoveFor(from, task.PlanState, cause)
+	move := store.PlanRiskMoveFor(from, task.PlanState, cause, recorded)
 	if !move.Create && move.Cancel == "" {
 		return nil
 	}

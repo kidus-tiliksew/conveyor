@@ -35,17 +35,18 @@ func planApprovalRiskRefusalTx(ctx context.Context, tx pgx.Tx, q *db.Queries, ta
 }
 
 // applyPlanRiskMoveTx applies store.PlanRiskMoveFor to a plan-state move from
-// the state from that the caller's transaction has just written. It takes
+// the state from that the caller's transaction has just written, or to a plan
+// version it recorded. It takes
 // lockWorkOrderTaskTx, which every caller already holds or may take after the
 // task-operation lock, so a claim, a completion, and a cancellation of the
 // task's risk orders serialize with the move.
-func applyPlanRiskMoveTx(ctx context.Context, tx pgx.Tx, q *db.Queries, taskID string, from core.PlanState, cause core.PlanStateCause, at time.Time) error {
+func applyPlanRiskMoveTx(ctx context.Context, tx pgx.Tx, q *db.Queries, taskID string, from core.PlanState, cause core.PlanStateCause, recorded bool, at time.Time) error {
 	row, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
 	if err != nil {
 		return notFound(err, "task %s", taskID)
 	}
 	task := taskFromDB(row)
-	move := store.PlanRiskMoveFor(from, task.PlanState, cause)
+	move := store.PlanRiskMoveFor(from, task.PlanState, cause, recorded)
 	if !move.Create && move.Cancel == "" {
 		return nil
 	}

@@ -1279,7 +1279,9 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, c
 			if err := taskEvent(ctx, tx, *planMove); err != nil {
 				return err
 			}
-			if err := s.applyPlanRiskMoveTx(ctx, tx, id, before.PlanState, command.PlanState.Cause, time.Now().UTC()); err != nil {
+		}
+		if planMove != nil || command.PlanVersion != nil {
+			if err := s.applyPlanRiskMoveTx(ctx, tx, id, before.PlanState, command.PlanState.Cause, command.PlanVersion != nil, time.Now().UTC()); err != nil {
 				return err
 			}
 		}

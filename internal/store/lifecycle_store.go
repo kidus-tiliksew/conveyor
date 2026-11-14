@@ -609,7 +609,9 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command.Kind})})
 	if planMove != nil {
 		m.appendEventLocked(ctx, *planMove)
-		if err := m.applyPlanRiskMoveLocked(ctx, task, fromPlanState, command.PlanState.Cause, time.Now().UTC()); err != nil {
+	}
+	if planMove != nil || command.PlanVersion != nil {
+		if err := m.applyPlanRiskMoveLocked(ctx, task, fromPlanState, command.PlanState.Cause, command.PlanVersion != nil, time.Now().UTC()); err != nil {
 			return core.Task{}, err
 		}
 	}

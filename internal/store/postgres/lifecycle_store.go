@@ -163,7 +163,9 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 			if err := insertEvent(ctx, q, *planMove); err != nil {
 				return err
 			}
-			if err := applyPlanRiskMoveTx(ctx, tx, q, id, core.PlanState(before.PlanState), command.PlanState.Cause, time.Now().UTC()); err != nil {
+		}
+		if planMove != nil || command.PlanVersion != nil {
+			if err := applyPlanRiskMoveTx(ctx, tx, q, id, core.PlanState(before.PlanState), command.PlanState.Cause, command.PlanVersion != nil, time.Now().UTC()); err != nil {
 				return err
 			}
 		}

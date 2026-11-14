@@ -199,7 +199,7 @@ func (s *Store) applyPlanStateEffectsTx(ctx context.Context, tx pgx.Tx, q *db.Qu
 	if err := insertEvent(ctx, q, *move); err != nil {
 		return core.Task{}, err
 	}
-	return task, applyPlanRiskMoveTx(ctx, tx, q, task.ID, effects.From, effects.Cause, time.Now().UTC())
+	return task, applyPlanRiskMoveTx(ctx, tx, q, task.ID, effects.From, effects.Cause, false, time.Now().UTC())
 }
 
 // cancelPlanActOrdersTx cancels the named orders as the terminal sweep does,
