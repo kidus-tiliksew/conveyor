@@ -17,11 +17,12 @@ import (
 
 // RunRiskRatingConformance proves on every backend that risk ratings are
 // workspace-scoped, unique per task and key, append-only with one activity
-// event each, recorded atomically with a review verdict, raised only
-// strictly upward under concurrency, and refused for a task whose frozen
-// risk mode is off (req-risk-based-review AC-1.1, AC-5.2, AC-5.3, AC-5.5,
-// AC-5.6, REQ-6, AC-6.1, AC-6.2; component-risk-review; feature-risk-based-review
-// RR-3, RR-8).
+// event each, never recorded by a review verdict, raised only strictly
+// upward under concurrency, and refused for a task whose frozen risk mode is
+// off. A rating recorded earlier with source reviewer stays readable and
+// keeps counting toward the task's tier (req-risk-based-review AC-1.1,
+// AC-5.5, AC-5.6, AC-5.7, REQ-6, AC-6.1, AC-6.2; component-risk-review
+// invariants 4 and 8; feature-risk-based-review RR-8, RR-14).
 func RunRiskRatingConformance(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	record := riskpolicy.Policy{Mode: riskpolicy.ModeRecord, Tiers: riskpolicy.DefaultTable()}
@@ -149,96 +150,105 @@ func RunRiskRatingConformance(t *testing.T, x Fixture) {
 		}
 	})
 
-	t.Run("ReviewerRatingsInVerdictTransaction", func(t *testing.T) {
-		task := fileTask(t, &record)
-		_, _, err := st.RecordRiskRating(ctx, pathRating(task.ID, "head-r", riskpolicy.TierMedium, "matched path rules: GitHub Actions workflows (medium)"))
-		requireOK(t, err)
-		jobs, orders := riskReviewRound(task.ID, 3)
-		requireOK(t, CreateReviewRound(ctx, st, task.ID, jobs, orders))
-		decision := func(i int, tier, reason string) core.ReviewDecision {
-			return core.ReviewDecision{TaskID: task.ID, JobID: orders[i].JobID, ReviewWorkOrderID: orders[i].ID, ReviewRound: 1, ReviewSeat: i + 1,
-				Verdict: "approve", ReasonCode: "verified", Summary: "risk seat", MaxBounces: 3, ReviewedCommitSHA: "head-r", HeadSHA: "head-r",
-				ReviewerModel: fmt.Sprintf("model-%d", i+1), PolicyVersion: 1, RiskTier: tier, RiskReason: reason}
-		}
-		eventsBefore, err := st.ListEvents(ctx, task.ID)
-		requireOK(t, err)
-		// A malformed stated tier refuses the whole verdict: no completion, no
-		// rating, no round progress.
-		if err := taskops.New(st).AcceptReviewDecision(ctx, decision(0, "critical", "not a tier")); err == nil {
-			t.Fatal("a verdict with tier critical was accepted")
-		}
-		if err := taskops.New(st).AcceptReviewDecision(ctx, decision(0, "low", "two\nlines")); err == nil {
-			t.Fatal("a verdict with a multi-line reason was accepted")
-		}
-		eventsAfter, err := st.ListEvents(ctx, task.ID)
-		requireOK(t, err)
-		if len(eventsAfter) != len(eventsBefore) || len(ratings(t, task.ID)) != 1 {
-			t.Fatalf("refused verdicts wrote %d events and left %d ratings", len(eventsAfter)-len(eventsBefore), len(ratings(t, task.ID)))
-		}
-		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, decision(0, "low", "small change in one handler")))
-		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, decision(1, "low", "tests cover the change")))
-		// Under record a verdict without a tier is accepted and records no
-		// rating (AC-5.2).
-		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, decision(2, "", "")))
-		listed := ratings(t, task.ID)
-		if len(listed) != 3 {
-			t.Fatalf("ratings=%+v, want the path rating and two seat ratings", listed)
-		}
-		for i, rating := range listed[1:] {
-			if rating.Source != core.RiskSourceReviewer || rating.ReviewSeat != i+1 || rating.ReviewRound != 1 || rating.ReviewWorkOrderID != orders[i].ID ||
-				rating.ReviewerModel != fmt.Sprintf("model-%d", i+1) || rating.HeadSHA != "head-r" || rating.Tier != riskpolicy.TierLow {
-				t.Fatalf("seat rating %d=%+v", i+1, rating)
+	t.Run("VerdictRecordsNoRating", func(t *testing.T) {
+		for _, policy := range []*riskpolicy.Policy{&record, nil} {
+			task := fileTask(t, policy)
+			if policy != nil {
+				_, _, err := st.RecordRiskRating(ctx, pathRating(task.ID, "head-r", riskpolicy.TierMedium, "matched path rules: GitHub Actions workflows (medium)"))
+				requireOK(t, err)
+			}
+			before := len(ratings(t, task.ID))
+			jobs, orders := riskReviewRound(task.ID, 2)
+			requireOK(t, CreateReviewRound(ctx, st, task.ID, jobs, orders))
+			decision := func(i int) core.ReviewDecision {
+				return core.ReviewDecision{TaskID: task.ID, JobID: orders[i].JobID, ReviewWorkOrderID: orders[i].ID, ReviewRound: 1, ReviewSeat: i + 1,
+					Verdict: "approve", ReasonCode: "verified", Summary: "risk seat", MaxBounces: 3, ReviewedCommitSHA: "head-r", HeadSHA: "head-r",
+					ReviewerModel: fmt.Sprintf("model-%d", i+1), PolicyVersion: 1}
+			}
+			requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, decision(0)))
+			requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, decision(1)))
+			// A replayed verdict records nothing either.
+			requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, decision(0)))
+			listed := ratings(t, task.ID)
+			if len(listed) != before || len(riskEvents(t, task.ID)) != before {
+				t.Fatalf("verdicts left ratings=%+v and %d risk events, want %d of each", listed, len(riskEvents(t, task.ID)), before)
+			}
+			for _, rating := range listed {
+				if rating.Source == core.RiskSourceReviewer {
+					t.Fatalf("a verdict recorded a reviewer rating: %+v", rating)
+				}
+			}
+			events, err := st.ListEvents(ctx, task.ID)
+			requireOK(t, err)
+			completed := 0
+			for _, event := range events {
+				if event.Kind != "review.completed" {
+					continue
+				}
+				completed++
+				var payload map[string]any
+				requireOK(t, json.Unmarshal(event.Payload, &payload))
+				if _, ok := payload["risk_tier"]; ok {
+					t.Fatalf("review.completed carries a tier: %v", payload)
+				}
+				if _, ok := payload["risk_reason"]; ok {
+					t.Fatalf("review.completed carries a reason: %v", payload)
+				}
+			}
+			if completed != 2 {
+				t.Fatalf("review.completed=%d, want 2", completed)
 			}
 		}
-		// Every seat said low; the sensitive path keeps the head at medium.
-		if setter, ok := core.RiskTierOf(listed); !ok || setter.Tier != riskpolicy.TierMedium || setter.Source != core.RiskSourcePathRule {
-			t.Fatalf("task tier setter=%+v, want medium from the path rule", setter)
-		}
-		events := riskEvents(t, task.ID)
-		if len(events) != 3 {
-			t.Fatalf("risk events=%d, want 3", len(events))
-		}
-		var seat map[string]any
-		requireOK(t, json.Unmarshal(events[1].Payload, &seat))
-		if seat["source"] != "reviewer" || seat["review_seat"] != float64(1) || seat["reviewer_model"] != "model-1" || seat["head_sha"] != "head-r" {
-			t.Fatalf("seat event payload=%v", seat)
-		}
-		// A replayed verdict records no second rating.
-		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, decision(0, "low", "small change in one handler")))
-		if got := len(ratings(t, task.ID)); got != 3 {
-			t.Fatalf("replayed verdict left %d ratings, want 3", got)
-		}
 	})
 
-	t.Run("SeatsLowAndMediumGiveMedium", func(t *testing.T) {
-		task := fileTask(t, &record)
-		_, _, err := st.RecordRiskRating(ctx, pathRating(task.ID, "head-m", riskpolicy.TierLow, "no sensitive path rule matched the changed paths"))
-		requireOK(t, err)
-		jobs, orders := riskReviewRound(task.ID, 2)
-		requireOK(t, CreateReviewRound(ctx, st, task.ID, jobs, orders))
-		for i, tier := range []string{"low", "medium"} {
-			requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: orders[i].JobID, ReviewWorkOrderID: orders[i].ID,
-				ReviewRound: 1, ReviewSeat: i + 1, Verdict: "approve", ReasonCode: "verified", Summary: "seat", MaxBounces: 3, ReviewedCommitSHA: "head-m", HeadSHA: "head-m",
-				ReviewerModel: "model", PolicyVersion: 1, RiskTier: tier, RiskReason: "seat " + tier}))
-		}
-		setter, ok := core.RiskTierOf(ratings(t, task.ID))
-		if !ok || setter.Tier != riskpolicy.TierMedium || setter.Source != core.RiskSourceReviewer || setter.ReviewSeat != 2 {
-			t.Fatalf("task tier setter=%+v, want medium from seat 2", setter)
-		}
-	})
-
-	t.Run("OffTaskVerdictWithTierIsRefused", func(t *testing.T) {
-		task := fileTask(t, nil)
-		jobs, orders := riskReviewRound(task.ID, 1)
-		requireOK(t, CreateReviewRound(ctx, st, task.ID, jobs, orders))
-		err := taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: orders[0].JobID, ReviewWorkOrderID: orders[0].ID,
-			ReviewRound: 1, ReviewSeat: 1, Verdict: "approve", ReasonCode: "verified", Summary: "seat", MaxBounces: 3, ReviewedCommitSHA: "head-off",
-			PolicyVersion: 1, RiskTier: "high", RiskReason: "off task"})
-		if !errors.Is(err, store.ErrRiskNotEnabled) {
-			t.Fatalf("off task verdict with a tier err=%v, want ErrRiskNotEnabled", err)
-		}
-		if len(ratings(t, task.ID)) != 0 {
-			t.Fatal("an off task recorded a seat rating")
+	t.Run("RecordedReviewerRatingKeepsCounting", func(t *testing.T) {
+		enforce := riskpolicy.Policy{Mode: riskpolicy.ModeEnforce, Tiers: riskpolicy.DefaultTable()}
+		for _, policy := range []*riskpolicy.Policy{&record, &enforce} {
+			task := fileTask(t, policy)
+			_, _, err := st.RecordRiskRating(ctx, pathRating(task.ID, "head-m", riskpolicy.TierLow, "no sensitive path rule matched the changed paths"))
+			requireOK(t, err)
+			// A rating that a review seat's verdict recorded before verdicts
+			// stopped stating a tier (AC-5.6).
+			seatOrder := task.ID + "-review-1-seat-2"
+			historical := seedReviewerRiskRating(t, x, task.ID, core.RiskRating{TaskID: task.ID, Key: core.ReviewerRiskKey(seatOrder), Source: core.RiskSourceReviewer,
+				Tier: riskpolicy.TierMedium, HeadSHA: "head-m", Reason: "seat 2 rated the head medium", ReviewWorkOrderID: seatOrder,
+				ReviewRound: 1, ReviewSeat: 2, ReviewerModel: "model-2"})
+			// A later head rated lower never lowers the task's tier (AC-5.5).
+			_, _, err = st.RecordRiskRating(ctx, pathRating(task.ID, "head-n", riskpolicy.TierLow, "no sensitive path rule matched the changed paths"))
+			requireOK(t, err)
+			jobs, orders := riskReviewRound(task.ID, 1)
+			requireOK(t, CreateReviewRound(ctx, st, task.ID, jobs, orders))
+			requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: orders[0].JobID, ReviewWorkOrderID: orders[0].ID,
+				ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "fix", Summary: "seat", Feedback: "fix the change", MaxBounces: 3,
+				ReviewedCommitSHA: "head-n", HeadSHA: "head-n", ReviewerModel: "model", PolicyVersion: 1}))
+			listed := ratings(t, task.ID)
+			if len(listed) != 3 {
+				t.Fatalf("ratings=%+v, want two path ratings and the recorded reviewer rating", listed)
+			}
+			var read core.RiskRating
+			for _, rating := range listed {
+				if rating.Key == historical.Key {
+					read = rating
+				}
+			}
+			if read.Source != core.RiskSourceReviewer || read.Tier != riskpolicy.TierMedium || read.ReviewSeat != 2 || read.ReviewRound != 1 ||
+				read.ReviewWorkOrderID != seatOrder || read.ReviewerModel != "model-2" || read.HeadSHA != "head-m" || read.Reason != historical.Reason {
+				t.Fatalf("recorded reviewer rating read back as %+v", read)
+			}
+			setter, ok := core.RiskTierOf(listed)
+			if !ok || setter.Tier != riskpolicy.TierMedium || setter.Source != core.RiskSourceReviewer || setter.ReviewSeat != 2 {
+				t.Fatalf("task tier setter=%+v, want medium from the recorded seat 2 rating", setter)
+			}
+			stored, err := st.GetTask(ctx, task.ID)
+			requireOK(t, err)
+			if projection := store.ProjectTaskRisk(stored, listed, 1); projection == nil || projection.Tier != riskpolicy.TierMedium || projection.Source != core.RiskSourceReviewer {
+				t.Fatalf("projection=%+v, want medium from reviewer", projection)
+			}
+			// Under enforce the recorded rating still sets the requirements:
+			// medium needs one human approval (AC-8.2).
+			if required, hold := store.RiskMergeHold(stored, listed); policy.Enforcing() && (!hold || required != 1) {
+				t.Fatalf("merge hold=%t required=%d, want the medium hold of one approval", hold, required)
+			}
 		}
 	})
 
@@ -390,4 +400,30 @@ func riskReviewRound(taskID string, seats int) ([]core.Job, []core.WorkOrder) {
 		orders = append(orders, core.WorkOrder{ID: id, JobID: id, TaskID: taskID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: seat, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour)})
 	}
 	return jobs, orders
+}
+
+// seedReviewerRiskRating stores one rating with source reviewer, numbered
+// after the task's recorded ratings, through the fixture's seed. No public
+// writer records a reviewer rating since verdicts stopped stating a tier, so
+// each backend seeds the row and its activity event as the removed verdict
+// acceptance wrote them (req-risk-based-review AC-5.6;
+// feature-risk-based-review RR-14).
+func seedReviewerRiskRating(t *testing.T, x Fixture, taskID string, rating core.RiskRating) core.RiskRating {
+	t.Helper()
+	if x.SeedRiskRating == nil {
+		t.Fatal("conformance fixture must provide SeedRiskRating for the recorded reviewer rating case (req-risk-based-review AC-5.6)")
+	}
+	existing, err := x.Backend.ListTaskRiskRatings(x.Context, taskID)
+	requireOK(t, err)
+	seq := 0
+	for _, recorded := range existing {
+		seq = max(seq, recorded.Seq)
+	}
+	rating.Seq, rating.CreatedAt = seq+1, time.Now().UTC().Truncate(time.Microsecond)
+	if rating.MatchedRules == nil {
+		rating.MatchedRules = []riskpolicy.RuleMatch{}
+	}
+	requireOK(t, rating.Validate())
+	x.SeedRiskRating(t, x.Context, rating)
+	return rating
 }

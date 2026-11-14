@@ -2252,26 +2252,17 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 			}
 		}
 		if !completed {
+			// A verdict records no rating and adds no seat
+			// (req-risk-based-review AC-5.7; feature-risk-based-review RR-14).
 			if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: reviewDecisionPayload(decision)}); err != nil {
 				return err
 			}
-			// The seat's stated tier is recorded in the verdict's transaction,
-			// so a refused rating rolls the verdict back (req-risk-based-review
-			// AC-5.2, AC-5.3).
-			if err := recordReviewerRiskTx(ctx, tx, q, taskFromDB(before), decision); err != nil {
-				return err
-			}
 		}
-		// Seats a raised enforcing tier requires join the round before it
-		// aggregates, so it never settles short of them (req-risk-based-review
-		// AC-7.2; feature-risk-based-review RR-5).
+		// An enforcing task's ratings decide the merge hold when the round
+		// settles (req-risk-based-review AC-8.2).
 		var ratings []core.RiskRating
 		if taskFromDB(before).SetupContract.Risk.Enforcing() {
 			if ratings, err = listRiskRatings(ctx, tx, decision.TaskID); err != nil {
-				return err
-			}
-			if err = addRiskSeatsTx(ctx, tx, q, workspace(ctx), taskFromDB(before), ratings, store.VerdictRiskSeatTrigger(decision),
-				store.RiskSeatSettings{WorkspaceReviewSeats: decision.WorkspaceReviewSeats, QueueTimeout: decision.SeatQueueTimeout}); err != nil {
 				return err
 			}
 		}
@@ -2587,9 +2578,6 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 	}
 	if decision.DocumentationAssessment != nil {
 		payload["documentation_assessment"] = decision.DocumentationAssessment
-	}
-	if decision.RiskTier != "" {
-		payload["risk_tier"], payload["risk_reason"] = decision.RiskTier, decision.RiskReason
 	}
 	return core.JSONPayload(payload)
 }

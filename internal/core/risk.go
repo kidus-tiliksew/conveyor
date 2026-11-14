@@ -132,21 +132,6 @@ func ValidateRiskReason(field, reason string) error {
 	return nil
 }
 
-// ValidateStatedRisk checks a stated tier and its reason. Both are absent or
-// both are present; a present tier is low, medium, or high.
-func ValidateStatedRisk(tierField, reasonField, tier, reason string) error {
-	if tier == "" && reason == "" {
-		return nil
-	}
-	if tier == "" {
-		return fmt.Errorf("%s is required when %s is stated", tierField, reasonField)
-	}
-	if _, err := riskpolicy.ParseTier(tier); err != nil {
-		return fmt.Errorf("%s must be low, medium, or high", tierField)
-	}
-	return ValidateRiskReason(reasonField, reason)
-}
-
 // Validate checks a rating before a store records it.
 func (r RiskRating) Validate() error {
 	if strings.TrimSpace(r.TaskID) == "" {

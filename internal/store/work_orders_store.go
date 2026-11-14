@@ -774,27 +774,10 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		}
 		return nil
 	}
-	// A stated tier is checked before the first write, so a refused rating
-	// leaves the verdict, the seat, and the round unchanged
-	// (req-risk-based-review AC-5.2, AC-5.3).
-	workspace, _ := WorkspaceFromContext(ctx)
-	stated, statedNew, err := ReviewerRiskRating(task, m.riskRatings[memoryScopedKey{workspace: workspace, id: task.ID}], decision, time.Now())
-	if err != nil && !completed {
-		return err
-	}
-	// Seats a raised enforcing tier requires are planned before the first
-	// write and added before the round aggregates, so the round never settles
-	// short of them (req-risk-based-review AC-7.2; feature-risk-based-review
-	// RR-5).
-	ratings := m.riskRatingsLocked(ctx, task)
-	if err == nil && statedNew && !completed {
-		ratings = append(ratings, stated)
-	}
-	riskSeats, addRiskSeats, err := m.planRiskSeatsLocked(ctx, task, ratings, VerdictRiskSeatTrigger(decision),
-		RiskSeatSettings{WorkspaceReviewSeats: decision.WorkspaceReviewSeats, QueueTimeout: decision.SeatQueueTimeout})
-	if err != nil {
-		return err
-	}
+	// A verdict records no rating and adds no seat: only a completed risk
+	// order gives an agent's rating, and a person's raise adds seats in its
+	// own act (req-risk-based-review AC-5.7, AC-7.2; feature-risk-based-review
+	// RR-14).
 	if !completed {
 		if decision.ClaimSession != "" {
 			if order.State != core.WorkOrderClaimed || order.SessionID != decision.ClaimSession || !order.LeaseExpiresAt.After(time.Now()) {
@@ -812,9 +795,6 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		}
 		payload := reviewDecisionPayload(decision)
 		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: payload})
-		if err := m.recordReviewerRiskLocked(ctx, task, decision); err != nil {
-			return err
-		}
 	}
 	if decision.PublicationEligible {
 		if _, exists := m.publications[decision.ReviewWorkOrderID]; !exists {
@@ -828,12 +808,6 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.accepted", Payload: core.JSONPayload(map[string]any{"review_work_order_id": decision.ReviewWorkOrderID, "review_round": decision.ReviewRound, "review_seat": decision.ReviewSeat})})
 	if decision.ClaimSession != "" {
 		if err := m.settleAcceptedReviewLocked(ctx, decision, order, job, time.Now().UTC()); err != nil {
-			return err
-		}
-	}
-
-	if addRiskSeats {
-		if err := m.applyReviewSeatAdditionLocked(ctx, task, riskSeats); err != nil {
 			return err
 		}
 	}
@@ -1067,9 +1041,6 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 	}
 	if decision.DocumentationAssessment != nil {
 		payload["documentation_assessment"] = decision.DocumentationAssessment
-	}
-	if decision.RiskTier != "" {
-		payload["risk_tier"], payload["risk_reason"] = decision.RiskTier, decision.RiskReason
 	}
 	return core.JSONPayload(payload)
 }
