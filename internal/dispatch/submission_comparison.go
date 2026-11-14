@@ -2,7 +2,6 @@ package dispatch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -75,18 +74,9 @@ func RecordedReviewComparison(task core.Task, events []core.Event) (core.Task, e
 		task.BaseBranch, task.ReviewedHeadSHA = task.RefreshBaselineSHA, task.RefreshHeadSHA
 		return task, nil
 	}
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Kind != "pull_request.opened" {
-			continue
-		}
-		var target struct {
-			Base string `json:"base_sha"`
-			Head string `json:"head_sha"`
-		}
-		if json.Unmarshal(events[i].Payload, &target) == nil && target.Base != "" && target.Head != "" {
-			task.BaseBranch, task.ReviewedHeadSHA = target.Base, target.Head
-			return task, nil
-		}
+	if base, head, ok := store.RecordedSubmissionComparison(events); ok {
+		task.BaseBranch, task.ReviewedHeadSHA = base, head
+		return task, nil
 	}
 	return core.Task{}, fmt.Errorf("task %s has no recorded review comparison", task.ID)
 }

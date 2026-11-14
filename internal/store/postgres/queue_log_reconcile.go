@@ -23,12 +23,14 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 	// Repairs are reported after the transaction commits, so a rolled-back
 	// repair reports nothing (component-persistence, Drift repair reports).
 	var enqueued []string
-	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		enqueued = enqueued[:0]
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:queue-reconcile:"+workspace(ctx)); err != nil {
 			return err
 		}
-		taskIDs, err := s.queue.queuedTasksWithoutActiveDispatch(ctx, tx, workspace(ctx))
+		taskIDs, err := s.queue.queuedTasksWithoutActiveDispatch(ctx, tx, workspace(ctx), func(taskID string) (bool, error) {
+			return reconcileRiskHeldTx(ctx, tx, q, workspace(ctx), taskID)
+		})
 		if err != nil {
 			return err
 		}
@@ -67,6 +69,47 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 		store.ReportDriftRepair(ctx, store.DriftRunningTaskJobDiscarded.For(candidate.taskID))
 	}
 	return repaired, nil
+}
+
+// reconcileRiskHeldTx reports whether a queued review task waits for its
+// head's risk order, read in the reconcile transaction: the task is loaded,
+// and store.QueuedReviewRiskHold reads its recorded submission comparisons
+// and risk orders only when its frozen mode is enforce. Dispatch applies the
+// same hold to the same head, so reconcile repairs no task that dispatch
+// would leave waiting (feature-risk-based-review RR-12;
+// req-risk-based-review AC-1.6, AC-5.10; component-risk-review invariant 13;
+// component-durable-queue "Reconciliation between tasks and jobs").
+func reconcileRiskHeldTx(ctx context.Context, tx pgx.Tx, q *db.Queries, workspaceID, taskID string) (bool, error) {
+	row, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspaceID})
+	if err != nil {
+		return false, notFound(err, "task %s", taskID)
+	}
+	_, held, err := store.QueuedReviewRiskHold(taskFromDB(row),
+		func() ([]core.Event, error) { return submissionComparisonEventsTx(ctx, tx, workspaceID, taskID) },
+		func() ([]core.RiskOrder, error) { return taskRiskOrdersTx(ctx, tx, workspaceID, taskID) })
+	return held, err
+}
+
+// submissionComparisonEventsTx reads a task's recorded submission
+// comparisons, oldest first, in the order ListEvents returns them. Each event
+// carries only its kind and payload.
+func submissionComparisonEventsTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string) ([]core.Event, error) {
+	rows, err := tx.Query(ctx, `SELECT e.payload_json FROM events e JOIN tasks t ON t.id = e.task_id
+WHERE e.task_id = $1 AND t.workspace_id = $2 AND e.kind = $3
+ORDER BY e.at, e.id`, taskID, workspaceID, store.SubmissionComparisonEventKind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	events := []core.Event{}
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		events = append(events, core.Event{TaskID: taskID, Kind: store.SubmissionComparisonEventKind, Payload: payload})
+	}
+	return events, rows.Err()
 }
 
 // enqueueTaskTx enqueues a dispatch inside the caller's transaction and
