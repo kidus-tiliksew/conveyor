@@ -277,6 +277,39 @@ func PrepareRiskOrderCompletion(task core.Task, ratings []core.RiskRating, risk 
 	return numberRiskRating(ratings, rating, now), true, nil
 }
 
+// LostRiskCompletionError classifies a risk order completion whose conditional
+// write changed no row, from the order's state read again in the same
+// transaction. A cancellation, including a raise to high, that committed
+// first answers ErrWorkOrderCancelled, as PrepareRiskOrderCompletion answers
+// for an order it reads cancelled. Every other loss answers
+// ErrWorkOrderClaimLost (req-risk-based-review AC-12.2, AC-12.3;
+// component-risk-review invariant 12).
+func LostRiskCompletionError(current core.WorkOrderState) error {
+	if current == core.WorkOrderCancelled {
+		return ErrWorkOrderCancelled
+	}
+	return ErrWorkOrderClaimLost
+}
+
+type riskCompletionReadHookKey struct{}
+
+// WithRiskCompletionReadHook runs fn after a backend's CompleteRiskOrderCommand
+// reads the risk order and before it writes, so a conformance case can commit a
+// cancellation, a raise, or a release in that window where the backend's locks
+// admit one, and prove that they serialize where they do not. It is an
+// in-process test hook, never a request field.
+func WithRiskCompletionReadHook(ctx context.Context, fn func(orderID string, read core.WorkOrderState)) context.Context {
+	return context.WithValue(ctx, riskCompletionReadHookKey{}, fn)
+}
+
+// RiskCompletionRead fires the hook WithRiskCompletionReadHook installed, if
+// any.
+func RiskCompletionRead(ctx context.Context, orderID string, read core.WorkOrderState) {
+	if fn, ok := ctx.Value(riskCompletionReadHookKey{}).(func(string, core.WorkOrderState)); ok {
+		fn(orderID, read)
+	}
+}
+
 // ValidateRiskOrderCancel checks a cancellation request.
 func ValidateRiskOrderCancel(request RiskOrderCancelRequest) error {
 	if strings.TrimSpace(request.WorkOrderID) == "" {
@@ -679,6 +712,9 @@ func (m *memory) CompleteRiskOrderCommand(ctx context.Context, lease taskops.Tas
 	if !ok {
 		return core.RiskRating{}, fmt.Errorf("%w: %s", ErrNotRiskOrder, order.ID)
 	}
+	// m.mu stays held from this read to the write, so no cancellation or
+	// raise commits in between (component-risk-review invariant 12).
+	RiskCompletionRead(ctx, order.ID, order.State)
 	ratings := m.riskRatingsLocked(ctx, task)
 	rating, created, err := PrepareRiskOrderCompletion(task, ratings, risk, request, now)
 	if err != nil || !created {
