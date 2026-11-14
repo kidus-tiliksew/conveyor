@@ -1071,20 +1071,6 @@ type ReviewDecision struct {
 	PolicyVersion           int
 	MergeApproval           bool
 	MaxBounces              int
-	// RiskTier and RiskReason are the seat's stated rating of the head it
-	// judged. They are set only when the task's frozen risk mode is record or
-	// enforce and the seat stated a tier; acceptance then records one reviewer
-	// rating in the same transaction (req-risk-based-review AC-5.2, AC-5.3;
-	// feature-risk-based-review RR-3).
-	RiskTier   string
-	RiskReason string
-	// WorkspaceReviewSeats and SeatQueueTimeout are trusted, service-derived
-	// inputs for seats an enforcing tier adds in the verdict's own act: the
-	// workspace seat-list length and the queue clock of an added seat
-	// (req-risk-based-review AC-7.2; feature-risk-based-review RR-5). No
-	// verdict body supplies them.
-	WorkspaceReviewSeats int           `json:"-"`
-	SeatQueueTimeout     time.Duration `json:"-"`
 }
 
 type ArtifactRole string

@@ -202,20 +202,3 @@ func insertRiskRatingTx(ctx context.Context, tx *sql.Tx, rating core.RiskRating)
 	}
 	return setClaim(ctx, tx, riskRatingClaimKey(ctx, rating.TaskID), strconv.Itoa(rating.Seq))
 }
-
-// recordReviewerRiskTx records a verdict's reviewer rating inside the
-// SingleStore verdict transaction, which already holds the task lock.
-func recordReviewerRiskTx(ctx context.Context, tx *sql.Tx, task core.Task, decision core.ReviewDecision) error {
-	if decision.RiskTier == "" {
-		return nil
-	}
-	existing, err := lockRiskRatingsTx(ctx, tx, task.ID)
-	if err != nil {
-		return err
-	}
-	rating, created, err := store.ReviewerRiskRating(task, existing, decision, time.Now())
-	if err != nil || !created {
-		return err
-	}
-	return insertRiskRatingTx(ctx, tx, rating)
-}

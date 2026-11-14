@@ -107,8 +107,9 @@ func (e *RiskApprovalsRequiredError) Is(target error) bool {
 	return target == ErrRiskApprovalsRequired || target == ErrRefusal
 }
 
-// RiskSeatTrigger names the act whose raised tier adds seats: a review seat's
-// verdict or a person's raise. RequestID is the deterministic ledger key of
+// RiskSeatTrigger names the act whose raised tier adds seats: a person's
+// raise. A review verdict states no tier and adds no seat
+// (feature-risk-based-review RR-14). RequestID is the deterministic ledger key of
 // the addition, so a replayed act never adds a second set of seats.
 type RiskSeatTrigger struct {
 	RequestID string
@@ -116,15 +117,6 @@ type RiskSeatTrigger struct {
 	ActorID   string
 	// Round is the round the act concerns; 0 means the task's latest round.
 	Round int
-}
-
-// VerdictRiskSeatTrigger is the trigger of an accepted verdict.
-func VerdictRiskSeatTrigger(decision core.ReviewDecision) RiskSeatTrigger {
-	return RiskSeatTrigger{
-		RequestID: "risk:" + decision.ReviewWorkOrderID,
-		Reason:    fmt.Sprintf("review seat %d of round %d rated the task %s", decision.ReviewSeat, decision.ReviewRound, decision.RiskTier),
-		ActorID:   ReviewRoundActorID(decision.ReviewRound), Round: decision.ReviewRound,
-	}
 }
 
 // PersonRiskSeatTrigger is the trigger of a person's recorded raise.

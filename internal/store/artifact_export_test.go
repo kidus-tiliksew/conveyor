@@ -92,6 +92,22 @@ func SeedStoredTaskHoldForTest(t *testing.T, st Backend, taskID string) {
 	m.tasks[taskID] = task
 }
 
+// SeedRiskRatingForTest stores one numbered risk rating and its risk.rated
+// event as a review verdict recorded a reviewer rating before verdicts
+// stopped stating a tier; no public writer accepts that source
+// (req-risk-based-review AC-5.6; feature-risk-based-review RR-14).
+func SeedRiskRatingForTest(t *testing.T, st Backend, ctx context.Context, rating core.RiskRating) {
+	t.Helper()
+	m := st.(*volatileMemory).memory
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, key, err := m.riskTaskLocked(ctx, rating.TaskID)
+	if err != nil || task.ID == "" {
+		t.Fatalf("seed requires an existing task: %v", err)
+	}
+	m.insertRiskRatingLocked(ctx, key, rating)
+}
+
 // SeedWorkspaceConfigYAMLForTest replaces one workspace's stored
 // configuration document with raw YAML without changing its version, as a
 // row an earlier release wrote; no public writer accepts a raw document.
