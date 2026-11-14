@@ -89,12 +89,19 @@ func TestClaimFailingStall(t *testing.T) {
 		}
 	})
 
-	t.Run("a stale order keeps its deterministic reason", func(t *testing.T) {
+	// A stored stale order is the queued order the clock returns, so waiting
+	// adds no reason and only the observed claim failure stalls it
+	// (req-task-lifecycle-and-queue AC-9.4; component-work-orders invariant 5).
+	t.Run("a stored stale order reads as queued and keeps the observed record", func(t *testing.T) {
 		stale := order
 		stale.State = core.WorkOrderStale
 		got := Project(input(stale, failure(ClaimFailureStallThreshold)))
-		if got.Details.StallReason != StallStale || got.Details.ClaimFailure != nil {
-			t.Fatalf("stall = %q claim_failure=%+v, want stale without a record", got.Details.StallReason, got.Details.ClaimFailure)
+		if got.Details.StallReason != StallClaimFailing || got.Details.ClaimFailure == nil {
+			t.Fatalf("stall = %q claim_failure=%+v, want claim_failing with its record", got.Details.StallReason, got.Details.ClaimFailure)
+		}
+		waiting := Project(input(stale, failure(ClaimFailureStallThreshold-1)))
+		if waiting.Kind != KindQueued || waiting.Actor != ActorAgent || waiting.Details.StallReason != "" || len(waiting.Choices) != 0 {
+			t.Fatalf("below threshold %s/%s stall=%q choices=%+v, want a queued statement", waiting.Actor, waiting.Kind, waiting.Details.StallReason, waiting.Choices)
 		}
 	})
 

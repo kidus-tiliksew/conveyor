@@ -140,11 +140,14 @@ func recoverableOrder(order core.WorkOrder, now time.Time) (bool, bool) {
 	if order.RetrySuppressionReason != "" && order.RetrySuppressionReason != core.AttemptRetriesExhaustedReason {
 		return false, false
 	}
+	// An order nobody has claimed since it entered the queue is waiting, not
+	// stopped, so it schedules and counts nothing. A stored stale order is the
+	// retired queue clock's mark: the clock returns it to queued first, and
+	// only genuine attempt evidence then makes it recoverable
+	// (component-work-orders invariants 5 and 46; DEC-117(2)).
 	switch order.State {
 	case core.WorkOrderTimedOut:
 		return true, false
-	case core.WorkOrderStale:
-		return true, true
 	case core.WorkOrderQueued:
 		if order.LastAttemptOutcome == core.WorkOrderOutcomeExpired {
 			return true, false

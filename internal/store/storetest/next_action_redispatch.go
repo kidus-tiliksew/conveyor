@@ -43,7 +43,10 @@ func runRedispatchOfferParity(t *testing.T, x Fixture) {
 		requireOK(t, st.CreateJob(ctx, core.Job{ID: order.ID, TaskID: order.TaskID, Stage: order.Stage, State: core.JobPending}))
 		requireOK(t, CreateWorkOrder(ctx, st, order))
 	}
-	addStale := func(taskID string) string {
+	// addWaiting files an order nobody has claimed, entered two days ago,
+	// whose stored queue_deadline passed: the retired queue clock would have
+	// marked it stale (component-work-orders invariant 5).
+	addWaiting := func(taskID string) string {
 		t.Helper()
 		id := taskID + "-implement-1"
 		addOrder(core.WorkOrder{ID: id, TaskID: taskID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now.Add(-48 * time.Hour), QueueDeadline: now.Add(-time.Minute)})
@@ -89,21 +92,24 @@ func runRedispatchOfferParity(t *testing.T, x Fixture) {
 		return false
 	}
 
-	// A stale order at the task's next stage holds it.
+	// A waiting order at the task's next stage holds it. Waiting past the
+	// former queue deadline is no stall: the statement waits for an agent and
+	// offers no operator choice (req-task-lifecycle-and-queue AC-9.4).
 	held := newTask(core.StageImplement)
-	heldOrder := addStale(held)
+	heldOrder := addWaiting(held)
 	action := claimFailureNextAction(t, handler, x.Workspace, held)
-	if action.Details.StallReason != nextaction.StallStale || offered(action) || !strings.Contains(redispatchRefusal(action), heldOrder) {
-		t.Fatalf("held statement stall=%q choices=%+v refusals=%+v", action.Details.StallReason, action.Choices, action.Details.Refusals)
+	if action.Kind != nextaction.KindQueued || action.Actor != nextaction.ActorAgent || action.Details.StallReason != "" || len(action.Choices) != 0 || action.Deadline != nil {
+		t.Fatalf("held statement %s/%s stall=%q choices=%+v deadline=%v", action.Actor, action.Kind, action.Details.StallReason, action.Choices, action.Deadline)
 	}
 	requireParity(held, heldOrder)
 
-	// The same order behind a return to the plan stage holds nothing.
+	// The same order behind a return to the plan stage holds nothing, and it
+	// still asks no operator to act.
 	moved := newTask(core.StageSpec)
-	addStale(moved)
+	addWaiting(moved)
 	action = claimFailureNextAction(t, handler, x.Workspace, moved)
-	if action.Details.StallReason != nextaction.StallStale || !offered(action) || redispatchRefusal(action) != "" {
-		t.Fatalf("unheld statement stall=%q choices=%+v refusals=%+v", action.Details.StallReason, action.Choices, action.Details.Refusals)
+	if action.Kind == nextaction.KindStalled || action.Details.StallReason != "" || offered(action) {
+		t.Fatalf("unheld statement %s/%s stall=%q choices=%+v", action.Actor, action.Kind, action.Details.StallReason, action.Choices)
 	}
 	requireParity(moved, "")
 

@@ -139,10 +139,17 @@ func TestSingleStoreLargeGovernanceClaimIntegration(t *testing.T) {
 					found[event.Kind] = true
 				}
 			}
-			for _, kind := range []string{"work_order.claimed", "work_order.updated", "work_order.timed_out", "work_order.stale"} {
+			for _, kind := range []string{"work_order.claimed", "work_order.updated", "work_order.timed_out"} {
 				if !found[kind] {
 					t.Fatalf("%s audit event missing", kind)
 				}
+			}
+			// The second order waited past its stored queue deadline unclaimed,
+			// so the clock recorded nothing for it. This replaces the retired
+			// expectation of a work_order.stale event (component-work-orders
+			// invariant 5).
+			if found["work_order.stale"] {
+				t.Fatal("the clock marked a waiting order stale")
 			}
 			t.Logf("%s: stored governance=%d bytes; largest work-order event=%d bytes", stage, len(stored), maxEventBytes)
 		})

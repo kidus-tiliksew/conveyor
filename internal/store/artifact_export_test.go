@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -90,6 +91,32 @@ func SeedStoredTaskHoldForTest(t *testing.T, st Backend, taskID string) {
 	}
 	task.Hold = true
 	m.tasks[taskID] = task
+}
+
+// SeedStoredStaleWorkOrderForTest sets one stored order to the retired stale
+// value, as a row the retired queue clock left would read; no command writes
+// it any more (component-work-orders invariant 5). With exhausted it stores
+// the automatic-recovery exhaustion that clock could leave, and a non-zero
+// scheduledAt stores that next automatic recovery time.
+func SeedStoredStaleWorkOrderForTest(t *testing.T, st Backend, orderID string, exhausted bool, scheduledAt time.Time) {
+	t.Helper()
+	m := st.(*volatileMemory).memory
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[orderID]
+	if !ok {
+		t.Fatal("seed requires an existing work order")
+	}
+	order.State, order.Claimable = core.WorkOrderStale, false
+	if exhausted {
+		order.RetrySuppressed, order.RetrySuppressionReason = true, core.AutomaticRecoveryExhaustedReason
+		order.AutomaticRecoveryCount, order.AutomaticRecoveryWindowStartedAt = 2, time.Now().UTC().Add(-time.Hour)
+		order.NextAutomaticRecoveryAt = time.Time{}
+	}
+	if !scheduledAt.IsZero() {
+		order.NextAutomaticRecoveryAt = scheduledAt
+	}
+	m.workOrders[orderID] = order
 }
 
 // SeedRiskRatingForTest stores one numbered risk rating and its risk.rated

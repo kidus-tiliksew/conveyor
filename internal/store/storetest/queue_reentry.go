@@ -110,20 +110,33 @@ func runQueueReentryPins(t *testing.T, x Fixture) {
 		}
 		requireStoredWithoutPins(t, x, "lease expiry", expired)
 	})
-	t.Run("StaleRedispatch", func(t *testing.T) {
+	// An order nobody claimed that waits past its stored queue deadline never
+	// leaves the queue, so nothing re-enters it: the tick changes nothing,
+	// redispatch finds nothing to redispatch, and the order keeps its pins.
+	// This replaces the retired "StaleRedispatch" case, in which the clock
+	// marked the order stale and its redispatch cleared the pins
+	// (component-work-orders invariants 5 and 38).
+	t.Run("WaitingOrderIsNotReentered", func(t *testing.T) {
 		order := newPinnedImplementOrder(t, x)
-		_, err := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
+		_, err := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdTimeout, func(lease taskops.TaskLease) (int, error) {
 			return st.ApplyWorkOrderClock(ctx, lease, order.TaskID, order.QueueDeadline.Add(time.Second))
 		})
 		requireOK(t, err)
-		stale, err := st.GetWorkOrder(ctx, order.ID)
+		waiting, err := st.GetWorkOrder(ctx, order.ID)
 		requireOK(t, err)
-		if stale.State != core.WorkOrderStale {
-			t.Fatalf("clock state=%s, want stale", stale.State)
+		if waiting.State != core.WorkOrderQueued || waiting.RedispatchCount != 0 || !waiting.QueueEnteredAt.Equal(order.QueueEnteredAt) {
+			t.Fatalf("clock state=%s redispatches=%d entered=%s, want the order waiting in place", waiting.State, waiting.RedispatchCount, waiting.QueueEnteredAt)
 		}
-		redispatched, err := RedispatchWorkOrder(ctx, st, order.ID, time.Hour)
+		if _, err = RedispatchWorkOrder(ctx, st, order.ID, time.Hour); err == nil || !strings.Contains(err.Error(), "is not stale") {
+			t.Fatalf("redispatch of a waiting order err=%v, want not stale", err)
+		}
+		stored, err := st.ListTaskWorkOrdersStored(ctx, order.TaskID)
 		requireOK(t, err)
-		requireStoredWithoutPins(t, x, "stale redispatch", redispatched)
+		for _, candidate := range stored {
+			if candidate.ID == order.ID {
+				requireExecutionPins(t, "waiting order", candidate)
+			}
+		}
 	})
 	t.Run("RecoveryAfterTimeout", func(t *testing.T) {
 		for _, refreeze := range []*store.RecoveryRefreeze{nil, {ExecutionTimeoutText: "2h"}} {

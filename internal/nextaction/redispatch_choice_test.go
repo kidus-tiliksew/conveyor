@@ -18,7 +18,6 @@ var stallFixtures = map[string]func(*Input, *core.WorkOrder){
 		in.Recovery = map[string]AutomaticRecovery{o.ID: {Exhausted: true}}
 	},
 	StallRetrySuppressed: func(_ *Input, o *core.WorkOrder) { o.RetrySuppressed = true },
-	StallStale:           func(_ *Input, o *core.WorkOrder) { o.State = core.WorkOrderStale },
 	StallTimedOut:        func(_ *Input, o *core.WorkOrder) { o.State = core.WorkOrderTimedOut },
 	StallUnclaimable:     func(_ *Input, o *core.WorkOrder) { o.RecoveryRefusal = "frozen policy refuses recovery" },
 	StallClaimFailing: func(in *Input, o *core.WorkOrder) {
@@ -110,10 +109,10 @@ func TestStalledRedispatchOfferedWhenTheRouteAccepts(t *testing.T) {
 // predicate does, so a stalled order behind a finished one at the next stage
 // keeps the offer and a stalled seat of the latest review round withholds it.
 func TestStalledRedispatchFollowsTheStageHold(t *testing.T) {
-	implement := core.WorkOrder{ID: "t-implement-1", TaskID: "t", Stage: core.StageImplement, State: core.WorkOrderStale}
+	implement := core.WorkOrder{ID: "t-implement-1", TaskID: "t", Stage: core.StageImplement, State: core.WorkOrderTimedOut}
 	completed := core.WorkOrder{ID: "t-review-1-seat-1", TaskID: "t", Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, State: core.WorkOrderCompleted}
 	offered := Project(Input{Task: core.Task{ID: "t", State: core.TaskQueued, NextStage: core.StageReview}, Orders: []core.WorkOrder{implement, completed}, Capabilities: allCaps(), Now: redispatchNow})
-	if offered.Details.StallReason != StallStale {
+	if offered.Details.StallReason != StallTimedOut {
 		t.Fatalf("stall = %q", offered.Details.StallReason)
 	}
 	requireRedispatchOffered(t, offered, "redispatch")

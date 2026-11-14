@@ -110,19 +110,28 @@ func runWorkOrderClocks(t *testing.T, x Fixture) {
 
 func runWorkOrderStageClocks(t *testing.T, x Fixture, stage core.Stage) {
 	st, ctx := x.Backend, x.Context
-	stale := newAggregateOrder(t, x, stage)
-	_, err := taskops.ExecuteWorkOrder(ctx, st, stale.TaskID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
-		return st.ApplyWorkOrderClock(ctx, lease, stale.TaskID, stale.QueueDeadline.Add(time.Second))
+	// An order nobody has claimed has no queue clock: a tick past its stored
+	// queue_deadline changes nothing, the redispatch command finds nothing to
+	// redispatch, and the order is claimed in its queue position
+	// (req-task-lifecycle-and-queue AC-9.5; component-work-orders invariant 5).
+	waiting := newAggregateOrder(t, x, stage)
+	acted, err := taskops.ExecuteWorkOrder(ctx, st, waiting.TaskID, core.WorkOrderCmdTimeout, func(lease taskops.TaskLease) (int, error) {
+		return st.ApplyWorkOrderClock(ctx, lease, waiting.TaskID, waiting.QueueDeadline.Add(time.Second))
 	})
 	requireOK(t, err)
-	claim := core.WorkOrderClaim{SessionID: "clock", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}
-	if _, err := ClaimWorkOrder(ctx, st, stale.ID, claim); !errors.Is(err, store.ErrWorkOrderStale) {
-		t.Fatalf("stale claim error=%v", err)
+	if acted != 0 {
+		t.Fatalf("clock past the former queue deadline acted %d times on a waiting order", acted)
 	}
-	redispatched, err := RedispatchWorkOrder(ctx, st, stale.ID, time.Hour)
+	claim := core.WorkOrderClaim{SessionID: "clock", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}
+	if _, err := RedispatchWorkOrder(ctx, st, waiting.ID, time.Hour); err == nil || !strings.Contains(err.Error(), "not stale") {
+		t.Fatalf("redispatch of a waiting order error=%v, want not stale", err)
+	}
+	waitingClaim := claim
+	waitingClaim.SessionID = "clock-waiting"
+	claimedWaiting, err := ClaimWorkOrder(ctx, st, waiting.ID, waitingClaim)
 	requireOK(t, err)
-	if redispatched.State != core.WorkOrderQueued || redispatched.RedispatchCount != 1 {
-		t.Fatal("redispatch did not renew queue clock")
+	if claimedWaiting.State != core.WorkOrderClaimed || claimedWaiting.RedispatchCount != 0 || !claimedWaiting.QueueEnteredAt.Equal(waiting.QueueEnteredAt) {
+		t.Fatalf("waiting order claim state=%s redispatches=%d entered=%s, want claimed in place", claimedWaiting.State, claimedWaiting.RedispatchCount, claimedWaiting.QueueEnteredAt)
 	}
 	for _, direction := range []string{"", "Use the existing fixture evidence."} {
 		order := newAggregateOrder(t, x, stage)
@@ -452,10 +461,13 @@ func runImplementationSubmissionReviewSeats(t *testing.T, x Fixture) {
 	requireDeclaredReviewSeats(t, x, refused, nil)
 }
 
-// runLiveWorkOrderListing stores one order in each of the seven states and
-// proves ListLiveWorkOrders returns exactly the queued, claimed, stale, and
+// runLiveWorkOrderListing stores one order in each of the six states a
+// command reaches, plus one order waiting past its stored queue deadline, and
+// proves ListLiveWorkOrders returns exactly the queued, claimed, and
 // timed-out ones, in ListWorkOrders order and isolated to the workspace
-// (component-work-orders, Listing).
+// (component-work-orders, Listing). The waiting order stays queued and
+// listed: the retired queue clock no longer marks it stale
+// (component-work-orders invariant 5).
 func runLiveWorkOrderListing(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	claim := func(order core.WorkOrder, session string) core.WorkOrder {
@@ -466,9 +478,9 @@ func runLiveWorkOrderListing(t *testing.T, x Fixture) {
 	}
 	queued := newAggregateOrder(t, x)
 	claimed := claim(newAggregateOrder(t, x), "live-claimed")
-	stale := newAggregateOrder(t, x)
-	_, err := taskops.ExecuteWorkOrder(ctx, st, stale.TaskID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
-		return st.ApplyWorkOrderClock(ctx, lease, stale.TaskID, stale.QueueDeadline.Add(time.Second))
+	waiting := newAggregateOrder(t, x)
+	_, err := taskops.ExecuteWorkOrder(ctx, st, waiting.TaskID, core.WorkOrderCmdTimeout, func(lease taskops.TaskLease) (int, error) {
+		return st.ApplyWorkOrderClock(ctx, lease, waiting.TaskID, waiting.QueueDeadline.Add(time.Second))
 	})
 	requireOK(t, err)
 	timedOut, err := st.GetWorkOrder(ctx, newAggregateOrder(t, x).ID)
@@ -487,7 +499,7 @@ func runLiveWorkOrderListing(t *testing.T, x Fixture) {
 	requireOK(t, UpdateWorkOrder(ctx, st, cancelled, core.WorkOrderCmdCancel))
 
 	seeded := map[string]core.WorkOrderState{
-		queued.ID: core.WorkOrderQueued, claimed.ID: core.WorkOrderClaimed, stale.ID: core.WorkOrderStale, timedOut.ID: core.WorkOrderTimedOut,
+		queued.ID: core.WorkOrderQueued, claimed.ID: core.WorkOrderClaimed, waiting.ID: core.WorkOrderQueued, timedOut.ID: core.WorkOrderTimedOut,
 		submitted.ID: core.WorkOrderSubmitted, completed.ID: core.WorkOrderCompleted, cancelled.ID: core.WorkOrderCancelled,
 	}
 	for id, want := range seeded {

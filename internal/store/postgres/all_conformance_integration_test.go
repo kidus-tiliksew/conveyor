@@ -295,6 +295,23 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+			}, SeedStoredStaleWorkOrder: func(t *testing.T, ctx context.Context, orderID string, exhausted bool, scheduledAt time.Time) {
+				// A row the retired queue clock left; no command writes stale
+				// any more (component-work-orders invariant 5).
+				var scheduled any
+				if !scheduledAt.IsZero() {
+					scheduled = scheduledAt
+				}
+				tag, err := st.pool.Exec(ctx, `UPDATE work_orders SET state='stale',
+					retry_suppressed=CASE WHEN $3 THEN true ELSE retry_suppressed END,
+					retry_suppression_reason=CASE WHEN $3 THEN 'automatic recovery exhausted' ELSE retry_suppression_reason END,
+					automatic_recovery_count=CASE WHEN $3 THEN 2 ELSE automatic_recovery_count END,
+					automatic_recovery_window_started_at=CASE WHEN $3 THEN now() - interval '1 hour' ELSE automatic_recovery_window_started_at END,
+					next_automatic_recovery_at=CASE WHEN $4::timestamptz IS NOT NULL THEN $4::timestamptz WHEN $3 THEN NULL ELSE next_automatic_recovery_at END
+					WHERE workspace_id=$1 AND id=$2`, workspace, orderID, exhausted, scheduled)
+				if err != nil || tag.RowsAffected() != 1 {
+					t.Fatalf("seed stored stale rows=%d err=%v", tag.RowsAffected(), err)
+				}
 			}, SeedStoredTaskHold: func(t *testing.T, ctx context.Context, taskID string) {
 				// A row written before the hold retirement; no public writer
 				// sets the column (DEC-125(3); component-persistence).

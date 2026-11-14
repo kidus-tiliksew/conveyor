@@ -3336,10 +3336,37 @@ func TestActivityConditionalDeadlines(t *testing.T) {
 			t.Fatalf("next minute status=%d", response.Code)
 		}
 	})
+	// A queued order's stored queue deadline is no deadline: the order waits
+	// unchanged past it (component-work-orders invariant 5). The execution
+	// deadline below replaces the retired queue-deadline fixture.
+	t.Run("stored queue deadline changes nothing", func(t *testing.T) {
+		f := newActivityConditionalFixture(t)
+		f.task("waiting-a", core.TaskQueued)
+		f.order(core.WorkOrder{ID: "waiting-order", TaskID: "waiting-a", JobID: "waiting-order", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: f.now.Add(-time.Hour), QueueDeadline: f.now.Add(20 * time.Second)})
+		nextAction := func() string {
+			t.Helper()
+			response := f.read("/v1/activity", "")
+			if response.Code != http.StatusOK {
+				t.Fatalf("activity status=%d body=%s", response.Code, response.Body.String())
+			}
+			var items []struct {
+				NextAction json.RawMessage `json:"next_action"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil || len(items) != 1 {
+				t.Fatalf("activity items=%s err=%v", response.Body.String(), err)
+			}
+			return string(items[0].NextAction)
+		}
+		before := nextAction()
+		f.now = f.now.Add(25 * time.Second)
+		if after := nextAction(); after != before || !strings.Contains(after, `"kind":"queued"`) || !strings.Contains(after, `"deadline":null`) {
+			t.Fatalf("next action after the stored queue deadline=%s, want it unchanged from %s", after, before)
+		}
+	})
 	t.Run("work-order deadline inside one minute", func(t *testing.T) {
 		f := newActivityConditionalFixture(t)
 		f.task("deadline-a", core.TaskQueued)
-		f.order(core.WorkOrder{ID: "deadline-order", TaskID: "deadline-a", JobID: "deadline-order", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: f.now.Add(-time.Hour), QueueDeadline: f.now.Add(20 * time.Second)})
+		f.order(core.WorkOrder{ID: "deadline-order", TaskID: "deadline-a", JobID: "deadline-order", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: f.now.Add(-time.Hour), QueueDeadline: f.now.Add(time.Hour), ExecutionStartedAt: f.now.Add(-time.Hour), ExecutionDeadline: f.now.Add(20 * time.Second)})
 		cold := f.read("/v1/activity", "")
 		etag := cold.Header().Get("ETag")
 		f.now = f.now.Add(15 * time.Second)

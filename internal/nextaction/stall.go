@@ -6,15 +6,19 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-// StallHit is one deterministic reason a queued, stale, or timed-out order
-// cannot be claimed. DependencyUnsatisfiable is row 13, not a stall reason.
+// StallHit is one deterministic reason a queued or timed-out order cannot be
+// claimed. DependencyUnsatisfiable is row 13, not a stall reason. Waiting
+// unclaimed is never a stall reason: an order nobody has claimed reads as
+// waiting for an agent, and a stored stale order reads as queued until the
+// clock returns it (req-task-lifecycle-and-queue AC-9.4, AC-9.5;
+// component-next-action invariant 5).
 type StallHit struct {
 	Order                   core.WorkOrder
 	Reason                  string
 	DependencyUnsatisfiable bool
 }
 
-// Stall walks queued, stale, and timed-out orders newest-first. An order whose
+// Stall walks queued and timed-out orders newest-first. An order whose
 // automatic recovery is still in the future is skipped. The first hit wins.
 func Stall(task core.Task, orders []core.WorkOrder, recovery map[string]AutomaticRecovery, claimants *ClaimantView, now time.Time) *StallHit {
 	return stall(task, orders, recovery, claimants, nil, now)
@@ -29,8 +33,11 @@ func stallIn(in Input) *StallHit {
 func stall(task core.Task, orders []core.WorkOrder, recovery map[string]AutomaticRecovery, claimants *ClaimantView, failures map[string]core.WorkOrderClaimFailure, now time.Time) *StallHit {
 	for i := len(orders) - 1; i >= 0; i-- {
 		order := orders[i]
+		if order.State == core.WorkOrderStale {
+			order = core.NormalizeLegacyStaleWorkOrder(order, now)
+		}
 		switch order.State {
-		case core.WorkOrderQueued, core.WorkOrderStale, core.WorkOrderTimedOut:
+		case core.WorkOrderQueued, core.WorkOrderTimedOut:
 		default:
 			continue
 		}
@@ -55,8 +62,6 @@ func stallReason(task core.Task, order core.WorkOrder, claimants *ClaimantView, 
 		return StallAutomaticRecoveryExhausted
 	case order.RetrySuppressed:
 		return StallRetrySuppressed
-	case order.State == core.WorkOrderStale:
-		return StallStale
 	case order.State == core.WorkOrderTimedOut:
 		return StallTimedOut
 	case unclaimable(task, order, claimants):

@@ -132,7 +132,8 @@ func (h harness) expire(t *testing.T, id string) {
 	}
 }
 
-// runBounce: implement-1 stays stored queued (or reads stale) while the task
+// runBounce: implement-1 stays stored queued (or waits past its stored queue
+// deadline) while the task
 // advances to review and a real review round is minted; the review bounces the
 // task back. The predicate sees the newer review order as latest, so dispatch
 // must mint implement-2, and creation must retire implement-1 rather than
@@ -293,8 +294,9 @@ func runOlderRoundStop(t *testing.T, st store.Backend) {
 	}
 }
 
-// requireStop asserts the single order is still the stage holder, the clock
-// scheduled no recovery, and redelivered dispatch minted nothing.
+// requireStop asserts the single order is still the stage holder in state
+// want, the clock scheduled no recovery, and redelivered dispatch minted
+// nothing.
 func (h harness) requireStop(t *testing.T, id string, want core.WorkOrderState) {
 	t.Helper()
 	clock := taskops.New(h.st)
@@ -344,17 +346,22 @@ func runClaimedExclusivity(t *testing.T, st store.Backend) {
 	}
 }
 
-// R1: with automatic recovery disabled a stale order still holds the stage.
+// R1: with automatic recovery disabled, an order nobody claimed that waits
+// past its stored queue deadline still holds the stage, queued. This replaces
+// the retired expectation that it held the stage as a stale order
+// (component-work-orders invariant 5).
 func runRecoveryDisabled(t *testing.T, st store.Backend) {
 	h := newHarness(t, st, "disabled", config.RecoveryPolicy{AutomaticRecoveries: 0, WindowText: "24h"}, core.Task{NextStage: core.StageImplement})
 	first := h.task.ID + "-implement-1"
 	h.dispatch(t)
 	h.expire(t, first)
-	h.requireStop(t, first, core.WorkOrderStale)
+	h.requireStop(t, first, core.WorkOrderQueued)
 }
 
-// A stale verify order whose head no longer matches the verify head is
-// refused by recovery policy; it still holds the stage for the operator.
+// A verify order nobody claimed whose head no longer matches the verify head
+// is refused by recovery policy; waiting past its stored queue deadline, it
+// still holds the stage, queued. This replaces the retired expectation that it
+// held the stage as a stale order (component-work-orders invariant 5).
 func runRefusedVerify(t *testing.T, st store.Backend) {
 	h := newHarness(t, st, "verify", config.DefaultRecoveryPolicy(), core.Task{NextStage: core.StageVerify, ReviewedHeadSHA: "head-new", SetupContract: config.PolicyContract{VerifyStage: true}})
 	id := h.task.ID + "-verify-1"
@@ -368,5 +375,5 @@ func runRefusedVerify(t *testing.T, st store.Backend) {
 	if refusal := store.WorkOrderRecoveryRefusal(h.task, core.WorkOrder{ID: id, TaskID: h.task.ID, Stage: core.StageVerify, HeadSHA: "head-old"}, nil); refusal == nil {
 		t.Fatal("fixture verify order is not policy-refused")
 	}
-	h.requireStop(t, id, core.WorkOrderStale)
+	h.requireStop(t, id, core.WorkOrderQueued)
 }

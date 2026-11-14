@@ -244,6 +244,12 @@ func runVerifyAdmission(t *testing.T, x Fixture) {
 
 func runVerifyPolicyStranded(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
+	// waiting names a verify order nobody claimed that waited past its stored
+	// queue deadline. The clock leaves it queued, so it behaves as the queued
+	// order. These cases replace the retired stale cases, in which the clock
+	// marked it stale, recover accepted it, and disabling verification
+	// retired it (component-work-orders invariant 5; DEC-117(2)).
+	const waiting = core.WorkOrderState("waiting")
 	newStranded := func(state core.WorkOrderState) (core.Task, core.WorkOrder) {
 		t.Helper()
 		task := core.Task{
@@ -275,27 +281,32 @@ func runVerifyPolicyStranded(t *testing.T, x Fixture) {
 		verify, err := st.GetWorkOrder(ctx, result.CreatedWorkOrders[0])
 		requireOK(t, err)
 		switch state {
-		case core.WorkOrderStale:
-			_, err = taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
+		case waiting:
+			_, err = taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdTimeout, func(lease taskops.TaskLease) (int, error) {
 				return st.ApplyWorkOrderClock(ctx, lease, task.ID, verify.QueueDeadline.Add(time.Second))
 			})
 			requireOK(t, err)
 			verify, err = st.GetWorkOrder(ctx, verify.ID)
 			requireOK(t, err)
+			if verify.State != core.WorkOrderQueued || !verify.Claimable {
+				t.Fatalf("waiting verify state=%s claimable=%t, want queued and claimable", verify.State, verify.Claimable)
+			}
 		case core.WorkOrderTimedOut:
 			verify = timeoutQueuedOrder(t, x, verify)
 		}
 		return result.Task, verify
 	}
-	t.Run("enable_queued_claimable", func(t *testing.T) {
-		task, verify := newStranded(core.WorkOrderQueued)
-		if _, err := ClaimWorkOrder(ctx, st, verify.ID, core.WorkOrderClaim{
-			SessionID: "stranded-claim", ClientToken: "stranded-claim", ClaimantID: core.TaskRunClaimantID("worker"), Lease: time.Minute,
-		}); err != nil {
-			t.Fatalf("queued verify after enable: %v task=%+v", err, task)
-		}
-	})
-	for _, state := range []core.WorkOrderState{core.WorkOrderStale, core.WorkOrderTimedOut} {
+	for _, state := range []core.WorkOrderState{core.WorkOrderQueued, waiting} {
+		t.Run("enable_"+string(state)+"_claimable", func(t *testing.T) {
+			task, verify := newStranded(state)
+			if _, err := ClaimWorkOrder(ctx, st, verify.ID, core.WorkOrderClaim{
+				SessionID: "stranded-claim-" + string(state), ClientToken: "stranded-claim-" + string(state), ClaimantID: core.TaskRunClaimantID("worker"), Lease: time.Minute,
+			}); err != nil {
+				t.Fatalf("%s verify after enable: %v task=%+v", state, err, task)
+			}
+		})
+	}
+	for _, state := range []core.WorkOrderState{core.WorkOrderTimedOut} {
 		t.Run("enable_"+string(state)+"_recoverable", func(t *testing.T) {
 			_, verify := newStranded(state)
 			recovered, err := RecoverWorkOrder(ctx, st, verify.ID, "stranded-recover-"+verify.ID, time.Hour)
@@ -308,7 +319,7 @@ func runVerifyPolicyStranded(t *testing.T, x Fixture) {
 			}
 		})
 	}
-	for _, state := range []core.WorkOrderState{core.WorkOrderQueued, core.WorkOrderStale, core.WorkOrderTimedOut} {
+	for _, state := range []core.WorkOrderState{core.WorkOrderQueued, waiting, core.WorkOrderTimedOut} {
 		t.Run("disable_"+string(state), func(t *testing.T) {
 			task, verify := newStranded(state)
 			disabled := false
@@ -344,11 +355,8 @@ func runVerifyPolicyStranded(t *testing.T, x Fixture) {
 			if !decided || !changed {
 				t.Fatal("disable missing transition or setup event")
 			}
-			if state == core.WorkOrderStale && !retired {
-				t.Fatal("stale verify was not retired")
-			}
-			if state != core.WorkOrderStale && !cancelled {
-				t.Fatal("verify was not cancelled")
+			if retired || !cancelled {
+				t.Fatalf("%s verify retired=%t cancelled=%t, want cancelled", state, retired, cancelled)
 			}
 			review, err := st.GetWorkOrder(ctx, result.CreatedWorkOrders[0])
 			requireOK(t, err)

@@ -24,10 +24,11 @@ type DeadlineReader interface {
 }
 
 // WorkOrderDeadlines are the deadlines a work order's state records: the
-// lease of a claimed order, the queue deadline of a queued order not yet
-// started and not blocked, the execution deadline of a queued or claimed
-// order, and the automatic-recovery time of any live order. NextDeadline
-// reads the same set in every backend.
+// lease of a claimed order, the execution deadline of a queued or claimed
+// order, and the automatic-recovery time of a queued, claimed, or timed-out
+// order. A queued order has no queue deadline, and a stored stale order waits
+// for the next fire (component-work-orders invariant 5). NextDeadline reads
+// the same set in every backend.
 func WorkOrderDeadlines(order core.WorkOrder) []time.Time {
 	var deadlines []time.Time
 	consider := func(at time.Time) {
@@ -41,12 +42,9 @@ func WorkOrderDeadlines(order core.WorkOrder) []time.Time {
 		consider(order.ExecutionDeadline)
 		consider(order.NextAutomaticRecoveryAt)
 	case core.WorkOrderQueued:
-		if order.ExecutionStartedAt.IsZero() && order.QueueBlockedAt.IsZero() {
-			consider(order.QueueDeadline)
-		}
 		consider(order.ExecutionDeadline)
 		consider(order.NextAutomaticRecoveryAt)
-	case core.WorkOrderStale, core.WorkOrderTimedOut:
+	case core.WorkOrderTimedOut:
 		consider(order.NextAutomaticRecoveryAt)
 	}
 	return deadlines
@@ -153,7 +151,9 @@ func EventDeadlineNotice(workspace, kind string, payload json.RawMessage, at tim
 		return changes.Notice{}, false
 	}
 	var earliest time.Time
-	for _, at := range []*time.Time{fields.LeaseExpiresAt, fields.QueueDeadline, fields.ExecutionDeadline, fields.NextAutomaticRecoveryAt} {
+	// queue_deadline is inert compatibility data and raises no notice
+	// (component-work-orders invariant 5).
+	for _, at := range []*time.Time{fields.LeaseExpiresAt, fields.ExecutionDeadline, fields.NextAutomaticRecoveryAt} {
 		if at != nil && !at.IsZero() && (earliest.IsZero() || at.Before(earliest)) {
 			earliest = *at
 		}
@@ -194,8 +194,8 @@ func verificationClaimMayHaveEnded(kind string, payload json.RawMessage) bool {
 	return order.Stage == core.StageVerify && order.State != "" && order.State != core.WorkOrderClaimed && order.LastAttemptID != ""
 }
 
-// DependencyResumeDeadlineNotice is raised when a dependency unblock
-// restarts paused queue clocks, which appends no event
+// DependencyResumeDeadlineNotice is raised when a dependency unblock makes
+// paused orders claimable again, which appends no event
 // (component-task-lifecycle, Dependency commands).
 func DependencyResumeDeadlineNotice(workspace string, at time.Time) changes.Notice {
 	return changes.Notice{Workspace: workspace, Kind: changes.Deadline, At: at}

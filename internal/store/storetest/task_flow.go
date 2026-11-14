@@ -233,41 +233,23 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		}
 	})
 
-	// Two spec orders: the newer one supersedes and retires the older, then
-	// times out unclaimed and the clock redispatches it automatically.
-	staleID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanNeeded, MergeApproval: true, NextStage: core.StageSpec})
-	older := flowOrder(t, st, ctx, staleID, core.StageSpec, "1", flowShort)
-	newer := flowOrder(t, st, ctx, staleID, core.StageSpec, "2", flowShort)
-	flowRecover(t, "stale redispatch", st, ctx, newer)
-	add("stale redispatch", staleID, func(t *testing.T, flow store.TaskFlow) {
+	// An order nobody claims waits past the deadline the retired queue clock
+	// stored, and the clock leaves it alone: one dispatch entry, not
+	// automatic, still open, with no stale outcome and no automatic
+	// redispatch. This replaces the retired "stale redispatch" scenario, in
+	// which the clock marked such an order stale and redispatched it
+	// (req-task-lifecycle-and-queue AC-9.5; component-work-orders invariant 5).
+	waitingID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanNeeded, MergeApproval: true, NextStage: core.StageSpec})
+	waiting := flowOrder(t, st, ctx, waitingID, core.StageSpec, "1", flowShort)
+	flowWait(t, "waiting order", st, ctx, waiting)
+	add("waiting order", waitingID, func(t *testing.T, flow store.TaskFlow) {
 		attempts := taskFlowStage(t, flow, core.StageSpec).Attempts
-		var olderRows, newerRows []store.FlowAttempt
-		for _, attempt := range attempts {
-			switch attempt.OrderID {
-			case older:
-				olderRows = append(olderRows, attempt)
-			case newer:
-				newerRows = append(newerRows, attempt)
-			}
+		if len(attempts) != 1 || attempts[0].OrderID != waiting || attempts[0].Auto || attempts[0].EndedAt != nil || attempts[0].Outcome == "stale" {
+			t.Fatalf("attempts = %+v, want one open dispatch entry", attempts)
 		}
-		if len(olderRows) == 0 || len(newerRows) < 2 {
-			t.Fatalf("attempts = %+v", attempts)
-		}
-		for _, row := range olderRows {
-			if !row.Superseded {
-				t.Fatalf("retired sibling entry not superseded: %+v", row)
-			}
-		}
-		// The first dispatch is not automatic; the system replacement is.
-		if olderRows[0].Auto || !newerRows[0].Auto || newerRows[0].EndedAt == nil || newerRows[0].Outcome != "stale" {
-			t.Fatalf("dispatch entries = %+v %+v", olderRows[0], newerRows[0])
-		}
-		last := newerRows[len(newerRows)-1]
-		if !last.Auto || last.Superseded || last.EndedAt != nil {
-			t.Fatalf("automatic redispatch entry = %+v", last)
-		}
-		if len(flow.Raw.OrderIDs) != 2 || flow.Raw.OrderIDs[0] != older || flow.Raw.OrderIDs[1] != newer {
-			t.Fatalf("order_ids = %v", flow.Raw.OrderIDs)
+		action := flow.NextAction
+		if action.Actor != nextaction.ActorAgent || action.Kind != nextaction.KindQueued || action.Details.StallReason != "" || len(action.Choices) != 0 {
+			t.Fatalf("next action = %s/%s stall=%q choices=%+v, want an order waiting for an agent", action.Actor, action.Kind, action.Details.StallReason, action.Choices)
 		}
 	})
 
@@ -893,9 +875,8 @@ func flowClaim(t *testing.T, st store.Store, ctx context.Context, id, session st
 	return order
 }
 
-// flowExpire waits past the order's execution deadline when one is set,
-// whatever its projected state, and its queue deadline otherwise, then ticks
-// the order clock, so a claimed order times out and a queued one goes stale.
+// flowExpire waits past the order's execution deadline, then ticks the order
+// clock, so a claimed order times out.
 func flowExpire(t *testing.T, scenario string, st store.Store, ctx context.Context, id string) core.WorkOrder {
 	t.Helper()
 	order, err := st.GetWorkOrder(ctx, id)
@@ -903,11 +884,7 @@ func flowExpire(t *testing.T, scenario string, st store.Store, ctx context.Conte
 	// A read after the execution deadline projects a claimed order as
 	// timed_out without writing (component-work-orders v42) and keeps
 	// ExecutionDeadline, so select by the deadline, not the projected state.
-	deadline := order.QueueDeadline
-	if !order.ExecutionDeadline.IsZero() {
-		deadline = order.ExecutionDeadline
-	}
-	wait := time.Until(deadline) + time.Millisecond
+	wait := time.Until(order.ExecutionDeadline) + time.Millisecond
 	if wait > flowMaxWait {
 		t.Fatalf("flowExpire: scenario %q: order %s (state %s, execution_deadline %s, queue_deadline %s) would wait %s, over flowMaxWait %s", scenario, id, order.State, order.ExecutionDeadline, order.QueueDeadline, wait, flowMaxWait)
 	}
@@ -916,10 +893,31 @@ func flowExpire(t *testing.T, scenario string, st store.Store, ctx context.Conte
 	requireOK(t, err)
 	order, err = st.GetWorkOrder(ctx, id)
 	requireOK(t, err)
-	if order.State != core.WorkOrderTimedOut && order.State != core.WorkOrderStale {
+	if order.State != core.WorkOrderTimedOut {
 		t.Fatalf("scenario %q: order %s after clock = %s", scenario, id, order.State)
 	}
 	return order
+}
+
+// flowWait waits past the queue deadline an unclaimed order stores, then ticks
+// the order clock, which leaves the order queued and claimable in its place
+// (component-work-orders invariant 5).
+func flowWait(t *testing.T, scenario string, st store.Store, ctx context.Context, id string) {
+	t.Helper()
+	before, err := st.GetWorkOrder(ctx, id)
+	requireOK(t, err)
+	wait := time.Until(before.QueueDeadline) + time.Millisecond
+	if wait > flowMaxWait {
+		t.Fatalf("flowWait: scenario %q: order %s would wait %s, over flowMaxWait %s", scenario, id, wait, flowMaxWait)
+	}
+	time.Sleep(wait)
+	_, err = taskops.New(st).TickOrderClock(ctx, time.Now().UTC())
+	requireOK(t, err)
+	order, err := st.GetWorkOrder(ctx, id)
+	requireOK(t, err)
+	if order.State != core.WorkOrderQueued || !order.Claimable || !order.QueueEnteredAt.Equal(before.QueueEnteredAt) || order.RedispatchCount != 0 || !order.NextAutomaticRecoveryAt.IsZero() {
+		t.Fatalf("scenario %q: order %s after clock = %s claimable=%t entered=%s redispatches=%d recovery=%s, want it waiting in place", scenario, id, order.State, order.Claimable, order.QueueEnteredAt, order.RedispatchCount, order.NextAutomaticRecoveryAt)
+	}
 }
 
 // flowRecover expires the order and ticks to its scheduled automatic recovery.

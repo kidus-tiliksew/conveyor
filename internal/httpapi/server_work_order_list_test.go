@@ -54,8 +54,8 @@ func seedWorkOrder(t *testing.T, ctx context.Context, st store.Store, taskID str
 		move(core.WorkOrderCancelled, core.WorkOrderCmdCancel)
 	case core.WorkOrderTimedOut:
 		move(core.WorkOrderTimedOut, core.WorkOrderCmdTimeout)
-	case core.WorkOrderStale:
-		if _, err := taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
+	case waitingWorkOrderState:
+		if _, err := taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdTimeout, func(lease taskops.TaskLease) (int, error) {
 			return st.ApplyWorkOrderClock(ctx, lease, taskID, now.Add(time.Hour+time.Second))
 		}); err != nil {
 			t.Fatal(err)
@@ -74,11 +74,21 @@ func seedWorkOrder(t *testing.T, ctx context.Context, st store.Store, taskID str
 	if err != nil {
 		t.Fatal(err)
 	}
-	if order.State != state {
-		t.Fatalf("seeded %s state=%s, want %s", id, order.State, state)
+	want := state
+	if state == waitingWorkOrderState {
+		want = core.WorkOrderQueued
+	}
+	if order.State != want {
+		t.Fatalf("seeded %s state=%s, want %s", id, order.State, want)
 	}
 	return order
 }
+
+// waitingWorkOrderState names a seeded order nobody claimed that waited past
+// its stored queue deadline. The clock leaves it queued and listed: it
+// replaces the retired stale seed, which the queue clock marked stale
+// (component-work-orders invariant 5).
+const waitingWorkOrderState = core.WorkOrderState("waiting")
 
 // workOrderListFixture seeds one live order in each live state and history
 // tasks holding only submitted and cancelled orders.
@@ -87,7 +97,7 @@ func workOrderListFixture(t *testing.T, history int) (*taskListCountingStore, ht
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	memory := store.NewMemory()
 	live := map[core.WorkOrderState]core.WorkOrder{}
-	for _, state := range []core.WorkOrderState{core.WorkOrderQueued, core.WorkOrderClaimed, core.WorkOrderStale, core.WorkOrderTimedOut} {
+	for _, state := range []core.WorkOrderState{core.WorkOrderQueued, core.WorkOrderClaimed, waitingWorkOrderState, core.WorkOrderTimedOut} {
 		live[state] = seedWorkOrder(t, ctx, memory, "live-"+string(state), 1, state)
 	}
 	var terminal []core.WorkOrder
@@ -134,11 +144,11 @@ func TestWorkOrderListReadsLiveOrdersOnly(t *testing.T) {
 	smallCalls, _ := listedStates(small, smallHandler)
 	largeCalls, states := listedStates(large, largeHandler)
 	want := map[string]core.WorkOrderState{}
-	for state, order := range live {
-		want[order.ID] = state
+	for _, order := range live {
+		want[order.ID] = order.State
 	}
 	if !reflect.DeepEqual(states, want) {
-		t.Fatalf("listed=%v, want exactly the queued, claimed, stale, and timed-out orders %v", states, want)
+		t.Fatalf("listed=%v, want exactly the queued, claimed, waiting, and timed-out orders %v", states, want)
 	}
 	for _, order := range terminal {
 		if _, listed := states[order.ID]; listed {
@@ -153,7 +163,7 @@ func TestWorkOrderListReadsLiveOrdersOnly(t *testing.T) {
 	}
 	_, _, historyIDs := large.snapshot()
 	for _, id := range historyIDs {
-		if !slices.Contains([]string{"live-queued", "live-claimed", "live-stale", "live-timed_out"}, id) {
+		if !slices.Contains([]string{"live-queued", "live-claimed", "live-waiting", "live-timed_out"}, id) {
 			t.Fatalf("projection read history of task %s, which has no live order", id)
 		}
 	}

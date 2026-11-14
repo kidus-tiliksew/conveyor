@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,9 +118,16 @@ func RunTaskContextQueueRepinConformance(t *testing.T, st store.Store, ctx conte
 		t.Fatalf("newer pending pin events=%d, want 3 (no downgrade append)", got)
 	}
 
-	if _, err = For(st).RedispatchWorkOrder(ctx, redispatchOrder.ID, time.Hour); err != nil {
-		t.Fatal(err)
+	// An implement order nobody claimed waits past its stored queue deadline
+	// without going stale, so redispatch finds nothing to redispatch and no
+	// age-only act repins the task; the next dispatch repins it. This replaces
+	// the retired expectation that a queue-clock redispatch repinned the task
+	// (component-work-orders invariant 5).
+	if _, err = For(st).RedispatchWorkOrder(ctx, redispatchOrder.ID, time.Hour); err == nil || !strings.Contains(err.Error(), "is not stale") {
+		t.Fatalf("redispatch of a waiting order err=%v, want not stale", err)
 	}
+	assertPin(redispatchTask.ID, first.Version)
+	createOrder(redispatchTask, "implement-2", nil)
 	assertPin(redispatchTask.ID, second.Version)
 
 	if _, err = For(st).RecoverWorkOrder(ctx, recoveryOrder.ID, "recover-repin", time.Hour); err != nil {

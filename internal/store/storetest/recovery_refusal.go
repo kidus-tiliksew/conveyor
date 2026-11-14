@@ -69,13 +69,18 @@ func runRecoverEligibility(t *testing.T, x Fixture) {
 			_, err := ReleaseWorkerClaim(ctx, st, order.ID, claimed.WorkerID, core.WorkOrderRelease{SessionID: claimed.SessionID})
 			requireOK(t, err)
 		}, accept: true},
-		{name: "stale", prepare: func(t *testing.T, order core.WorkOrder) {
+		// An order nobody claimed that waited past its stored queue deadline
+		// is waiting, not stopped: the clock leaves it queued and the recover
+		// route refuses it like any never-claimed order. This replaces the
+		// retired "stale" shape, which the clock marked stale and recover
+		// accepted (component-work-orders invariant 5; DEC-117(2)).
+		{name: "waiting past the former queue deadline", prepare: func(t *testing.T, order core.WorkOrder) {
 			t.Helper()
-			_, err := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
+			_, err := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdTimeout, func(lease taskops.TaskLease) (int, error) {
 				return st.ApplyWorkOrderClock(ctx, lease, order.TaskID, order.QueueDeadline.Add(time.Second))
 			})
 			requireOK(t, err)
-		}, accept: true},
+		}},
 		{name: "timed out", prepare: func(t *testing.T, order core.WorkOrder) {
 			t.Helper()
 			timeoutQueuedOrder(t, x, order)
@@ -334,7 +339,12 @@ func runRecoveryRefuseWriteFree(t *testing.T, x Fixture) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+"/recover", func(t *testing.T) { refuseRecoverWriteFree(t, x, tc.mutate, tc.want) })
-		t.Run(tc.name+"/redispatch", func(t *testing.T) { refuseRedispatchWriteFree(t, x, tc.mutate, tc.want) })
+		// The redispatch probe waited past its stored queue deadline unclaimed
+		// and never went stale, so redispatch refuses it, write-free, before
+		// any policy predicate. This replaces the retired expectation that
+		// redispatch of a queue-clock stale order reached tc.want
+		// (component-work-orders invariant 5).
+		t.Run(tc.name+"/redispatch", func(t *testing.T) { refuseRedispatchWriteFree(t, x, tc.mutate, "is not stale") })
 	}
 }
 
@@ -417,89 +427,89 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 			want:        func(string, string, string) string { return "" },
 		},
 		{
-			name:  "running/verify-on/equal/verify/stale",
+			name:  "running/verify-on/equal/verify/timed-out",
 			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
-			clock: core.WorkOrderStale,
+			clock: core.WorkOrderTimedOut,
 			want:  func(string, string, string) string { return "" },
 		},
 		{
-			name:  "running/verify-off/equal/verify/stale",
+			name:  "running/verify-off/equal/verify/timed-out",
 			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head"},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
-			clock: core.WorkOrderStale,
+			clock: core.WorkOrderTimedOut,
 			want: func(taskID, orderID, _ string) string {
 				return "verify order " + orderID + " cannot be claimed: verify stage is off in task " + taskID + "'s frozen policy"
 			},
 		},
 		{
-			name:  "running/verify-on/mismatch/verify/stale",
+			name:  "running/verify-on/mismatch/verify/timed-out",
 			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "task-head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "order-head"},
-			clock: core.WorkOrderStale,
+			clock: core.WorkOrderTimedOut,
 			want: func(_, orderID, _ string) string {
 				return "verify order " + orderID + " cannot be claimed: order head order-head differs from the verify head task-head"
 			},
 		},
 		{
-			name:  "running/verify-on/empty/verify/stale",
+			name:  "running/verify-on/empty/verify/timed-out",
 			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify},
-			clock: core.WorkOrderStale,
+			clock: core.WorkOrderTimedOut,
 			want: func(_, orderID, _ string) string {
 				return "verify order " + orderID + " cannot be claimed: the order has no head"
 			},
 		},
 		{
-			name:  "running/verify-on/refresh/verify/stale",
+			name:  "running/verify-on/refresh/verify/timed-out",
 			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "reviewed", ApprovalStale: true, RefreshHeadSHA: "refresh", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "order"},
-			clock: core.WorkOrderStale,
+			clock: core.WorkOrderTimedOut,
 			want: func(_, orderID, _ string) string {
 				return "verify order " + orderID + " cannot be claimed: order head order differs from the verify head refresh (the refresh head, because approval_stale is set)"
 			},
 		},
 		{
-			name:  "running/next-review/verify/stale",
+			name:  "running/next-review/verify/timed-out",
 			task:  core.Task{State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
-			clock: core.WorkOrderStale,
+			clock: core.WorkOrderTimedOut,
 			want: func(taskID, orderID, _ string) string {
 				return "verify order " + orderID + " cannot be claimed: task " + taskID + " next_stage is review, not verify"
 			},
 		},
 		{
-			name:  "awaiting/recovery-implement/spec/stale",
+			name:  "awaiting/recovery-implement/spec/timed-out",
 			task:  core.Task{State: core.TaskAwaiting, RecoveryStage: core.StageImplement, NextStage: core.StageSpec},
 			order: core.WorkOrder{Stage: core.StageSpec},
-			clock: core.WorkOrderStale,
+			clock: core.WorkOrderTimedOut,
 			want: func(taskID, orderID, _ string) string {
 				return "work order " + orderID + " cannot be recovered because task " + taskID + " has passed the plan gate"
 			},
 		},
 		{
-			name:  "running/implement-advanced/implement/stale",
+			name:  "running/implement-advanced/implement/timed-out",
 			task:  core.Task{State: core.TaskRunning, NextStage: core.StageReview},
 			order: core.WorkOrder{Stage: core.StageImplement},
-			clock: core.WorkOrderStale,
+			clock: core.WorkOrderTimedOut,
 			want: func(taskID, orderID, _ string) string {
 				return "work order " + orderID + " cannot be recovered because task " + taskID + " has advanced to review"
 			},
 		},
 		{
-			name:  "running/implement-advanced-verify/implement/stale",
+			name:  "running/implement-advanced-verify/implement/timed-out",
 			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify},
 			order: core.WorkOrder{Stage: core.StageImplement},
-			clock: core.WorkOrderStale,
+			clock: core.WorkOrderTimedOut,
 			want: func(taskID, orderID, _ string) string {
 				return "work order " + orderID + " cannot be recovered because task " + taskID + " has advanced to verify"
 			},
 		},
 		{
-			name:      "running/verify-on/equal/verify/stale/successor",
+			name:      "running/verify-on/equal/verify/timed-out/successor",
 			task:      core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order:     core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
-			clock:     core.WorkOrderStale,
+			clock:     core.WorkOrderTimedOut,
 			successor: true,
 			want: func(_, orderID, successorID string) string {
 				return "work order " + orderID + " was superseded by same-stage successor " + successorID
@@ -535,11 +545,16 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 				_, err = ReleaseWorkerClaim(ctx, st, order.ID, claimed.WorkerID, core.WorkOrderRelease{SessionID: claimed.SessionID})
 				requireOK(t, err)
 			}
-			if item.clock == core.WorkOrderStale {
-				_, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
-					return st.ApplyWorkOrderClock(ctx, lease, task.ID, order.QueueDeadline.Add(time.Second))
-				})
+			// A never-claimed order no longer goes stale, so each stopped cell
+			// is a timed-out order, recorded through the work-order timeout
+			// command as refuseRecoverWriteFree records it. These cells replace
+			// the retired stale cells, which the queue clock reached
+			// (component-work-orders invariant 5).
+			if item.clock == core.WorkOrderTimedOut {
+				persisted, err := st.GetWorkOrder(ctx, order.ID)
 				requireOK(t, err)
+				persisted.State = core.WorkOrderTimedOut
+				requireOK(t, UpdateWorkOrder(ctx, st, persisted, core.WorkOrderCmdTimeout))
 			}
 			successorID := ""
 			if item.successor {
@@ -563,18 +578,9 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 			} else if recoverErr != nil {
 				t.Fatalf("recover err=%v", recoverErr)
 			}
-			if item.clock == core.WorkOrderStale {
-				currentAfter, getErr := st.GetWorkOrder(ctx, current.ID)
-				requireOK(t, getErr)
-				if currentAfter.State == core.WorkOrderStale {
-					_, redispatchErr := RedispatchWorkOrder(ctx, st, current.ID, time.Hour)
-					if want != "" {
-						if redispatchErr == nil || redispatchErr.Error() != want {
-							t.Fatalf("redispatch err=%v want %q", redispatchErr, want)
-						}
-					} else if redispatchErr != nil && !strings.Contains(redispatchErr.Error(), "already claimed") {
-						t.Fatalf("redispatch err=%v", redispatchErr)
-					}
+			if item.clock == core.WorkOrderTimedOut {
+				if _, redispatchErr := RedispatchWorkOrder(ctx, st, current.ID, time.Hour); redispatchErr == nil || !strings.Contains(redispatchErr.Error(), "is not stale") {
+					t.Fatalf("redispatch err=%v, want a timed-out order that is not stale", redispatchErr)
 				}
 			}
 			if recoverErr != nil {
@@ -654,44 +660,57 @@ func runRedispatchPlanRevisionGuard(t *testing.T, x Fixture) {
 	}
 	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
 	requireOK(t, CreateWorkOrder(ctx, st, order))
+	// The order waited past its stored queue deadline unclaimed and never
+	// went stale, so redispatch refuses it write-free before the plan-revision
+	// guard. This replaces the retired expectation that redispatch of a
+	// queue-clock stale order reached that guard (component-work-orders
+	// invariant 5).
 	beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, task.ID, order.ID)
 	_, err := RedispatchWorkOrder(ctx, st, order.ID, time.Hour)
-	if err == nil || !strings.Contains(err.Error(), "unreadable plan-revision request") {
+	if err == nil || !strings.Contains(err.Error(), "is not stale") {
 		t.Fatalf("redispatch err=%v", err)
 	}
 	afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, task.ID, order.ID)
 	assertUnchanged(t, beforeOrder, afterOrder, beforeJob, afterJob, beforeTask, afterTask, beforeEvents, afterEvents)
 }
 
-// runRedispatchResetsQueueClockAndAudit proves the order-level redispatch of a
-// stale never-claimed order on every backend: a fresh queue window, no execution
-// clock, one audit event for each step, and a claim that succeeds afterward
-// (component-work-orders invariants 5 and 41).
+// runRedispatchResetsQueueClockAndAudit proves on every backend that an order
+// nobody claimed keeps its queue window when it waits past its stored queue
+// deadline: the clock records nothing, redispatch refuses it write-free, and a
+// claim succeeds in its original queue position with no stale or redispatch
+// audit. This replaces the retired expectation that the clock marked it stale
+// and redispatch gave it a fresh queue window with one audit event for each
+// step (component-work-orders invariants 5 and 41; req-task-lifecycle-and-queue
+// AC-9.5).
 func runRedispatchResetsQueueClockAndAudit(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
-	_, err := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
+	acted, err := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdTimeout, func(lease taskops.TaskLease) (int, error) {
 		return st.ApplyWorkOrderClock(ctx, lease, order.TaskID, order.QueueDeadline.Add(time.Second))
 	})
 	requireOK(t, err)
-	const timeout = 3 * time.Hour
-	redispatched, err := RedispatchWorkOrder(ctx, st, order.ID, timeout)
-	requireOK(t, err)
-	if redispatched.State != core.WorkOrderQueued || !redispatched.Claimable || redispatched.RedispatchCount != 1 ||
-		redispatched.QueueDeadline.Sub(redispatched.QueueEnteredAt) != timeout ||
-		!redispatched.ExecutionStartedAt.IsZero() || !redispatched.ExecutionDeadline.IsZero() {
-		t.Fatalf("redispatched=%+v", redispatched)
+	if acted != 0 {
+		t.Fatalf("clock acted %d times on a waiting order", acted)
 	}
-	_, err = ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "after-redispatch", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, order.TaskID, order.ID)
+	if _, err = RedispatchWorkOrder(ctx, st, order.ID, 3*time.Hour); err == nil || !strings.Contains(err.Error(), "is not stale") {
+		t.Fatalf("redispatch err=%v, want a waiting order that is not stale", err)
+	}
+	afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, order.TaskID, order.ID)
+	assertUnchanged(t, beforeOrder, afterOrder, beforeJob, afterJob, beforeTask, afterTask, beforeEvents, afterEvents)
+	claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "after-wait", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
+	if claimed.RedispatchCount != 0 || !claimed.QueueEnteredAt.Equal(order.QueueEnteredAt) {
+		t.Fatalf("claimed=%+v, want the original queue position", claimed)
+	}
 	events, err := st.ListEvents(ctx, order.TaskID)
 	requireOK(t, err)
 	counts := map[string]int{}
 	for _, event := range events {
 		counts[event.Kind]++
 	}
-	if counts["work_order.stale"] != 1 || counts["work_order.redispatched"] != 1 {
-		t.Fatalf("audit events stale=%d redispatched=%d", counts["work_order.stale"], counts["work_order.redispatched"])
+	if counts["work_order.stale"] != 0 || counts["work_order.redispatched"] != 0 {
+		t.Fatalf("audit events stale=%d redispatched=%d, want none", counts["work_order.stale"], counts["work_order.redispatched"])
 	}
 }
 
@@ -709,7 +728,10 @@ func runRedispatchStaleNeverClaimedGuard(t *testing.T, x Fixture) {
 		{name: "claimed", state: core.WorkOrderClaimed, want: "cannot be redispatched"},
 		{name: "submitted", state: core.WorkOrderSubmitted, command: core.WorkOrderCmdSubmitForReview, want: "is not stale and cannot be redispatched"},
 		{name: "timed-out", state: core.WorkOrderTimedOut, command: core.WorkOrderCmdTimeout, want: "is not stale and cannot be redispatched"},
-		{name: "previously-claimed-stale", state: core.WorkOrderStale, command: core.WorkOrderCmdMarkStale, want: "was already claimed and requires operator recovery"},
+		// A stored stale value reads as the queued order the clock returns it
+		// to, so redispatch finds nothing stale. This replaces the retired
+		// "was already claimed" refusal (component-work-orders invariant 5).
+		{name: "previously-claimed-stale", state: core.WorkOrderStale, command: core.WorkOrderCmdMarkStale, want: "is not stale and cannot be redispatched"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			order := newAggregateOrder(t, x)

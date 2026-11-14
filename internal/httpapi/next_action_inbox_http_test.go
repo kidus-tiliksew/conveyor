@@ -207,6 +207,11 @@ func TestNextActionInboxOrdersDependentsFirst(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	now := time.Now().UTC().Truncate(time.Second)
+	// Each fixture order lost its lease and has an automatic recovery
+	// scheduled, so its statement carries the recovery time as its deadline.
+	// A queued order's stored queue deadline is no deadline
+	// (component-next-action invariant 14), so these fixtures replace the
+	// retired retry-suppressed orders whose queue deadlines ordered the band.
 	stalled := func(id, repo string, deadline time.Time) {
 		t.Helper()
 		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Title: "Task " + id, Repo: repo, Branch: id, State: core.TaskRunning, CreatedAt: now}); err != nil {
@@ -215,7 +220,7 @@ func TestNextActionInboxOrdersDependentsFirst(t *testing.T) {
 		if err := st.CreateJob(ctx, core.Job{ID: id + "-job", TaskID: id, Stage: core.StageImplement, State: core.JobPending}); err != nil {
 			t.Fatal(err)
 		}
-		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: id + "-order", TaskID: id, JobID: id + "-job", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: deadline, RetrySuppressed: true}); err != nil {
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: id + "-order", TaskID: id, JobID: id + "-job", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(24 * time.Hour), LastAttemptID: id + "-attempt", LastAttemptOutcome: core.WorkOrderOutcomeExpired, NextAutomaticRecoveryAt: deadline}); err != nil {
 			t.Fatal(err)
 		}
 	}

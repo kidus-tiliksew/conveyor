@@ -313,19 +313,27 @@ func TestAutomaticRecoveryOverlappingTicksIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:  "redispatch",
-			point: clockOrderReadRecovery,
+			// A row the retired queue clock left stale, with the age-only
+			// schedule it could leave, is the one hand-set state here. Two
+			// overlapping ticks return it to queued once: one
+			// work_order.redispatched, no recovery ledger row, no recovery
+			// counted, and the schedule cleared, even when the second tick
+			// read the old image. This replaces the retired scenario in which
+			// the clock redispatched a stale order as an automatic recovery
+			// (component-work-orders invariants 5 and 47).
+			name:  "legacy stale",
+			point: clockOrderReadTransitions,
 			seed: func(t *testing.T, r *clockRace) (time.Time, time.Time) {
 				now := time.Now().UTC()
 				r.set(t, `state='stale', next_automatic_recovery_at=?`, now)
 				return now, now
 			},
-			locked:  outcome{events: map[string]int{"work_order.redispatched": 1}, ledger: 1},
-			oldRead: outcome{events: map[string]int{"work_order.redispatched": 1}, ledger: 1},
+			locked:  outcome{events: map[string]int{"work_order.redispatched": 1, "work_order.recovered": 0}},
+			oldRead: outcome{events: map[string]int{"work_order.redispatched": 1, "work_order.recovered": 0}},
 			check: func(t *testing.T, r *clockRace, _ bool, _, _ time.Time) {
 				order := r.read(t, core.WorkOrderQueued)
-				if order.AutomaticRecoveryCount != 1 || order.RedispatchCount != 1 {
-					t.Fatalf("redispatched order=%+v", order)
+				if order.AutomaticRecoveryCount != 0 || order.RedispatchCount != 0 || !order.NextAutomaticRecoveryAt.IsZero() {
+					t.Fatalf("normalized order=%+v", order)
 				}
 			},
 		},

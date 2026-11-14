@@ -108,8 +108,15 @@ func assertUnreadablePlanRevisionGate(t *testing.T, st store.Store, ctx context.
 	if _, err = RecoverWorkOrder(ctx, st, orderID, "unreadable-"+orderID, time.Hour); err == nil || err.Error() != want {
 		t.Fatalf("recover err=%v want %q", err, want)
 	}
-	if _, err = RedispatchWorkOrder(ctx, st, orderID, time.Hour); err == nil || err.Error() != want {
-		t.Fatalf("redispatch err=%v want %q", err, want)
+	// The probe waited past its stored queue deadline unclaimed, so it never
+	// went stale and redispatch finds nothing to redispatch. This replaces the
+	// retired expectation that redispatch reached the plan-revision refusal on
+	// a queue-clock stale order (component-work-orders invariant 5).
+	if _, err = RedispatchWorkOrder(ctx, st, orderID, time.Hour); err == nil || !strings.Contains(err.Error(), "is not stale") {
+		t.Fatalf("redispatch err=%v want a waiting order that is not stale", err)
+	}
+	if order, err := st.GetWorkOrder(ctx, orderID); err != nil || order.State != core.WorkOrderQueued || order.RedispatchCount != 0 {
+		t.Fatalf("probe after refusals state=%s redispatches=%d err=%v, want queued in place", order.State, order.RedispatchCount, err)
 	}
 	pending, err := gate(ctx, st, taskID)
 	if !pending || !errors.Is(err, store.ErrPlanRevisionGateUnreadable) {

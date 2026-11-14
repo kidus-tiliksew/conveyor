@@ -42,7 +42,7 @@ const automaticRecoveryElapsedSQL = ` OR (
 			AND (retry_suppression_reason='' OR retry_suppression_reason='attempt retries exhausted')
 			AND JSON_LENGTH(checkpoint)=0
 			AND (
-				state IN ('timed_out','stale')
+				state='timed_out'
 				OR (state='queued' AND last_attempt_outcome='expired')
 				OR (state='queued' AND retry_suppressed AND retry_suppression_reason='attempt retries exhausted')
 				OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?)

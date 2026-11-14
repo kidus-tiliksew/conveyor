@@ -1045,7 +1045,9 @@ func MergeConflictDispatchState(events []core.Event, approvedHead, newHead strin
 
 func terminalConflictFix(order core.WorkOrder) bool {
 	switch order.State {
-	case core.WorkOrderCancelled, core.WorkOrderStale, core.WorkOrderTimedOut:
+	// A stored stale order is a waiting order the clock returns to the queue,
+	// so it ends no attempt (component-work-orders invariant 5).
+	case core.WorkOrderCancelled, core.WorkOrderTimedOut:
 		return true
 	case core.WorkOrderQueued, core.WorkOrderCompleted:
 		return order.RetrySuppressed || order.LastAttemptOutcome != "" || order.LastFailureMessage != ""

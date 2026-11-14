@@ -106,8 +106,17 @@ func runQueuedSeatRetirementRefused(t *testing.T, x Fixture) {
 func runStaleSeatRetirementRefused(t *testing.T, x Fixture) {
 	_, orders := ffRound(t, x, 2, false)
 	moveRetirementOrder(t, x, orders[1].ID, core.WorkOrderStale, core.WorkOrderCmdMarkStale)
-	stale, err := x.Backend.GetWorkOrder(x.Context, orders[1].ID)
+	// A read projects a stored stale seat as the queued seat the clock returns
+	// it to (component-work-orders invariant 5), so the stored read proves
+	// the fixture holds the legacy value.
+	stored, err := x.Backend.ListTaskWorkOrdersStored(x.Context, orders[1].TaskID)
 	requireOK(t, err)
+	var stale core.WorkOrder
+	for _, order := range stored {
+		if order.ID == orders[1].ID {
+			stale = order
+		}
+	}
 	if stale.State != core.WorkOrderStale {
 		t.Fatalf("fixture seat state=%s, want stale", stale.State)
 	}

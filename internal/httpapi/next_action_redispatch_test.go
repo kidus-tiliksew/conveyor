@@ -167,8 +167,6 @@ func stalledOrder(t *testing.T, h *redispatchHarness, reason, taskID string, sta
 		order.RetrySuppressed, order.RetrySuppressionReason = true, core.AutomaticRecoveryExhaustedReason
 	case nextaction.StallRetrySuppressed:
 		order.RetrySuppressed = true
-	case nextaction.StallStale:
-		order.QueueDeadline = now.Add(-time.Minute)
 	case nextaction.StallTimedOut:
 		order.ExecutionStartedAt, order.ExecutionDeadline = now.Add(-2*time.Hour), now.Add(-time.Hour)
 	case nextaction.StallDispatchFailing:
@@ -187,7 +185,7 @@ func stalledOrder(t *testing.T, h *redispatchHarness, reason, taskID string, sta
 // stallReasons are the reasons this suite can seed on an order of any stage.
 // unclaimable has its own verify-order fixtures below.
 var stallReasons = []string{
-	nextaction.StallAutomaticRecoveryExhausted, nextaction.StallRetrySuppressed, nextaction.StallStale,
+	nextaction.StallAutomaticRecoveryExhausted, nextaction.StallRetrySuppressed,
 	nextaction.StallTimedOut, nextaction.StallClaimFailing, nextaction.StallDispatchFailing,
 }
 

@@ -123,12 +123,31 @@ func TestDecideAutomaticRecovery(t *testing.T) {
 			return order
 		}(), policy: policy, now: now, want: AutomaticRecoveryNone},
 	}
-	for _, state := range []core.WorkOrderState{core.WorkOrderTimedOut, core.WorkOrderStale} {
+	// An order nobody has claimed since it entered the queue schedules and
+	// counts nothing, however long it waited and whatever the retired queue
+	// clock left on it. These rows replace the retired expectation that a
+	// stale order schedules, redispatches, and exhausts like a timeout
+	// (component-work-orders invariants 5 and 46; DEC-117(2)).
+	waiting := base(core.WorkOrderQueued)
+	waiting.QueueEnteredAt, waiting.QueueDeadline = now.Add(-48*time.Hour), now.Add(-24*time.Hour)
+	waitingDue := waiting
+	waitingDue.NextAutomaticRecoveryAt = due
+	staleBound := base(core.WorkOrderStale)
+	staleBound.AutomaticRecoveryCount = 2
+	staleBound.AutomaticRecoveryWindowStartedAt = now.Add(-time.Hour)
+	staleBound.NextAutomaticRecoveryAt = due
+	staleDue := base(core.WorkOrderStale)
+	staleDue.NextAutomaticRecoveryAt = due
+	rows = append(rows,
+		row{name: "waiting past the former queue deadline", task: running, order: waiting, policy: policy, now: now, want: AutomaticRecoveryNone},
+		row{name: "waiting with a legacy schedule due", task: running, order: waitingDue, policy: policy, now: now, want: AutomaticRecoveryNone},
+		row{name: "stale unscheduled", task: running, order: base(core.WorkOrderStale), policy: policy, now: now, want: AutomaticRecoveryNone},
+		row{name: "stale due", task: running, order: staleDue, policy: policy, now: now, want: AutomaticRecoveryNone},
+		row{name: "stale at bound", task: running, order: staleBound, policy: policy, now: now, want: AutomaticRecoveryNone},
+	)
+	for _, state := range []core.WorkOrderState{core.WorkOrderTimedOut} {
 		state := state
 		wantAct := AutomaticRecoveryRecover
-		if state == core.WorkOrderStale {
-			wantAct = AutomaticRecoveryRedispatch
-		}
 		rows = append(rows,
 			row{name: string(state) + " unscheduled", task: running, order: base(state), policy: policy, now: now, want: AutomaticRecoverySchedule, at: now.Add(time.Minute), number: 1},
 			row{name: string(state) + " future", task: running, order: func() core.WorkOrder {

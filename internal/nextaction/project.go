@@ -40,6 +40,12 @@ func Project(in Input) NextAction {
 	// order never displaces another open order of the task
 	// (feature-risk-based-review RR-15).
 	in.Orders = SelectableOrders(in.Task, in.Orders)
+	// Waiting is never a stop: a stored stale order reads as the queued order
+	// the clock returns it to, so no row states a stall, health warning, or
+	// operator choice for an order that only waited unclaimed
+	// (req-task-lifecycle-and-queue AC-9.4, AC-9.5; component-work-orders
+	// invariant 5).
+	in.Orders = waitingOrders(in.Orders, in.Now)
 	rows := rules()
 	var winner *built
 	var secondary []Secondary
@@ -92,7 +98,7 @@ func rules() []rule {
 		}},
 		{match: stalled, build: func(in Input) built {
 			hit := stallIn(in)
-			return built{actor: ActorOperator, kind: KindStalled, stall: hit.Reason, reason: hit.Reason, order: &hit.Order, deadline: queueDeadline(hit.Order)}
+			return built{actor: ActorOperator, kind: KindStalled, stall: hit.Reason, reason: hit.Reason, order: &hit.Order}
 		}},
 		{match: contextProposal, build: func(Input) built {
 			return built{actor: ActorOperator, kind: KindContextProposal, judgment: true}
@@ -111,7 +117,7 @@ func rules() []rule {
 		}},
 		{match: queuedClaimable, build: func(in Input) built {
 			order := latestClaimable(in.Orders)
-			return built{actor: ActorAgent, kind: KindQueued, order: order, deadline: queueDeadline(*order)}
+			return built{actor: ActorAgent, kind: KindQueued, order: order}
 		}},
 		{match: factoryWorking, build: func(in Input) built {
 			return built{actor: ActorFactory, kind: KindWorking, order: currentOrder(in)}
@@ -571,7 +577,24 @@ func timePtr(t time.Time) *time.Time {
 	return &utc
 }
 
-func queueDeadline(order core.WorkOrder) *time.Time { return timePtr(order.QueueDeadline) }
+// waitingOrders returns orders with every stored stale order read as queued,
+// copying the slice only when one is found.
+func waitingOrders(orders []core.WorkOrder, now time.Time) []core.WorkOrder {
+	var out []core.WorkOrder
+	for i, order := range orders {
+		if order.State != core.WorkOrderStale {
+			continue
+		}
+		if out == nil {
+			out = append([]core.WorkOrder(nil), orders...)
+		}
+		out[i] = core.NormalizeLegacyStaleWorkOrder(order, now)
+	}
+	if out == nil {
+		return orders
+	}
+	return out
+}
 
 func executionDeadline(order core.WorkOrder) *time.Time { return timePtr(order.ExecutionDeadline) }
 
