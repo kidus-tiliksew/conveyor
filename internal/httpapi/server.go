@@ -1090,7 +1090,10 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	if s.OnIntervention != nil {
 		if err := s.OnIntervention(r.Context(), task, latestJob, intervention); err != nil {
 			var invalidTransition *core.ErrInvalidTransition
+			var riskOpen *store.PlanRiskRatingOpenError
 			switch {
+			case errors.As(err, &riskOpen):
+				writePlanRiskRatingOpen(w, riskOpen)
 			case errors.Is(err, store.ErrApproveWithoutReview):
 				writeApproveWithoutReview(w)
 			case errors.As(err, &invalidTransition), errors.Is(err, dispatch.ErrReviewedHeadUnavailable):
@@ -1130,6 +1133,20 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		"checkout_command":   checkoutCommand,
 		"checkout_available": checkoutAvailable,
 		"checkout_guidance":  checkoutGuidance,
+	})
+}
+
+// writePlanRiskRatingOpen answers a plan approval that waits for the plan
+// version's risk order under enforce: 409 with the refusal code, a plain
+// message, and the open order's ID. The refusal recorded no intervention and
+// changed no plan state (req-risk-based-review AC-4.8;
+// feature-risk-based-review RR-13).
+func writePlanRiskRatingOpen(w http.ResponseWriter, refusal *store.PlanRiskRatingOpenError) {
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"error":              store.PlanRiskRatingOpenCode,
+		"message":            "The plan cannot be approved yet. Its risk order must finish or be cancelled first.",
+		"risk_work_order_id": refusal.WorkOrderID,
+		"plan_version":       refusal.PlanVersion,
 	})
 }
 
@@ -1594,7 +1611,7 @@ func (s *Server) getLatestSpec(w http.ResponseWriter, r *http.Request) {
 	if task, taskErr := s.Store.GetTask(r.Context(), chi.URLParam(r, "id")); taskErr == nil {
 		spec.MaterializedChildren = materializedChildrenForSpec(task.Children, spec.Version)
 	}
-	writeJSON(w, http.StatusOK, withPlanRisk(spec))
+	writeJSON(w, http.StatusOK, spec)
 }
 
 func materializedChildrenForSpec(children []core.TaskRelation, version int) []core.TaskRelation {
@@ -2627,7 +2644,6 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	var specPointer *core.SpecVersion
 	if hasSpec {
 		spec.MaterializedChildren = materializedChildrenForSpec(task.Children, spec.Version)
-		spec = withPlanRisk(spec)
 		specPointer = &spec
 	}
 	workOrders, err := s.Store.ListTaskWorkOrders(store.WithWorkspace(r.Context(), task.Workspace), id)

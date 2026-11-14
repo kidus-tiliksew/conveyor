@@ -1178,9 +1178,6 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if err = CheckPlanReviewSeats(cfg, task, result.ReviewSeats); err != nil {
 			return invalid(err)
 		}
-		if err = pipeline.CheckPlanRiskTier(task.SetupContract.Risk, result); err != nil {
-			return invalid(err)
-		}
 		return d.completeSpec(ctx, task, result, reviewer, job.ModelTier)
 	case core.StageReview:
 		result, err := pipeline.ParseReview(output)
@@ -1239,21 +1236,25 @@ func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Ta
 }
 
 // ApplyExternalPlan validates an MCP-authored execution plan, including its
-// optional base commit and risk tier line, and records it at the
-// plan_approval gate. Validation refuses before any write, so the order stays
-// claimed (component-work-orders invariant 56). A task whose frozen risk mode
-// is enforce refuses a plan that states no tier, as CheckPlanReviewSeats
-// refuses a bad seat count (req-risk-based-review AC-4.1;
-// feature-risk-based-review RR-4).
-func (d *Dispatcher) ApplyExternalPlan(ctx context.Context, task core.Task, job core.Job, value pipeline.StructuredPlan, agent, model string) (core.SpecVersion, error) {
+// optional base commit, and records it at the plan_approval gate. Validation
+// refuses before any write, so the order stays claimed (component-work-orders
+// invariant 56). No tier rule applies: a plan states no tier, and a line that
+// reads like one is plan text (feature-risk-based-review RR-13). The result
+// names the plan version and its risk order ID, empty when the version got
+// none (req-risk-based-review AC-12.6).
+func (d *Dispatcher) ApplyExternalPlan(ctx context.Context, task core.Task, job core.Job, value pipeline.StructuredPlan, agent, model string) (SubmittedPlan, error) {
 	result, err := pipeline.ParseStructuredPlan(value)
 	if err != nil {
-		return core.SpecVersion{}, err
-	}
-	if err = pipeline.CheckPlanRiskTier(task.SetupContract.Risk, result); err != nil {
-		return core.SpecVersion{}, err
+		return SubmittedPlan{}, err
 	}
 	return d.completeSpecVersion(ctx, task, result, agent, model)
+}
+
+// SubmittedPlan is a recorded plan version and the ID of the risk order that
+// its entry into plan awaiting approval created, empty when it created none.
+type SubmittedPlan struct {
+	Version         core.SpecVersion
+	RiskWorkOrderID string
 }
 
 // PlanReviewSeatsBelowMinimumError refuses a planned review seat count below
@@ -1298,24 +1299,44 @@ func (d *Dispatcher) completeSpec(ctx context.Context, task core.Task, result pi
 // completeSpecVersion records a submitted plan as the next plan version with
 // origin plan_order and its base commit, moves the plan state to
 // awaiting_approval (cause plan_submitted), and parks the task at the
-// plan_approval gate. No submission approves a plan, whatever the task's
-// policy version: only a person's recorded approval reaches planning
-// completed (component-work-orders invariant 56; req-task-plan-state AC-1.2;
-// req-task-centric-delivery AC-2.1, AC-2.3; DEC-125(6)).
-func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, result pipeline.Spec, agent, model string) (core.SpecVersion, error) {
+// plan_approval gate. The version, the move, the gate, the version's risk
+// order, and the cancellation of an earlier version's open risk order commit
+// in one store transaction under the task operation lock, so a refused or
+// failed transition records no version and no order (req-task-plan-state
+// AC-1.2; req-risk-based-review AC-4.7, AC-4.9; feature-risk-based-review
+// RR-13). No submission approves a plan, whatever the task's policy version:
+// only a person's recorded approval reaches planning completed
+// (component-work-orders invariant 56; req-task-centric-delivery AC-2.1,
+// AC-2.3; DEC-125(6)).
+func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, result pipeline.Spec, agent, model string) (SubmittedPlan, error) {
 	spec := core.SpecVersion{TaskID: task.ID, Content: result.Markdown, AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance), Decomposition: core.JSONPayload(result.Decomposition), Agent: agent, Model: model, ReviewSeats: result.ReviewSeats, Origin: core.PlanOriginPlanOrder}
 	if result.BaseCommit != "" {
 		commit := result.BaseCommit
 		spec.BaseCommit = &commit
 	}
-	version, err := d.Store.CreateSpecVersion(ctx, spec)
+	if err := d.transitionPlanVersion(ctx, task.ID, core.TaskGateSpec, "", core.StageImplement, &taskops.PlanStateMove{To: core.PlanAwaitingApproval, Cause: core.PlanCausePlanSubmitted}, &spec); err != nil {
+		return SubmittedPlan{}, err
+	}
+	// The transition committed the version as the latest one, and no other
+	// plan act can record a version while the task waits at the plan
+	// approval gate, so the latest version is the one this call recorded.
+	version, ok, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
 	if err != nil {
-		return core.SpecVersion{}, err
+		return SubmittedPlan{}, err
 	}
-	if err = d.transitionPlan(ctx, task.ID, core.TaskGateSpec, "", core.StageImplement, &taskops.PlanStateMove{To: core.PlanAwaitingApproval, Cause: core.PlanCausePlanSubmitted}); err != nil {
-		return core.SpecVersion{}, err
+	if !ok {
+		return SubmittedPlan{}, fmt.Errorf("task %s recorded no plan version", task.ID)
 	}
-	return version, nil
+	submitted := SubmittedPlan{Version: version}
+	if !task.SetupContract.Risk.Enabled() {
+		return submitted, nil
+	}
+	orders, err := d.Store.ListTaskRiskOrders(ctx, task.ID)
+	if err != nil {
+		return SubmittedPlan{}, err
+	}
+	submitted.RiskWorkOrderID = store.PlanRiskWorkOrderID(orders, version.Version)
+	return submitted, nil
 }
 
 // proceedFromTriage applies the step a valid proceed verdict takes, selected
@@ -1699,6 +1720,12 @@ func (d *Dispatcher) transition(ctx context.Context, taskID string, command core
 // lifecycle command commits in its own transaction (component-plan-state
 // invariant 3).
 func (d *Dispatcher) transitionPlan(ctx context.Context, taskID string, command core.TaskCommand, next, recovery core.Stage, planMove *taskops.PlanStateMove) error {
+	return d.transitionPlanVersion(ctx, taskID, command, next, recovery, planMove, nil)
+}
+
+// transitionPlanVersion is transitionPlan that also records planVersion, when
+// set, in the command's transaction (taskops.Command.PlanVersion).
+func (d *Dispatcher) transitionPlanVersion(ctx context.Context, taskID string, command core.TaskCommand, next, recovery core.Stage, planMove *taskops.PlanStateMove, planVersion *core.SpecVersion) error {
 	task, err := d.Store.GetTask(ctx, taskID)
 	if err != nil {
 		return err
@@ -1724,7 +1751,7 @@ func (d *Dispatcher) transitionPlan(ctx context.Context, taskID string, command 
 		}
 	}
 	outcome, err := taskops.New(d.Store).Perform(ctx, taskID, taskops.Command{
-		Kind: command, NextStage: next, RecoveryStage: recovery, ProjectStages: true, PlanState: planMove,
+		Kind: command, NextStage: next, RecoveryStage: recovery, ProjectStages: true, PlanState: planMove, PlanVersion: planVersion,
 	})
 	if err != nil {
 		return err

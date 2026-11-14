@@ -25,27 +25,13 @@ import (
 
 func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "CreateSpecVersion")
-	if spec.CreatedAt.IsZero() {
-		spec.CreatedAt = time.Now().UTC()
-	}
 	if err := store.PrepareSpecVersionOrigin(&spec); err != nil {
 		return core.SpecVersion{}, err
 	}
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		if _, err := q.GetTask(ctx, db.GetTaskParams{ID: spec.TaskID, WorkspaceID: workspace(ctx)}); err != nil {
-			return notFound(err, "task %s", spec.TaskID)
-		}
-		row, err := q.InsertSpecVersion(ctx, db.InsertSpecVersionParams{
-			TaskID: spec.TaskID, Content: spec.Content, AcceptanceCount: int32(spec.AcceptanceCount),
-			Acceptance: spec.Acceptance, Decomposition: spec.Decomposition, CreatedAt: timestamp(spec.CreatedAt), Agent: spec.Agent, Model: spec.Model,
-			ReviewSeats: int4FromSeatCount(spec.ReviewSeats),
-			Origin:      string(spec.Origin), BaseCommit: textFromPointer(spec.BaseCommit),
-		})
-		if err != nil {
-			return err
-		}
-		spec = specFromDB(row)
-		return insertEvent(ctx, q, core.Event{TaskID: spec.TaskID, Kind: "spec.version_created", Payload: core.JSONPayload(map[string]any{"version": spec.Version, "acceptance_count": spec.AcceptanceCount})})
+		var err error
+		spec, err = insertSpecVersionTx(ctx, q, spec)
+		return err
 	})
 	if err != nil {
 		return core.SpecVersion{}, err
@@ -137,19 +123,21 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version i
 		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), taskID); err != nil {
 			return err
 		}
-		approved, err := q.ApproveLatestSpecVersion(ctx, db.ApproveLatestSpecVersionParams{
+		// Under enforce the approval waits for the version's open risk order
+		// and changes nothing; no plan text is read (req-risk-based-review
+		// AC-4.8; feature-risk-based-review RR-13).
+		if err := planApprovalRiskRefusalTx(ctx, tx, q, taskID, version); err != nil {
+			return err
+		}
+		if _, err := q.ApproveLatestSpecVersion(ctx, db.ApproveLatestSpecVersionParams{
 			TaskID: taskID, Version: int32(version), WorkspaceID: workspace(ctx),
-		})
-		if err != nil {
+		}); err != nil {
 			return err
 		}
 		if err := insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})}); err != nil {
 			return err
 		}
 		if err := approvePlanStateTx(ctx, tx, q, taskID); err != nil {
-			return err
-		}
-		if err := recordPlanRiskTx(ctx, tx, q, taskID, version, approved.Content); err != nil {
 			return err
 		}
 		// An approval can make a risk agent rating of this version count, so

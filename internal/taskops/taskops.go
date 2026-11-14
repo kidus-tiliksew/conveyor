@@ -71,6 +71,14 @@ type Command struct {
 	// task.plan_state_changed with its cause (component-plan-state
 	// invariant 3; req-task-plan-state REQ-3).
 	PlanState *PlanStateMove
+	// PlanVersion, when set with a PlanState move into plan awaiting
+	// approval, records this plan version as the task's next version in the
+	// same transaction, before the move. The backend numbers it, records its
+	// spec.version_created event, and creates its risk order when the need
+	// decision calls for one, so a submitted plan, its plan-state move, and
+	// its risk order commit together (req-task-plan-state AC-1.2;
+	// req-risk-based-review AC-4.7; feature-risk-based-review RR-13).
+	PlanVersion *core.SpecVersion
 	// TriageProceed makes the backend choose Kind, NextStage, and
 	// RecoveryStage from core.TriageProceedStep of the plan state it reads
 	// under the task-operation lock, replacing the caller's values. A plan

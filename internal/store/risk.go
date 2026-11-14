@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 )
 
@@ -141,32 +140,6 @@ func ReviewerRiskRating(task core.Task, existing []core.RiskRating, decision cor
 		}
 	}
 	return numberRiskRating(existing, rating, now), true, nil
-}
-
-// PlanApprovalRiskRating returns the rating a plan version records when it
-// reaches planning completed: source plan, the version's stated tier and
-// reason, and the version number (req-risk-based-review AC-4.3, AC-4.5;
-// feature-risk-based-review RR-4). Every backend calls it in the transaction
-// that records the approval, under the task lock, so the approval and its
-// rating commit together. It returns false, recording nothing, when the
-// task's frozen risk mode is off or absent, when the content is not a plan,
-// or when the plan states no tier, so such a task keeps its tier from its
-// other ratings alone (AC-1.1, AC-4.6). A version whose rating is already
-// recorded returns false, so a repeated approval adds no second rating. The
-// rating never reads or sets the plan state (AC-2.2).
-func PlanApprovalRiskRating(task core.Task, existing []core.RiskRating, version int, content string, now time.Time) (core.RiskRating, bool, error) {
-	if !task.SetupContract.Risk.Enabled() {
-		return core.RiskRating{}, false, nil
-	}
-	plan, err := pipeline.ParseStoredPlan(content)
-	if err != nil || plan.RiskTier == "" {
-		return core.RiskRating{}, false, nil
-	}
-	rating := core.RiskRating{
-		TaskID: task.ID, Key: core.PlanRiskKey(version), Source: core.RiskSourcePlan,
-		Tier: plan.RiskTier, Reason: plan.RiskReason, PlanVersion: version, MatchedRules: []riskpolicy.RuleMatch{},
-	}
-	return PrepareRiskRating(task, existing, rating, now)
 }
 
 func numberRiskRating(existing []core.RiskRating, rating core.RiskRating, now time.Time) core.RiskRating {
@@ -334,16 +307,6 @@ func (m *memory) recordReviewerRiskLocked(ctx context.Context, task core.Task, d
 	}
 	m.insertRiskRatingLocked(ctx, key, rating)
 	return nil
-}
-
-// planApprovalRiskLocked prepares the plan rating of a version a memory
-// approval records. The caller inserts it after its other checks pass, so a
-// refused approval records no rating.
-func (m *memory) planApprovalRiskLocked(ctx context.Context, task core.Task, version int, content string) (memoryScopedKey, core.RiskRating, bool, error) {
-	workspace, _ := WorkspaceFromContext(ctx)
-	key := memoryScopedKey{workspace: workspace, id: task.ID}
-	rating, created, err := PlanApprovalRiskRating(task, m.riskRatings[key], version, content, time.Now())
-	return key, rating, created, err
 }
 
 func (m *memory) insertRiskRatingLocked(ctx context.Context, key memoryScopedKey, rating core.RiskRating) {

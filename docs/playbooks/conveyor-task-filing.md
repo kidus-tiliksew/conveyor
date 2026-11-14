@@ -109,13 +109,11 @@ cites:
   (`req-task-plan-state` AC-2.4; DEC-125(6)). Send no `plan_state` with a
   `plan`, and set `plan_base_commit` to the full commit ID the plan was read
   against.
-- A filed `plan` states its risk tier as one line under its `## Risks`
-  heading: `Risk tier: <low|medium|high> — <reason>`, with the tier in
-  lowercase, an em dash (—), and a one-line reason. Intake refuses a
-  malformed line in every risk mode. When the workspace's risk mode is
-  enforce, intake also refuses a plan with no line, and records nothing.
+- A filed `plan` states no risk tier, and intake applies no tier rule. When
+  the workspace's risk mode is record or enforce, a plan that waits for a
+  person's approval gets a risk order. A plan filed as approved gets none.
   The risk policy never changes a task's plan state: `plan_state` and the
-  plan decide it, as below (`req-risk-based-review` REQ-4, AC-4.2).
+  plan decide it, as below (`req-risk-based-review` REQ-4, AC-4.7).
 - The title is generated from the body; don't write one.
 - When tasks are filed out of order, use the human-only MCP
   `add_task_dependency` tool with `task_id`, `depends_on_task_id`, an audit

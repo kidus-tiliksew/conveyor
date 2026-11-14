@@ -287,6 +287,12 @@ func (m *memory) approveSpecVersionAndMaterialize(ctx context.Context, taskID st
 	if !ok {
 		return nil, fmt.Errorf("task %s: %w", taskID, ErrNotFound)
 	}
+	// A legacy materializing approval waits for the version's open risk
+	// order under enforce, as an ordinary approval does
+	// (req-risk-based-review AC-4.8).
+	if err := m.planApprovalRiskRefusalLocked(ctx, taskID, version); err != nil {
+		return nil, err
+	}
 	var decomposition []core.BlueprintDecompositionItem
 	if len(versions[len(versions)-1].Decomposition) > 0 {
 		if err := json.Unmarshal(versions[len(versions)-1].Decomposition, &decomposition); err != nil {
@@ -750,13 +756,6 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 		}
 		m.repositoryInstalls[key] = append(m.repositoryInstalls[key], core.RepositoryInstallTask{TaskID: t.ID, Attempt: t.RepositoryInstallAttempt})
 	}
-	// An approved intake plan's stated tier becomes a plan rating in the
-	// creating act; it is prepared before any write so a failure records
-	// nothing (req-risk-based-review AC-4.3; feature-risk-based-review RR-4).
-	intakeRating, err := IntakePlanRiskRating(t)
-	if err != nil {
-		return err
-	}
 	// A task carries no worker reservation: every insert stores hold false,
 	// like the durable column default (DEC-125(3); component-persistence).
 	t.Hold = false
@@ -771,7 +770,9 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	}
 	t.IntakePlan = intakePlan
 	m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: TaskCreatedPayload(ctx, t), At: t.CreatedAt})
-	m.recordIntakePlanStateLocked(ctx, t, approver, intakeRating)
+	if err := m.recordIntakePlanStateLocked(ctx, t, approver); err != nil {
+		return err
+	}
 	for dependencyID := range seen {
 		m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.dependency_added", At: t.CreatedAt,
 			Payload: core.JSONPayload(map[string]string{"task_id": t.ID, "depends_on_task_id": dependencyID})})
@@ -790,11 +791,13 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 // recordIntakePlanStateLocked appends the intake plan-state move and, for a
 // task filed with a plan, plan version 1 and any filer approval, inside the
 // creating transaction (component-task-lifecycle invariant 20;
-// component-plan-state invariants 2 and 3).
-func (m *memory) recordIntakePlanStateLocked(ctx context.Context, t core.Task, approver Actor, rating *core.RiskRating) {
+// component-plan-state invariants 2 and 3). A plan filed for approval gets
+// its risk order in the same act, and a plan the filer approves gets none
+// (req-risk-based-review AC-4.7; feature-risk-based-review RR-13).
+func (m *memory) recordIntakePlanStateLocked(ctx context.Context, t core.Task, approver Actor) error {
 	m.appendEventLocked(ctx, IntakePlanStateEvent(t))
 	if t.IntakePlan == nil {
-		return
+		return nil
 	}
 	spec := IntakePlanSpecVersion(t)
 	if m.specs == nil {
@@ -803,7 +806,12 @@ func (m *memory) recordIntakePlanStateLocked(ctx context.Context, t core.Task, a
 	m.specs[t.ID] = append(m.specs[t.ID], spec)
 	m.appendEventLocked(ctx, IntakePlanVersionCreatedEvent(spec))
 	if !t.IntakePlan.Approved {
-		return
+		if request, ok := PlanRiskOrderRequest(t, nil, spec.Version, t.CreatedAt); ok {
+			if _, _, err := m.createRiskOrderLocked(ctx, t, request); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	intervention := IntakePlanApproval(t, approver)
 	m.nextReviewID++
@@ -814,10 +822,7 @@ func (m *memory) recordIntakePlanStateLocked(ctx context.Context, t core.Task, a
 	m.interventions[t.ID] = append(m.interventions[t.ID], intervention)
 	m.appendEventLocked(ctx, InterventionEvent(intervention))
 	m.appendEventLocked(ctx, IntakePlanApprovedEvent(spec))
-	if rating != nil {
-		workspace, _ := WorkspaceFromContext(ctx)
-		m.insertRiskRatingLocked(ctx, memoryScopedKey{workspace: workspace, id: t.ID}, *rating)
-	}
+	return nil
 }
 
 func (m *memory) validateTaskContextLocked(workspace string, input TaskContextInput) (TaskContextVersions, error) {
