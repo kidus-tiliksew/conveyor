@@ -47,13 +47,6 @@ type Review struct {
 	RequirementCitations    *core.RequirementCitationAssessment `json:"requirement_citations,omitempty"`
 	DoneCriteriaCoverage    *core.DoneCriteriaAssessment        `json:"done_criteria_coverage,omitempty"`
 	GovernanceAssessment    *core.GovernanceAssessment          `json:"governance_assessment,omitempty"`
-	// RiskTier and RiskReason are the seat's rating of the head it judged:
-	// low, medium, or high with one non-blank line of reason. Both are absent
-	// or both are present; the task's frozen risk mode decides whether they
-	// are required (req-risk-based-review AC-5.2; feature-risk-based-review
-	// RR-3).
-	RiskTier   string `json:"risk_tier,omitempty"`
-	RiskReason string `json:"risk_reason,omitempty"`
 }
 
 type AcceptanceCriterion struct {
@@ -179,9 +172,6 @@ func ValidateReview(value Review) (Review, error) {
 		}
 	}
 	if err := core.NormalizeDocumentationAssessment(value.DocumentationAssessment); err != nil {
-		return value, err
-	}
-	if err := core.ValidateStatedRisk("review risk_tier", "review risk_reason", value.RiskTier, value.RiskReason); err != nil {
 		return value, err
 	}
 	return value, nil

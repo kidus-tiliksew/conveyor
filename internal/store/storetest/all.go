@@ -59,6 +59,13 @@ type Fixture struct {
 	// No public writer can; each backend seeds it directly in its test
 	// binary. The hold-retirement cases require it and never skip.
 	SeedStoredTaskHold func(t *testing.T, ctx context.Context, taskID string)
+	// SeedRiskRating inserts one numbered risk rating row and its risk.rated
+	// event, modelling a rating with source reviewer that a review verdict
+	// recorded before verdicts stopped stating a tier. No public writer
+	// accepts that source (feature-risk-based-review RR-14), so each test
+	// binary seeds it directly. The recorded reviewer rating case requires it
+	// and never skips (req-risk-based-review AC-5.6).
+	SeedRiskRating func(t *testing.T, ctx context.Context, rating core.RiskRating)
 	// SeedVerificationAttemptAuthorization sets one stored attempt's
 	// ReplayAuthorizationID, modelling a row that an ungated start wrote
 	// before ungated starts stopped recording the caller's ID. No public

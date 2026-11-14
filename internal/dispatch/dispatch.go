@@ -844,7 +844,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		return inprocess.Input{}, err
 	}
 	if stage == core.StageReview {
-		role = pack.InProcessReviewRole(pack.WithRiskRating(role, task.SetupContract.Risk.Enabled()))
+		role = pack.InProcessReviewRole(role)
 	}
 	servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 	if err != nil {
@@ -1544,18 +1544,6 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		RequiredHarness: requiredHarness, RequiredEffort: requiredEffort, ModelEnforcement: enforcement,
 		InterventionActorID: "review:" + session, PublicationEligible: publicationEligible,
 		Level: task.Level, PolicyVersion: task.PolicyVersion, MergeApproval: task.MergeApproval, MaxBounces: cfg.MaxBounces,
-	}
-	// Only a task whose frozen risk mode is record or enforce records a
-	// seat's tier. The head, seat, and model come from the claimed order
-	// above, never from the verdict (req-risk-based-review AC-1.1, AC-5.3).
-	if task.SetupContract.Risk.Enabled() {
-		decision.RiskTier, decision.RiskReason = result.RiskTier, result.RiskReason
-	}
-	// Seats a raised enforcing tier adds take the workspace seat-list length
-	// and queue clock from configuration, never from the verdict
-	// (req-risk-based-review AC-7.2).
-	if task.SetupContract.Risk.Enforcing() {
-		decision.WorkspaceReviewSeats, decision.SeatQueueTimeout = len(cfg.Review.Seats), cfg.WorkOrderQueueTimeout
 	}
 	if task.SetupContract.VerifyStage {
 		reader, ok := d.Store.(store.VerificationReviewReader)

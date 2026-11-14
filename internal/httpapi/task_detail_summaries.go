@@ -417,8 +417,9 @@ type taskReviewResult struct {
 	// or "unknown", and is absent from an event that recorded none. The review
 	// card shows the match only (req-review-gates-evidence AC-2.12).
 	SameModelAsImplementer string `json:"same_model_as_implementer,omitempty"`
-	// RiskTier and RiskReason are the seat's stated rating, absent when the
-	// seat stated none (req-risk-based-review AC-5.3, REQ-11).
+	// RiskTier and RiskReason are a seat's rating that a verdict recorded
+	// before verdicts stopped stating a tier. A later verdict states none, so
+	// both stay absent (req-risk-based-review AC-5.6, AC-5.7).
 	RiskTier   string `json:"risk_tier,omitempty"`
 	RiskReason string `json:"risk_reason,omitempty"`
 }

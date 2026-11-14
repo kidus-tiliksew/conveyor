@@ -268,6 +268,15 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				if _, err := st.db.ExecContext(ctx, `UPDATE tasks SET setup_contract=? WHERE workspace_id=? AND id=?`, raw, ws, taskID); err != nil {
 					t.Fatal(err)
 				}
+			}, SeedRiskRating: func(t *testing.T, ctx context.Context, rating core.RiskRating) {
+				// A reviewer rating a verdict recorded before verdicts stopped
+				// stating a tier; no public writer accepts the source
+				// (feature-risk-based-review RR-14).
+				if err := st.taskTx(ctx, rating.TaskID, func(tx *sql.Tx) error {
+					return insertRiskRatingTx(ctx, tx, rating)
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}, SeedStoredTaskHold: func(t *testing.T, ctx context.Context, taskID string) {
 				// A row written before the hold retirement; no public writer
 				// sets the column (DEC-125(3); component-persistence).

@@ -278,32 +278,6 @@ func renderDecisions(out *strings.Builder, decisions []core.GovernanceDecisionRe
 	}
 }
 
-const (
-	riskRatingStart = "<!-- conveyor:risk-rating -->"
-	riskRatingEnd   = "<!-- /conveyor:risk-rating -->"
-)
-
-// WithRiskRating serves the review role's risk rating instruction only to a
-// task whose frozen risk mode is record or enforce, so a review of a task
-// with mode off receives the role it received before risk review existed
-// (req-risk-based-review AC-1.1, AC-5.7; feature-risk-based-review RR-3). The
-// instruction's marker lines never reach the agent.
-func WithRiskRating(role string, rated bool) string {
-	start := strings.Index(role, riskRatingStart)
-	if start < 0 {
-		return role
-	}
-	end := strings.Index(role[start:], riskRatingEnd)
-	if end < 0 {
-		return role
-	}
-	end += start
-	if rated {
-		return strings.TrimRight(role[:start], "\n") + "\n\n" + strings.TrimSpace(role[start+len(riskRatingStart):end]) + "\n" + strings.TrimLeft(role[end+len(riskRatingEnd):], "\n")
-	}
-	return strings.TrimRight(role[:start], "\n") + "\n" + strings.TrimLeft(role[end+len(riskRatingEnd):], "\n")
-}
-
 // MCPReviewRole adds the terminal lifecycle contract used by operator-owned
 // Codex and Claude reviewers. Their prose or JSON output is never a verdict.
 func MCPReviewRole(role string) string {
