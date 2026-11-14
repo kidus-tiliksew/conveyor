@@ -23,13 +23,16 @@ review threads follow `conveyor-work`. The coordinator starts one risk thread
 for each claimable risk order and does not wait for the operator. It passes it
 only the task, workspace, and order identifiers, none of the planner's or
 implementer's reasoning. Each risk thread counts against the concurrency
-limit while it runs. Under an enforce risk mode, plan approval and the review
-round wait for the risk order. Under a record risk mode nothing waits. A
-person who raises the task to high ends the wait. Threads never start other
-threads, wait for verdicts, or record a gate or proposal decision, and an
-implementation thread never proposes or revises a document. The one exception: when the review
-primary entry is set, one review primary thread per round starts the seat
-threads, claims no seat, and submits no verdict. Before each thread start, the
+limit while it runs. When the `risk` stage is unset and the operator cannot
+be asked, the coordinator starts an isolated agent of its own harness for the
+risk thread, reports that default, and saves no stage preference. Under an
+enforce risk mode, plan approval and the review round wait for the risk order.
+Under a record risk mode nothing waits. A person who raises the task to high
+ends the wait. Threads never start other threads, wait for verdicts, or record
+a gate or proposal decision, and an implementation thread never proposes or
+revises a document. The one exception: when the review primary entry is set,
+one review primary thread per round starts the seat threads, claims no seat,
+and submits no verdict. Before each thread start, the
 coordinator reads the person's stage preferences with `get_stage_preferences`
 for that thread's harness, model, and effort. Review seat N takes seat entry N
 or else the review primary entry. The host and the number of tasks run at once

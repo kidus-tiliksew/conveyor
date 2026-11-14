@@ -2071,6 +2071,15 @@ var riskAgentRules = map[string][]string{
 		"Never give a risk order to the planner, implementer, or reviewer thread.",
 		"Never start a second thread for an order whose thread holds its claim or has submitted its rating.",
 		"Start none when the thread released the order because it could not read the subject: report that failure to the operator.",
+		// The unattended default for an unset risk stage, with the stops
+		// for a failed read and an unavailable harness kept
+		// (req-agent-skills AC-3.5).
+		"**No operator to ask.** When the `risk` stage is unset and the operator cannot be asked, start the risk thread as an isolated agent of your own harness, with a fresh context. Report that default to the operator in your next status report. Save no stage preference: you save only an answer that the operator gave (req-agent-skills AC-3.5).",
+		"A failed read still starts no thread. A configured harness or model that cannot start is still a blocker",
+		"When the operator cannot be asked, use the default in **No operator to ask**.",
+		"When the read fails, report the failure to the operator and start no thread. A failed read is not an unset stage.",
+		"When the preferred host, harness, or model is unavailable, report a blocker. Never substitute another host, harness, or model (req-agent-coordination AC-1.7).",
+		"A submission result without `risk_work_order_id` created no risk order.",
 		"Each risk thread counts against your concurrency limit while it runs, the same as any other thread.",
 		"Do not record a plan approval then.",
 		"**Record.** Nothing waits.",
@@ -2087,6 +2096,7 @@ var riskAgentRules = map[string][]string{
 		"plan, implementation, risk, and review threads follow `conveyor-work`",
 		"The coordinator starts one risk thread for each claimable risk order and does not wait for the operator",
 		"Each risk thread counts against the concurrency limit while it runs.",
+		"When the `risk` stage is unset and the operator cannot be asked, the coordinator starts an isolated agent of its own harness for the risk thread, reports that default, and saves no stage preference.",
 	},
 }
 

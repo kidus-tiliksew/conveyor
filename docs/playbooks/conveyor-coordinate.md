@@ -86,6 +86,14 @@ read fails, report the failure to the operator and start no thread. A failed
 read is not an unset stage. Never use an earlier read or a default in its
 place.
 
+**No operator to ask.** When the `risk` stage is unset and the operator cannot
+be asked, start the risk thread as an isolated agent of your own harness, with
+a fresh context. Report that default to the operator in your next status
+report. Save no stage preference: you save only an answer that the operator
+gave (req-agent-skills AC-3.5). This default applies only to an unset `risk`
+stage. A failed read still starts no thread. A configured harness or model
+that cannot start is still a blocker, as the next paragraphs describe.
+
 **Save stage answers in Conveyor.** Save the operator's direct answer for a
 harness, model, or effort with `set_stage_preference`:
 
@@ -299,7 +307,8 @@ order with stage `risk` (req-agent-coordination AC-1.8).
   the `risk` entry of the stage preferences. Do not wait for the operator.
   When `risk` is unset, ask the operator for the harness, model, and effort
   as [Setups](#setups) describes. That question is setup, not permission to
-  start.
+  start. When the operator cannot be asked, use the default in **No operator
+  to ask**.
 - **Pass only identifiers.** Give the risk thread the base prompt, its setup,
   and the risk agent prompt, with only the task, workspace, and order
   identifiers. Pass none of the planner's or implementer's reasoning, no
@@ -335,6 +344,11 @@ invariant 13; `feature-risk-based-review` RR-15):
 - **Record.** Nothing waits. Start the risk thread anyway. The plan gate,
   verification, and review go on without the rating.
 - **Off.** Conveyor creates no risk order.
+
+A submission result without `risk_work_order_id` created no risk order. This
+happens when the mode is off or the tier is high. It also happens when a
+later head changes only paths that the task's last completed risk order rated.
+Start no risk thread in these cases (DEC-135(10), DEC-135(11)).
 
 An unclaimed risk order waits in the queue like every other order. No clock
 cancels or escalates it. A person who holds `operate_gates` can raise the
