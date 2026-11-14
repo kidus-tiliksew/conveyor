@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -903,13 +904,13 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 			(e.kind='work_order.claimed' AND e.payload_json->>'stage'='implement') OR
 			(e.kind IN ('work_order.claimed','work_order.lease_renewed','work_order.released','review.completed','review.accepted','task.setup.changed')
 				AND e.task_id=ANY($3::text[])) OR
-			e.kind IN (
-				'github_issue.publication_failed','github_issue.publication_published',
-				'review.publication_failed','review.publication_published',
-				'merge.failed','merge.confirmed','merge.reconciled'
-			)
+			(e.kind='work_order.updated' AND e.payload_json->>'stage'='implement' AND e.payload_json->>'state'='submitted') OR
+			(e.kind<>'work_order.updated' AND e.kind=ANY($4::text[]))
 		) ORDER BY e.at,e.id`
-	markerArgs := []any{workspace(ctx), emptyIfNil(taskIDs), emptyIfNil(reviewTaskIDs)}
+	// The forge failure kinds are the ones store.LatestForgeFailure reads;
+	// of work_order.updated it reads only an implement submission
+	// (component-next-action; component-submission-merge).
+	markerArgs := []any{workspace(ctx), emptyIfNil(taskIDs), emptyIfNil(reviewTaskIDs), store.ForgeFailureEventKinds}
 	markerRows, err := s.boundary.Query(ctx, markerQuery, markerArgs...)
 	if err != nil {
 		return nil, nil, time.Time{}, err
@@ -926,10 +927,10 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 				eventsByTask[event.TaskID] = append(eventsByTask[event.TaskID], event)
 			}
 		}
-		switch event.Kind {
-		case "pipeline.bounced", "work_order.claimed":
+		switch {
+		case event.Kind == "pipeline.bounced" || event.Kind == "work_order.claimed":
 			requestEventsByTask[event.TaskID] = append(requestEventsByTask[event.TaskID], event)
-		case "github_issue.publication_failed", "github_issue.publication_published", "review.publication_failed", "review.publication_published", "merge.failed", "merge.confirmed", "merge.reconciled":
+		case slices.Contains(store.ForgeFailureEventKinds, event.Kind):
 			forgeEventsByTask[event.TaskID] = append(forgeEventsByTask[event.TaskID], event)
 		}
 	}
