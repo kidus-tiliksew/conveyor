@@ -483,6 +483,18 @@ func RunRiskOrderConformance(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		jobs, seats := riskReviewRound(task.ID, 1)
 		requireOK(t, CreateReviewRound(ctx, st, task.ID, jobs, seats))
+		_, err = claim(seats[0].ID, "reviewer-round-1", "reviewer-round-1-token")
+		requireOK(t, err)
+		// The first round settles with changes requested, so its seat is
+		// history when the second round opens.
+		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: seats[0].JobID, ReviewWorkOrderID: seats[0].ID,
+			ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "tests_missing", Summary: "add tests", Feedback: "add tests",
+			MaxBounces: 3, ReviewedCommitSHA: "h-round-1", HeadSHA: "h-round-1", ReviewerModel: "model", PolicyVersion: 1, ClaimSession: "reviewer-round-1"}))
+		jobs, seats = riskReviewRound(task.ID, 1)
+		for i := range seats {
+			seats[i].ReviewRound = 2
+		}
+		requireOK(t, CreateReviewRound(ctx, st, task.ID, jobs, seats))
 		_, err = claim(seats[0].ID, "reviewer", "reviewer-token")
 		requireOK(t, err)
 		risk := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-claim")})
@@ -492,6 +504,7 @@ func RunRiskOrderConformance(t *testing.T, x Fixture) {
 			{"implementer", "fresh-3"}, {"fresh-4", "implementer-token"},
 			{"implementer-old", "fresh-5"}, {"fresh-6", "implementer-old-token"},
 			{"reviewer", "fresh-7"}, {"fresh-8", "reviewer-token"},
+			{"reviewer-round-1", "fresh-9"}, {"fresh-10", "reviewer-round-1-token"},
 		} {
 			if _, err := claim(risk.ID, attempt.session, attempt.token); !errors.Is(err, store.ErrRiskOrderNotIndependent) {
 				t.Fatalf("risk claim by session %q token %q err=%v, want refusal", attempt.session, attempt.token, err)
