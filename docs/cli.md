@@ -233,7 +233,7 @@ reads nor compares proposals. Each observation holds these fields:
 | `task_id` | The task ID. |
 | `state` | The task state. |
 | `pending_gate` | The pending human gate, or `null`. `kind` is `plan`, `merge`, `merge_execution`, `check_hold`, `plan_revision`, or `human`; `plan_version` appears for plan and plan revision gates. `merge_execution` is an approved task behind the merge gate waiting for `conveyor task merge`; its `merge_readiness` is the pull request's readiness state (`MERGEABLE`, `STALE`, `CONFLICTING`, or `UNKNOWN`), absent when the server could not read it. `check_hold` is an approved task with the merge gate off whose merge a failed or stuck check, or a refused check-status read, holds; the next action names each check and offers `conveyor task merge`, request changes, and close. |
-| `next_order` | The next claimable work order `id` and `stage`, or `null`. |
+| `next_order` | The next claimable work order `id` and `stage`, or `null`. Stages rank `spec`, `implement`, `verify`, `review`, then `risk`, so ordinary work beside a risk order is reported first, and a lone claimable risk order is reported. |
 | `observed_at` | The time of the observation. It is not compared. |
 
 The first successful observation is the baseline. The command re-reads with
@@ -261,7 +261,7 @@ With `--until operator|terminal|stage=<stage>`, the wait ignores other
 changes and ends with reason `reached` when the task's `next_action.actor`
 is `operator`, when the task is merged, closed, or parked (`terminal`), or
 when `next_action.current_order.stage` equals the named work-order stage
-(`spec`, `implement`, `verify`, or `review`). Each poll decodes the
+(`spec`, `implement`, `verify`, `review`, or `risk`). Each poll decodes the
 `next_action` embedded in `GET /v1/tasks/{id}`; no extra request is made. A
 task that turns terminal before another target ends with reason `terminal`.
 Every observed change of actor, kind, or current-order stage prints one line,

@@ -216,13 +216,27 @@ func init() {
 		string(core.StageImplement): "An agent is implementing this task.",
 		string(core.StageReview):    "An agent is reviewing this task.",
 		string(core.StageVerify):    "An agent is verifying this task.",
+		string(core.StageRisk):      "An agent is rating the risk of this task.",
 	})
 	stageSummary(KindQueued, "An order is waiting to be claimed.", map[string]string{
 		string(core.StageSpec):      "The plan order is waiting for an agent.",
 		string(core.StageImplement): "The implementation order is waiting for an agent.",
 		string(core.StageReview):    "The review order is waiting for an agent.",
 		string(core.StageVerify):    "The verification order is waiting for an agent.",
+		string(core.StageRisk):      "The risk order is waiting for an agent to rate the risk.",
 	})
+	// An enforcing task at plan approval waits for its plan version's risk
+	// rating. The statement names the rating, never a review, and asks no
+	// person for the approval (req-risk-based-review AC-11.3;
+	// feature-risk-based-review RR-16).
+	planRiskWorking := catalogueTable[catalogueKey{KindWorking, "", "", "", ""}]
+	planRiskWorking.Label = "Rating plan risk"
+	planRiskWorking.Summary = text("An agent is rating the risk of the plan. Plan approval waits for this rating.")
+	catalogueTable[catalogueKey{KindWorking, "", "", "", PlanRiskRating}] = planRiskWorking
+	planRiskQueued := catalogueTable[catalogueKey{KindQueued, "", "", "", ""}]
+	planRiskQueued.Label = "Waiting for a risk rating"
+	planRiskQueued.Summary = text("Plan approval waits for a risk rating. The risk order is waiting for an agent.")
+	catalogueTable[catalogueKey{KindQueued, "", "", "", PlanRiskRating}] = planRiskQueued
 	// An enforcing task short of its required human approvals names how many
 	// remain and whether a trusted author's approval is among them, at the
 	// merge gate and after an approve-only act (req-risk-based-review

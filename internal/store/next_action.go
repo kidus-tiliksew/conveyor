@@ -132,6 +132,10 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
+	planRiskOrders, err := readAssemblerPlanRiskOrders(ctx, st, tasks, specs)
+	if err != nil {
+		return nil, err
+	}
 	contexts, err := readContextProposals(ctx, st, tasks)
 	if err != nil {
 		return nil, err
@@ -163,6 +167,17 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		if approvals, ok := riskApprovals[task.ID]; ok {
 			input.RiskHumanApprovals = approvals.Required
 			input.RiskApprovals = &approvals
+		}
+		if ref, ok := planRiskOrders[task.ID]; ok {
+			// The order's state comes from the task's order read when that
+			// read holds it, so the row and every other selector see one
+			// state of the order.
+			for _, order := range ordersByTask[task.ID] {
+				if order.ID == ref.Order.ID {
+					ref.Order = order
+				}
+			}
+			input.PlanRiskOrder = &ref
 		}
 		input.ClaimFailures = claimFailuresFor(ordersByTask[task.ID], claimFailures)
 		if origin, ok := origins[task.ID]; ok {
@@ -544,6 +559,39 @@ func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task
 			caller = &evaluation.Status
 		}
 		out[task.ID] = nextaction.RiskApprovalsFrom(evaluation.Base, caller)
+	}
+	return out, nil
+}
+
+// readAssemblerPlanRiskOrders reads the risk order of the plan version that
+// waits at each enforcing task's plan approval gate. It reads only such tasks,
+// and it reads the task's stored risk orders fresh on every call, so a
+// completion or a cancellation ends the wait at the next read. The match is
+// exact: the order's subject is a plan version, and that version is the
+// task's latest one, which the gate holds. An earlier version's order and a
+// head's order never match. A read error fails the statement
+// (req-risk-based-review AC-11.3; feature-risk-based-review RR-16;
+// component-next-action invariant 1).
+func readAssemblerPlanRiskOrders(ctx context.Context, st Store, tasks []core.Task, specs map[string]int) (map[string]nextaction.PlanRiskOrderRef, error) {
+	out := map[string]nextaction.PlanRiskOrderRef{}
+	for _, task := range tasks {
+		version := specs[task.ID]
+		if task.State != core.TaskAwaiting || task.GateKind != core.GateKindPlanApproval || !task.SetupContract.Risk.Enforcing() || version <= 0 {
+			continue
+		}
+		scoped := ctx
+		if task.Workspace != "" {
+			scoped = WithWorkspace(ctx, task.Workspace)
+		}
+		orders, err := st.ListTaskRiskOrders(scoped, task.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, order := range orders {
+			if order.Order.TaskID == task.ID && order.Subject.Kind() == riskpolicy.RiskSubjectPlan && order.Subject.PlanVersion == version {
+				out[task.ID] = nextaction.PlanRiskOrderRef{PlanVersion: version, Order: order.Order}
+			}
+		}
 	}
 	return out, nil
 }
