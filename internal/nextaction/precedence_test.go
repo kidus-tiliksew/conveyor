@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 )
 
 func TestOverlappingRowsKeepEarlierWinner(t *testing.T) {
@@ -15,6 +16,10 @@ func TestOverlappingRowsKeepEarlierWinner(t *testing.T) {
 		in                    Input
 		absent                string
 	}{
+		{
+			name: "plan risk wait over the gate row", kind: KindQueued, secondary: KindPlanApproval,
+			in: planRiskInput(riskpolicy.ModeEnforce, core.WorkOrderQueued),
+		},
 		{
 			name: "rows 5 and 6", kind: KindMergeConflict, secondary: KindMergeExecution,
 			in: conflictInput(true, now),

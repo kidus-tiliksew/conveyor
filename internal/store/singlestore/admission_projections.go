@@ -196,9 +196,14 @@ func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, q store.CallerA
 	return page, nil
 }
 
+// ListCheckpointContextCandidates reads each task's latest order from the view
+// the next action selects from: under a record-mode risk policy, a risk order
+// is skipped while another order of the task is queued or claimed, so it never
+// hides a checkpoint (feature-risk-based-review RR-15). The candidate order w
+// is queued, so when w is not a risk order it is that other open order.
 func (s *Store) ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]store.CheckpointContextCandidate, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListCheckpointContextCandidates")
-	rows, err := documentRows(ctx, s.db, `SELECT t.id,t.title,t.state FROM tasks t JOIN work_orders w ON w.workspace_id=t.workspace_id AND w.task_id=t.id WHERE t.workspace_id=? AND t.state NOT IN ('merged','closed') AND w.state='queued' AND w.last_attempt_outcome='released' AND w.last_failure_message='operator checkpoint reached' AND NOT EXISTS(SELECT 1 FROM work_orders newer WHERE newer.workspace_id=w.workspace_id AND newer.task_id=w.task_id AND (newer.created_at>w.created_at OR (newer.created_at=w.created_at AND newer.id>w.id))) ORDER BY t.id`, documentWorkspace(ctx))
+	rows, err := documentRows(ctx, s.db, `SELECT t.id,t.title,t.state FROM tasks t JOIN work_orders w ON w.workspace_id=t.workspace_id AND w.task_id=t.id WHERE t.workspace_id=? AND t.state NOT IN ('merged','closed') AND w.state='queued' AND w.last_attempt_outcome='released' AND w.last_failure_message='operator checkpoint reached' AND NOT (w.stage='risk' AND COALESCE(JSON_EXTRACT_STRING(t.setup_contract,'risk','mode'),'')='record' AND EXISTS(SELECT 1 FROM work_orders other WHERE other.workspace_id=w.workspace_id AND other.task_id=w.task_id AND other.stage<>'risk' AND other.state IN ('queued','claimed'))) AND NOT EXISTS(SELECT 1 FROM work_orders newer WHERE newer.workspace_id=w.workspace_id AND newer.task_id=w.task_id AND (newer.created_at>w.created_at OR (newer.created_at=w.created_at AND newer.id>w.id)) AND NOT (newer.stage='risk' AND w.stage<>'risk' AND COALESCE(JSON_EXTRACT_STRING(t.setup_contract,'risk','mode'),'')='record')) ORDER BY t.id`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
 	}

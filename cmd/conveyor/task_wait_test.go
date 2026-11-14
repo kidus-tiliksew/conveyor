@@ -35,13 +35,16 @@ var taskWaitTestTime = time.Date(2026, 10, 4, 8, 0, 0, 0, time.UTC)
 // taskWaitStep is one server observation. A nonzero status fails the task read
 // of that observation; abort drops the connection instead of answering.
 type taskWaitStep struct {
-	status    int
-	abort     bool
-	block     bool
-	state     core.TaskState
-	title     string
-	gate      *taskWaitTestGate
-	order     core.WorkOrder
+	status int
+	abort  bool
+	block  bool
+	state  core.TaskState
+	title  string
+	gate   *taskWaitTestGate
+	order  core.WorkOrder
+	// orders are more of this task's orders, served with their own state
+	// and claimability.
+	orders    []core.WorkOrder
 	proposals []taskWaitTestProposal
 	// nextAction, when set, is embedded as next_action in the task read, as
 	// GET /v1/tasks/{id} does.
@@ -194,6 +197,10 @@ func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 		if step.order.ID != "" {
 			order := step.order
 			order.TaskID, order.State, order.Claimable = taskWaitTestTaskID, core.WorkOrderQueued, true
+			orders = append(orders, order)
+		}
+		for _, order := range step.orders {
+			order.TaskID = taskWaitTestTaskID
 			orders = append(orders, order)
 		}
 		_ = json.NewEncoder(w).Encode(orders)
@@ -1104,5 +1111,106 @@ func TestTaskWaitStopsAtARiskHeldMerge(t *testing.T) {
 	want := taskWaitGate{Kind: taskWaitGateMergeExecution, MergeReadiness: "MERGEABLE"}
 	if result.PendingGate == nil || *result.PendingGate != want || result.State != core.TaskApproved {
 		t.Fatalf("result = %+v gate %+v", result, result.PendingGate)
+	}
+}
+
+// A risk order is claimable work like every other order: its creation ends a
+// wait, and a repeated observation of the same risk order does not
+// (feature-risk-based-review RR-16; req-agent-skills AC-4.1).
+func TestTaskWaitReturnsWhenRiskOrderBecomesClaimable(t *testing.T) {
+	risk := core.WorkOrder{ID: "261004-abc123-risk-1", Stage: core.StageRisk}
+	f := newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskRunning},
+		taskWaitStep{state: core.TaskRunning, order: risk},
+	)
+	result, err := runTaskWaitJSON(t, f, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reason != taskWaitReasonChanged || result.NextOrder == nil || result.NextOrder.ID != risk.ID || result.NextOrder.Stage != core.StageRisk {
+		t.Fatalf("result = %+v", result)
+	}
+
+	stable := newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskRunning, order: risk},
+		taskWaitStep{state: core.TaskRunning, order: risk},
+	)
+	result, err = runTaskWaitJSON(t, stable, 60*time.Millisecond)
+	var timedOut *taskWaitTimeoutError
+	if !errors.As(err, &timedOut) || result.NextOrder == nil || result.NextOrder.ID != risk.ID || result.NextOrder.Stage != core.StageRisk {
+		t.Fatalf("a repeated risk order ended the wait: err=%v result=%+v", err, result)
+	}
+}
+
+// taskWaitNextOrder ranks risk after every existing stage, keeps the existing
+// stages in their order, and reports a lone claimable risk order.
+func TestTaskWaitNextOrderRanksRiskLast(t *testing.T) {
+	at := func(minutes int) time.Time { return taskWaitTestTime.Add(time.Duration(minutes) * time.Minute) }
+	order := func(id string, stage core.Stage, entered time.Time) core.WorkOrder {
+		return core.WorkOrder{ID: id, TaskID: taskWaitTestTaskID, Stage: stage, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: entered}
+	}
+	for _, tc := range []struct {
+		name   string
+		orders []core.WorkOrder
+		want   string
+	}{
+		{"lone risk", []core.WorkOrder{order("risk", core.StageRisk, at(0))}, "risk"},
+		{"older risk beside implementation", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("implement", core.StageImplement, at(5))}, "implement"},
+		{"older risk beside review", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("review", core.StageReview, at(5))}, "review"},
+		{"older risk beside verification", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("verify", core.StageVerify, at(5))}, "verify"},
+		{"older risk beside plan", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("spec", core.StageSpec, at(5))}, "spec"},
+		{"two risk orders take the oldest", []core.WorkOrder{order("risk-2", core.StageRisk, at(5)), order("risk-1", core.StageRisk, at(0))}, "risk-1"},
+		{"existing order unchanged", []core.WorkOrder{order("review", core.StageReview, at(0)), order("verify", core.StageVerify, at(1)), order("implement", core.StageImplement, at(2)), order("spec", core.StageSpec, at(3))}, "spec"},
+		{"claimed risk is not next", []core.WorkOrder{{ID: "risk", TaskID: taskWaitTestTaskID, Stage: core.StageRisk, State: core.WorkOrderClaimed}}, ""},
+		{"another task's risk order", []core.WorkOrder{{ID: "risk", TaskID: "other-task", Stage: core.StageRisk, State: core.WorkOrderQueued, Claimable: true}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := taskWaitNextOrder(tc.orders, taskWaitTestTaskID)
+			switch {
+			case tc.want == "" && got != nil:
+				t.Fatalf("next order = %+v, want none", got)
+			case tc.want != "" && (got == nil || got.ID != tc.want):
+				t.Fatalf("next order = %+v, want %s", got, tc.want)
+			}
+		})
+	}
+	if rank, ok := taskWaitStageOrder[core.StageRisk]; !ok || rank <= taskWaitStageOrder[core.StageReview] {
+		t.Fatalf("risk rank = %d (declared %t), want an explicit rank after review", rank, ok)
+	}
+}
+
+// A wait sees ordinary work beside a risk order first, and the risk order once
+// it stands alone.
+func TestTaskWaitReportsOrdinaryWorkBesideARiskOrder(t *testing.T) {
+	risk := core.WorkOrder{ID: "261004-abc123-risk-1", Stage: core.StageRisk, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: taskWaitTestTime}
+	f := newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskQueued, order: core.WorkOrder{ID: "261004-abc123-implement-1", Stage: core.StageImplement}, orders: []core.WorkOrder{risk}},
+		taskWaitStep{state: core.TaskRunning, orders: []core.WorkOrder{risk}},
+	)
+	result, err := runTaskWaitJSON(t, f, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reason != taskWaitReasonChanged || result.NextOrder == nil || result.NextOrder.ID != risk.ID || result.NextOrder.Stage != core.StageRisk {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+// --until stage=risk is a valid target, reached when the next action names a
+// risk order.
+func TestTaskWaitUntilRiskStage(t *testing.T) {
+	if _, err := parseTaskWaitTarget("stage=risk"); err != nil {
+		t.Fatalf("stage=risk was refused: %v", err)
+	}
+	if _, err := parseTaskWaitTarget("stage=deploy"); err == nil || !strings.Contains(err.Error(), "review, or risk") {
+		t.Fatalf("unknown stage err = %v", err)
+	}
+	f := newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskRunning, nextAction: untilAction("Implementing", "agent", "running", "implement")},
+		taskWaitStep{state: core.TaskAwaiting, nextAction: untilAction("Waiting for a risk rating", "agent", "queued", "risk")},
+	)
+	result, _, err := runTaskWaitUntil(t, f, "stage=risk", 5*time.Second)
+	if err != nil || result.Reason != taskWaitReasonReached || result.NextAction == nil || result.NextAction.Stage != "risk" {
+		t.Fatalf("err=%v result=%+v", err, result)
 	}
 }

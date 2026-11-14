@@ -19,12 +19,14 @@ func TestWorkingAndQueuedSummariesNameTheOrderStage(t *testing.T) {
 		core.StageImplement: "An agent is implementing this task.",
 		core.StageReview:    "An agent is reviewing this task.",
 		core.StageVerify:    "An agent is verifying this task.",
+		core.StageRisk:      "An agent is rating the risk of this task.",
 	}
 	queued := map[core.Stage]string{
 		core.StageSpec:      "The plan order is waiting for an agent.",
 		core.StageImplement: "The implementation order is waiting for an agent.",
 		core.StageReview:    "The review order is waiting for an agent.",
 		core.StageVerify:    "The verification order is waiting for an agent.",
+		core.StageRisk:      "The risk order is waiting for an agent to rate the risk.",
 	}
 	// The task's next stage disagrees with every order stage on purpose.
 	task := core.Task{ID: "t", State: core.TaskRunning, NextStage: core.StageMerge}
