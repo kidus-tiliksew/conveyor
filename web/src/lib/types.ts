@@ -11,7 +11,7 @@ export type TaskState =
   | 'closed'
   | 'parked'
 
-export type Stage = 'triage' | 'spec' | 'implement' | 'review' | 'verify' | 'gate' | 'merge' | 'monitor'
+export type Stage = 'triage' | 'spec' | 'implement' | 'review' | 'verify' | 'risk' | 'gate' | 'merge' | 'monitor'
 
 // Verification is independently queried. Full evidence never enters ActivityItem.
 export interface VerificationMetadata {
@@ -1209,7 +1209,10 @@ export interface RiskPolicy {
   mode: RiskMode
   tiers: RiskTierTable
 }
-export type RiskSource = 'plan' | 'path_rule' | 'reviewer' | 'person'
+// plan and reviewer name ratings recorded before risk orders, from a plan's
+// tier line or a review seat; they stay readable (req-risk-based-review
+// AC-5.6). risk_agent names a completed risk order's rating.
+export type RiskSource = 'plan' | 'path_rule' | 'reviewer' | 'person' | 'risk_agent'
 // One recorded rating of a task (req-risk-based-review AC-5.6).
 export interface RiskRating {
   seq: number
@@ -1217,6 +1220,7 @@ export interface RiskRating {
   source: RiskSource
   tier: RiskTier
   head_sha?: string
+  base_sha?: string
   reason: string
   matched_rules: {
     source: string
@@ -1229,8 +1233,37 @@ export interface RiskRating {
   review_round?: number
   review_seat?: number
   reviewer_model?: string
+  // The plan version a plan rating or a risk agent rating rates.
+  plan_version?: number
+  // A risk_agent rating names its completed risk order and the model that
+  // order's session reported, and for a head the paths it covered
+  // (req-risk-based-review AC-5.6, AC-12.2).
+  risk_work_order_id?: string
+  risk_model?: string
+  covered_paths?: string[]
+  // A risk agent rating of a plan version that is not approved: readable, and
+  // counted only once that version is approved (AC-4.3).
+  plan_pending?: boolean
   actor_id?: string
   previous_tier?: RiskTier
+  created_at: string
+}
+// What one risk order rates: exactly one plan version, or one head with its
+// base (feature-risk-based-review RR-11).
+export interface RiskOrderSubject {
+  plan_version?: number
+  head_sha?: string
+  base_sha?: string
+}
+// One risk order on the task read: the order, its state, what it rates, and
+// the model its claiming session reported (req-risk-based-review AC-5.6,
+// AC-11.2; feature-risk-based-review RR-16).
+export interface TaskRiskOrder {
+  work_order_id: string
+  state: WorkOrder['state']
+  claimable: boolean
+  subject: RiskOrderSubject
+  model?: string
   created_at: string
 }
 // The task read field risk, present only while the task's frozen risk mode is
@@ -1259,6 +1292,8 @@ export interface TaskRisk {
   approval_head?: string
   approvals_satisfied?: boolean
   ratings: RiskRating[]
+  // The task's risk orders, oldest first. A server before risk orders omits it.
+  orders?: TaskRiskOrder[]
 }
 // The workspace risk_policy key. A saved policy always states its table; a
 // policy sent without one takes the default table (AC-1.3).
@@ -1620,7 +1655,7 @@ export interface WorkOrder {
   id: string
   task_id: string
   job_id: string
-  stage: 'spec' | 'implement' | 'verify' | 'review'
+  stage: 'spec' | 'implement' | 'verify' | 'review' | 'risk'
   state: 'queued' | 'claimed' | 'submitted' | 'completed' | 'cancelled' | 'stale' | 'timed_out'
   claimable: boolean
   blocking_task_ids?: string[]
@@ -1638,6 +1673,9 @@ export interface WorkOrder {
   review_scope?: 'delta' | 'full'
   baseline_sha?: string
   head_sha?: string
+  // What a risk order rates, on the work-order list read only. Task detail
+  // reads it from risk.orders (req-risk-based-review AC-11.2).
+  risk_subject?: RiskOrderSubject
   required_model?: string
   required_harness?: string
   required_effort?: 'low' | 'medium' | 'high'
