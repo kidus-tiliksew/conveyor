@@ -139,6 +139,13 @@ func (s *Service) SubmitRiskRating(ctx context.Context, claim core.WorkOrderClai
 	if err != nil {
 		return nil, err
 	}
+	// A completed risk order can end an enforcing review round's wait. The
+	// durable backends enqueue the task in the completing transaction; the
+	// in-memory dispatcher queue is fed here (feature-risk-based-review
+	// RR-12; req-risk-based-review AC-5.10).
+	if s.Dispatcher != nil {
+		s.Dispatcher.Enqueue(ctx, order.TaskID)
+	}
 	return map[string]any{"work_order_id": id, "task_id": order.TaskID, "state": core.WorkOrderCompleted, "rating": rating}, nil
 }
 
