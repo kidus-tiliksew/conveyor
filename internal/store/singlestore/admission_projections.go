@@ -285,25 +285,43 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 		if err := lockKey(ctx, tx, "queue-reconcile:"+ws); err != nil {
 			return err
 		}
-		rows, err := documentRows(ctx, tx, `SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.state='queued' AND NOT(t.parent_task_id IS NULL AND t.next_stage='implement' AND EXISTS(SELECT 1 FROM tasks c WHERE c.workspace_id=t.workspace_id AND c.parent_task_id=t.id)) AND NOT (`+blockingOrderSQL("t")+`) ORDER BY t.created_at,t.id`, ws)
+		rows, err := documentRows(ctx, tx, `SELECT t.id,t.next_stage FROM tasks t WHERE t.workspace_id=? AND t.state='queued' AND NOT(t.parent_task_id IS NULL AND t.next_stage='implement' AND EXISTS(SELECT 1 FROM tasks c WHERE c.workspace_id=t.workspace_id AND c.parent_task_id=t.id)) AND NOT (`+blockingOrderSQL("t")+`) ORDER BY t.created_at,t.id`, ws)
 		if err != nil {
 			return err
 		}
-		ids := []string{}
+		type candidate struct {
+			id        string
+			nextStage core.Stage
+		}
+		candidates := []candidate{}
 		for rows.Next() {
-			var id string
-			if err = rows.Scan(&id); err != nil {
+			var c candidate
+			if err = rows.Scan(&c.id, &c.nextStage); err != nil {
 				rows.Close()
 				return err
 			}
-			ids = append(ids, id)
+			candidates = append(candidates, c)
 		}
 		err = rows.Err()
 		rows.Close()
 		if err != nil {
 			return err
 		}
-		for _, id := range ids {
+		for _, c := range candidates {
+			id := c.id
+			// The risk hold is read before the job stream. Completing or
+			// cancelling the risk order enqueues the task in the same
+			// transaction, so a hold read after that commit is gone and the
+			// job read finds the wake active (feature-risk-based-review RR-12).
+			if c.nextStage == core.StageReview {
+				held, err := reconcileRiskHeldTx(ctx, tx, id)
+				if err != nil {
+					return err
+				}
+				if held {
+					continue
+				}
+			}
 			job, err := logqueue.Load(logTx(ctx, tx), s.log, ws, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), id))
 			if err != nil {
 				return err
@@ -353,6 +371,36 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// reconcileRiskHeldTx reports whether a queued review task waits for its
+// head's risk order, read in the reconcile transaction: the task is loaded,
+// and store.QueuedReviewRiskHold reads its recorded submission comparisons
+// and risk orders only when its frozen mode is enforce. Dispatch applies the
+// same hold to the same head, so reconcile repairs no task that dispatch
+// would leave waiting (feature-risk-based-review RR-12;
+// req-risk-based-review AC-1.6, AC-5.10; component-risk-review invariant 13;
+// component-durable-queue "Reconciliation between tasks and jobs").
+func reconcileRiskHeldTx(ctx context.Context, tx *sql.Tx, taskID string) (bool, error) {
+	task, err := getTaskRow(ctx, tx, taskID)
+	if err != nil {
+		return false, err
+	}
+	_, held, err := store.QueuedReviewRiskHold(task,
+		func() ([]core.Event, error) { return submissionComparisonEventsTx(ctx, tx, taskID) },
+		func() ([]core.RiskOrder, error) { return taskRiskOrdersTx(ctx, tx, taskID) })
+	return held, err
+}
+
+// submissionComparisonEventsTx reads a task's recorded submission
+// comparisons with the task timeline predicate and order of
+// documentTaskEvents.
+func submissionComparisonEventsTx(ctx context.Context, tx *sql.Tx, taskID string) ([]core.Event, error) {
+	rows, err := documentRows(ctx, tx, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key AND kind=? ORDER BY at,id`, documentWorkspace(ctx), taskID, store.SubmissionComparisonEventKind)
+	if err != nil {
+		return nil, err
+	}
+	return scanDocumentEvents(rows)
 }
 
 // blockingOrderSQL is the SQL form of the durable reconcile hold predicate:

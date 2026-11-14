@@ -101,9 +101,14 @@ func blockingOrderSQL(task string) string {
 )`
 }
 
-func (q *logDispatchQueue) queuedTasksWithoutActiveDispatch(ctx context.Context, tx pgx.Tx, workspace string) ([]string, error) {
+// queuedTasksWithoutActiveDispatch returns the queued tasks that no ordinary
+// work order holds and whose dispatch job is not active. held is asked about
+// each review-stage candidate before its job stream is read, and a candidate
+// it holds is left out, so reconcile enqueues nothing for it and reports no
+// repair. A held error rolls the reconcile back.
+func (q *logDispatchQueue) queuedTasksWithoutActiveDispatch(ctx context.Context, tx pgx.Tx, workspace string, held func(taskID string) (bool, error)) ([]string, error) {
 	rows, err := tx.Query(ctx, `
-SELECT t.id
+SELECT t.id, t.next_stage
 FROM tasks t
 WHERE t.workspace_id = $1
   AND t.state = 'queued'
@@ -121,14 +126,18 @@ ORDER BY t.created_at, t.id`, workspace)
 	if err != nil {
 		return nil, err
 	}
-	var candidates []string
+	type candidate struct {
+		id        string
+		nextStage core.Stage
+	}
+	var candidates []candidate
 	for rows.Next() {
-		var taskID string
-		if err := rows.Scan(&taskID); err != nil {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.nextStage); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		candidates = append(candidates, taskID)
+		candidates = append(candidates, c)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -137,7 +146,21 @@ ORDER BY t.created_at, t.id`, workspace)
 	logCtx := logTx(ctx, tx)
 	kind := queue.DispatchTaskArgs{}.Kind()
 	var out []string
-	for _, taskID := range candidates {
+	for _, c := range candidates {
+		taskID := c.id
+		// The risk hold is read before the job stream. Completing or
+		// cancelling the risk order enqueues the task in the same
+		// transaction, so a hold read after that commit is gone and the job
+		// read finds the wake active (feature-risk-based-review RR-12).
+		if held != nil && c.nextStage == core.StageReview {
+			skip, err := held(taskID)
+			if err != nil {
+				return nil, err
+			}
+			if skip {
+				continue
+			}
+		}
 		job, err := logqueue.Load(logCtx, q.log, workspace, logqueue.StreamFor(kind, taskID))
 		if err != nil {
 			return nil, err
