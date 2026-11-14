@@ -2444,6 +2444,13 @@ func (m *memory) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.createSpecVersionLocked(ctx, spec)
+}
+
+// createSpecVersionLocked records spec as the task's next plan version under
+// m.mu. A lifecycle command that carries a plan version calls it inside its
+// own critical section (taskops.Command.PlanVersion).
+func (m *memory) createSpecVersionLocked(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {
 	if _, ok := m.tasks[spec.TaskID]; !ok {
 		return core.SpecVersion{}, fmt.Errorf("task %s: %w", spec.TaskID, ErrNotFound)
 	}
@@ -2529,26 +2536,16 @@ func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version 
 	if len(versions) == 0 || versions[len(versions)-1].Version != version {
 		return fmt.Errorf("spec version %d for task %s not found or superseded", version, taskID)
 	}
-	// The approved version's stated tier becomes a plan rating in the same
-	// act (req-risk-based-review AC-4.3; feature-risk-based-review RR-4).
-	var (
-		ratingKey   memoryScopedKey
-		planRating  core.RiskRating
-		ratePlanned bool
-	)
-	if task, ok := m.tasks[taskID]; ok {
-		var err error
-		if ratingKey, planRating, ratePlanned, err = m.planApprovalRiskLocked(ctx, task, version, versions[len(versions)-1].Content); err != nil {
-			return err
-		}
+	// Under enforce the approval waits for the version's open risk order and
+	// changes nothing (req-risk-based-review AC-4.8; req-task-plan-state
+	// AC-1.3). No plan text is read: a plan states no tier (RR-13).
+	if err := m.planApprovalRiskRefusalLocked(ctx, taskID, version); err != nil {
+		return err
 	}
 	versions[len(versions)-1].Approved = true
 	versions[len(versions)-1].ApprovedAt = time.Now().UTC()
 	m.specs[taskID] = versions
 	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
-	if ratePlanned {
-		m.insertRiskRatingLocked(ctx, ratingKey, planRating)
-	}
 	// An approval can make a risk agent rating of this version count, so a
 	// tier that reaches high cancels the open risk orders in the same act
 	// (req-risk-based-review AC-4.3, AC-12.3).

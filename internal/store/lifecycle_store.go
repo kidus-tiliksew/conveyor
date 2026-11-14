@@ -562,6 +562,9 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 	if err != nil {
 		return core.Task{}, err
 	}
+	if err := ValidateTaskCommandPlanVersion(command); err != nil {
+		return core.Task{}, err
+	}
 	var final *core.TaskApproval
 	if command.FinalApproval != nil {
 		prepared, prepareErr := PrepareFinalTaskApproval(task, command.Kind, *command.FinalApproval, time.Now())
@@ -578,6 +581,16 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 		}
 		bypass = &event
 	}
+	if command.PlanVersion != nil {
+		// The submitted plan version commits with its plan-state move and its
+		// risk order (taskops.Command.PlanVersion; req-task-plan-state AC-1.2).
+		spec := *command.PlanVersion
+		spec.TaskID = id
+		if _, err := m.createSpecVersionLocked(ctx, spec); err != nil {
+			return core.Task{}, err
+		}
+	}
+	fromPlanState := task.PlanState
 	task.State = state
 	task.GateKind = core.GateKindFor(state, command.Kind)
 	if command.ProjectStages {
@@ -596,6 +609,11 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command.Kind})})
 	if planMove != nil {
 		m.appendEventLocked(ctx, *planMove)
+	}
+	if planMove != nil || command.PlanVersion != nil {
+		if err := m.applyPlanRiskMoveLocked(ctx, task, fromPlanState, command.PlanState.Cause, command.PlanVersion != nil, time.Now().UTC()); err != nil {
+			return core.Task{}, err
+		}
 	}
 	if final != nil {
 		workspace := task.Workspace

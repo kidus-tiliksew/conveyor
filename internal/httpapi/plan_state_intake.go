@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -151,25 +150,6 @@ func validateIntakePlan(req createTaskReq) (store.PlanStateRequest, *core.Intake
 	}
 	request.HasPlan, request.PlanApproved = true, plan.Approved
 	return request, plan, nil
-}
-
-// checkIntakePlanRisk refuses an intake plan that states no risk tier when
-// the risk policy current would freeze into the task is in enforce mode. The
-// refusal answers 400 with nothing recorded, before the idempotency lookup,
-// on REST and MCP intake alike (req-risk-based-review AC-4.2;
-// feature-risk-based-review RR-4; component-plan-state invariant 2).
-func checkIntakePlanRisk(current *config.Config, content string) *taskCreateError {
-	if current == nil {
-		return nil
-	}
-	plan, err := pipeline.ParsePlan(content, nil)
-	if err != nil {
-		return planIntakeError("invalid plan: %v", err)
-	}
-	if err := pipeline.CheckPlanRiskTier(current.FreezePolicy().Risk, plan); err != nil {
-		return planIntakeError("invalid plan: %v", err)
-	}
-	return nil
 }
 
 // authorizeIntakePlanApproval judges plan_approved true after admission, from

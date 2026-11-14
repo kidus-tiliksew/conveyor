@@ -1479,7 +1479,7 @@ func (s *Service) UploadTranscript(ctx context.Context, id, session, transcript 
 // remain in-band, retain the claim, and record no plan version
 // (component-work-orders invariant 56; component-mcp-protocol invariant 40).
 func (s *Service) SubmitPlan(ctx context.Context, id, session string, value pipeline.StructuredPlan) (map[string]any, error) {
-	return s.submitStageDocument(ctx, id, session, func(ctx context.Context, task core.Task, job core.Job, order core.WorkOrder) (core.SpecVersion, error) {
+	return s.submitStageDocument(ctx, id, session, func(ctx context.Context, task core.Task, job core.Job, order core.WorkOrder) (dispatch.SubmittedPlan, error) {
 		// A planned review seat count below the task's minimum is refused
 		// before any plan version or lifecycle change, so the order stays
 		// claimed for correction (req-review-gates-evidence AC-2.8;
@@ -1487,10 +1487,10 @@ func (s *Service) SubmitPlan(ctx context.Context, id, session string, value pipe
 		if value.ReviewSeats != nil {
 			cfg, err := s.config(ctx)
 			if err != nil {
-				return core.SpecVersion{}, err
+				return dispatch.SubmittedPlan{}, err
 			}
 			if err = dispatch.CheckPlanReviewSeats(cfg, task, value.ReviewSeats); err != nil {
-				return core.SpecVersion{}, err
+				return dispatch.SubmittedPlan{}, err
 			}
 		}
 		return s.Dispatcher.ApplyExternalPlan(ctx, task, job, value, order.Agent, order.Model)
@@ -1501,7 +1501,7 @@ func (s *Service) SubmitPlan(ctx context.Context, id, session string, value pipe
 // store write inside it must run on the session that holds the task
 // side-effect lock, or it waits on that lock forever (component-persistence
 // invariant 6).
-func (s *Service) submitStageDocument(ctx context.Context, id, session string, apply func(context.Context, core.Task, core.Job, core.WorkOrder) (core.SpecVersion, error)) (map[string]any, error) {
+func (s *Service) submitStageDocument(ctx context.Context, id, session string, apply func(context.Context, core.Task, core.Job, core.WorkOrder) (dispatch.SubmittedPlan, error)) (map[string]any, error) {
 	order, err := s.authorized(ctx, id, session)
 	if err != nil {
 		return nil, err
@@ -1520,7 +1520,7 @@ func (s *Service) submitStageDocument(ctx context.Context, id, session string, a
 	return result, err
 }
 
-func (s *Service) submitStageDocumentLocked(ctx context.Context, id, session string, apply func(context.Context, core.Task, core.Job, core.WorkOrder) (core.SpecVersion, error)) (map[string]any, error) {
+func (s *Service) submitStageDocumentLocked(ctx context.Context, id, session string, apply func(context.Context, core.Task, core.Job, core.WorkOrder) (dispatch.SubmittedPlan, error)) (map[string]any, error) {
 	order, err := s.authorized(ctx, id, session)
 	if err != nil {
 		return nil, err
@@ -1550,7 +1550,7 @@ func (s *Service) submitStageDocumentLocked(ctx context.Context, id, session str
 	if !found {
 		return nil, fmt.Errorf("spec job unavailable")
 	}
-	version, err := apply(ctx, task, job, order)
+	submitted, err := apply(ctx, task, job, order)
 	if err != nil {
 		return nil, err
 	}
@@ -1574,8 +1574,14 @@ func (s *Service) submitStageDocumentLocked(ctx context.Context, id, session str
 	}
 	// No submission approves a plan: the version waits at the plan_approval
 	// gate for a person's decision, so approved is always false
-	// (component-work-orders invariant 56; DEC-125(6)).
-	return map[string]any{"task_id": task.ID, "version": version.Version, "approved": false, "next_stage": current.NextStage}, nil
+	// (component-work-orders invariant 56; DEC-125(6)). A submission that
+	// created a risk order names it (req-risk-based-review AC-12.6;
+	// feature-risk-based-review RR-13).
+	result := map[string]any{"task_id": task.ID, "version": submitted.Version.Version, "approved": false, "next_stage": current.NextStage}
+	if submitted.RiskWorkOrderID != "" {
+		result["risk_work_order_id"] = submitted.RiskWorkOrderID
+	}
+	return result, nil
 }
 
 func (s *Service) AwaitReview(ctx context.Context, id, session string, wait time.Duration) (map[string]any, error) {

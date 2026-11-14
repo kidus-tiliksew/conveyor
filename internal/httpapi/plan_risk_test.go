@@ -1,24 +1,32 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// riskTierLine is a well-formed plan risk tier line (req-risk-based-review
-// REQ-4).
+// riskTierLine is a line in the retired plan tier format. A plan that still
+// holds it is accepted, and the line is plan text (feature-risk-based-review
+// RR-13).
 const riskTierLine = "Risk tier: medium — The plan changes intake."
 
-// tieredIntakePlan states a tier; intakeTestPlan states none.
+// tieredIntakePlan holds the retired tier line; intakeTestPlan holds none.
 var tieredIntakePlan = strings.Replace(intakeTestPlan, "## Risks\n- None.", "## Risks\n- None.\n\n"+riskTierLine, 1)
+
+// malformedTierIntakePlan holds a tier line the retired grammar refused.
+var malformedTierIntakePlan = strings.Replace(intakeTestPlan, "## Risks\n- None.", "## Risks\n- None.\n\nRisk tier: severe — Not a tier.\n\nRisk tier: low — Twice.", 1)
 
 func (f *sessionIntakeFixture) setRiskMode(mode riskpolicy.Mode) {
 	f.cfgMu.Lock()
@@ -28,96 +36,78 @@ func (f *sessionIntakeFixture) setRiskMode(mode riskpolicy.Mode) {
 	f.cfg = &copied
 }
 
-// TestIntakePlanRiskTier covers REST JSON, REST multipart, a keyed multipart
-// retry, and MCP intake: under enforce a plan with no tier is refused with
-// nothing recorded, before the idempotency lookup; a malformed tier line is
-// refused in every mode; record and off accept a plan with no tier; and an
-// approved intake plan's stated tier is recorded as a plan rating
-// (req-risk-based-review AC-4.2, AC-4.3, AC-4.5; feature-risk-based-review
-// RR-4; component-plan-state invariant 2).
-func TestIntakePlanRiskTier(t *testing.T) {
+// planRiskOrders returns the task's risk orders whose subject is a plan
+// version.
+func planRiskOrders(t *testing.T, st store.Store, ctx context.Context, taskID string) []core.RiskOrder {
+	t.Helper()
+	orders, err := st.ListTaskRiskOrders(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plans []core.RiskOrder
+	for _, order := range orders {
+		if order.Subject.PlanVersion > 0 {
+			plans = append(plans, order)
+		}
+	}
+	return plans
+}
+
+// TestIntakePlanRiskOrder covers REST JSON, REST multipart, and MCP intake:
+// every plan is accepted with or without a tier line, malformed or repeated
+// lines included; a plan filed for approval gets one risk order for plan
+// version 1 when the frozen mode is record or enforce; a plan approved in the
+// act that files it gets none; an off task gets none; and no intake records a
+// rating from plan text (req-risk-based-review AC-4.7, AC-1.1;
+// feature-risk-based-review RR-13; component-plan-state invariant 2).
+func TestIntakePlanRiskOrder(t *testing.T) {
 	f := newSessionIntakeFixture(t)
 	token := humanIntakeToken(core.WorkspaceRoleOperator)
 	ctx := store.WithWorkspace(t.Context(), "alpha")
-	seed := f.postTaskMultipart(t, token, intakeFields(nil), "plan-risk-key")
-	if seed.status != http.StatusCreated {
-		t.Fatalf("seed status=%d body=%s", seed.status, seed.body)
-	}
-	malformed := strings.Replace(intakeTestPlan, "## Risks\n- None.", "## Risks\n- None.\n\nRisk tier: severe — Not a tier.", 1)
-	refuse := func(t *testing.T, label string, fields map[string]any, want string) {
+	requireOrders := func(t *testing.T, label, taskID string, want int) {
 		t.Helper()
-		for _, surface := range []string{"json", "multipart", "multipart retry", "mcp"} {
-			tasks, titles, notified := f.taskCount(t), f.titles.Load(), f.notified.Load()
-			switch surface {
-			case "mcp":
-				result := f.callMCP(t, token, "create_task", intakeArgs("mcp-plan-risk", map[string]any{"plan": fields["plan"]}))
-				if !strings.HasPrefix(result.errText, invalidPlanIntake+": ") || !strings.Contains(result.errText, want) {
-					t.Fatalf("%s (mcp): err=%q", label, result.errText)
-				}
-			default:
-				var result restIntakeResult
-				switch surface {
-				case "json":
-					result = f.postTaskJSON(t, token, intakeFields(fields))
-				case "multipart":
-					result = f.postTaskMultipart(t, token, intakeFields(fields), "")
-				default:
-					result = f.postTaskMultipart(t, token, intakeFields(fields), "plan-risk-key")
-				}
-				if result.status != http.StatusBadRequest || result.code() != invalidPlanIntake || !strings.Contains(result.body, want) {
-					t.Fatalf("%s (%s): status=%d body=%s", label, surface, result.status, result.body)
-				}
+		orders := planRiskOrders(t, f.store, ctx, taskID)
+		if len(orders) != want {
+			t.Fatalf("%s: plan risk orders=%+v, want %d", label, orders, want)
+		}
+		for _, order := range orders {
+			if order.Subject.PlanVersion != core.IntakePlanVersion || order.Order.Stage != core.StageRisk || order.Order.State != core.WorkOrderQueued {
+				t.Fatalf("%s: risk order=%+v, want a queued order for plan version 1", label, order)
 			}
-			f.requireNoSideEffects(t, label+" ("+surface+")", tasks, titles, notified)
+		}
+		if ratings, err := f.store.ListTaskRiskRatings(ctx, taskID); err != nil || len(ratings) != 0 {
+			t.Fatalf("%s: intake recorded ratings %+v err=%v", label, ratings, err)
 		}
 	}
-
-	f.setRiskMode(riskpolicy.ModeEnforce)
-	refuse(t, "enforce without a tier", map[string]any{"plan": intakeTestPlan}, "plan_risk_tier_missing")
-	refuse(t, "enforce approved without a tier", map[string]any{"plan": intakeTestPlan, "plan_approved": true}, "plan_risk_tier_missing")
-	refuse(t, "enforce malformed tier", map[string]any{"plan": malformed}, "must be low, medium, or high")
-	enforced := f.postTaskJSON(t, token, intakeFields(map[string]any{"plan": tieredIntakePlan}))
-	if enforced.status != http.StatusCreated || enforced.task.PlanState != core.PlanAwaitingApproval {
-		t.Fatalf("enforce with a tier: status=%d body=%s", enforced.status, enforced.body)
-	}
-	if ratings, err := f.store.ListTaskRiskRatings(ctx, enforced.task.ID); err != nil || len(ratings) != 0 {
-		t.Fatalf("an unapproved intake plan was rated: %+v err=%v", ratings, err)
-	}
-	approved := f.postTaskJSON(t, token, intakeFields(map[string]any{"plan": tieredIntakePlan, "plan_approved": true}))
-	if approved.status != http.StatusCreated || approved.task.PlanState != core.PlanCompleted {
-		t.Fatalf("enforce approved with a tier: status=%d body=%s", approved.status, approved.body)
-	}
-	ratings, err := f.store.ListTaskRiskRatings(ctx, approved.task.ID)
-	if err != nil || len(ratings) != 1 || ratings[0].Source != core.RiskSourcePlan || ratings[0].Tier != riskpolicy.TierMedium ||
-		ratings[0].Reason != "The plan changes intake." || ratings[0].PlanVersion != core.IntakePlanVersion {
-		t.Fatalf("approved intake plan ratings=%+v err=%v", ratings, err)
-	}
-	stored, err := f.store.GetTask(ctx, approved.task.ID)
-	if err != nil || stored.PlanState != core.PlanCompleted {
-		t.Fatalf("rated task plan state=%s err=%v", stored.PlanState, err)
-	}
-
-	f.setRiskMode(riskpolicy.ModeRecord)
-	refuse(t, "record malformed tier", map[string]any{"plan": malformed}, "must be low, medium, or high")
-	recorded := f.postTaskJSON(t, token, intakeFields(map[string]any{"plan": intakeTestPlan, "plan_approved": true}))
-	if recorded.status != http.StatusCreated || recorded.task.PlanState != core.PlanCompleted {
-		t.Fatalf("record without a tier: status=%d body=%s", recorded.status, recorded.body)
-	}
-	if ratings, err := f.store.ListTaskRiskRatings(ctx, recorded.task.ID); err != nil || len(ratings) != 0 {
-		t.Fatalf("a plan with no tier was rated: %+v err=%v", ratings, err)
-	}
-	if mcp := f.callMCP(t, token, "create_task", intakeArgs("mcp-plan-risk-record", map[string]any{"plan": intakeTestPlan})); mcp.errText != "" {
-		t.Fatalf("record MCP intake without a tier: %q", mcp.errText)
-	}
-
-	f.setRiskMode(riskpolicy.ModeOff)
-	refuse(t, "off malformed tier", map[string]any{"plan": malformed}, "must be low, medium, or high")
-	off := f.postTaskJSON(t, token, intakeFields(map[string]any{"plan": tieredIntakePlan, "plan_approved": true}))
-	if off.status != http.StatusCreated {
-		t.Fatalf("off with a tier: status=%d body=%s", off.status, off.body)
-	}
-	if ratings, err := f.store.ListTaskRiskRatings(ctx, off.task.ID); err != nil || len(ratings) != 0 {
-		t.Fatalf("an off task was rated: %+v err=%v", ratings, err)
+	for _, mode := range []riskpolicy.Mode{riskpolicy.ModeEnforce, riskpolicy.ModeRecord, riskpolicy.ModeOff} {
+		f.setRiskMode(mode)
+		pending := 1
+		if mode == riskpolicy.ModeOff {
+			pending = 0
+		}
+		for _, plan := range []struct{ name, text string }{{"no tier line", intakeTestPlan}, {"tier line", tieredIntakePlan}, {"malformed tier lines", malformedTierIntakePlan}} {
+			label := string(mode) + " " + plan.name
+			filed := f.postTaskJSON(t, token, intakeFields(map[string]any{"plan": plan.text}))
+			if filed.status != http.StatusCreated || filed.task.PlanState != core.PlanAwaitingApproval {
+				t.Fatalf("%s (json): status=%d body=%s", label, filed.status, filed.body)
+			}
+			requireOrders(t, label+" (json)", filed.task.ID, pending)
+			multipart := f.postTaskMultipart(t, token, intakeFields(map[string]any{"plan": plan.text}), "")
+			if multipart.status != http.StatusCreated || multipart.task.PlanState != core.PlanAwaitingApproval {
+				t.Fatalf("%s (multipart): status=%d body=%s", label, multipart.status, multipart.body)
+			}
+			requireOrders(t, label+" (multipart)", multipart.task.ID, pending)
+			approved := f.postTaskJSON(t, token, intakeFields(map[string]any{"plan": plan.text, "plan_approved": true}))
+			if approved.status != http.StatusCreated || approved.task.PlanState != core.PlanCompleted {
+				t.Fatalf("%s approved: status=%d body=%s", label, approved.status, approved.body)
+			}
+			requireOrders(t, label+" approved", approved.task.ID, 0)
+			mcp := f.callMCP(t, token, "create_task", intakeArgs("mcp-plan-risk-"+string(mode)+"-"+strings.ReplaceAll(plan.name, " ", "-"), map[string]any{"plan": plan.text}))
+			if mcp.errText != "" || mcp.task.PlanState != core.PlanAwaitingApproval {
+				t.Fatalf("%s (mcp): err=%q task=%+v", label, mcp.errText, mcp.task)
+			}
+			requireOrders(t, label+" (mcp)", mcp.task.ID, pending)
+		}
 	}
 }
 
@@ -133,86 +123,147 @@ func seedRiskPlanTask(t *testing.T, st store.Store, id string, mode riskpolicy.M
 	}
 }
 
-// TestAttachPlanRiskTier covers POST /v1/tasks/{id}/plan: under the task's
-// frozen enforce mode a plan with no tier answers 400 and leaves the plan
-// versions, plan state, and events as they were; a malformed tier line is
-// refused in every mode; record accepts a plan with no tier; and the task
-// detail read serves the attached version's own tier and reason
-// (req-risk-based-review AC-4.2, AC-4.4, AC-4.5; feature-risk-based-review
-// RR-4; component-plan-state invariant 5).
-func TestAttachPlanRiskTier(t *testing.T) {
+// TestAttachPlanRiskOrder covers POST /v1/tasks/{id}/plan: every plan is
+// accepted with or without a tier line in every mode; the attached version
+// gets one risk order under record and enforce; and the plan reads serve no
+// tier from the plan text (req-risk-based-review AC-4.7;
+// feature-risk-based-review RR-13; DEC-134(2); component-plan-state invariant
+// 5).
+func TestAttachPlanRiskOrder(t *testing.T) {
 	_, st, handler := policyHTTPFixture(t)
-	seedRiskPlanTask(t, st, "risk-enforce", riskpolicy.ModeEnforce)
-	seedRiskPlanTask(t, st, "risk-record", riskpolicy.ModeRecord)
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	tiered := strings.Replace(httpPlan, "## Risks\n- None.", "## Risks\n- None.\n\nRisk tier: high — Attach changes the plan.", 1)
 	malformed := strings.Replace(httpPlan, "## Risks\n- None.", "## Risks\n- None.\n\n- Risk tier: high — Listed.", 1)
-	attach := func(task, plan, requestID string) (int, string) {
-		response := planActsRequest(t, handler, http.MethodPost, "/v1/tasks/"+task+"/plan",
-			planActsJSON(t, map[string]any{"plan": plan, "reason": "operator plan", "request_id": requestID}))
-		return response.Code, response.Body.String()
-	}
-	before, err := st.ListEvents(ctx, "risk-enforce")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct{ name, task, plan, requestID, want string }{
-		{"enforce without a tier", "risk-enforce", httpPlan, "risk-attach-1", "plan_risk_tier_missing"},
-		{"enforce malformed tier", "risk-enforce", malformed, "risk-attach-2", "list marker"},
-		{"record malformed tier", "risk-record", malformed, "risk-attach-3", "list marker"},
-	} {
-		code, body := attach(tc.task, tc.plan, tc.requestID)
-		if code != http.StatusBadRequest || !strings.Contains(body, tc.want) {
-			t.Fatalf("%s: %d %s", tc.name, code, body)
-		}
-	}
-	if _, ok, err := st.GetLatestSpecVersion(ctx, "risk-enforce"); err != nil || ok {
-		t.Fatalf("a refused attach recorded a plan version: ok=%t err=%v", ok, err)
-	}
-	after, err := st.ListEvents(ctx, "risk-enforce")
-	if err != nil || len(after) != len(before) {
-		t.Fatalf("a refused attach appended events: %d -> %d err=%v", len(before), len(after), err)
-	}
-	if task, err := st.GetTask(ctx, "risk-enforce"); err != nil || task.PlanState != core.PlanNeeded {
-		t.Fatalf("a refused attach moved the plan state: %+v err=%v", task.PlanState, err)
-	}
-	// The refused request ID records no replay: the corrected plan under the
-	// same ID is recorded.
-	if code, body := attach("risk-enforce", tiered, "risk-attach-1"); code != http.StatusOK {
-		t.Fatalf("enforce with a tier: %d %s", code, body)
-	}
-	if code, body := attach("risk-record", httpPlan, "risk-attach-4"); code != http.StatusOK {
-		t.Fatalf("record without a tier: %d %s", code, body)
-	}
-
 	for _, tc := range []struct {
 		task   string
-		tier   riskpolicy.Tier
-		reason string
-	}{{"risk-enforce", riskpolicy.TierHigh, "Attach changes the plan."}, {"risk-record", "", ""}} {
+		mode   riskpolicy.Mode
+		plan   string
+		orders int
+	}{
+		{"risk-enforce-plain", riskpolicy.ModeEnforce, httpPlan, 1},
+		{"risk-enforce-tiered", riskpolicy.ModeEnforce, tiered, 1},
+		{"risk-enforce-malformed", riskpolicy.ModeEnforce, malformed, 1},
+		{"risk-record-plain", riskpolicy.ModeRecord, httpPlan, 1},
+		{"risk-record-malformed", riskpolicy.ModeRecord, malformed, 1},
+		{"risk-off-tiered", riskpolicy.ModeOff, tiered, 0},
+	} {
+		seedRiskPlanTask(t, st, tc.task, tc.mode)
+		response := planActsRequest(t, handler, http.MethodPost, "/v1/tasks/"+tc.task+"/plan",
+			planActsJSON(t, map[string]any{"plan": tc.plan, "reason": "operator plan", "request_id": "attach-" + tc.task}))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", tc.task, response.Code, response.Body)
+		}
+		orders := planRiskOrders(t, st, ctx, tc.task)
+		if len(orders) != tc.orders {
+			t.Fatalf("%s: plan risk orders=%+v, want %d", tc.task, orders, tc.orders)
+		}
+		if tc.orders == 1 && (orders[0].Subject.PlanVersion != 1 || orders[0].Order.State != core.WorkOrderQueued) {
+			t.Fatalf("%s: risk order=%+v, want a queued order for the attached version", tc.task, orders[0])
+		}
 		for _, path := range []string{"/v1/tasks/" + tc.task + "/activity", "/v1/tasks/" + tc.task + "/spec"} {
-			response := planActsRequest(t, handler, http.MethodGet, path, "")
-			if response.Code != http.StatusOK {
-				t.Fatalf("GET %s: %d %s", path, response.Code, response.Body)
+			read := planActsRequest(t, handler, http.MethodGet, path, "")
+			if read.Code != http.StatusOK {
+				t.Fatalf("GET %s: %d %s", path, read.Code, read.Body)
 			}
-			var spec core.SpecVersion
+			body := read.Body.String()
 			if strings.HasSuffix(path, "/activity") {
 				var detail struct {
-					Spec *core.SpecVersion `json:"spec"`
+					Spec json.RawMessage `json:"spec"`
 				}
-				if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil || detail.Spec == nil {
-					t.Fatalf("GET %s: spec missing: %s", path, response.Body)
+				if err := json.Unmarshal(read.Body.Bytes(), &detail); err != nil || len(detail.Spec) == 0 {
+					t.Fatalf("GET %s: spec missing: %s", path, body)
 				}
-				spec = *detail.Spec
-			} else if err := json.Unmarshal(response.Body.Bytes(), &spec); err != nil {
-				t.Fatal(err)
+				body = string(detail.Spec)
 			}
-			if spec.RiskTier != tc.tier || spec.RiskReason != tc.reason {
-				t.Fatalf("GET %s: plan tier=%q reason=%q, want %q %q", path, spec.RiskTier, spec.RiskReason, tc.tier, tc.reason)
-			}
-			if tc.tier == "" && strings.Contains(response.Body.String(), `"risk_tier"`) {
-				t.Fatalf("GET %s served a tier for a plan that states none: %s", path, response.Body)
+			if strings.Contains(body, `"risk_tier"`) || strings.Contains(body, `"risk_reason"`) {
+				t.Fatalf("GET %s served a plan rating from plan text: %s", path, body)
 			}
 		}
+	}
+}
+
+// TestPlanApprovalWaitsForRiskOrder covers the review route's approve act at
+// the plan approval gate: under enforce, while the version's risk order is
+// open, it answers 409 plan_risk_rating_open naming the order and records no
+// intervention, no approval, and no plan-state move; once the order is
+// cancelled, approval succeeds. Under record it never waits
+// (req-risk-based-review AC-4.8, AC-1.6; req-task-plan-state AC-1.3;
+// feature-risk-based-review RR-13).
+func TestPlanApprovalWaitsForRiskOrder(t *testing.T) {
+	for _, mode := range []riskpolicy.Mode{riskpolicy.ModeEnforce, riskpolicy.ModeRecord} {
+		t.Run(string(mode), func(t *testing.T) {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+			st := store.NewMemory()
+			task := core.Task{ID: "plan-risk-approve-" + string(mode), Workspace: "demo", Repo: "conveyor", PolicyVersion: 1,
+				State: core.TaskRunning, NextStage: core.StageSpec, PlanState: core.PlanNeeded, CreatedAt: time.Now()}
+			task.SetupContract = config.PolicyContract{MaxBounces: 3, Risk: &riskpolicy.Policy{Mode: mode, Tiers: riskpolicy.DefaultTable()}}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-spec", TaskID: task.ID, Stage: core.StageSpec, State: core.JobDone}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{
+				Kind: core.TaskGateSpec, RecoveryStage: core.StageImplement, ProjectStages: true,
+				PlanState:   &taskops.PlanStateMove{To: core.PlanAwaitingApproval, Cause: core.PlanCausePlanSubmitted},
+				PlanVersion: &core.SpecVersion{Content: httpPlan, Acceptance: []byte(`[]`), Decomposition: []byte(`[]`)},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			orders := planRiskOrders(t, st, ctx, task.ID)
+			if len(orders) != 1 {
+				t.Fatalf("plan risk orders=%+v, want one", orders)
+			}
+			server := NewServer(st)
+			server.Workspace, server.BearerToken = "demo", "token"
+			server.OnIntervention = dispatch.New(st, &config.Config{Workspace: "demo"}, nil).HandleIntervention
+			approve := func() *httptest.ResponseRecorder {
+				response := httptest.NewRecorder()
+				server.Handler().ServeHTTP(response, authenticatedSpecApprovalRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/review", `{"action":"approve","reason_code":"plan-approved"}`))
+				return response
+			}
+			if mode == riskpolicy.ModeEnforce {
+				refused := approve()
+				var body struct {
+					Error           string `json:"error"`
+					Message         string `json:"message"`
+					RiskWorkOrderID string `json:"risk_work_order_id"`
+					PlanVersion     int    `json:"plan_version"`
+				}
+				if refused.Code != http.StatusConflict || json.Unmarshal(refused.Body.Bytes(), &body) != nil ||
+					body.Error != store.PlanRiskRatingOpenCode || body.RiskWorkOrderID != orders[0].Order.ID || body.PlanVersion != 1 || body.Message == "" {
+					t.Fatalf("refused approve: %d %s", refused.Code, refused.Body)
+				}
+				current, err := st.GetTask(ctx, task.ID)
+				if err != nil || current.PlanState != core.PlanAwaitingApproval || current.GateKind != core.GateKindPlanApproval {
+					t.Fatalf("refused approve moved the task: %+v err=%v", current, err)
+				}
+				if interventions, err := st.ListInterventions(ctx, task.ID); err != nil || len(interventions) != 0 {
+					t.Fatalf("refused approve recorded interventions %+v err=%v", interventions, err)
+				}
+				if _, approved, err := st.GetApprovedSpecVersion(ctx, task.ID); err != nil || approved {
+					t.Fatalf("refused approve approved the plan: %t err=%v", approved, err)
+				}
+				if _, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdCancel, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+					order, _, cancelErr := st.CancelRiskOrderCommand(ctx, lease, store.RiskOrderCancelRequest{WorkOrderID: orders[0].Order.ID, Reason: "operator ended the wait"})
+					return order, cancelErr
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			accepted := approve()
+			if accepted.Code != http.StatusAccepted {
+				t.Fatalf("approve: %d %s", accepted.Code, accepted.Body)
+			}
+			current, err := st.GetTask(ctx, task.ID)
+			if err != nil || current.PlanState != core.PlanCompleted {
+				t.Fatalf("approved task=%+v err=%v", current, err)
+			}
+			after := planRiskOrders(t, st, ctx, task.ID)
+			if mode == riskpolicy.ModeRecord && after[0].Order.State != core.WorkOrderQueued {
+				t.Fatalf("record approval ended the risk order: %+v", after[0])
+			}
+		})
 	}
 }

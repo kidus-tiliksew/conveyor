@@ -98,6 +98,19 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 		if err != nil {
 			return err
 		}
+		if err = store.ValidateTaskCommandPlanVersion(command); err != nil {
+			return err
+		}
+		if command.PlanVersion != nil {
+			// The submitted plan version commits with its plan-state move and
+			// its risk order (taskops.Command.PlanVersion;
+			// req-task-plan-state AC-1.2).
+			spec := *command.PlanVersion
+			spec.TaskID = id
+			if _, err = insertSpecVersionTx(ctx, q, spec); err != nil {
+				return err
+			}
+		}
 		var final *core.TaskApproval
 		if command.FinalApproval != nil {
 			prepared, prepareErr := store.PrepareFinalTaskApproval(taskFromDB(before), command.Kind, *command.FinalApproval, time.Now())
@@ -148,6 +161,11 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 			}
 			result.PlanState = command.PlanState.To
 			if err := insertEvent(ctx, q, *planMove); err != nil {
+				return err
+			}
+		}
+		if planMove != nil || command.PlanVersion != nil {
+			if err := applyPlanRiskMoveTx(ctx, tx, q, id, core.PlanState(before.PlanState), command.PlanState.Cause, command.PlanVersion != nil, time.Now().UTC()); err != nil {
 				return err
 			}
 		}

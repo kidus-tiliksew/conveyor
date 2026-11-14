@@ -115,14 +115,6 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		current, currentLoaded = loaded, true
 		return nil
 	}
-	if intakePlan != nil {
-		if err := loadCurrent(); err != nil {
-			return taskCreateResult{}, err
-		}
-		if refusal := checkIntakePlanRisk(current, intakePlan.Content); refusal != nil {
-			return taskCreateResult{}, refusal
-		}
-	}
 	if intakePlan != nil && intakePlan.Approved {
 		if err := s.authorizeIntakePlanApproval(ctx); err != nil {
 			return taskCreateResult{}, err

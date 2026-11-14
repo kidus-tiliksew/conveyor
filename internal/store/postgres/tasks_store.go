@@ -187,6 +187,13 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'','',NULL,$10,$11)`,
 		return err
 	}
 	if !spec.Approved {
+		// A plan filed for approval gets its risk order in the creating
+		// transaction; a plan the filer approves gets none
+		// (req-risk-based-review AC-4.7; feature-risk-based-review RR-13).
+		if request, ok := store.PlanRiskOrderRequest(task, nil, spec.Version, task.CreatedAt); ok {
+			_, _, err := createRiskOrderTx(ctx, tx, q, task, request)
+			return err
+		}
 		return nil
 	}
 	intervention := store.IntakePlanApproval(task, approver)
@@ -196,10 +203,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'','',NULL,$10,$11)`,
 	if err := insertEvent(ctx, q, store.InterventionEvent(intervention)); err != nil {
 		return err
 	}
-	if err := insertEvent(ctx, q, store.IntakePlanApprovedEvent(spec)); err != nil {
-		return err
-	}
-	return recordIntakePlanRiskTx(ctx, tx, q, task)
+	return insertEvent(ctx, q, store.IntakePlanApprovedEvent(spec))
 }
 
 func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {
@@ -1033,6 +1037,13 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 			return notFound(err, "task %s", taskID)
 		}
 		parent := taskFromDB(parentRow)
+		// A legacy materializing approval waits for the version's open risk
+		// order under enforce, as an ordinary approval does
+		// (req-risk-based-review AC-4.8). An open order only ever ends, so
+		// the read needs no task lock here.
+		if err = planApprovalRiskRefusalTx(ctx, tx, q, taskID, version); err != nil {
+			return err
+		}
 		var decompositionJSON []byte
 		if err = tx.QueryRow(ctx, `SELECT decomposition FROM task_specs
 			WHERE task_id=$1 AND version=$2

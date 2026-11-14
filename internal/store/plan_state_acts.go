@@ -386,6 +386,9 @@ func (m *memory) applyPlanStateEffectsLocked(ctx context.Context, task core.Task
 		task.PlanState = effects.To
 		m.tasks[task.ID] = task
 		m.appendEventLocked(ctx, *move)
+		if err := m.applyPlanRiskMoveLocked(ctx, task, effects.From, effects.Cause, false, time.Now().UTC()); err != nil {
+			return core.Task{}, err
+		}
 	}
 	return m.tasks[task.ID], nil
 }

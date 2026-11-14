@@ -1196,13 +1196,13 @@ func TestPlanReviewSeatsPersistenceAndApproval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, tc.seats, false)
+			requirePlanVersionSeats(t, ctx, st, task.ID, version.Version.Version, tc.seats, false)
 			if tc.approve {
 				current, _ := st.GetTask(ctx, task.ID)
 				if err = d.HandleIntervention(ctx, current, job, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionApprove, ReasonCode: "plan-approved"}); err != nil {
 					t.Fatal(err)
 				}
-				requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, tc.seats, true)
+				requirePlanVersionSeats(t, ctx, st, task.ID, version.Version.Version, tc.seats, true)
 			}
 		})
 	}
@@ -1218,7 +1218,7 @@ func TestPlanReviewSeatsPersistenceAndApproval(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, nil, false)
+		requirePlanVersionSeats(t, ctx, st, task.ID, version.Version.Version, nil, false)
 	})
 	t.Run("in-process output", func(t *testing.T) {
 		encoded, err := json.Marshal(planReviewSeatsMarkdown)
@@ -1296,7 +1296,7 @@ func TestPlanReviewSeatsFirstRoundPlanned(t *testing.T) {
 			if err = d.HandleIntervention(ctx, current, job, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionApprove, ReasonCode: "plan-approved"}); err != nil {
 				t.Fatal(err)
 			}
-			requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, tc.planned, true)
+			requirePlanVersionSeats(t, ctx, st, task.ID, version.Version.Version, tc.planned, true)
 			// Implementation and its submission are outside RS-3; the task
 			// starts implementation and advances to review as a submission would.
 			if err = d.transition(ctx, task.ID, core.TaskDispatchStart, "", ""); err != nil {

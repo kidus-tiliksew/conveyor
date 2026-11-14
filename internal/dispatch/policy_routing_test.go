@@ -255,7 +255,8 @@ func TestNoPlanApprovedWithoutPersonDecision(t *testing.T) {
 			d := New(st, cfg, nil)
 			d.DisableMemoryQueueForTest()
 			commit := "0123456789abcdef0123456789abcdef01234567"
-			version, err := d.ApplyExternalPlan(ctx, created, job, pipeline.StructuredPlan{Markdown: routingPlan, Decomposition: []pipeline.DecompositionItem{}, BaseCommit: commit}, "codex", "gpt")
+			submitted, err := d.ApplyExternalPlan(ctx, created, job, pipeline.StructuredPlan{Markdown: routingPlan, Decomposition: []pipeline.DecompositionItem{}, BaseCommit: commit}, "codex", "gpt")
+			version := submitted.Version
 			if err != nil {
 				t.Fatal(err)
 			}
