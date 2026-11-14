@@ -70,7 +70,16 @@ func (s *Store) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, se
 		// it reopens the task's policy statuses in the same transaction
 		// (req-risk-based-review AC-10.1; component-git-delivery
 		// invariant 37).
-		return s.reopenReviewPolicyStatusesTx(ctx, tx, task)
+		if err = s.reopenReviewPolicyStatusesTx(ctx, tx, task); err != nil {
+			return err
+		}
+		// A raise to high cancels the task's open risk orders in the same
+		// transaction (req-risk-based-review AC-12.3;
+		// feature-risk-based-review RR-15).
+		if store.RiskTierReachesHigh(append(existing, result)) {
+			_, err = cancelRiskOrdersTx(ctx, tx, task.ID, "", store.RiskTierHighCancelReason, result.CreatedAt)
+		}
+		return err
 	})
 	if err != nil {
 		return core.RiskRating{}, err
@@ -107,8 +116,12 @@ func listRiskRatings(ctx context.Context, db s2log.Executor, taskID string) ([]c
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	rows.Close()
 	store.SortRiskRatings(ratings)
-	return ratings, nil
+	// Every read derives PlanPending, so each tier and seat count counts a
+	// risk agent plan rating only once its version is approved
+	// (req-risk-based-review AC-4.3).
+	return markPendingPlanRiskRatings(ctx, db, taskID, ratings)
 }
 
 func riskTaskTx(ctx context.Context, tx *sql.Tx, taskID string) (core.Task, []core.RiskRating, error) {

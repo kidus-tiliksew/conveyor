@@ -1185,7 +1185,9 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 				return fmt.Errorf("conflicting claimed order %s", other.ID)
 			}
 		}
-		if o.Stage != core.StageReview {
+		// Review seats and risk orders run beside their peers
+		// (feature-risk-based-review RR-11).
+		if o.Stage != core.StageReview && o.Stage != core.StageRisk {
 			var active string
 			err := tx.QueryRowContext(ctx, `SELECT id FROM work_orders WHERE workspace_id=? AND task_id=? AND stage=? AND id<>? AND state='claimed' ORDER BY created_at,id LIMIT 1`, documentWorkspace(ctx), o.TaskID, o.Stage, id).Scan(&active)
 			if err == nil {
@@ -1219,6 +1221,12 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 				return err
 			}
 			o.ModelEnforcement = "self-reported"
+		}
+		// A risk order is claimable only by a session independent of the
+		// task's planning, implementation, and review (req-risk-based-review
+		// AC-12.1). The refusal returns before any write.
+		if err = riskClaimRefusalTx(ctx, tx, o, claim.SessionID, hash, siblings); err != nil {
+			return err
 		}
 		now := time.Now().UTC()
 		if o.Stage == core.StageImplement || o.Stage == core.StageVerify {
@@ -1342,7 +1350,12 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		if _, err = tx.ExecContext(ctx, `UPDATE jobs SET state='running',model_tier=?,started_at=COALESCE(started_at,?),updated_at=? WHERE workspace_id=? AND id=?`, claim.Model, o.ExecutionStartedAt, o.ExecutionStartedAt, documentWorkspace(ctx), o.JobID); err != nil {
 			return err
 		}
-		if task.State == core.TaskQueued {
+		if err = recordClaimIdentityTx(ctx, tx, o, hash, now); err != nil {
+			return err
+		}
+		// A risk order stands beside the serial stage, so its claim leaves
+		// the task state as it is (feature-risk-based-review RR-11).
+		if task.State == core.TaskQueued && o.Stage != core.StageRisk {
 			state, err := core.TransitionTask(task.State, core.TaskOrderClaim)
 			if err != nil {
 				return err
