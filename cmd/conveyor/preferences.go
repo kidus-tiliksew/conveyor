@@ -39,7 +39,7 @@ func preferencesCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "preferences",
 		Short: "Show and change your stage preferences",
-		Long: "Show and change your stage preferences: the harness, model, and effort your agent sessions use for the plan, implement, verify, and review stages. " +
+		Long: "Show and change your stage preferences: the harness, model, and effort your agent sessions use for the plan, implement, verify, risk, and review stages. " +
 			"The preferences belong to you and apply in every workspace. They are advice to your own sessions; no factory decision reads them.",
 	}
 	var asJSON bool
@@ -64,7 +64,7 @@ func preferencesCmd() *cobra.Command {
 	set := &cobra.Command{
 		Use:   "set <stage> --harness <h> --model <m> [--effort <e>] [--primary | --seat <n>]",
 		Short: "Set one stage, the review primary, or one review seat",
-		Long: "Set the entry for plan, implement, or verify, or for review set the primary (the default, or --primary) or seat N (--seat N, 1 to 8). " +
+		Long: "Set the entry for plan, implement, verify, or risk, or for review set the primary (the default, or --primary) or seat N (--seat N, 1 to 8). " +
 			"A seat without its own entry uses the primary. Seat N can be set when seats 1 to N-1 are set. The command prints the resulting set.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -97,7 +97,7 @@ func preferencesCmd() *cobra.Command {
 	clearCmd := &cobra.Command{
 		Use:   "clear <stage> [--primary | --seat <n>]",
 		Short: "Clear one stage, the review primary, or one review seat",
-		Long: "Clear plan, implement, verify, or the whole review stage. For review, --primary clears only the primary and --seat N removes seat N; later seats move up one position. " +
+		Long: "Clear plan, implement, verify, risk, or the whole review stage. For review, --primary clears only the primary and --seat N removes seat N; later seats move up one position. " +
 			"The command prints the resulting set.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -126,7 +126,7 @@ func preferencesCmd() *cobra.Command {
 // before any request.
 func preferenceTargetFlags(cmd *cobra.Command, stage string, primary bool, seat int) (preferenceTarget, error) {
 	if err := stageprefs.ParseStageName("stage", stage); err != nil {
-		return preferenceTarget{}, fmt.Errorf("unknown stage %q: use plan, implement, verify, or review", stage)
+		return preferenceTarget{}, fmt.Errorf("unknown stage %q: use plan, implement, verify, risk, or review", stage)
 	}
 	seatSet := cmd.Flags().Changed("seat")
 	if primary && seatSet {
@@ -152,6 +152,8 @@ func setStagePreferenceEntry(stages *store.StagePreferenceStages, stage string, 
 		stages.Implement = &value
 	case stageprefs.StageVerify:
 		stages.Verify = &value
+	case stageprefs.StageRisk:
+		stages.Risk = &value
 	case stageprefs.StageReview:
 		if stages.Review == nil {
 			stages.Review = &store.ReviewStagePreference{Seats: []store.StagePreferenceEntry{}}
@@ -182,6 +184,8 @@ func clearStagePreferenceEntry(stages *store.StagePreferenceStages, stage string
 		stages.Implement = nil
 	case stageprefs.StageVerify:
 		stages.Verify = nil
+	case stageprefs.StageRisk:
+		stages.Risk = nil
 	case stageprefs.StageReview:
 		switch {
 		case target.primary:
@@ -325,6 +329,7 @@ func printStagePreferences(out io.Writer, set store.StagePreferences, asJSON boo
 	line("plan", describePreferenceEntry(set.Stages.Plan))
 	line("implement", describePreferenceEntry(set.Stages.Implement))
 	line("verify", describePreferenceEntry(set.Stages.Verify))
+	line("risk", describePreferenceEntry(set.Stages.Risk))
 	review := set.Stages.Review
 	if review == nil {
 		line("review", "not set")

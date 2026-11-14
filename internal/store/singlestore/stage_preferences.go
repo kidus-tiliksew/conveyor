@@ -11,16 +11,29 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
+// stagePreferenceRiskMigrationVersion is the migration whose Go step adds
+// stagePreferenceRiskColumn before its file runs (req-stage-preferences
+// AC-1.1; DEC-135(13)).
+const stagePreferenceRiskMigrationVersion = 41
+
+// stagePreferenceRiskColumn is the nullable risk column. SingleStore DDL
+// commits implicitly and has no ADD COLUMN IF NOT EXISTS, so migrate adds it
+// through addNullableColumns, which checks information_schema under the
+// startup migration lock, and a rerun adds nothing. There is no backfill: a row
+// saved before the column existed reads risk as unset. The table name stays in
+// this file (component-stage-preferences invariant 5).
+var stagePreferenceRiskColumn = nullableColumn{"user_stage_preferences", "risk_json", "JSON NULL"}
+
 // The stage preference statements live only in this file
 // (component-stage-preferences invariant 5).
 const (
-	stagePreferenceSelect = `SELECT version, plan_json, implement_json, verify_json, review_json, updated_at FROM user_stage_preferences WHERE user_id=?`
+	stagePreferenceSelect = `SELECT version, plan_json, implement_json, verify_json, risk_json, review_json, updated_at FROM user_stage_preferences WHERE user_id=?`
 	// stagePreferenceReserve creates the person's row at version 0 when it is
 	// absent, so concurrent first writers queue on one row lock. The row and
 	// its lock share one partition, so the next holder reads the previous
 	// holder's committed write. A rolled back write removes the row again.
 	stagePreferenceReserve = `INSERT INTO user_stage_preferences (user_id, version, updated_at) VALUES (?, 0, ?) ON DUPLICATE KEY UPDATE user_id=user_id`
-	stagePreferenceUpdate  = `UPDATE user_stage_preferences SET version=?, plan_json=?, implement_json=?, verify_json=?, review_json=?, updated_at=? WHERE user_id=? AND version=?`
+	stagePreferenceUpdate  = `UPDATE user_stage_preferences SET version=?, plan_json=?, implement_json=?, verify_json=?, risk_json=?, review_json=?, updated_at=? WHERE user_id=? AND version=?`
 )
 
 // GetStagePreferences implements store.StagePreferenceStore.
@@ -54,7 +67,7 @@ func (s *Store) UpdateStagePreferences(ctx context.Context, userID string, apply
 			return err
 		}
 		version := current.Version + 1
-		result, err := tx.ExecContext(ctx, stagePreferenceUpdate, version, nullableJSON(columns.Plan), nullableJSON(columns.Implement), nullableJSON(columns.Verify), nullableJSON(columns.Review), now, userID, current.Version)
+		result, err := tx.ExecContext(ctx, stagePreferenceUpdate, version, nullableJSON(columns.Plan), nullableJSON(columns.Implement), nullableJSON(columns.Verify), nullableJSON(columns.Risk), nullableJSON(columns.Review), now, userID, current.Version)
 		if err != nil {
 			return err
 		}
@@ -86,7 +99,7 @@ func scanStagePreferences(row interface{ Scan(...any) error }) (store.StagePrefe
 		columns   store.StagePreferenceColumns
 		updatedAt time.Time
 	)
-	err := row.Scan(&version, &columns.Plan, &columns.Implement, &columns.Verify, &columns.Review, &updatedAt)
+	err := row.Scan(&version, &columns.Plan, &columns.Implement, &columns.Verify, &columns.Risk, &columns.Review, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.StagePreferences{}, nil
 	}

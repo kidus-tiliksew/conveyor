@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -122,6 +123,15 @@ func TestStagePreferenceMCPToolSchemas(t *testing.T) {
 	if _, versioned := set["properties"].(map[string]any)["version"]; versioned {
 		t.Fatal("set_stage_preference takes no expected version")
 	}
+	stage := set["properties"].(map[string]any)["stage"].(map[string]any)
+	if fmt.Sprint(stage["enum"]) != "[plan implement verify risk review]" {
+		t.Fatalf("set_stage_preference stage enum = %v, want the five stages", stage["enum"])
+	}
+	for _, name := range []string{getStagePreferencesTool, setStagePreferenceTool} {
+		if description, _ := tools[name]["description"].(string); !strings.Contains(description, "risk") {
+			t.Fatalf("%s description does not name the risk stage: %s", name, description)
+		}
+	}
 }
 
 // TestStagePreferenceMCPRoundTrip saves through MCP and REST and reads the
@@ -160,6 +170,21 @@ func TestStagePreferenceMCPRoundTrip(t *testing.T) {
 		}
 	}
 
+	// The risk stage holds one entry, keeps every other stage, and reads the
+	// same through REST (AC-1.1, AC-2.3; DEC-135(13)).
+	withRisk := h.mcpSet(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "beta", "stage": "risk", "value": map[string]any{"harness": "claude-code", "model": " claude-haiku-5-5 ", "effort": "low"}})
+	if withRisk.Version != saved.Version+1 || withRisk.Stages.Risk == nil || withRisk.Stages.Risk.Model != "claude-haiku-5-5" || withRisk.Stages.Verify == nil || withRisk.Stages.Review == nil {
+		t.Fatalf("set risk = %+v", withRisk)
+	}
+	if rest := decodeStagePreferences(t, h.call(stagePreferenceRequest{method: http.MethodGet, path: stagePreferencePath, session: h.ownerSession})); rest.Version != withRisk.Version || !reflect.DeepEqual(rest.Stages, withRisk.Stages) {
+		t.Fatalf("REST read %+v, MCP saved %+v", rest, withRisk)
+	}
+	riskCleared := h.mcpSet(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "risk", "value": nil})
+	if riskCleared.Version != withRisk.Version+1 || riskCleared.Stages.Risk != nil || riskCleared.Stages.Verify == nil || riskCleared.Stages.Review == nil {
+		t.Fatalf("clear risk = %+v", riskCleared)
+	}
+	saved = riskCleared
+
 	// null clears one stage and keeps the others.
 	cleared := h.mcpSet(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "verify", "value": nil})
 	if cleared.Version != saved.Version+1 || cleared.Stages.Verify != nil || cleared.Stages.Review == nil {
@@ -191,6 +216,9 @@ func TestStagePreferenceMCPRefusals(t *testing.T) {
 	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "review", "value": map[string]any{"seats": nine}}, "value.seats[8]", "review seat 9")
 	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "review", "value": map[string]any{"seats": []any{entry, map[string]any{"harness": "", "model": "m"}}}}, "value.seats[1].harness", "review seat 2")
 	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "triage", "value": nil}, "stage")
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "risk", "value": []any{entry}}, "value", "not a list")
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "risk", "value": map[string]any{"primary": entry}}, "value.primary")
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "risk", "value": map[string]any{"harness": "codex", "model": "m", "command": "run"}}, "value.command")
 	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "plan"}, "value", "null")
 	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "value": nil}, "stage")
 	// Workspace admission: the ID is required and must be visible to the
@@ -219,8 +247,9 @@ func TestStagePreferenceMCPRefusals(t *testing.T) {
 func TestStagePreferenceMCPConcurrentStagesKeepEveryChange(t *testing.T) {
 	h := newStagePreferenceHarness(t)
 	var wg sync.WaitGroup
-	results := make([]stagePreferenceMCPResult, 4)
-	for i, stage := range []string{"plan", "implement", "verify", "review"} {
+	stages := []string{"plan", "implement", "verify", "risk", "review"}
+	results := make([]stagePreferenceMCPResult, len(stages))
+	for i, stage := range stages {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -238,7 +267,7 @@ func TestStagePreferenceMCPConcurrentStagesKeepEveryChange(t *testing.T) {
 		}
 	}
 	read := h.mcpSet(stagePreferenceOwnerToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"})
-	if read.Version != 4 || read.Stages.Plan == nil || read.Stages.Implement == nil || read.Stages.Verify == nil || read.Stages.Review == nil {
+	if read.Version != int64(len(stages)) || read.Stages.Plan == nil || read.Stages.Implement == nil || read.Stages.Verify == nil || read.Stages.Risk == nil || read.Stages.Review == nil {
 		t.Fatalf("concurrent stage writes lost a change: %+v", read)
 	}
 }

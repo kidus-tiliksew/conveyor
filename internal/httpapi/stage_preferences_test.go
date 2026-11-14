@@ -7,9 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -163,7 +165,7 @@ const stagePreferencePath = "/v1/me/stage-preferences"
 func TestStagePreferencesRESTNeverSavedReadsUnset(t *testing.T) {
 	h := newStagePreferenceHarness(t)
 	response := h.call(stagePreferenceRequest{method: http.MethodGet, path: stagePreferencePath, token: stagePreferenceOwnerToken})
-	if got := strings.TrimSpace(response.Body.String()); got != `{"version":0,"updated_at":null,"stages":{"plan":null,"implement":null,"verify":null,"review":null}}` {
+	if got := strings.TrimSpace(response.Body.String()); got != `{"version":0,"updated_at":null,"stages":{"plan":null,"implement":null,"verify":null,"risk":null,"review":null}}` {
 		t.Fatalf("never-saved body = %s", got)
 	}
 	if response.Header().Get("ETag") != `"0"` {
@@ -231,6 +233,70 @@ func TestStagePreferencesRESTConditionalReplacement(t *testing.T) {
 	}
 	if got := h.eventCount(); got != h.recordedEvents {
 		t.Fatalf("preference writes appended %d events", got-h.recordedEvents)
+	}
+}
+
+// TestStagePreferencesRESTRiskStage covers the risk stage on the whole-set
+// routes (req-stage-preferences AC-1.1, AC-1.4, AC-1.7; DEC-135(13)): a PUT
+// saves risk beside the other stages, a GET returns exactly the five keys, a
+// list or an extra field for risk is refused naming the field, a stale
+// version changes nothing, and a PUT with risk null clears it.
+func TestStagePreferencesRESTRiskStage(t *testing.T) {
+	h := newStagePreferenceHarness(t)
+	put := func(ifMatch, body string) *httptest.ResponseRecorder {
+		return h.call(stagePreferenceRequest{method: http.MethodPut, path: stagePreferencePath, token: stagePreferenceOwnerToken, body: body, header: map[string]string{"If-Match": ifMatch}})
+	}
+	get := func() *httptest.ResponseRecorder {
+		return h.call(stagePreferenceRequest{method: http.MethodGet, path: stagePreferencePath, token: stagePreferenceOwnerToken})
+	}
+	saved := decodeStagePreferences(t, put(`"0"`, `{"stages":{"plan":{"harness":"codex","model":"gpt-6.1-sol"},"risk":{"harness":" claude-code ","model":"claude-haiku-5-5","effort":"low"}}}`))
+	if saved.Version != 1 || saved.Stages.Risk == nil || *saved.Stages.Risk != (store.StagePreferenceEntry{Harness: "claude-code", Model: "claude-haiku-5-5", Effort: "low"}) || saved.Stages.Plan == nil {
+		t.Fatalf("risk save = %+v", saved)
+	}
+	var raw struct {
+		Stages map[string]any `json:"stages"`
+	}
+	if err := json.Unmarshal(get().Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for key := range raw.Stages {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if fmt.Sprint(keys) != "[implement plan review risk verify]" {
+		t.Fatalf("stage keys = %v, want exactly the five stages", keys)
+	}
+	if risk, _ := raw.Stages["risk"].(map[string]any); risk["model"] != "claude-haiku-5-5" {
+		t.Fatalf("GET risk = %v", raw.Stages["risk"])
+	}
+
+	for _, tc := range []struct{ body, field string }{
+		{`{"stages":{"risk":[{"harness":"h","model":"m"}]}}`, "stages.risk"},
+		{`{"stages":{"risk":{"harness":"h","model":"m","sandbox":"none"}}}`, "stages.risk.sandbox"},
+		{`{"stages":{"risk":{"primary":{"harness":"h","model":"m"}}}}`, "stages.risk.primary"},
+		{`{"stages":{"risk":{"harness":"h","model":" "}}}`, "stages.risk.model"},
+		{`{"stages":{"risks":null}}`, "stages.risks"},
+	} {
+		body := decodeStagePreferenceError(t, put("1", tc.body), http.StatusUnprocessableEntity, "validation_failed")
+		if fields := body["fields"].([]any); fields[0].(map[string]any)["field"] != tc.field {
+			t.Fatalf("%s refusal = %v, want field %s", tc.body, body, tc.field)
+		}
+	}
+	decodeStagePreferenceError(t, put("0", `{"stages":{}}`), http.StatusPreconditionFailed, "version_conflict")
+	if read := decodeStagePreferences(t, get()); read.Version != 1 || read.Stages.Risk == nil || read.Stages.Risk.Model != "claude-haiku-5-5" {
+		t.Fatalf("refused writes changed the risk stage: %+v", read)
+	}
+
+	cleared := decodeStagePreferences(t, put("1", `{"stages":{"plan":{"harness":"codex","model":"gpt-6.1-sol"},"risk":null}}`))
+	if cleared.Version != 2 || cleared.Stages.Risk != nil || cleared.Stages.Plan == nil {
+		t.Fatalf("risk clear = %+v", cleared)
+	}
+	if body := strings.TrimSpace(get().Body.String()); !strings.Contains(body, `"risk":null`) {
+		t.Fatalf("a cleared risk stage must read as null: %s", body)
+	}
+	if got := h.eventCount(); got != h.recordedEvents {
+		t.Fatalf("risk preference writes appended %d events", got-h.recordedEvents)
 	}
 }
 

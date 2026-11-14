@@ -62,7 +62,7 @@ same trust model as `gh` and kubeconfig).
 ## preferences
 
 Your stage preferences are the harness, model, and effort that your agent
-sessions use for the plan, implement, verify, and review stages. Conveyor
+sessions use for the plan, implement, verify, risk, and review stages. Conveyor
 keeps one set for each person, and the set applies in every workspace. It is
 advice to your own sessions: no dispatch, claim, review, or merge decision
 reads it. The commands call `GET` and `PUT /v1/me/stage-preferences` with your
@@ -72,8 +72,11 @@ own credential, and the dashboard Settings page and the MCP tools
 | Command | What it does |
 |---|---|
 | `conveyor preferences show [--json]` | Print every stage, or `not set`, with the set's version. |
-| `conveyor preferences set <stage> --harness <h> --model <m> [--effort <e>] [--primary \| --seat <n>] [--json]` | Set the entry for `plan`, `implement`, or `verify`. For `review`, set the primary (the default, or `--primary`) or seat N (`--seat N`, 1 to 8). Seat N can be set when seats 1 to N-1 are set. A seat without its own entry uses the primary. |
-| `conveyor preferences clear <stage> [--primary \| --seat <n>] [--json]` | Clear `plan`, `implement`, `verify`, or the whole `review` stage. For `review`, `--primary` clears only the primary and `--seat N` removes seat N, and later seats move up one position. |
+| `conveyor preferences set <stage> --harness <h> --model <m> [--effort <e>] [--primary \| --seat <n>] [--json]` | Set the entry for `plan`, `implement`, `verify`, or `risk`. For `review`, set the primary (the default, or `--primary`) or seat N (`--seat N`, 1 to 8). Seat N can be set when seats 1 to N-1 are set. A seat without its own entry uses the primary. |
+| `conveyor preferences clear <stage> [--primary \| --seat <n>] [--json]` | Clear `plan`, `implement`, `verify`, `risk`, or the whole `review` stage. For `review`, `--primary` clears only the primary and `--seat N` removes seat N, and later seats move up one position. |
+
+The `risk` stage names the agent that rates a task's risk. `--primary` and
+`--seat` apply only to `review`, so `set risk` and `clear risk` refuse them.
 
 Each change prints the resulting set. Harness, model, and effort are free
 text: harness and model must not be blank and hold at most 128 bytes, effort
