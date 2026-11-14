@@ -10,12 +10,13 @@ import { openSettingsRow, settingsRowHeader } from './helpers/settings'
 // returns (internal/httpapi/stage_preferences.go) and keeps the server's
 // If-Match rule: a stale version answers 412 and changes nothing.
 
-const unset: StagePreferenceStages = { plan: null, implement: null, verify: null, review: null }
+const unset: StagePreferenceStages = { plan: null, implement: null, verify: null, risk: null, review: null }
 
 const savedSet: StagePreferenceStages = {
   plan: { harness: 'codex', model: 'gpt-6.1-sol', effort: 'medium' },
   implement: { harness: 'claude-code', model: 'claude-opus-5-5', effort: 'high' },
   verify: null,
+  risk: { harness: 'claude-code', model: 'claude-haiku-5-5', effort: 'low' },
   review: {
     primary: { harness: 'claude-code', model: 'claude-opus-5-5', effort: '' },
     seats: [
@@ -122,7 +123,7 @@ test('a person with no saved preferences sees every stage unset', async ({ page 
   await page.goto('/w/demo/settings')
   await openSettingsRow(page, 'Stage preferences')
   await expect(page.getByText('These preferences apply in every workspace.')).toBeVisible()
-  for (const name of ['Plan', 'Implement', 'Verify', 'Review']) {
+  for (const name of ['Plan', 'Implement', 'Verify', 'Risk', 'Review']) {
     await expect(stage(page, name).getByText('Not set').first()).toBeVisible()
   }
   await expect(page.getByRole('button', { name: 'Save stage preferences' })).toBeDisabled()
@@ -160,6 +161,7 @@ test('the card sets each stage and edits review seats, then saves the whole set'
       plan: { harness: 'codex', model: 'gpt-6.1-sol', effort: 'medium' },
       implement: null,
       verify: { harness: 'opencode', model: 'local', effort: '' },
+      risk: null,
       review: {
         primary: { harness: 'claude-code', model: 'claude-opus-5-5', effort: 'high' },
         seats: [
@@ -177,6 +179,120 @@ test('the card sets each stage and edits review seats, then saves the whole set'
   expect(state.puts[1].ifMatch).toBe('"1"')
   expect(state.puts[1].body.stages.plan).toBeNull()
   expect(state.set.version).toBe(2)
+})
+
+// The Risk row (req-stage-preferences AC-1.1, AC-2.1; DEC-135(13)): it sits
+// between Verify and Review at 375 px and at a desktop width, in the form and
+// in the closed row.
+for (const width of [375, 1280]) {
+  test(`the Risk row sits between Verify and Review at ${width} px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1600 })
+    await mockSettings(page, savedSet, 3)
+    await page.goto('/w/demo/settings')
+    const header = settingsRowHeader(page, 'Stage preferences')
+    await expect(header).toContainText('Risk: claude-code · claude-haiku-5-5 · low')
+    const closed = (await header.textContent()) ?? ''
+    const verifyLine = closed.indexOf('Verify: Not set')
+    const riskLine = closed.indexOf('Risk: claude-code · claude-haiku-5-5 · low')
+    const reviewLine = closed.indexOf('Review primary:')
+    expect(verifyLine).toBeGreaterThanOrEqual(0)
+    expect(riskLine).toBeGreaterThan(verifyLine)
+    expect(reviewLine).toBeGreaterThan(riskLine)
+
+    await openSettingsRow(page, 'Stage preferences')
+    const sections = await page
+      .getByRole('form', { name: 'Edit stage preferences' })
+      .getByRole('region')
+      .evaluateAll((regions) => regions.map((region) => region.getAttribute('aria-label')))
+    expect(sections).toEqual(['Plan stage', 'Implement stage', 'Verify stage', 'Risk stage', 'Review stage'])
+    const [verifyBox, riskBox, reviewBox] = await Promise.all(
+      ['Verify', 'Risk', 'Review'].map((name) => stage(page, name).boundingBox()),
+    )
+    expect(riskBox!.y).toBeGreaterThan(verifyBox!.y)
+    expect(reviewBox!.y).toBeGreaterThan(riskBox!.y)
+    await expect(stage(page, 'Risk').getByRole('heading', { name: 'Risk' })).toBeVisible()
+    await expect(page.getByLabel('Risk model', { exact: true })).toHaveValue('claude-haiku-5-5')
+    await expect(page.getByLabel('Risk effort', { exact: true })).toHaveValue('low')
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    )
+    expect(overflow).toBeLessThanOrEqual(0)
+  })
+}
+
+test('the card sets, edits, saves, and clears the Risk stage', async ({ page }) => {
+  const state = await mockSettings(page, { ...unset, verify: { harness: 'opencode', model: 'local', effort: '' } }, 1)
+  await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
+  await expect(stage(page, 'Risk').getByText('Not set')).toBeVisible()
+  await page.getByRole('button', { name: 'Set risk' }).click()
+  await fillEntry(page, 'Risk', ' claude-code ', ' claude-haiku-5-5 ', ' low ')
+  await page.getByRole('button', { name: 'Save stage preferences' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Stage preferences saved.' })).toBeVisible()
+  expect(state.puts[0].ifMatch).toBe('"1"')
+  expect(state.puts[0].body).toEqual({
+    stages: {
+      plan: null,
+      implement: null,
+      verify: { harness: 'opencode', model: 'local', effort: '' },
+      risk: { harness: 'claude-code', model: 'claude-haiku-5-5', effort: 'low' },
+      review: null,
+    },
+  })
+  await expect(page.getByLabel('Risk harness', { exact: true })).toHaveValue('claude-code')
+
+  // A blank model is caught before any request, in the card's words.
+  await page.getByLabel('Risk model', { exact: true }).fill('  ')
+  await page.getByRole('button', { name: 'Save stage preferences' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Risk: enter a model.' })).toBeVisible()
+  expect(state.puts).toHaveLength(1)
+
+  // The server's refusal of a risk field is named in the card's words.
+  await page.getByLabel('Risk model', { exact: true }).fill('claude-sonnet-5-5')
+  state.putAnswers.push({
+    status: 422,
+    json: {
+      error: 'validation_failed',
+      fields: [{ field: 'stages.risk.model', message: 'must be at most 128 bytes' }],
+    },
+  })
+  await page.getByRole('button', { name: 'Save stage preferences' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Risk model: must be at most 128 bytes' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Clear risk' }).click()
+  await expect(stage(page, 'Risk').getByText('Not set')).toBeVisible()
+  await page.getByRole('button', { name: 'Save stage preferences' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Stage preferences saved.' })).toBeVisible()
+  const last = state.puts[state.puts.length - 1]
+  expect(last.ifMatch).toBe('"2"')
+  expect(last.body.stages.risk).toBeNull()
+  expect(last.body.stages.verify).toEqual({ harness: 'opencode', model: 'local', effort: '' })
+  expect(state.set.version).toBe(3)
+  // The closed row reads the saved set: Risk is unset and Verify is kept.
+  const header = settingsRowHeader(page, 'Stage preferences')
+  await header.click()
+  await expect(header).toContainText('Risk: Not set')
+  await expect(header).toContainText('Verify: opencode · local')
+})
+
+test('a stale save keeps a Risk draft and shows the saved Risk entry beside it', async ({ page }) => {
+  const state = await mockSettings(page, savedSet, 3)
+  await page.goto('/w/demo/settings')
+  await openSettingsRow(page, 'Stage preferences')
+  await page.getByLabel('Risk model', { exact: true }).fill('claude-sonnet-5-5')
+  state.putAnswers.push({
+    status: 412,
+    json: { error: 'version_conflict', message: 'changed' },
+    changeTo: { ...savedSet, risk: { harness: 'codex', model: 'risk-saved-elsewhere', effort: '' } },
+  })
+  await page.getByRole('button', { name: 'Save stage preferences' }).click()
+  const saved = page.getByRole('region', { name: 'Saved stage preferences' })
+  await expect(saved.getByText('codex, risk-saved-elsewhere')).toBeVisible()
+  await expect(page.getByLabel('Risk model', { exact: true })).toHaveValue('claude-sonnet-5-5')
+  await saved.getByRole('button', { name: 'Save my changes' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Stage preferences saved.' })).toBeVisible()
+  expect(state.puts.map((put) => put.ifMatch)).toEqual(['"3"', '"4"'])
+  expect(state.puts[1].body.stages.risk).toEqual({ harness: 'claude-code', model: 'claude-sonnet-5-5', effort: 'low' })
 })
 
 test('review keeps at most eight seat entries, and an empty review is saved as unset', async ({ page }) => {
@@ -555,6 +671,7 @@ test('the closed row shows every stage, each seat, and the every-workspace state
     'Plan: codex · gpt-6.1-sol · medium',
     'Implement: claude-code · claude-opus-5-5 · high',
     'Verify: Not set',
+    'Risk: claude-code · claude-haiku-5-5 · low',
     'Review primary: claude-code · claude-opus-5-5',
     'Review seat 1: codex · gpt-6.1-sol · medium',
     'Review seat 2: claude-code · claude-sonnet-5-5',
@@ -569,7 +686,7 @@ test('the closed row shows Not set for every stage of an empty set', async ({ pa
   await mockSettings(page)
   await page.goto('/w/demo/settings')
   const header = settingsRowHeader(page, 'Stage preferences')
-  for (const stage of ['Plan', 'Implement', 'Verify', 'Review primary'])
+  for (const stage of ['Plan', 'Implement', 'Verify', 'Risk', 'Review primary'])
     await expect(header).toContainText(`${stage}: Not set`)
   await expect(header).not.toContainText('Review seat')
   await expect(header).toContainText('They apply in every workspace.')
@@ -635,7 +752,7 @@ test('each entry keeps harness, model, and effort on one line at 375 px', async 
   await mockSettings(page, savedSet, 3)
   await page.goto('/w/demo/settings')
   await openSettingsRow(page, 'Stage preferences')
-  for (const label of ['Plan', 'Implement', 'Review primary', 'Review seat 1', 'Review seat 2']) {
+  for (const label of ['Plan', 'Implement', 'Risk', 'Review primary', 'Review seat 1', 'Review seat 2']) {
     const [harness, model, effort] = await Promise.all(
       ['harness', 'model', 'effort'].map((name) => page.getByLabel(`${label} ${name}`, { exact: true }).boundingBox()),
     )

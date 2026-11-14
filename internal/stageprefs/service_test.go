@@ -54,14 +54,14 @@ func TestEmptySetBeforeAnySave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if set.Version != 0 || set.UpdatedAt != nil || set.Stages.Plan != nil || set.Stages.Implement != nil || set.Stages.Verify != nil || set.Stages.Review != nil {
+	if set.Version != 0 || set.UpdatedAt != nil || set.Stages.Plan != nil || set.Stages.Implement != nil || set.Stages.Verify != nil || set.Stages.Risk != nil || set.Stages.Review != nil {
 		t.Fatalf("never-saved set = %+v", set)
 	}
 	raw, err := json.Marshal(set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"version":0,"updated_at":null,"stages":{"plan":null,"implement":null,"verify":null,"review":null}}`; string(raw) != want {
+	if want := `{"version":0,"updated_at":null,"stages":{"plan":null,"implement":null,"verify":null,"risk":null,"review":null}}`; string(raw) != want {
 		t.Fatalf("never-saved JSON = %s, want %s", raw, want)
 	}
 }
@@ -77,6 +77,7 @@ func TestReplaceStoresTrimmedFreeTextAndAdvancesVersion(t *testing.T) {
 		"plan":      entry("  codex ", " gpt-6.1-sol ", " medium "),
 		"implement": entry("my-own-harness", "a-model-nobody-lists", ""),
 		"verify":    nil,
+		"risk":      entry(" claude-code ", " claude-haiku-5-5 ", " low "),
 		"review":    map[string]any{"primary": entry("claude-code", "claude-opus-5-5", "high"), "seats": seats},
 	}))
 	if err != nil {
@@ -90,6 +91,9 @@ func TestReplaceStoresTrimmedFreeTextAndAdvancesVersion(t *testing.T) {
 	}
 	if saved.Stages.Verify != nil {
 		t.Fatalf("verify = %+v, want unset", saved.Stages.Verify)
+	}
+	if saved.Stages.Risk == nil || *saved.Stages.Risk != (store.StagePreferenceEntry{Harness: "claude-code", Model: "claude-haiku-5-5", Effort: "low"}) {
+		t.Fatalf("risk was not saved trimmed: %+v", saved.Stages.Risk)
 	}
 	if len(saved.Stages.Review.Seats) != stageprefs.MaxReviewSeats || saved.Stages.Review.Seats[7].Harness != "harness 8" {
 		t.Fatalf("eight seats were not kept in order: %+v", saved.Stages.Review.Seats)
@@ -207,6 +211,9 @@ func TestEntryValidation(t *testing.T) {
 		{"control in harness", map[string]any{"implement": entry("co\x07dex", "m", "")}, "stages.implement.harness", 0},
 		{"newline in model", map[string]any{"implement": entry("codex", "m\n", "")}, "stages.implement.model", 0},
 		{"control in effort", map[string]any{"implement": entry("codex", "m", "hi\tgh")}, "stages.implement.effort", 0},
+		{"blank risk model", map[string]any{"risk": entry("h", "  ", "")}, "stages.risk.model", 0},
+		{"long risk harness", map[string]any{"risk": entry(long+"a", "m", "")}, "stages.risk.harness", 0},
+		{"control in risk effort", map[string]any{"risk": entry("h", "m", "lo\x00w")}, "stages.risk.effort", 0},
 		{"number harness", map[string]any{"plan": map[string]any{"harness": 7, "model": "m"}}, "stages.plan.harness", 0},
 		{"blank review primary model", map[string]any{"review": map[string]any{"primary": entry("h", " ", "")}}, "stages.review.primary.model", 0},
 		{"third seat harness", seat(3, entry("", "m", "")), "stages.review.seats[2].harness", 3},
@@ -251,6 +258,10 @@ func TestClosedShape(t *testing.T) {
 		{"concurrency in review", `{"stages":{"review":{"primary":null,"concurrency":2}}}`, "stages.review.concurrency", 0},
 		{"list for plan", `{"stages":{"plan":[{"harness":"h","model":"m"}]}}`, "stages.plan", 0},
 		{"list for verify", `{"stages":{"verify":[]}}`, "stages.verify", 0},
+		{"list for risk", `{"stages":{"risk":[{"harness":"h","model":"m"}]}}`, "stages.risk", 0},
+		{"host in risk entry", `{"stages":{"risk":{"harness":"h","model":"m","host":"box"}}}`, "stages.risk.host", 0},
+		{"primary for risk", `{"stages":{"risk":{"primary":{"harness":"h","model":"m"}}}}`, "stages.risk.primary", 0},
+		{"stage key in wrong case", `{"stages":{"Risk":null}}`, "stages.Risk", 0},
 		{"string for implement", `{"stages":{"implement":"codex"}}`, "stages.implement", 0},
 		{"seats not a list", `{"stages":{"review":{"seats":{"harness":"h","model":"m"}}}}`, "stages.review.seats", 0},
 		{"review a list", `{"stages":{"review":[]}}`, "stages.review", 0},
@@ -314,12 +325,91 @@ func TestSetStage(t *testing.T) {
 		{"triage", `null`, "stage"},
 		{"plan", `[{"harness":"h","model":"m"}]`, "value"},
 		{"verify", `{"harness":"h","model":"m","host":"x"}`, "value.host"},
+		{"risk", `[{"harness":"h","model":"m"}]`, "value"},
+		{"risk", `{"harness":"h","model":"m","seats":[]}`, "value.seats"},
+		{"risk", `{"harness":"h","model":""}`, "value.model"},
+		{"risks", `null`, "stage"},
 	} {
 		_, err := service.SetStage(ctx, "usr_a", tc.stage, json.RawMessage(tc.value))
 		requireValidation(t, err, tc.field, 0)
 	}
 	if set, _ := service.Get(ctx, "usr_a"); set.Version != 3 {
 		t.Fatalf("refused stage writes changed the version to %d", set.Version)
+	}
+}
+
+// TestSetStageRisk covers req-stage-preferences AC-1.1 and AC-1.4 for the risk
+// stage (DEC-135(13)): it saves, replaces, and clears one entry and keeps every
+// other stage.
+func TestSetStageRisk(t *testing.T) {
+	service := newService(t)
+	ctx := context.Background()
+	if _, err := service.Replace(ctx, "usr_risk", 0, body(t, map[string]any{
+		"plan":   entry("codex", "gpt-6.1-sol", ""),
+		"verify": entry("opencode", "local", ""),
+		"review": map[string]any{"primary": entry("claude-code", "claude-opus-5-5", "")},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := service.SetStage(ctx, "usr_risk", stageprefs.StageRisk, json.RawMessage(`{"harness":" claude-code ","model":"claude-haiku-5-5","effort":"low"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Version != 2 || saved.Stages.Risk == nil || *saved.Stages.Risk != (store.StagePreferenceEntry{Harness: "claude-code", Model: "claude-haiku-5-5", Effort: "low"}) {
+		t.Fatalf("saving risk = %+v", saved)
+	}
+	if saved.Stages.Plan == nil || saved.Stages.Verify == nil || saved.Stages.Review == nil || saved.Stages.Implement != nil {
+		t.Fatalf("saving risk changed another stage: %+v", saved.Stages)
+	}
+	replaced, err := service.SetStage(ctx, "usr_risk", stageprefs.StageRisk, json.RawMessage(`{"harness":"codex","model":"gpt-6.1-sol"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.Version != 3 || replaced.Stages.Risk.Harness != "codex" || replaced.Stages.Risk.Effort != "" {
+		t.Fatalf("replacing risk = %+v", replaced.Stages.Risk)
+	}
+	planOnly, err := service.SetStage(ctx, "usr_risk", stageprefs.StagePlan, json.RawMessage(`null`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planOnly.Stages.Risk == nil || planOnly.Stages.Risk.Harness != "codex" {
+		t.Fatalf("clearing plan dropped risk: %+v", planOnly.Stages)
+	}
+	cleared, err := service.SetStage(ctx, "usr_risk", stageprefs.StageRisk, json.RawMessage(`null`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Version != 5 || cleared.Stages.Risk != nil || cleared.Stages.Verify == nil || cleared.Stages.Review == nil {
+		t.Fatalf("clearing risk = %+v", cleared)
+	}
+	read, err := service.Get(ctx, "usr_risk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(read, cleared) {
+		t.Fatalf("read %+v, cleared %+v", read, cleared)
+	}
+	raw, err := json.Marshal(read.Stages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"risk":null`) {
+		t.Fatalf("a cleared risk stage must read as null: %s", raw)
+	}
+}
+
+// TestStagesListAndMessages proves the closed stage list holds exactly the
+// five keys in display order, with risk between verify and review, and that
+// an unknown stage is refused naming every key (component-stage-preferences
+// invariant 3).
+func TestStagesListAndMessages(t *testing.T) {
+	if want := []string{"plan", "implement", "verify", "risk", "review"}; !reflect.DeepEqual(stageprefs.Stages, want) {
+		t.Fatalf("stages = %v, want %v", stageprefs.Stages, want)
+	}
+	err := stageprefs.ParseStageName("stage", "triage")
+	requireValidation(t, err, "stage", 0)
+	if !strings.Contains(err.Error(), "plan, implement, verify, risk, and review") {
+		t.Fatalf("refusal %q does not name the five stages", err)
 	}
 }
 
@@ -352,7 +442,7 @@ func TestConcurrentStageWritesKeepEveryStage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if set.Version != 4 || set.Stages.Plan == nil || set.Stages.Implement == nil || set.Stages.Verify == nil || set.Stages.Review == nil || set.Stages.Review.Primary == nil {
+	if set.Version != int64(len(stageprefs.Stages)) || set.Stages.Plan == nil || set.Stages.Implement == nil || set.Stages.Verify == nil || set.Stages.Risk == nil || set.Stages.Review == nil || set.Stages.Review.Primary == nil {
 		t.Fatalf("concurrent stage writes lost a stage: %+v", set)
 	}
 }

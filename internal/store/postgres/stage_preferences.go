@@ -15,12 +15,12 @@ import (
 // The stage preference statements live only in this file
 // (component-stage-preferences invariant 5).
 const (
-	stagePreferenceSelect = `SELECT version, plan_json, implement_json, verify_json, review_json, updated_at FROM user_stage_preferences WHERE user_id=$1`
+	stagePreferenceSelect = `SELECT version, plan_json, implement_json, verify_json, risk_json, review_json, updated_at FROM user_stage_preferences WHERE user_id=$1`
 	// stagePreferenceReserve creates the person's row at version 0 when it is
 	// absent, so concurrent first writers queue on one row lock. A rolled
 	// back write removes the reserved row again.
 	stagePreferenceReserve = `INSERT INTO user_stage_preferences (user_id, version, updated_at) VALUES ($1, 0, $2) ON CONFLICT (user_id) DO NOTHING`
-	stagePreferenceUpdate  = `UPDATE user_stage_preferences SET version=$2, plan_json=$3, implement_json=$4, verify_json=$5, review_json=$6, updated_at=$7 WHERE user_id=$1 AND version=$8`
+	stagePreferenceUpdate  = `UPDATE user_stage_preferences SET version=$2, plan_json=$3, implement_json=$4, verify_json=$5, risk_json=$6, review_json=$7, updated_at=$8 WHERE user_id=$1 AND version=$9`
 )
 
 // GetStagePreferences implements store.StagePreferenceStore.
@@ -57,7 +57,7 @@ func (s *Store) UpdateStagePreferences(ctx context.Context, userID string, apply
 		return store.StagePreferences{}, err
 	}
 	version := current.Version + 1
-	tag, err := tx.Exec(ctx, stagePreferenceUpdate, userID, version, nullableJSON(columns.Plan), nullableJSON(columns.Implement), nullableJSON(columns.Verify), nullableJSON(columns.Review), now, current.Version)
+	tag, err := tx.Exec(ctx, stagePreferenceUpdate, userID, version, nullableJSON(columns.Plan), nullableJSON(columns.Implement), nullableJSON(columns.Verify), nullableJSON(columns.Risk), nullableJSON(columns.Review), now, current.Version)
 	if err != nil {
 		return store.StagePreferences{}, translateBackendConflict(err)
 	}
@@ -82,7 +82,7 @@ func scanStagePreferences(row pgx.Row) (store.StagePreferences, error) {
 		columns   store.StagePreferenceColumns
 		updatedAt time.Time
 	)
-	err := row.Scan(&version, &columns.Plan, &columns.Implement, &columns.Verify, &columns.Review, &updatedAt)
+	err := row.Scan(&version, &columns.Plan, &columns.Implement, &columns.Verify, &columns.Risk, &columns.Review, &updatedAt)
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
 		return store.StagePreferences{}, nil
 	}

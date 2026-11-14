@@ -26,7 +26,7 @@ const (
 )
 
 // governedPaths are the component's governed source globs, copied from the
-// conveyor:governs block of component-stage-preferences v1.
+// conveyor:governs block of component-stage-preferences v2.
 var governedPaths = []string{
 	"cmd/conveyor/preferences*",
 	"internal/httpapi/mcp_stage_preferences*",
@@ -43,11 +43,13 @@ var governedPaths = []string{
 }
 
 // schemaDeclarations are the only files outside the governed globs that may
-// name the table: the migrations that create it (component-persistence owns
-// numbered migrations).
+// name the table: the migrations that create it and add its risk column
+// (component-persistence owns numbered migrations).
 var schemaDeclarations = map[string]bool{
-	"internal/store/postgres/migrations/166_user_stage_preferences.sql":     true,
-	"internal/store/singlestore/migrations/0039_user_stage_preferences.sql": true,
+	"internal/store/postgres/migrations/166_user_stage_preferences.sql":          true,
+	"internal/store/singlestore/migrations/0039_user_stage_preferences.sql":      true,
+	"internal/store/postgres/migrations/168_user_stage_preferences_risk.sql":     true,
+	"internal/store/singlestore/migrations/0041_user_stage_preferences_risk.sql": true,
 }
 
 // storeMethods are the persistence calls behind the service. A call outside
@@ -196,6 +198,8 @@ func TestStagePreferencesAdviceOnlyClassifier(t *testing.T) {
 		{"internal/review/verdict.go", queryTable},
 		{"cmd/conveyord/main.go", importService},
 		{"internal/store/postgres/migrations/167_policy.sql", tableSQL},
+		{"internal/store/singlestore/migrate.go", queryTable},
+		{"internal/store/postgres/migrations/169_policy.sql", tableSQL},
 	}
 	for _, tc := range forbidden {
 		if violations := adviceOnlyViolations(tc.file, tc.source); len(violations) == 0 {
@@ -217,6 +221,9 @@ func TestStagePreferencesAdviceOnlyClassifier(t *testing.T) {
 		{"internal/stageprefs/advice_only_test.go", queryTable},
 		{"internal/store/postgres/migrations/166_user_stage_preferences.sql", tableSQL},
 		{"internal/store/singlestore/migrations/0039_user_stage_preferences.sql", tableSQL},
+		{"internal/store/postgres/migrations/168_user_stage_preferences_risk.sql", tableSQL},
+		{"internal/store/singlestore/migrations/0041_user_stage_preferences_risk.sql", tableSQL},
+		{"internal/store/singlestore/stage_preferences_migration_integration_test.go", queryTable},
 		{"internal/httpapi/server.go", []byte("package x\n\nimport \"example/store\"\n\nvar _ store.StagePreferenceStore\n")},
 	}
 	for _, tc := range allowed {

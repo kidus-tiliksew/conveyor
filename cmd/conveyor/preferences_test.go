@@ -144,7 +144,7 @@ func (h *preferencesCLIHarness) mcp(tool string, args map[string]any) store.Stag
 func TestPreferencesShowNeverSaved(t *testing.T) {
 	h := newPreferencesCLIHarness(t)
 	out := h.mustRun("show")
-	for _, want := range []string{"never saved", "apply in every workspace", "plan       not set", "implement  not set", "verify     not set", "review     not set"} {
+	for _, want := range []string{"never saved", "apply in every workspace", "plan       not set", "implement  not set", "verify     not set", "risk       not set", "review     not set"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("show output lacks %q:\n%s", want, out)
 		}
@@ -204,6 +204,55 @@ func TestPreferencesSetAndClearRoundTrip(t *testing.T) {
 	out = h.mustRun("clear", "plan")
 	if !strings.Contains(out, "plan       not set") || !strings.Contains(out, "verify     codex, model gpt-6.1-sol, effort low") {
 		t.Fatalf("clear plan printed:\n%s", out)
+	}
+}
+
+// TestPreferencesRiskStage covers the risk stage in the CLI
+// (req-stage-preferences AC-1.1, AC-1.4, AC-2.2; DEC-135(13)): show prints a
+// risk line between verify and review, set risk and clear risk change only
+// that stage, MCP reads what the CLI saved, and the CLI reads what MCP saved.
+func TestPreferencesRiskStage(t *testing.T) {
+	h := newPreferencesCLIHarness(t)
+	h.mustRun("set", "verify", "--harness", "opencode", "--model", "local")
+	h.mustRun("set", "review", "--harness", "claude-code", "--model", "claude-opus-5-5")
+	out := h.mustRun("set", "risk", "--harness", "claude-code", "--model", "claude-haiku-5-5", "--effort", "low")
+	verify := strings.Index(out, "verify     opencode, model local")
+	risk := strings.Index(out, "risk       claude-code, model claude-haiku-5-5, effort low")
+	review := strings.Index(out, "review     primary: claude-code, model claude-opus-5-5")
+	if verify < 0 || risk < 0 || review < 0 || !(verify < risk && risk < review) {
+		t.Fatalf("set risk printed no risk line between verify and review:\n%s", out)
+	}
+	if read := h.mcp("get_stage_preferences", map[string]any{"workspace_id": "alpha"}); read.Version != 3 || read.Stages.Risk == nil || read.Stages.Risk.Model != "claude-haiku-5-5" || read.Stages.Verify == nil || read.Stages.Review == nil {
+		t.Fatalf("MCP read after set risk = %+v", read)
+	}
+	h.mcp("set_stage_preference", map[string]any{"workspace_id": "beta", "stage": "risk", "value": map[string]any{"harness": "codex", "model": "gpt-6.1-sol"}})
+	if read := h.runJSON("show"); read.Version != 4 || read.Stages.Risk == nil || read.Stages.Risk.Harness != "codex" || read.Stages.Risk.Effort != "" {
+		t.Fatalf("CLI read after MCP risk save = %+v", read)
+	}
+	set := h.runJSON("clear", "risk")
+	if set.Version != 5 || set.Stages.Risk != nil || set.Stages.Verify == nil || set.Stages.Review == nil || set.Stages.Review.Primary == nil {
+		t.Fatalf("clear risk = %+v", set)
+	}
+	if out := h.mustRun("show"); !strings.Contains(out, "risk       not set") || !strings.Contains(out, "verify     opencode, model local") {
+		t.Fatalf("show after clear risk printed:\n%s", out)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"set", "risk", "--primary", "--harness", "h", "--model", "m"}, "--primary and --seat apply only to review, not to risk"},
+		{[]string{"set", "risk", "--seat", "1", "--harness", "h", "--model", "m"}, "--primary and --seat apply only to review, not to risk"},
+		{[]string{"clear", "risk", "--primary"}, "--primary and --seat apply only to review, not to risk"},
+		{[]string{"clear", "risk", "--seat", "1"}, "--primary and --seat apply only to review, not to risk"},
+		{[]string{"set", "risk", "--harness", "h", "--model", " "}, "stage preferences refused: stages.risk.model must not be blank"},
+		{[]string{"set", "risks", "--harness", "h", "--model", "m"}, "use plan, implement, verify, risk, or review"},
+	} {
+		if _, err := h.run(tc.args...); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("conveyor preferences %s: error = %v, want %q", strings.Join(tc.args, " "), err, tc.want)
+		}
+	}
+	if read := h.runJSON("show"); read.Version != set.Version {
+		t.Fatalf("refused risk commands saved a set: %+v", read)
 	}
 }
 

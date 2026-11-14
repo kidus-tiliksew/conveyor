@@ -19,16 +19,22 @@ const (
 	MaxReviewSeats = 8
 )
 
-// The four stage keys, in the order every surface shows them.
+// The five stage keys, in the order every surface shows them. Risk is the
+// risk agent's stage and holds one entry like plan, implement, and verify
+// (req-stage-preferences AC-1.1; DEC-135(13); component-stage-preferences).
 const (
 	StagePlan      = "plan"
 	StageImplement = "implement"
 	StageVerify    = "verify"
+	StageRisk      = "risk"
 	StageReview    = "review"
 )
 
 // Stages lists the stage keys in display order.
-var Stages = []string{StagePlan, StageImplement, StageVerify, StageReview}
+var Stages = []string{StagePlan, StageImplement, StageVerify, StageRisk, StageReview}
+
+// stageList names the stage keys for refusal messages.
+const stageList = "plan, implement, verify, risk, and review"
 
 // ValidationError names the refused field and, for a review seat entry, the
 // seat's 1-based position (component-stage-preferences invariant 2).
@@ -45,13 +51,13 @@ func invalid(field string, position int, format string, args ...any) error {
 }
 
 // ParseStages decodes a whole set's stages object under the closed shape:
-// only the four stage keys, only the three entry fields, only primary and
-// seats on review, one entry for plan, implement, and verify, and at most
+// only the five stage keys, only the three entry fields, only primary and
+// seats on review, one entry for plan, implement, verify, and risk, and at most
 // eight seats (invariant 3; AC-1.2, AC-1.5). An absent key is an unset stage.
 func ParseStages(field string, raw json.RawMessage) (store.StagePreferenceStages, error) {
 	var stages store.StagePreferenceStages
 	if isNull(raw) {
-		return stages, invalid(field, 0, "must be an object with the stage keys plan, implement, verify, and review")
+		return stages, invalid(field, 0, "must be an object with the stage keys "+stageList)
 	}
 	object, err := closedObject(field, raw, Stages)
 	if err != nil {
@@ -69,14 +75,14 @@ func ParseStages(field string, raw json.RawMessage) (store.StagePreferenceStages
 	return stages, nil
 }
 
-// ParseStageName refuses a stage key other than the four (invariant 3).
+// ParseStageName refuses a stage key other than the five (invariant 3).
 func ParseStageName(field, stage string) error {
 	for _, known := range Stages {
 		if stage == known {
 			return nil
 		}
 	}
-	return invalid(field, 0, "unknown stage %q; the stages are plan, implement, verify, and review", stage)
+	return invalid(field, 0, "unknown stage %q; the stages are "+stageList, stage)
 }
 
 // SetStageValue replaces one stage of stages with value, the stage's whole
@@ -96,6 +102,8 @@ func SetStageValue(stages *store.StagePreferenceStages, field, stage string, val
 		stages.Implement = next.Implement
 	case StageVerify:
 		stages.Verify = next.Verify
+	case StageRisk:
+		stages.Risk = next.Risk
 	case StageReview:
 		stages.Review = next.Review
 	}
@@ -125,6 +133,8 @@ func setStage(stages *store.StagePreferenceStages, field, stage string, raw json
 		stages.Implement = entry
 	case StageVerify:
 		stages.Verify = entry
+	case StageRisk:
+		stages.Risk = entry
 	}
 	return nil
 }

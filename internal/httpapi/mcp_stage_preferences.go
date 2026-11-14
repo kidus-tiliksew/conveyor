@@ -41,7 +41,7 @@ func stagePreferenceMCPTools() []map[string]any {
 		},
 	}
 	value := map[string]any{
-		"description": "The stage's whole value; null clears the stage. For plan, implement, and verify: one entry {harness, model, effort}. For review: {primary, seats}, where primary is an entry or null and seats lists at most 8 entries, seat N at position N.",
+		"description": "The stage's whole value; null clears the stage. For plan, implement, verify, and risk: one entry {harness, model, effort}. For review: {primary, seats}, where primary is an entry or null and seats lists at most 8 entries, seat N at position N.",
 		"anyOf": []any{
 			map[string]any{"type": "null"},
 			entry,
@@ -57,13 +57,13 @@ func stagePreferenceMCPTools() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        getStagePreferencesTool,
-			"description": "Read your person's stage preferences: the harness, model, and effort to use for plan, implement, verify, and review. The result has version, updated_at, and stages with exactly the keys plan, implement, verify, and review. A stage that is null is unset. review holds primary and seats; seat N uses seat entry N or else the primary. The same set applies in every workspace, and workspace_id only admits the call. The set is advice to your own sessions: no factory decision reads it.",
+			"description": "Read your person's stage preferences: the harness, model, and effort to use for plan, implement, verify, risk, and review. The result has version, updated_at, and stages with exactly the keys plan, implement, verify, risk, and review. A stage that is null is unset. review holds primary and seats; seat N uses seat entry N or else the primary. The same set applies in every workspace, and workspace_id only admits the call. The set is advice to your own sessions: no factory decision reads it.",
 			"annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 			"inputSchema": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"workspace_id": str}, "required": []string{"workspace_id"}},
 		},
 		{
 			"name":        setStagePreferenceTool,
-			"description": "Replace or clear one stage of your person's stage preferences, in one transaction that keeps every other stage. Save a stage only on your operator's direct answer or instruction. stage is plan, implement, verify, or review. value is the stage's whole value, and null clears it. The result is the whole set after the change. The same set applies in every workspace, and workspace_id only admits the call. A field other than harness, model, and effort, such as a host, sandbox, command, or credential, is refused.",
+			"description": "Replace or clear one stage of your person's stage preferences, in one transaction that keeps every other stage. Save a stage only on your operator's direct answer or instruction. stage is plan, implement, verify, risk, or review. value is the stage's whole value, and null clears it. The result is the whole set after the change. The same set applies in every workspace, and workspace_id only admits the call. A field other than harness, model, and effort, such as a host, sandbox, command, or credential, is refused.",
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
 			"inputSchema": map[string]any{
 				"type": "object", "additionalProperties": false,
@@ -106,7 +106,7 @@ func (s *Server) callStagePreferenceMCP(ctx context.Context, name string, args m
 	}
 	stage, ok := args["stage"].(string)
 	if !ok {
-		return nil, mcpStagePreferenceError(&stageprefs.ValidationError{Field: "stage", Message: "is required: plan, implement, verify, or review"})
+		return nil, mcpStagePreferenceError(&stageprefs.ValidationError{Field: "stage", Message: "is required: plan, implement, verify, risk, or review"})
 	}
 	raw, present := args["value"]
 	if !present {

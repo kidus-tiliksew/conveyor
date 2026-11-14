@@ -113,6 +113,8 @@ func (s *Service) SetStage(ctx context.Context, userID, stage string, value json
 			next.Implement = parsed.Implement
 		case StageVerify:
 			next.Verify = parsed.Verify
+		case StageRisk:
+			next.Risk = parsed.Risk
 		case StageReview:
 			next.Review = parsed.Review
 		}
