@@ -1257,3 +1257,45 @@ func TestRepoInitGuidanceOnlyAndPlaybooksCarryNoPlanTierRule(t *testing.T) {
 		t.Fatalf("guidance-only wrote %v, want root guidance only", written)
 	}
 }
+
+// `conveyor repo init` run in an empty repository writes work and
+// coordination playbooks that hold the risk agent rules for every supported
+// tool (req-agent-skills AC-3.16; req-agent-coordination AC-1.2;
+// feature-risk-based-review RR-17).
+func TestRepoInitIntoEmptyDirectoryWritesRiskAgentRules(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	// repo init reports paths under the resolved root, so resolve a
+	// symlinked temporary directory, such as /var on macOS, first.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
+		t.Fatalf("root is not empty: %v %v", entries, err)
+	}
+	t.Chdir(root)
+	mustGit(t, root, "init", "-b", "main")
+	command := repoCmd()
+	command.SetArgs([]string{"init"})
+	var out bytes.Buffer
+	command.SetOut(&out)
+	command.SetErr(&out)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("repo init: %v\n%s", err, out.String())
+	}
+	destinations := skillDestinations(root, supportedSkillTools, true)
+	if len(destinations) != 4 {
+		t.Fatalf("destinations = %d, want 4", len(destinations))
+	}
+	for _, destination := range destinations {
+		for file := range riskAgentRules {
+			installed := filepath.Join(destination.root, filepath.FromSlash(file))
+			if !strings.Contains(out.String(), destination.tool.name+"\twritten\t"+installed) {
+				t.Errorf("repo init did not report %s for %s:\n%s", installed, destination.tool.name, out.String())
+			}
+		}
+		checkRiskAgentRules(t, "repo init "+destination.tool.name, destination.root)
+	}
+}
