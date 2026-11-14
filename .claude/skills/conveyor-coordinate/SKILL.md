@@ -18,10 +18,16 @@ validation honesty, readable timeline text, and the coordination record.
 
 Non-negotiables, restated: the coordinator never claims a work order or edits
 a task repository; each stage order runs in its own thread. Verification
-threads follow `conveyor-kit-verify`, and plan, implementation, and review
-threads follow `conveyor-work`. Threads never start other threads, wait for
-verdicts, or record a gate or proposal decision, and an implementation thread
-never proposes or revises a document. The one exception: when the review
+threads follow `conveyor-kit-verify`, and plan, implementation, risk, and
+review threads follow `conveyor-work`. The coordinator starts one risk thread
+for each claimable risk order and does not wait for the operator. It passes it
+only the task, workspace, and order identifiers, none of the planner's or
+implementer's reasoning. Each risk thread counts against the concurrency
+limit while it runs. Under an enforce risk mode, plan approval and the review
+round wait for the risk order. Under a record risk mode nothing waits. A
+person who raises the task to high ends the wait. Threads never start other
+threads, wait for verdicts, or record a gate or proposal decision, and an
+implementation thread never proposes or revises a document. The one exception: when the review
 primary entry is set, one review primary thread per round starts the seat
 threads, claims no seat, and submits no verdict. Before each thread start, the
 coordinator reads the person's stage preferences with `get_stage_preferences`

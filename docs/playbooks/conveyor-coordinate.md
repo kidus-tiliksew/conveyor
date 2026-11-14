@@ -42,16 +42,18 @@ AC-1.6):
 - **Host:** the machine where threads run, their checkouts live, and their
   builds and tests execute.
 - **Harness, model, and effort for each role:** planner, implementer,
-  verifier, reviewer, and review primary.
-- **Concurrency:** how many tasks run at once, and how expensive test suites
-  share the host.
+  verifier, risk agent, reviewer, and review primary.
+- **Concurrency:** how many tasks and threads run at once, and how expensive
+  test suites share the host. Each risk thread counts against this limit
+  while it runs, like every other thread.
 
 The answers come from two sources (DEC-131(3)):
 
 - **Stage preferences in Conveyor.** The person's stored stage preferences
   give the harness, model, and effort for each role. Read them with
   `get_stage_preferences` and the workspace ID. `plan` is the planner,
-  `implement` the implementer, and `verify` the verifier. For review seat N,
+  `implement` the implementer, `verify` the verifier, and `risk` the risk
+  agent. For review seat N,
   use seat entry N. When the seat has no entry of its own, use the review
   primary entry. The review order's `review_seat` field in `list_work_orders`
   gives N. A stage that is `null` is unset.
@@ -89,7 +91,7 @@ harness, model, or effort with `set_stage_preference`:
 
 - Pass `workspace_id`, `stage`, and `value`. `value` is the whole value of
   that stage, and `null` clears it.
-- For `plan`, `implement`, or `verify`, `value` is one entry:
+- For `plan`, `implement`, `verify`, or `risk`, `value` is one entry:
   `{"harness": "<harness>", "model": "<model>", "effort": "<effort or null>"}`.
 - For `review`, `value` is `{"primary": <entry or null>, "seats": [<entry>, ...]}`.
   The seats list has no gaps. To save seat N, the list needs an entry at
@@ -126,7 +128,7 @@ never write a stage preference or a memory preference.
 
 The coordinator never claims a work order and never edits a task repository.
 It starts a separate thread for each claimable plan, implementation,
-verification, and review order. Each thread claims its one order under
+verification, risk, and review order. Each thread claims its one order under
 `conveyor-work`, works it, and ends after submitting or releasing it
 (req-agent-coordination AC-1.2, AC-1.3). A thread never starts other threads,
 with one exception. When the review primary entry is set, you start one
@@ -186,6 +188,24 @@ identifiers. Put those in later sentences. Write this text under the
 conveyor-plain-english profile.
 ```
 
+**Risk agent:**
+
+```text
+You are the risk agent for risk work order <order-id>. Claim it, rate the plan
+version or change that it names from your delivered contract, submit the
+rating through submit_risk_rating, and end. Do not claim any other order,
+review the work, edit files, start other agents or threads, or record any gate
+or proposal decision.
+Report only to the session that started you, and use no operator
+notification or decision channel.
+Timeline text: the first sentence of every progress message, decision reason,
+and review summary you write states in plain language what happened and what
+happens next. That sentence contains no work-order or session identifiers,
+file paths, migration numbers, commit SHAs, or REQ-n, AC-n.m, or DEC-n
+identifiers. Put those in later sentences. Write this text under the
+conveyor-plain-english profile.
+```
+
 **Verifier or reviewer:**
 
 ```text
@@ -228,23 +248,28 @@ identifiers. Put those in later sentences. Write this text under the
 conveyor-plain-english profile.
 ```
 
-A verifier, reviewer, or review primary prompt names only the task, workspace,
-and order identifiers beyond the fixed text above. It carries none of the
-implementer's reasoning and none of your own assessment
-(req-agent-coordination AC-1.4, AC-1.10). A verifier follows
-`conveyor-kit-verify`; a reviewer follows `conveyor-work` and its delivered
-review role. A review primary claims no seat and submits no verdict. It ends
-once the seat threads are started.
+A verifier, risk agent, reviewer, or review primary prompt names only the task,
+workspace, and order identifiers beyond the fixed text above. It carries none
+of the planner's or implementer's reasoning and none of your own assessment
+(req-agent-coordination AC-1.4, AC-1.10). Start each such thread in a fresh
+context, never as a fork of another thread's history. A verifier follows
+`conveyor-kit-verify`. A risk agent follows the `conveyor-work` section "Rate a
+plan or a change" and its delivered risk role. A reviewer follows
+`conveyor-work` and its delivered review role. A review primary claims no seat
+and submits no verdict. It ends once the seat threads are started.
 
 ### Drive each task's loop
 
 1. Plan in a planner thread, using the planner the setup names. Read the
    stage preferences again before you start it, as for every thread.
-2. Handle the plan gate under
+2. After the planner submits, start one risk thread for each claimable risk
+   order of the task, as [Risk orders](#risk-orders) describes.
+3. Handle the plan gate under
    [Decisions within delegated scope](#decisions-within-delegated-scope).
-3. Start one implementer thread for the task's implementation order.
-4. After the implementer submits, start one verifier or reviewer thread per
-   claimable verification or review order, as the setup names. Start them
+4. Start one implementer thread for the task's implementation order.
+5. After the implementer submits, start one risk thread for each claimable
+   risk order. Start one verifier or reviewer thread per claimable
+   verification or review order, as the setup names. Start them all
    yourself, so each thread keeps a single role. When the review primary entry
    is set, start one review primary thread for the round's claimable review
    orders instead of the reviewer threads. Before you start it, check the
@@ -253,12 +278,68 @@ once the seat threads are started.
    When review orders become claimable later, start a new review primary thread
    for only those orders. Confirm each seat's claim from `list_work_orders`,
    never from the review primary's report.
-5. Watch with `list_work_orders` and `get_task`, or wait with
+6. Watch with `list_work_orders` and `get_task`, or wait with
    `conveyor task wait <task-id> --timeout 5m`.
-6. When a review requests changes, give the successor implementation order to
+7. When a review requests changes, give the successor implementation order to
    the thread that implemented the task if that thread can still be continued.
    Otherwise start a fresh implementer thread for it
    (req-agent-coordination AC-1.5).
+
+### Risk orders
+
+A risk order rates one plan version or one head of a task. Conveyor creates
+it after a plan submission or an implementation submission. A risk thread
+claims it under `conveyor-work` and ends with `submit_risk_rating`
+(req-agent-coordination AC-1.2; DEC-135(13); `feature-risk-based-review`
+RR-17). The submission result names the order as `risk_work_order_id`. Do
+not depend on a thread's report of it: `list_work_orders` shows every risk
+order with stage `risk` (req-agent-coordination AC-1.8).
+
+- **Start one thread for each claimable risk order.** Start it at once, with
+  the `risk` entry of the stage preferences. Do not wait for the operator.
+  When `risk` is unset, ask the operator for the harness, model, and effort
+  as [Setups](#setups) describes. That question is setup, not permission to
+  start.
+- **Pass only identifiers.** Give the risk thread the base prompt, its setup,
+  and the risk agent prompt, with only the task, workspace, and order
+  identifiers. Pass none of the planner's or implementer's reasoning, no
+  transcript, no proposed tier, and none of your own assessment
+  (req-agent-coordination AC-1.4).
+- **Never reuse a session.** The risk thread creates its own session ID and
+  client token. Conveyor refuses a risk order claim from a session that
+  claimed a plan, implementation, or review order of the task. Never give a
+  risk order to the planner, implementer, or reviewer thread.
+- **Start each order once.** Before each start, confirm from
+  `list_work_orders` that the order is claimable. Never start a second thread
+  for an order whose thread holds its claim or has submitted its rating.
+- **Replace a thread only for a claimable order.** When a risk thread ends
+  without a rating, read the order again. Start a new thread when the order is
+  claimable again. Start none for a cancelled order. Conveyor cancels a risk
+  order when a later plan version or head replaces its subject, when the tier
+  reaches high, or when the task merges or closes.
+- **Count it against concurrency.** Each risk thread counts against your
+  concurrency limit while it runs, the same as any other thread. A risk thread and a
+  verifier thread of one task can run at the same time, and both count.
+
+What waits for the rating depends on the task's frozen risk mode, which the
+order's `task.policy_contract.risk.mode` shows (component-risk-review
+invariant 13; `feature-risk-based-review` RR-15):
+
+- **Enforce.** Plan approval waits for the plan version's risk order, and
+  Conveyor refuses the approval with `plan_risk_rating_open` while the order
+  is queued or claimed. Do not record a plan approval then. A review round
+  opens only after the head's risk order completes or is cancelled.
+  Verification runs beside the risk order and does not wait.
+- **Record.** Nothing waits. Start the risk thread anyway. The plan gate,
+  verification, and review go on without the rating.
+- **Off.** Conveyor creates no risk order.
+
+An unclaimed risk order waits in the queue like every other order. No clock
+cancels or escalates it. A person who holds `operate_gates` can raise the
+task's tier to high. The raise cancels the task's open risk orders and ends the
+wait (DEC-135(11)). Never raise a tier yourself to end a wait. A tier raise is
+an operator act, so bring it to the operator as an escalation. A risk thread
+never decides a gate.
 
 ### Verify before acting
 
@@ -506,7 +587,8 @@ Restrictions: <no merge, named checkpoints, or none>.
 Host setup (agent memory): <host>; concurrency <n>. Source: <memory or answer>.
 Stage choices (stored stage preferences, read at each thread start):
 planner <harness/model/effort>; implementer <…>; verifier <…>;
-review primary <… or none>; review seats <seat N: …>. Source: <stored or answer>.
+risk agent <…>; review primary <… or none>; review seats <seat N: …>.
+Source: <stored or answer>.
 
 ## Decisions
 
