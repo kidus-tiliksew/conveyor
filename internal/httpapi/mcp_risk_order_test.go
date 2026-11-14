@@ -45,6 +45,7 @@ var (
 type riskOrderFixture struct {
 	handler   http.Handler
 	store     store.Store
+	service   *workorder.Service
 	ctx       context.Context
 	planOrder string
 	headOrder string
@@ -100,7 +101,7 @@ func newRiskOrderFixture(t *testing.T) *riskOrderFixture {
 	server := NewServer(st)
 	server.Workspaces, server.Memberships = fixture, fixture
 	server.ConfigProvider = func(context.Context) (*config.Config, error) { return cfg, nil }
-	server.WorkOrders = &workorder.Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+	f.service = &workorder.Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 		ReviewDiffBetween: func(_ context.Context, repo, baseline, head string) (string, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -109,6 +110,7 @@ func newRiskOrderFixture(t *testing.T) *riskOrderFixture {
 		},
 		ReviewPRDescription: func(context.Context, string, string) (string, error) { return riskPRBodySentinel, nil },
 	}
+	server.WorkOrders = f.service
 	server.Credentials = staticCredentialVerifier{
 		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 		"other-token":    {ID: "pat_other", OwnerUserID: "other", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
@@ -362,8 +364,13 @@ func TestSubmitRiskRatingRequiresTheLiveRiskClaim(t *testing.T) {
 		})
 	}
 	t.Run("CancelledClaim", func(t *testing.T) {
-		// A later head cancels the claimed plan order; its late rating is
-		// refused and records nothing (req-risk-based-review AC-4.9).
+		// A later head cancels the claimed plan order before the call; its
+		// late rating is refused and records nothing (req-risk-based-review
+		// AC-4.9). The cancellation ended the claim and cleared its session,
+		// so the call fails claim binding before any completion runs and
+		// answers the lost claim (component-mcp-protocol invariant 8). A
+		// cancellation after authorization answers the cancellation; see
+		// TestSubmitRiskRatingCancelledAfterAuthorization.
 		f.claim(t, f.planOrder, "plan-rater", "planner-rater")
 		_, err := taskops.ExecuteWorkOrder(f.ctx, f.store, riskOrderTaskID, core.WorkOrderCmdCancel, func(lease taskops.TaskLease) (core.WorkOrder, error) {
 			order, _, cancelErr := f.store.CancelRiskOrderCommand(f.ctx, lease, store.RiskOrderCancelRequest{WorkOrderID: f.planOrder, Reason: "a later plan version replaced it"})
@@ -371,8 +378,8 @@ func TestSubmitRiskRatingRequiresTheLiveRiskClaim(t *testing.T) {
 		})
 		requireOKHTTP(t, err)
 		text, isError := rate("operator-token", "alpha", f.planOrder, "plan-rater")
-		if !isError || (!strings.Contains(text, store.ErrWorkOrderCancelled.Error()) && !strings.Contains(text, store.ErrWorkOrderClaimLost.Error())) {
-			t.Fatalf("cancelled claim: error=%t text=%s", isError, text)
+		if !isError || !strings.Contains(text, store.ErrWorkOrderClaimLost.Error()) || strings.Contains(text, store.ErrWorkOrderCancelled.Error()) {
+			t.Fatalf("cancelled claim: error=%t text=%s, want exactly %q", isError, text, store.ErrWorkOrderClaimLost)
 		}
 		if order := f.order(t, f.planOrder); order.State != core.WorkOrderCancelled || len(f.riskAgentRatings(t)) != 0 {
 			t.Fatalf("a cancelled claim recorded a rating: %+v", order)
@@ -391,6 +398,81 @@ func TestSubmitRiskRatingRequiresTheLiveRiskClaim(t *testing.T) {
 			t.Fatal("an expired claim completed the risk order")
 		}
 	})
+}
+
+// actBeforeRiskCompletion is the work-order service's store with one act that
+// commits after submit_risk_rating authorized the session and the service read
+// the order as claimed, and before the store's completion command runs.
+type actBeforeRiskCompletion struct {
+	store.Store
+	act func(context.Context) error
+}
+
+func (s actBeforeRiskCompletion) CompleteRiskOrderCommand(ctx context.Context, lease taskops.TaskLease, request store.RiskOrderCompleteRequest) (core.RiskRating, error) {
+	if err := s.act(ctx); err != nil {
+		return core.RiskRating{}, err
+	}
+	return s.Store.CompleteRiskOrderCommand(ctx, lease, request)
+}
+
+// TestSubmitRiskRatingCancelledAfterAuthorization: a cancellation or a raise
+// to high that commits after submit_risk_rating authorized the live claim and
+// before the completion commits makes the tool answer the cancelled refusal,
+// never a lost claim, and record nothing. Each act is the store command
+// production calls. The SingleStore integration test
+// TestSubmitRiskRatingCancelledInsideStoreWindowIntegration commits the same
+// acts inside the store completion itself, where its conditional write changes
+// no row (req-risk-based-review AC-4.9, AC-12.2, AC-12.3).
+func TestSubmitRiskRatingCancelledAfterAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		act  func(f *riskOrderFixture) func(context.Context) error
+	}{
+		{"Cancellation", func(f *riskOrderFixture) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := taskops.ExecuteWorkOrder(ctx, f.store, riskOrderTaskID, core.WorkOrderCmdCancel, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+					order, made, cancelErr := f.store.CancelRiskOrderCommand(ctx, lease, store.RiskOrderCancelRequest{WorkOrderID: f.headOrder, Reason: "a later head was submitted"})
+					if cancelErr == nil && !made {
+						cancelErr = errors.New("the cancellation cancelled nothing")
+					}
+					return order, cancelErr
+				})
+				return err
+			}
+		}},
+		{"RaiseToHigh", func(f *riskOrderFixture) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := f.store.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: riskOrderTaskID, Tier: riskpolicy.TierHigh, Reason: "touches billing", ActorID: "user:operator"}, store.RiskSeatSettings{})
+				return err
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRiskOrderFixture(t)
+			f.claim(t, f.headOrder, "head-rater", "rater-model")
+			acted := 0
+			act := tc.act(f)
+			f.service.Store = actBeforeRiskCompletion{Store: f.store, act: func(ctx context.Context) error {
+				acted++
+				// The service authorized the session against the live claim.
+				if order := f.order(t, f.headOrder); order.State != core.WorkOrderClaimed || order.SessionID != "head-rater" {
+					t.Errorf("order before the act=%+v, want the live claim", order)
+				}
+				return act(ctx)
+			}}
+			text, isError := mcpToolCall(t, f.handler, "operator-token", "submit_risk_rating", map[string]any{"workspace_id": "alpha", "work_order_id": f.headOrder,
+				"session_id": "head-rater", "tier": "medium", "reason": "Touches the CI workflow."})
+			if acted != 1 {
+				t.Fatalf("the act ran %d times before the completion, want 1", acted)
+			}
+			if !isError || !strings.Contains(text, store.ErrWorkOrderCancelled.Error()) || strings.Contains(text, store.ErrWorkOrderClaimLost.Error()) {
+				t.Fatalf("submit_risk_rating: error=%t text=%s, want exactly %q", isError, text, store.ErrWorkOrderCancelled)
+			}
+			if order := f.order(t, f.headOrder); order.State != core.WorkOrderCancelled || len(f.riskAgentRatings(t)) != 0 {
+				t.Fatalf("a cancelled risk order recorded a rating: %+v", order)
+			}
+		})
+	}
 }
 
 // TestSubmitRiskRatingRecordsTheRatingOnEveryTaskRead: an accepted rating

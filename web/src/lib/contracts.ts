@@ -81,6 +81,7 @@ export const stageLabels: Record<string, string> = {
   implement: 'Implement',
   review: 'Code review',
   verify: 'Verify',
+  risk: 'Risk rating',
   gate: 'Approval',
   merge: 'Merge',
   monitor: 'Monitor',
@@ -93,6 +94,9 @@ export const workOrderStageLabels: Record<string, string> = {
   implement: 'Implementation',
   review: 'Review',
   verify: 'Verification',
+  // A risk order rates a plan version or a head (feature-risk-based-review
+  // RR-16).
+  risk: 'Risk rating',
 }
 
 export const taskStateLabels: Record<string, string> = {

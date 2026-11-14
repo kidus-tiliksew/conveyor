@@ -104,6 +104,7 @@ func (s *Store) CompleteRiskOrderCommand(ctx context.Context, lease taskops.Task
 		if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdSubmitRiskRating)) {
 			return fmt.Errorf("risk order completion requires a valid taskops lease")
 		}
+		store.RiskCompletionRead(ctx, order.ID, order.State)
 		task, ratings, err := riskTaskTx(ctx, tx, order.TaskID)
 		if err != nil {
 			return err
@@ -130,8 +131,12 @@ func (s *Store) CompleteRiskOrderCommand(ctx context.Context, lease taskops.Task
 		if err != nil {
 			return err
 		}
-		if affected, affectedErr := written.RowsAffected(); affectedErr != nil || affected != 1 {
-			return store.ErrWorkOrderClaimLost
+		affected, err := written.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected != 1 {
+			return lostRiskCompletionTx(ctx, tx, order)
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE jobs SET state='done',ended_at=?,updated_at=? WHERE workspace_id=? AND id=?`, now, now, documentWorkspace(ctx), order.JobID); err != nil {
 			return err
@@ -161,6 +166,35 @@ func (s *Store) CompleteRiskOrderCommand(ctx context.Context, lease taskops.Task
 		return core.RiskRating{}, err
 	}
 	return result, nil
+}
+
+// lostRiskCompletionTx classifies a completion whose conditional write changed
+// no row. orderTx read the order with a plain read after the task-operation
+// lock, and a commit spanning partitions can release that lock before the
+// order row it changed is visible (component-persistence invariant 8). The
+// write evaluated the row's latest committed version, so the read here locks
+// the row and reads that version. A read that still returns the claim this
+// completion read is not yet the version the write saw: it is read again until
+// it changes, and a wait that runs out returns store.ErrRetryable. The
+// transaction then rolls back, so a losing completion appends no rating,
+// completion event, or job update (req-risk-based-review AC-12.2, AC-12.3).
+func lostRiskCompletionTx(ctx context.Context, tx *sql.Tx, read core.WorkOrder) error {
+	var state core.WorkOrderState
+	visible, err := awaitClaimedVisibility(ctx, func() (bool, error) {
+		var session string
+		err := tx.QueryRowContext(ctx, `SELECT state,session_id FROM work_orders WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), read.ID).Scan(&state, &session)
+		if err != nil {
+			return false, notFound(err, "work order %s", read.ID)
+		}
+		return state != core.WorkOrderClaimed || session != read.SessionID, nil
+	})
+	if err != nil {
+		return err
+	}
+	if !visible {
+		return fmt.Errorf("%w: risk order %s changed, and its new state is not visible", store.ErrRetryable, read.ID)
+	}
+	return store.LostRiskCompletionError(state)
 }
 
 func (s *Store) CancelRiskOrderCommand(ctx context.Context, lease taskops.TaskLease, request store.RiskOrderCancelRequest) (core.WorkOrder, bool, error) {

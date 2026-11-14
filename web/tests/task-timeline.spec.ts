@@ -2780,3 +2780,337 @@ for (const width of [375, 1280]) {
     await capture(page, testInfo, `runtime-running-open-${width}.png`)
   })
 }
+
+// Risk orders on task detail (feature-risk-based-review RR-16;
+// req-risk-based-review REQ-11, AC-5.6, AC-11.2; component-web-task-surfaces
+// invariant 66; DEC-127(1), (2)). The read is the server's: risk.orders names
+// each order's subject and state, and risk.ratings holds each completed
+// order's risk_agent rating with its order and reported model. A risk order
+// shows as an order entry that names its subject. A rated one shows its own
+// tier chip alone, never the task's tier, with its source, reason, and model
+// behind the chip.
+const riskBase = 'f0e1d2c3b4a5968778695a4b3c2d1e0f12345678'
+const riskHeadA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
+const riskHeadB = 'b2c3d4e5f60718293a4b5c6d7e8f901234567890'
+const riskHeadC = 'c3d4e5f60718293a4b5c6d7e8f90123456789012'
+
+type RiskSubjectFixture = { plan_version: number } | { head_sha: string; base_sha: string }
+
+function riskWorkOrder(
+  n: number,
+  state: WorkOrder['state'],
+  subject: RiskSubjectFixture,
+  extra: Partial<WorkOrder> = {},
+) {
+  // A head risk order carries its head and base on the order row too.
+  const head = 'head_sha' in subject ? { head_sha: subject.head_sha, baseline_sha: subject.base_sha } : {}
+  return order(`${taskId}-risk-${n}`, {
+    stage: 'risk',
+    state,
+    claimable: state === 'queued',
+    queue_entered_at: minutes(n * 10),
+    created_at: minutes(n * 10),
+    updated_at: minutes(n * 10 + 2),
+    ...head,
+    ...extra,
+  })
+}
+
+function riskAgentRating(
+  seq: number,
+  n: number,
+  tier: 'low' | 'medium' | 'high',
+  subject: RiskSubjectFixture,
+  reason: string,
+  model: string,
+) {
+  return {
+    seq,
+    task_id: taskId,
+    key: `risk_agent:${taskId}-risk-${n}`,
+    source: 'risk_agent' as const,
+    tier,
+    reason,
+    matched_rules: [],
+    ...subject,
+    risk_work_order_id: `${taskId}-risk-${n}`,
+    risk_model: model,
+    ...('head_sha' in subject ? { covered_paths: ['web/src/app.tsx'] } : {}),
+    created_at: minutes(n * 10 + 2),
+  }
+}
+
+const planV1: RiskSubjectFixture = { plan_version: 1 }
+const planV2: RiskSubjectFixture = { plan_version: 2 }
+const headA: RiskSubjectFixture = { head_sha: riskHeadA, base_sha: riskBase }
+const headB: RiskSubjectFixture = { head_sha: riskHeadB, base_sha: riskBase }
+const headC: RiskSubjectFixture = { head_sha: riskHeadC, base_sha: riskBase }
+
+const riskOrders = [
+  riskWorkOrder(1, 'completed', planV1, { model: 'gpt-6.1-sol', agent: 'codex', claimed_by: 'run:usr_operator' }),
+  riskWorkOrder(2, 'completed', headA, {
+    model: 'claude-sonnet-5-5',
+    agent: 'claude-code',
+    claimed_by: 'run:usr_operator',
+  }),
+  riskWorkOrder(3, 'cancelled', headB),
+  riskWorkOrder(4, 'claimed', planV2, {
+    model: 'claude-opus-5-5',
+    agent: 'claude-code',
+    claimed_by: 'run:usr_operator',
+    execution_started_at: minutes(41),
+  }),
+  riskWorkOrder(5, 'queued', headC),
+]
+
+const riskSubjects = [planV1, headA, headB, planV2, headC]
+
+// The task's tier is high from a person's raise, so an entry that borrowed the
+// task's tier would read High. Each completed order reads its own tier.
+function riskItem(source: 'person' | 'plan' | 'reviewer' | 'risk_agent' = 'person') {
+  return activity({
+    jobs: [
+      job(`${taskId}-implement-1`, 'implement', 'running'),
+      // A finished risk job has no summary of its own: its placeholder
+      // "Completed." never hides the order's rating.
+      job(`${taskId}-risk-1`, 'risk', 'done', { started_at: minutes(11), ended_at: minutes(12) }),
+      job(`${taskId}-risk-2`, 'risk', 'done', { started_at: minutes(21), ended_at: minutes(22) }),
+      job(`${taskId}-risk-3`, 'risk', 'cancelled', { started_at: undefined }),
+      job(`${taskId}-risk-4`, 'risk', 'running', { started_at: minutes(41) }),
+      job(`${taskId}-risk-5`, 'risk', 'pending', { started_at: undefined }),
+    ],
+    work_orders: [
+      order(`${taskId}-implement-1`, { attempt_id: 'attempt-current', session_id: 'sess-current' }),
+      ...riskOrders,
+    ],
+    risk: {
+      mode: 'record',
+      tier: 'high',
+      source,
+      reason: 'The release window needs a closer review.',
+      required_agent_reviews: 2,
+      required_human_approvals: 2,
+      calculated_agent_reviews: 2,
+      calculated_human_approvals: 2,
+      recorded_approvals: 0,
+      author_approval_needed: false,
+      ratings: [
+        riskAgentRating(1, 1, 'medium', planV1, 'The plan changes how the merge gate counts approvals.', 'gpt-6.1-sol'),
+        riskAgentRating(2, 2, 'low', headA, 'Only the dashboard copy changes.', 'claude-sonnet-5-5'),
+        {
+          seq: 3,
+          task_id: taskId,
+          key: 'person:high',
+          source: 'person',
+          tier: 'high',
+          reason: 'The release window needs a closer review.',
+          matched_rules: [],
+          actor_id: 'usr_operator',
+          previous_tier: 'medium',
+          created_at: minutes(60),
+        },
+      ],
+      orders: riskOrders.map((risk, index) => ({
+        work_order_id: risk.id,
+        state: risk.state,
+        claimable: risk.claimable,
+        subject: riskSubjects[index],
+        ...(risk.model ? { model: risk.model } : {}),
+        created_at: risk.created_at,
+      })),
+    },
+  })
+}
+
+const riskEntry = (page: Page, n: number) => page.locator(`[data-order-id="${taskId}-risk-${n}"]`)
+
+async function expectRiskEntries(page: Page) {
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.locator('[data-order-stage="risk"]')).toHaveCount(5)
+  // Each entry names what it rates.
+  const subjects = [
+    [1, 'Plan version 1'],
+    [2, `Head ${riskHeadA.slice(0, 7)}`],
+    [3, `Head ${riskHeadB.slice(0, 7)}`],
+    [4, 'Plan version 2'],
+    [5, `Head ${riskHeadC.slice(0, 7)}`],
+  ] as const
+  for (const [n, subject] of subjects) {
+    await expect(riskEntry(page, n).locator('[data-risk-subject]')).toHaveText(subject)
+    await expect(riskEntry(page, n)).toContainText('Risk rating')
+  }
+  await expect(riskEntry(page, 2).locator('[data-risk-subject]')).toHaveAttribute(
+    'title',
+    `Head ${riskHeadA} on base ${riskBase}`,
+  )
+  // A completed order shows its own tier chip alone, and no state badge.
+  const planChip = riskEntry(page, 1).getByRole('button', {
+    name: 'Risk tier Medium. From a risk agent. The plan changes how the merge gate counts approvals. Reported model gpt-6.1-sol.',
+    exact: true,
+  })
+  await expect(planChip).toHaveText('Medium')
+  const headChip = riskEntry(page, 2).getByRole('button', {
+    name: 'Risk tier Low. From a risk agent. Only the dashboard copy changes. Reported model claude-sonnet-5-5.',
+    exact: true,
+  })
+  await expect(headChip).toHaveText('Low')
+  for (const n of [1, 2]) {
+    await expect(riskEntry(page, n).locator('[data-risk-order-rating]')).toHaveCount(1)
+    await expect(riskEntry(page, n)).not.toContainText(/Queued|In progress|Completed|Cancelled/)
+  }
+  // No entry borrows the task's tier, and the open and cancelled orders show none.
+  await expect(timeline.locator('[data-order-stage="risk"] [data-risk-tier="high"]')).toHaveCount(0)
+  for (const n of [3, 4, 5]) await expect(riskEntry(page, n).locator('[data-risk-order-rating]')).toHaveCount(0)
+  // The open orders keep their state, and a claimed one names its claimant's model.
+  await expect(riskEntry(page, 3)).toContainText('Cancelled')
+  await expect(riskEntry(page, 4)).toContainText('In progress')
+  await expect(riskEntry(page, 4)).toContainText('claude-opus-5-5')
+  await expect(riskEntry(page, 5)).toContainText('Queued')
+  // A finished risk job adds no placeholder row of its own.
+  await expect(timeline.getByText(/risk.*completed/i)).toHaveCount(0)
+  await expect(timeline.locator('[data-job-completed]')).toHaveCount(0)
+}
+
+for (const viewport of [
+  { name: 'mobile', width: 375, height: 1600 },
+  { name: 'desktop', width: 1280, height: 1200 },
+]) {
+  test(`risk orders show their subject, state, and own rating at ${viewport.width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await mockAPI(page, riskItem(), nextAction(`${taskId}-implement-1`))
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    await expectRiskEntries(page)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width)
+    // The chip's facts open on keyboard focus, inside the viewport.
+    const chip = riskEntry(page, 1).locator('[data-risk-order-rating] button')
+    await chip.focus()
+    const details = riskEntry(page, 1).locator('[data-risk-order-rating-details]')
+    await expect(details.locator('[data-risk-order-rating-source]')).toHaveText('From a risk agent')
+    await expect(details.locator('[data-risk-order-rating-reason]')).toHaveText(
+      'The plan changes how the merge gate counts approvals.',
+    )
+    await expect(details.locator('[data-risk-order-rating-model]')).toHaveText('Reported model gpt-6.1-sol')
+    const bounds = await details.boundingBox()
+    expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(viewport.width)
+    await riskEntry(page, 1).scrollIntoViewIfNeeded()
+    await attachScreenshot(page, testInfo, `risk-orders-timeline-${viewport.name}.png`)
+    await chip.blur()
+    await expect(details).toHaveCount(0)
+    await attachScreenshot(page, testInfo, `risk-orders-timeline-closed-${viewport.name}.png`)
+  })
+}
+
+async function attachScreenshot(page: Page, testInfo: TestInfo, name: string) {
+  const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+  const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+  await testInfo.attach(name, { body: image, contentType: 'image/png' })
+}
+
+test('a risk order chip opens its facts on hover and on Enter', async ({ page }) => {
+  await mockAPI(page, riskItem(), nextAction(`${taskId}-implement-1`))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const chip = riskEntry(page, 2).locator('[data-risk-order-rating] button')
+  const details = riskEntry(page, 2).locator('[data-risk-order-rating-details]')
+  await chip.hover()
+  await expect(details).toContainText('Only the dashboard copy changes.')
+  await expect(details).toContainText('Reported model claude-sonnet-5-5')
+  await page.mouse.move(0, 0)
+  await expect(details).toHaveCount(0)
+  await chip.focus()
+  await expect(details).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(details).toHaveCount(0)
+  await chip.press('Enter')
+  await expect(details).toContainText('From a risk agent')
+  await chip.press('Enter')
+  await expect(details).toHaveCount(0)
+})
+
+test.describe('risk order chip on touch', () => {
+  test.use({ viewport: { width: 375, height: 844 }, isMobile: true, hasTouch: true })
+
+  test('a tap opens the facts and a second tap closes them', async ({ page }) => {
+    await mockAPI(page, riskItem(), nextAction(`${taskId}-implement-1`))
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const chip = riskEntry(page, 1).locator('[data-risk-order-rating] button')
+    await chip.scrollIntoViewIfNeeded()
+    const bounds = await chip.boundingBox()
+    expect(bounds?.width).toBeGreaterThanOrEqual(40)
+    expect(bounds?.height).toBeGreaterThanOrEqual(40)
+    await chip.tap()
+    await expect(chip).toHaveAttribute('aria-expanded', 'true')
+    const details = riskEntry(page, 1).locator('[data-risk-order-rating-details]')
+    await expect(details).toContainText('Reported model gpt-6.1-sol')
+    const box = await details.boundingBox()
+    expect(box?.x ?? -1).toBeGreaterThanOrEqual(0)
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(375)
+    await chip.tap()
+    await expect(chip).toHaveAttribute('aria-expanded', 'false')
+    await expect(details).toHaveCount(0)
+  })
+})
+
+// The task's own tier chip names each source, the two sources recorded before
+// risk orders included (req-risk-based-review AC-5.6).
+for (const [source, text] of [
+  ['risk_agent', 'From a risk agent'],
+  ['plan', 'From the plan'],
+  ['reviewer', 'From a reviewer'],
+  ['person', 'From a person'],
+] as const) {
+  test(`the task tier chip names the ${source} source`, async ({ page }) => {
+    await mockAPI(page, riskItem(source), nextAction(`${taskId}-implement-1`))
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const chip = page.locator('[data-task-risk]').first().getByRole('button')
+    await expect(chip).toHaveText('High')
+    await expect(chip).toHaveAccessibleName(new RegExp(`^Risk tier High\\. ${text}\\.`))
+    await chip.focus()
+    await expect(page.locator('[data-task-risk-details]').first()).toContainText(text)
+  })
+}
+
+// The rating an entry shows is bound to its own order and subject: a rating
+// that names the order but rates another subject is not shown, and with no
+// served subject the rating's own subject names what the order rates.
+test('a risk order entry shows only the rating of its own order and subject', () => {
+  const item = riskItem() as unknown as ActivityItem
+  const risk = item.risk
+  if (!risk) throw new Error('fixture has no risk')
+  const entries = (value: ActivityItem) =>
+    buildTimeline(value).filter(
+      (entry): entry is Extract<TimelineEntry, { type: 'order' }> =>
+        entry.type === 'order' && entry.order.stage === 'risk',
+    )
+  const byOrder = (value: ActivityItem, n: number) =>
+    entries(value).find((entry) => entry.order.id === `${taskId}-risk-${n}`)
+  expect(entries(item)).toHaveLength(5)
+  expect(byOrder(item, 1)?.risk?.rating?.tier).toBe('medium')
+  expect(byOrder(item, 2)?.risk?.rating?.tier).toBe('low')
+  expect(byOrder(item, 2)?.badge).toBeUndefined()
+  for (const n of [3, 4, 5]) expect(byOrder(item, n)?.risk?.rating).toBeUndefined()
+
+  // The head A rating moved to name head B's order: head B rates another head.
+  const moved = {
+    ...item,
+    risk: {
+      ...risk,
+      ratings: risk.ratings.map((rating) =>
+        rating.risk_work_order_id === `${taskId}-risk-2`
+          ? { ...rating, risk_work_order_id: `${taskId}-risk-3` }
+          : rating,
+      ),
+    },
+  }
+  expect(byOrder(moved, 2)?.risk?.rating).toBeUndefined()
+  expect(byOrder(moved, 3)?.risk?.rating).toBeUndefined()
+  expect(byOrder(moved, 3)?.badge?.label).toBe('Cancelled')
+
+  // Without risk.orders, a plan subject comes from the order's own rating,
+  // and a completed order without a rating shows no invented tier.
+  const bare = { ...item, risk: { ...risk, orders: undefined, ratings: risk.ratings.slice(0, 1) } }
+  expect(byOrder(bare, 1)?.risk?.subject).toEqual({ plan_version: 1 })
+  expect(byOrder(bare, 1)?.risk?.rating?.tier).toBe('medium')
+  expect(byOrder(bare, 2)?.risk?.subject).toEqual({ head_sha: riskHeadA, base_sha: riskBase })
+  expect(byOrder(bare, 2)?.risk?.rating).toBeUndefined()
+  expect(byOrder(bare, 2)?.badge?.label).toBe('Completed')
+})
