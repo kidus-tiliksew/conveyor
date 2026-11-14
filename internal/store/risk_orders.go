@@ -398,37 +398,114 @@ type ClaimIdentity struct {
 	ClaimedAt       time.Time
 }
 
-// RiskClaimRefusal refuses a risk order claim whose session ID or client token
-// hash matches a ledger identity, a current order row, or an earlier
-// work_order.claimed event of a plan order, an implementation order, or a
-// review seat of the same task.
-func RiskClaimRefusal(order core.WorkOrder, sessionID, tokenHash string, ledger []ClaimIdentity, taskOrders []core.WorkOrder, claimedEvents []core.Event) error {
+// RiskTokenHistoryGap names one earlier plan, implementation, or review claim
+// of the task whose client-token fingerprint the store no longer holds: a
+// claim that ended before the claim ledger existed, or a claim made without a
+// client token. Its session ID is still checked from its claim event. It never
+// carries a hash.
+type RiskTokenHistoryGap struct {
+	WorkOrderID string     `json:"work_order_id"`
+	AttemptID   string     `json:"attempt_id"`
+	Stage       core.Stage `json:"stage"`
+}
+
+// RiskTokenHistoryIncompleteEvent is the activity event a risk order claim
+// appends when the task's earlier token history is incomplete. The claim is
+// admitted: incomplete history alone refuses nothing (operator decision of
+// review round 1 on task 261114-9d3b4c; req-risk-based-review AC-12.1).
+const RiskTokenHistoryIncompleteEvent = "risk_order.token_history_incomplete"
+
+// MaxRiskTokenHistoryGaps bounds the earlier claims one indication lists. The
+// count is always exact.
+const MaxRiskTokenHistoryGaps = 50
+
+// RiskClaimCheck applies the risk claim refusal and reports the token history
+// it could not verify (req-risk-based-review AC-12.1; feature-risk-based-review
+// RR-11). It refuses with ErrRiskOrderNotIndependent when the claim's session
+// ID matches any earlier plan, implementation, or review claim of the task, in
+// the claim ledger, an order row, or a work_order.claimed event, or when its
+// client-token hash matches a fingerprint the ledger or an order row still
+// holds. Otherwise it returns every earlier claim whose fingerprint is no
+// longer stored, so the caller records the indication on the risk order's
+// activity. A gap never refuses the claim by itself.
+func RiskClaimCheck(order core.WorkOrder, sessionID, tokenHash string, ledger []ClaimIdentity, taskOrders []core.WorkOrder, claimedEvents []core.Event) ([]RiskTokenHistoryGap, error) {
 	if order.Stage != core.StageRisk {
-		return nil
+		return nil, nil
 	}
 	matches := func(stage core.Stage, session, hash string) bool {
 		return RiskClaimConflictStage(stage) && ((sessionID != "" && session == sessionID) || (tokenHash != "" && hash == tokenHash))
 	}
+	type attempt struct{ order, attempt string }
+	fingerprinted := map[attempt]bool{}
 	for _, identity := range ledger {
-		if identity.TaskID == order.TaskID && matches(identity.Stage, identity.SessionID, identity.ClientTokenHash) {
-			return ErrRiskOrderNotIndependent
+		if identity.TaskID != order.TaskID {
+			continue
+		}
+		if matches(identity.Stage, identity.SessionID, identity.ClientTokenHash) {
+			return nil, ErrRiskOrderNotIndependent
+		}
+		if identity.ClientTokenHash != "" {
+			fingerprinted[attempt{identity.WorkOrderID, identity.AttemptID}] = true
 		}
 	}
 	for _, candidate := range taskOrders {
-		if candidate.TaskID == order.TaskID && candidate.ID != order.ID && matches(candidate.Stage, candidate.SessionID, candidate.ClientTokenHash) {
-			return ErrRiskOrderNotIndependent
+		if candidate.TaskID != order.TaskID || candidate.ID == order.ID {
+			continue
+		}
+		if matches(candidate.Stage, candidate.SessionID, candidate.ClientTokenHash) {
+			return nil, ErrRiskOrderNotIndependent
+		}
+		if candidate.ClientTokenHash != "" && candidate.AttemptID != "" {
+			fingerprinted[attempt{candidate.ID, candidate.AttemptID}] = true
 		}
 	}
+	seen := map[attempt]bool{}
+	gaps := []RiskTokenHistoryGap{}
 	for _, event := range claimedEvents {
 		if event.Kind != "work_order.claimed" {
 			continue
 		}
 		var prior core.WorkOrder
-		if json.Unmarshal(event.Payload, &prior) == nil && prior.ID != order.ID && matches(prior.Stage, prior.SessionID, "") {
-			return ErrRiskOrderNotIndependent
+		if json.Unmarshal(event.Payload, &prior) != nil || prior.ID == order.ID || !RiskClaimConflictStage(prior.Stage) {
+			continue
 		}
+		if matches(prior.Stage, prior.SessionID, "") {
+			return nil, ErrRiskOrderNotIndependent
+		}
+		key := attempt{prior.ID, prior.AttemptID}
+		if fingerprinted[key] || seen[key] {
+			continue
+		}
+		seen[key] = true
+		gaps = append(gaps, RiskTokenHistoryGap{WorkOrderID: prior.ID, AttemptID: prior.AttemptID, Stage: prior.Stage})
 	}
-	return nil
+	sort.Slice(gaps, func(i, j int) bool {
+		if gaps[i].WorkOrderID != gaps[j].WorkOrderID {
+			return gaps[i].WorkOrderID < gaps[j].WorkOrderID
+		}
+		return gaps[i].AttemptID < gaps[j].AttemptID
+	})
+	return gaps, nil
+}
+
+// RiskTokenHistoryIncomplete is the activity event that records, on the
+// claimed risk order, that the task's earlier token history is incomplete. It
+// names the earlier claims by work order, attempt, and stage, and never a
+// session's token or hash. It returns false when there is no gap.
+func RiskTokenHistoryIncomplete(order core.WorkOrder, gaps []RiskTokenHistoryGap, at time.Time) (core.Event, bool) {
+	if len(gaps) == 0 {
+		return core.Event{}, false
+	}
+	listed := gaps
+	if len(listed) > MaxRiskTokenHistoryGaps {
+		listed = listed[:MaxRiskTokenHistoryGaps]
+	}
+	return core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: RiskTokenHistoryIncompleteEvent, At: at, Payload: core.JSONPayload(map[string]any{
+		"work_order_id": order.ID, "attempt_id": order.AttemptID, "session_id": order.SessionID,
+		"claims_without_token": len(gaps), "claims": listed, "claims_truncated": len(gaps) > len(listed),
+		"claim_refused": false,
+		"note":          "Earlier claims of this task have no stored token fingerprint, so this claim was checked against their session IDs only.",
+	})}, true
 }
 
 func riskOrderOrdinal(taskID, id string) int {
@@ -694,9 +771,9 @@ func (m *memory) recordClaimIdentityLocked(ctx context.Context, order core.WorkO
 		Stage: order.Stage, SessionID: order.SessionID, ClientTokenHash: tokenHash, ClaimedAt: order.UpdatedAt})
 }
 
-func (m *memory) riskClaimRefusalLocked(ctx context.Context, order core.WorkOrder, claim core.WorkOrderClaim) error {
+func (m *memory) riskClaimCheckLocked(ctx context.Context, order core.WorkOrder, claim core.WorkOrderClaim) ([]RiskTokenHistoryGap, error) {
 	if order.Stage != core.StageRisk {
-		return nil
+		return nil, nil
 	}
 	workspace, _ := WorkspaceFromContext(ctx)
 	hash := ""
@@ -709,5 +786,5 @@ func (m *memory) riskClaimRefusalLocked(ctx context.Context, order core.WorkOrde
 			orders = append(orders, candidate)
 		}
 	}
-	return RiskClaimRefusal(order, claim.SessionID, hash, m.claimIdentities[memoryScopedKey{workspace: workspace, id: order.TaskID}], orders, m.events[order.TaskID])
+	return RiskClaimCheck(order, claim.SessionID, hash, m.claimIdentities[memoryScopedKey{workspace: workspace, id: order.TaskID}], orders, m.events[order.TaskID])
 }

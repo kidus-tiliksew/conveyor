@@ -391,35 +391,36 @@ func recordClaimIdentityTx(ctx context.Context, tx *sql.Tx, order core.WorkOrder
 	return err
 }
 
-// riskClaimRefusalTx applies the risk claim refusal inside the claim's taskTx
-// from the claim ledger, the task's order rows, and its claim events
+// riskClaimCheckTx applies the risk claim refusal inside the claim's taskTx
+// from the claim ledger, the task's order rows, and its claim events, and
+// returns the earlier claims whose token fingerprint is no longer stored
 // (req-risk-based-review AC-12.1).
-func riskClaimRefusalTx(ctx context.Context, tx *sql.Tx, order core.WorkOrder, sessionID, tokenHash string, taskOrders []core.WorkOrder) error {
+func riskClaimCheckTx(ctx context.Context, tx *sql.Tx, order core.WorkOrder, sessionID, tokenHash string, taskOrders []core.WorkOrder) ([]store.RiskTokenHistoryGap, error) {
 	if order.Stage != core.StageRisk {
-		return nil
+		return nil, nil
 	}
 	rows, err := documentRows(ctx, tx, `SELECT task_id,work_order_id,attempt_id,stage,session_id,client_token_hash,claimed_at
 		FROM work_order_claim_identities WHERE workspace_id=? AND task_id=? AND stage IN ('spec','implement','review')`, documentWorkspace(ctx), order.TaskID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var ledger []store.ClaimIdentity
 	for rows.Next() {
 		var identity store.ClaimIdentity
 		if err = rows.Scan(&identity.TaskID, &identity.WorkOrderID, &identity.AttemptID, &identity.Stage, &identity.SessionID, &identity.ClientTokenHash, &identity.ClaimedAt); err != nil {
 			rows.Close()
-			return err
+			return nil, err
 		}
 		ledger = append(ledger, identity)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	events, err := documentTaskEvents(ctx, tx, order.TaskID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return store.RiskClaimRefusal(order, sessionID, tokenHash, ledger, taskOrders, events)
+	return store.RiskClaimCheck(order, sessionID, tokenHash, ledger, taskOrders, events)
 }

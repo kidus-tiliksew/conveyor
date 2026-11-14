@@ -552,11 +552,63 @@ func RunRiskOrderConformance(t *testing.T, x Fixture) {
 		if taskAfter.State != taskBefore.State {
 			t.Fatalf("a risk claim moved the task from %s to %s", taskBefore.State, taskAfter.State)
 		}
+		// Every earlier claim kept its token fingerprint, so the claim records
+		// no incomplete-history indication.
+		if got := countEvents(t, task.ID, store.RiskTokenHistoryIncompleteEvent); got != 0 {
+			t.Fatalf("a task with complete token history recorded %d indications", got)
+		}
 		// Risk orders run beside each other: a second risk order of the task
 		// is claimable while the first is claimed.
 		second := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: core.RiskOrderSubject{PlanVersion: 4}})
 		if _, err := claim(second.ID, "independent-2", "independent-2-token"); err != nil {
 			t.Fatalf("second risk order claim err=%v", err)
+		}
+	})
+
+	t.Run("ClaimWithoutStoredTokenRecordsIncompleteHistory", func(t *testing.T) {
+		// A claim made without a client token leaves no fingerprint, as a
+		// claim that ended before the claim ledger does. Its session ID is
+		// still refused, a fresh session is admitted, and the risk order's
+		// activity says the token history is incomplete (operator decision of
+		// review round 1; req-risk-based-review AC-12.1).
+		task := fileTask(t, &record, core.StageImplement)
+		implement := stageOrder(t, task.ID, core.StageImplement)
+		_, err := claim(implement.ID, "tokenless", "")
+		requireOK(t, err)
+		risk := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-tokenless")})
+		if _, err := claim(risk.ID, "tokenless", "fresh-tokenless-1"); !errors.Is(err, store.ErrRiskOrderNotIndependent) {
+			t.Fatalf("risk claim by the tokenless session err=%v, want refusal", err)
+		}
+		if got := countEvents(t, task.ID, store.RiskTokenHistoryIncompleteEvent); got != 0 {
+			t.Fatalf("a refused claim recorded %d indications", got)
+		}
+		claimed, err := claim(risk.ID, "fresh-tokenless-2", "fresh-tokenless-2-token")
+		requireOK(t, err)
+		events, err := st.ListEvents(ctx, task.ID)
+		requireOK(t, err)
+		var found []core.Event
+		for _, event := range events {
+			if event.Kind == store.RiskTokenHistoryIncompleteEvent {
+				found = append(found, event)
+			}
+			if strings.Contains(string(event.Payload), "client_token") || strings.Contains(string(event.Payload), "fresh-tokenless-2-token") {
+				t.Fatalf("event %s carries a token field or value: %s", event.Kind, event.Payload)
+			}
+		}
+		if len(found) != 1 || found[0].JobID != risk.JobID {
+			t.Fatalf("incomplete-history indications=%+v, want one on the risk order", found)
+		}
+		var payload struct {
+			WorkOrderID        string                      `json:"work_order_id"`
+			AttemptID          string                      `json:"attempt_id"`
+			ClaimsWithoutToken int                         `json:"claims_without_token"`
+			Claims             []store.RiskTokenHistoryGap `json:"claims"`
+			ClaimRefused       bool                        `json:"claim_refused"`
+		}
+		requireOK(t, json.Unmarshal(found[0].Payload, &payload))
+		if payload.WorkOrderID != risk.ID || payload.AttemptID != claimed.AttemptID || payload.ClaimsWithoutToken != 1 || payload.ClaimRefused ||
+			len(payload.Claims) != 1 || payload.Claims[0].WorkOrderID != implement.ID || payload.Claims[0].Stage != core.StageImplement {
+			t.Fatalf("indication payload=%+v", payload)
 		}
 	})
 

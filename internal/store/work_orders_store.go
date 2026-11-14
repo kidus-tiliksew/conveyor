@@ -2010,7 +2010,8 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	// A risk order is claimable only by a session independent of the task's
 	// planning, implementation, and review (req-risk-based-review AC-12.1;
 	// feature-risk-based-review RR-11). The refusal writes nothing.
-	if err := m.riskClaimRefusalLocked(ctx, order, claim); err != nil {
+	tokenHistoryGaps, err := m.riskClaimCheckLocked(ctx, order, claim)
+	if err != nil {
 		return core.WorkOrder{}, err
 	}
 	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {
@@ -2070,6 +2071,11 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	// write (component-work-orders, Claim admission).
 	delete(m.claimFailures, order.ID)
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: WorkOrderEventPayload(order)})
+	// An admitted risk claim records any earlier token history it could not
+	// verify on the risk order's activity (req-risk-based-review AC-12.1).
+	if event, incomplete := RiskTokenHistoryIncomplete(order, tokenHistoryGaps, now); incomplete {
+		m.appendEventLocked(ctx, event)
+	}
 	return order, nil
 }
 

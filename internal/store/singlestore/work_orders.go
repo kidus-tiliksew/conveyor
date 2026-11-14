@@ -1225,7 +1225,8 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		// A risk order is claimable only by a session independent of the
 		// task's planning, implementation, and review (req-risk-based-review
 		// AC-12.1). The refusal returns before any write.
-		if err = riskClaimRefusalTx(ctx, tx, o, claim.SessionID, hash, siblings); err != nil {
+		tokenHistoryGaps, err := riskClaimCheckTx(ctx, tx, o, claim.SessionID, hash, siblings)
+		if err != nil {
 			return err
 		}
 		now := time.Now().UTC()
@@ -1374,6 +1375,14 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		}
 		if err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.claimed", Payload: store.WorkOrderEventPayload(o)}); err != nil {
 			return err
+		}
+		// An admitted risk claim records any earlier token history it could
+		// not verify on the risk order's activity (req-risk-based-review
+		// AC-12.1).
+		if event, incomplete := store.RiskTokenHistoryIncomplete(o, tokenHistoryGaps, now); incomplete {
+			if err = taskEvent(ctx, tx, event); err != nil {
+				return err
+			}
 		}
 		if recordSeatClaim {
 			if err = recordReviewSeatClaimTx(ctx, tx, o, replacedAt); err != nil {
