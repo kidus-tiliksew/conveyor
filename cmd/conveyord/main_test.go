@@ -252,7 +252,7 @@ func TestLoadConveyordPackUsesEmbeddedDefaultAndStrictOverride(t *testing.T) {
 	if err = os.MkdirAll(filepath.Join(dir, "roles"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"triage", "planning", "spec", "implement", "verify", "review"} {
+	for _, name := range []string{"triage", "planning", "spec", "implement", "verify", "review", "risk"} {
 		if err = os.WriteFile(filepath.Join(dir, "roles", name+".md"), []byte("override "+name), 0o644); err != nil {
 			t.Fatal(err)
 		}

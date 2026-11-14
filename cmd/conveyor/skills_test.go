@@ -2002,7 +2002,7 @@ func TestEmbeddedGuidanceCarriesCitationScopeStatement(t *testing.T) {
 		check("pack/"+role, content)
 	}
 	sort.Strings(stages)
-	if got, want := strings.Join(stages, ","), "implement,review,spec,verify"; got != want {
+	if got, want := strings.Join(stages, ","), "implement,review,risk,spec,verify"; got != want {
 		t.Fatalf("checked stage roles %s, want %s", got, want)
 	}
 }

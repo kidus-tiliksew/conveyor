@@ -731,6 +731,11 @@ type WorkOrder struct {
 	// GovernanceSnapshotDigest is the content-addressed identity of GovernanceSnapshot.
 	// Claim events carry this instead of document bodies.
 	GovernanceSnapshotDigest string `json:"governance_snapshot_digest,omitempty"`
+	// RiskSubject names what a risk order rates on the work-order list. It
+	// is a read projection from the risk order's stored subject and is never
+	// persisted on the order row (req-risk-based-review AC-11.2;
+	// feature-risk-based-review RR-11).
+	RiskSubject *RiskOrderSubject `json:"risk_subject,omitempty"`
 
 	// ClaimExpiryUnpersisted marks a read-time projection of a stored claim
 	// whose lease or execution deadline has elapsed. The order clock has not

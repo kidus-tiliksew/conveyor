@@ -36,7 +36,50 @@ func riskSummaryLine(risk *core.TaskRisk) string {
 	if risk.Tier == "" {
 		return fmt.Sprintf("Risk tier: not rated yet (mode %s); %s", risk.Mode, counts)
 	}
-	return fmt.Sprintf("Risk tier: %s from %s (mode %s): %s; %s", risk.Tier, riskSourceLabel(risk.Source), risk.Mode, risk.Reason, counts)
+	return fmt.Sprintf("Risk tier: %s from %s (mode %s): %s; %s", risk.Tier, riskSetterLabel(risk), risk.Mode, risk.Reason, counts)
+}
+
+// riskSetterLabel names the source of the rating that sets the task's tier.
+// A risk agent rating also names its risk order and the model its session
+// reported (req-risk-based-review AC-5.6, AC-11.2). The setter is the rating
+// core.RiskTierOf selects from the ratings the server states.
+func riskSetterLabel(risk *core.TaskRisk) string {
+	label := riskSourceLabel(risk.Source)
+	if risk.Source != core.RiskSourceRiskAgent {
+		return label
+	}
+	setter, ok := core.RiskTierOf(risk.Ratings)
+	if !ok || setter.Source != core.RiskSourceRiskAgent || setter.RiskWorkOrderID == "" {
+		return label
+	}
+	if setter.RiskModel == "" {
+		return fmt.Sprintf("%s order %s", label, setter.RiskWorkOrderID)
+	}
+	return fmt.Sprintf("%s order %s with model %s", label, setter.RiskWorkOrderID, setter.RiskModel)
+}
+
+// riskOrderLines states each risk order of the task with what it rates and
+// its state (req-risk-based-review AC-11.2; feature-risk-based-review RR-16).
+func riskOrderLines(risk *core.TaskRisk) []string {
+	if risk == nil {
+		return nil
+	}
+	lines := make([]string, 0, len(risk.Orders))
+	for _, order := range risk.Orders {
+		subject := "an unknown subject"
+		switch {
+		case order.Subject.PlanVersion > 0:
+			subject = fmt.Sprintf("plan version %d", order.Subject.PlanVersion)
+		case order.Subject.HeadSHA != "":
+			subject = fmt.Sprintf("head %s against base %s", order.Subject.HeadSHA, order.Subject.BaseSHA)
+		}
+		line := fmt.Sprintf("Risk order %s rates %s: %s", order.WorkOrderID, subject, order.State)
+		if order.Model != "" {
+			line += fmt.Sprintf(" (model %s)", order.Model)
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 func riskSourceLabel(source core.RiskSource) string {
@@ -49,6 +92,8 @@ func riskSourceLabel(source core.RiskSource) string {
 		return "person"
 	case core.RiskSourcePlan:
 		return "plan"
+	case core.RiskSourceRiskAgent:
+		return "risk agent"
 	}
 	return string(source)
 }

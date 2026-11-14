@@ -366,7 +366,7 @@ func ProjectTaskRisk(task core.Task, ratings []core.RiskRating, seatMinimum int)
 		return nil
 	}
 	SortRiskRatings(ratings)
-	projection := &core.TaskRisk{Mode: policy.Mode, Head: task.ReviewedHeadSHA, Ratings: make([]core.RiskRating, 0, len(ratings))}
+	projection := &core.TaskRisk{Mode: policy.Mode, Head: task.ReviewedHeadSHA, Ratings: make([]core.RiskRating, 0, len(ratings)), Orders: []core.TaskRiskOrder{}}
 	for _, rating := range ratings {
 		projection.Ratings = append(projection.Ratings, cloneRiskRating(rating))
 		if rating.Source == core.RiskSourcePathRule {
