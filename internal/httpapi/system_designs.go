@@ -21,7 +21,7 @@ import (
 // events: the History view reads them from GET /v1/system-designs/{id}/events
 // (component-web-document-surfaces).
 type systemDesignView struct {
-	Document       core.SystemDesign          `json:"document"`
+	Document        core.SystemDesign          `json:"document"`
 	CurrentVersion  *core.SystemDesignVersion  `json:"current_version,omitempty"`
 	PendingVersions []core.SystemDesignVersion `json:"pending_versions"`
 	Versions        []core.SystemDesignVersion `json:"versions"`
