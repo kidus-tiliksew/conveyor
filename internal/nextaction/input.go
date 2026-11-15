@@ -120,9 +120,10 @@ type Input struct {
 	RiskApprovals *RiskApprovals
 	// PlanRiskOrder is the risk order of the plan version that waits at an
 	// enforcing task's plan approval gate, read fresh by the assembler, and
-	// nil for every other task. Only a queued or claimed order of the version
-	// the gate holds selects the plan risk wait row (req-risk-based-review
-	// AC-11.3; component-next-action, The statement, row 3a).
+	// nil for every other task. An open order of the version the gate holds,
+	// one neither completed nor cancelled, selects the plan risk wait row
+	// (req-risk-based-review AC-11.3; component-next-action, The statement,
+	// row 3a).
 	PlanRiskOrder  *PlanRiskOrderRef
 	Recommendation string
 	Assignee       *core.TaskAssignee

@@ -841,6 +841,13 @@ func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) 
 	if err := collect(query, args...); err != nil {
 		return nil, err
 	}
+	// The risk order of an enforcing task's plan gate is decided while the
+	// task is awaiting_human (component-work-orders invariant 46).
+	if bound != 0 {
+		if err := collect(planGateRiskElapsedSQL, documentWorkspace(ctx), now, now); err != nil {
+			return nil, err
+		}
+	}
 	// Merged or closed tasks that still hold a non-terminal order are visited
 	// without a due transition, bounded per tick, so the order clock retires
 	// them (component-work-orders "Three clocks").
