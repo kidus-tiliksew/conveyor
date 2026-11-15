@@ -71,7 +71,9 @@ func (q *logDispatchQueue) enqueueGitHubIssuePublicationTx(ctx context.Context, 
 // stage history. Read-time stale and timed_out projections are stored as
 // queued or claimed, so the stored set covers them. A stored claim must remain
 // visible until the order clock persists its expiry (component-durable-queue
-// "Reconciliation between tasks and jobs"; DEC-62).
+// "Reconciliation between tasks and jobs"; DEC-62). A risk order never counts
+// as the later order, so it releases no hold (component-work-orders
+// invariant 2; DEC-135(10)).
 func blockingOrderSQL(task string) string {
 	return `(
   EXISTS (
@@ -80,7 +82,7 @@ func blockingOrderSQL(task string) string {
         AND latest.stage=` + task + `.next_stage
         AND NOT EXISTS (
             SELECT 1 FROM work_orders later
-            WHERE later.workspace_id=latest.workspace_id AND later.task_id=latest.task_id
+            WHERE later.workspace_id=latest.workspace_id AND later.task_id=latest.task_id AND later.stage<>'risk'
               AND (later.created_at > latest.created_at OR (later.created_at = latest.created_at AND later.id > latest.id))
         )
         AND EXISTS (

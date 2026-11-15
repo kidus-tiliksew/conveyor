@@ -12,6 +12,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
+	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -59,6 +60,17 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	if err = store.RefuseReviewSeatRetirement(current); err != nil {
 		return store.WorkOrderPreemptResult{}, err
+	}
+	// A risk order's retirement reads the owning task's frozen risk mode in
+	// this transaction, before any write (component-work-orders invariant 43).
+	if current.Stage == core.StageRisk {
+		taskRow, taskErr := s.queries.WithTx(tx).GetTask(ctx, db.GetTaskParams{ID: current.TaskID, WorkspaceID: workspaceID})
+		if taskErr != nil {
+			return store.WorkOrderPreemptResult{}, notFound(taskErr, "task %s", current.TaskID)
+		}
+		if err = store.RefuseRiskOrderRetirement(taskFromDB(taskRow), current); err != nil {
+			return store.WorkOrderPreemptResult{}, err
+		}
 	}
 	now := time.Now().UTC()
 	if current.State == core.WorkOrderClaimed && !current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {

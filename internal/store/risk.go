@@ -165,6 +165,12 @@ func (m *memory) RecordRiskRating(ctx context.Context, rating core.RiskRating) (
 		return cloneRiskRating(prepared), false, err
 	}
 	m.insertRiskRatingLocked(ctx, key, prepared)
+	// A path rating that brings the tier to high cancels the task's open
+	// risk orders in the same act. The cancellation enqueues nothing, and it
+	// stands when the caller refuses or skips later (component-work-orders
+	// invariant 66; component-submission-merge invariants 67 to 69;
+	// req-risk-based-review AC-12.3).
+	m.cancelRiskOrdersIfHighLocked(ctx, task, prepared.CreatedAt)
 	return cloneRiskRating(prepared), true, nil
 }
 
