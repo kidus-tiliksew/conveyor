@@ -11,7 +11,7 @@ import (
 
 // PolicyStatusContext is the commit-status context of an enforcing task's
 // risk requirements (req-risk-based-review AC-10.1, AC-10.2;
-// component-git-delivery invariant 37; feature-risk-based-review RR-9). A
+// component-git-delivery invariant 37). A
 // repository owner's branch protection can require it. It is Conveyor's own
 // published status, so the check-status read skips it as it skips
 // ReviewStatusContext (component-submission-merge invariant 59).

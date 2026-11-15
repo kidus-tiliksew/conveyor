@@ -59,7 +59,8 @@ func riskEventIndex(t *testing.T, st store.Store, ctx context.Context, taskID, k
 // handoff write; a malformed declaration gives high and never refuses the
 // submission; a head already rated reads nothing again; and mode off makes no
 // declaration read (req-risk-based-review AC-1.1, AC-3.2, AC-3.3, AC-3.5,
-// AC-5.1; feature-risk-based-review RR-2, RR-3).
+// AC-5.1; component-risk-review invariants 6 and 15; component-submission-merge
+// invariant 67).
 func TestSubmissionRecordsPathRiskAtBase(t *testing.T) {
 	head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	for _, tc := range []struct {
@@ -190,7 +191,7 @@ func riskVerdict() pipeline.Review {
 // enforce, record, and off a verdict without one is accepted, records no
 // rating and no risk.rated event, adds no seat, and its review.completed
 // payload carries no tier (req-risk-based-review AC-1.1, AC-5.7, AC-7.2;
-// feature-risk-based-review RR-14).
+// component-review invariant 13).
 func TestVerdictStatesNoTierInAnyMode(t *testing.T) {
 	for _, mode := range []riskpolicy.Mode{riskpolicy.ModeEnforce, riskpolicy.ModeRecord, ""} {
 		t.Run("Mode"+string(mode), func(t *testing.T) {
@@ -315,7 +316,7 @@ func TestRecordModeChangesNoFlow(t *testing.T) {
 
 // TestReviewRoleCarriesNoRating: a review order's role asks for no tier in
 // any risk mode (req-risk-based-review AC-5.7, AC-1.1;
-// feature-risk-based-review RR-14).
+// component-review invariant 13).
 func TestReviewRoleCarriesNoRating(t *testing.T) {
 	for _, mode := range []riskpolicy.Mode{riskpolicy.ModeRecord, riskpolicy.ModeEnforce, ""} {
 		f, orders, _, _ := riskVerdictFixture(t, "risk-role-"+string(mode), mode, 1)

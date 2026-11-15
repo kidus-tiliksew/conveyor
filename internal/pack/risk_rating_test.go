@@ -10,7 +10,7 @@ import (
 // TestReviewRoleStatesNoRating: the review role asks for no risk tier in any
 // form. A risk agent rates the change, and a review verdict that sends
 // risk_tier or risk_reason is refused (req-risk-based-review AC-5.7;
-// feature-risk-based-review RR-14).
+// component-review invariant 13).
 func TestReviewRoleStatesNoRating(t *testing.T) {
 	bundle, err := Load("../../pack")
 	if err != nil {

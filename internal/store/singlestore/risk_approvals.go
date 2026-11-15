@@ -13,7 +13,7 @@ import (
 )
 
 // Human approvals and author waivers (req-risk-based-review AC-8.3 to AC-8.8;
-// component-risk-review invariants 9 and 10; feature-risk-based-review RR-7).
+// component-risk-review invariants 9, 10, and 21).
 // A write runs in taskTx, under the task's operation lock, validates the
 // task's state and reviewed head, and inserts one row and its activity event.
 // INSERT IGNORE against the primary key keeps one row per task, head, round,

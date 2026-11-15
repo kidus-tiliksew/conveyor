@@ -11,7 +11,7 @@ import (
 )
 
 // TestPlanRiskMoveFor covers the plan risk effects of every plan-state move
-// (req-risk-based-review AC-4.7, AC-4.9; feature-risk-based-review RR-13).
+// (req-risk-based-review AC-4.7, AC-4.9; component-plan-state invariant 9).
 func TestPlanRiskMoveFor(t *testing.T) {
 	create := PlanRiskMove{Create: true, Cancel: PlanRiskReplacedReason}
 	cases := []struct {

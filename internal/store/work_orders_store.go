@@ -777,8 +777,8 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	}
 	// A verdict records no rating and adds no seat: only a completed risk
 	// order gives an agent's rating, and a person's raise adds seats in its
-	// own act (req-risk-based-review AC-5.7, AC-7.2; feature-risk-based-review
-	// RR-14).
+	// own act (req-risk-based-review AC-5.7, AC-7.2; component-review
+	// invariant 13).
 	if !completed {
 		if decision.ClaimSession != "" {
 			if order.State != core.WorkOrderClaimed || order.SessionID != decision.ClaimSession || !order.LeaseExpiresAt.After(time.Now()) {
@@ -1172,7 +1172,7 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 	}
 	// An enforcing task's round waits for its head's risk order; the hold is
 	// rechecked here, in the act that writes the round
-	// (feature-risk-based-review RR-12; req-risk-based-review AC-5.10).
+	// (component-review invariant 41; req-risk-based-review AC-5.10).
 	if err := m.reviewRoundRiskHoldLocked(ctx, task, ReviewRoundHead(orders)); err != nil {
 		return err
 	}
@@ -1665,7 +1665,8 @@ func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requiremen
 		}
 		// The latest order is read from the view the next action selects
 		// from, so a record-mode risk order never hides a checkpoint that
-		// the task's agent question states (feature-risk-based-review RR-15).
+		// the task's agent question states (component-next-action, The
+		// statement).
 		var taskOrders []core.WorkOrder
 		for _, order := range m.workOrders {
 			if order.TaskID == task.ID {
@@ -2004,7 +2005,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	}
 	// A risk order is claimable only by a session independent of the task's
 	// planning, implementation, and review (req-risk-based-review AC-12.1;
-	// feature-risk-based-review RR-11). The refusal writes nothing.
+	// component-work-orders invariant 63). The refusal writes nothing.
 	tokenHistoryGaps, err := m.riskClaimCheckLocked(ctx, order, claim)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -2050,7 +2051,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	}
 	m.recordClaimIdentityLocked(ctx, order, claimHash)
 	// A risk order stands beside the serial stage, so its claim leaves the
-	// task state as it is (feature-risk-based-review RR-11).
+	// task state as it is (component-work-orders invariant 62).
 	if task := m.tasks[order.TaskID]; task.State == core.TaskQueued && order.Stage != core.StageRisk {
 		from := task.State
 		state, taskErr := core.TransitionTask(from, core.TaskOrderClaim)
@@ -2535,7 +2536,7 @@ func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version 
 	}
 	// Under enforce the approval waits for the version's open risk order and
 	// changes nothing (req-risk-based-review AC-4.8; req-task-plan-state
-	// AC-1.3). No plan text is read: a plan states no tier (RR-13).
+	// AC-1.3). No plan text is read: a plan states no tier (component-risk-review invariant 8).
 	if err := m.planApprovalRiskRefusalLocked(ctx, taskID, version); err != nil {
 		return err
 	}

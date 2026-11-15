@@ -11,7 +11,8 @@ import (
 )
 
 // Risk enforcement (req-risk-based-review REQ-7, REQ-8, AC-7.1, AC-7.2,
-// AC-8.1, AC-8.2, AC-8.6; feature-risk-based-review RR-5, RR-6). Every
+// AC-8.1, AC-8.2, AC-8.6; component-review invariants 1 and 42;
+// component-task-lifecycle invariant 5). Every
 // backend reads a task's ratings inside the transaction that sizes a round,
 // adds seats, or chooses the acceptance edge, and passes them here. Under the
 // frozen modes off and record nothing in this file changes a seat, a gate, or
@@ -109,7 +110,7 @@ func (e *RiskApprovalsRequiredError) Is(target error) bool {
 
 // RiskSeatTrigger names the act whose raised tier adds seats: a person's
 // raise. A review verdict states no tier and adds no seat
-// (feature-risk-based-review RR-14). RequestID is the deterministic ledger key of
+// (component-review invariant 13). RequestID is the deterministic ledger key of
 // the addition, so a replayed act never adds a second set of seats.
 type RiskSeatTrigger struct {
 	RequestID string
@@ -146,7 +147,7 @@ type RiskSeatAdditionInputs struct {
 
 // PlanRiskSeatAddition plans the seats an enforcing task's raised tier adds to
 // its open review round (req-risk-based-review AC-7.2;
-// feature-risk-based-review RR-5). It returns false with no plan when the task
+// component-review invariant 42). It returns false with no plan when the task
 // does not enforce, has no open round, the act concerns an older round, the
 // round settled or a policy handoff superseded it, or the round already holds
 // the tier's count. The added seats are ordinary seats of that round, built by

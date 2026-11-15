@@ -38,7 +38,7 @@ func Project(in Input) NextAction {
 	}
 	// Every row selects its order from the same view, so a record-mode risk
 	// order never displaces another open order of the task
-	// (feature-risk-based-review RR-15).
+	// (component-next-action, The statement).
 	in.Orders = SelectableOrders(in.Task, in.Orders)
 	// Waiting is never a stop: a stored stale order reads as the queued order
 	// the clock returns it to, so no row states a stall, health warning, or

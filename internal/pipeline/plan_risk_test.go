@@ -15,7 +15,7 @@ func riskPlan(risks string) string {
 // plan with a `Risk tier:` line and a plan without one are both accepted, and
 // every line the retired grammar read or refused, well-formed, malformed,
 // repeated, decorated, or misplaced, is ordinary plan text kept verbatim
-// (req-risk-based-review REQ-4; feature-risk-based-review RR-13).
+// (req-risk-based-review REQ-4; component-risk-review invariant 8).
 func TestPlanTierLineIsPlanText(t *testing.T) {
 	cases := []struct {
 		name string

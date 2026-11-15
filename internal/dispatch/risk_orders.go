@@ -18,7 +18,7 @@ import (
 // of head waits for that head's risk order: one that is queued or claimed,
 // including the stale and timed-out forms the order clock recovers. It reads
 // no risk order for a task whose frozen mode is not enforce
-// (feature-risk-based-review RR-12; req-risk-based-review AC-1.6, AC-5.10;
+// (component-review invariant 41; req-risk-based-review AC-1.6, AC-5.10;
 // component-risk-review invariant 13). The round-building command repeats the
 // check in its transaction.
 func ReviewRoundHeldByRiskOrder(ctx context.Context, st store.RiskOrderStore, task core.Task, head string) (bool, error) {
@@ -79,8 +79,8 @@ func headPathRiskHigh(ctx context.Context, st store.RiskRatingStore, taskID stri
 // stale and dispatches review, so no round of that head opens before its risk
 // order exists. The subject is the observed head and base commit, never a
 // branch name. A replay returns the head's order and writes nothing
-// (feature-risk-based-review RR-12; req-risk-based-review AC-5.8, AC-5.9,
-// AC-5.11).
+// (component-submission-merge invariant 69; req-risk-based-review AC-5.8,
+// AC-5.9, AC-5.11).
 func (d *Dispatcher) ensureRefreshHeadRiskOrder(ctx context.Context, cfg *config.Config, task core.Task, observed github.PullRequest, rated refreshPathRead) error {
 	if !task.SetupContract.Risk.Enabled() || observed.HeadSHA == "" || observed.BaseSHA == "" {
 		return nil

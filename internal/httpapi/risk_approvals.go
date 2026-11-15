@@ -17,7 +17,7 @@ import (
 )
 
 // Human approvals of an enforcing task (req-risk-based-review REQ-8, REQ-9,
-// AC-8.3 to AC-8.8, AC-11.2; feature-risk-based-review RR-7;
+// AC-8.3 to AC-8.8, AC-11.2; component-risk-review invariants 20 to 23;
 // component-http-api). Both routes run under operate_gates and the request
 // credential's person; no new capability exists. An approval names the head
 // it approves, and a head other than the task's reviewed head is refused with
@@ -120,7 +120,7 @@ func (s *Server) approvalTask(w http.ResponseWriter, r *http.Request) (core.Task
 // one approval of the reviewed head. It never merges. 200 answers a count
 // that is now met, and 202 a recorded approval that leaves the task short;
 // both carry the task's risk read (req-risk-based-review AC-8.3, AC-8.6,
-// AC-11.2; feature-risk-based-review RR-7).
+// AC-11.2; component-risk-review invariant 22).
 func (s *Server) recordTaskApproval(w http.ResponseWriter, r *http.Request) {
 	request, ok := readApprovalRequest(w, r, false)
 	if !ok {

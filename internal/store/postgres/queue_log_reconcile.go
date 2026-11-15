@@ -76,7 +76,7 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 // and store.QueuedReviewRiskHold reads its recorded submission comparisons
 // and risk orders only when its frozen mode is enforce. Dispatch applies the
 // same hold to the same head, so reconcile repairs no task that dispatch
-// would leave waiting (feature-risk-based-review RR-12;
+// would leave waiting (component-review invariant 41;
 // req-risk-based-review AC-1.6, AC-5.10; component-risk-review invariant 13;
 // component-durable-queue "Reconciliation between tasks and jobs").
 func reconcileRiskHeldTx(ctx context.Context, tx pgx.Tx, q *db.Queries, workspaceID, taskID string) (bool, error) {

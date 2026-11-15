@@ -155,13 +155,13 @@ type ImplementationSubmission struct {
 	// HeadRisk asks for the submitted head's risk order. When it is set, the
 	// command cancels open risk orders of earlier heads and creates the
 	// head's risk order when it needs one, in the same transaction as the
-	// order and job completion (feature-risk-based-review RR-12;
+	// order and job completion (component-submission-merge invariant 68;
 	// req-risk-based-review AC-5.8, AC-5.9, AC-5.11).
 	HeadRisk *HeadRiskOrderRequest
 }
 
 // SubmissionReviewSeats is a submission's admitted review seat declaration
-// (feature-review-seat-minimum RS-4; DEC-123). Declared is written to the
+// (feature-review-seat-minimum RS-4; DEC-135). Declared is written to the
 // implement order's declared_review_seats; Unused, for a submission that
 // completes an already dispatched refresh, is recorded only in the
 // submission's work_order.updated payload and never becomes a declaration.

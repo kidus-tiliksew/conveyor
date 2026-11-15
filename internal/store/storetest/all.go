@@ -71,7 +71,7 @@ type Fixture struct {
 	// SeedRiskRating inserts one numbered risk rating row and its risk.rated
 	// event, modelling a rating with source reviewer that a review verdict
 	// recorded before verdicts stopped stating a tier. No public writer
-	// accepts that source (feature-risk-based-review RR-14), so each test
+	// accepts that source (component-review invariant 13), so each test
 	// binary seeds it directly. The recorded reviewer rating case requires it
 	// and never skips (req-risk-based-review AC-5.6).
 	SeedRiskRating func(t *testing.T, ctx context.Context, rating core.RiskRating)

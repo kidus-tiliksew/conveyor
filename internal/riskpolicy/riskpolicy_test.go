@@ -280,40 +280,6 @@ func TestPathMinimums(t *testing.T) {
 	}
 }
 
-// AC-5.5; component-risk-review invariants 3 and 4: the tier is the largest
-// input and never falls below the current tier.
-func TestTaskTier(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		in   TierInput
-		want Tier
-	}{
-		{"no inputs", TierInput{}, TierLow},
-		{"path minimum", TierInput{PathMinimum: TierMedium}, TierMedium},
-		{"any approved plan", TierInput{PlanTiers: []Tier{TierHigh, TierLow}}, TierHigh},
-		{"later lower plan keeps earlier", TierInput{PlanTiers: []Tier{TierMedium, TierLow}}, TierMedium},
-		{"reviewer rating", TierInput{PathMinimum: TierLow, HeadRatings: []Tier{TierLow, TierHigh}}, TierHigh},
-		{"person raise", TierInput{PersonRaises: []Tier{TierMedium}}, TierMedium},
-		{"current tier never falls", TierInput{Current: TierHigh, PathMinimum: TierLow, PlanTiers: []Tier{TierLow}}, TierHigh},
-		{"unknown values add nothing", TierInput{Current: "critical", HeadRatings: []Tier{"", "x"}}, TierLow},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := TaskTier(tc.in); got != tc.want {
-				t.Fatalf("TaskTier=%s, want %s", got, tc.want)
-			}
-		})
-	}
-	// Adding any input never lowers the result.
-	base := TierInput{PathMinimum: TierMedium}
-	for _, extra := range Tiers {
-		with := base
-		with.HeadRatings = []Tier{extra}
-		if TaskTier(with).Rank() < TaskTier(base).Rank() {
-			t.Fatalf("adding %s lowered the tier", extra)
-		}
-	}
-}
-
 // REQ-2, AC-1.1, AC-1.6, AC-2.1; component-risk-review invariant 2.
 func TestCalculateRequirements(t *testing.T) {
 	table := Table{Low: Requirement{1, 0}, Medium: Requirement{2, 1}, High: Requirement{3, 2}}

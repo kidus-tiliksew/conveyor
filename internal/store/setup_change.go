@@ -200,7 +200,7 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 		// Submitted spec/implement attempts are delivered, not executing; only
 		// claimed attempts and in-flight review verdicts block. A claimed risk
 		// order stands beside the stage and blocks nothing
-		// (feature-risk-based-review RR-12).
+		// (component-task-lifecycle invariant 45).
 		if order.State == core.WorkOrderClaimed && order.Stage != core.StageRisk {
 			return SetupChangeResult{}, fmt.Errorf("%w: task %s has a claimed attempt", ErrSetupChangeConflict, request.TaskID)
 		}

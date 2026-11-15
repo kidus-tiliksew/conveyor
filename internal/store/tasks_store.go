@@ -794,7 +794,7 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 // creating transaction (component-task-lifecycle invariant 20;
 // component-plan-state invariants 2 and 3). A plan filed for approval gets
 // its risk order in the same act, and a plan the filer approves gets none
-// (req-risk-based-review AC-4.7; feature-risk-based-review RR-13).
+// (req-risk-based-review AC-4.7; component-plan-state invariant 9).
 func (m *memory) recordIntakePlanStateLocked(ctx context.Context, t core.Task, approver Actor) error {
 	m.appendEventLocked(ctx, IntakePlanStateEvent(t))
 	if t.IntakePlan == nil {

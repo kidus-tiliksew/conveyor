@@ -26,7 +26,7 @@ import (
 // in its own act, and a risk claim is refused for any session ID or client
 // token that claimed a plan, implementation, or review order of the task,
 // including released attempts (req-risk-based-review AC-4.3, AC-5.5, AC-5.6,
-// AC-12.1 to AC-12.3; feature-risk-based-review RR-11, RR-15;
+// AC-12.1 to AC-12.3; component-work-orders invariants 62 to 66;
 // component-risk-review invariant 12).
 func RunRiskOrderConformance(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context

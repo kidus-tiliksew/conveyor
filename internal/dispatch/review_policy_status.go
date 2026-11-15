@@ -2,9 +2,8 @@ package dispatch
 
 // The conveyor/review-policy commit status of an enforcing task
 // (req-risk-based-review AC-10.1, AC-10.2; component-git-delivery invariant
-// 37; component-submission-merge invariant 65; feature-risk-based-review
-// RR-9). A task whose frozen risk mode is off or record publishes nothing and
-// reads nothing here.
+// 37; component-submission-merge invariant 65). A task whose frozen risk mode
+// is off or record publishes nothing and reads nothing here.
 //
 // The status of a head is pending while the head lacks any agent review or
 // human approval its requirements call for, and success once it has them.

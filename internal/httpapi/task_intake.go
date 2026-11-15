@@ -100,7 +100,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	// A plan filed at intake is checked against the risk policy that will
 	// freeze into the task, so the configuration is read once, here, before
 	// the idempotency lookup, and the same snapshot is frozen below
-	// (req-risk-based-review AC-4.2; feature-risk-based-review RR-4).
+	// (req-risk-based-review AC-4.2; component-plan-state invariant 9).
 	var current *config.Config
 	currentLoaded := false
 	loadCurrent := func() *taskCreateError {

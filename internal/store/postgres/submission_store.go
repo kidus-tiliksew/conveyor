@@ -359,7 +359,7 @@ func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.T
 		}
 		// The head's risk order is created, and earlier heads' open risk
 		// orders cancelled, in the act that completes the implement order
-		// (feature-risk-based-review RR-12).
+		// (component-submission-merge invariant 68).
 		if request.HeadRisk != nil {
 			_, err = applyHeadRiskOrderTx(ctx, tx, q, order.TaskID, *request.HeadRisk)
 		}

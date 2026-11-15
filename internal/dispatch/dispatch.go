@@ -59,7 +59,8 @@ type Dispatcher struct {
 	SubmissionPR                func(context.Context, string, string) (github.SubmissionPullRequest, error)
 	DiscoverDocumentationPolicy func(context.Context, string, string) github.DocumentationPolicyDiscovery
 	// DiscoverRiskDeclaration reads .conveyor/risk.yaml at a base commit
-	// (req-risk-based-review AC-3.2; feature-risk-based-review RR-2).
+	// (req-risk-based-review AC-3.2; component-risk-review invariants 6 and
+	// 15).
 	DiscoverRiskDeclaration    func(context.Context, string, string) riskpolicy.DeclarationInput
 	RequestMerge               func(context.Context, string, int) error
 	RequestMergeWithCredential func(context.Context, string, int, string) error
@@ -552,7 +553,7 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 	}
 	// Durable reconcile names the same head through the same selection, so it
 	// holds a task exactly when this dispatch would wait for its risk order
-	// (feature-risk-based-review RR-12).
+	// (component-review invariant 41).
 	var events []core.Event
 	if !task.ApprovalStale {
 		if events, err = d.Store.ListCompactEvents(ctx, task.ID); err != nil {
@@ -565,7 +566,7 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 	// can still rise; completing or cancelling the risk order enqueues the
 	// task, and this dispatch then resolves the seats with the tier as it
 	// stands. Under record and off no risk order is read
-	// (feature-risk-based-review RR-12; req-risk-based-review AC-1.6, AC-5.10;
+	// (component-review invariant 41; req-risk-based-review AC-1.6, AC-5.10;
 	// component-risk-review invariant 13).
 	if held, holdErr := ReviewRoundHeldByRiskOrder(ctx, d.Store, task, head); holdErr != nil || held {
 		return holdErr
@@ -608,7 +609,7 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 // seatCount is the round's RS-2 resolved count and floor its seat floor; a
 // count below the floor is refused before any job or order is built, and
 // seats beyond the configured list are content-free like every persisted seat
-// (feature-review-seat-minimum RS-2; DEC-56(2), DEC-77, DEC-123).
+// (feature-review-seat-minimum RS-2; DEC-56(2), DEC-77, DEC-135).
 func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRoute, round, seatCount, floor int) ([]core.Job, []core.WorkOrder, error) {
 	if cfg == nil || round <= 0 {
 		return nil, nil, fmt.Errorf("review round configuration and positive round are required")
@@ -1257,7 +1258,7 @@ func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Ta
 // optional base commit, and records it at the plan_approval gate. Validation
 // refuses before any write, so the order stays claimed (component-work-orders
 // invariant 56). No tier rule applies: a plan states no tier, and a line that
-// reads like one is plan text (feature-risk-based-review RR-13). The result
+// reads like one is plan text (component-risk-review invariant 8). The result
 // names the plan version and its risk order ID, empty when the version got
 // none (req-risk-based-review AC-12.6).
 func (d *Dispatcher) ApplyExternalPlan(ctx context.Context, task core.Task, job core.Job, value pipeline.StructuredPlan, agent, model string) (SubmittedPlan, error) {
@@ -1276,7 +1277,7 @@ type SubmittedPlan struct {
 }
 
 // PlanReviewSeatsBelowMinimumError refuses a planned review seat count below
-// the task's minimum (req-review-gates-evidence AC-2.8; DEC-123;
+// the task's minimum (req-review-gates-evidence AC-2.8; DEC-135;
 // feature-review-seat-minimum RS-3).
 type PlanReviewSeatsBelowMinimumError struct {
 	ReviewSeats      int
@@ -1321,8 +1322,8 @@ func (d *Dispatcher) completeSpec(ctx context.Context, task core.Task, result pi
 // order, and the cancellation of an earlier version's open risk order commit
 // in one store transaction under the task operation lock, so a refused or
 // failed transition records no version and no order (req-task-plan-state
-// AC-1.2; req-risk-based-review AC-4.7, AC-4.9; feature-risk-based-review
-// RR-13). No submission approves a plan, whatever the task's policy version:
+// AC-1.2; req-risk-based-review AC-4.7, AC-4.9; component-plan-state
+// invariant 9). No submission approves a plan, whatever the task's policy version:
 // only a person's recorded approval reaches planning completed
 // (component-work-orders invariant 56; req-task-centric-delivery AC-2.1,
 // AC-2.3; DEC-125(6)).

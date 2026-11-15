@@ -2481,7 +2481,7 @@ test('a stalled task offers redispatch only as the server choice', async ({ page
 })
 
 // An enforcing task short of its required human approvals (req-risk-based-review
-// AC-8.2, AC-8.7, AC-11.1, AC-11.2; feature-risk-based-review RR-7). The
+// AC-8.2, AC-8.7, AC-11.1, AC-11.2; component-web-task-surfaces invariant 45). The
 // server labels the merge choice Approve while more than one approval remains;
 // the card states the count beside it, and the confirm says the act records
 // the person's approval and merges nothing.
@@ -3138,7 +3138,7 @@ test('the disposition card without a decision request shows no request box', asy
 })
 
 // An enforcing task that waits for a risk order (req-risk-based-review AC-11.3;
-// feature-risk-based-review RR-16). Each statement is the server's: at plan
+// component-next-action, The statement, row 3a). Each statement is the server's: at plan
 // approval the plan risk row names the agent and the risk order and offers no
 // approval, and a review round that waits for a head's risk order takes the
 // queued and working rows with their risk-stage wording. The card prints the

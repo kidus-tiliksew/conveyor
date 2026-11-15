@@ -18,8 +18,8 @@ import (
 )
 
 // riskTierLine is a line in the retired plan tier format. A plan that still
-// holds it is accepted, and the line is plan text (feature-risk-based-review
-// RR-13).
+// holds it is accepted, and the line is plan text (component-mcp-protocol
+// invariant 42).
 const riskTierLine = "Risk tier: medium — The plan changes intake."
 
 // tieredIntakePlan holds the retired tier line; intakeTestPlan holds none.
@@ -59,7 +59,7 @@ func planRiskOrders(t *testing.T, st store.Store, ctx context.Context, taskID st
 // version 1 when the frozen mode is record or enforce; a plan approved in the
 // act that files it gets none; an off task gets none; and no intake records a
 // rating from plan text (req-risk-based-review AC-4.7, AC-1.1;
-// feature-risk-based-review RR-13; component-plan-state invariant 2).
+// component-plan-state invariants 2 and 9).
 func TestIntakePlanRiskOrder(t *testing.T) {
 	f := newSessionIntakeFixture(t)
 	token := humanIntakeToken(core.WorkspaceRoleOperator)
@@ -127,8 +127,7 @@ func seedRiskPlanTask(t *testing.T, st store.Store, id string, mode riskpolicy.M
 // accepted with or without a tier line in every mode; the attached version
 // gets one risk order under record and enforce; and the plan reads serve no
 // tier from the plan text (req-risk-based-review AC-4.7;
-// feature-risk-based-review RR-13; DEC-134(2); component-plan-state invariant
-// 5).
+// DEC-134(2); component-plan-state invariants 5 and 9).
 func TestAttachPlanRiskOrder(t *testing.T) {
 	_, st, handler := policyHTTPFixture(t)
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
@@ -188,7 +187,7 @@ func TestAttachPlanRiskOrder(t *testing.T) {
 // intervention, no approval, and no plan-state move; once the order is
 // cancelled, approval succeeds. Under record it never waits
 // (req-risk-based-review AC-4.8, AC-1.6; req-task-plan-state AC-1.3;
-// feature-risk-based-review RR-13).
+// component-plan-state invariant 10).
 func TestPlanApprovalWaitsForRiskOrder(t *testing.T) {
 	for _, mode := range []riskpolicy.Mode{riskpolicy.ModeEnforce, riskpolicy.ModeRecord} {
 		t.Run(string(mode), func(t *testing.T) {

@@ -228,7 +228,8 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	}
 	// The head's path minimums are recorded before the first handoff write.
 	// A risk read that fails gives high and never refuses the submission
-	// (req-risk-based-review AC-5.1, AC-5.4; feature-risk-based-review RR-3).
+	// (req-risk-based-review AC-5.1, AC-5.4; component-submission-merge
+	// invariant 67).
 	if err = s.recordSubmissionPathRisk(ctx, task, repo.GitHub, target.Base.SHA, headSHA, func(context.Context) ([]string, error) {
 		if pathsRead {
 			return paths, nil
@@ -250,7 +251,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	// After the path rating, the head's risk order request names the head,
 	// its observed base commit, and its complete changed paths. The
 	// submission command decides the need from the ratings and risk orders it
-	// reads in its own transaction (feature-risk-based-review RR-12;
+	// reads in its own transaction (component-submission-merge invariant 68;
 	// component-risk-review invariant 12).
 	var headRisk *store.HeadRiskOrderRequest
 	if pathsRead {
@@ -566,7 +567,7 @@ func (s *Service) submissionJobReady(ctx context.Context, order core.WorkOrder) 
 // completeImplementationSubmission records the submitted order and completes
 // its own job atomically, with the head's risk order effects when headRisk is
 // set; a completion failure leaves none of them written
-// (feature-risk-based-review RR-12).
+// (component-submission-merge invariants 20 and 68).
 func (s *Service) completeImplementationSubmission(ctx context.Context, order core.WorkOrder, headSHA string, documentationChecked bool, documentation *core.DocumentationGateEvidence, reviewSeats store.SubmissionReviewSeats, headRisk *store.HeadRiskOrderRequest) error {
 	order.State = core.WorkOrderSubmitted
 	order.HeadSHA = headSHA

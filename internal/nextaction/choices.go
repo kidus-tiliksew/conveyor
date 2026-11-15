@@ -582,7 +582,7 @@ func mergeAtGateRefusal(in Input) string {
 
 // riskApprovalChoice decides the merge and approve choices of an enforcing
 // task from the caller's own approval (req-risk-based-review AC-8.3, AC-8.7,
-// AC-11.1, REQ-9; feature-risk-based-review RR-7). The merge choice keeps its
+// AC-11.1, REQ-9; component-next-action, The statement). The merge choice keeps its
 // label, and opens the merge confirmation, only when the act lands the head:
 // the requirements are already met, or the caller's approval meets every one
 // of them. When the caller's approval counts but leaves the task short, the

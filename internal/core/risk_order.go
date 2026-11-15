@@ -11,7 +11,7 @@ import (
 )
 
 // RiskOrderSubject names what one risk order rates: exactly one plan version,
-// or one head with its base (feature-risk-based-review RR-11). A task has at
+// or one head with its base (component-work-orders invariant 62). A task has at
 // most one risk order per subject.
 type RiskOrderSubject struct {
 	PlanVersion int    `json:"plan_version,omitempty"`
@@ -63,7 +63,7 @@ func (s RiskOrderSubject) Key() string {
 // RiskOrder is a risk-stage work order with what it rates. ChangedPaths and
 // MatchedRules are copied at creation for a head and empty for a plan
 // version. The order's completion reads them, never the completing call
-// (feature-risk-based-review RR-11; req-risk-based-review AC-12.5).
+// (component-work-orders invariants 64 and 65; req-risk-based-review AC-12.5).
 type RiskOrder struct {
 	Order        WorkOrder              `json:"order"`
 	Subject      RiskOrderSubject       `json:"subject"`

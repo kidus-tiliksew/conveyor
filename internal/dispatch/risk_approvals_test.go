@@ -15,7 +15,8 @@ import (
 
 // Tests for counted human approvals, authors, and trust on enforcing tasks
 // (req-risk-based-review REQ-8, REQ-9, AC-8.3 to AC-8.8, AC-9.1 to AC-9.3;
-// req-review-gates-evidence AC-1.3; feature-risk-based-review RR-7).
+// req-review-gates-evidence AC-1.3; component-risk-review invariants 19 to
+// 23).
 
 func person(id string) core.Actor {
 	return core.Actor{ID: store.UserActorID(id), Role: core.ActorUser}

@@ -56,7 +56,7 @@ const (
 	StageReview    Stage = "review"
 	StageVerify    Stage = "verify"
 	// StageRisk is the risk order stage: a separate session rates a plan
-	// version or a head (feature-risk-based-review RR-11;
+	// version or a head (component-work-orders invariant 1;
 	// req-risk-based-review REQ-12).
 	StageRisk    Stage = "risk"
 	StageGate    Stage = "gate"
@@ -65,7 +65,7 @@ const (
 )
 
 // ValidWorkOrderStage is the closed executor-stage vocabulary (DEC-43;
-// component-work-orders; feature-risk-based-review RR-11).
+// component-work-orders invariant 1).
 func ValidWorkOrderStage(stage Stage) bool {
 	return stage == StageSpec || stage == StageImplement || stage == StageVerify || stage == StageReview || stage == StageRisk
 }
@@ -733,7 +733,7 @@ type WorkOrder struct {
 	// RiskSubject names what a risk order rates on the work-order list. It
 	// is a read projection from the risk order's stored subject and is never
 	// persisted on the order row (req-risk-based-review AC-11.2;
-	// feature-risk-based-review RR-11).
+	// component-work-orders, Public surfaces).
 	RiskSubject *RiskOrderSubject `json:"risk_subject,omitempty"`
 
 	// ClaimExpiryUnpersisted marks a read-time projection of a stored claim

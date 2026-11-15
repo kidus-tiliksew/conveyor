@@ -77,7 +77,7 @@ type Command struct {
 	// spec.version_created event, and creates its risk order when the need
 	// decision calls for one, so a submitted plan, its plan-state move, and
 	// its risk order commit together (req-task-plan-state AC-1.2;
-	// req-risk-based-review AC-4.7; feature-risk-based-review RR-13).
+	// req-risk-based-review AC-4.7; component-plan-state invariant 9).
 	PlanVersion *core.SpecVersion
 	// TriageProceed makes the backend choose Kind, NextStage, and
 	// RecoveryStage from core.TriageProceedStep of the plan state it reads

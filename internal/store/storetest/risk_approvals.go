@@ -36,8 +36,8 @@ func (s gatedApprovalStore) AuthorizeWorkspace(_ context.Context, userID, _ stri
 // shared evaluation counts the backend's rows the same way on each backend:
 // a new round finds none, an untrusted author's approval does not count, and
 // a waiver satisfies only the trusted-author condition (req-risk-based-review
-// AC-8.3 to AC-8.8, AC-9.1 to AC-9.3; component-risk-review invariants 9 and
-// 10; feature-risk-based-review RR-7).
+// AC-8.3 to AC-8.8, AC-9.1 to AC-9.3; component-risk-review invariants 9,
+// 10, and 21).
 func RunTaskApprovalConformance(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	const head = "approval-head"

@@ -296,7 +296,7 @@ func (s *Store) applyReviewSeatAdditionTx(ctx context.Context, tx *sql.Tx, plan 
 
 // addRiskSeatsTx adds the seats an enforcing task's raised tier requires to
 // its open review round inside taskTx, in the act that raised the tier
-// (req-risk-based-review AC-7.2; feature-risk-based-review RR-5). ratings
+// (req-risk-based-review AC-7.2; component-review invariant 42). ratings
 // include the act's own rating. A replayed act finds its ledger row and adds
 // nothing.
 func (s *Store) addRiskSeatsTx(ctx context.Context, tx *sql.Tx, task core.Task, ratings []core.RiskRating, trigger store.RiskSeatTrigger, seats store.RiskSeatSettings) error {

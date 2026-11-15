@@ -416,7 +416,7 @@ func (c *planChecker) checkOrphanPlans() {
 // validator submit_plan applies to a plan. No tier rule applies: a plan states
 // no tier, and a `Risk tier:` line is plan text (component-cli-onboarding
 // invariant 27; req-task-plan-state AC-2.2, AC-2.5, AC-2.6;
-// req-risk-based-review REQ-4; feature-risk-based-review RR-13).
+// req-risk-based-review REQ-4).
 func (c *planChecker) checkTaskPlan(item PlanItem) {
 	task := item.Task
 	if task.PlanState != nil {

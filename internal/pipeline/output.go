@@ -63,7 +63,7 @@ type Spec struct {
 	Acceptance    []AcceptanceCriterion
 	Decomposition []DecompositionItem
 	// ReviewSeats is a plan's planned review seat count, nil when the plan
-	// states none (feature-review-seat-minimum RS-3; DEC-123).
+	// states none (feature-review-seat-minimum RS-3; DEC-135).
 	ReviewSeats *int
 	// BaseCommit is the full commit ID the plan was read against, empty when
 	// the planner stated none (component-work-orders invariant 56;
@@ -184,7 +184,7 @@ var planHeadingPattern = regexp.MustCompile(`(?im)^#{1,6}[ \t]+([^\r\n#]+?)[ \t]
 // later retirement slice renames the persistence model. No path reads a risk
 // tier from a plan: a plan states no tier, and a line such as `Risk tier:` is
 // ordinary plan text, however it is written or placed
-// (req-risk-based-review REQ-4; feature-risk-based-review RR-13).
+// (req-risk-based-review REQ-4; component-risk-review invariant 8).
 func ParsePlan(markdown string, decomposition []DecompositionItem) (Spec, error) {
 	return parsePlanStructure(markdown, decomposition)
 }
@@ -197,7 +197,8 @@ func ParseStoredPlan(markdown string) (Spec, error) {
 
 func parsePlanStructure(markdown string, decomposition []DecompositionItem) (Spec, error) {
 	// CRLF line endings read as LF, so a plan saved by any editor parses the
-	// same way (feature-risk-based-review RR-4).
+	// same way (component-plan-state invariant 2; component-cli-onboarding
+	// invariant 27).
 	markdown = strings.TrimSpace(strings.ReplaceAll(markdown, "\r\n", "\n"))
 	if markdown == "" {
 		return Spec{}, fmt.Errorf("plan markdown is required")

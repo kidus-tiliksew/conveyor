@@ -31,7 +31,7 @@ type HeadPathRiskInput struct {
 
 // RecordHeadPathRisk records a head's path minimums once, before the head's
 // review handoff (req-risk-based-review AC-5.1, AC-5.4, AC-3.4, AC-3.5;
-// feature-risk-based-review RR-3). Submission and refresh share it. A
+// component-submission-merge invariant 67). Submission and refresh share it. A
 // declaration or changed-path list that cannot be read gives high with a
 // recorded reason and never refuses the caller; only a store failure returns
 // an error. No model is called. It reports the recorded rating, and false
@@ -131,7 +131,7 @@ type refreshPathRead struct {
 
 // recordRefreshPathRisk rates a refresh head before its approval is marked
 // stale and its refresh is dispatched or skipped (req-risk-based-review
-// AC-5.1; feature-risk-based-review RR-3). It returns the changed paths it
+// AC-5.1; component-submission-merge invariant 67). It returns the changed paths it
 // read in full.
 func (d *Dispatcher) recordRefreshPathRisk(ctx context.Context, cfg *config.Config, task core.Task, observed github.PullRequest) (refreshPathRead, error) {
 	if !task.SetupContract.Risk.Enabled() {

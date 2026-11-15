@@ -241,7 +241,7 @@ func (f *reviewSeatsFixture) submissionPayload(t *testing.T, id string) map[stri
 // larger of the RS-2 minimum and the newest approved plan count, equality is
 // accepted, and a refusal is typed, carries both counts, and leaves every
 // submission surface unchanged with the order still claimed
-// (req-review-gates-evidence AC-2.3; DEC-123; feature-review-seat-minimum RS-4).
+// (req-review-gates-evidence AC-2.3; DEC-135; feature-review-seat-minimum RS-4).
 func TestSubmitForReviewReviewSeatsFloor(t *testing.T) {
 	frozen := func(seats int) config.PolicyContract {
 		return config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, seats)}}
@@ -570,7 +570,7 @@ func TestSubmitForReviewReviewSeatsReplay(t *testing.T) {
 // raises the declared seat floor: a count below the tier's agent reviews is
 // refused before any submission effect with the order still claimed, and a
 // count at the floor opens that many seats (req-review-gates-evidence AC-2.3;
-// req-risk-based-review REQ-7; feature-risk-based-review RR-5).
+// req-risk-based-review REQ-7; component-review invariants 1 and 7).
 func TestSubmitForReviewReviewSeatsRiskFloor(t *testing.T) {
 	enforce := riskpolicy.Policy{Mode: riskpolicy.ModeEnforce, Tiers: riskpolicy.DefaultTable()}
 	setup := config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}, Risk: &enforce}

@@ -1219,7 +1219,7 @@ func TestRepoInitPreservedLinkPreimage(t *testing.T) {
 	}
 }
 
-// feature-risk-based-review RR-13: the plan tier line leaves the planning and
+// component-cli-onboarding invariant 43: the plan tier line leaves the planning and
 // filing playbooks that full installation copies, and guidance-only
 // installation writes only root guidance, which carries no tier text, so its
 // output is unchanged by the removal.
@@ -1261,7 +1261,7 @@ func TestRepoInitGuidanceOnlyAndPlaybooksCarryNoPlanTierRule(t *testing.T) {
 // `conveyor repo init` run in an empty repository writes work and
 // coordination playbooks that hold the risk agent rules for every supported
 // tool (req-agent-skills AC-3.16; req-agent-coordination AC-1.2;
-// feature-risk-based-review RR-17).
+// component-cli-onboarding invariant 43).
 func TestRepoInitIntoEmptyDirectoryWritesRiskAgentRules(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

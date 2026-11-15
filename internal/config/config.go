@@ -43,7 +43,7 @@ type Repo struct {
 	// an edit applies the next time a task's approvals are evaluated. An
 	// empty list trusts every person who holds operate_gates
 	// (req-risk-based-review REQ-9, AC-9.1, AC-9.3; component-risk-review,
-	// Public surfaces; feature-risk-based-review RR-1).
+	// Public surfaces, invariant 19).
 	TrustedAuthors []string `yaml:"trusted_authors,omitempty" json:"trusted_authors,omitempty"`
 
 	// Accepted only while canonicalizing pre-4.7 stored rows. These fields
@@ -743,8 +743,8 @@ type PolicyContract struct {
 	// Risk is the risk policy frozen by value at intake. It is nil when the
 	// workspace had no risk policy or its mode was off, so such a contract
 	// encodes exactly as it did before risk review existed
-	// (req-risk-based-review REQ-1, AC-1.1, AC-1.5; feature-risk-based-review
-	// RR-1).
+	// (req-risk-based-review REQ-1, AC-1.1, AC-1.5; component-runtime
+	// invariant 19).
 	Risk *riskpolicy.Policy
 	// legacyNamed records that an earlier full-setup encoding named its
 	// setup; such a stored row still counts as frozen policy.

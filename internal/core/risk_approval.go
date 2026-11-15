@@ -7,8 +7,8 @@ import (
 )
 
 // Human approvals of an enforcing task's head (req-risk-based-review REQ-8,
-// AC-8.3 to AC-8.8; component-risk-review invariants 9 and 10;
-// feature-risk-based-review RR-7). An approval names one person and binds to
+// AC-8.3 to AC-8.8; component-risk-review invariants 9, 10, and 21). An
+// approval names one person and binds to
 // the head and review round at which it was recorded. A new head always
 // reaches the merge gate through a new review round, so approvals bound to an
 // earlier round never count again, even when an earlier head returns.

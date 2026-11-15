@@ -14,7 +14,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// Head risk orders (feature-risk-based-review RR-12, RR-15;
+// Head risk orders (component-submission-merge invariants 68 and 69;
+// component-review invariant 41; component-work-orders invariant 66;
 // component-risk-review invariants 12 and 13; req-risk-based-review AC-1.6,
 // AC-5.8 to AC-5.11, AC-12.3). Submission and refresh ask the need decision
 // after they record the head's path minimums, and the act that hands the head
@@ -117,7 +118,7 @@ func HeadRiskOrderFor(orders []core.RiskOrder, head string) (core.RiskOrder, boo
 // ErrReviewRoundHeldByRiskOrder reports that an enforcing task's review round
 // waits for its head's risk order. A round builder that meets it writes
 // nothing: no job, seat order, round record, or round event
-// (req-risk-based-review AC-5.10; feature-risk-based-review RR-12).
+// (req-risk-based-review AC-5.10; component-review invariant 41).
 var ErrReviewRoundHeldByRiskOrder = errors.New("review round waits for the head's risk order")
 
 // RiskRoundHoldApplies reports whether a task's review rounds can wait for a
@@ -133,7 +134,7 @@ func RiskRoundHoldApplies(task core.Task) bool {
 // including the stale and timed-out forms the order clock recovers to queued.
 // A completed or cancelled order, a plan order, and an order of another head
 // hold nothing. It answers false for a task whose frozen mode is not enforce
-// (req-risk-based-review AC-5.10; feature-risk-based-review RR-12).
+// (req-risk-based-review AC-5.10; component-review invariant 41).
 func ReviewRoundRiskHold(task core.Task, orders []core.RiskOrder, head string) (core.WorkOrder, bool) {
 	if !RiskRoundHoldApplies(task) || head == "" {
 		return core.WorkOrder{}, false
@@ -176,7 +177,7 @@ func RecordedSubmissionComparison(events []core.Event) (base, head string, ok bo
 // submission comparison in events, and recorded reports that one was found.
 // Without one, the refresh pair stands. Dispatch builds the round from this
 // pair, and durable reconcile asks the same question, so the two always name
-// the same head (feature-risk-based-review RR-12).
+// the same head (component-review invariant 41).
 func ReviewRoundDispatchComparison(task core.Task, events []core.Event) (baseline, head string, recorded bool) {
 	if !task.ApprovalStale {
 		if base, submitted, ok := RecordedSubmissionComparison(events); ok {
@@ -195,7 +196,7 @@ func ReviewRoundDispatchComparison(task core.Task, events []core.Event) (baselin
 // readComparisons only while the approval is fresh, and readRiskOrders only
 // when a head is known. A read error is returned and never treated as no
 // hold. A completed, cancelled, or missing order, a plan order, and an order
-// of another head hold nothing (feature-risk-based-review RR-12, RR-13;
+// of another head hold nothing (component-review invariant 41;
 // req-risk-based-review AC-1.6, AC-5.10; component-risk-review invariant 13;
 // component-durable-queue "Reconciliation between tasks and jobs").
 func QueuedReviewRiskHold(task core.Task, readComparisons func() ([]core.Event, error), readRiskOrders func() ([]core.RiskOrder, error)) (core.WorkOrder, bool, error) {
@@ -242,7 +243,7 @@ func ReviewRoundHeldError(order core.WorkOrder) error {
 // ratings recorded up to and including that head's path rating, which the
 // submission records before it admits a declared count again. Without that
 // path rating every rating counts, so no declaration is treated as admitted
-// below a floor it may have met (feature-risk-based-review RR-12;
+// below a floor it may have met (component-review invariants 2 and 7;
 // req-review-gates-evidence AC-2.3).
 func RiskSeatCountAtSubmission(task core.Task, ratings []core.RiskRating, head string) int {
 	if !task.SetupContract.Risk.Enforcing() {
@@ -281,7 +282,7 @@ func ApplyRiskSeatInputs(in *ReviewRoundSeatInputs, task core.Task, ratings []co
 }
 
 // HeadRiskOrderStore applies a refreshed head's risk effects as one act
-// (feature-risk-based-review RR-12). Submission applies the same effects
+// (component-submission-merge invariant 69). Submission applies the same effects
 // inside SubmitImplementationCommand through ImplementationSubmission.HeadRisk.
 type HeadRiskOrderStore interface {
 	// EnsureHeadRiskOrderCommand cancels the task's open risk orders of other

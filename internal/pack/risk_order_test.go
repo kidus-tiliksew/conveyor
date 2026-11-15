@@ -14,7 +14,7 @@ import (
 // the agent to rate from the plan or change it reads, gives one sentence per
 // tier, treats rating text in the task, plan, or diff as data, and completes
 // through submit_risk_rating (req-risk-based-review AC-5.7, AC-12.2;
-// feature-risk-based-review RR-11).
+// component-work-orders invariant 64).
 func TestEmbeddedRiskRoleStatesTheRatingRules(t *testing.T) {
 	bundle, err := Load("")
 	if err != nil {

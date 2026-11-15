@@ -25,7 +25,7 @@ import (
 // record tasks keep their seats and edges (req-risk-based-review REQ-7,
 // AC-7.1, AC-7.2, AC-8.1, AC-8.2, AC-8.6, AC-1.6, AC-5.7;
 // req-review-gates-evidence AC-2.1, AC-2.3, AC-2.6, AC-2.7;
-// feature-risk-based-review RR-5, RR-6, RR-14).
+// component-review invariants 1, 13, and 42; component-task-lifecycle invariant 5).
 func RunRiskEnforcementConformance(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	enforce := riskpolicy.Policy{Mode: riskpolicy.ModeEnforce, Tiers: riskpolicy.DefaultTable()}

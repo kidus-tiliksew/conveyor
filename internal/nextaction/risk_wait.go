@@ -15,8 +15,8 @@ const PlanRiskRating = "plan_risk_rating"
 // gate row would ask a person for an approval the factory refuses. The row
 // matches only an enforcing task waiting at plan approval whose current plan
 // version's risk order is queued or claimed. Completion or cancellation ends
-// the match, and the gate row applies again (feature-risk-based-review RR-16;
-// req-risk-based-review AC-4.8, AC-11.3).
+// the match, and the gate row applies again (component-next-action, The
+// statement, row 3a; req-risk-based-review AC-4.8, AC-11.3).
 func planRiskWait(in Input) bool { return planRiskWaitOrder(in) != nil }
 
 func planRiskWaitOrder(in Input) *core.WorkOrder {
@@ -54,7 +54,7 @@ func planRiskWaitBuild(in Input) built {
 // the view drops the task's risk orders while any order of another stage is
 // queued or claimed. Otherwise it returns orders unchanged. Under enforce the
 // task waits for its risk order, so the view keeps it
-// (feature-risk-based-review RR-15; req-risk-based-review AC-1.6).
+// (component-next-action, The statement; req-risk-based-review AC-1.6).
 func SelectableOrders(task core.Task, orders []core.WorkOrder) []core.WorkOrder {
 	if task.SetupContract.Risk == nil || task.SetupContract.Risk.Mode != riskpolicy.ModeRecord {
 		return orders

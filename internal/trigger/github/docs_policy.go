@@ -52,7 +52,7 @@ type conveyorFile struct {
 // readConveyorFile reads .conveyor/<name> at revision with the workspace App
 // token. It reads only the commit, the root tree, the .conveyor tree, and the
 // file's blob, so a declaration is always read at the named commit and never
-// at a branch head (DEC-71; feature-risk-based-review RR-2).
+// at a branch head (DEC-71; component-risk-review invariant 6).
 func (c *AppClient) readConveyorFile(ctx context.Context, st AppStore, workspace, slug, revision, name string, maxBytes int) conveyorFile {
 	unknown := func(reason string) conveyorFile { return conveyorFile{state: "unknown", reason: reason} }
 	sha, err := hex.DecodeString(revision)

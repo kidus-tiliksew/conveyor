@@ -13,7 +13,7 @@ const planFixturePlan = "# Plan\n\n## Approach\n\nAdd the check following draft:
 
 // planFixtureRiskTier is a line in the retired plan tier format. The fixture
 // keeps it to show that a plan holding it passes as plan text
-// (feature-risk-based-review RR-13).
+// (component-cli-onboarding invariant 27).
 const planFixtureRiskTier = "Risk tier: low — The check reads local files only."
 
 const planFixtureBaseCommit = "0123456789abcdef0123456789abcdef01234567"
@@ -178,7 +178,8 @@ func TestPlanCheckTaskPlanPasses(t *testing.T) {
 	}
 }
 
-// feature-risk-based-review RR-13: conveyor plan check applies no tier rule.
+// component-cli-onboarding invariant 27: conveyor plan check applies no tier
+// rule.
 // A plan with no tier line and a plan whose tier line the retired grammar
 // refused, malformed, repeated, or outside Risks, both pass with no warning.
 func TestPlanCheckAppliesNoTierRule(t *testing.T) {

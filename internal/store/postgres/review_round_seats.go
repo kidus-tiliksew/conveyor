@@ -325,7 +325,7 @@ func applyReviewSeatAdditionTx(ctx context.Context, tx pgx.Tx, q *db.Queries, wo
 // addRiskSeatsTx adds the seats an enforcing task's raised tier requires to
 // its open review round, inside the transaction of the act that raised the
 // tier, which holds the task lock (req-risk-based-review AC-7.2;
-// feature-risk-based-review RR-5). ratings include the act's own rating. A
+// component-review invariant 42). ratings include the act's own rating. A
 // replayed act finds its ledger row and adds nothing.
 func addRiskSeatsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, workspaceID string, task core.Task, ratings []core.RiskRating, trigger store.RiskSeatTrigger, seats store.RiskSeatSettings) error {
 	if !task.SetupContract.Risk.Enforcing() {

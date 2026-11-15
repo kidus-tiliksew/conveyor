@@ -199,7 +199,7 @@ func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, q store.CallerA
 // ListCheckpointContextCandidates reads each task's latest order from the view
 // the next action selects from: under a record-mode risk policy, a risk order
 // is skipped while another order of the task is queued or claimed, so it never
-// hides a checkpoint (feature-risk-based-review RR-15). The candidate order w
+// hides a checkpoint (component-next-action, The statement). The candidate order w
 // is queued, so when w is not a risk order it is that other open order.
 func (s *Store) ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]store.CheckpointContextCandidate, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListCheckpointContextCandidates")
@@ -312,7 +312,7 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 			// The risk hold is read before the job stream. Completing or
 			// cancelling the risk order enqueues the task in the same
 			// transaction, so a hold read after that commit is gone and the
-			// job read finds the wake active (feature-risk-based-review RR-12).
+			// job read finds the wake active (component-work-orders invariant 66).
 			if c.nextStage == core.StageReview {
 				held, err := reconcileRiskHeldTx(ctx, tx, id)
 				if err != nil {
@@ -378,7 +378,7 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 // and store.QueuedReviewRiskHold reads its recorded submission comparisons
 // and risk orders only when its frozen mode is enforce. Dispatch applies the
 // same hold to the same head, so reconcile repairs no task that dispatch
-// would leave waiting (feature-risk-based-review RR-12;
+// would leave waiting (component-review invariant 41;
 // req-risk-based-review AC-1.6, AC-5.10; component-risk-review invariant 13;
 // component-durable-queue "Reconciliation between tasks and jobs").
 func reconcileRiskHeldTx(ctx context.Context, tx *sql.Tx, taskID string) (bool, error) {

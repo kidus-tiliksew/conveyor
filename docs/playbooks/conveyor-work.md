@@ -423,11 +423,12 @@ evidence are adequate (DEC-53; req-verification-kits AC-8.4).
 
 A risk agent is the session that holds a risk order. It rates one plan version
 or one change of a task with a tier and a one-line reason. It plans nothing,
-implements nothing, and reviews nothing (DEC-135(8); `feature-risk-based-review`
-RR-11). A session that plans, implements, or reviews states no tier.
-`submit_plan`, `submit_for_review`, and `submit_review_verdict` have no tier
-field (RR-13, RR-14). The delivered risk role in the work order is the
-contract. This section restates it for a reader who has only this playbook.
+implements nothing, and reviews nothing (DEC-135(8); component-work-orders
+invariants 62 to 65). A session that plans, implements, or reviews states no
+tier. `submit_plan`, `submit_for_review`, and `submit_review_verdict` have no
+tier field (component-mcp-protocol invariant 42). The delivered risk role in
+the work order is the contract. This section restates it for a reader who has
+only this playbook.
 
 1. Create your own session ID and client token. Never use the session ID or
    client token of the session that started you.
@@ -534,12 +535,12 @@ starts: pass
 `review_seats` on `submit_for_review`, or run
 `conveyor submit <task-id> --review-seats N`. Without the field or flag the
 submission declares nothing (req-review-gates-evidence AC-2.3; DEC-77(2);
-DEC-123(1)). When the session's MCP tool schema omits `review_seats`, reload
+DEC-135(1)). When the session's MCP tool schema omits `review_seats`, reload
 the registration instead of sending another field.
 
 - The task's seat floor is the largest of its frozen minimum seat count, its
   latest approved plan's seat count, and the agent reviews its risk tier
-  requires (DEC-123(2)). A task with no risk policy has no tier count.
+  requires (DEC-135(2)). A task with no risk policy has no tier count.
 - A declared count below the floor is refused with `review_seats_below_floor`.
   No round starts and the order stays claimed; correct or omit the count and
   submit again.
@@ -557,7 +558,7 @@ the registration instead of sending another field.
 ### Add review seats on direct instruction
 
 Adding seats to an open review round is a separate operator act, not a gate and
-not a gate reply (req-review-gates-evidence AC-2.5; DEC-77(2); DEC-123(1)). Run
+not a gate reply (req-review-gates-evidence AC-2.5; DEC-77(2); DEC-135(1)). Run
 it only as [Record on direct instruction](#human-gates) describes, never on
 inference or as an automatic escalation (DEC-84):
 
@@ -587,8 +588,8 @@ describes.
 
 A risk order rates one plan version or one head of the task. Conveyor creates
 it. The session that orchestrates the task starts one separate agent for each
-risk order (req-agent-skills AC-3.16; DEC-135(13); `feature-risk-based-review`
-RR-17). The session does not ask the operator for permission to start it. A
+risk order (req-agent-skills AC-3.16; DEC-135(13); component-cli-onboarding
+invariant 43). The session does not ask the operator for permission to start it. A
 missing `risk` preference is a setup question, not a launch approval, as
 [Choose how each stage runs](#choose-how-each-stage-runs) describes.
 
@@ -673,7 +674,8 @@ risk order's `state` in `risk.orders`, and each completed rating with source
 
 **What waits for the rating.** The task's frozen risk mode is in
 `task.policy_contract.risk.mode` of the `get_work_order` response
-(component-risk-review invariant 13; `feature-risk-based-review` RR-15):
+(component-risk-review invariant 13; component-plan-state invariant 10;
+component-review invariant 41):
 
 - **Enforce.** Plan approval waits for the plan version's risk order. While
   that order is queued or claimed, Conveyor refuses the approval with
@@ -689,11 +691,13 @@ risk order's `state` in `risk.orders`, and each completed rating with source
 
 An unclaimed risk order waits in the queue like every other order. No clock
 cancels or escalates it. It stays queued until an agent claims it, a later
-plan version or head replaces it, or the task merges or closes (RR-15).
+plan version or head replaces it, or the task merges or closes
+(component-work-orders invariants 5 and 66).
 
 A person who holds `operate_gates` can raise the task's tier to high. The
 raise cancels the task's open risk orders in the same act, and the wait ends
-(DEC-135(11); RR-15). The session never raises a tier itself to end a wait.
+(DEC-135(11); component-work-orders invariant 66). The session never raises a
+tier itself to end a wait.
 A risk agent never decides a gate.
 
 ### Start verifier and reviewer agents
@@ -964,19 +968,19 @@ rule for running stages stay in the harness's own agent memory. Conveyor
 stores none of them (DEC-131(3)).
 
 - **Review seat count.** The operator's review seat count rule is one of these
-  memory rules (DEC-123(3); DEC-131(3)). It may direct a planner to state
+  memory rules (DEC-135(3); DEC-131(3)). It may direct a planner to state
   `review_seats` on `submit_plan` and an implementer to declare a count at
   submission, as [Declare a review seat count](#declare-a-review-seat-count)
   describes, by task difficulty or any other rule the operator records. A
   delegated planner receives that direction as one added sentence in its
   launch prompt. Conveyor stores seat counts and their sources, the closed
   risk scale, the workspace risk policy, and each task's ratings, and never a
-  difficulty class or any other raise rule (DEC-123(3)). A planned count below
+  difficulty class or any other raise rule (DEC-135(3)). A planned count below
   the task's frozen minimum is refused with `review_seats_below_minimum` and
   the plan order stays claimed for correction. An accepted count is shown with
   the plan at plan approval, and only the latest approved plan's count
   contributes to the seat floor; a later approved plan without a count clears
-  that contribution (req-review-gates-evidence AC-2.8; DEC-123(2)).
+  that contribution (req-review-gates-evidence AC-2.8; DEC-135(2)).
 - **Reporting.** Call `report_progress` on the submitted implementation order
   with its session to name the harness and model used for each verifier, risk
   agent, reviewer, and review primary. Name the harness and model of a
@@ -1336,11 +1340,12 @@ or report them as completed.
 
 This loop implements req-agent-skills REQ-2 (AC-2.1 through AC-2.3) and REQ-3
 (AC-3.1 through AC-3.7 and AC-3.9 through AC-3.16) under DEC-131, DEC-135, and
-DEC-84. Risk agents follow `feature-risk-based-review` RR-11 to RR-17 and
-component-risk-review invariants 8, 12, and 13. It
+DEC-84. Risk agents follow component-work-orders invariants 62 to 66,
+component-cli-onboarding invariant 43, and component-risk-review invariants 8,
+12, and 13. It
 preserves req-delegated-execution REQ-1 lease and deadline rules, REQ-2 review
 independence, and REQ-3 dedicated worktrees, with the post-merge fast-forward
 bounded by REQ-3 AC-3.8 and AC-3.9, and follows req-review-gates-evidence REQ-2
 (AC-2.3 through AC-2.6 and AC-2.8) for declared, planned, and operator-added
-review seats under DEC-77 and DEC-123. `component-work-orders` governs the
+review seats under DEC-77 and DEC-135. `component-work-orders` governs the
 work-order mechanism; this playbook changes no lifecycle semantics.

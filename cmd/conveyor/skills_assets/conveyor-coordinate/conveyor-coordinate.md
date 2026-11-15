@@ -298,8 +298,8 @@ and submits no verdict. It ends once the seat threads are started.
 A risk order rates one plan version or one head of a task. Conveyor creates
 it after a plan submission or an implementation submission. A risk thread
 claims it under `conveyor-work` and ends with `submit_risk_rating`
-(req-agent-coordination AC-1.2; DEC-135(13); `feature-risk-based-review`
-RR-17). The submission result names the order as `risk_work_order_id`. Do
+(req-agent-coordination AC-1.2; DEC-135(13); component-cli-onboarding
+invariant 43). The submission result names the order as `risk_work_order_id`. Do
 not depend on a thread's report of it: `list_work_orders` shows every risk
 order with stage `risk` (req-agent-coordination AC-1.8).
 
@@ -334,7 +334,8 @@ order with stage `risk` (req-agent-coordination AC-1.8).
 
 What waits for the rating depends on the task's frozen risk mode, which the
 order's `task.policy_contract.risk.mode` shows (component-risk-review
-invariant 13; `feature-risk-based-review` RR-15):
+invariant 13; component-plan-state invariant 10; component-review invariant
+41):
 
 - **Enforce.** Plan approval waits for the plan version's risk order, and
   Conveyor refuses the approval with `plan_risk_rating_open` while the order

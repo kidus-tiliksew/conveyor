@@ -460,7 +460,7 @@ const (
 // taskWaitStageOrder ranks claimable stages the way a session works them. A
 // risk order ranks last: ordinary work beside it is reported first, and a lone
 // claimable risk order is reported, so its creation ends a wait
-// (feature-risk-based-review RR-15, RR-16).
+// (component-cli-onboarding invariant 22).
 var taskWaitStageOrder = map[core.Stage]int{core.StageSpec: 0, core.StageImplement: 1, core.StageVerify: 2, core.StageReview: 3, core.StageRisk: 4}
 
 // taskWaitAwaitingGate maps the next action of an awaiting_human task to the

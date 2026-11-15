@@ -74,7 +74,7 @@ func rateRiskOrder(t *testing.T, f evidenceSubmissionFixture, id string, tier ri
 // risk order of an earlier head, and that a replay names the same order and
 // creates none; mode off and a head rated high get no order
 // (req-risk-based-review AC-1.1, AC-5.8, AC-5.11, AC-12.3, AC-12.6;
-// feature-risk-based-review RR-12).
+// component-submission-merge invariant 68).
 func TestSubmissionCreatesHeadRiskOrder(t *testing.T) {
 	head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	for _, tc := range []struct {
@@ -145,7 +145,7 @@ func TestSubmissionCreatesHeadRiskOrder(t *testing.T) {
 // the tier's agent reviews and source risk, above a declared count that the
 // submission admitted. A record task's round opens at once at its declared
 // count (req-risk-based-review AC-1.6, AC-5.10, AC-7.1;
-// req-review-gates-evidence AC-2.3; feature-risk-based-review RR-12).
+// req-review-gates-evidence AC-2.3; component-review invariants 2 and 41).
 func TestRoundWaitsForTheHeadRiskOrder(t *testing.T) {
 	head := strings.Repeat("a", 40)
 	for _, mode := range []riskpolicy.Mode{riskpolicy.ModeRecord, riskpolicy.ModeEnforce} {
@@ -218,7 +218,7 @@ func (s verifyRiskTaskStore) CreateTask(ctx context.Context, task core.Task) err
 // TestVerifyAndRiskOrdersAreClaimableTogether proves that with verify_stage
 // on, the submitted head's risk order and its verify order are both claimable
 // and are claimed side by side: risk is no serial stage
-// (feature-risk-based-review RR-12).
+// (component-submission-merge invariant 68).
 func TestVerifyAndRiskOrdersAreClaimableTogether(t *testing.T) {
 	head := strings.Repeat("a", 40)
 	f := documentationSubmission(t, "absent", "", []string{"internal/server.go"}, func(st store.Store) store.Store {

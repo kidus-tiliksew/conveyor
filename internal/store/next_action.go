@@ -570,8 +570,8 @@ func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task
 // exact: the order's subject is a plan version, and that version is the
 // task's latest one, which the gate holds. An earlier version's order and a
 // head's order never match. A read error fails the statement
-// (req-risk-based-review AC-11.3; feature-risk-based-review RR-16;
-// component-next-action invariant 1).
+// (req-risk-based-review AC-11.3; component-next-action, The statement, row
+// 3a; component-next-action invariant 1).
 func readAssemblerPlanRiskOrders(ctx context.Context, st Store, tasks []core.Task, specs map[string]int) (map[string]nextaction.PlanRiskOrderRef, error) {
 	out := map[string]nextaction.PlanRiskOrderRef{}
 	for _, task := range tasks {
@@ -628,7 +628,7 @@ func assembleInput(ctx context.Context, task core.Task, orders []core.WorkOrder,
 	// next-action selector reads, so a record-mode risk order never hides
 	// the checkpoint of the order the agent question selects. Input.Orders
 	// keeps every order for the inputs that read orders by ID
-	// (feature-risk-based-review RR-15).
+	// (component-next-action, The statement).
 	selectable := nextaction.SelectableOrders(task, orders)
 	input := nextaction.Input{
 		Task: task, Orders: orders, Markers: markersFromHistory(marker, history.ParkCommand, selectable), Assignee: task.Assignee,

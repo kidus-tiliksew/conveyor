@@ -289,7 +289,7 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 			}, SeedRiskRating: func(t *testing.T, ctx context.Context, rating core.RiskRating) {
 				// A reviewer rating a verdict recorded before verdicts stopped
 				// stating a tier; no public writer accepts the source
-				// (feature-risk-based-review RR-14).
+				// (component-risk-review invariant 17).
 				if err := st.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 					if err := lockWorkOrderTaskTx(ctx, tx, workspace, rating.TaskID); err != nil {
 						return err

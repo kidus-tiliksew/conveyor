@@ -17,7 +17,7 @@ import (
 // TestDiscoverRiskDeclaration reads .conveyor/risk.yaml at the named base
 // commit only and maps each read to a declaration state; the bytes are
 // returned as read for internal/riskpolicy to parse (req-risk-based-review
-// AC-3.2, AC-3.4, AC-3.5; feature-risk-based-review RR-2).
+// AC-3.2, AC-3.4, AC-3.5; component-risk-review invariants 6 and 15).
 func TestDiscoverRiskDeclaration(t *testing.T) {
 	_, private := appTestKey(t)
 	sha, treeSHA, dirSHA, blobSHA := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40), strings.Repeat("d", 40)

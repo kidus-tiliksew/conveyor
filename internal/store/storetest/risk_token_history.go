@@ -20,7 +20,7 @@ import (
 // RunRiskTokenHistoryUpgrade proves the operator's decision of review round 1
 // on task 261114-9d3b4c for claims that ended before the claim ledger
 // migration, on a durable backend (req-risk-based-review AC-12.1;
-// feature-risk-based-review RR-11):
+// component-work-orders invariant 63):
 //
 //   - a claim released before the upgrade, and the first attempt of a claim
 //     retried before the upgrade, keep their session ID refusal;

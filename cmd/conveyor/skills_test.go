@@ -641,7 +641,7 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"The session changes a stored stage preference only on the operator's direct instruction",
 		"A planner, verifier, risk agent, reviewer, or review primary that the session started never writes a stage preference and never asks the operator",
 		"stay in the harness's own agent memory. Conveyor stores none of them (DEC-131(3))",
-		"The operator's review seat count rule is one of these memory rules (DEC-123(3); DEC-131(3))",
+		"The operator's review seat count rule is one of these memory rules (DEC-135(3); DEC-131(3))",
 		"When the operator's review seat count rule in agent memory directs it, the implementation submission declares the seat count",
 		"name the harness and model used for each verifier, risk agent, reviewer, and review primary",
 		// AC-3.15: the review primary only starts the seat agents.
@@ -762,7 +762,7 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"Each time it starts a planner, verifier, risk agent, reviewer, or review primary, it reads the person's stage preferences with `get_stage_preferences`",
 		"It plans in-session without asking when no planning preference is stored",
 		"it asks the operator and saves the direct answer with `set_stage_preference`",
-		"Where agents run, how many tasks run at once, and the review seat count rule stay in agent memory (DEC-131(3); DEC-123(3))",
+		"Where agents run, how many tasks run at once, and the review seat count rule stay in agent memory (DEC-131(3); DEC-135(3))",
 		"A review primary only starts the seat agents: it claims no seat, submits no verdict, and awaits no verdict",
 		"Every verifier, risk agent, and reviewer reports and exits after submitting its own result",
 		"awaits the verdict with `await_review`",
@@ -2014,7 +2014,7 @@ func TestEmbeddedGuidanceCarriesCitationScopeStatement(t *testing.T) {
 // either submission, the stage preference, isolation, completion, and the
 // waits (req-agent-skills AC-3.4, AC-3.5, AC-3.10, AC-3.13, AC-3.16;
 // req-agent-coordination AC-1.2, AC-1.4; DEC-135(8), DEC-135(10) to
-// DEC-135(13); feature-risk-based-review RR-11 to RR-17).
+// DEC-135(13); component-cli-onboarding invariant 43).
 var riskAgentRules = map[string][]string{
 	"conveyor-work/conveyor-work.md": {
 		// Launch from either submission and from a later claimable order.
@@ -2101,8 +2101,9 @@ var riskAgentRules = map[string][]string{
 }
 
 // riskAgentForbidden is text that no installed work or coordination file may
-// keep: reviewers state no tier (feature-risk-based-review RR-14), and a
-// risk order nobody claims is never cancelled by a clock (RR-15).
+// keep: reviewers state no tier (component-review invariant 13), and a
+// risk order nobody claims is never cancelled by a clock
+// (component-work-orders invariant 5).
 var riskAgentForbidden = []string{"risk_tier", "risk_reason", "Rate the head's risk", "passes its queue deadline"}
 
 // checkRiskAgentRules reports each risk agent rule missing from, and each

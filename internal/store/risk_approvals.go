@@ -14,7 +14,7 @@ import (
 
 // TaskApprovalStore records and reads the human approvals and author waivers
 // of an enforcing task's head (req-risk-based-review AC-8.3 to AC-8.8;
-// component-risk-review invariants 9 and 10; feature-risk-based-review RR-7).
+// component-risk-review invariants 9, 10, and 21).
 // Every backend writes under the task's operation lock and keeps one row per
 // workspace, task, head, review round, kind, and person, so a replayed or
 // concurrent request by the same person records one row and one event.
