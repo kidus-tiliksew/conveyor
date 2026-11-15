@@ -516,7 +516,7 @@ func TestTaskWaitJSONNormalizesAbsentFields(t *testing.T) {
 	}
 	for field, want := range map[string]string{
 		"task_id": `"` + taskWaitTestTaskID + `"`, "state": `"merged"`, "pending_gate": "null", "next_order": "null",
-		"observed_at": `"2026-10-04T08:00:00Z"`, "reason": `"terminal"`, "timed_out": "false",
+		"claimable_orders": "[]", "observed_at": `"2026-10-04T08:00:00Z"`, "reason": `"terminal"`, "timed_out": "false",
 	} {
 		if got := string(raw[field]); got != want {
 			t.Errorf("%s = %s, want %s", field, got, want)
@@ -544,6 +544,7 @@ func TestTaskWaitHumanOutputMatchesJSONFields(t *testing.T) {
 		"state:             awaiting_human",
 		"pending gate:      plan v3",
 		"next order:        none",
+		"claimable orders:  none",
 		"observed at:       2026-10-04T08:00:00Z",
 		"wait ended:        changed",
 		"timed out:         false",
@@ -954,7 +955,7 @@ func TestTaskWaitUntil(t *testing.T) {
 		if err := runTaskWait(t.Context(), newTaskWaitFixture(t, steps...).client(), &out, taskWaitTestTaskID, true, taskWaitTestOptions(5*time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		wantJSON := `{"task_id":"261004-abc123","state":"queued","pending_gate":null,"next_order":null,"observed_at":"2026-10-04T08:00:00Z","reason":"changed","timed_out":false}` + "\n"
+		wantJSON := `{"task_id":"261004-abc123","state":"queued","pending_gate":null,"next_order":null,"claimable_orders":[],"observed_at":"2026-10-04T08:00:00Z","reason":"changed","timed_out":false}` + "\n"
 		if out.String() != wantJSON {
 			t.Fatalf("json = %q\nwant %q", out.String(), wantJSON)
 		}
@@ -967,6 +968,7 @@ func TestTaskWaitUntil(t *testing.T) {
 			"state:             queued",
 			"pending gate:      none",
 			"next order:        none",
+			"claimable orders:  none",
 			"observed at:       2026-10-04T08:00:00Z",
 			"wait ended:        changed",
 			"timed out:         false",
@@ -1212,5 +1214,186 @@ func TestTaskWaitUntilRiskStage(t *testing.T) {
 	result, _, err := runTaskWaitUntil(t, f, "stage=risk", 5*time.Second)
 	if err != nil || result.Reason != taskWaitReasonReached || result.NextAction == nil || result.NextAction.Stage != "risk" {
 		t.Fatalf("err=%v result=%+v", err, result)
+	}
+}
+
+// claimableTestOrder is a queued, claimable order of the waited task that a
+// step serves through the work-order listing.
+func claimableTestOrder(id string, stage core.Stage, entered time.Time) core.WorkOrder {
+	return core.WorkOrder{ID: id, Stage: stage, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: entered}
+}
+
+// runTaskWaitBoth runs one wait in JSON and one in text over fresh fixtures of
+// the same steps, and returns the raw JSON fields and the text output.
+func runTaskWaitBoth(t *testing.T, timeout time.Duration, steps ...taskWaitStep) (map[string]json.RawMessage, string) {
+	t.Helper()
+	var out bytes.Buffer
+	err := runTaskWait(t.Context(), newTaskWaitFixture(t, steps...).client(), &out, taskWaitTestTaskID, true, taskWaitTestOptions(timeout))
+	var timedOut *taskWaitTimeoutError
+	if err != nil && !errors.As(err, &timedOut) {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	out.Reset()
+	err = runTaskWait(t.Context(), newTaskWaitFixture(t, steps...).client(), &out, taskWaitTestTaskID, false, taskWaitTestOptions(timeout))
+	if err != nil && !errors.As(err, &timedOut) {
+		t.Fatal(err)
+	}
+	return raw, out.String()
+}
+
+// The wait result names every claimable order of the task in claimable_orders,
+// in next-order rank, as an empty list when there is none, in JSON and in text
+// output. next_order stays the first entry (component-cli-onboarding invariant
+// 22; req-agent-skills AC-4.1).
+func TestTaskWaitReportsClaimableOrders(t *testing.T) {
+	risk := claimableTestOrder("261004-abc123-risk-1", core.StageRisk, taskWaitTestTime)
+	verify := claimableTestOrder("261004-abc123-verify-1", core.StageVerify, taskWaitTestTime.Add(5*time.Minute))
+	for _, tc := range []struct {
+		name      string
+		changed   taskWaitStep
+		wantList  string
+		wantNext  string
+		wantLines []string
+	}{
+		{
+			name:      "no claimable order",
+			changed:   taskWaitStep{state: core.TaskQueued},
+			wantList:  `[]`,
+			wantNext:  `null`,
+			wantLines: []string{"next order:        none", "claimable orders:  none"},
+		},
+		{
+			name:      "one order",
+			changed:   taskWaitStep{state: core.TaskQueued, order: core.WorkOrder{ID: "261004-abc123-implement-1", Stage: core.StageImplement}},
+			wantList:  `[{"id":"261004-abc123-implement-1","stage":"implement"}]`,
+			wantNext:  `{"id":"261004-abc123-implement-1","stage":"implement"}`,
+			wantLines: []string{"next order:        261004-abc123-implement-1 (implement)", "claimable orders:  261004-abc123-implement-1 (implement)"},
+		},
+		{
+			name:     "verification beside risk",
+			changed:  taskWaitStep{state: core.TaskRunning, orders: []core.WorkOrder{risk, verify}},
+			wantList: `[{"id":"261004-abc123-verify-1","stage":"verify"},{"id":"261004-abc123-risk-1","stage":"risk"}]`,
+			wantNext: `{"id":"261004-abc123-verify-1","stage":"verify"}`,
+			wantLines: []string{
+				"next order:        261004-abc123-verify-1 (verify)",
+				"claimable orders:  261004-abc123-verify-1 (verify), 261004-abc123-risk-1 (risk)",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, text := runTaskWaitBoth(t, 5*time.Second, taskWaitStep{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "merge"}}, tc.changed)
+			if got := string(raw["reason"]); got != `"changed"` {
+				t.Fatalf("reason = %s", got)
+			}
+			if got := string(raw["claimable_orders"]); got != tc.wantList {
+				t.Errorf("claimable_orders = %s, want %s", got, tc.wantList)
+			}
+			if got := string(raw["next_order"]); got != tc.wantNext {
+				t.Errorf("next_order = %s, want %s", got, tc.wantNext)
+			}
+			for _, line := range append(tc.wantLines, "wait ended:        changed") {
+				if !strings.Contains(text, line+"\n") {
+					t.Errorf("text output lacks %q:\n%s", line, text)
+				}
+			}
+		})
+	}
+}
+
+// claimable_orders ranks spec, implement, verify, review, then risk, breaks a
+// stage tie by queue entry and then by ID, and leaves out another task's
+// orders, an unknown stage, and orders that are not queued or not claimable
+// (component-cli-onboarding invariant 22).
+func TestTaskWaitClaimableOrdersRankAndExclusions(t *testing.T) {
+	at := func(minutes int) time.Time { return taskWaitTestTime.Add(time.Duration(minutes) * time.Minute) }
+	claimed := claimableTestOrder("261004-abc123-verify-claimed", core.StageVerify, at(0))
+	claimed.State, claimed.Claimable = core.WorkOrderClaimed, false
+	completed := claimableTestOrder("261004-abc123-review-done", core.StageReview, at(0))
+	completed.State = core.WorkOrderCompleted
+	unclaimable := claimableTestOrder("261004-abc123-spec-held", core.StageSpec, at(0))
+	unclaimable.Claimable = false
+	step := taskWaitStep{state: core.TaskRunning, orders: []core.WorkOrder{
+		claimableTestOrder("261004-abc123-risk-1", core.StageRisk, at(0)),
+		claimableTestOrder("261004-abc123-review-new", core.StageReview, at(4)),
+		claimableTestOrder("261004-abc123-review-old", core.StageReview, at(1)),
+		claimableTestOrder("261004-abc123-implement-b", core.StageImplement, at(2)),
+		claimableTestOrder("261004-abc123-implement-a", core.StageImplement, at(2)),
+		claimableTestOrder("261004-abc123-verify-1", core.StageVerify, at(3)),
+		claimableTestOrder("261004-abc123-spec-1", core.StageSpec, at(9)),
+		claimableTestOrder("261004-abc123-deploy-1", core.Stage("deploy"), at(0)),
+		claimed, completed, unclaimable,
+	}}
+	// The fixture also serves another task's claimable order and a claimed
+	// plan order of this task.
+	raw, text := runTaskWaitBoth(t, 20*time.Millisecond, step)
+	want := `[{"id":"261004-abc123-spec-1","stage":"spec"},` +
+		`{"id":"261004-abc123-implement-a","stage":"implement"},` +
+		`{"id":"261004-abc123-implement-b","stage":"implement"},` +
+		`{"id":"261004-abc123-verify-1","stage":"verify"},` +
+		`{"id":"261004-abc123-review-old","stage":"review"},` +
+		`{"id":"261004-abc123-review-new","stage":"review"},` +
+		`{"id":"261004-abc123-risk-1","stage":"risk"}]`
+	if got := string(raw["claimable_orders"]); got != want {
+		t.Fatalf("claimable_orders = %s\nwant %s", got, want)
+	}
+	if got := string(raw["next_order"]); got != `{"id":"261004-abc123-spec-1","stage":"spec"}` {
+		t.Fatalf("next_order = %s", got)
+	}
+	wantLine := "claimable orders:  261004-abc123-spec-1 (spec), 261004-abc123-implement-a (implement), " +
+		"261004-abc123-implement-b (implement), 261004-abc123-verify-1 (verify), 261004-abc123-review-old (review), " +
+		"261004-abc123-review-new (review), 261004-abc123-risk-1 (risk)\n"
+	if !strings.Contains(text, wantLine) {
+		t.Fatalf("text output lacks %q:\n%s", wantLine, text)
+	}
+}
+
+// A change in claimable_orders alone does not end a wait: adding, removing, or
+// replacing an order behind the same next order keeps the wait open, and the
+// timeout reports the last successful list (component-cli-onboarding invariant
+// 22; req-agent-skills AC-4.1, AC-4.3).
+func TestTaskWaitClaimableOrdersChangeAloneDoesNotEndWait(t *testing.T) {
+	implement := claimableTestOrder("261004-abc123-implement-1", core.StageImplement, taskWaitTestTime)
+	risk := claimableTestOrder("261004-abc123-risk-1", core.StageRisk, taskWaitTestTime)
+	review := claimableTestOrder("261004-abc123-review-1-seat-1", core.StageReview, taskWaitTestTime)
+	verify := claimableTestOrder("261004-abc123-verify-1", core.StageVerify, taskWaitTestTime)
+	steps := []taskWaitStep{
+		{state: core.TaskRunning, orders: []core.WorkOrder{implement, risk}},
+		{state: core.TaskRunning, orders: []core.WorkOrder{implement, risk, review}},
+		{state: core.TaskRunning, orders: []core.WorkOrder{implement, review}},
+		{state: core.TaskRunning, orders: []core.WorkOrder{implement, verify}},
+	}
+	wantList := []taskWaitOrder{{ID: implement.ID, Stage: core.StageImplement}, {ID: verify.ID, Stage: core.StageVerify}}
+	for _, tc := range []struct {
+		name    string
+		steps   []taskWaitStep
+		wantErr string
+	}{
+		{"last read succeeded", steps, ""},
+		{"last read failed", append(append([]taskWaitStep(nil), steps...), taskWaitStep{status: http.StatusServiceUnavailable}), "503"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTaskWaitFixture(t, tc.steps...)
+			result, err := runTaskWaitJSON(t, f, 150*time.Millisecond)
+			var timedOut *taskWaitTimeoutError
+			if !errors.As(err, &timedOut) || result.Reason != taskWaitReasonTimeout || !result.TimedOut {
+				t.Fatalf("a claimable_orders change ended the wait: err=%v result=%+v", err, result)
+			}
+			if f.taskReads() <= len(tc.steps) {
+				t.Fatalf("task reads = %d; the wait did not observe every step", f.taskReads())
+			}
+			if result.NextOrder == nil || *result.NextOrder != wantList[0] {
+				t.Fatalf("next order = %+v", result.NextOrder)
+			}
+			if len(result.ClaimableOrders) != len(wantList) || result.ClaimableOrders[0] != wantList[0] || result.ClaimableOrders[1] != wantList[1] {
+				t.Fatalf("claimable orders = %+v, want the last successful list %+v", result.ClaimableOrders, wantList)
+			}
+			if tc.wantErr == "" && result.LastReadError != "" || !strings.Contains(result.LastReadError, tc.wantErr) {
+				t.Fatalf("last read error = %q", result.LastReadError)
+			}
+		})
 	}
 }

@@ -44,12 +44,14 @@ state, or the timeout elapses.
 Each observation holds the task state, the pending human gate (plan, merge,
 merge execution, check hold, plan revision, or human recovery, with the plan
 version when one applies and the merge readiness state for merge execution), and the next
-claimable work order ID and stage. The command reads GET /v1/tasks/{id} and
+claimable work order ID and stage. The result also lists every claimable order
+of the task in claimable_orders, in the same order as the next order, and an
+empty list when there is none. The list is reported and is not compared. The command reads GET /v1/tasks/{id} and
 GET /v1/work-orders, plus GET /v1/tasks/{id}/spec at a plan or plan-revision
 gate and GET /v1/tasks/{id}/activity at a merge-execution gate, with the
 ordinary server, workspace, and credential resolution. It re-reads with jittered backoff from
-250ms to a 2s ceiling and returns when any observed field differs from the
-first observation. A merged, closed, or parked task returns at once, at start
+250ms to a 2s ceiling and returns when the state, the pending gate, or the next
+order differs from the first observation. A merged, closed, or parked task returns at once, at start
 or during the wait, and so does a task at a check hold, which needs an operator.
 
 Transport errors and server 5xx responses after the first observation are
@@ -109,16 +111,24 @@ type taskWaitNextAction struct {
 	Stage string `json:"stage,omitempty"`
 }
 
-// taskWaitObservation holds only the compared semantic fields plus the read
-// time. Titles, labels, capability flags, and progress are excluded so that
-// presentation churn never ends a wait.
+// taskWaitObservation holds the compared semantic fields, the reported
+// claimable order list, and the read time. sameAs compares the state, the
+// pending gate, and the next order. ClaimableOrders, NextAction, and
+// ObservedAt are reported and not compared. Titles, labels, capability flags,
+// and progress are excluded so that presentation churn never ends a wait.
 type taskWaitObservation struct {
-	TaskID      string              `json:"task_id"`
-	State       core.TaskState      `json:"state"`
-	PendingGate *taskWaitGate       `json:"pending_gate"`
-	NextOrder   *taskWaitOrder      `json:"next_order"`
-	NextAction  *taskWaitNextAction `json:"next_action,omitempty"`
-	ObservedAt  time.Time           `json:"observed_at"`
+	TaskID      string         `json:"task_id"`
+	State       core.TaskState `json:"state"`
+	PendingGate *taskWaitGate  `json:"pending_gate"`
+	NextOrder   *taskWaitOrder `json:"next_order"`
+	// ClaimableOrders names every claimable order of the task in next-order
+	// rank, so a risk order beside other work is reported with it. It is an
+	// empty list, never null, when no order is claimable, and a change in it
+	// alone does not end a wait (component-cli-onboarding invariant 22;
+	// req-agent-skills AC-4.1).
+	ClaimableOrders []taskWaitOrder     `json:"claimable_orders"`
+	NextAction      *taskWaitNextAction `json:"next_action,omitempty"`
+	ObservedAt      time.Time           `json:"observed_at"`
 }
 
 type taskWaitResult struct {
@@ -517,7 +527,11 @@ func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() 
 	if action != nil {
 		actionKind = action.Kind
 	}
-	observation.NextOrder = taskWaitNextOrder(orders, task.ID)
+	observation.ClaimableOrders = taskWaitClaimableOrders(orders, task.ID)
+	if len(observation.ClaimableOrders) > 0 {
+		first := observation.ClaimableOrders[0]
+		observation.NextOrder = &first
+	}
 	// A pending plan revision is read even beside a claimable order, so a new
 	// plan version ends the wait wherever the order stands (AC-4.1).
 	planRevision := task.State == core.TaskAwaiting && actionKind == nextaction.KindPlanRevision
@@ -531,18 +545,27 @@ func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() 
 	return observation, nil
 }
 
-// taskWaitNextOrder selects the task's queued, claimable order of a known
-// stage: spec, implement, verify, review, then risk, then the oldest queue
-// entry.
+// taskWaitNextOrder selects the first of the task's claimable orders, or nil
+// when there is none.
 func taskWaitNextOrder(orders []core.WorkOrder, taskID string) *taskWaitOrder {
+	claimable := taskWaitClaimableOrders(orders, taskID)
+	if len(claimable) == 0 {
+		return nil
+	}
+	return &claimable[0]
+}
+
+// taskWaitClaimableOrders lists the task's queued, claimable orders of a known
+// stage: spec, implement, verify, review, then risk, then the oldest queue
+// entry, then the order ID. The list is never nil, so an observation with no
+// claimable order reports an empty list (component-cli-onboarding invariant
+// 22).
+func taskWaitClaimableOrders(orders []core.WorkOrder, taskID string) []taskWaitOrder {
 	var eligible []core.WorkOrder
 	for _, order := range orders {
 		if order.TaskID == taskID && order.State == core.WorkOrderQueued && order.Claimable && core.ValidWorkOrderStage(order.Stage) {
 			eligible = append(eligible, order)
 		}
-	}
-	if len(eligible) == 0 {
-		return nil
 	}
 	sort.Slice(eligible, func(i, j int) bool {
 		a, b := eligible[i], eligible[j]
@@ -554,7 +577,11 @@ func taskWaitNextOrder(orders []core.WorkOrder, taskID string) *taskWaitOrder {
 		}
 		return a.ID < b.ID
 	})
-	return &taskWaitOrder{ID: eligible[0].ID, Stage: eligible[0].Stage}
+	claimable := make([]taskWaitOrder, 0, len(eligible))
+	for _, order := range eligible {
+		claimable = append(claimable, taskWaitOrder{ID: order.ID, Stage: order.Stage})
+	}
+	return claimable
 }
 
 // taskWaitGate derives the pending gate of a task with no claimable order.
@@ -685,6 +712,14 @@ func writeTaskWaitResult(w io.Writer, result taskWaitResult, timeout time.Durati
 	if result.NextOrder != nil {
 		order = fmt.Sprintf("%s (%s)", result.NextOrder.ID, result.NextOrder.Stage)
 	}
+	claimable := "none"
+	if len(result.ClaimableOrders) > 0 {
+		names := make([]string, 0, len(result.ClaimableOrders))
+		for _, item := range result.ClaimableOrders {
+			names = append(names, fmt.Sprintf("%s (%s)", item.ID, item.Stage))
+		}
+		claimable = strings.Join(names, ", ")
+	}
 	ended := result.Reason
 	if result.TimedOut {
 		ended = fmt.Sprintf("%s after %s; the values above are the last successful observation", result.Reason, timeout)
@@ -694,6 +729,7 @@ func writeTaskWaitResult(w io.Writer, result taskWaitResult, timeout time.Durati
 		fmt.Sprintf("state:             %s", result.State),
 		fmt.Sprintf("pending gate:      %s", gate),
 		fmt.Sprintf("next order:        %s", order),
+		fmt.Sprintf("claimable orders:  %s", claimable),
 		fmt.Sprintf("observed at:       %s", result.ObservedAt.Format(time.RFC3339)),
 		fmt.Sprintf("wait ended:        %s", ended),
 		fmt.Sprintf("timed out:         %t", result.TimedOut),
