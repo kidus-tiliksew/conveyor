@@ -678,8 +678,8 @@ risk order's `state` in `risk.orders`, and each completed rating with source
 component-review invariant 41):
 
 - **Enforce.** Plan approval waits for the plan version's risk order. While
-  that order is queued or claimed, Conveyor refuses the approval with
-  `plan_risk_rating_open` and changes no plan state. A review round opens
+  that order is neither completed nor cancelled, Conveyor refuses the approval
+  with `plan_risk_rating_open` and changes no plan state. A review round opens
   only after the head's risk order completes or is cancelled. The round then
   takes the seats that the tier requires. Verification does not wait for
   the rating. The task's next action names the risk order while the task
@@ -1159,7 +1159,8 @@ each choice with its effect and its command, what happens if nobody acts, and
 the deadline. Quote it rather than deriving the gate from the task state.
 
 **A plan that waits for its rating.** Under an enforce risk mode, do not offer
-plan approval while the plan version's risk order is queued or claimed.
+plan approval while the plan version's risk order is neither completed nor
+cancelled.
 Conveyor refuses the approval then, and the next action names the risk order.
 Start the risk agent as [Start a risk agent](#start-a-risk-agent) describes,
 and wait as **Wait otherwise** describes. Offer the gate after the risk order
