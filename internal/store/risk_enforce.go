@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"slices"
@@ -8,13 +9,16 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
+	"gopkg.in/yaml.v3"
 )
 
 // Risk enforcement (req-risk-based-review REQ-7, REQ-8, AC-7.1, AC-7.2,
-// AC-8.1, AC-8.2, AC-8.6; component-review invariants 1 and 42;
-// component-task-lifecycle invariant 5). Every
-// backend reads a task's ratings inside the transaction that sizes a round,
-// adds seats, or chooses the acceptance edge, and passes them here. Under the
+// AC-8.1, AC-8.2, AC-8.6, AC-9.2; component-review invariants 1, 21, and 42;
+// component-risk-review invariants 16 and 19; component-task-lifecycle
+// invariant 5). Every backend reads a task's ratings inside the transaction
+// that sizes a round, adds seats, or chooses the acceptance edge, and passes
+// them here. The acceptance edge also reads the task's authors and the live
+// trust state in that transaction (RiskAcceptanceReads). Under the
 // frozen modes off and record nothing in this file changes a seat, a gate, or
 // a merge (AC-1.1, AC-1.6).
 
@@ -45,8 +49,10 @@ func riskRequirementInput(task core.Task, ratings []core.RiskRating, seatMinimum
 // REQ-8 requires, the largest of the tier's count, any matched path rule's
 // min_human_approvals, and one when the frozen merge gate is on. ok is false
 // for a task whose frozen mode is not enforce. The calculation is
-// internal/riskpolicy's (component-risk-review, Boundary). Approvals from a
-// trusted author (REQ-9) are not inputs yet.
+// internal/riskpolicy's (component-risk-review, Boundary). The one approval an
+// untrusted author makes necessary depends on the task's authors and the live
+// trust state, so it is not an input here: RiskAcceptanceHold adds it at
+// acceptance and EvaluateTaskApprovals adds it at every approval evaluation.
 func EnforcedRiskRequirements(task core.Task, ratings []core.RiskRating) (riskpolicy.Requirements, riskpolicy.Tier, bool) {
 	if !task.SetupContract.Risk.Enforcing() {
 		return riskpolicy.Requirements{}, "", false
@@ -65,10 +71,12 @@ func RiskSeatCount(task core.Task, ratings []core.RiskRating) int {
 	return required.AgentReviews
 }
 
-// RiskMergeHold returns the human approvals an enforcing task requires and
-// whether that count holds an approved review at the merge gate: one or more
-// waits there, and zero merges as req-review-gates-evidence AC-1.1 states
-// (req-risk-based-review AC-8.1, AC-8.2). hold is false for every task whose
+// RiskMergeHold returns the human approvals an enforcing task's tier, latest
+// path rating, and frozen merge gate require, and whether that count alone
+// holds an approved review at the merge gate: one or more waits there, and
+// zero merges as req-review-gates-evidence AC-1.1 states
+// (req-risk-based-review AC-8.1, AC-8.2). It reads no author, so the
+// acceptance edge uses RiskAcceptanceHold. hold is false for every task whose
 // frozen mode is not enforce.
 func RiskMergeHold(task core.Task, ratings []core.RiskRating) (required int, hold bool) {
 	requirements, _, ok := EnforcedRiskRequirements(task, ratings)
@@ -76,6 +84,97 @@ func RiskMergeHold(task core.Task, ratings []core.RiskRating) (required int, hol
 		return 0, false
 	}
 	return requirements.HumanApprovals, requirements.HumanApprovals >= 1
+}
+
+// RiskAcceptanceReads are the reads the acceptance edge of an enforcing task
+// makes inside the backend's serialized acceptance operation, in the same
+// transaction or under the same lock that settles the round. Each read
+// answers the state current at that call, and nothing caches an answer, so an
+// edit of the trust list or of a person's role before acceptance changes the
+// edge (component-risk-review invariant 19; req-risk-based-review AC-9.3).
+// A read error fails the acceptance, which then records nothing.
+type RiskAcceptanceReads struct {
+	// Claims returns the task's work_order.claimed events and its current
+	// implementation orders, the inputs of TaskAuthors.
+	Claims func() ([]core.Event, []core.WorkOrder, error)
+	// TrustedAuthors returns the task repository's live trusted_authors
+	// list. An empty list trusts every person who holds operate_gates.
+	TrustedAuthors func() ([]string, error)
+	// OperateGates answers whether a person holds operate_gates in the task's
+	// workspace now.
+	OperateGates func(userID string) (bool, error)
+}
+
+// RiskAcceptanceHold returns the human approvals an enforcing task requires
+// when its approved review round settles, and whether that count holds the
+// round at the merge gate. The count is the one component-risk-review
+// invariant 16 states: the largest of the tier's count, the latest path
+// rating's minimum, one when the frozen merge gate is on, and one when any
+// author is not trusted. An author whose claim names no person is never
+// trusted (invariant 19). One or more takes gate.merge, a refresh round
+// included, even when recorded approvals already meet it (component-review
+// invariant 21; component-task-lifecycle invariant 5; req-risk-based-review
+// AC-8.2, AC-9.2). A task whose frozen mode is not enforce makes no read and
+// is never held (AC-1.1, AC-1.6). The author reads run only when the other
+// floors require no approval, because they can only add the one approval.
+func RiskAcceptanceHold(task core.Task, ratings []core.RiskRating, reads RiskAcceptanceReads) (required int, hold bool, err error) {
+	required, hold = RiskMergeHold(task, ratings)
+	if !task.SetupContract.Risk.Enforcing() || hold {
+		return required, hold, nil
+	}
+	events, orders, err := reads.Claims()
+	if err != nil {
+		return 0, false, fmt.Errorf("read the task's authors: %w", err)
+	}
+	authors, unknown := TaskAuthors(events, orders)
+	if len(authors) == 0 && !unknown {
+		return required, hold, nil
+	}
+	trusted, err := reads.TrustedAuthors()
+	if err != nil {
+		return 0, false, fmt.Errorf("read the repository's trusted authors: %w", err)
+	}
+	gatekeepers := map[string]bool{}
+	if len(trusted) == 0 {
+		// An empty list trusts every person who holds operate_gates now
+		// (req-risk-based-review AC-9.1).
+		for _, author := range authors {
+			allowed, err := reads.OperateGates(author)
+			if err != nil {
+				return 0, false, fmt.Errorf("read an author's operate_gates capability: %w", err)
+			}
+			gatekeepers[author] = allowed
+		}
+	}
+	status := riskpolicy.EvaluateApprovals(riskpolicy.ApprovalInput{
+		Required: required, Authors: authors, UnknownAuthor: unknown, TrustedAuthors: trusted, Gatekeepers: gatekeepers,
+	})
+	return status.Required, status.Required >= 1, nil
+}
+
+// StoredTrustedAuthors reads one repository's trusted_authors list from a
+// stored workspace configuration document. Empty data, or a document that
+// does not name the repository, is the empty list. A document that cannot be
+// parsed is an error, so the caller never assumes trust.
+func StoredTrustedAuthors(data []byte, repo string) ([]string, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, nil
+	}
+	var document struct {
+		Repos []struct {
+			Name           string   `yaml:"name"`
+			TrustedAuthors []string `yaml:"trusted_authors"`
+		} `yaml:"repos"`
+	}
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return nil, fmt.Errorf("decode stored workspace config: %w", err)
+	}
+	for _, stored := range document.Repos {
+		if stored.Name == repo {
+			return slices.Clone(stored.TrustedAuthors), nil
+		}
+	}
+	return nil, nil
 }
 
 // ErrRiskApprovalsRequired refuses the factory's automatic merge of an

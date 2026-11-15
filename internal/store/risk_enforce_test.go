@@ -157,3 +157,98 @@ func TestRiskApprovalsRequiredErrorWording(t *testing.T) {
 		t.Fatalf("two approvals: %q", two)
 	}
 }
+
+// TestRiskAcceptanceHoldCountsAuthors covers the acceptance count of
+// component-risk-review invariant 16 over invariant 19's authors: one
+// approval for any untrusted or unknown author, the trust list and each
+// author's capability read on every call, no author read when another floor
+// already holds or the mode does not enforce, and a read error returned
+// instead of a trusting answer (req-risk-based-review AC-8.2, AC-9.1 to
+// AC-9.3, AC-1.1, AC-1.6).
+func TestRiskAcceptanceHoldCountsAuthors(t *testing.T) {
+	claimed := func(claimants ...string) []core.Event {
+		var events []core.Event
+		for _, claimant := range claimants {
+			events = append(events, core.Event{Kind: "work_order.claimed", Payload: WorkOrderEventPayload(core.WorkOrder{Stage: core.StageImplement, ClaimantID: claimant})})
+		}
+		return events
+	}
+	reads := func(events []core.Event, orders []core.WorkOrder, trusted []string, gates map[string]bool) (RiskAcceptanceReads, *int) {
+		calls := 0
+		return RiskAcceptanceReads{
+			Claims:         func() ([]core.Event, []core.WorkOrder, error) { calls++; return events, orders, nil },
+			TrustedAuthors: func() ([]string, error) { calls++; return trusted, nil },
+			OperateGates:   func(userID string) (bool, error) { calls++; return gates[userID], nil },
+		}, &calls
+	}
+	alice, bob := core.TaskRunClaimantID("usr-alice"), core.TaskRunClaimantID("usr-bob")
+	for _, tc := range []struct {
+		name     string
+		task     core.Task
+		ratings  []core.RiskRating
+		events   []core.Event
+		orders   []core.WorkOrder
+		trusted  []string
+		gates    map[string]bool
+		required int
+		reads    bool
+	}{
+		{"NoAuthorNoHold", riskTask(riskpolicy.ModeEnforce, false), pathRated(riskpolicy.TierLow, 0), nil, nil, nil, nil, 0, true},
+		{"GatekeeperAuthorTrusted", riskTask(riskpolicy.ModeEnforce, false), nil, claimed(alice), nil, nil, map[string]bool{"usr-alice": true}, 0, true},
+		{"AuthorWithoutGatesUntrusted", riskTask(riskpolicy.ModeEnforce, false), nil, claimed(alice), nil, nil, map[string]bool{}, 1, true},
+		{"ListedAuthorTrusted", riskTask(riskpolicy.ModeEnforce, false), nil, claimed(alice), nil, []string{"usr-alice"}, nil, 0, true},
+		{"UnlistedGatekeeperUntrusted", riskTask(riskpolicy.ModeEnforce, false), nil, claimed(alice), nil, []string{"usr-bob"}, map[string]bool{"usr-alice": true}, 1, true},
+		{"CurrentOrderAuthorCounts", riskTask(riskpolicy.ModeEnforce, false), nil, claimed(alice), []core.WorkOrder{{Stage: core.StageImplement, ClaimantID: bob}}, []string{"usr-alice"}, nil, 1, true},
+		{"UnknownAuthorUntrusted", riskTask(riskpolicy.ModeEnforce, false), nil, claimed("agent:session"), nil, []string{"usr-alice"}, nil, 1, true},
+		{"TierFloorSkipsAuthors", riskTask(riskpolicy.ModeEnforce, false), pathRated(riskpolicy.TierHigh, 0), claimed(alice), nil, nil, nil, 2, false},
+		{"GateFloorSkipsAuthors", riskTask(riskpolicy.ModeEnforce, true), nil, claimed(alice), nil, nil, nil, 1, false},
+		{"RecordReadsNothing", riskTask(riskpolicy.ModeRecord, false), nil, claimed(alice), nil, nil, nil, 0, false},
+		{"OffReadsNothing", core.Task{ID: "off"}, nil, claimed(alice), nil, nil, nil, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in, calls := reads(tc.events, tc.orders, tc.trusted, tc.gates)
+			required, hold, err := RiskAcceptanceHold(tc.task, tc.ratings, in)
+			if err != nil || required != tc.required || hold != (tc.required >= 1) {
+				t.Fatalf("required=%d hold=%t err=%v, want %d", required, hold, err, tc.required)
+			}
+			if (*calls > 0) != tc.reads {
+				t.Fatalf("reads=%d, want reads=%t", *calls, tc.reads)
+			}
+		})
+	}
+	t.Run("ReadErrorsFail", func(t *testing.T) {
+		failed := errors.New("read failed")
+		task := riskTask(riskpolicy.ModeEnforce, false)
+		for name, in := range map[string]RiskAcceptanceReads{
+			"Claims": {Claims: func() ([]core.Event, []core.WorkOrder, error) { return nil, nil, failed }},
+			"TrustedAuthors": {Claims: func() ([]core.Event, []core.WorkOrder, error) { return claimed(alice), nil, nil },
+				TrustedAuthors: func() ([]string, error) { return nil, failed }},
+			"OperateGates": {Claims: func() ([]core.Event, []core.WorkOrder, error) { return claimed(alice), nil, nil },
+				TrustedAuthors: func() ([]string, error) { return nil, nil }, OperateGates: func(string) (bool, error) { return false, failed }},
+		} {
+			if _, hold, err := RiskAcceptanceHold(task, nil, in); !errors.Is(err, failed) || hold {
+				t.Fatalf("%s: hold=%t err=%v, want the read error", name, hold, err)
+			}
+		}
+	})
+}
+
+// TestStoredTrustedAuthors reads one repository's list from a stored
+// workspace document and refuses a document it cannot parse.
+func TestStoredTrustedAuthors(t *testing.T) {
+	data := []byte("repos:\n  - name: conveyor\n    trusted_authors: [usr-a, usr-b]\n  - name: app\n")
+	if got, err := StoredTrustedAuthors(data, "conveyor"); err != nil || strings.Join(got, ",") != "usr-a,usr-b" {
+		t.Fatalf("conveyor list=%v err=%v", got, err)
+	}
+	for _, repo := range []string{"app", "missing"} {
+		if got, err := StoredTrustedAuthors(data, repo); err != nil || len(got) != 0 {
+			t.Fatalf("%s list=%v err=%v, want empty", repo, got, err)
+		}
+	}
+	if got, err := StoredTrustedAuthors(nil, "conveyor"); err != nil || len(got) != 0 {
+		t.Fatalf("empty document list=%v err=%v", got, err)
+	}
+	if _, err := StoredTrustedAuthors([]byte("repos: [unterminated"), "conveyor"); err == nil {
+		t.Fatal("a malformed document returned a list")
+	}
+}

@@ -775,6 +775,15 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		}
 		return nil
 	}
+	// An enforcing task's ratings, authors, and live trust state decide the
+	// merge hold when the round settles. The memory store cannot roll back, so
+	// it reads them before its first write and a read error changes nothing
+	// (req-risk-based-review AC-8.2, AC-9.2; component-risk-review invariants
+	// 16 and 19).
+	_, riskHold, err := RiskAcceptanceHold(task, m.riskRatingsLocked(ctx, task), m.riskAcceptanceReadsLocked(task))
+	if err != nil {
+		return err
+	}
 	// A verdict records no rating and adds no seat: only a completed risk
 	// order gives an agent's rating, and a person's raise adds seats in its
 	// own act (req-risk-based-review AC-5.7, AC-7.2; component-review
@@ -875,7 +884,7 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 			m.appendEventLocked(ctx, event)
 		}
 		command, next, recovery = plan.Command, plan.NextStage, plan.Recovery
-	} else if _, hold := RiskMergeHold(task, m.riskRatingsLocked(ctx, task)); ReviewAcceptAdmitted(decision, aggregate.Verdict, hold) {
+	} else if ReviewAcceptAdmitted(decision, aggregate.Verdict, riskHold) {
 		// DEC-64(8): one running -> approved edge, no intervention.
 		command, recovery = core.TaskReviewAccept, ""
 	}
@@ -904,6 +913,34 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": next, "recovery_stage": recovery, "state": state, "review_work_order_id": decision.ReviewWorkOrderID})})
 	return nil
+}
+
+// riskAcceptanceReadsLocked supplies RiskAcceptanceHold's reads from the
+// state m.mu guards, for a caller that holds m.mu: the task's claim events and
+// implementation orders, the live trust list, and each author's role. A raw
+// memory store without a membership boundary answers no trust list and no
+// operate_gates holder, so every named author is untrusted.
+func (m *memory) riskAcceptanceReadsLocked(task core.Task) RiskAcceptanceReads {
+	return RiskAcceptanceReads{
+		Claims: func() ([]core.Event, []core.WorkOrder, error) {
+			var orders []core.WorkOrder
+			for _, order := range m.workOrders {
+				if order.TaskID == task.ID && order.Stage == core.StageImplement {
+					orders = append(orders, order)
+				}
+			}
+			return m.events[task.ID], orders, nil
+		},
+		TrustedAuthors: func() ([]string, error) {
+			if m.readTrustedAuthors == nil {
+				return nil, nil
+			}
+			return m.readTrustedAuthors(task.Workspace, task.Repo)
+		},
+		OperateGates: func(userID string) (bool, error) {
+			return m.operateGatesLocked != nil && m.operateGatesLocked(task.Workspace, userID), nil
+		},
+	}
 }
 
 func (m *memory) settleAcceptedReviewLocked(ctx context.Context, decision core.ReviewDecision, order core.WorkOrder, job core.Job, now time.Time) error {

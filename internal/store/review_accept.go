@@ -13,12 +13,14 @@ import "github.com/kidus-tiliksew/conveyor/internal/core"
 // gate off; a legacy policy-0 task at L0. Every backend's
 // AcceptReviewDecisionCommand uses this one rule.
 //
-// riskHold is RiskMergeHold's answer for the task, read in the acceptance
-// transaction. An enforcing task that requires one or more human approvals is
-// never admitted, refresh rounds included, so its approval takes the existing
-// gate.merge edge to the merge gate (req-risk-based-review AC-8.2, AC-8.6;
-// component-task-lifecycle invariant 5). riskHold is false for every task whose
-// frozen mode is not enforce, which keeps DEC-64(8) unchanged for them.
+// riskHold is RiskAcceptanceHold's answer for the task, read in the acceptance
+// transaction. An enforcing task that requires one or more human approvals,
+// the one an untrusted author makes necessary included, is never admitted,
+// refresh rounds included, so its approval takes the existing gate.merge edge
+// to the merge gate (req-risk-based-review AC-8.2, AC-8.6, AC-9.2;
+// component-review invariant 21; component-task-lifecycle invariant 5).
+// riskHold is false for every task whose frozen mode is not enforce, which
+// keeps DEC-64(8) unchanged for them.
 func ReviewAcceptAdmitted(decision core.ReviewDecision, verdict string, riskHold bool) bool {
 	if verdict == "changes_requested" || riskHold {
 		return false

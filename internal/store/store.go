@@ -698,18 +698,26 @@ type memory struct {
 	// changes publishes this store's committed change notices; staged, when
 	// set, holds the notices of a staged copy until it is installed
 	// (component-persistence, Change notices).
-	changes                     *changes.Hub
-	staged                      *[]changes.Notice
-	documentationEvidence       map[memoryScopedKey]map[string]core.DocumentationGateEvidence
-	riskRatings                 map[memoryScopedKey][]core.RiskRating
-	riskOrders                  map[string]memoryRiskOrder
-	claimIdentities             map[memoryScopedKey][]ClaimIdentity
-	taskApprovals               map[memoryScopedKey][]core.TaskApproval
-	reviewPolicyStatuses        map[memoryScopedKey]map[string]core.ReviewPolicyStatus
-	verificationDeliveries      map[string]core.VerificationDelivery
-	verificationRows            map[string]VerificationRow
-	repositoryInstalls          map[memoryScopedKey][]core.RepositoryInstallTask
-	readClockPolicy             func(workspace string) (config.RecoveryPolicy, time.Duration, error)
+	changes                *changes.Hub
+	staged                 *[]changes.Notice
+	documentationEvidence  map[memoryScopedKey]map[string]core.DocumentationGateEvidence
+	riskRatings            map[memoryScopedKey][]core.RiskRating
+	riskOrders             map[string]memoryRiskOrder
+	claimIdentities        map[memoryScopedKey][]ClaimIdentity
+	taskApprovals          map[memoryScopedKey][]core.TaskApproval
+	reviewPolicyStatuses   map[memoryScopedKey]map[string]core.ReviewPolicyStatus
+	verificationDeliveries map[string]core.VerificationDelivery
+	verificationRows       map[string]VerificationRow
+	repositoryInstalls     map[memoryScopedKey][]core.RepositoryInstallTask
+	readClockPolicy        func(workspace string) (config.RecoveryPolicy, time.Duration, error)
+	// readTrustedAuthors and operateGatesLocked answer the review acceptance
+	// edge's live trust reads under m.mu (component-risk-review invariant
+	// 19). The volatile backend sets them over its stored workspace
+	// configuration and membership bindings. A raw memory store has no
+	// membership boundary and leaves them nil, so it trusts no named author,
+	// as EvaluateTaskApprovals does for a store without that boundary.
+	readTrustedAuthors          func(workspace, repo string) ([]string, error)
+	operateGatesLocked          func(workspace, userID string) bool
 	mu                          sync.RWMutex
 	tasks                       map[string]core.Task
 	repositories                map[string]map[string]string

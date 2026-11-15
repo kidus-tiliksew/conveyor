@@ -2272,8 +2272,9 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 				return err
 			}
 		}
-		// An enforcing task's ratings decide the merge hold when the round
-		// settles (req-risk-based-review AC-8.2).
+		// An enforcing task's ratings, authors, and live trust state decide
+		// the merge hold when the round settles (req-risk-based-review AC-8.2,
+		// AC-9.2).
 		var ratings []core.RiskRating
 		if taskFromDB(before).SetupContract.Risk.Enforcing() {
 			if ratings, err = listRiskRatings(ctx, tx, decision.TaskID); err != nil {
@@ -2353,7 +2354,9 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 				}
 			}
 			command, next, recovery = plan.Command, plan.NextStage, plan.Recovery
-		} else if _, hold := store.RiskMergeHold(taskFromDB(before), ratings); store.ReviewAcceptAdmitted(decision, aggregate.Verdict, hold) {
+		} else if hold, holdErr := riskAcceptanceHoldTx(ctx, tx, q, taskFromDB(before), ratings); holdErr != nil {
+			return holdErr
+		} else if store.ReviewAcceptAdmitted(decision, aggregate.Verdict, hold) {
 			// DEC-64(8): one running -> approved edge, no intervention.
 			command, recovery = core.TaskReviewAccept, ""
 		}
