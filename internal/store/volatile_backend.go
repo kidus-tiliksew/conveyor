@@ -58,6 +58,17 @@ func NewVolatileBackend() Backend {
 		}
 		return config.ReadClockPolicy([]byte(record.ConfigYAML))
 	}
+	// The acceptance edge reads the live trust list and each author's role
+	// under the memory lock it already holds, so these read the maps directly
+	// and never call a reader that takes the lock (component-risk-review
+	// invariant 19).
+	backend.readTrustedAuthors = func(workspace, repo string) ([]string, error) {
+		return StoredTrustedAuthors([]byte(backend.workspaces[workspace].ConfigYAML), repo)
+	}
+	backend.operateGatesLocked = func(workspace, userID string) bool {
+		binding, ok := backend.memberships[memoryScopedKey{workspace: workspace, id: userID}]
+		return ok && core.RoleAllows(binding.Role, core.CapabilityOperateGates)
+	}
 	return backend
 }
 
