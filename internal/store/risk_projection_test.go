@@ -1,6 +1,7 @@
 package store
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -54,6 +55,58 @@ func TestProjectTaskRisk(t *testing.T) {
 	}
 	if len(projected.Ratings) != 3 || projected.Ratings[0].Seq != 1 || projected.Ratings[2].Seq != 3 {
 		t.Fatalf("ratings not in recorded order: %+v", projected.Ratings)
+	}
+}
+
+// TestProjectTaskRiskServesPathCounts: the projection serves each rating
+// with counts in place of its path lists and leaves the stored ratings it
+// read unchanged. The tier and the requirements still come from the stored
+// ratings, so a path rule's stored human approvals stay in effect
+// (component-risk-review, Public surfaces; req-risk-based-review AC-11.2).
+func TestProjectTaskRiskServesPathCounts(t *testing.T) {
+	record := riskpolicy.Policy{Mode: riskpolicy.ModeRecord, Tiers: riskpolicy.DefaultTable()}
+	task := core.Task{ID: "risk-served", ReviewedHeadSHA: "reviewed", SetupContract: config.PolicyContract{Risk: &record}}
+	rules := []riskpolicy.RuleMatch{{Source: riskpolicy.RuleDeclared, Index: 1, Description: "billing", MinTier: riskpolicy.TierLow, MinHumanApprovals: 3, Paths: []string{"billing/a.go", "billing/b.go"}}}
+	ratings := []core.RiskRating{
+		{Seq: 2, Key: core.RiskAgentKey("o"), Source: core.RiskSourceRiskAgent, Tier: riskpolicy.TierMedium, HeadSHA: "head-1", BaseSHA: "base", Reason: "agent",
+			RiskWorkOrderID: "o", RiskModel: "m", MatchedRules: rules, CoveredPaths: []string{"billing/a.go", "billing/b.go", "web/x.ts"}},
+		{Seq: 1, Key: core.PathRiskKey("head-1"), Source: core.RiskSourcePathRule, Tier: riskpolicy.TierLow, HeadSHA: "head-1", BaseSHA: "base", Reason: "rules",
+			MatchedRules: rules, HumanApprovals: 3, DeclarationState: riskpolicy.DeclarationPresent},
+	}
+	before := make([]core.RiskRating, len(ratings))
+	for i, rating := range ratings {
+		before[i] = cloneRiskRating(rating)
+	}
+	projected := ProjectTaskRisk(task, ratings, 1)
+	if len(projected.Ratings) != 2 || projected.Ratings[0].Seq != 1 || projected.Ratings[1].Seq != 2 {
+		t.Fatalf("served ratings = %+v", projected.Ratings)
+	}
+	agent := projected.Ratings[1]
+	if agent.CoveredPathCount == nil || *agent.CoveredPathCount != 3 || len(agent.MatchedRules) != 1 || agent.MatchedRules[0].PathCount != 2 ||
+		agent.RiskWorkOrderID != "o" || agent.RiskModel != "m" || agent.BaseSHA != "base" {
+		t.Fatalf("served risk agent rating = %+v", agent)
+	}
+	if path := projected.Ratings[0]; path.CoveredPathCount != nil || path.MatchedRules[0].PathCount != 2 || path.HumanApprovals != 3 || path.DeclarationState != riskpolicy.DeclarationPresent {
+		t.Fatalf("served path rating = %+v", path)
+	}
+	// The projection sorts its input by sequence, as before; it changes no
+	// rating and no nested list.
+	byKey := map[string]core.RiskRating{}
+	for _, rating := range ratings {
+		byKey[rating.Key] = rating
+	}
+	for _, want := range before {
+		if got := byKey[want.Key]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("stored rating changed:\ngot  %+v\nwant %+v", got, want)
+		}
+	}
+	if projected.Tier != riskpolicy.TierMedium || projected.Source != core.RiskSourceRiskAgent || projected.Reason != "agent" || projected.Head != "head-1" {
+		t.Fatalf("projection = %+v", projected)
+	}
+	// Medium's table row asks for one approval; the stored path rule asks
+	// for three, and the calculated count takes the larger.
+	if projected.CalculatedHumanApprovals != 3 || projected.RequiredAgentReviews != 1 || projected.RequiredHumanApprovals != 0 {
+		t.Fatalf("requirements = %+v", projected)
 	}
 }
 

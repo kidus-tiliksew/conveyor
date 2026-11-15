@@ -183,7 +183,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		if origin, ok := origins[task.ID]; ok {
 			input.MonitorObservation = &nextaction.MonitorObservationRef{Kind: string(origin.Kind), SourceURL: origin.SourceURL, ObservedAt: origin.ObservedAt}
 		}
-		if input.Markers.CheckpointDecision && input.Markers.CheckpointClass == core.WorkOrderCheckpointClassAuthorityConflict && len(nextaction.CitedDocumentIDs(input.Markers.Citations)) > 0 {
+		if len(nextaction.CitedDocumentIDs(assemblerCitations(input))) > 0 {
 			checkpointed = append(checkpointed, i)
 		}
 		inputs[i] = input
@@ -420,6 +420,21 @@ func readDependencyView(ctx context.Context, st Store, tasks []core.Task, orders
 // call. A missing, archived, or unconfirmed document is left out; any read
 // error fails the projection (component-work-orders, Next action;
 // feature-operator-next-action NA-3).
+// assemblerCitations returns the authority-conflict citations whose
+// documents a statement reads: those of the plan risk order's own checkpoint
+// when row 3a states its decision request, and otherwise those of the
+// checkpoint row 10 reads (component-next-action, The statement, row 3a and
+// invariant 10).
+func assemblerCitations(input nextaction.Input) []core.WorkOrderAuthorityConflictCitation {
+	if citations := nextaction.PlanRiskCheckpointCitations(input); len(citations) > 0 {
+		return citations
+	}
+	if input.Markers.CheckpointDecision && input.Markers.CheckpointClass == core.WorkOrderCheckpointClassAuthorityConflict {
+		return input.Markers.Citations
+	}
+	return nil
+}
+
 func readCitedDocuments(ctx context.Context, st Store, tasks []core.Task, inputs []nextaction.Input, checkpointed []int) error {
 	if len(checkpointed) == 0 {
 		return nil
@@ -428,7 +443,7 @@ func readCitedDocuments(ctx context.Context, st Store, tasks []core.Task, inputs
 	var documentIDs []string
 	for _, i := range checkpointed {
 		taskIDs = append(taskIDs, tasks[i].ID)
-		for _, id := range nextaction.CitedDocumentIDs(inputs[i].Markers.Citations) {
+		for _, id := range nextaction.CitedDocumentIDs(assemblerCitations(inputs[i])) {
 			if !slices.Contains(documentIDs, id) {
 				documentIDs = append(documentIDs, id)
 			}
@@ -444,7 +459,7 @@ func readCitedDocuments(ctx context.Context, st Store, tasks []core.Task, inputs
 		return err
 	}
 	for _, i := range checkpointed {
-		ids := nextaction.CitedDocumentIDs(inputs[i].Markers.Citations)
+		ids := nextaction.CitedDocumentIDs(assemblerCitations(inputs[i]))
 		out := make(map[string]nextaction.CitedDocument, len(ids))
 		for _, id := range ids {
 			head, ok := heads[id]
@@ -566,12 +581,16 @@ func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task
 // readAssemblerPlanRiskOrders reads the risk order of the plan version that
 // waits at each enforcing task's plan approval gate. It reads only such tasks,
 // and it reads the task's stored risk orders fresh on every call, so a
-// completion or a cancellation ends the wait at the next read. The match is
-// exact: the order's subject is a plan version, and that version is the
-// task's latest one, which the gate holds. An earlier version's order and a
-// head's order never match. A read error fails the statement
-// (req-risk-based-review AC-11.3; component-next-action, The statement, row
-// 3a; component-next-action invariant 1).
+// completion or a cancellation ends the wait at the next read. It filters no
+// order state: the projection's row 3a states the order in every open state,
+// queued, claimed, timed out, released at a checkpoint, or suppressed. The
+// caller replaces the order with the task's order read, which carries the
+// recovery refusal and recovery schedule the row reads. The match is exact:
+// the order's subject is a plan version, and that version is the task's
+// latest one, which the gate holds. An earlier version's order and a head's
+// order never match. A read error fails the statement (req-risk-based-review
+// AC-11.3; component-next-action, The statement, row 3a; component-next-action
+// invariant 1).
 func readAssemblerPlanRiskOrders(ctx context.Context, st Store, tasks []core.Task, specs map[string]int) (map[string]nextaction.PlanRiskOrderRef, error) {
 	out := map[string]nextaction.PlanRiskOrderRef{}
 	for _, task := range tasks {

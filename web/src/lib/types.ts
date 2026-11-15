@@ -1208,7 +1208,9 @@ export interface RiskPolicy {
 // tier line or a review seat; they stay readable (req-risk-based-review
 // AC-5.6). risk_agent names a completed risk order's rating.
 export type RiskSource = 'plan' | 'path_rule' | 'reviewer' | 'person' | 'risk_agent'
-// One recorded rating of a task (req-risk-based-review AC-5.6).
+// One recorded rating of a task as the task read serves it
+// (req-risk-based-review AC-5.6). A served rating carries counts in place of
+// path lists (component-risk-review, Public surfaces).
 export interface RiskRating {
   seq: number
   key: string
@@ -1219,10 +1221,11 @@ export interface RiskRating {
   reason: string
   matched_rules: {
     source: string
+    index: number
     description: string
     min_tier: RiskTier
     min_human_approvals: number
-    paths: string[]
+    path_count: number
   }[]
   human_approvals?: number
   review_round?: number
@@ -1231,11 +1234,11 @@ export interface RiskRating {
   // The plan version a plan rating or a risk agent rating rates.
   plan_version?: number
   // A risk_agent rating names its completed risk order and the model that
-  // order's session reported, and for a head the paths it covered
+  // order's session reported, and for a head the number of paths it covered
   // (req-risk-based-review AC-5.6, AC-12.2).
   risk_work_order_id?: string
   risk_model?: string
-  covered_paths?: string[]
+  covered_path_count?: number
   // A risk agent rating of a plan version that is not approved: readable, and
   // counted only once that version is approved (AC-4.3).
   plan_pending?: boolean

@@ -2059,7 +2059,12 @@ var riskAgentRules = map[string][]string{
 		"An unclaimed risk order waits in the queue like every other order. No clock cancels or escalates it.",
 		"The raise cancels the task's open risk orders in the same act, and the wait ends",
 		"The session never raises a tier itself to end a wait.",
-		"Under an enforce risk mode, do not offer plan approval while the plan version's risk order is queued or claimed.",
+		"Under an enforce risk mode, do not offer plan approval while the plan version's risk order is neither completed nor cancelled.",
+		// An open risk order is one neither completed nor cancelled, so a
+		// timed-out or released order still holds the approval
+		// (component-cli-onboarding invariant 43; component-plan-state
+		// invariant 10).
+		"While that order is neither completed nor cancelled, Conveyor refuses the approval with `plan_risk_rating_open` and changes no plan state.",
 	},
 	"conveyor-coordinate/conveyor-coordinate.md": {
 		"It starts a separate thread for each claimable plan, implementation, verification, risk, and review order.",
@@ -2081,7 +2086,7 @@ var riskAgentRules = map[string][]string{
 		"When the preferred host, harness, or model is unavailable, report a blocker. Never substitute another host, harness, or model (req-agent-coordination AC-1.7).",
 		"A submission result without `risk_work_order_id` created no risk order.",
 		"Each risk thread counts against your concurrency limit while it runs, the same as any other thread.",
-		"Do not record a plan approval then.",
+		"Conveyor refuses the approval with `plan_risk_rating_open` while the order is neither completed nor cancelled. Do not record a plan approval then.",
 		"**Record.** Nothing waits.",
 		"Never raise a tier yourself to end a wait.",
 		"risk agent <…>;",
@@ -2101,10 +2106,11 @@ var riskAgentRules = map[string][]string{
 }
 
 // riskAgentForbidden is text that no installed work or coordination file may
-// keep: reviewers state no tier (component-review invariant 13), and a
-// risk order nobody claims is never cancelled by a clock
-// (component-work-orders invariant 5).
-var riskAgentForbidden = []string{"risk_tier", "risk_reason", "Rate the head's risk", "passes its queue deadline"}
+// keep: reviewers state no tier (component-review invariant 13), a risk
+// order nobody claims is never cancelled by a clock (component-work-orders
+// invariant 5), and the plan approval waits while the risk order is open, not
+// only while it is queued or claimed (component-cli-onboarding invariant 43).
+var riskAgentForbidden = []string{"risk_tier", "risk_reason", "Rate the head's risk", "passes its queue deadline", "order is queued or claimed"}
 
 // checkRiskAgentRules reports each risk agent rule missing from, and each
 // forbidden fragment present in, the work and coordination files under one

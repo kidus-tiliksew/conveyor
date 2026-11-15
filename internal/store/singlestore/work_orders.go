@@ -627,8 +627,10 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 		// even behind a newer stage. Without a claim, the latest-order holding
 		// predicate governs admission; review rounds use their own latest-round
 		// predicate (component-work-orders "Stages and order minting"; DEC-62).
+		// A risk order never counts as the later order, so it releases no
+		// hold (component-work-orders invariant 2; DEC-135(10)).
 		var exists bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders wo WHERE wo.workspace_id=? AND wo.task_id=? AND wo.stage=? AND (wo.state='claimed' OR (wo.state IN ('queued','stale','timed_out') AND NOT EXISTS (SELECT 1 FROM work_orders later WHERE later.workspace_id=wo.workspace_id AND later.task_id=wo.task_id AND (later.created_at > wo.created_at OR (later.created_at = wo.created_at AND later.id > wo.id))))))`, documentWorkspace(ctx), j.TaskID, o.Stage).Scan(&exists); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders wo WHERE wo.workspace_id=? AND wo.task_id=? AND wo.stage=? AND (wo.state='claimed' OR (wo.state IN ('queued','stale','timed_out') AND NOT EXISTS (SELECT 1 FROM work_orders later WHERE later.workspace_id=wo.workspace_id AND later.task_id=wo.task_id AND later.stage<>'risk' AND (later.created_at > wo.created_at OR (later.created_at = wo.created_at AND later.id > wo.id))))))`, documentWorkspace(ctx), j.TaskID, o.Stage).Scan(&exists); err != nil {
 			return err
 		}
 		if exists {
@@ -840,6 +842,13 @@ func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) 
 	}
 	if err := collect(query, args...); err != nil {
 		return nil, err
+	}
+	// The risk order of an enforcing task's plan gate is decided while the
+	// task is awaiting_human (component-work-orders invariant 46).
+	if bound != 0 {
+		if err := collect(planGateRiskElapsedSQL, documentWorkspace(ctx), now, now); err != nil {
+			return nil, err
+		}
 	}
 	// Merged or closed tasks that still hold a non-terminal order are visited
 	// without a due transition, bounded per tick, so the order clock retires
@@ -1840,6 +1849,18 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		}
 		if err := store.RefuseReviewSeatRetirement(o); err != nil {
 			return err
+		}
+		// A risk order's retirement reads the owning task's frozen risk mode
+		// in this transaction, before any write (component-work-orders
+		// invariant 43).
+		if o.Stage == core.StageRisk {
+			task, err := getTaskRow(ctx, tx, o.TaskID)
+			if err != nil {
+				return err
+			}
+			if err := store.RefuseRiskOrderRetirement(task, o); err != nil {
+				return err
+			}
 		}
 		now := time.Now().UTC()
 		conflict := fmt.Errorf("%w: work order %s does not have an active claimed attempt", store.ErrWorkOrderPreemptConflict, o.ID)

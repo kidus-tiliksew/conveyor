@@ -39,8 +39,8 @@ func (f approvalHTTP) trust(userIDs ...string) { f.cfg.Repos[0].TrustedAuthors =
 // approvalHTTPFixture serves workspace "alpha" with an enforcing high-tier
 // task "risk-approve" waiting at the merge gate at approvalHead in review
 // round 1, authored by "author", and a record-mode task "risk-record" at the
-// gate. operator, second, and author hold operate_gates; contributor does
-// not.
+// gate. Each task's path rating matched one rule on two paths. operator,
+// second, and author hold operate_gates; contributor does not.
 func approvalHTTPFixture(t *testing.T) approvalHTTP {
 	t.Helper()
 	fixture := &membershipFixture{
@@ -60,7 +60,9 @@ func approvalHTTPFixture(t *testing.T) approvalHTTP {
 		task.SetupContract = config.PolicyContract{MaxBounces: 3, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}, Risk: &riskpolicy.Policy{Mode: mode, Tiers: riskpolicy.DefaultTable()}}
 		requireOKHTTP(t, st.CreateTask(ctx, task))
 		if _, _, err := st.RecordRiskRating(ctx, core.RiskRating{TaskID: id, Key: core.PathRiskKey(approvalHead), Source: core.RiskSourcePathRule, Tier: riskpolicy.TierHigh,
-			HeadSHA: approvalHead, BaseSHA: "base", DeclarationState: riskpolicy.DeclarationAbsent, Reason: "path rule"}); err != nil {
+			HeadSHA: approvalHead, BaseSHA: "base", DeclarationState: riskpolicy.DeclarationAbsent, Reason: "path rule", HumanApprovals: 1,
+			MatchedRules: []riskpolicy.RuleMatch{{Source: riskpolicy.RuleBuiltin, Description: "GitHub Actions workflows", MinTier: riskpolicy.TierMedium, MinHumanApprovals: 1,
+				Paths: []string{".github/workflows/ci.yml", ".github/workflows/release.yml"}}}}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := taskops.New(st).Perform(ctx, id, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
@@ -91,6 +93,16 @@ func approvalHTTPFixture(t *testing.T) approvalHTTP {
 	return approvalHTTP{handler: server.Handler(), st: st, ctx: ctx, forge: pr, cfg: cfg}
 }
 
+// requireServedApprovalRisk checks that an approval or waiver answer serves
+// the task's one path rating with its rule's path count and no path list
+// (component-risk-review, Public surfaces).
+func requireServedApprovalRisk(t *testing.T, body string) {
+	t.Helper()
+	if ratings, rules := requireServedRiskRatings(t, []byte(body)); ratings != 1 || rules != 1 || !strings.Contains(body, `"path_count":2`) {
+		t.Fatalf("answer served %d ratings and %d matched rules: %s", ratings, rules, body)
+	}
+}
+
 func (f approvalHTTP) post(token, taskID, route, body string) *routeResult {
 	response := riskRequest(f.handler, http.MethodPost, token, "/v1/tasks/"+taskID+route+"?workspace_id=alpha", body)
 	return &routeResult{Code: response.Code, Body: response.Body.String()}
@@ -111,7 +123,9 @@ func (f approvalHTTP) records(t *testing.T, taskID string) []core.TaskApproval {
 // Two people are needed: the first approval answers 202 with the shortfall,
 // a repeat counts once, and the trusted author's approval answers 200 with
 // every requirement met. The
-// REST read carries the same count. No approval merges.
+// REST read carries the same count. Both answers serve the rating with a
+// path count in place of its paths (component-risk-review, Public surfaces).
+// No approval merges.
 func TestApprovalsRouteCountsDistinctPeople(t *testing.T) {
 	f := approvalHTTPFixture(t)
 	body := `{"head_sha":"` + approvalHead + `"}`
@@ -119,6 +133,7 @@ func TestApprovalsRouteCountsDistinctPeople(t *testing.T) {
 	if first.Code != http.StatusAccepted || !strings.Contains(first.Body, `"approvals_required"`) || !strings.Contains(first.Body, `"recorded":true`) {
 		t.Fatalf("first approval status=%d body=%s", first.Code, first.Body)
 	}
+	requireServedApprovalRisk(t, first.Body)
 	if again := f.post("operator-token", "risk-approve", "/approvals", body); again.Code != http.StatusAccepted || !strings.Contains(again.Body, `"recorded":false`) {
 		t.Fatalf("repeat approval status=%d body=%s", again.Code, again.Body)
 	}
@@ -139,6 +154,7 @@ func TestApprovalsRouteCountsDistinctPeople(t *testing.T) {
 	if second.Code != http.StatusOK || !strings.Contains(second.Body, `"approvals_satisfied":true`) {
 		t.Fatalf("second approval status=%d body=%s", second.Code, second.Body)
 	}
+	requireServedApprovalRisk(t, second.Body)
 	if current, _ := f.st.GetTask(f.ctx, "risk-approve"); current.State != core.TaskAwaiting {
 		t.Fatalf("approvals changed the task state to %s", current.State)
 	}
@@ -232,6 +248,7 @@ func TestWaiveAuthorRoute(t *testing.T) {
 	if result.Risk.AuthorApprovalNeeded || result.Risk.RequiredHumanApprovals != 2 || result.Risk.RecordedApprovals != 0 {
 		t.Fatalf("waived risk=%+v", result.Risk)
 	}
+	requireServedApprovalRisk(t, response.Body)
 	events, err := f.st.ListEvents(f.ctx, "risk-approve")
 	requireOKHTTP(t, err)
 	// The waiver is the act's last event before the policy status

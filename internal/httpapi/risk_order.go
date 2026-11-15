@@ -15,7 +15,8 @@ import (
 // come from the stored order and its claim, never from the call
 // (req-risk-based-review AC-12.2; component-work-orders invariant 65). A
 // missing, mistyped, or invalid tier or reason is refused before any write,
-// so the order stays claimed.
+// so the order stays claimed. The answer carries the rating in its served
+// shape.
 func (s *Server) submitRiskRatingTool(ctx context.Context, args map[string]any, session string) (any, error) {
 	workOrderID, _ := args["work_order_id"].(string)
 	claim, err := s.authorizeClaimantSession(ctx, workOrderID, session)
@@ -40,5 +41,16 @@ func (s *Server) submitRiskRatingTool(ctx context.Context, args map[string]any, 
 	if err = core.ValidateRiskReason("reason", values["reason"]); err != nil {
 		return nil, invalidToolArgument(err)
 	}
-	return s.WorkOrders.SubmitRiskRating(ctx, claim, workOrderID, values["tier"], values["reason"])
+	result, err := s.WorkOrders.SubmitRiskRating(ctx, claim, workOrderID, values["tier"], values["reason"])
+	if err != nil {
+		return nil, err
+	}
+	// The answer serves the rating with counts in place of its path lists,
+	// for the first call and for a replay alike; the stored rating keeps
+	// both lists (component-work-orders invariant 65; component-risk-review,
+	// Public surfaces).
+	if rating, ok := result["rating"].(core.RiskRating); ok {
+		result["rating"] = core.ServeRiskRating(rating)
+	}
+	return result, nil
 }

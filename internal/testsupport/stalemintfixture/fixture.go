@@ -17,6 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -33,6 +34,7 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 	t.Run("DeadClaimBehindReviewReportsHoldLease", func(t *testing.T) { runDeadClaimBehindReview(t, factory(t), false) })
 	t.Run("DeadClaimBehindReviewReportsHoldExecutionDeadline", func(t *testing.T) { runDeadClaimBehindReview(t, factory(t), true) })
 	t.Run("OlderRoundStopDoesNotHoldReview", func(t *testing.T) { runOlderRoundStop(t, factory(t)) })
+	t.Run("TimedOutSeatBehindRiskOrderHoldsReview", func(t *testing.T) { runSeatBehindRiskOrder(t, factory(t)) })
 }
 
 type harness struct {
@@ -61,6 +63,7 @@ func newHarness(t *testing.T, st store.Backend, name string, recovery config.Rec
 	if task.SetupContract.VerifyStage {
 		setup.VerifyStage = true
 	}
+	setup.Risk = task.SetupContract.Risk
 	cfg := (&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://github.com/fixture/conveyor", GitHub: "fixture/conveyor", Base: "main"}}, WorkOrderQueueTimeout: time.Hour, WorkOrderQueueTimeoutText: "1h", MaxBounces: 3, Recovery: recovery, ExecutionSettings: &settings, Routing: config.Routing{Triage: config.TriageRoute{Model: "control", TimeoutText: "20m", Timeout: 20 * time.Minute}, Stages: routes}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}}}).WithPolicy(setup)
 	human := store.WithActor(t.Context(), store.Actor{ID: "test", Role: core.ActorHuman})
 	if _, err := st.CreateWorkspace(human, workspace, "Stale mint "+workspace, cfg); err != nil {
@@ -291,6 +294,46 @@ func runOlderRoundStop(t *testing.T, st store.Backend) {
 	h.dispatch(t)
 	if _, ok := h.orders(t)[h.task.ID+"-review-3-seat-1"]; !ok {
 		t.Fatalf("completed round 2 did not permit round 3: %+v", h.orders(t))
+	}
+}
+
+// runSeatBehindRiskOrder proves that a review seat that timed out still holds
+// review when a head risk order is created after it. A risk order never
+// counts as the later order, so redelivered dispatch mints no second round
+// beside the stopped seat (component-work-orders invariants 2 and 62;
+// DEC-135(10)).
+func runSeatBehindRiskOrder(t *testing.T, st store.Backend) {
+	policy := riskpolicy.Policy{Mode: riskpolicy.ModeRecord, Tiers: riskpolicy.DefaultTable()}
+	h := newHarness(t, st, "seat-risk", config.DefaultRecoveryPolicy(), core.Task{NextStage: core.StageImplement, SetupContract: config.PolicyContract{Risk: &policy}})
+	h.dispatch(t)
+	h.running(t)
+	h.perform(t, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true})
+	h.dispatch(t)
+	seat := h.task.ID + "-review-1-seat-1"
+	if _, err := storetest.ClaimWorkOrder(h.ctx, h.st, seat, core.WorkOrderClaim{
+		SessionID: "seat-risk-session", ClientToken: "seat-risk-token",
+		Lease: time.Minute, ExecutionTimeout: time.Nanosecond,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(h.st).TickOrderClock(h.ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if order := h.orders(t)[seat]; order.State != core.WorkOrderTimedOut {
+		t.Fatalf("seat state=%s, want timed_out", order.State)
+	}
+	result, err := taskops.ExecuteWorkOrder(h.ctx, h.st, h.task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.HeadRiskOrderResult, error) {
+		return h.st.EnsureHeadRiskOrderCommand(h.ctx, lease, store.HeadRiskOrderRequest{TaskID: h.task.ID,
+			Subject: core.RiskOrderSubject{HeadSHA: "seat-risk-head", BaseSHA: "seat-risk-base"}, ChangedPaths: []string{"a.go"}, QueueTimeout: time.Hour})
+	})
+	if err != nil || !result.Created {
+		t.Fatalf("head risk order=%+v err=%v", result, err)
+	}
+	for range 2 {
+		h.dispatch(t)
+	}
+	if _, minted := h.orders(t)[h.task.ID+"-review-2-seat-1"]; minted {
+		t.Fatalf("a second round was minted beside the timed-out seat: %+v", h.orders(t))
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -29,9 +30,12 @@ import (
 // round and an older head's open order never hold it; completing or cancelling
 // an enforcing task's risk order enqueues the queued task's dispatch on a
 // durable backend; a claimed risk order blocks no policy change; and merge and
-// close cancel the task's open risk orders (component-submission-merge
-// invariants 68 and 69; component-review invariant 41; component-work-orders
-// invariant 66; req-risk-based-review AC-1.6, AC-5.8 to AC-5.11, AC-12.3;
+// close cancel the task's open risk orders; a later risk order leaves a
+// timed-out review seat or verify order holding its stage; and a path minimum
+// that brings the tier to high cancels the task's open risk orders and
+// enqueues nothing (component-submission-merge invariants 67 to 69;
+// component-review invariant 41; component-work-orders invariants 2, 62, and
+// 66; req-risk-based-review AC-1.6, AC-5.8 to AC-5.11, AC-12.3;
 // component-risk-review invariants 12 and 13).
 func RunHeadRiskOrderConformance(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
@@ -411,6 +415,214 @@ func RunHeadRiskOrderConformance(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		if cancelled.State != core.TaskClosed || orderState(t, claimed) != core.WorkOrderCancelled {
 			t.Fatalf("closed task=%s risk order=%s", cancelled.State, orderState(t, claimed))
+		}
+	})
+
+	// A risk order is created beside the task's other orders and never counts
+	// as the later order. A timed-out review seat or verify order followed by
+	// a risk order still holds its stage: the dispatcher's read finds the
+	// stopped order as the holder, stage creation mints no second order, the
+	// held task names the stopped order, and durable reconcile enqueues
+	// nothing for it (component-work-orders invariants 2 and 62;
+	// DEC-135(10); component-durable-queue "Reconciliation between tasks and
+	// jobs").
+	timeOut := func(t *testing.T, id string) {
+		t.Helper()
+		_, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{SessionID: "timeout-" + id, ClientToken: "timeout-token-" + id, Lease: time.Minute, ExecutionTimeout: time.Nanosecond})
+		requireOK(t, err)
+		_, err = taskops.New(st).TickOrderClock(ctx, time.Now().UTC())
+		requireOK(t, err)
+		if got := orderState(t, id); got != core.WorkOrderTimedOut {
+			t.Fatalf("order %s state=%s, want timed_out", id, got)
+		}
+	}
+	requireStageHeld := func(t *testing.T, taskID string, stage core.Stage, holder string) {
+		t.Helper()
+		orders, err := st.ListWorkOrdersForTasks(ctx, []string{taskID})
+		requireOK(t, err)
+		if latest := orders[len(orders)-1]; latest.Stage != core.StageRisk {
+			t.Fatalf("latest order %s is at stage %s, want a risk order", latest.ID, latest.Stage)
+		}
+		if got, held := core.WorkOrderBlocksStageMint(orders, stage); !held || got.ID != holder {
+			t.Fatalf("%s holder=%q held=%t, want %s", stage, got.ID, held, holder)
+		}
+		if err = st.EnsureTaskEnqueued(ctx, taskID); !errors.Is(err, store.ErrTaskHeldByWorkOrder) || !strings.Contains(err.Error(), holder) {
+			t.Fatalf("enqueue err=%v, want a hold by %s", err, holder)
+		}
+		if !st.IsDurable() {
+			return
+		}
+		reconcileCtx, repairs := countReconciled(ctx, st)
+		for range 3 {
+			_, err = st.ReconcileQueuedTasks(reconcileCtx)
+			requireOK(t, err)
+		}
+		got, err := repairs(taskID)
+		requireOK(t, err)
+		if job, _ := dispatchJob(t, taskID); got != 0 || job.Active() {
+			t.Fatalf("reconcile repaired a held task: repairs=%d job=%+v", got, job)
+		}
+	}
+
+	t.Run("LaterRiskOrderKeepsATimedOutReviewSeatHeld", func(t *testing.T) {
+		task := fileTask(t, &record, core.TaskRunning, core.StageReview)
+		requireOK(t, openRound(t, task.ID, "h1", 1))
+		seat := task.ID + "-review-1-seat-1"
+		timeOut(t, seat)
+		if created := ensure(t, request(task.ID, "h1", "a.go")); !created.Created {
+			t.Fatalf("head risk order=%+v", created)
+		}
+		queueTask(t, task.ID)
+		requireStageHeld(t, task.ID, core.StageReview, seat)
+		if n := reviewOrders(t, task.ID); n != 1 || orderState(t, seat) != core.WorkOrderTimedOut {
+			t.Fatalf("review orders=%d seat state=%s, want the one timed-out seat", n, orderState(t, seat))
+		}
+	})
+
+	t.Run("LaterRiskOrderKeepsATimedOutVerifyOrderHeld", func(t *testing.T) {
+		id := core.NewTaskID()
+		task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id,
+			State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "h1", PolicyVersion: 1, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+		task.SetupContract = config.PolicyContract{MaxBounces: 3, VerifyStage: true, Risk: &record, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)},
+			StageTimeouts: config.PolicyStageTimeouts{Spec: "30m", Implement: "4h", Verify: "1h", Review: "45m"}}
+		requireOK(t, st.CreateTask(ctx, task))
+		verifyOrder := func(n int) (core.Job, core.WorkOrder) {
+			orderID := fmt.Sprintf("%s-verify-%d", id, n)
+			now := time.Now().UTC()
+			return core.Job{ID: orderID, TaskID: id, Stage: core.StageVerify, State: core.JobPending},
+				core.WorkOrder{ID: orderID, TaskID: id, JobID: orderID, Stage: core.StageVerify, HeadSHA: "h1", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
+		}
+		job, order := verifyOrder(1)
+		made, err := CreateStageWorkOrder(ctx, st, job, order)
+		requireOK(t, err)
+		if !made {
+			t.Fatal("the first verify order was not created")
+		}
+		timeOut(t, order.ID)
+		if created := ensure(t, request(id, "h1", "a.go")); !created.Created {
+			t.Fatalf("head risk order=%+v", created)
+		}
+		job2, order2 := verifyOrder(2)
+		made, err = CreateStageWorkOrder(ctx, st, job2, order2)
+		requireOK(t, err)
+		if made {
+			t.Fatal("a second verify order was minted beside the timed-out one")
+		}
+		if _, err = st.GetWorkOrder(ctx, order2.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("second verify order read err=%v, want not found", err)
+		}
+		_, err = taskops.New(st).Perform(ctx, id, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageVerify, ProjectStages: true})
+		requireOK(t, err)
+		if st.IsDurable() {
+			finishDispatch(t, id)
+		}
+		requireStageHeld(t, id, core.StageVerify, order.ID)
+	})
+
+	// A path minimum that brings the tier to high cancels every open risk
+	// order of the task, a live claim included, in the act that records it.
+	// The cancellation records no rating of its own and enqueues nothing, so
+	// a queued task's dispatch stays as it was. A lower path minimum, and a
+	// replay that records no rating, cancel nothing (component-work-orders
+	// invariant 66; component-submission-merge invariants 67 to 69;
+	// req-risk-based-review AC-12.3).
+	pathRating := func(t *testing.T, taskID, head string, tier riskpolicy.Tier) (core.RiskRating, bool) {
+		t.Helper()
+		rating, created, err := st.RecordRiskRating(ctx, core.RiskRating{TaskID: taskID, Key: core.PathRiskKey(head), Source: core.RiskSourcePathRule, Tier: tier,
+			HeadSHA: head, DeclarationState: riskpolicy.DeclarationUnknown, Reason: "path minimum " + string(tier)})
+		requireOK(t, err)
+		return rating, created
+	}
+	planRiskOrder := func(t *testing.T, taskID string, version int) core.WorkOrder {
+		t.Helper()
+		order, err := taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+			order, made, err := st.CreateRiskOrderCommand(ctx, lease, store.RiskOrderCreateRequest{TaskID: taskID, Subject: core.RiskOrderSubject{PlanVersion: version}, QueueTimeout: time.Hour})
+			if err == nil && !made {
+				err = fmt.Errorf("plan risk order for version %d was not created", version)
+			}
+			return order, err
+		})
+		requireOK(t, err)
+		return order
+	}
+
+	for _, mode := range []*riskpolicy.Policy{&record, &enforce} {
+		t.Run("PathMinimumToHighCancelsOpenRiskOrders/"+string(mode.Mode), func(t *testing.T) {
+			task := fileTask(t, mode, core.TaskRunning, core.StageImplement)
+			headOrder := ensure(t, request(task.ID, "h0", "a.go")).Order
+			plan := planRiskOrder(t, task.ID, 1)
+			session := "path-high-" + task.ID
+			claimRisk(t, plan.ID, session)
+			queueTask(t, task.ID)
+			ratingsBefore, err := st.ListTaskRiskRatings(ctx, task.ID)
+			requireOK(t, err)
+			if _, created := pathRating(t, task.ID, "h1", riskpolicy.TierHigh); !created {
+				t.Fatal("the high path minimum was not recorded")
+			}
+			for _, id := range []string{headOrder.ID, plan.ID} {
+				got, err := st.GetWorkOrder(ctx, id)
+				requireOK(t, err)
+				if got.State != core.WorkOrderCancelled || got.SessionID != "" {
+					t.Fatalf("risk order %s after a high path minimum=%+v", id, got)
+				}
+			}
+			if got := countEvents(t, task.ID, "work_order.cancelled"); got != 2 {
+				t.Fatalf("work_order.cancelled events=%d, want 2", got)
+			}
+			events, err := st.ListEvents(ctx, task.ID)
+			requireOK(t, err)
+			reasons := 0
+			for _, event := range events {
+				if event.Kind == "work_order.cancelled" && strings.Contains(string(event.Payload), store.RiskTierHighCancelReason) {
+					reasons++
+				}
+			}
+			if reasons != 2 {
+				t.Fatalf("cancellations naming the high-tier reason=%d, want 2", reasons)
+			}
+			ratingsAfter, err := st.ListTaskRiskRatings(ctx, task.ID)
+			requireOK(t, err)
+			if len(ratingsAfter) != len(ratingsBefore)+1 || ratingsAfter[len(ratingsAfter)-1].Source != core.RiskSourcePathRule {
+				t.Fatalf("ratings after the path minimum=%+v, want only the path rating added", ratingsAfter)
+			}
+			// The claimed order's late completion is refused.
+			_, err = taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdSubmitRiskRating, func(lease taskops.TaskLease) (core.RiskRating, error) {
+				return st.CompleteRiskOrderCommand(ctx, lease, store.RiskOrderCompleteRequest{WorkOrderID: plan.ID,
+					Claim: core.WorkOrderClaimIdentity{ClaimantID: "run:risk-agent", SessionID: session}, Tier: riskpolicy.TierLow, Reason: "late"})
+			})
+			if !errors.Is(err, store.ErrWorkOrderCancelled) {
+				t.Fatalf("late completion after the high path minimum err=%v", err)
+			}
+			if st.IsDurable() {
+				if job, _ := dispatchJob(t, task.ID); job.Active() {
+					t.Fatalf("the path minimum cancellation enqueued the task: %+v", job)
+				}
+			}
+		})
+	}
+
+	t.Run("LowerPathMinimumsAndReplaysCancelNothing", func(t *testing.T) {
+		task := fileTask(t, &record, core.TaskRunning, core.StageImplement)
+		if _, created := pathRating(t, task.ID, "h1", riskpolicy.TierMedium); !created {
+			t.Fatal("the medium path minimum was not recorded")
+		}
+		open := ensure(t, request(task.ID, "h2", "a.go")).Order
+		plan := planRiskOrder(t, task.ID, 1)
+		// A replay of h1 with a high read records no rating, so the tier
+		// stays medium and nothing is cancelled.
+		if replay, created := pathRating(t, task.ID, "h1", riskpolicy.TierHigh); created || replay.Tier != riskpolicy.TierMedium {
+			t.Fatalf("replayed path minimum=%+v created=%t", replay, created)
+		}
+		if _, created := pathRating(t, task.ID, "h2", riskpolicy.TierLow); !created {
+			t.Fatal("the low path minimum was not recorded")
+		}
+		for _, id := range []string{open.ID, plan.ID} {
+			if got := orderState(t, id); got != core.WorkOrderQueued {
+				t.Fatalf("risk order %s state=%s, want queued", id, got)
+			}
+		}
+		if got := countEvents(t, task.ID, "work_order.cancelled"); got != 0 {
+			t.Fatalf("work_order.cancelled events=%d, want 0", got)
 		}
 	})
 

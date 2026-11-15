@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -25,9 +26,11 @@ import (
 // records no rating, a raise or rating to high cancels every open risk order
 // in its own act, and a risk claim is refused for any session ID or client
 // token that claimed a plan, implementation, or review order of the task,
-// including released attempts (req-risk-based-review AC-4.3, AC-5.5, AC-5.6,
-// AC-12.1 to AC-12.3; component-work-orders invariants 62 to 66;
-// component-risk-review invariant 12).
+// including released attempts. Preempt refuses to retire an open risk order
+// of an enforcing task before any write, retires one of a record task, and
+// still requeues a claimed one (req-risk-based-review AC-4.3, AC-4.8, AC-5.5,
+// AC-5.6, AC-5.10, AC-12.1 to AC-12.3; component-work-orders invariants 43
+// and 62 to 66; component-risk-review invariant 12).
 func RunRiskOrderConformance(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	record := riskpolicy.Policy{Mode: riskpolicy.ModeRecord, Tiers: riskpolicy.DefaultTable()}
@@ -408,6 +411,126 @@ func RunRiskOrderConformance(t *testing.T, x Fixture) {
 		}
 		if got := order(t, headOrder.ID); got.State != core.WorkOrderCompleted {
 			t.Fatalf("rated order=%+v", got)
+		}
+	})
+
+	// Preempt never retires an open risk order of an enforcing task: a
+	// retired order is not open, so it would end the plan approval's or the
+	// review round's wait with no rating. The refusal comes before any write,
+	// so the same request refuses again. Under record the retirement works as
+	// before, and preempting a claimed risk order still revokes the claim and
+	// requeues the order (component-work-orders invariant 43;
+	// req-risk-based-review AC-4.8, AC-5.10, AC-12.3; DEC-135(11)).
+	preempt := func(o core.WorkOrder, requestID string) (store.WorkOrderPreemptResult, error) {
+		return taskops.ExecuteWorkOrder(ctx, st, o.TaskID, core.WorkOrderCmdPreempt, func(lease taskops.TaskLease) (store.WorkOrderPreemptResult, error) {
+			return st.PreemptWorkOrderCommand(ctx, lease, store.WorkOrderPreemptRequest{WorkOrderID: o.ID, RequestID: requestID, Reason: "operator retirement"})
+		})
+	}
+	type durableOrder struct {
+		ID, AttemptID, SessionID string
+		State                    core.WorkOrderState
+		Outcome                  string
+		RetrySuppressed          bool
+		UpdatedAt                time.Time
+	}
+	type durableView struct {
+		Orders []durableOrder
+		Jobs   map[string]core.JobState
+		Events int
+	}
+	snapshot := func(t *testing.T, taskID string) durableView {
+		t.Helper()
+		orders, err := st.ListTaskWorkOrders(ctx, taskID)
+		requireOK(t, err)
+		jobs, err := st.ListJobs(ctx, taskID)
+		requireOK(t, err)
+		events, err := st.ListEvents(ctx, taskID)
+		requireOK(t, err)
+		view := durableView{Jobs: map[string]core.JobState{}, Events: len(events)}
+		for _, o := range orders {
+			view.Orders = append(view.Orders, durableOrder{o.ID, o.AttemptID, o.SessionID, o.State, o.LastAttemptOutcome, o.RetrySuppressed, o.UpdatedAt.UTC()})
+		}
+		for _, job := range jobs {
+			view.Jobs[job.ID] = job.State
+		}
+		return view
+	}
+	requireRetirementRefused := func(t *testing.T, o core.WorkOrder) {
+		t.Helper()
+		before := snapshot(t, o.TaskID)
+		requestID := "retire-risk-" + core.NewTaskID()
+		for range 2 {
+			if _, err := preempt(o, requestID); !errors.Is(err, store.ErrWorkOrderPreemptConflict) {
+				t.Fatalf("retiring risk order %s err=%v, want ErrWorkOrderPreemptConflict", o.ID, err)
+			}
+		}
+		if after := snapshot(t, o.TaskID); !reflect.DeepEqual(before, after) {
+			t.Fatalf("a refused retirement wrote state:\nbefore=%+v\nafter=%+v", before, after)
+		}
+	}
+
+	t.Run("PreemptRefusesToRetireAnEnforcingTasksRiskOrder", func(t *testing.T) {
+		task := fileTask(t, &enforce, core.StageReview)
+		plan := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: core.RiskOrderSubject{PlanVersion: 1}})
+		headOrder := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-preempt")})
+		requireRetirementRefused(t, plan)
+		requireRetirementRefused(t, headOrder)
+		// A claimed risk order is still preempted: the claim is revoked and
+		// the order is requeued, and a replay returns the same result.
+		session := "preempt-rater-" + task.ID
+		claimed, err := claim(headOrder.ID, session, session+"-token")
+		requireOK(t, err)
+		requestID := "preempt-risk-" + task.ID
+		result, err := preempt(claimed, requestID)
+		requireOK(t, err)
+		if result.WorkOrder.State != core.WorkOrderQueued || result.RevokedSessionID != session || result.RevokedAttemptID != claimed.AttemptID {
+			t.Fatalf("claimed risk order preempt=%+v", result)
+		}
+		replay, err := preempt(claimed, requestID)
+		requireOK(t, err)
+		if replay.RequestID != result.RequestID || replay.WorkOrder.ID != result.WorkOrder.ID || replay.WorkOrder.State != result.WorkOrder.State || replay.RevokedAttemptID != result.RevokedAttemptID {
+			t.Fatalf("preempt replay=%+v, want %+v", replay, result)
+		}
+		requeued := order(t, headOrder.ID)
+		if requeued.State != core.WorkOrderQueued || requeued.SessionID != "" {
+			t.Fatalf("requeued risk order=%+v", requeued)
+		}
+		// The requeued order is open again and still refuses retirement.
+		requireRetirementRefused(t, requeued)
+		if retired, preempted := countEvents(t, task.ID, "work_order.retired"), countEvents(t, task.ID, "work_order.preempted"); retired != 0 || preempted != 1 {
+			t.Fatalf("retired events=%d preempted events=%d, want 0 and 1", retired, preempted)
+		}
+		if got := order(t, plan.ID); got.State != core.WorkOrderQueued {
+			t.Fatalf("plan risk order after refused retirements=%+v", got)
+		}
+	})
+
+	t.Run("PreemptRetiresARecordTasksRiskOrder", func(t *testing.T) {
+		task := fileTask(t, &record, core.StageReview)
+		queued := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-record-retire")})
+		requestID := "retire-record-risk-" + task.ID
+		result, err := preempt(queued, requestID)
+		requireOK(t, err)
+		if result.WorkOrder.State != core.WorkOrderCancelled || order(t, queued.ID).State != core.WorkOrderCancelled {
+			t.Fatalf("record risk order retirement=%+v", result)
+		}
+		replay, err := preempt(queued, requestID)
+		requireOK(t, err)
+		if replay.RequestID != requestID || replay.WorkOrder.State != core.WorkOrderCancelled {
+			t.Fatalf("retirement replay=%+v", replay)
+		}
+		if got := countEvents(t, task.ID, "work_order.retired"); got != 1 {
+			t.Fatalf("retired events=%d, want 1", got)
+		}
+		// A claimed risk order of a record task is preempted as before.
+		claimedOrder := mustCreate(t, store.RiskOrderCreateRequest{TaskID: task.ID, Subject: head("h-record-claimed")})
+		session := "record-preempt-" + task.ID
+		claimed, err := claim(claimedOrder.ID, session, session+"-token")
+		requireOK(t, err)
+		preempted, err := preempt(claimed, "preempt-record-risk-"+task.ID)
+		requireOK(t, err)
+		if preempted.WorkOrder.State != core.WorkOrderQueued || preempted.RevokedSessionID != session {
+			t.Fatalf("record claimed risk order preempt=%+v", preempted)
 		}
 	})
 

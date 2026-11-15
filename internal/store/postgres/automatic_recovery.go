@@ -38,8 +38,18 @@ func readClockPolicyTx(ctx context.Context, tx pgx.Tx) (config.RecoveryPolicy, t
 	return config.ReadClockPolicy([]byte(raw))
 }
 
+// automaticRecoveryElapsedSQL selects the orders the shared decision may act
+// on. A task must be queued or running, except for the risk order of the
+// plan version at the plan approval gate of an enforcing task, which the
+// clock decides while the task is awaiting_human (component-work-orders
+// invariant 46). The per-task transaction decides again on locked rows.
 const automaticRecoveryElapsedSQL = ` OR (
-			EXISTS (SELECT 1 FROM tasks t WHERE t.workspace_id=work_orders.workspace_id AND t.id=work_orders.task_id AND t.state IN ('queued','running'))
+			EXISTS (SELECT 1 FROM tasks t WHERE t.workspace_id=work_orders.workspace_id AND t.id=work_orders.task_id AND (
+				t.state IN ('queued','running')
+				OR (t.state='awaiting_human' AND t.gate_kind='plan_approval' AND COALESCE(t.setup_contract #>> '{risk,mode}','')='enforce'
+					AND work_orders.stage='risk'
+					AND EXISTS (SELECT 1 FROM risk_orders r WHERE r.workspace_id=work_orders.workspace_id AND r.work_order_id=work_orders.id
+						AND r.plan_version>0 AND r.plan_version=(SELECT MAX(s.version) FROM task_specs s WHERE s.task_id=t.id)))))
 			AND (retry_suppression_reason='' OR retry_suppression_reason='attempt retries exhausted')
 			AND checkpoint='{}'::jsonb
 			AND (
@@ -111,6 +121,10 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx pgx.Tx, taskID 
 		return 0, err
 	}
 	rows.Close()
+	planGateRiskOrderID, err := planGateRiskOrderIDTx(ctx, tx, task)
+	if err != nil {
+		return 0, err
+	}
 	sort.Slice(orders, func(i, j int) bool {
 		if !orders[i].QueueEnteredAt.Equal(orders[j].QueueEnteredAt) {
 			return orders[i].QueueEnteredAt.Before(orders[j].QueueEnteredAt)
@@ -133,7 +147,7 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx pgx.Tx, taskID 
 			}
 			continue
 		}
-		decision := store.DecideAutomaticRecovery(policy, task, order, now)
+		decision := store.DecideAutomaticRecoveryAtPlanGate(policy, task, order, planGateRiskOrderID, now)
 		switch decision.Kind {
 		case store.AutomaticRecoverySchedule:
 			store.ScheduleAutomaticRecovery(&order, decision)
@@ -165,6 +179,26 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx pgx.Tx, taskID 
 		}
 	}
 	return acted, nil
+}
+
+// planGateRiskOrderIDTx resolves, inside the clock's per-task transaction,
+// the risk order the decision may act for while the task waits at its plan
+// approval gate: the open risk order of the task's latest plan version, which
+// the gate holds (component-work-orders invariant 46).
+func planGateRiskOrderIDTx(ctx context.Context, tx pgx.Tx, task core.Task) (string, error) {
+	if !store.PlanGateRiskTask(task) {
+		return "", nil
+	}
+	gate := 0
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(s.version),0) FROM task_specs s JOIN tasks t ON t.id=s.task_id
+		WHERE s.task_id=$1 AND t.workspace_id=$2`, task.ID, workspace(ctx)).Scan(&gate); err != nil {
+		return "", err
+	}
+	orders, err := taskRiskOrdersTx(ctx, tx, workspace(ctx), task.ID)
+	if err != nil {
+		return "", err
+	}
+	return store.PlanGateRiskOrderID(task, orders, gate), nil
 }
 
 func (s *Store) actAutomaticRecoveryTx(ctx context.Context, tx pgx.Tx, q *db.Queries, order core.WorkOrder, decision store.AutomaticRecoveryDecision, queueTimeout time.Duration, now time.Time, policy config.RecoveryPolicy) (core.WorkOrder, error) {
