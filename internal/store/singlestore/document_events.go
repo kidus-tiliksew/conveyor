@@ -640,17 +640,14 @@ func (s *Store) ListDocumentEventPage(ctx context.Context, kind core.LineageNode
 	}
 	// One statement pins count, snapshot, and page membership together. Only
 	// selected event payloads cross the database boundary.
-	rows, err := documentRows(ctx, s.db, `WITH matched AS (
- SELECT e.id,e.at FROM events_columnstore e WHERE e.workspace_id=? AND (?=0 OR e.id<=?) AND (
- (?='requirement' AND ((e.task_id IS NULL AND JSON_EXTRACT_STRING(e.payload_json,'requirement_id')=?) OR EXISTS (
- SELECT 1 FROM task_context_proposals p WHERE p.workspace_id=e.workspace_id AND p.task_id=e.task_id AND p.target_kind='requirement' AND p.target_id=? AND p.state='confirmed')))
- OR (?='system_design' AND e.kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(e.payload_json,'document_id')=?))
- ), selected AS (SELECT id,at FROM matched ORDER BY at DESC,id DESC LIMIT ? OFFSET ?),
- totals AS (SELECT COUNT(*) AS total,COALESCE(MAX(id),0) AS snapshot FROM matched)
- SELECT totals.total,CASE WHEN ?>0 THEN ? ELSE totals.snapshot END,
- e.id,COALESCE(e.task_id,''),COALESCE(e.job_id,''),COALESCE(e.kind,''),COALESCE(e.actor_id,''),COALESCE(e.actor_role,''),e.payload_json,e.at
- FROM totals LEFT JOIN selected p ON 1=1 LEFT JOIN events_columnstore e ON e.workspace_id=? AND e.id=p.id ORDER BY e.at DESC,e.id DESC`,
-		documentWorkspace(ctx), q.SnapshotID, q.SnapshotID, string(kind), id, id, string(kind), id, q.Limit, q.Offset, q.SnapshotID, q.SnapshotID, documentWorkspace(ctx))
+	query, args := documentEventPageQuery(documentWorkspace(ctx), kind, id, q)
+	return readDocumentEventPage(ctx, s.db, page, query, args...)
+}
+
+// readDocumentEventPage decodes the totals row and the selected page rows of
+// one document event page statement.
+func readDocumentEventPage(ctx context.Context, db s2log.Executor, page store.DocumentEventPage, query string, args ...any) (store.DocumentEventPage, error) {
+	rows, err := documentRows(ctx, db, query, args...)
 	if err != nil {
 		return page, err
 	}
@@ -670,3 +667,49 @@ func (s *Store) ListDocumentEventPage(ctx context.Context, kind core.LineageNode
 	}
 	return page, rows.Err()
 }
+
+// documentEventPageQuery selects the membership statement by document kind in
+// Go instead of one OR predicate over both kinds (component-persistence;
+// component-document-corpus, Public surfaces).
+func documentEventPageQuery(ws string, kind core.LineageNodeType, id string, q store.DocumentEventQuery) (string, []any) {
+	page := []any{q.Limit, q.Offset, q.SnapshotID, q.SnapshotID, ws}
+	if kind == core.LineageSystemDesign {
+		return systemDesignDocumentEventPageSQL, append([]any{ws, id, q.SnapshotID, q.SnapshotID}, page...)
+	}
+	return requirementDocumentEventPageSQL, append([]any{ws, id, q.SnapshotID, q.SnapshotID, ws, id, q.SnapshotID, q.SnapshotID}, page...)
+}
+
+// The requirement membership is the union of two branches. Events of a task
+// are reached from the confirmed context proposals by task ID. event_shard_key
+// equals task_id for every task event, so this branch reads only the matching
+// tasks' events. Events without a task are filtered by the payload's
+// requirement_id within the workspace. task_id IS NULL does not bound that
+// scan, and no key covers the payload, so this branch reads every segment
+// of the workspace.
+const requirementDocumentEventPageSQL = `WITH matched AS (
+ SELECT e.id,e.at,e.event_shard_key FROM events_columnstore e
+ WHERE e.workspace_id=? AND e.task_id IS NULL AND JSON_EXTRACT_STRING(e.payload_json,'requirement_id')=? AND (?=0 OR e.id<=?)
+ UNION
+ SELECT e.id,e.at,e.event_shard_key FROM task_context_proposals p
+ JOIN events_columnstore e ON e.workspace_id=p.workspace_id AND e.event_shard_key=p.task_id AND e.task_id=p.task_id
+ WHERE p.workspace_id=? AND p.target_kind='requirement' AND p.target_id=? AND p.state='confirmed' AND (?=0 OR e.id<=?)
+` + documentEventPageSQL
+
+// System Design history includes task-associated consultation events, so this
+// branch keeps no task_id condition. No key covers kind or the payload's
+// document_id, so it reads every segment of the workspace.
+const systemDesignDocumentEventPageSQL = `WITH matched AS (
+ SELECT e.id,e.at,e.event_shard_key FROM events_columnstore e
+ WHERE e.workspace_id=? AND e.kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(e.payload_json,'document_id')=? AND (?=0 OR e.id<=?)
+` + documentEventPageSQL
+
+// The page fetch reads only the selected rows. It uses each row's stored
+// event_shard_key, never one derived from task_id, because an event without a
+// task has its own shard key. The workspace, shard key, and ID equalities use
+// the unique hash key events_task_event_idx. A join on the workspace and ID
+// alone repartitions every event of the workspace.
+const documentEventPageSQL = ` ), selected AS (SELECT id,at,event_shard_key FROM matched ORDER BY at DESC,id DESC LIMIT ? OFFSET ?),
+ totals AS (SELECT COUNT(*) AS total,COALESCE(MAX(id),0) AS snapshot FROM matched)
+ SELECT totals.total,CASE WHEN ?>0 THEN ? ELSE totals.snapshot END,
+ e.id,COALESCE(e.task_id,''),COALESCE(e.job_id,''),COALESCE(e.kind,''),COALESCE(e.actor_id,''),COALESCE(e.actor_role,''),e.payload_json,e.at
+ FROM totals LEFT JOIN selected p ON 1=1 LEFT JOIN events_columnstore e ON e.workspace_id=? AND e.event_shard_key=p.event_shard_key AND e.id=p.id ORDER BY e.at DESC,e.id DESC`
