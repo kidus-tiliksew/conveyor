@@ -3666,9 +3666,6 @@ test('Show changes reads the proposal only after it opens and renders the bounde
             version(5, '# Alpha\n\nIntake sends textual documents as text/plain.\n\nOutput is redacted.', false),
           ],
           versions: [version(3, '# Alpha\n\nIntake keeps the recorded media type.', true)],
-          lineage: [],
-          lineage_total: 0,
-          lineage_snapshot_id: 0,
           drift: [],
         },
       })
@@ -6358,7 +6355,6 @@ function designProposalSummary(
     // Confirmation is what empties this list; the card reads no other state.
     pending_versions: resolved ? [] : [proposal],
     versions: [confirmedVersion, proposal],
-    lineage: [],
     drift: [],
   }
 }

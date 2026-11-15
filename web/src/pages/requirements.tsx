@@ -21,7 +21,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { ArchiveDocumentDialog, type SuccessorCandidate } from '../components/documents/archive-document-dialog'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
-import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
+import { DocumentEventsStatus, MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
 import {
   archivedByDismissal,
   changesTargetVersion,
@@ -583,7 +583,7 @@ function RequirementDetailCanvas({
   requirements: RequirementSummary[]
   search: ReviewSearch & { requirement?: string; session?: string }
 }) {
-  const history = useDocumentEvents('requirement', item.requirement.id, item)
+  const history = useDocumentEvents('requirement', item.requirement.id, search.tab === 'history')
   const { workspace } = useWorkspaceSelection()
   const canOperate = useWorkspaceCapability('operate_gates')
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
@@ -669,6 +669,7 @@ function RequirementDetailCanvas({
         client.invalidateQueries({ queryKey: ['task', workspace] }),
         client.invalidateQueries({ queryKey: ['requirements', workspace] }),
         client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
+        client.invalidateQueries({ queryKey: ['document-events', workspace, 'requirement', item.requirement.id] }),
         client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
       ])
     },
@@ -681,6 +682,7 @@ function RequirementDetailCanvas({
       await Promise.all([
         client.invalidateQueries({ queryKey: ['requirements', workspace] }),
         client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
+        client.invalidateQueries({ queryKey: ['document-events', workspace, 'requirement', item.requirement.id] }),
         client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
         client.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
         client.invalidateQueries({ queryKey: ['activity', workspace] }),
@@ -698,6 +700,7 @@ function RequirementDetailCanvas({
       await Promise.all([
         client.invalidateQueries({ queryKey: ['requirements', workspace] }),
         client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
+        client.invalidateQueries({ queryKey: ['document-events', workspace, 'requirement', item.requirement.id] }),
         client.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
       ])
     },
@@ -1287,7 +1290,7 @@ function RequirementDetailCanvas({
                       </span>
                       Activity
                     </CardTitle>
-                    <Badge variant="mono">{history.total}</Badge>
+                    {history.total !== undefined && <Badge variant="mono">{history.total}</Badge>}
                   </CardHeader>
                   <CardContent>
                     {routineDeliveries.length > 0 && (
@@ -1323,7 +1326,8 @@ function RequirementDetailCanvas({
                         </ul>
                       </section>
                     )}
-                    {history.events.length === 0 && routineDeliveries.length === 0 && (
+                    <DocumentEventsStatus history={history} />
+                    {history.loaded && history.events.length === 0 && routineDeliveries.length === 0 && (
                       <p className="text-sm text-muted">Activity appears as planning and delivery advance.</p>
                     )}
                     {history.events.length > 0 && (

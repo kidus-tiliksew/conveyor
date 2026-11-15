@@ -723,6 +723,8 @@ async function seedReview(
     for (const v of versions) v.statements = []
   let current = options.first ? undefined : versions[0]
   const calls: Array<{ path: string; body: unknown }> = []
+  // Every document events request, as path plus query, in send order.
+  const eventRequests: string[] = []
   let refuse = false
   const detail = (workspace: string, id = 'doc-review') => {
     const document = {
@@ -751,8 +753,6 @@ async function seedReview(
       serving_blueprints: [],
       planning_sessions: [],
       artifacts: [],
-      lineage: [],
-      lineage_total: 0,
       drift: [],
       confirmation_eligible: true,
       staleness: { deliveries: [], active_drift: [] },
@@ -784,6 +784,10 @@ async function seedReview(
           drift_count: 0,
         })),
       })
+    if (path.endsWith('/events')) {
+      eventRequests.push(`${path}${url.search}`)
+      return route.fulfill({ json: { events: [], total: 0, limit: 50, offset: 0, snapshot_id: 0 } })
+    }
     if (/\/doc-(review|other)$/.test(path))
       return route.fulfill({ json: detail(workspace, path.endsWith('doc-other') ? 'doc-other' : 'doc-review') })
     if (path.endsWith('/versions'))
@@ -815,6 +819,7 @@ async function seedReview(
   })
   return {
     calls,
+    eventRequests,
     setRefuse: (value: boolean) => {
       refuse = value
     },
@@ -845,8 +850,20 @@ for (const tier of ['requirements', 'system-design'] as const) {
     await expect(page.getByText('Comparing against an empty base.')).toBeVisible()
     await page.getByLabel('Target version', { exact: true }).selectOption('4')
     await expect(page.getByRole('button', { name: /Confirm version/ })).toHaveCount(0)
+    await page.getByRole('tab', { name: 'document', exact: true }).click()
+    await expect(page.getByRole('tab', { name: 'document', exact: true })).toHaveAttribute('aria-selected', 'true')
+    // Document and Changes never read document events.
+    expect(seed.eventRequests).toEqual([])
     await page.getByRole('tab', { name: 'history', exact: true }).click()
     await expect(page.getByText("Operator's reason: Keep the existing behavior.")).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Version history' })).toBeVisible()
+    await expect.poll(() => seed.eventRequests.length).toBeGreaterThan(0)
+    const eventsPath = tier === 'requirements' ? '/v1/requirements' : '/v1/system-designs'
+    // StrictMode's discarded first mount can send and abort one extra read.
+    expect(new Set(seed.eventRequests)).toEqual(
+      new Set([`${eventsPath}/doc-review/events?limit=50&offset=0&workspace_id=demo`]),
+    )
+    const historyReads = seed.eventRequests.length
     const history = page.getByRole('region', { name: 'Version history' })
     await expect(history).toContainText('implementation deliberation · Task legacy-task')
     await expect(history).toContainText('planning session · Session legacy-session')
@@ -867,6 +884,9 @@ for (const tier of ['requirements', 'system-design'] as const) {
     await expect(page.getByRole('heading', { name: 'Beta review', exact: true })).toBeVisible()
     await expect(page.getByText('Claim ownership', { exact: true })).toHaveCount(0)
     expect(seed.calls).toEqual([])
+    // Leaving History, switching document, and switching workspace start no
+    // further events read.
+    expect(seed.eventRequests).toHaveLength(historyReads)
   })
 
   test(`${tier}: dismiss cancel, optional note, refusal and successful selected-version mutation`, async ({ page }) => {

@@ -2012,9 +2012,6 @@ export interface RequirementView {
   serving_tasks?: Array<Pick<Task, 'id' | 'title' | 'state'>>
   planning_sessions: PlanningSession[]
   artifacts: Artifact[]
-  lineage: TaskEvent[]
-  lineage_total: number
-  lineage_snapshot_id: number
   staleness?: RequirementStaleness
   migrated_seed: boolean
   confirmation_eligible: boolean
@@ -2110,9 +2107,6 @@ export interface SystemDesignView {
   current_version?: SystemDesignVersion
   pending_versions: SystemDesignVersion[]
   versions: SystemDesignVersion[]
-  lineage: TaskEvent[]
-  lineage_total: number
-  lineage_snapshot_id: number
   drift: RepositoryDrift[]
 }
 export type SystemDesignVersionSummary = Omit<SystemDesignVersion, 'content' | 'governs'>

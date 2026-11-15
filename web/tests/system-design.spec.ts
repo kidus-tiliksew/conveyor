@@ -43,28 +43,6 @@ const design = {
   current_version: first,
   pending_versions: [pending],
   versions: [first, pending],
-  lineage_total: 1,
-  lineage_snapshot_id: 73,
-  lineage: [
-    {
-      id: 73,
-      task_id: '',
-      kind: 'system_design.consulted',
-      actor_id: 'system',
-      actor_role: 'system',
-      payload: {
-        workspace_id: 'demo',
-        document_id: 'design-dispatch',
-        version: 1,
-        delivery_task_id: '260813-delivery',
-        merge_event_id: 72,
-        merge_head_sha: 'reviewed-head',
-        matching_paths: ['internal/dispatch/dispatch.go'],
-        consultation: 'delivery_no_revision',
-      },
-      at: '2026-08-05T09:30:00Z',
-    },
-  ],
   drift: [
     {
       id: 'design-drift-1',
@@ -84,6 +62,42 @@ const design = {
 function versionSummary(version: typeof first | typeof pending) {
   const { content: _content, governs: _governs, ...summary } = version
   return summary
+}
+
+// System Design activity comes from the events route, never the detail
+// (component-web-document-surfaces invariant 8).
+const designEvents = [
+  {
+    id: 73,
+    task_id: '',
+    kind: 'system_design.consulted',
+    actor_id: 'system',
+    actor_role: 'system',
+    payload: {
+      workspace_id: 'demo',
+      document_id: 'design-dispatch',
+      version: 1,
+      delivery_task_id: '260813-delivery',
+      merge_event_id: 72,
+      merge_head_sha: 'reviewed-head',
+      matching_paths: ['internal/dispatch/dispatch.go'],
+      consultation: 'delivery_no_revision',
+    },
+    at: '2026-08-05T09:30:00Z',
+  },
+]
+
+function documentEventPage(
+  events: Array<{ id: number }>,
+  options: { total?: number; offset?: number; snapshot?: number } = {},
+) {
+  return {
+    events,
+    total: options.total ?? events.length,
+    limit: 50,
+    offset: options.offset ?? 0,
+    snapshot_id: options.snapshot ?? Math.max(0, ...events.map((event) => event.id)),
+  }
 }
 
 function summarizeDesign(view: typeof design) {
@@ -176,6 +190,8 @@ test('System Design renders a category tree, one attention surface, and authenti
     }
     if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
+    if (url.pathname === '/v1/system-designs/design-dispatch/events')
+      return route.fulfill({ json: documentEventPage(designEvents) })
     if (url.pathname === '/v1/decisions') return route.fulfill({ json: proposedDecisions })
     if (url.pathname === '/v1/system-designs/design-dispatch/versions/2/confirm') {
       expect(request.headers().authorization).toBeUndefined()
@@ -657,8 +673,6 @@ test('System Design lists no proposed decision and its attention count equals th
     current_version: queueFirst,
     pending_versions: queuePending,
     versions: [queueFirst, ...queuePending],
-    lineage: [],
-    lineage_total: 0,
     drift: [
       { ...design.drift[0], id: 'queue-drift-1', system_design_id: 'design-queue' },
       {
@@ -753,9 +767,9 @@ test('System Design archives with successors, shows inline rejection, and restor
       archived_at: archived ? archivedAt : undefined,
       superseded_by: archived ? submittedSuccessors : undefined,
     },
-    lineage_total: archived ? 2 : 1,
-    lineage_snapshot_id: archived ? 74 : 73,
-    lineage: archived
+  })
+  const events = () =>
+    archived
       ? [
           {
             id: 74,
@@ -766,10 +780,9 @@ test('System Design archives with successors, shows inline rejection, and restor
             payload: {},
             at: archivedAt,
           },
-          ...design.lineage,
+          ...designEvents,
         ]
-      : design.lineage,
-  })
+      : designEvents
 
   await page.route('**/v1/**', async (route) => {
     const handled = shell(route)
@@ -781,6 +794,8 @@ test('System Design archives with successors, shows inline rejection, and restor
       return route.fulfill({ json: [summarizeDesign(view())] })
     }
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: view() })
+    if (url.pathname === '/v1/system-designs/design-dispatch/events')
+      return route.fulfill({ json: documentEventPage(events()) })
     if (url.pathname === '/v1/requirements') {
       return route.fulfill({
         json: [
@@ -896,38 +911,60 @@ test('System Design archive controls are absent without document confirmation ca
   await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(0)
 })
 
-test('System Design pages older delivery activity and loads its explorer on open', async ({ page }) => {
+test('System Design activity loads only in History, pages from the first snapshot, and loads its explorer on open', async ({
+  page,
+}) => {
   await initialize(page)
-  const events = Array.from({ length: 51 }, (_, index) => ({
-    ...design.lineage[0],
-    id: 100 - index,
-    payload: {
-      ...design.lineage[0].payload,
-      delivery_task_id: index === 50 ? 'oldest-delivery-task' : `delivery-${index}`,
-    },
-  }))
-  const item = { ...design, lineage: events.slice(0, 50), lineage_total: 51, lineage_snapshot_id: 100 }
-  let eventReads = 0
+  const archivedEvent = {
+    ...designEvents[0],
+    id: 100,
+    kind: 'system_design.archived',
+    payload: { ...designEvents[0].payload, consultation: undefined },
+  }
+  const events = [
+    archivedEvent,
+    ...Array.from({ length: 50 }, (_, index) => ({
+      ...designEvents[0],
+      id: 99 - index,
+      payload: {
+        ...designEvents[0].payload,
+        delivery_task_id: index === 49 ? 'oldest-delivery-task' : `delivery-${index}`,
+      },
+    })),
+  ]
+  const eventReads: Array<{ offset: string | null; snapshot: string | null; limit: string | null }> = []
   let graphReads = 0
   // Walks that delivered a response. The explorer's read consumes its abort
   // signal, so StrictMode's discarded first mount aborts a read the page never
   // receives.
+  // Event reads that delivered a response. A read consumes its abort signal,
+  // so StrictMode's discarded first mount aborts a read the page never
+  // receives.
   page.on('requestfinished', (request) => {
-    if (new URL(request.url()).pathname === '/v1/lineage/system_design/design-dispatch') graphReads++
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/lineage/system_design/design-dispatch') graphReads++
+    if (url.pathname === '/v1/system-designs/design-dispatch/events')
+      eventReads.push({
+        offset: url.searchParams.get('offset'),
+        snapshot: url.searchParams.get('snapshot_id'),
+        limit: url.searchParams.get('limit'),
+      })
   })
   await page.route('**/v1/**', async (route) => {
     const handled = shell(route)
     if (handled) return await handled
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(item)] })
-    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: item })
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
     if (url.pathname === '/v1/system-designs/design-dispatch/events') {
-      eventReads++
       expect(url.searchParams.get('workspace_id')).toBe('demo')
-      expect(url.searchParams.get('offset')).toBe('50')
-      expect(url.searchParams.get('snapshot_id')).toBe('100')
-      expect(url.searchParams.get('limit')).toBe('50')
-      return route.fulfill({ json: { events: events.slice(50), total: 51, limit: 50, offset: 50, snapshot_id: 100 } })
+      const offset = url.searchParams.get('offset')
+      return route.fulfill({
+        json:
+          offset === '0'
+            ? documentEventPage(events.slice(0, 50), { total: 51, snapshot: 100 })
+            : documentEventPage(events.slice(50), { total: 51, offset: 50, snapshot: 100 }),
+      })
     }
     if (url.pathname === '/v1/lineage/system_design/design-dispatch') {
       expect(url.searchParams.get('workspace_id')).toBe('demo')
@@ -943,19 +980,174 @@ test('System Design pages older delivery activity and loads its explorer on open
     return route.fulfill({ json: [] })
   })
   await page.goto('/w/demo/system-design?document=design-dispatch')
+  await expect(page.getByText('The dispatcher owns durable stage transitions.').first()).toBeVisible()
+  await page.getByRole('tab', { name: 'changes', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Version comparison', exact: true })).toBeVisible()
+  // Document and Changes send no events request.
+  expect(eventReads).toEqual([])
   await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByText('51 activity events')).toBeVisible()
-  expect(eventReads).toBe(0)
+  // The first page names no snapshot.
+  await expect.poll(() => eventReads).toEqual([{ offset: '0', snapshot: null, limit: '50' }])
+  const deliveryHistory = page.getByRole('region', { name: 'Delivery history' })
+  await expect(deliveryHistory.getByText('Consulted at delivery — no revision warranted')).toHaveCount(49)
+  await expect(page.getByRole('region', { name: 'Archive activity' })).toContainText('System Design document archived')
   expect(graphReads).toBe(0)
   await page.getByRole('button', { name: 'Load older activity' }).click()
   await expect(page.getByText('oldest-delivery-task', { exact: true })).toBeVisible()
+  await expect(deliveryHistory.getByText('Consulted at delivery — no revision warranted')).toHaveCount(50)
   await expect(page.getByRole('button', { name: 'Load older activity' })).toHaveCount(0)
-  expect(eventReads).toBe(1)
+  // The older page passes the first page's snapshot and the next offset.
+  await expect
+    .poll(() => eventReads)
+    .toEqual([
+      { offset: '0', snapshot: null, limit: '50' },
+      { offset: '50', snapshot: '100', limit: '50' },
+    ])
   expect(graphReads).toBe(0)
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   await expect(page.getByRole('dialog', { name: 'Knowledge explorer' })).toBeVisible()
   await expect.poll(() => graphReads).toBe(1)
 })
+
+// History shows the version list without waiting for activity, states a
+// pending or failed first read, and never fills one document's activity with
+// another's late response.
+async function routeDelayedDesignEvents(page: Page) {
+  const other: typeof design = {
+    ...design,
+    document: { ...design.document, id: 'design-other', slug: 'other', title: 'Other ownership' },
+    drift: [],
+  }
+  const reads: string[] = []
+  const gates = new Map<string, Array<() => void>>()
+  let fail = false
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/system-designs')
+      return route.fulfill({ json: [summarizeDesign(design), summarizeDesign(other)] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
+    if (url.pathname === '/v1/system-designs/design-other') return route.fulfill({ json: other })
+    const events = /^\/v1\/system-designs\/([^/]+)\/events$/.exec(url.pathname)
+    if (events) {
+      const id = decodeURIComponent(events[1])
+      reads.push(id)
+      await new Promise<void>((resolve) => gates.set(id, [...(gates.get(id) ?? []), resolve]))
+      if (fail) return route.fulfill({ status: 500, body: 'internal server error' })
+      return route
+        .fulfill({
+          json: documentEventPage([
+            {
+              ...designEvents[0],
+              payload: { ...designEvents[0].payload, delivery_task_id: `${id}-delivery` },
+            },
+          ]),
+        })
+        .catch(() => {})
+    }
+    return route.fulfill({ json: [] })
+  })
+  return {
+    // The documents read, in order. StrictMode's discarded first mount sends
+    // and aborts one extra read, so repeats of one document collapse.
+    reads: () => reads.filter((id, index) => id !== reads[index - 1]),
+    release: (id: string) => {
+      for (const resolve of gates.get(id) ?? []) resolve()
+      gates.delete(id)
+    },
+    releaseAll: () => {
+      for (const resolves of gates.values()) for (const resolve of resolves) resolve()
+      gates.clear()
+    },
+    failReads: () => {
+      fail = true
+    },
+  }
+}
+
+test('System Design History keeps versions while activity loads and states a failed activity read', async ({
+  page,
+}) => {
+  await initialize(page)
+  const events = await routeDelayedDesignEvents(page)
+  await page.goto('/w/demo/system-design?document=design-dispatch&tab=history')
+  const versions = page.getByRole('region', { name: 'Version history' })
+  await expect(versions).toContainText('v2')
+  await expect(versions).toContainText('v1')
+  await expect(page.getByRole('status').filter({ hasText: 'Loading activity…' })).toBeVisible()
+  await expect(page.getByText(/activity events/)).toHaveCount(0)
+  await expect.poll(() => events.reads()).toEqual(['design-dispatch'])
+  events.release('design-dispatch')
+  await expect(page.getByText('1 activity events')).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Delivery history' })).toContainText('design-dispatch-delivery')
+  await expect(page.getByRole('status').filter({ hasText: 'Loading activity…' })).toHaveCount(0)
+
+  // A failed first read states the failure and keeps the version list.
+  events.failReads()
+  await page.reload()
+  const release = setInterval(() => events.releaseAll(), 50)
+  try {
+    await expect(page.getByRole('alert').filter({ hasText: 'Could not load activity.' })).toBeVisible()
+  } finally {
+    clearInterval(release)
+  }
+  await expect(versions).toContainText('v2')
+  await expect(page.getByText(/activity events/)).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Delivery history' })).toHaveCount(0)
+})
+
+test('System Design activity from a late response never fills another document and starts no read outside History', async ({
+  page,
+}) => {
+  await initialize(page)
+  const events = await routeDelayedDesignEvents(page)
+  await page.goto('/w/demo/system-design?document=design-dispatch&tab=history')
+  await expect.poll(() => events.reads()).toEqual(['design-dispatch'])
+  // Leave History for another document while the first read is outstanding.
+  await page
+    .getByRole('navigation', { name: 'Document tree' })
+    .getByRole('button', { name: /Other ownership/ })
+    .click()
+  await expect(page.getByRole('heading', { name: 'Other ownership' })).toBeVisible()
+  events.release('design-dispatch')
+  await expect(page.getByRole('tab', { name: 'document', exact: true })).toHaveAttribute('aria-selected', 'true')
+  expect(events.reads()).toEqual(['design-dispatch'])
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
+  await expect.poll(() => events.reads()).toEqual(['design-dispatch', 'design-other'])
+  events.release('design-other')
+  const deliveryHistory = page.getByRole('region', { name: 'Delivery history' })
+  await expect(deliveryHistory).toContainText('design-other-delivery')
+  await expect(deliveryHistory).not.toContainText('design-dispatch-delivery')
+})
+
+for (const viewport of [
+  { name: 'mobile', width: 375, height: 1600 },
+  { name: 'desktop', width: 1280, height: 1100 },
+]) {
+  test(`capture System Design History loading and loaded activity at ${viewport.width} px`, async ({
+    page,
+  }, testInfo) => {
+    await initialize(page)
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    const events = await routeDelayedDesignEvents(page)
+    await page.goto('/w/demo/system-design?document=design-dispatch&tab=history')
+    await expect(page.getByRole('region', { name: 'Version history' })).toContainText('v2')
+    await expect(page.getByRole('status').filter({ hasText: 'Loading activity…' })).toBeVisible()
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    for (const state of ['loading', 'loaded'] as const) {
+      if (state === 'loaded') {
+        events.release('design-dispatch')
+        await expect(page.getByText('1 activity events')).toBeVisible()
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      const name = `system-design-history-${state}-${viewport.name}.png`
+      const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+      await testInfo.attach(name, { body: image, contentType: 'image/png' })
+    }
+  })
+}
 
 test('System Design pending attention revises through the shared dialog and refreshes the document', async ({
   page,

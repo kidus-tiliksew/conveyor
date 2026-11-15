@@ -73,8 +73,6 @@ const design = {
   pending_versions: [],
   versions: [designVersion],
   drift: [],
-  lineage: [],
-  lineage_total: 0,
 }
 
 async function mockAPI(page: Page) {

@@ -82,7 +82,6 @@ async function mockTaskCreateAPIs(
             serving_blueprints: [],
             planning_sessions: [],
             artifacts: [],
-            lineage: [],
           },
           {
             requirement: { id: 'req-second', title: 'Operators can resume a stalled task', current_version: 3 },
@@ -91,7 +90,6 @@ async function mockTaskCreateAPIs(
             serving_blueprints: [],
             planning_sessions: [],
             artifacts: [],
-            lineage: [],
           },
           {
             // Never confirmed: it has no current version and must stay unselectable.
@@ -101,7 +99,6 @@ async function mockTaskCreateAPIs(
             serving_blueprints: [],
             planning_sessions: [],
             artifacts: [],
-            lineage: [],
           },
         ],
       })
@@ -116,7 +113,6 @@ async function mockTaskCreateAPIs(
             current_version: { document_id: 'design-context', version: 2, confirmed: true },
             pending_versions: [],
             versions: [],
-            lineage: [],
             drift: [],
           },
           {
@@ -124,7 +120,6 @@ async function mockTaskCreateAPIs(
             current_version: null,
             pending_versions: [],
             versions: [],
-            lineage: [],
             drift: [],
           },
         ],

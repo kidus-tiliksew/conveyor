@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { ArchiveDocumentDialog, type SuccessorCandidate } from '../components/documents/archive-document-dialog'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
-import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
+import { DocumentEventsStatus, MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
 import {
   archivedByDismissal,
   changesTargetVersion,
@@ -273,7 +273,7 @@ function DesignCanvas({
   item: SystemDesignView
   workspace: string
 }) {
-  const history = useDocumentEvents('system_design', item.document.id, item)
+  const history = useDocumentEvents('system_design', item.document.id, search.tab === 'history')
   const client = useQueryClient()
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const canConfirm = useWorkspaceCapability('confirm_documents')
@@ -336,6 +336,7 @@ function DesignCanvas({
       void client.invalidateQueries({ queryKey: ['pending-proposals', workspace] })
       void client.invalidateQueries({ queryKey: ['activity', workspace] })
       void client.invalidateQueries({ queryKey: ['task', workspace] })
+      void client.invalidateQueries({ queryKey: ['document-events', workspace, 'system_design', item.document.id] })
     },
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['system-designs', workspace] })
@@ -356,6 +357,7 @@ function DesignCanvas({
       await Promise.all([
         client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
         client.invalidateQueries({ queryKey: ['system-design', workspace, item.document.id] }),
+        client.invalidateQueries({ queryKey: ['document-events', workspace, 'system_design', item.document.id] }),
         client.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
         client.invalidateQueries({ queryKey: ['activity', workspace] }),
         client.invalidateQueries({ queryKey: ['task', workspace] }),
@@ -372,6 +374,7 @@ function DesignCanvas({
       await Promise.all([
         client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
         client.invalidateQueries({ queryKey: ['system-design', workspace, item.document.id] }),
+        client.invalidateQueries({ queryKey: ['document-events', workspace, 'system_design', item.document.id] }),
         client.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
       ])
     },
@@ -702,7 +705,10 @@ function DesignCanvas({
               </section>
             )}
             <section className="mt-4" aria-label="Document activity">
-              <span className="mr-2 text-xs text-muted">{history.total} activity events</span>
+              <DocumentEventsStatus history={history} />
+              {history.total !== undefined && (
+                <span className="mr-2 text-xs text-muted">{history.total} activity events</span>
+              )}
               <MoreDocumentEvents history={history} />
             </section>
           </>

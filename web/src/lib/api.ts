@@ -2070,19 +2070,22 @@ export async function fixMergeConflict(workspace: string, taskId: string) {
   return response.json() as Promise<import('./types').WorkOrder>
 }
 
+// The first page omits snapshot_id. A later page passes the first page's
+// snapshot_id, zero included (component-web-document-surfaces invariant 8).
 export function fetchDocumentEvents(
   workspace: string,
   kind: 'requirement' | 'system_design',
   id: string,
   offset: number,
-  snapshot: number,
+  snapshot?: number,
+  signal?: AbortSignal,
 ) {
   const collection = kind === 'requirement' ? 'requirements' : 'system-designs'
+  const params = new URLSearchParams({ limit: '50', offset: String(offset) })
+  if (snapshot !== undefined) params.set('snapshot_id', String(snapshot))
   return getJSON<import('./types').DocumentEventPage>(
-    workspaceURL(
-      `/v1/${collection}/${encodeURIComponent(id)}/events?limit=50&offset=${offset}&snapshot_id=${snapshot}`,
-      workspace,
-    ),
+    workspaceURL(`/v1/${collection}/${encodeURIComponent(id)}/events?${params}`, workspace),
+    signal,
   )
 }
 
