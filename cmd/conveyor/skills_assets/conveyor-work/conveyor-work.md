@@ -603,7 +603,9 @@ missing `risk` preference is a setup question, not a launch approval, as
 - A risk order that becomes claimable later. For example, Conveyor creates one
   for a refreshed head, or returns one to the queue after its agent released
   it or lost its lease. `list_work_orders` shows it with stage `risk` and its
-  `risk_subject`. `conveyor task wait` reports it as the next claimable order.
+  `risk_subject`. `conveyor task wait` lists it in `claimable_orders`, also
+  when a verification order is claimable beside it. `next_order` names the
+  risk order only when no other order is claimable.
 
 A submission result without `risk_work_order_id` created no risk order. This
 happens when the task's risk mode is off or its tier is high. It also happens

@@ -233,7 +233,8 @@ reads nor compares proposals. Each observation holds these fields:
 | `task_id` | The task ID. |
 | `state` | The task state. |
 | `pending_gate` | The pending human gate, or `null`. `kind` is `plan`, `merge`, `merge_execution`, `check_hold`, `plan_revision`, or `human`; `plan_version` appears for plan and plan revision gates. `merge_execution` is an approved task behind the merge gate waiting for `conveyor task merge`; its `merge_readiness` is the pull request's readiness state (`MERGEABLE`, `STALE`, `CONFLICTING`, or `UNKNOWN`), absent when the server could not read it. `check_hold` is an approved task with the merge gate off whose merge a failed or stuck check, or a refused check-status read, holds; the next action names each check and offers `conveyor task merge`, request changes, and close. |
-| `next_order` | The next claimable work order `id` and `stage`, or `null`. Stages rank `spec`, `implement`, `verify`, `review`, then `risk`, so ordinary work beside a risk order is reported first, and a lone claimable risk order is reported. |
+| `next_order` | The next claimable work order `id` and `stage`, or `null`. Stages rank `spec`, `implement`, `verify`, `review`, then `risk`, then queue entry and ID, so ordinary work beside a risk order is reported first, and a lone claimable risk order is reported. It is the first entry of `claimable_orders`. |
+| `claimable_orders` | Every claimable work order of the task, each with `id` and `stage`, in the same rank as `next_order`. It is an empty list, never `null`, when no order is claimable. A risk order that is claimable beside a verification order is listed with it. The list is reported and is not compared, so a change in the list alone does not end the wait. |
 | `observed_at` | The time of the observation. It is not compared. |
 
 The first successful observation is the baseline. The command re-reads with
@@ -252,8 +253,9 @@ at once. A failure before the baseline also ends it, because there is nothing
 to compare against.
 
 Output reports the observation, `reason` (`changed`, `terminal`, or
-`timeout`), and `timed_out`. `--json` prints the same fields as one JSON
-object. On timeout, the values are the last successful observation, and
+`timeout`), and `timed_out`. The text output prints `claimable_orders` on one
+`claimable orders:` line as `<id> (<stage>)` entries in list order, or `none`.
+`--json` prints the same fields as one JSON object. On timeout, the values are the last successful observation, and
 `last_read_error` names the most recent failed read when the final poll
 failed.
 
