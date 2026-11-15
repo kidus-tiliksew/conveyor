@@ -3,12 +3,13 @@ package singlestore
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"reflect"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,20 +106,24 @@ func TestDocumentEventQueryPlansIntegration(t *testing.T) {
 	}
 	t.Run("measurement", func(t *testing.T) {
 		seedDocumentPlanNoise(t, st, ctx, noise)
-		for _, table := range []string{"events_columnstore", "task_context_proposals"} {
-			if _, err := st.db.ExecContext(ctx, "ANALYZE TABLE "+table); err != nil {
-				t.Fatal(err)
-			}
-		}
+		prepareDocumentPlanMeasurement(t, st, ctx)
 		var version string
-		var events, matching int
+		var events int
 		if err := st.db.QueryRowContext(ctx, `SELECT @@memsql_version`).Scan(&version); err != nil {
 			t.Fatal(err)
 		}
 		if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=?`, ws).Scan(&events); err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("measurement server=SingleStore %s workspace events=%d noise events=%d", version, events, noise)
+		var count, smallest, largest, sum int64
+		var average float64
+		if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*),MIN(LENGTH(payload_json)),AVG(LENGTH(payload_json)),MAX(LENGTH(payload_json)),SUM(LENGTH(payload_json)) FROM events_columnstore WHERE workspace_id=? AND task_id LIKE 'noise-%' AND kind='fixture.activity'`, ws).Scan(&count, &smallest, &average, &largest, &sum); err != nil {
+			t.Fatal(err)
+		}
+		if count != int64(noise) || smallest < documentPlanPaddingBytes {
+			t.Fatalf("noise events=%d smallest payload=%d bytes; want %d events of at least %d bytes", count, smallest, noise, documentPlanPaddingBytes)
+		}
+		t.Logf("measurement server=SingleStore %s workspace events=%d noise events=%d noise payload bytes min=%d avg=%.0f max=%d total=%d", version, events, count, smallest, average, largest, sum)
 		checkDocumentEventPlans(t, st, ctx, ws, ids)
 		for _, kind := range []core.LineageNodeType{core.LineageRequirement, core.LineageSystemDesign} {
 			id := ids[kind]
@@ -126,9 +131,8 @@ func TestDocumentEventQueryPlansIntegration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			matching = page.Total
-			if matching > 100 {
-				t.Fatalf("%s has %d matching events; the measurement allows at most 100", kind, matching)
+			if page.Total > 100 {
+				t.Fatalf("%s has %d matching events; the measurement allows at most 100", kind, page.Total)
 			}
 			compareDocumentEventPages(t, st, ctx, ws, kind, id)
 			for _, variant := range []struct {
@@ -137,8 +141,17 @@ func TestDocumentEventQueryPlansIntegration(t *testing.T) {
 			}{{"before", originalDocumentEventPageQuery}, {"after", documentEventPageQuery}} {
 				query, args := variant.build(ws, kind, id, store.DocumentEventQuery{Limit: 50})
 				durations := timeDocumentEventQuery(t, st, ctx, query, args, 2, 7)
-				t.Logf("measurement %s %s matching=%d warmup=2 runs=%d median=%s min=%s max=%s all=%v", kind, variant.name, matching, len(durations), durations[len(durations)/2], durations[0], durations[len(durations)-1], durations)
-				t.Logf("measurement %s %s profile:\n%s", kind, variant.name, profileDocumentEventQuery(t, st, ctx, query, args))
+				sorted := slices.Clone(durations)
+				slices.Sort(sorted)
+				t.Logf("measurement %s %s matching=%d warmup=2 runs=%d median=%s min=%s max=%s in run order=%v", kind, variant.name, page.Total, len(durations), sorted[len(sorted)/2], sorted[0], sorted[len(sorted)-1], durations)
+				profile := profileDocumentEventQuery(t, st, ctx, query, args)
+				t.Logf("measurement %s %s profile summary:\n%s", kind, variant.name, summarizeDocumentEventProfile(profile))
+				t.Logf("measurement %s %s profile:\n%s", kind, variant.name, profile)
+				if variant.name == "after" {
+					if task, fetch := documentEventPlanProblems(kind, strings.Split(profile, "\n")); task != "" || fetch != "" {
+						t.Fatalf("%s executed plan: task problem=%q page fetch problem=%q", kind, task, fetch)
+					}
+				}
 			}
 		}
 	})
@@ -216,6 +229,21 @@ func seedDocumentPlanOtherWorkspace(t *testing.T, st *Store, ctx context.Context
 	appendDocumentPlanEvents(t, st, ctx, task, fixture, 5, time.Date(2027, 1, 3, 0, 0, 0, 0, time.UTC))
 }
 
+// documentPlanPaddingBytes is the least padding each noise event carries, so
+// a fetch that reads every workspace payload costs what large events cost.
+const documentPlanPaddingBytes = 4096
+
+// documentPlanPadding returns documentPlanPaddingBytes hexadecimal characters
+// that differ for each index, so column compression cannot fold them.
+func documentPlanPadding(i int) string {
+	random := rand.New(rand.NewPCG(uint64(i), 0x5eed))
+	raw := make([]byte, documentPlanPaddingBytes/2)
+	for j := range raw {
+		raw[j] = byte(random.Uint32())
+	}
+	return hex.EncodeToString(raw)
+}
+
 // seedDocumentPlanNoise appends n events through the public append API on
 // tasks that serve no document, so the events carry no document ID.
 func seedDocumentPlanNoise(t *testing.T, st *Store, ctx context.Context, n int) {
@@ -235,7 +263,7 @@ func seedDocumentPlanNoise(t *testing.T, st *Store, ctx context.Context, n int) 
 		go func() {
 			defer wg.Done()
 			for i := range work {
-				event := core.Event{TaskID: ids[i%tasks], Kind: "fixture.activity", At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Millisecond), Payload: core.JSONPayload(map[string]any{"index": i})}
+				event := core.Event{TaskID: ids[i%tasks], Kind: "fixture.activity", At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Millisecond), Payload: core.JSONPayload(map[string]any{"index": i, "padding": documentPlanPadding(i)})}
 				if err := st.AppendEvent(ctx, event); err != nil {
 					once.Do(func() { failure = err })
 				}
@@ -296,7 +324,7 @@ func documentPageSummary(page store.DocumentEventPage) string {
 // documentEventScan is one events_columnstore scan of a statement's plan,
 // with the column filter SingleStore applies to it.
 type documentEventScan struct {
-	alias, filter string
+	alias, filter, line string
 }
 
 var documentEventScanAlias = regexp.MustCompile("ColumnStoreScan \\S+\\.events_columnstore AS (\\S+),")
@@ -323,7 +351,7 @@ func explainDocumentEventQuery(t *testing.T, st *Store, ctx context.Context, que
 }
 
 // documentEventScans pairs each events_columnstore scan with the
-// ColumnStoreFilter line directly above it in the text plan.
+// nearest ColumnStoreFilter line above it in a text plan or profile.
 func documentEventScans(lines []string) []documentEventScan {
 	var scans []documentEventScan
 	for i, line := range lines {
@@ -331,85 +359,141 @@ func documentEventScans(lines []string) []documentEventScan {
 		if match == nil {
 			continue
 		}
-		scan := documentEventScan{alias: match[1]}
-		if i > 0 && strings.Contains(lines[i-1], "ColumnStoreFilter [") {
-			scan.filter = lines[i-1]
+		scan := documentEventScan{alias: match[1], line: line}
+		// PROFILE output adds a per-partition statistics line, such as
+		// [total_rows_in: ...], between an operator and its input.
+		above := i - 1
+		for above > 0 && strings.HasPrefix(strings.TrimLeft(lines[above], "| "), "[total_rows_in:") {
+			above--
+		}
+		if above >= 0 && strings.Contains(lines[above], "ColumnStoreFilter [") {
+			scan.filter = lines[above]
 		}
 		scans = append(scans, scan)
 	}
 	return scans
 }
 
-// taskBound reports whether the scan reaches events through a task ID: a
-// task_id or event_shard_key join-index lookup or an equality on either key.
-func (s documentEventScan) taskBound() bool {
-	for _, column := range []string{"task_id", "event_shard_key"} {
-		if regexp.MustCompile(regexp.QuoteMeta(s.alias+"."+column) + " = [^ ]+ (join )?index").MatchString(s.filter) {
-			return true
-		}
+func (s documentEventScan) keyed(column, value string) bool {
+	return regexp.MustCompile(regexp.QuoteMeta(s.alias+"."+column) + " = " + value + " (join )?index").MatchString(s.filter)
+}
+
+// taskMembership reports whether the scan reads events through the task IDs
+// of matching proposals: a task_id or event_shard_key key lookup by a
+// proposal's task_id.
+func (s documentEventScan) taskMembership() bool {
+	return s.keyed("event_shard_key", `\S+\.task_id`) || s.keyed("task_id", `\S+\.task_id`)
+}
+
+// pageLookup reports whether the scan reads selected rows by their stored
+// shard key and ID through key lookups, as the page payload fetch must.
+func (s documentEventScan) pageLookup() bool {
+	return s.keyed("event_shard_key", `\S+\.event_shard_key`) && s.keyed("id", `\S+\.id`)
+}
+
+// filterScan reports whether the scan evaluates a payload membership
+// predicate. The plan accepts these scans for events without a task and for
+// System Design events, which no key covers.
+func (s documentEventScan) filterScan() bool {
+	return strings.Contains(s.filter, "JSON_EXTRACT_STRING(")
+}
+
+func (s documentEventScan) role() string {
+	switch {
+	case s.taskMembership():
+		return "task membership by proposal task ID"
+	case s.pageLookup():
+		return "page fetch by shard key and ID"
+	case s.filterScan():
+		return "accepted payload filter scan"
+	default:
+		return "workspace read without a key lookup"
 	}
-	return false
 }
 
-// taskless reports whether the scan is bounded to events without a task by
-// the (workspace_id, task_id) sort key.
-func (s documentEventScan) taskless() bool {
-	return strings.Contains(s.filter, s.alias+".task_id IS NULL index")
-}
-
-// membership reports whether the scan evaluates a document membership
-// predicate rather than fetching selected payloads.
-func (s documentEventScan) membership() bool {
-	return strings.Contains(s.filter, "JSON_EXTRACT_STRING(") || s.taskBound() || s.taskless()
-}
-
-// requirementPlanProblem returns why a requirement statement's plan examines
-// events beyond the matching tasks, or "" when every membership scan is bound
-// to events without a task or to the task IDs of matching proposals.
-func requirementPlanProblem(lines []string) string {
-	var task, taskless bool
+// documentEventPlanProblems returns why a plan reads requirement task events
+// beyond the matching tasks, and why its page fetch reads more than the
+// selected rows. An empty string means that check passes.
+func documentEventPlanProblems(kind core.LineageNodeType, lines []string) (task, fetch string) {
+	var membership, lookup bool
 	for _, scan := range documentEventScans(lines) {
-		switch {
-		case scan.taskBound():
-			task = true
-		case scan.taskless():
-			taskless = true
-		case scan.membership():
-			return "membership scan " + scan.alias + " is bound only by workspace: " + strings.TrimSpace(scan.filter)
+		switch scan.role() {
+		case "task membership by proposal task ID":
+			membership = true
+		case "page fetch by shard key and ID":
+			lookup = true
+		case "workspace read without a key lookup":
+			if fetch == "" {
+				fetch = "event scan " + scan.alias + " reads the workspace without a shard-key and ID lookup: " + strings.TrimSpace(scan.filter)
+			}
 		}
-		// A scan without a membership predicate fetches the selected payloads.
 	}
-	if !task {
-		return "no events scan is bound by a task-ID key"
+	if fetch == "" && !lookup {
+		fetch = "no event scan looks up the selected rows by shard key and ID"
 	}
-	if !taskless {
-		return "no events scan is bound to events without a task"
+	if kind == core.LineageRequirement && !membership {
+		task = "no event scan is bound to the task IDs of matching proposals"
 	}
-	return ""
+	return task, fetch
 }
 
+// originalMembershipWithPageLookup keeps the original combined membership
+// predicate but fetches the page by shard key and ID. Only the task check
+// can reject it.
+func originalMembershipWithPageLookup(ws string, kind core.LineageNodeType, id string, q store.DocumentEventQuery) (string, []any) {
+	query, args := originalDocumentEventPageQuery(ws, kind, id, q)
+	head := query[:strings.Index(query, " ), selected AS")]
+	return strings.Replace(head, "SELECT e.id,e.at FROM", "SELECT e.id,e.at,e.event_shard_key FROM", 1) + "\n" + documentEventPageSQL, args
+}
+
+// idOnlyPageFetch keeps the kind-specific membership but fetches the page by
+// workspace and ID alone. Only the fetch check can reject it.
+func idOnlyPageFetch(ws string, kind core.LineageNodeType, id string, q store.DocumentEventQuery) (string, []any) {
+	query, args := documentEventPageQuery(ws, kind, id, q)
+	return strings.Replace(query, "e.event_shard_key=p.event_shard_key AND ", "", 1), args
+}
+
+// checkDocumentEventPlans requires the kind-specific statements to pass both
+// checks. It also requires the original statement and two variants to fail
+// the checks they break, so each check is proven to reject its regression.
 func checkDocumentEventPlans(t *testing.T, st *Store, ctx context.Context, ws string, ids map[core.LineageNodeType]string) {
 	t.Helper()
+	type variant struct {
+		name                  string
+		build                 func(string, core.LineageNodeType, string, store.DocumentEventQuery) (string, []any)
+		taskFails, fetchFails bool
+		requirementOnly       bool
+	}
+	variants := []variant{
+		{name: "after", build: documentEventPageQuery},
+		{name: "before", build: originalDocumentEventPageQuery, taskFails: true, fetchFails: true},
+		{name: "original membership with page lookup", build: originalMembershipWithPageLookup, taskFails: true, requirementOnly: true},
+		{name: "kind split with ID-only page fetch", build: idOnlyPageFetch, fetchFails: true},
+	}
+	if query, _ := idOnlyPageFetch(ws, core.LineageRequirement, "x", store.DocumentEventQuery{Limit: 1}); strings.Contains(query, "e.event_shard_key=p.event_shard_key") {
+		t.Fatal("ID-only page fetch variant still joins by shard key")
+	}
 	for _, kind := range []core.LineageNodeType{core.LineageRequirement, core.LineageSystemDesign} {
-		for _, variant := range []struct {
-			name  string
-			build func(string, core.LineageNodeType, string, store.DocumentEventQuery) (string, []any)
-		}{{"before", originalDocumentEventPageQuery}, {"after", documentEventPageQuery}} {
+		for _, v := range variants {
+			if v.requirementOnly && kind != core.LineageRequirement {
+				continue
+			}
 			for _, q := range []store.DocumentEventQuery{{Limit: 50}, {Limit: 3, Offset: 2, SnapshotID: 1 << 40}} {
-				query, args := variant.build(ws, kind, ids[kind], q)
+				query, args := v.build(ws, kind, ids[kind], q)
 				lines := explainDocumentEventQuery(t, st, ctx, query, args)
-				plan := strings.Join(slices.DeleteFunc(lines, func(line string) bool { return strings.TrimSpace(line) == "" }), "\n")
-				t.Logf("%s %s query=%+v plan:\n%s", kind, variant.name, q, plan)
-				if kind != core.LineageRequirement {
-					continue
+				plan := strings.Join(slices.DeleteFunc(slices.Clone(lines), func(line string) bool { return strings.TrimSpace(line) == "" }), "\n")
+				var roles []string
+				for _, scan := range documentEventScans(lines) {
+					roles = append(roles, scan.alias+": "+scan.role())
 				}
-				problem := requirementPlanProblem(lines)
-				if variant.name == "after" && problem != "" {
-					t.Fatalf("requirement statement examines events beyond the matching tasks: %s\n%s", problem, plan)
+				t.Logf("%s %s query=%+v event scans=%v plan:\n%s", kind, v.name, q, roles, plan)
+				task, fetch := documentEventPlanProblems(kind, lines)
+				wantTask := v.taskFails && kind == core.LineageRequirement
+				if (task != "") != wantTask {
+					t.Fatalf("%s %s: task check problem=%q, want failure=%v\n%s", kind, v.name, task, wantTask, plan)
 				}
-				// The checker must reject the original statement's plan.
-				if variant.name == "before" && problem == "" {
-					t.Fatalf("plan check accepted the original statement:\n%s", plan)
+				if (fetch != "") != v.fetchFails {
+					t.Fatalf("%s %s: page fetch check problem=%q, want failure=%v\n%s", kind, v.name, fetch, v.fetchFails, plan)
 				}
 			}
 		}
@@ -429,7 +513,6 @@ func timeDocumentEventQuery(t *testing.T, st *Store, ctx context.Context, query 
 			durations = append(durations, time.Since(started).Round(time.Microsecond))
 		}
 	}
-	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 	return durations
 }
 
@@ -469,4 +552,99 @@ func profileDocumentEventQuery(t *testing.T, st *Store, ctx context.Context, que
 		t.Fatal(err)
 	}
 	return strings.Join(profile, "\n")
+}
+
+var documentProfileAlias = regexp.MustCompile(`\] AS (\S+) `)
+
+var documentProfileStat = regexp.MustCompile(`(actual_rows|exec_time|segments_scanned|segments_skipped|network_traffic): [0-9.,]+( KB|ms)?`)
+
+// summarizeDocumentEventProfile lists each events scan with its role and
+// statistics, and each data movement operator with its rows and bytes.
+func summarizeDocumentEventProfile(profile string) string {
+	lines := strings.Split(profile, "\n")
+	var out []string
+	for _, scan := range documentEventScans(lines) {
+		out = append(out, fmt.Sprintf("scan %s (%s): %s", scan.alias, scan.role(), strings.Join(documentProfileStat.FindAllString(scan.line, -1), " ")))
+	}
+	for _, line := range lines {
+		fields := strings.Fields(strings.TrimLeft(line, "| -"))
+		if len(fields) == 0 || !slices.Contains([]string{"Repartition", "Broadcast", "Gather"}, fields[0]) {
+			continue
+		}
+		name := fields[0]
+		if alias := documentProfileAlias.FindStringSubmatch(line); alias != nil {
+			name += " AS " + alias[1]
+		}
+		out = append(out, fmt.Sprintf("movement %s: %s", name, strings.Join(documentProfileStat.FindAllString(line, -1), " ")))
+	}
+	return strings.Join(out, "\n")
+}
+
+// prepareDocumentPlanMeasurement flushes the in-memory segment, runs the
+// default segment merge, and
+// collects statistics, so both statements run on the
+// same settled layout.
+func prepareDocumentPlanMeasurement(t *testing.T, st *Store, ctx context.Context) {
+	t.Helper()
+	for _, statement := range []string{
+		"OPTIMIZE TABLE events_columnstore FLUSH",
+		"OPTIMIZE TABLE events_columnstore",
+		"ANALYZE TABLE events_columnstore",
+		"ANALYZE TABLE task_context_proposals",
+	} {
+		started := time.Now()
+		rows, err := st.db.QueryContext(ctx, statement)
+		if err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+		for rows.Next() {
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+		t.Logf("measurement preparation %q took %s", statement, time.Since(started).Round(time.Millisecond))
+	}
+	var segments, rows int64
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(rows_count),0) FROM information_schema.columnar_segments WHERE database_name=DATABASE() AND table_name='events_columnstore' AND column_name='id'`).Scan(&segments, &rows); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("measurement preparation events_columnstore segments=%d rows=%d", segments, rows)
+}
+
+// TestDocumentEventScanRoles classifies scans in EXPLAIN and PROFILE text
+// without a database, including PROFILE's per-partition statistics line.
+func TestDocumentEventScanRoles(t *testing.T) {
+	plan := []string{
+		"|   |   ColumnStoreFilter [(e.workspace_id = ? index) AND events_columnstore_44.event_shard_key = r0.task_id join index AND events_columnstore_44.workspace_id = r0.workspace_id join index] actual_rows: 80",
+		"|   |    [total_rows_in: 61,440 | max:36,864 at partition_4]",
+		"|   |   ColumnStoreScan db.events_columnstore AS events_columnstore_44, SORT KEY workspace_id (workspace_id, task_id, at, id) actual_rows: 61,440 segments_scanned: 2 segments_skipped: 10",
+		"|       ColumnStoreFilter [JSON_EXTRACT_STRING(events_columnstore_42.payload_json,'requirement_id') = ? AND events_columnstore_42.workspace_id = ? index AND events_columnstore_42.task_id IS NULL index]",
+		"|       ColumnStoreScan db.events_columnstore AS events_columnstore_42, SORT KEY workspace_id (workspace_id, task_id, at, id)",
+		"        ColumnStoreFilter [events_columnstore_50.workspace_id = ? index AND events_columnstore_50.event_shard_key = r5.event_shard_key join index AND events_columnstore_50.id = r5.id join index] actual_rows: 50",
+		"         [total_rows_in: 61,440 | max:36,864 at partition_4]",
+		"        ColumnStoreScan db.events_columnstore AS events_columnstore_50, SORT KEY workspace_id (workspace_id, task_id, at, id) actual_rows: 61,440",
+	}
+	var roles []string
+	for _, scan := range documentEventScans(plan) {
+		roles = append(roles, scan.role())
+	}
+	want := []string{"task membership by proposal task ID", "accepted payload filter scan", "page fetch by shard key and ID"}
+	if !reflect.DeepEqual(roles, want) {
+		t.Fatalf("roles=%v want %v", roles, want)
+	}
+	if task, fetch := documentEventPlanProblems(core.LineageRequirement, plan); task != "" || fetch != "" {
+		t.Fatalf("task=%q fetch=%q", task, fetch)
+	}
+	// An ID-only fetch and a scan without a proposal task bound both fail.
+	unbounded := []string{
+		"ColumnStoreFilter [JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'requirement_id') = ? AND events_columnstore_31.workspace_id = ? index]",
+		"ColumnStoreScan db.events_columnstore AS events_columnstore_31, SORT KEY workspace_id (workspace_id, task_id, at, id)",
+		"ColumnStoreFilter [events_columnstore_38.workspace_id = ? index]",
+		"ColumnStoreScan db.events_columnstore AS events_columnstore_38, SORT KEY workspace_id (workspace_id, task_id, at, id)",
+	}
+	if task, fetch := documentEventPlanProblems(core.LineageRequirement, unbounded); task == "" || fetch == "" {
+		t.Fatalf("unbounded plan passed: task=%q fetch=%q", task, fetch)
+	}
 }
