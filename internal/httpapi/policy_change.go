@@ -19,6 +19,7 @@ func (s *Server) changeTaskPolicy(w http.ResponseWriter, r *http.Request) {
 		VerifyStage          *bool             `json:"verify_stage"`
 		StageTimeouts        map[string]string `json:"stage_timeouts"`
 		ReviewDistinctModels *bool             `json:"review_distinct_models"`
+		LaterRoundReview     *string           `json:"later_round_review"`
 		Reason               string            `json:"reason"`
 		RequestID            string            `json:"request_id"`
 	}
@@ -41,7 +42,10 @@ func (s *Server) changeTaskPolicy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expected one policy object"})
 		return
 	}
-	policy := store.TaskPolicyChange{VerifyStage: input.VerifyStage, StageTimeouts: input.StageTimeouts, ReviewDistinctModels: input.ReviewDistinctModels}
+	// later_round_review is full or delta and reads only at the next
+	// submission; refresh_review is not a field here, so a frozen
+	// refresh_review never changes (feature-delta-review-rounds DR-6).
+	policy := store.TaskPolicyChange{VerifyStage: input.VerifyStage, StageTimeouts: input.StageTimeouts, ReviewDistinctModels: input.ReviewDistinctModels, LaterRoundReview: input.LaterRoundReview}
 	// plan_state is needed or not_required and travels alone; Validate
 	// answers any other value or any other policy field with 400
 	// (component-plan-state invariant 4; component-task-lifecycle

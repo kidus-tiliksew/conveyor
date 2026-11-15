@@ -449,6 +449,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"ReviewFailFast", true, runReviewFailFast},
 		{"ReviewSeatRetirement", true, runReviewSeatRetirement},
 		{"ReviewDistinctModels", true, runReviewDistinctModels},
+		{"LaterRoundReview", true, runLaterRoundReview},
 		{"RequirementInsight", true, RunRequirementInsightConformance},
 		{"Decisions", true, runDecisions},
 		{"ArchiveRestore", true, runArchiveRestore},

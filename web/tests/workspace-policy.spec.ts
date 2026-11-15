@@ -233,3 +233,119 @@ test('scoped configuration sources contain no retired vocabulary or API paths', 
   expect(`${policyOnly}\n${taskCreate}\n${taskHeader}`).not.toMatch(/setup|harness|model/i)
   expect(api).not.toMatch(/getHarnessTemplates|changeTaskSetup|setup\?: string/)
 })
+
+// A stateful mock for the review scope settings: a save replaces the served
+// document, so a reload reads what was saved, and a listed refusal answers 422.
+async function mockReviewScopeAPIs(
+  page: Page,
+  served: Record<string, unknown>,
+  refusal?: { field: string; message: string },
+) {
+  const saved: Array<Record<string, unknown>> = []
+  let current = served
+  let version = 1
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-workspace', 'demo')
+  })
+  await page.route('**/v1/**', async (route: Route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me')
+      return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }, route.request()) })
+    if (path === '/v1/workspace/config') {
+      if (route.request().method() === 'PUT') {
+        const body = route.request().postDataJSON() as { document: Record<string, unknown> }
+        saved.push(body.document)
+        if (refusal) return route.fulfill({ status: 422, json: { error: 'validation_failed', fields: [refusal] } })
+        current = body.document
+        version++
+        return route.fulfill({ json: { document: current, version, event_id: 42 } })
+      }
+      return route.fulfill({ json: { document: current, version } })
+    }
+    if (path === '/v1/workspace')
+      return route.fulfill({ json: { workspace: 'demo', max_bounces: 3, database: 'postgres', repos: [] } })
+    return route.fulfill({ json: [] })
+  })
+  return () => saved
+}
+
+// feature-delta-review-rounds DR-1; req-review-gates-evidence AC-4.3,
+// AC-12.1: a document without the members shows the defaults, each value
+// says in plain words what it reviews, and an unrelated save sends the
+// defaults.
+test('review scope settings show their defaults and say what each value reviews', async ({ page }) => {
+  const saved = await mockReviewScopeAPIs(page, document)
+  await page.goto('/w/demo/workspace')
+
+  const laterRound = page.getByRole('combobox', { name: 'Later review rounds' })
+  const refresh = page.getByRole('combobox', { name: 'Refresh review' })
+  await expect(laterRound).toHaveValue('full')
+  await expect(refresh).toHaveValue('delta')
+  await expect(laterRound.locator('option')).toHaveText(['Whole change', 'Changes since the last complete round'])
+  await expect(refresh.locator('option')).toHaveText(['Changes since the approved commit', 'Whole change'])
+  await expect(laterRound).toHaveAccessibleDescription(
+    'A review round after a bounce reviews the whole change. New tasks only.',
+  )
+  await expect(refresh).toHaveAccessibleDescription(
+    'When the branch changes after approval, the refresh review covers only the changes since the approved commit. New tasks only.',
+  )
+  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0)
+
+  await laterRound.selectOption('delta')
+  await refresh.selectOption('full')
+  await expect(laterRound).toHaveAccessibleDescription(
+    'A review round after a bounce reviews only the changes since the last complete round. New tasks only.',
+  )
+  await expect(refresh).toHaveAccessibleDescription(
+    'When the branch changes after approval, the refresh review covers the whole change. New tasks only.',
+  )
+  await expect(page.getByText('Unsaved changes', { exact: true })).toBeVisible()
+  await laterRound.selectOption('full')
+  await refresh.selectOption('delta')
+  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0)
+
+  await page.getByLabel('Review seats').fill('3')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  expect(saved().at(-1)).toMatchObject({ later_round_review: 'full', refresh_review: 'delta' })
+})
+
+test('changed review scope settings save and read back after a reload', async ({ page }) => {
+  const saved = await mockReviewScopeAPIs(page, document)
+  await page.goto('/w/demo/workspace')
+
+  await page.getByRole('combobox', { name: 'Later review rounds' }).selectOption('delta')
+  await page.getByRole('combobox', { name: 'Refresh review' }).selectOption('full')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  expect(saved()).toHaveLength(1)
+  expect(saved()[0]).toMatchObject({ later_round_review: 'delta', refresh_review: 'full' })
+
+  await page.reload()
+  await expect(page.getByRole('combobox', { name: 'Later review rounds' })).toHaveValue('delta')
+  await expect(page.getByRole('combobox', { name: 'Refresh review' })).toHaveValue('full')
+  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0)
+})
+
+test('a served document with saved review scopes loads them', async ({ page }) => {
+  await mockReviewScopeAPIs(page, { ...document, later_round_review: 'delta', refresh_review: 'full' })
+  await page.goto('/w/demo/workspace')
+  await expect(page.getByRole('combobox', { name: 'Later review rounds' })).toHaveValue('delta')
+  await expect(page.getByRole('combobox', { name: 'Refresh review' })).toHaveValue('full')
+})
+
+for (const refusal of [
+  { field: 'later_round_review', message: 'later_round_review must be full or delta', control: 'Later review rounds' },
+  { field: 'refresh_review', message: 'refresh_review must be delta or full', control: 'Refresh review' },
+]) {
+  test(`a save refusal naming ${refusal.field} shows below its control`, async ({ page }) => {
+    await mockReviewScopeAPIs(page, document, { field: refusal.field, message: refusal.message })
+    await page.goto('/w/demo/workspace')
+    await page.getByRole('combobox', { name: refusal.control }).selectOption({ index: 1 })
+    await page.getByRole('button', { name: 'Save changes' }).click()
+    const control = page.getByRole('combobox', { name: refusal.control }).locator('xpath=ancestor::div[1]')
+    await expect(control.getByRole('alert')).toHaveText(refusal.message)
+    await expect(page.getByRole('alert').filter({ hasText: refusal.message })).toHaveCount(1)
+  })
+}
