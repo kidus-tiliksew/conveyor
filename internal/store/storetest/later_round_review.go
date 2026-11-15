@@ -35,15 +35,18 @@ func lrChange(x Fixture, taskID, requestID, value string) (store.SetupChangeResu
 }
 
 // lrState is the comparable persisted state a later-round change must leave
-// unchanged: the stage, approval, and recorded comparison of the task, and the
+// unchanged: the stage, approval, refresh binding, and recorded comparison of
+// the task, and the
 // state, session, head, scope, and baseline of each order. Events are counted
 // by kind, so the one audited event can be told apart from any other effect.
 type lrState struct {
-	nextStage                          core.Stage
-	state                              core.TaskState
-	reviewedHead, refreshScope, policy string
-	orders                             []string
-	kinds                              map[string]int
+	nextStage                                  core.Stage
+	state                                      core.TaskState
+	reviewedHead, refreshScope, policy         string
+	approvedHead, refreshBaseline, refreshHead string
+	approvalStale                              bool
+	orders                                     []string
+	kinds                                      map[string]int
 }
 
 func lrSnapshot(t *testing.T, x Fixture, taskID string) lrState {
@@ -52,7 +55,8 @@ func lrSnapshot(t *testing.T, x Fixture, taskID string) lrState {
 	requireOK(t, err)
 	orders, err := x.Backend.ListTaskWorkOrders(x.Context, taskID)
 	requireOK(t, err)
-	state := lrState{nextStage: task.NextStage, state: task.State, reviewedHead: task.ReviewedHeadSHA, refreshScope: task.RefreshReviewScope, kinds: ffKinds(t, x, taskID)}
+	state := lrState{nextStage: task.NextStage, state: task.State, reviewedHead: task.ReviewedHeadSHA, refreshScope: task.RefreshReviewScope,
+		approvedHead: task.ApprovedHeadSHA, refreshBaseline: task.RefreshBaselineSHA, refreshHead: task.RefreshHeadSHA, approvalStale: task.ApprovalStale, kinds: ffKinds(t, x, taskID)}
 	contract := task.SetupContract
 	contract.LaterRoundReview = ""
 	encoded, err := json.Marshal(contract)
@@ -93,7 +97,10 @@ func lrRequireValue(t *testing.T, x Fixture, taskID, want string) {
 
 func lrTask(t *testing.T, x Fixture, state core.TaskState, next core.Stage) core.Task {
 	t.Helper()
-	task := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", BaseBranch: "main", State: state, NextStage: next, ReviewedHeadSHA: seatFixtureHead, CreatedAt: time.Now().UTC()}
+	// The approval and refresh binding hold values, so a change that cleared
+	// either one would show in the snapshot.
+	task := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", BaseBranch: "main", State: state, NextStage: next, ReviewedHeadSHA: seatFixtureHead,
+		ApprovedHeadSHA: "approved-head", ApprovalStale: true, RefreshBaselineSHA: "refresh-baseline", RefreshHeadSHA: "refresh-head", RefreshReviewScope: config.RefreshReviewDelta, CreatedAt: time.Now().UTC()}
 	task.Branch = "conveyor/task-" + task.ID
 	task.SetupContract = config.PolicyContract{VerifyStage: true, MaxBounces: 3, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}, StageTimeouts: config.PolicyStageTimeouts{Review: "1h"}, RefreshReview: config.RefreshReviewDelta}
 	requireOK(t, x.Backend.CreateTask(x.Context, task))

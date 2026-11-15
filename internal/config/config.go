@@ -922,10 +922,13 @@ func frozenRisk(policy *riskpolicy.Policy) *riskpolicy.Policy {
 }
 
 // HasFrozenPolicy distinguishes a frozen contract from the zero value of a
-// task that predates policy freezing.
+// task that predates policy freezing. LaterRoundReview alone does not make a
+// contract frozen: a per-task later_round_review change on such a task must
+// not replace the workspace values of every other policy member with zero
+// values (feature-delta-review-rounds DR-6).
 func (s PolicyContract) HasFrozenPolicy() bool {
 	return s.VerifyStage || s.legacyNamed || s.MaxBounces > 0 || s.StageTimeouts != (PolicyStageTimeouts{}) ||
-		s.Review.Seats != nil || s.RefreshReview != "" || s.LaterRoundReview != "" || s.Risk.Enabled()
+		s.Review.Seats != nil || s.RefreshReview != "" || s.Risk.Enabled()
 }
 
 const (

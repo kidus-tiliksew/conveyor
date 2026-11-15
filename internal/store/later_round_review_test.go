@@ -101,6 +101,20 @@ func TestLaterRoundReviewPolicyOnlyPlan(t *testing.T) {
 	}
 }
 
+// A task that predates policy freezing stays unfrozen after the change, so
+// dispatch keeps applying the workspace policy to every other member.
+func TestLaterRoundReviewPolicyOnUnfrozenTask(t *testing.T) {
+	task := core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageImplement}
+	request := SetupChangeRequest{TaskID: "task", RequestID: "request", Reason: "reason", Policy: &TaskPolicyChange{LaterRoundReview: laterRound("delta")}}
+	planned, err := PlanTaskPolicyChange(task, nil, request, PolicyHandoffSeatInputs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned.Setup.HasFrozenPolicy() || planned.Setup.LaterRoundReviewScope() != config.LaterRoundReviewDelta || planned.Setup.StageTimeouts.Verify != "" {
+		t.Fatalf("planned setup %+v frozen=%t", planned.Setup, planned.Setup.HasFrozenPolicy())
+	}
+}
+
 // Normalization copies the pointer, and the replay identity includes the
 // value while an absent value leaves an earlier identity's JSON unchanged.
 func TestLaterRoundReviewPolicyReplayIdentity(t *testing.T) {

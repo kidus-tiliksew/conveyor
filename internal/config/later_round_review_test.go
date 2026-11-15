@@ -213,11 +213,24 @@ func TestPolicyContractLaterRoundReviewEncodings(t *testing.T) {
 	if legacyDelta.LaterRoundReviewScope() != LaterRoundReviewDelta {
 		t.Fatalf("full-setup shape lost later_round_review: %+v", legacyDelta)
 	}
+	// A task that predates policy freezing keeps the workspace policy after a
+	// per-task later_round_review change: the member alone freezes nothing.
 	var onlyLaterRound PolicyContract
 	if err := json.Unmarshal([]byte(`{"max_bounces":0,"stage_timeouts":{},"review":{},"later_round_review":"delta"}`), &onlyLaterRound); err != nil {
 		t.Fatal(err)
 	}
-	if !onlyLaterRound.HasFrozenPolicy() {
-		t.Fatal("a contract holding only later_round_review decoded as unfrozen")
+	if onlyLaterRound.HasFrozenPolicy() || onlyLaterRound.LaterRoundReviewScope() != LaterRoundReviewDelta {
+		t.Fatalf("a contract holding only later_round_review decoded as frozen=%t scope=%q", onlyLaterRound.HasFrozenPolicy(), onlyLaterRound.LaterRoundReviewScope())
+	}
+	encoded, err := json.Marshal(PolicyContract{LaterRoundReview: LaterRoundReviewDelta})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored PolicyContract
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.HasFrozenPolicy() || restored.LaterRoundReviewScope() != LaterRoundReviewDelta {
+		t.Fatalf("stored %s restored as frozen=%t scope=%q", encoded, restored.HasFrozenPolicy(), restored.LaterRoundReviewScope())
 	}
 }
