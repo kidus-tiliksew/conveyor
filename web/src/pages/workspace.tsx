@@ -25,11 +25,13 @@ import { githubSlug } from '../lib/repository'
 import type {
   ConfigWarning,
   ExecutionPolicy,
+  LaterRoundReview,
   RiskMode,
   RiskTier,
   RiskTierTable,
   WorkspaceConfigDocument,
   WorkspaceConfigRepo,
+  WorkspaceRefreshReview,
 } from '../lib/types'
 import { cn } from '../lib/utils'
 
@@ -65,7 +67,15 @@ const TAB_SLICES: Record<Exclude<TabId, 'members'>, (document: WorkspaceConfigDo
   ],
   policy: (document) => {
     const { verify_stage: _verify, ...execution } = document.execution
-    return [document.max_bounces, document.stage_timeouts, document.review, execution, document.risk_policy ?? null]
+    return [
+      document.max_bounces,
+      document.stage_timeouts,
+      document.review,
+      document.later_round_review ?? 'full',
+      document.refresh_review ?? 'delta',
+      execution,
+      document.risk_policy ?? null,
+    ]
   },
   verification: (document) => [document.execution.verify_stage ?? false],
 }
@@ -568,6 +578,8 @@ function PolicyTab({
   const updateStageTimeout = (stage: 'spec' | 'implement' | 'review', value: string) =>
     update({ stage_timeouts: { ...draft.stage_timeouts, [stage]: value } })
   const seatCount = draft.review.seats.length
+  const laterRoundReview: LaterRoundReview = draft.later_round_review ?? 'full'
+  const refreshReview: WorkspaceRefreshReview = draft.refresh_review ?? 'delta'
   return (
     <div className="space-y-4">
       <Card>
@@ -670,6 +682,22 @@ function PolicyTab({
                 }}
               />
             </Field>
+            <ReviewScopeSetting
+              label="Later review rounds"
+              value={laterRoundReview}
+              options={laterRoundReviewOptions}
+              hints={laterRoundReviewHints}
+              errors={errors.filter((error) => error.field === 'later_round_review')}
+              onChange={(value) => update({ later_round_review: value })}
+            />
+            <ReviewScopeSetting
+              label="Refresh review"
+              value={refreshReview}
+              options={refreshReviewOptions}
+              hints={refreshReviewHints}
+              errors={errors.filter((error) => error.field === 'refresh_review')}
+              onChange={(value) => update({ refresh_review: value })}
+            />
           </div>
         </CardContent>
       </Card>
@@ -712,6 +740,74 @@ function PolicyTab({
         // until the next save answers again.
         warnings={riskChanged ? [] : warnings.filter((warning) => warning.field === 'risk_policy')}
       />
+    </div>
+  )
+}
+
+const laterRoundReviewOptions: Array<{ value: LaterRoundReview; label: string }> = [
+  { value: 'full', label: 'Whole change' },
+  { value: 'delta', label: 'Changes since the last complete round' },
+]
+
+const laterRoundReviewHints: Record<LaterRoundReview, string> = {
+  full: 'A review round after a bounce reviews the whole change. New tasks only.',
+  delta: 'A review round after a bounce reviews only the changes since the last complete round. New tasks only.',
+}
+
+const refreshReviewOptions: Array<{ value: WorkspaceRefreshReview; label: string }> = [
+  { value: 'delta', label: 'Changes since the approved commit' },
+  { value: 'full', label: 'Whole change' },
+]
+
+const refreshReviewHints: Record<WorkspaceRefreshReview, string> = {
+  delta:
+    'When the branch changes after approval, the refresh review covers only the changes since the approved commit. New tasks only.',
+  full: 'When the branch changes after approval, the refresh review covers the whole change. New tasks only.',
+}
+
+// One review scope setting: a select, the sentence that says what the chosen
+// value does, and the save refusals that name the member
+// (feature-delta-review-rounds DR-1).
+function ReviewScopeSetting<T extends string>({
+  label,
+  value,
+  options,
+  hints,
+  errors,
+  onChange,
+}: {
+  label: string
+  value: T
+  options: Array<{ value: T; label: string }>
+  hints: Record<T, string>
+  errors: Array<{ field: string; message: string }>
+  onChange: (value: T) => void
+}) {
+  const hintId = useId()
+  return (
+    <div className="sm:col-span-2">
+      <Field label={label}>
+        <Select
+          aria-label={label}
+          aria-describedby={hintId}
+          value={value}
+          onChange={(event) => onChange(event.target.value as T)}
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <p id={hintId} className="mt-1 text-xs text-faint">
+        {hints[value]}
+      </p>
+      {errors.map((error) => (
+        <p key={error.field + error.message} role="alert" className="mt-1 text-xs text-failure">
+          {error.message}
+        </p>
+      ))}
     </div>
   )
 }

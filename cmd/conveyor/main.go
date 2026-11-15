@@ -422,6 +422,7 @@ func taskCmd() *cobra.Command {
 		taskReviewSummaryCmd(),
 		taskAddReviewSeatsCmd(),
 		taskSetDistinctModelsCmd(),
+		taskSetLaterRoundReviewCmd(),
 		taskPlanStateCmd(),
 		taskAttachPlanCmd(),
 		mergeTaskCmd(),

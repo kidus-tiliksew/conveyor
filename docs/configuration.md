@@ -391,8 +391,8 @@ cut off.
 ## Workspace config over the API
 
 The server-side workspace configuration (repos, stage timeouts, review seat
-count, gates, bounce limits, monitor, issue publication) is also editable at
-runtime: through the Workspace page, or round-tripped as YAML with
+count, review scopes, gates, bounce limits, monitor, issue publication) is also
+editable at runtime: through the Workspace page, or round-tripped as YAML with
 `conveyor config export` and `conveyor config import`, which uses optimistic
 concurrency and rejects unknown keys.
 
@@ -407,6 +407,26 @@ changes no existing task. To change one task, an operator runs
 `conveyor task set-distinct-models <task-id> --off|--on --reason <text>`. The
 server refuses that change while a seat of the task is claimed or holds a
 submitted verdict.
+
+`later_round_review` sets what a review round compares after a bounce. Its
+values are `full` and `delta`, and `full` applies when the document never set
+it. `full` reviews the whole change. `delta` reviews only the changes since the
+last complete review round.
+
+`refresh_review` sets what a refresh review compares after the head moves past
+an approved commit. Its values are `delta` and `full`, and `delta` applies when
+the document never set it. `delta` reviews the changes since the approved
+commit. `full` reviews the whole change. A save with any other value, including
+`none`, is refused, and the refusal names the member.
+
+A task freezes both values at intake, and a later workspace edit changes no
+existing task. A task frozen before `later_round_review` existed reads as
+`full`. A task frozen with `refresh_review: none` keeps that value. To change
+one task's later-round scope, an operator runs
+`conveyor task set-later-round-review <task-id> --full|--delta --reason <text>`.
+The new value applies to the next implementation submission. The server
+refuses that change only for a merged or closed task. No command changes a
+task's frozen `refresh_review`.
 
 `issue_publication.enabled` decides whether plan approval publishes a GitHub
 issue for the task. It is off when the document never set it, including every

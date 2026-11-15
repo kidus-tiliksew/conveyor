@@ -11,8 +11,8 @@ import (
 
 // TaskPolicyChange contains only the explicit, audited frozen-policy exception
 // admitted by DEC-47 and DEC-43 (component-task-lifecycle). An absent
-// ReviewDistinctModels leaves the stored replay identity of earlier changes
-// unchanged.
+// ReviewDistinctModels or LaterRoundReview leaves the stored replay identity
+// of earlier changes unchanged.
 //
 // PlanState is the plan_state change of component-plan-state invariant 4: it
 // holds needed or not_required and travels alone (component-task-lifecycle
@@ -22,6 +22,10 @@ type TaskPolicyChange struct {
 	VerifyStage          *bool             `json:"verify_stage,omitempty"`
 	StageTimeouts        map[string]string `json:"stage_timeouts,omitempty"`
 	ReviewDistinctModels *bool             `json:"review_distinct_models,omitempty"`
+	// LaterRoundReview is the frozen later-round review scope, full or delta.
+	// It is read only at the task's next implementation submission
+	// (feature-delta-review-rounds DR-6; req-review-gates-evidence AC-12.8).
+	LaterRoundReview *string `json:"later_round_review,omitempty"`
 }
 
 // OnlyDistinctModels reports a change holding review_distinct_models and no
@@ -30,18 +34,37 @@ func (p TaskPolicyChange) OnlyDistinctModels() bool {
 	return p.ReviewDistinctModels != nil && p.VerifyStage == nil && len(p.StageTimeouts) == 0
 }
 
+// OnlyLaterRoundReview reports a change holding later_round_review and no
+// other policy field. Such a change is refused only for a terminal task and
+// for a reused request ID with different input; the claimed-order,
+// in-flight-verdict, approved-task, and gate refusals of
+// component-task-lifecycle invariant 45 do not apply to it
+// (feature-delta-review-rounds DR-6; req-review-gates-evidence AC-12.8).
+func (p TaskPolicyChange) OnlyLaterRoundReview() bool {
+	return p.LaterRoundReview != nil && p.PlanState == nil && p.VerifyStage == nil && p.StageTimeouts == nil && p.ReviewDistinctModels == nil
+}
+
+// MovesNoStage reports a change whose fields can move no stage, so it has
+// nothing to dispatch (req-review-gates-evidence AC-2.11, AC-12.8).
+func (p TaskPolicyChange) MovesNoStage() bool {
+	return p.OnlyDistinctModels() || p.OnlyLaterRoundReview()
+}
+
 func (p TaskPolicyChange) Validate() error {
 	if p.PlanState != nil {
 		if *p.PlanState != core.PlanNeeded && *p.PlanState != core.PlanNotRequired {
 			return fmt.Errorf("plan_state must be %s or %s", core.PlanNeeded, core.PlanNotRequired)
 		}
-		if p.VerifyStage != nil || p.StageTimeouts != nil || p.ReviewDistinctModels != nil {
+		if p.VerifyStage != nil || p.StageTimeouts != nil || p.ReviewDistinctModels != nil || p.LaterRoundReview != nil {
 			return fmt.Errorf("plan_state must be the only policy field in its change")
 		}
 		return nil
 	}
-	if p.VerifyStage == nil && len(p.StageTimeouts) == 0 && p.ReviewDistinctModels == nil {
-		return fmt.Errorf("plan_state, verify_stage, stage_timeouts.verify, or review_distinct_models is required")
+	if p.VerifyStage == nil && len(p.StageTimeouts) == 0 && p.ReviewDistinctModels == nil && p.LaterRoundReview == nil {
+		return fmt.Errorf("plan_state, verify_stage, stage_timeouts.verify, review_distinct_models, or later_round_review is required")
+	}
+	if p.LaterRoundReview != nil && !config.ValidLaterRoundReview(*p.LaterRoundReview) {
+		return fmt.Errorf("later_round_review must be full or delta")
 	}
 	for stage, value := range p.StageTimeouts {
 		if stage != "verify" {
@@ -65,7 +88,11 @@ func (p TaskPolicyChange) Validate() error {
 // review_distinct_models returns before handoff resolution: it sets the frozen
 // value for later seat claims and changes no order and opens no round, even on
 // a task with verify_stage true waiting at review (req-review-gates-evidence
-// AC-2.11).
+// AC-2.11). A change holding only later_round_review returns before every
+// task-state and order exclusion: it sets the frozen value that the next
+// implementation submission reads, and it changes no order, comparison,
+// verdict, approval, or round (feature-delta-review-rounds DR-6;
+// req-review-gates-evidence AC-12.8).
 func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChangeRequest, seats PolicyHandoffSeatInputs) (SetupChangeRequest, error) {
 	if r.Policy == nil {
 		return r, Refusef("a frozen-policy change is required")
@@ -75,6 +102,16 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	}
 	if r.Policy.PlanState != nil {
 		return planTaskPlanStateChange(task, orders, r)
+	}
+	if r.Policy.OnlyLaterRoundReview() {
+		r.Setup = task.SetupContract
+		r.Setup.LaterRoundReview = *r.Policy.LaterRoundReview
+		r.ReviewTransition = "policy_only"
+		r.NextStage = task.NextStage
+		r.WorkOrderUpdates, r.NewJobs, r.NewWorkOrders, r.SupersedeWorkOrderIDs = nil, nil, nil, nil
+		r.PriorReviewRound, r.ResultingReviewRound = 0, 0
+		r.ReviewRoundSeats = nil
+		return r, nil
 	}
 	if task.State == core.TaskApproved || (task.State == core.TaskAwaiting && task.NextStage == "") {
 		return r, fmt.Errorf("%w: policy changes require a queued or submitted handoff", ErrSetupChangeConflict)
@@ -88,6 +125,9 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	}
 	if r.Policy.ReviewDistinctModels != nil {
 		r.Setup.Review.DistinctModels = *r.Policy.ReviewDistinctModels
+	}
+	if r.Policy.LaterRoundReview != nil {
+		r.Setup.LaterRoundReview = *r.Policy.LaterRoundReview
 	}
 	onlyDistinctModels := r.Policy.OnlyDistinctModels()
 	if r.Setup.StageTimeouts.Verify == "" && !onlyDistinctModels {

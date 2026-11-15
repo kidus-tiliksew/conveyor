@@ -1721,6 +1721,8 @@ export function fetchWorkspaceConfig(workspace: string) {
             // Kept only when on, so a save that leaves it off sends no new key.
             ...(result.document.review?.distinct_models ? { distinct_models: true } : {}),
           },
+          later_round_review: result.document.later_round_review ?? 'full',
+          refresh_review: result.document.refresh_review ?? 'delta',
           stage_timeouts: {
             spec: result.document.stage_timeouts?.spec ?? '30m',
             implement: result.document.stage_timeouts?.implement ?? '4h',
