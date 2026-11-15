@@ -214,6 +214,7 @@ func TestRiskOrderContractDeliversTheExactHead(t *testing.T) {
 	if risk.Subject != (core.RiskOrderSubject{HeadSHA: riskHead, BaseSHA: riskBase}) || risk.Plan != nil ||
 		!reflect.DeepEqual(risk.ChangedPaths, []string{".github/workflows/ci.yml", "internal/risk.go"}) ||
 		len(risk.MatchedRules) != 1 || risk.MatchedRules[0].Description != "GitHub Actions workflows" || risk.MatchedRules[0].MinTier != riskpolicy.TierMedium ||
+		!reflect.DeepEqual(risk.MatchedRules[0].Paths, []string{".github/workflows/ci.yml"}) ||
 		risk.Mode != riskpolicy.ModeRecord || risk.Tiers.Medium.AgentReviews != 2 || risk.Tiers.High.HumanApprovals != 2 {
 		t.Fatalf("risk_order = %+v", risk)
 	}
@@ -482,9 +483,13 @@ func TestSubmitRiskRatingCancelledAfterAuthorization(t *testing.T) {
 // the covered paths, and the matched rules. REST task detail, the REST task
 // read, MCP get_task, MCP list_work_orders, and the REST work-order list name
 // the risk orders with consistent subjects and states. A replay by the same
-// session returns the recorded rating and writes nothing
-// (req-risk-based-review AC-5.6, AC-11.2, AC-12.2; component-work-orders
-// invariant 65; component-risk-review, Public surfaces).
+// session returns the recorded rating and writes nothing. The answer, its
+// replay, REST task detail, a REST task list row, the task detail read, MCP
+// get_task, and the raise answer serve the rating with counts in place of
+// its path lists, while the stored rating and a claimed head order's
+// get_work_order keep both lists (req-risk-based-review AC-5.6, AC-11.2,
+// AC-12.2; component-work-orders invariants 64 and 65;
+// component-risk-review, Public surfaces).
 func TestSubmitRiskRatingRecordsTheRatingOnEveryTaskRead(t *testing.T) {
 	f := newRiskOrderFixture(t)
 	f.claim(t, f.headOrder, "head-rater", "rater-model")
@@ -492,33 +497,48 @@ func TestSubmitRiskRatingRecordsTheRatingOnEveryTaskRead(t *testing.T) {
 	args := map[string]any{"workspace_id": "alpha", "work_order_id": f.headOrder, "session_id": "head-rater", "tier": "medium", "reason": "Touches the CI workflow."}
 	text := mcpToolText(t, f.handler, "operator-token", "submit_risk_rating", args)
 	var result struct {
-		WorkOrderID string          `json:"work_order_id"`
-		TaskID      string          `json:"task_id"`
-		State       string          `json:"state"`
-		Rating      core.RiskRating `json:"rating"`
+		WorkOrderID string                `json:"work_order_id"`
+		TaskID      string                `json:"task_id"`
+		State       string                `json:"state"`
+		Rating      core.ServedRiskRating `json:"rating"`
 	}
 	requireOKHTTP(t, json.Unmarshal([]byte(text), &result))
 	rating := result.Rating
 	if result.WorkOrderID != f.headOrder || result.TaskID != riskOrderTaskID || result.State != string(core.WorkOrderCompleted) ||
 		rating.Source != core.RiskSourceRiskAgent || rating.Tier != riskpolicy.TierMedium || rating.Reason != "Touches the CI workflow." ||
 		rating.RiskWorkOrderID != f.headOrder || rating.RiskModel != "rater-model" || rating.HeadSHA != riskHead || rating.BaseSHA != riskBase ||
-		!reflect.DeepEqual(rating.CoveredPaths, []string{".github/workflows/ci.yml", "internal/risk.go"}) || len(rating.MatchedRules) != 1 {
+		rating.CoveredPathCount == nil || *rating.CoveredPathCount != 2 || len(rating.MatchedRules) != 1 || rating.MatchedRules[0].PathCount != 1 ||
+		rating.MatchedRules[0].Description != "GitHub Actions workflows" || rating.MatchedRules[0].MinHumanApprovals != 1 {
 		t.Fatalf("submit_risk_rating result = %s", text)
 	}
+	requireServedRiskAnswer(t, text)
 	if order := f.order(t, f.headOrder); order.State != core.WorkOrderCompleted {
 		t.Fatalf("rated order state = %s", order.State)
 	}
+	// The stored rating keeps both path lists.
+	stored := f.riskAgentRatings(t)
+	if len(stored) != 1 || !reflect.DeepEqual(stored[0].CoveredPaths, []string{".github/workflows/ci.yml", "internal/risk.go"}) ||
+		len(stored[0].MatchedRules) != 1 || !reflect.DeepEqual(stored[0].MatchedRules[0].Paths, []string{".github/workflows/ci.yml"}) {
+		t.Fatalf("stored risk agent ratings = %+v", stored)
+	}
+	eventsBefore, err := f.store.ListEvents(f.ctx, riskOrderTaskID)
+	requireOKHTTP(t, err)
 
 	// A replay by the completing session returns the same rating and records
 	// nothing more; a different tier on replay changes nothing.
 	args["tier"] = "high"
 	replay := mcpToolText(t, f.handler, "operator-token", "submit_risk_rating", args)
 	var replayed struct {
-		Rating core.RiskRating `json:"rating"`
+		Rating core.ServedRiskRating `json:"rating"`
 	}
 	requireOKHTTP(t, json.Unmarshal([]byte(replay), &replayed))
-	if replayed.Rating.Key != rating.Key || replayed.Rating.Tier != riskpolicy.TierMedium || len(f.riskAgentRatings(t)) != 1 {
+	if replayed.Rating.Key != rating.Key || replayed.Rating.Tier != riskpolicy.TierMedium || len(f.riskAgentRatings(t)) != 1 ||
+		replayed.Rating.CoveredPathCount == nil || *replayed.Rating.CoveredPathCount != 2 {
 		t.Fatalf("replay = %s, ratings = %+v", replay, f.riskAgentRatings(t))
+	}
+	requireServedRiskAnswer(t, replay)
+	if eventsAfter, err := f.store.ListEvents(f.ctx, riskOrderTaskID); err != nil || len(eventsAfter) != len(eventsBefore) {
+		t.Fatalf("replay appended events: before=%d after=%d err=%v", len(eventsBefore), len(eventsAfter), err)
 	}
 
 	type riskRead struct {
@@ -535,20 +555,23 @@ func TestSubmitRiskRatingRecordsTheRatingOnEveryTaskRead(t *testing.T) {
 		if value.Risk == nil {
 			t.Fatalf("GET %s has no risk", path)
 		}
+		if ratings, rules := requireServedRiskRatings(t, response.Body.Bytes()); ratings != 1 || rules != 1 {
+			t.Fatalf("GET %s served %d ratings and %d matched rules", path, ratings, rules)
+		}
 		return value.Risk
 	}
 	rest := read("/v1/tasks/" + riskOrderTaskID + "?workspace_id=alpha")
 	if rest.Tier != riskpolicy.TierMedium || rest.Source != core.RiskSourceRiskAgent || rest.Reason != "Touches the CI workflow." {
 		t.Fatalf("REST risk = %+v", rest)
 	}
-	var agent *core.RiskRating
+	var agent *core.ServedRiskRating
 	for i := range rest.Ratings {
 		if rest.Ratings[i].Source == core.RiskSourceRiskAgent {
 			agent = &rest.Ratings[i]
 		}
 	}
 	if agent == nil || agent.RiskWorkOrderID != f.headOrder || agent.RiskModel != "rater-model" || agent.HeadSHA != riskHead ||
-		len(agent.MatchedRules) != 1 || len(agent.CoveredPaths) != 2 {
+		len(agent.MatchedRules) != 1 || agent.MatchedRules[0].PathCount != 1 || agent.CoveredPathCount == nil || *agent.CoveredPathCount != 2 {
 		t.Fatalf("REST risk_agent rating = %+v", agent)
 	}
 	wantOrders := map[string]core.TaskRiskOrder{
@@ -574,6 +597,25 @@ func TestSubmitRiskRatingRecordsTheRatingOnEveryTaskRead(t *testing.T) {
 	requireOKHTTP(t, json.Unmarshal([]byte(mcp), &items))
 	if len(items.Items) != 1 || items.Items[0].Risk == nil || !sameRisk(*items.Items[0].Risk, *rest) {
 		t.Fatalf("MCP get_task = %s", mcp)
+	}
+	if ratings, rules := requireServedRiskRatings(t, []byte(mcp)); ratings != 1 || rules != 1 {
+		t.Fatalf("MCP get_task served %d ratings and %d matched rules", ratings, rules)
+	}
+	// Each row of the REST task list serves the same projection.
+	listResponse := riskRequest(f.handler, http.MethodGet, "operator-token", "/v1/tasks?workspace_id=alpha", "")
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("REST task list status=%d body=%s", listResponse.Code, listResponse.Body)
+	}
+	if ratings, rules := requireServedRiskRatings(t, listResponse.Body.Bytes()); ratings != 1 || rules != 1 {
+		t.Fatalf("REST task list served %d ratings and %d matched rules", ratings, rules)
+	}
+	var rows []struct {
+		ID   string         `json:"id"`
+		Risk *core.TaskRisk `json:"risk"`
+	}
+	requireOKHTTP(t, json.Unmarshal(listResponse.Body.Bytes(), &rows))
+	if len(rows) != 1 || rows[0].ID != riskOrderTaskID || rows[0].Risk == nil || !sameRisk(*rows[0].Risk, *rest) {
+		t.Fatalf("REST task list = %s", listResponse.Body)
 	}
 
 	// The work-order lists name the live risk order's subject; the completed
@@ -602,5 +644,31 @@ func TestSubmitRiskRatingRecordsTheRatingOnEveryTaskRead(t *testing.T) {
 		if impl, ok := seen[f.implOrder]; !ok || impl.RiskSubject != nil {
 			t.Fatalf("%s list implementation order = %+v", name, impl)
 		}
+	}
+
+	// The raise answer serves the same projection, with the person's new
+	// rating beside the risk agent's.
+	raised := postRiskTier(f.handler, "operator-token", riskOrderTaskID, `{"tier":"high","reason":"Release week."}`)
+	if raised.Code != http.StatusOK {
+		t.Fatalf("raise status=%d body=%s", raised.Code, raised.Body)
+	}
+	if ratings, rules := requireServedRiskRatings(t, raised.Body.Bytes()); ratings != 2 || rules != 1 {
+		t.Fatalf("raise answer served %d ratings and %d matched rules: %s", ratings, rules, raised.Body)
+	}
+	if !strings.Contains(raised.Body.String(), `"covered_path_count":2`) {
+		t.Fatalf("raise answer = %s", raised.Body)
+	}
+}
+
+// requireServedRiskAnswer checks that a submit_risk_rating answer carries
+// its rating in the served shape (component-work-orders invariant 65).
+func requireServedRiskAnswer(t *testing.T, text string) {
+	t.Helper()
+	var answer struct {
+		Rating map[string]any `json:"rating"`
+	}
+	requireOKHTTP(t, json.Unmarshal([]byte(text), &answer))
+	if rules := requireServedRiskRating(t, answer.Rating); rules != 1 || answer.Rating["covered_path_count"] != float64(2) {
+		t.Fatalf("submit_risk_rating answer = %s", text)
 	}
 }
