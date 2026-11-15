@@ -301,7 +301,9 @@ claims it under `conveyor-work` and ends with `submit_risk_rating`
 (req-agent-coordination AC-1.2; DEC-135(13); component-cli-onboarding
 invariant 43). The submission result names the order as `risk_work_order_id`. Do
 not depend on a thread's report of it: `list_work_orders` shows every risk
-order with stage `risk` (req-agent-coordination AC-1.8).
+order with stage `risk` (req-agent-coordination AC-1.8). `conveyor task wait`
+lists each claimable risk order in `claimable_orders`, also when a
+verification order is claimable beside it.
 
 - **Start one thread for each claimable risk order.** Start it at once, with
   the `risk` entry of the stage preferences. Do not wait for the operator.
