@@ -413,6 +413,13 @@ values are `full` and `delta`, and `full` applies when the document never set
 it. `full` reviews the whole change. `delta` reviews only the changes since the
 last complete review round.
 
+A submission fixes the scope of its head once. The scope is `delta` only when
+the last complete round's commit is an ancestor of the new head. In every
+other case the round reviews the whole change. This includes a round that
+cancelled a seat, seats that reviewed different commits, and a failed GitHub
+read. A retried submission of the same head keeps its first scope. While an
+approval is stale, `refresh_review` alone sets the scope.
+
 `refresh_review` sets what a refresh review compares after the head moves past
 an approved commit. Its values are `delta` and `full`, and `delta` applies when
 the document never set it. `delta` reviews the changes since the approved
