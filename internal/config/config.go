@@ -731,7 +731,7 @@ type PolicyStageTimeouts struct {
 
 // PolicyContract is a task's frozen pipeline policy (DEC-104(1)): the verify
 // stage toggle, bounce limit, stage timeouts, review seat count and
-// fail-fast, and refresh review mode. It is the type of core.Task's
+// fail-fast, refresh review mode, and later-round review scope. It is the type of core.Task's
 // SetupContract and of a planning bundle member's contract. It carries no
 // harness, model, effort, or setup selection (DEC-104(2); component-runtime).
 type PolicyContract struct {
@@ -740,6 +740,11 @@ type PolicyContract struct {
 	StageTimeouts PolicyStageTimeouts
 	Review        ReviewPanel
 	RefreshReview string
+	// LaterRoundReview is the frozen scope of a review round that follows a
+	// bounce: full or delta. A stored contract written before the member
+	// existed holds no value, and LaterRoundReviewScope reads it as full
+	// (feature-delta-review-rounds DR-1; req-review-gates-evidence AC-12.1).
+	LaterRoundReview string
 	// Risk is the risk policy frozen by value at intake. It is nil when the
 	// workspace had no risk policy or its mode was off, so such a contract
 	// encodes exactly as it did before risk review existed
@@ -760,8 +765,9 @@ type policyContractJSON struct {
 		FailFast       bool        `json:"fail_fast,omitempty"`
 		DistinctModels bool        `json:"distinct_models,omitempty"`
 	} `json:"review"`
-	RefreshReview string             `json:"refresh_review,omitempty"`
-	Risk          *riskpolicy.Policy `json:"risk,omitempty"`
+	RefreshReview    string             `json:"refresh_review,omitempty"`
+	LaterRoundReview string             `json:"later_round_review,omitempty"`
+	Risk             *riskpolicy.Policy `json:"risk,omitempty"`
 }
 
 // MarshalJSON persists and serves the frozen policy in the policy_contract
@@ -771,6 +777,7 @@ type policyContractJSON struct {
 func (s PolicyContract) MarshalJSON() ([]byte, error) {
 	var encoded policyContractJSON
 	encoded.VerifyStage, encoded.MaxBounces, encoded.RefreshReview = s.VerifyStage, s.MaxBounces, s.RefreshReview
+	encoded.LaterRoundReview = s.LaterRoundReview
 	encoded.StageTimeouts = map[string]string{
 		"verify":    s.StageTimeouts.Verify,
 		"spec":      s.StageTimeouts.Spec,
@@ -812,7 +819,8 @@ type legacySetupContract struct {
 		Seats    []struct{} `json:"seats"`
 		FailFast bool       `json:"fail_fast"`
 	} `json:"review"`
-	RefreshReview string `json:"refresh_review"`
+	RefreshReview    string `json:"refresh_review"`
+	LaterRoundReview string `json:"later_round_review"`
 }
 
 // errPolicyContractShape replaces encoding/json's text, which prints a number
@@ -844,9 +852,10 @@ func (s *PolicyContract) UnmarshalJSON(data []byte) error {
 				Review:    decoded.ExecutionSettings.Review.TimeoutText,
 				Verify:    decoded.ExecutionSettings.Verify.TimeoutText,
 			},
-			Review:        ReviewPanel{Seats: seats, FailFast: decoded.Review.FailFast},
-			RefreshReview: decoded.RefreshReview,
-			legacyNamed:   decoded.Name != "",
+			Review:           ReviewPanel{Seats: seats, FailFast: decoded.Review.FailFast},
+			RefreshReview:    decoded.RefreshReview,
+			LaterRoundReview: decoded.LaterRoundReview,
+			legacyNamed:      decoded.Name != "",
 		}
 		return nil
 	}
@@ -859,8 +868,9 @@ func (s *PolicyContract) UnmarshalJSON(data []byte) error {
 			FailFast       bool       `json:"fail_fast"`
 			DistinctModels bool       `json:"distinct_models"`
 		} `json:"review"`
-		RefreshReview string             `json:"refresh_review"`
-		Risk          *riskpolicy.Policy `json:"risk"`
+		RefreshReview    string             `json:"refresh_review"`
+		LaterRoundReview string             `json:"later_round_review"`
+		Risk             *riskpolicy.Policy `json:"risk"`
 	}
 	if err := json.Unmarshal(data, &policy); err != nil {
 		return errPolicyContractShape
@@ -881,11 +891,23 @@ func (s *PolicyContract) UnmarshalJSON(data []byte) error {
 			Review:    policy.StageTimeouts["review"],
 			Verify:    policy.StageTimeouts["verify"],
 		},
-		Review:        ReviewPanel{Seats: seats, FailFast: policy.Review.FailFast, DistinctModels: policy.Review.DistinctModels},
-		RefreshReview: policy.RefreshReview,
-		Risk:          frozenRisk(policy.Risk),
+		Review:           ReviewPanel{Seats: seats, FailFast: policy.Review.FailFast, DistinctModels: policy.Review.DistinctModels},
+		RefreshReview:    policy.RefreshReview,
+		LaterRoundReview: policy.LaterRoundReview,
+		Risk:             frozenRisk(policy.Risk),
 	}
 	return nil
+}
+
+// LaterRoundReviewScope is the frozen later-round review scope: delta when
+// the contract holds delta, and full otherwise, so a contract that predates
+// the member reads as full and no existing task changes scope
+// (feature-delta-review-rounds DR-1; req-review-gates-evidence AC-12.1).
+func (s PolicyContract) LaterRoundReviewScope() string {
+	if s.LaterRoundReview == LaterRoundReviewDelta {
+		return LaterRoundReviewDelta
+	}
+	return LaterRoundReviewFull
 }
 
 // frozenRisk returns an independent copy of an enabled risk policy and nil
@@ -903,7 +925,7 @@ func frozenRisk(policy *riskpolicy.Policy) *riskpolicy.Policy {
 // task that predates policy freezing.
 func (s PolicyContract) HasFrozenPolicy() bool {
 	return s.VerifyStage || s.legacyNamed || s.MaxBounces > 0 || s.StageTimeouts != (PolicyStageTimeouts{}) ||
-		s.Review.Seats != nil || s.RefreshReview != "" || s.Risk.Enabled()
+		s.Review.Seats != nil || s.RefreshReview != "" || s.LaterRoundReview != "" || s.Risk.Enabled()
 }
 
 const (
@@ -911,6 +933,26 @@ const (
 	RefreshReviewFull  = "full"
 	RefreshReviewNone  = "none"
 )
+
+// Later-round review scopes (feature-delta-review-rounds DR-1;
+// req-review-gates-evidence AC-12.1).
+const (
+	LaterRoundReviewFull  = "full"
+	LaterRoundReviewDelta = "delta"
+)
+
+// ValidLaterRoundReview reports a later_round_review value a workspace or a
+// per-task change may hold: full or delta.
+func ValidLaterRoundReview(value string) bool {
+	return value == LaterRoundReviewFull || value == LaterRoundReviewDelta
+}
+
+// ValidWorkspaceRefreshReview reports a refresh_review value a workspace may
+// hold: delta or full. A stored task contract may still hold none, which no
+// workspace save accepts (req-review-gates-evidence AC-4.2, AC-4.3).
+func ValidWorkspaceRefreshReview(value string) bool {
+	return value == RefreshReviewDelta || value == RefreshReviewFull
+}
 
 type WorkspaceDocument struct {
 	Workspace                 string                       `yaml:"workspace" json:"workspace"`
@@ -920,11 +962,18 @@ type WorkspaceDocument struct {
 	ExecutionSettings         *ContextualExecutionSettings `yaml:"execution_settings,omitempty" json:"execution_settings,omitempty"`
 	Routing                   Routing                      `yaml:"routing" json:"routing"`
 	Review                    ReviewPanel                  `yaml:"review" json:"review"`
-	Execution                 ExecutionPolicy              `yaml:"execution" json:"execution"`
-	Repos                     []Repo                       `yaml:"repos" json:"repos"`
-	Monitor                   MonitorConfig                `yaml:"monitor" json:"monitor"`
-	IssuePublication          IssuePublication             `yaml:"issue_publication,omitempty" json:"issue_publication"`
-	PlanningModels            []string                     `yaml:"planning_models,omitempty" json:"planning_models"`
+	// LaterRoundReview and RefreshReview are the review scopes a task
+	// freezes at intake: full or delta for a round that follows a bounce
+	// (absent means full), and delta or full for a refresh review (absent
+	// means delta) (feature-delta-review-rounds DR-1;
+	// req-review-gates-evidence AC-4.3, AC-12.1).
+	LaterRoundReview string           `yaml:"later_round_review,omitempty" json:"later_round_review,omitempty"`
+	RefreshReview    string           `yaml:"refresh_review,omitempty" json:"refresh_review,omitempty"`
+	Execution        ExecutionPolicy  `yaml:"execution" json:"execution"`
+	Repos            []Repo           `yaml:"repos" json:"repos"`
+	Monitor          MonitorConfig    `yaml:"monitor" json:"monitor"`
+	IssuePublication IssuePublication `yaml:"issue_publication,omitempty" json:"issue_publication"`
+	PlanningModels   []string         `yaml:"planning_models,omitempty" json:"planning_models"`
 	// StageTimeouts is pipeline policy. Execution details are client-local;
 	// legacy fields above remain decode-only upgrade inputs and are stripped
 	// from the workspace API and canonical persisted document.
@@ -954,12 +1003,14 @@ func (d WorkspaceDocument) MarshalJSON() ([]byte, error) {
 		WorkOrderQueueTimeoutText string               `json:"work_order_queue_timeout"`
 		StageTimeouts             map[string]string    `json:"stage_timeouts"`
 		Review                    ReviewPanel          `json:"review"`
+		LaterRoundReview          string               `json:"later_round_review,omitempty"`
+		RefreshReview             string               `json:"refresh_review,omitempty"`
 		Execution                 ExecutionPolicy      `json:"execution"`
 		Repos                     []Repo               `json:"repos"`
 		Monitor                   MonitorConfig        `json:"monitor"`
 		IssuePublication          IssuePublication     `json:"issue_publication"`
 		RiskPolicy                *riskpolicy.Settings `json:"risk_policy,omitempty"`
-	}{d.Workspace, d.MaxBounces, d.Recovery, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.Execution, d.Repos, d.Monitor, d.IssuePublication, d.RiskPolicy})
+	}{d.Workspace, d.MaxBounces, d.Recovery, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.LaterRoundReview, d.RefreshReview, d.Execution, d.Repos, d.Monitor, d.IssuePublication, d.RiskPolicy})
 }
 
 var ErrVersionConflict = errors.New("workspace config version conflict")
@@ -999,11 +1050,16 @@ type Config struct {
 	ExecutionSettings *ContextualExecutionSettings `yaml:"execution_settings,omitempty"`
 	Routing           Routing                      `yaml:"routing"`
 	Review            ReviewPanel                  `yaml:"review"`
-	Execution         ExecutionPolicy              `yaml:"execution"`
-	Repos             []Repo                       `yaml:"repos"`
-	Monitor           MonitorConfig                `yaml:"monitor"`
-	IssuePublication  IssuePublication             `yaml:"issue_publication,omitempty"`
-	PlanningModels    []string                     `yaml:"planning_models,omitempty"`
+	// LaterRoundReview and RefreshReview are workspace review scopes. Only a
+	// workspace document sets them; the deployment file never does
+	// (feature-delta-review-rounds DR-1).
+	LaterRoundReview string           `yaml:"-"`
+	RefreshReview    string           `yaml:"-"`
+	Execution        ExecutionPolicy  `yaml:"execution"`
+	Repos            []Repo           `yaml:"repos"`
+	Monitor          MonitorConfig    `yaml:"monitor"`
+	IssuePublication IssuePublication `yaml:"issue_publication,omitempty"`
+	PlanningModels   []string         `yaml:"planning_models,omitempty"`
 	// RiskPolicy is the validated workspace risk policy, stated with its full
 	// table, or nil when the workspace has none (req-risk-based-review REQ-1).
 	RiskPolicy *riskpolicy.Settings `yaml:"risk_policy,omitempty"`
@@ -1242,6 +1298,22 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 	next.Review = document.Review
 	if next.Review.Seats == nil {
 		next.Review.Seats = []ReviewSeat{{}}
+	}
+	// A refusal names the member and never the value (feature-delta-review-rounds
+	// DR-1; req-review-gates-evidence AC-4.3, AC-12.1).
+	next.LaterRoundReview = document.LaterRoundReview
+	if next.LaterRoundReview == "" {
+		next.LaterRoundReview = LaterRoundReviewFull
+	}
+	if !ValidLaterRoundReview(next.LaterRoundReview) {
+		return nil, fmt.Errorf("later_round_review must be full or delta")
+	}
+	next.RefreshReview = document.RefreshReview
+	if next.RefreshReview == "" {
+		next.RefreshReview = RefreshReviewDelta
+	}
+	if !ValidWorkspaceRefreshReview(next.RefreshReview) {
+		return nil, fmt.Errorf("refresh_review must be delta or full")
 	}
 	if err = normalizeMonitorConfig(&next.Monitor); err != nil {
 		return nil, err
@@ -1740,6 +1812,8 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		ExecutionSettings:         executionSettings,
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
 		Review:                    ReviewPanel{Seats: reviewSeats, FailFast: c.Review.FailFast, DistinctModels: c.Review.DistinctModels},
+		LaterRoundReview:          c.laterRoundReview(),
+		RefreshReview:             c.refreshReview(),
 		Execution:                 execution,
 		Repos:                     append(make([]Repo, 0, len(c.Repos)), c.Repos...),
 		Monitor:                   c.Monitor,
@@ -1791,7 +1865,8 @@ func (c *Config) FreezePolicy() PolicyContract {
 		policy.StageTimeouts.Implement = c.Routing.Stages["implement"].TimeoutText
 		policy.StageTimeouts.Review = c.Routing.Stages["review"].TimeoutText
 		policy.Review = c.Review
-		policy.RefreshReview = RefreshReviewDelta
+		policy.RefreshReview = c.refreshReview()
+		policy.LaterRoundReview = c.laterRoundReview()
 	}
 	return PolicyContract{
 		VerifyStage: c.Execution.VerifyStage,
@@ -1803,10 +1878,29 @@ func (c *Config) FreezePolicy() PolicyContract {
 			Review:    policy.StageTimeouts.Review,
 		},
 		// Fail-fast and distinct seat models are workspace review policy.
-		Review:        ReviewPanel{Seats: make([]ReviewSeat, len(policy.Review.Seats)), FailFast: c.Review.FailFast, DistinctModels: c.Review.DistinctModels},
-		RefreshReview: policy.RefreshReview,
-		Risk:          policy.Risk,
+		Review:           ReviewPanel{Seats: make([]ReviewSeat, len(policy.Review.Seats)), FailFast: c.Review.FailFast, DistinctModels: c.Review.DistinctModels},
+		RefreshReview:    policy.RefreshReview,
+		LaterRoundReview: policy.LaterRoundReview,
+		Risk:             policy.Risk,
 	}
+}
+
+// laterRoundReview is the workspace later-round review scope, full when the
+// value holds none (feature-delta-review-rounds DR-1).
+func (c *Config) laterRoundReview() string {
+	if c.LaterRoundReview == "" {
+		return LaterRoundReviewFull
+	}
+	return c.LaterRoundReview
+}
+
+// refreshReview is the workspace refresh review scope, delta when the value
+// holds none (req-review-gates-evidence AC-4.3).
+func (c *Config) refreshReview() string {
+	if c.RefreshReview == "" {
+		return RefreshReviewDelta
+	}
+	return c.RefreshReview
 }
 
 // frozenWorkspaceRisk returns the workspace risk policy a task freezes at
@@ -1824,7 +1918,7 @@ func (c *Config) frozenWorkspaceRisk() *riskpolicy.Policy {
 
 // DefaultPolicy derives the workspace default policy that a planning bundle
 // member carries: the composed stage timeouts, the workspace review panel,
-// and delta refresh review. It reports false when the value holds neither
+// and the workspace refresh and later-round review scopes. It reports false when the value holds neither
 // execution settings nor stage routes (component-runtime; component-planning).
 func (c *Config) DefaultPolicy() (PolicyContract, bool) {
 	settings := c.ExecutionSettings
@@ -1841,9 +1935,10 @@ func (c *Config) DefaultPolicy() (PolicyContract, bool) {
 			Review:    settings.Review.TimeoutText,
 			Verify:    settings.Verify.TimeoutText,
 		},
-		Review:        c.Review,
-		RefreshReview: RefreshReviewDelta,
-		Risk:          c.frozenWorkspaceRisk(),
+		Review:           c.Review,
+		RefreshReview:    c.refreshReview(),
+		LaterRoundReview: c.laterRoundReview(),
+		Risk:             c.frozenWorkspaceRisk(),
 	}, true
 }
 

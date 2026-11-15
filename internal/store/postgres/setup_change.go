@@ -83,12 +83,17 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 		return s.changeTaskPlanStateTx(ctx, tx, q, task, request, identityJSON)
 	}
 	// Submitted spec/implement attempts are delivered, not executing; only
-	// claimed attempts and in-flight review verdicts block.
+	// claimed attempts and in-flight review verdicts block. A change holding
+	// only later_round_review is not refused for either
+	// (feature-delta-review-rounds DR-6).
 	var claimedAttempt, inFlightVerdict bool
 	if err = tx.QueryRow(ctx, `SELECT
 			EXISTS (SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state='claimed' AND stage<>'risk'),
 			EXISTS (SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND state='submitted')`, workspaceID, task.ID).Scan(&claimedAttempt, &inFlightVerdict); err != nil {
 		return store.SetupChangeResult{}, err
+	}
+	if request.Policy.OnlyLaterRoundReview() {
+		claimedAttempt, inFlightVerdict = false, false
 	}
 	if claimedAttempt {
 		return store.SetupChangeResult{}, fmt.Errorf("%w: task %s has a claimed attempt", store.ErrSetupChangeConflict, task.ID)
