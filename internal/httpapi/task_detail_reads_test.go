@@ -619,6 +619,11 @@ func (c *taskDetailCountingStore) ListLatestSpecVersionNumbers(a0 context.Contex
 	return c.Store.ListLatestSpecVersionNumbers(a0, a1)
 }
 
+func (c *taskDetailCountingStore) ListLatestPlanSummaries(a0 context.Context, a1 []string) (map[string]store.PlanSummary, error) {
+	c.count("ListLatestPlanSummaries")
+	return c.Store.ListLatestPlanSummaries(a0, a1)
+}
+
 func (c *taskDetailCountingStore) ListLineageContextRecords(a0 context.Context, a1 []core.LineageNode) (store.LineageContextRecords, error) {
 	c.count("ListLineageContextRecords")
 	return c.Store.ListLineageContextRecords(a0, a1)
@@ -727,6 +732,11 @@ func (c *taskDetailCountingStore) ListRequirementDeliveryLineage(a0 context.Cont
 func (c *taskDetailCountingStore) ListRequirementDeliveryLineageByRequirement(a0 context.Context, a1 []string, a2 core.LineageTraversalBudget) (map[string][]core.LineageLink, error) {
 	c.count("ListRequirementDeliveryLineageByRequirement")
 	return c.Store.ListRequirementDeliveryLineageByRequirement(a0, a1, a2)
+}
+
+func (c *taskDetailCountingStore) ListRequirementDetailTasks(a0 context.Context, a1 []string) (map[string]store.RequirementDetailTask, error) {
+	c.count("ListRequirementDetailTasks")
+	return c.Store.ListRequirementDetailTasks(a0, a1)
 }
 
 func (c *taskDetailCountingStore) ListRequirementEvents(a0 context.Context, a1 string) ([]core.Event, error) {

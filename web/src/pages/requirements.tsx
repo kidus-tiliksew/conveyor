@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { type UseQueryResult, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import {
   Archive,
@@ -151,12 +151,27 @@ export function RequirementsPage() {
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
+  const selectedId = search.requirement ?? ''
+
+  // Overviews open on the same canvas as requirements. Their selection lives
+  // in the existing `#reference-<id>-v<n>` anchor rather than a new query key,
+  // so the links proposals already carry keep working unchanged.
+  const [openOverview, setOpenOverview] = useState<{ id: string; version?: number } | undefined>(() =>
+    readOverviewAnchor(window.location.hash),
+  )
+  // The page owns the selected requirement's detail query, so the detail
+  // request starts beside the list request instead of after it. The canvas
+  // reads this query result and starts no request of its own
+  // (component-web-document-surfaces).
+  const detail = useQuery({
+    ...requirementDetailQuery(workspace, selectedId),
+    enabled: Boolean(workspace && selectedId && !openOverview),
+  })
   const { data: overviews = [], isSuccess: overviewsLoaded } = useQuery({
     queryKey: ['reference-documents', workspace],
     queryFn: () => fetchReferenceDocuments(workspace),
     enabled: Boolean(workspace),
   })
-  const selectedId = search.requirement ?? ''
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<DocumentSort>('updated')
   const [direction, setDirection] = useState<DocumentSortDirection>('descending')
@@ -177,12 +192,6 @@ export function RequirementsPage() {
     [archivedRequirements, direction, query, sort],
   )
 
-  // Overviews open on the same canvas as requirements. Their selection lives
-  // in the existing `#reference-<id>-v<n>` anchor rather than a new query key,
-  // so the links proposals already carry keep working unchanged.
-  const [openOverview, setOpenOverview] = useState<{ id: string; version?: number } | undefined>(() =>
-    readOverviewAnchor(window.location.hash),
-  )
   useEffect(() => {
     const follow = () => {
       const target = readOverviewAnchor(window.location.hash)
@@ -376,7 +385,9 @@ export function RequirementsPage() {
                     </CardContent>
                   </Card>
                 )}
-                {selected && <RequirementCanvas key={selected.requirement.id} summary={selected} />}
+                {selected && (
+                  <RequirementCanvas key={selected.requirement.id} detail={detail} requirements={requirements ?? []} />
+                )}
               </>
             )}
           </div>
@@ -530,17 +541,23 @@ function OverviewDiff({ prior, current }: { prior: ReferenceDocumentVersion; cur
   )
 }
 
-function RequirementCanvas({ summary }: { summary: RequirementSummary }) {
+function requirementDetailQuery(workspace: string, requirementId: string) {
+  return {
+    queryKey: ['requirement', workspace, requirementId],
+    queryFn: ({ signal }: { signal: AbortSignal }) => fetchRequirement(requirementId, workspace, signal),
+  }
+}
+
+function RequirementCanvas({
+  detail,
+  requirements,
+}: {
+  detail: UseQueryResult<RequirementView>
+  requirements: RequirementSummary[]
+}) {
   const { workspace } = useWorkspaceSelection()
   const reviewSearch = useSearch({ from: '/w/$workspaceId/requirements' })
-  const {
-    data: item,
-    error,
-    isLoading,
-  } = useQuery({
-    queryKey: ['requirement', workspace, summary.requirement.id],
-    queryFn: ({ signal }) => fetchRequirement(summary.requirement.id, workspace, signal),
-  })
+  const { data: item, error, isLoading } = detail
 
   if (isLoading) return <EmptyMessage>Loading requirement…</EmptyMessage>
   if (error)
@@ -551,6 +568,7 @@ function RequirementCanvas({ summary }: { summary: RequirementSummary }) {
     <RequirementDetailCanvas
       key={`${workspace}:${item.requirement.id}:${reviewSearch.tab}:${reviewSearch.base}:${reviewSearch.target}`}
       item={item}
+      requirements={requirements}
       search={reviewSearch}
     />
   )
@@ -558,9 +576,11 @@ function RequirementCanvas({ summary }: { summary: RequirementSummary }) {
 
 function RequirementDetailCanvas({
   item,
+  requirements,
   search,
 }: {
   item: RequirementView
+  requirements: RequirementSummary[]
   search: ReviewSearch & { requirement?: string; session?: string }
 }) {
   const history = useDocumentEvents('requirement', item.requirement.id, item)
@@ -607,15 +627,11 @@ function RequirementDetailCanvas({
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
-  const { data: successorRequirements = [] } = useQuery({
-    queryKey: ['requirements', workspace, { includeArchived: false }],
-    queryFn: () => fetchRequirements(workspace),
-    enabled: Boolean(workspace),
-    staleTime: 60_000,
-  })
+  // Successor candidates come from the page's list, which includes archived
+  // requirements, so the page sends one list request.
   const successorCandidates = useMemo<SuccessorCandidate[]>(
     () => [
-      ...successorRequirements
+      ...requirements
         .filter((candidate) => candidate.requirement.id !== item.requirement.id && !candidate.requirement.archived)
         .map((candidate) => ({
           id: candidate.requirement.id,
@@ -630,7 +646,7 @@ function RequirementDetailCanvas({
           kind: 'system_design' as const,
         })),
     ],
-    [item.requirement.id, successorRequirements, systemDesigns],
+    [item.requirement.id, requirements, systemDesigns],
   )
   useEffect(() => {
     if (!displayed || !/^#(?:req|ac)-/i.test(window.location.hash)) return

@@ -1947,9 +1947,12 @@ export interface PlanningMessagePart {
   [key: string]: unknown
 }
 
+// One confirmed requirement link on the requirement detail: the linked task's
+// ID, title, and state, and its latest plan version's number and approval
+// flag. The detail carries no task body and no plan content.
 export interface BlueprintLineage {
-  task: Task
-  spec?: SpecVersion
+  task: Pick<Task, 'id' | 'title' | 'state'>
+  spec?: Pick<SpecVersion, 'version' | 'approved'>
 }
 
 // The blueprint presentation surface. An anchor is an intent
@@ -1994,7 +1997,7 @@ export interface RequirementView {
   current_version?: RequirementVersion
   pending_versions: RequirementVersion[]
   serving_blueprints: BlueprintLineage[]
-  serving_tasks?: Task[]
+  serving_tasks?: Array<Pick<Task, 'id' | 'title' | 'state'>>
   planning_sessions: PlanningSession[]
   artifacts: Artifact[]
   lineage: TaskEvent[]
