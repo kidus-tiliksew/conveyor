@@ -218,7 +218,7 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 // creating transaction (component-task-lifecycle invariant 20;
 // component-plan-state invariants 2 and 3). A plan filed for approval gets
 // its risk order in the same transaction, and a plan the filer approves gets
-// none (req-risk-based-review AC-4.7; feature-risk-based-review RR-13).
+// none (req-risk-based-review AC-4.7; component-plan-state invariant 9).
 func (s *Store) recordIntakePlanStateTx(ctx context.Context, tx *sql.Tx, t core.Task, approver store.Actor) error {
 	if err := taskEvent(ctx, tx, store.IntakePlanStateEvent(t)); err != nil {
 		return err
@@ -1789,7 +1789,7 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 		for _, o := range orders {
 			byID[o.ID] = o
 			// A claimed risk order stands beside the stage and blocks nothing
-			// (feature-risk-based-review RR-12).
+			// (component-task-lifecycle invariant 45).
 			if o.State == core.WorkOrderClaimed && o.Stage != core.StageRisk {
 				return fmt.Errorf("%w: task has a claimed attempt", store.ErrSetupChangeConflict)
 			}

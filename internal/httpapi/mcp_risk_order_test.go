@@ -198,7 +198,8 @@ func requireRiskTierTable(t *testing.T, role string) {
 // order's reader, the head's changed paths and matched path rules, the frozen
 // tier table, and the risk role. The task's later reviewed head never
 // replaces the stored subject, and no approved plan is delivered beside it
-// (req-risk-based-review AC-12.5, AC-5.7; feature-risk-based-review RR-11).
+// (req-risk-based-review AC-12.5, AC-5.7; component-work-orders invariant
+// 64).
 func TestRiskOrderContractDeliversTheExactHead(t *testing.T) {
 	f := newRiskOrderFixture(t)
 	f.claim(t, f.headOrder, "head-rater", "rater-model")
@@ -247,7 +248,7 @@ func TestRiskOrderContractDeliversTheExactHead(t *testing.T) {
 // TestRiskOrderContractDeliversTheExactPlanVersion: a claimed plan risk
 // order delivers the immutable plan version it rates, even when a later
 // version exists and is approved, with the tier table and the risk role
-// (req-risk-based-review AC-12.5; feature-risk-based-review RR-11).
+// (req-risk-based-review AC-12.5; component-work-orders invariant 64).
 func TestRiskOrderContractDeliversTheExactPlanVersion(t *testing.T) {
 	f := newRiskOrderFixture(t)
 	f.claim(t, f.planOrder, "plan-rater", "rater-model")
@@ -482,8 +483,8 @@ func TestSubmitRiskRatingCancelledAfterAuthorization(t *testing.T) {
 // read, MCP get_task, MCP list_work_orders, and the REST work-order list name
 // the risk orders with consistent subjects and states. A replay by the same
 // session returns the recorded rating and writes nothing
-// (req-risk-based-review AC-5.6, AC-11.2, AC-12.2; feature-risk-based-review
-// RR-11, RR-16).
+// (req-risk-based-review AC-5.6, AC-11.2, AC-12.2; component-work-orders
+// invariant 65; component-risk-review, Public surfaces).
 func TestSubmitRiskRatingRecordsTheRatingOnEveryTaskRead(t *testing.T) {
 	f := newRiskOrderFixture(t)
 	f.claim(t, f.headOrder, "head-rater", "rater-model")

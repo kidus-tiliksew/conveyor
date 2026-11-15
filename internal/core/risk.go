@@ -46,8 +46,7 @@ const MaxRiskReasonRunes = 1000
 // once per review work order (its round and seat), a plan rating once per
 // plan version, a risk agent rating once per risk order, and a person raise
 // once per raised tier
-// (feature-risk-based-review RR-3, RR-8; component-risk-review, State and
-// failure model).
+// (component-risk-review invariant 17 and State and failure model).
 type RiskRating struct {
 	// Seq orders a task's ratings from 1 in the order they were recorded.
 	Seq     int             `json:"seq"`
@@ -77,7 +76,8 @@ type RiskRating struct {
 	PlanVersion int `json:"plan_version,omitempty"`
 	// Risk agent fields name the completed risk order, the model its session
 	// reported, and for a head the changed paths the rating covered
-	// (req-risk-based-review AC-5.6, AC-12.2; feature-risk-based-review RR-11).
+	// (req-risk-based-review AC-5.6, AC-12.2; component-work-orders
+	// invariant 65).
 	// A head rating also carries HeadSHA, BaseSHA, and MatchedRules.
 	RiskWorkOrderID string   `json:"risk_work_order_id,omitempty"`
 	RiskModel       string   `json:"risk_model,omitempty"`
@@ -290,7 +290,7 @@ type TaskRisk struct {
 	Ratings            []RiskRating `json:"ratings"`
 	// Orders lists the task's risk orders, oldest first, with what each
 	// rates and its state, so every task read names the same orders
-	// (req-risk-based-review AC-11.2; feature-risk-based-review RR-16).
+	// (req-risk-based-review AC-11.2; component-risk-review, Public surfaces).
 	Orders []TaskRiskOrder `json:"orders"`
 }
 

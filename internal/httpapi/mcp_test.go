@@ -633,8 +633,26 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 		}
 		if name == "claim_work_order" {
 			description := envelope.Result.Tools[i].Description
-			if !strings.Contains(description, "claimant_id") || !strings.Contains(description, "ignored") || !strings.Contains(description, "authenticated credential") {
+			if !strings.Contains(description, "claimant_id") || !strings.Contains(description, "ignores") || !strings.Contains(description, "authenticated credential") {
 				t.Fatalf("claim_work_order description=%q", description)
+			}
+		}
+		// The work-order tools name risk orders: the list names every stage
+		// and risk_subject, the claim names the risk claim refusal, and the
+		// read names risk_order (req-risk-based-review AC-12.1, AC-12.5;
+		// component-work-orders invariants 63 and 64, Public surfaces).
+		for tool, phrases := range map[string][]string{
+			"list_work_orders": {"spec, implement, verify, review, and risk orders", "risk_subject"},
+			"claim_work_order": {"refuses a risk order claim", "claimed a plan, implementation, or review order of the task", "stays claimable"},
+			"get_work_order":   {"risk_order", "subject", "matched rules", "tier table", "review_comparison"},
+		} {
+			if name != tool {
+				continue
+			}
+			for _, phrase := range phrases {
+				if !strings.Contains(envelope.Result.Tools[i].Description, phrase) {
+					t.Fatalf("%s description lacks %q: %q", tool, phrase, envelope.Result.Tools[i].Description)
+				}
 			}
 		}
 	}

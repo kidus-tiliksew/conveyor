@@ -22,7 +22,7 @@ import (
 // off. A rating recorded earlier with source reviewer stays readable and
 // keeps counting toward the task's tier (req-risk-based-review AC-1.1,
 // AC-5.5, AC-5.6, AC-5.7, REQ-6, AC-6.1, AC-6.2; component-risk-review
-// invariants 4 and 8; feature-risk-based-review RR-8, RR-14).
+// invariants 4 and 8; component-risk-review invariant 18; component-review invariant 13).
 func RunRiskRatingConformance(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	record := riskpolicy.Policy{Mode: riskpolicy.ModeRecord, Tiers: riskpolicy.DefaultTable()}
@@ -407,7 +407,7 @@ func riskReviewRound(taskID string, seats int) ([]core.Job, []core.WorkOrder) {
 // writer records a reviewer rating since verdicts stopped stating a tier, so
 // each backend seeds the row and its activity event as the removed verdict
 // acceptance wrote them (req-risk-based-review AC-5.6;
-// feature-risk-based-review RR-14).
+// component-risk-review invariant 17).
 func seedReviewerRiskRating(t *testing.T, x Fixture, taskID string, rating core.RiskRating) core.RiskRating {
 	t.Helper()
 	if x.SeedRiskRating == nil {

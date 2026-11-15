@@ -98,7 +98,7 @@ type Server struct {
 	// OnRecordApproval records the acting person's approval of an enforcing
 	// task's reviewed head, and OnWaiveAuthorApproval records a non-author's
 	// waiver of the trusted author's approval (req-risk-based-review AC-8.3,
-	// AC-8.5; feature-risk-based-review RR-7).
+	// AC-8.5; component-risk-review invariants 22 and 23).
 	OnRecordApproval      func(ctx context.Context, task core.Task, actor core.Actor, head string) (store.ApprovalEvaluation, error)
 	OnWaiveAuthorApproval func(ctx context.Context, task core.Task, actor core.Actor, head, reason string) (store.ApprovalEvaluation, bool, error)
 	OnMergeReadiness      func(context.Context, core.Task) (dispatch.MergeReadiness, error)
@@ -380,7 +380,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/review-round/seats", s.addReviewSeats)
 			// A person's raise of a task's risk tier (req-risk-based-review
-			// REQ-6; feature-risk-based-review RR-8).
+			// REQ-6; component-risk-review invariant 18).
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/risk-tier", s.raiseTaskRiskTier)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
 			r.With(s.requireMutationCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/review-rounds/{round}/summaries", s.recordReviewSummary)
@@ -1061,7 +1061,7 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	// counted approval: it records the approval at a ready reviewed head and
 	// approves the task only when every requirement is met, so Approve only
 	// never passes the count (req-risk-based-review AC-8.3, AC-8.7;
-	// feature-risk-based-review RR-7).
+	// component-risk-review invariant 22).
 	if request.Action == core.InterventionApprove && task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval && task.SetupContract.Risk.Enforcing() {
 		if s.OnRecordApproval == nil {
 			http.Error(w, "approval recording is not configured", http.StatusNotImplemented)
@@ -1140,7 +1140,7 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 // version's risk order under enforce: 409 with the refusal code, a plain
 // message, and the open order's ID. The refusal recorded no intervention and
 // changed no plan state (req-risk-based-review AC-4.8;
-// feature-risk-based-review RR-13).
+// component-task-lifecycle invariant 54).
 func writePlanRiskRatingOpen(w http.ResponseWriter, refusal *store.PlanRiskRatingOpenError) {
 	writeJSON(w, http.StatusConflict, map[string]any{
 		"error":              store.PlanRiskRatingOpenCode,

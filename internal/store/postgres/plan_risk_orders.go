@@ -10,7 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
-// Plan risk orders on PostgreSQL (feature-risk-based-review RR-13;
+// Plan risk orders on PostgreSQL (component-plan-state invariants 9 and 10;
 // req-risk-based-review AC-4.7 to AC-4.9). Each helper runs in the caller's
 // transaction, so a plan version, its plan-state move, and its risk order
 // commit together.

@@ -15,7 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// Risk orders (feature-risk-based-review RR-11, RR-15; req-risk-based-review
+// Risk orders (component-work-orders invariants 62 to 66; req-risk-based-review
 // REQ-12; component-persistence). Every command runs in one transaction that
 // holds lockWorkOrderTaskTx, the lock ClaimWorkOrderCommand and
 // RaiseTaskRiskTier take. createRiskOrderTx and cancelRiskOrdersTx compose
@@ -510,7 +510,7 @@ func riskClaimCheckTx(ctx context.Context, tx pgx.Tx, order core.WorkOrder, sess
 // wakeTaskAfterRiskOrderTx enqueues an enforcing task's dispatch job in the
 // caller's transaction when one of its risk orders completed or was cancelled
 // while the task is queued, so a review round that waited for the order opens
-// with the tier as it then stands (feature-risk-based-review RR-12;
+// with the tier as it then stands (component-work-orders invariant 66;
 // req-risk-based-review AC-5.10). A task that does not enforce has no round
 // waiting, so nothing is enqueued (component-risk-review invariant 13).
 func (s *Store) wakeTaskAfterRiskOrderTx(ctx context.Context, tx pgx.Tx, task core.Task) error {
@@ -532,7 +532,7 @@ func (s *Store) wakeTaskAfterRiskOrderTx(ctx context.Context, tx pgx.Tx, task co
 // transaction, which holds lockWorkOrderTaskTx for the task: it cancels open
 // risk orders of other heads and creates the head's risk order when it needs
 // one, from ratings and orders read in the same transaction
-// (feature-risk-based-review RR-12; req-risk-based-review AC-5.8, AC-5.9,
+// (component-submission-merge invariant 68; req-risk-based-review AC-5.8, AC-5.9,
 // AC-5.11).
 func applyHeadRiskOrderTx(ctx context.Context, tx pgx.Tx, q *db.Queries, taskID string, request store.HeadRiskOrderRequest) (store.HeadRiskOrderResult, error) {
 	row, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})

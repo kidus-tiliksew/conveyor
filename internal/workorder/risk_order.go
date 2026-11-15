@@ -19,7 +19,7 @@ import (
 // subject it rates, the plan version for a plan subject, the changed paths
 // and matched path rules stored for a head subject, and the task's frozen
 // risk mode and tier table (req-risk-based-review AC-12.5;
-// feature-risk-based-review RR-11). A head subject's comparison and diff
+// component-work-orders invariant 64). A head subject's comparison and diff
 // arrive in the context's review_comparison and diff, read by the review
 // order's reader.
 type RiskContract struct {
@@ -98,7 +98,7 @@ func (s *Service) riskMaterialForOrder(ctx context.Context, order core.WorkOrder
 }
 
 // SubmitRiskRating completes a risk order with a tier and a one-line reason
-// (req-risk-based-review AC-12.2; feature-risk-based-review RR-11). claim is
+// (req-risk-based-review AC-12.2; component-work-orders invariant 65). claim is
 // the authenticated claimant's identity for the presented session, never a
 // value the caller supplies. The store command reads the subject, the paths,
 // the rules, and the model from the stored order and its claim, refuses a
@@ -141,8 +141,8 @@ func (s *Service) SubmitRiskRating(ctx context.Context, claim core.WorkOrderClai
 	}
 	// A completed risk order can end an enforcing review round's wait. The
 	// durable backends enqueue the task in the completing transaction; the
-	// in-memory dispatcher queue is fed here (feature-risk-based-review
-	// RR-12; req-risk-based-review AC-5.10).
+	// in-memory dispatcher queue is fed here (component-work-orders invariant
+	// 66; component-review invariant 41; req-risk-based-review AC-5.10).
 	if s.Dispatcher != nil {
 		s.Dispatcher.Enqueue(ctx, order.TaskID)
 	}

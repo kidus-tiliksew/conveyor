@@ -11,8 +11,9 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// Plan risk orders (feature-risk-based-review RR-13; component-risk-review
-// invariants 12 and 13; req-risk-based-review AC-4.7 to AC-4.9). A plan
+// Plan risk orders (component-plan-state invariants 9 and 10;
+// component-risk-review invariants 12 and 13; req-risk-based-review AC-4.7 to
+// AC-4.9). A plan
 // version that enters plan awaiting approval gets a risk order when the need
 // decision calls for one. Every backend applies PlanRiskMoveFor in the
 // transaction that commits the plan-state move, under the task's operation
@@ -22,7 +23,7 @@ import (
 
 // PlanRiskRatingOpenCode is the refusal code of a plan approval that waits
 // for its plan version's risk order (req-risk-based-review AC-4.8;
-// feature-risk-based-review RR-13).
+// component-plan-state invariant 10).
 const PlanRiskRatingOpenCode = "plan_risk_rating_open"
 
 // ErrPlanRiskRatingOpen matches every *PlanRiskRatingOpenError.
@@ -87,8 +88,8 @@ type PlanRiskMove struct {
 }
 
 // PlanRiskMoveFor decides the plan risk effects of a move from one plan state
-// to another (req-risk-based-review AC-4.7, AC-4.9; feature-risk-based-review
-// RR-13):
+// to another (req-risk-based-review AC-4.7, AC-4.9; component-plan-state
+// invariant 9):
 //
 //   - A move into plan awaiting approval asks for the latest plan version's
 //     risk order and cancels the open order of any earlier version, which
@@ -120,8 +121,8 @@ func PlanRiskMoveFor(from, to core.PlanState, cause core.PlanStateCause, recorde
 
 // PlanRiskCancelIDs lists the open plan risk orders a move cancels: every
 // open order whose subject is a plan version other than keep. Head risk
-// orders are never touched here (RR-12 owns them). keep is zero when the move
-// creates no order.
+// orders are never touched here (component-submission-merge invariants 68
+// and 69 own them). keep is zero when the move creates no order.
 func PlanRiskCancelIDs(orders []core.RiskOrder, keep int) []string {
 	ids := []string{}
 	for _, order := range orders {

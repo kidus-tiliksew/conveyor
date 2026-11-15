@@ -151,7 +151,7 @@ ORDER BY t.created_at, t.id`, workspace)
 		// The risk hold is read before the job stream. Completing or
 		// cancelling the risk order enqueues the task in the same
 		// transaction, so a hold read after that commit is gone and the job
-		// read finds the wake active (feature-risk-based-review RR-12).
+		// read finds the wake active (component-work-orders invariant 66).
 		if held != nil && c.nextStage == core.StageReview {
 			skip, err := held(taskID)
 			if err != nil {

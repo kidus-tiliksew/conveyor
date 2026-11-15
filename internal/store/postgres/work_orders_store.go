@@ -119,13 +119,13 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version i
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		// The task's operation lock comes first, as every rating write takes
 		// it, so the approval's plan rating serializes with the task's other
-		// ratings (feature-risk-based-review RR-4; component-persistence).
+		// ratings (component-risk-review invariant 17; component-persistence).
 		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), taskID); err != nil {
 			return err
 		}
 		// Under enforce the approval waits for the version's open risk order
 		// and changes nothing; no plan text is read (req-risk-based-review
-		// AC-4.8; feature-risk-based-review RR-13).
+		// AC-4.8; component-plan-state invariant 10).
 		if err := planApprovalRiskRefusalTx(ctx, tx, q, taskID, version); err != nil {
 			return err
 		}
@@ -372,7 +372,7 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 			}
 		}
 		// An enforcing task's round waits for its head's risk order
-		// (feature-risk-based-review RR-12; req-risk-based-review AC-5.10).
+		// (component-review invariant 41; req-risk-based-review AC-5.10).
 		if err = reviewRoundRiskHoldTx(ctx, tx, workspace(ctx), task, store.ReviewRoundHead(orders)); err != nil {
 			return err
 		}
@@ -1284,7 +1284,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		}
 	}
 	// Review seats and risk orders run beside their peers
-	// (feature-risk-based-review RR-11).
+	// (component-task-lifecycle invariant 2).
 	if order.Stage != core.StageReview && order.Stage != core.StageRisk {
 		var activeSiblingID string
 		activeErr := tx.QueryRow(ctx, `SELECT id FROM work_orders
@@ -1498,7 +1498,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		return core.WorkOrder{}, err
 	}
 	// A risk order stands beside the serial stage, so its claim leaves the
-	// task state as it is (feature-risk-based-review RR-11).
+	// task state as it is (component-work-orders invariant 62).
 	if taskState == core.TaskQueued && order.Stage != core.StageRisk {
 		nextTaskState, transitionErr := core.TransitionTask(taskState, core.TaskOrderClaim)
 		if transitionErr != nil {
@@ -2267,7 +2267,7 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 		}
 		if !completed {
 			// A verdict records no rating and adds no seat
-			// (req-risk-based-review AC-5.7; feature-risk-based-review RR-14).
+			// (req-risk-based-review AC-5.7; component-review invariant 13).
 			if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: reviewDecisionPayload(decision)}); err != nil {
 				return err
 			}

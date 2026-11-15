@@ -2781,9 +2781,9 @@ for (const width of [375, 1280]) {
   })
 }
 
-// Risk orders on task detail (feature-risk-based-review RR-16;
-// req-risk-based-review REQ-11, AC-5.6, AC-11.2; component-web-task-surfaces
-// invariant 66; DEC-127(1), (2)). The read is the server's: risk.orders names
+// Risk orders on task detail (req-risk-based-review REQ-11, AC-5.6, AC-11.2;
+// component-web-task-surfaces invariants 66, 72, and 73; DEC-127(1), (2)). The
+// read is the server's: risk.orders names
 // each order's subject and state, and risk.ratings holds each completed
 // order's risk_agent rating with its order and reported model. A risk order
 // shows as an order entry that names its subject. A rated one shows its own

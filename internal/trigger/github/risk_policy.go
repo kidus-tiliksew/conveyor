@@ -8,7 +8,7 @@ import (
 
 // DiscoverRiskDeclaration reads .conveyor/risk.yaml at the pull request's base
 // SHA with the workspace App token (req-risk-based-review AC-3.2;
-// feature-risk-based-review RR-2; component-risk-review invariant 6). It never
+// component-risk-review invariants 6 and 15). It never
 // reads the head. The bytes are parsed by internal/riskpolicy, not here: a
 // present file is returned as read, an absent file means only the built-in
 // minimums apply (AC-3.4), and a malformed, unavailable, or unknown read gives

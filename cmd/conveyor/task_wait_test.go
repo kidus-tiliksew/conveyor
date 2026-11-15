@@ -1116,7 +1116,7 @@ func TestTaskWaitStopsAtARiskHeldMerge(t *testing.T) {
 
 // A risk order is claimable work like every other order: its creation ends a
 // wait, and a repeated observation of the same risk order does not
-// (feature-risk-based-review RR-16; req-agent-skills AC-4.1).
+// (component-cli-onboarding invariant 22; req-agent-skills AC-4.1).
 func TestTaskWaitReturnsWhenRiskOrderBecomesClaimable(t *testing.T) {
 	risk := core.WorkOrder{ID: "261004-abc123-risk-1", Stage: core.StageRisk}
 	f := newTaskWaitFixture(t,

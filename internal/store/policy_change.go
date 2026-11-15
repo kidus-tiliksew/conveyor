@@ -101,7 +101,7 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	for _, order := range orders {
 		// A claimed risk order stands beside the task's serial stage, so it
 		// neither blocks a policy change nor is moved by one
-		// (feature-risk-based-review RR-11, RR-12).
+		// (component-task-lifecycle invariant 45).
 		if order.Stage == core.StageRisk {
 			continue
 		}
@@ -173,7 +173,7 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	// the handoff keeps that head at review and opens no round: no job, seat
 	// order, or round record. Completing or cancelling the risk order
 	// enqueues the task, and its dispatch opens the round with the tier as it
-	// then stands (feature-risk-based-review RR-12; req-risk-based-review
+	// then stands (component-review invariant 41; req-risk-based-review
 	// AC-5.10).
 	if target == core.StageReview && RiskRoundHoldApplies(task) {
 		if _, held := ReviewRoundRiskHold(task, seats.RiskOrders, core.VerifyStageHead(task)); held {

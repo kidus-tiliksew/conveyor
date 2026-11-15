@@ -12,8 +12,8 @@ import (
 )
 
 // RiskRatingStore records and reads a task's risk ratings
-// (req-risk-based-review AC-5.5, AC-5.6, REQ-6; component-risk-review, State
-// and failure model; feature-risk-based-review RR-3, RR-8). Every backend
+// (req-risk-based-review AC-5.5, AC-5.6, REQ-6; component-risk-review
+// invariants 17 and 18, State and failure model). Every backend
 // writes a rating, its activity event, and its uniqueness check in one
 // transaction under the task's operation lock. Ratings are append-only. A
 // reviewer rating is written only by AcceptReviewDecisionCommand, in the
@@ -29,8 +29,8 @@ type RiskRatingStore interface {
 	// *core.RiskTierNotRaisedError naming it, and otherwise records the raise
 	// with the previous tier and its activity event. On an enforcing task it
 	// adds, in the same transaction, the seats the raised tier requires to an
-	// open review round (req-risk-based-review AC-7.2;
-	// feature-risk-based-review RR-5, RR-8).
+	// open review round (req-risk-based-review AC-7.2; component-review
+	// invariant 42; component-risk-review invariant 18).
 	RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, seats RiskSeatSettings) (core.RiskRating, error)
 	// ListTaskRiskRatings returns a task's ratings in recorded order.
 	ListTaskRiskRatings(ctx context.Context, taskID string) ([]core.RiskRating, error)
@@ -201,7 +201,7 @@ func (m *memory) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, s
 	// (req-risk-based-review AC-10.1; component-git-delivery invariant 37).
 	m.reopenReviewPolicyStatusesLocked(ctx, key, task)
 	// A raise to high cancels the task's open risk orders in the same act
-	// (req-risk-based-review AC-12.3; feature-risk-based-review RR-15).
+	// (req-risk-based-review AC-12.3; component-work-orders invariant 66).
 	if RiskTierReachesHigh(ratings) {
 		m.cancelRiskOrdersLocked(ctx, task.ID, "", RiskTierHighCancelReason, prepared.CreatedAt)
 	}

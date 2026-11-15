@@ -42,8 +42,8 @@ func (s *Server) taskRisk(ctx context.Context, task core.Task) (*core.TaskRisk, 
 	}
 	projection := store.ProjectTaskRisk(task, ratings, store.ReviewSeatMinimum(task.SetupContract, workspaceSeats))
 	// Every task read names the same risk orders with what each rates and
-	// its state (req-risk-based-review AC-11.2; feature-risk-based-review
-	// RR-16).
+	// its state (req-risk-based-review AC-11.2; component-risk-review, Public
+	// surfaces).
 	orders, err := s.Store.ListTaskRiskOrders(scoped, task.ID)
 	if err != nil {
 		return nil, fmt.Errorf("list risk orders: %w", err)
@@ -121,7 +121,7 @@ func decodeRiskTierRequest(body []byte) (riskTierRequest, error) {
 // named and nothing recorded. No route lowers a tier, and the raise changes
 // no stage, plan state, queue position, or claim eligibility
 // (req-risk-based-review REQ-6, AC-6.1, AC-6.2, AC-2.2, AC-2.3;
-// feature-risk-based-review RR-8). Under record it changes no seat, gate, or
+// component-risk-review invariant 18). Under record it changes no seat, gate, or
 // merge decision (AC-1.6). Under enforce it adds the seats the raised tier
 // requires to an open review round in the same act (AC-7.2).
 func (s *Server) raiseTaskRiskTier(w http.ResponseWriter, r *http.Request) {
@@ -172,7 +172,7 @@ func (s *Server) raiseTaskRiskTier(w http.ResponseWriter, r *http.Request) {
 	}
 	// The raise runs under the task side-effect lock that every merge act
 	// holds while it reads the required approvals, so a raise and a merge
-	// never interleave (feature-risk-based-review RR-6).
+	// never interleave (component-risk-review invariant 18).
 	err = s.Store.WithTaskSideEffectLock(r.Context(), task.ID, func(locked context.Context) error {
 		_, raiseErr := s.Store.RaiseTaskRiskTier(locked, core.RiskRating{
 			TaskID: task.ID, Tier: riskpolicy.Tier(request.Tier), Reason: request.Reason, ActorID: actor.ID, HeadSHA: task.ReviewedHeadSHA,

@@ -122,7 +122,7 @@ type Input struct {
 	// enforcing task's plan approval gate, read fresh by the assembler, and
 	// nil for every other task. Only a queued or claimed order of the version
 	// the gate holds selects the plan risk wait row (req-risk-based-review
-	// AC-11.3; feature-risk-based-review RR-16).
+	// AC-11.3; component-next-action, The statement, row 3a).
 	PlanRiskOrder  *PlanRiskOrderRef
 	Recommendation string
 	Assignee       *core.TaskAssignee

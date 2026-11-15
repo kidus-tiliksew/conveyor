@@ -35,7 +35,8 @@ func TestRiskSummaryLine(t *testing.T) {
 // TestRiskAgentSourceAndOrders: conveyor task show labels a risk agent rating
 // with its order and reported model, keeps the historical plan and reviewer
 // labels, and lists each risk order with what it rates and its state
-// (req-risk-based-review AC-5.6, AC-11.2; feature-risk-based-review RR-16).
+// (req-risk-based-review AC-5.6, AC-11.2; component-risk-review, Public
+// surfaces).
 func TestRiskAgentSourceAndOrders(t *testing.T) {
 	for source, want := range map[core.RiskSource]string{
 		core.RiskSourcePlan: "plan", core.RiskSourceReviewer: "reviewer", core.RiskSourcePathRule: "path rule",

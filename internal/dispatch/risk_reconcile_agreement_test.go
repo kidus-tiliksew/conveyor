@@ -16,7 +16,7 @@ import (
 // refresh head while the approval is stale. While that head's risk order is
 // open, dispatch builds no round and reconcile reports a hold. Once it ends,
 // or for another head's order or a record task, dispatch opens the round of
-// that head and reconcile reports none (feature-risk-based-review RR-12;
+// that head and reconcile reports none (component-review invariant 41;
 // req-risk-based-review AC-1.6, AC-5.10; component-risk-review invariant 13).
 func TestReviewRoundHoldAgreesWithReconcile(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")

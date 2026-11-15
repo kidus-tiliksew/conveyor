@@ -16,7 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// These tests prove RR-13 of feature-risk-based-review at the submit_plan
+// These tests prove component-plan-state invariants 9 and 10 at the submit_plan
 // service boundary and the plan approval gate: every plan is accepted with or
 // without a tier line; a submitted version gets one risk order that the
 // result names; under enforce the approval waits for that order; a risk agent

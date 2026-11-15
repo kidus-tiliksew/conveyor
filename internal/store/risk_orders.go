@@ -19,7 +19,7 @@ import (
 )
 
 // RiskOrderStore creates, completes, cancels, and reads a task's risk orders
-// (feature-risk-based-review RR-11, RR-15; component-risk-review invariant 12;
+// (component-work-orders invariants 62 to 66; component-risk-review invariant 12;
 // req-risk-based-review REQ-12, AC-12.1 to AC-12.3). A risk order is a
 // risk-stage work order and its queue job. It stands beside the task's serial
 // stage: no command here changes the task's state, next stage, plan state,
@@ -110,19 +110,19 @@ type RiskOrderCancelRequest struct {
 
 // MaxRiskOrderPaths bounds the changed paths one head risk order copies.
 // GitHub's compare read already refuses a list at 300 files
-// (feature-risk-based-review RR-3), so this bound only rejects a corrupt
+// (component-risk-review invariant 7), so this bound only rejects a corrupt
 // request.
 const MaxRiskOrderPaths = 3000
 
 // RiskTierHighCancelReason is the cancellation reason when the task's tier
-// reaches high (req-risk-based-review AC-12.3; feature-risk-based-review
-// RR-15).
+// reaches high (req-risk-based-review AC-12.3; component-work-orders
+// invariant 66).
 const RiskTierHighCancelReason = "task risk tier reached high"
 
 // ErrRiskOrderNotIndependent refuses a risk order claim by a session ID or
 // client token that claimed a plan order, an implementation order, or a
 // review seat of the same task. The order stays claimable
-// (req-risk-based-review AC-12.1; feature-risk-based-review RR-11).
+// (req-risk-based-review AC-12.1; component-work-orders invariant 63).
 var ErrRiskOrderNotIndependent = errors.New("risk order independence: the session ID or client token already claimed a plan, implementation, or review order of this task")
 
 // ErrNotRiskOrder refuses a risk order command on an order of another stage.
@@ -203,7 +203,7 @@ func PlanRiskOrderCreate(task core.Task, ratings []core.RiskRating, existing []c
 		ID: id, TaskID: task.ID, JobID: id, Stage: core.StageRisk, State: core.WorkOrderQueued, Claimable: true,
 		HeadSHA: request.Subject.HeadSHA, BaselineSHA: request.Subject.BaseSHA,
 		// A risk order takes the review stage's frozen execution timeout and
-		// the workspace queue timeout (feature-risk-based-review RR-11).
+		// the workspace queue timeout (component-work-orders invariant 4).
 		ExecutionTimeoutText: strings.TrimSpace(task.SetupContract.StageTimeouts.Review),
 		QueueEnteredAt:       now, QueueDeadline: now.Add(timeout), CreatedAt: now, UpdatedAt: now,
 	}
@@ -453,8 +453,8 @@ const RiskTokenHistoryIncompleteEvent = "risk_order.token_history_incomplete"
 const MaxRiskTokenHistoryGaps = 50
 
 // RiskClaimCheck applies the risk claim refusal and reports the token history
-// it could not verify (req-risk-based-review AC-12.1; feature-risk-based-review
-// RR-11). It refuses with ErrRiskOrderNotIndependent when the claim's session
+// it could not verify (req-risk-based-review AC-12.1; component-work-orders
+// invariant 63). It refuses with ErrRiskOrderNotIndependent when the claim's session
 // ID matches any earlier plan, implementation, or review claim of the task, in
 // the claim ledger, an order row, or a work_order.claimed event, or when its
 // client-token hash matches a fingerprint the ledger or an order row still

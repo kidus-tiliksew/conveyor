@@ -28,8 +28,8 @@ func planRiskPlan(tier riskpolicy.Tier, reason string) string {
 // plan's tier line stays readable with source plan and keeps counting toward
 // the task's tier, which a later approval never lowers. Approvals and path
 // ratings still serialize under the task lock (req-risk-based-review AC-4.3,
-// AC-4.6, AC-5.5, AC-5.6, AC-1.1, AC-2.2; feature-risk-based-review RR-13;
-// component-risk-review invariants 4 and 8).
+// AC-4.6, AC-5.5, AC-5.6, AC-1.1, AC-2.2; component-risk-review invariants 4,
+// 8, and 17).
 func runPlanRiskRatings(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	record := riskpolicy.Policy{Mode: riskpolicy.ModeRecord, Tiers: riskpolicy.DefaultTable()}

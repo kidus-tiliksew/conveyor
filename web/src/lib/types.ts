@@ -772,11 +772,6 @@ export interface SpecVersion {
   // AC-2.5).
   origin?: PlanOrigin
   base_commit?: string | null
-  // The risk tier and one-line reason this version's plan states, read from
-  // its content by the server; absent when the plan states none
-  // (req-risk-based-review AC-4.4).
-  risk_tier?: RiskTier
-  risk_reason?: string
 }
 
 export type ActivityTask = Pick<
@@ -1249,7 +1244,7 @@ export interface RiskRating {
   created_at: string
 }
 // What one risk order rates: exactly one plan version, or one head with its
-// base (feature-risk-based-review RR-11).
+// base (component-work-orders invariant 62).
 export interface RiskOrderSubject {
   plan_version?: number
   head_sha?: string
@@ -1257,7 +1252,7 @@ export interface RiskOrderSubject {
 }
 // One risk order on the task read: the order, its state, what it rates, and
 // the model its claiming session reported (req-risk-based-review AC-5.6,
-// AC-11.2; feature-risk-based-review RR-16).
+// AC-11.2; component-risk-review, Public surfaces).
 export interface TaskRiskOrder {
   work_order_id: string
   state: WorkOrder['state']

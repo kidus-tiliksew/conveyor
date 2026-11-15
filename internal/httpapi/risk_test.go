@@ -89,7 +89,7 @@ func riskRatingCount(t *testing.T, st store.Store, taskID string) int {
 // TestRaiseRiskTierHTTPAuthorization: only a user credential holding
 // operate_gates in the task's workspace may raise a tier, and the raise
 // records the authenticated person, the old and new tier, and the reason
-// (req-risk-based-review REQ-6, AC-6.1; feature-risk-based-review RR-8).
+// (req-risk-based-review REQ-6, AC-6.1; component-risk-review invariant 18).
 func TestRaiseRiskTierHTTPAuthorization(t *testing.T) {
 	handler, st := riskHTTPFixture(t)
 	body := `{"tier":"medium","reason":"touches billing"}`
@@ -345,7 +345,7 @@ func mcpToolCall(t *testing.T, handler http.Handler, token, tool string, args ma
 // and says that a risk agent rates the change; the seat stays claimed, and no
 // verdict, rating, or event is written. The published schema carries neither
 // field (req-risk-based-review AC-5.7; component-risk-review invariant 8;
-// feature-risk-based-review RR-14).
+// component-mcp-protocol invariant 42).
 func TestSubmitReviewVerdictRefusesRiskFields(t *testing.T) {
 	handler, st := riskHTTPFixture(t)
 	ctx := store.WithWorkspace(t.Context(), "alpha")
@@ -494,7 +494,7 @@ func TestRaiseRiskTierHTTPBodyBound(t *testing.T) {
 // TestRaiseRiskTierHTTPWaitsForTheTaskLock: the raise runs under the task
 // side-effect lock every merge act holds, so a merge holding it finishes
 // under the tier it read before the raise records anything
-// (feature-risk-based-review RR-6).
+// (component-risk-review invariant 18).
 func TestRaiseRiskTierHTTPWaitsForTheTaskLock(t *testing.T) {
 	handler, st := riskHTTPFixture(t)
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "alpha")

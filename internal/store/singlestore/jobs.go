@@ -239,7 +239,7 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, id string, version int) 
 	return s.taskTx(ctx, id, func(tx *sql.Tx) error {
 		// Under enforce the approval waits for the version's open risk order
 		// and changes nothing; no plan text is read (req-risk-based-review
-		// AC-4.8; feature-risk-based-review RR-13).
+		// AC-4.8; component-plan-state invariant 10).
 		if err := planApprovalRiskRefusalTx(ctx, tx, id, version); err != nil {
 			return err
 		}

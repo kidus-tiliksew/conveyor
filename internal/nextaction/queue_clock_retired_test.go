@@ -28,7 +28,7 @@ func requireWaitingForAgent(t *testing.T, name string, na NextAction) {
 // past the deadline the retired queue clock stored, reads as waiting for an
 // agent on every stage, the risk stage included with no special case
 // (req-task-lifecycle-and-queue AC-9.4, AC-9.5; DEC-117(2);
-// feature-risk-based-review RR-15).
+// component-work-orders invariant 5).
 func TestOrderWaitingPastFormerQueueDeadlineReadsAsQueued(t *testing.T) {
 	entered, formerDeadline := waitingNow.Add(-48*time.Hour), waitingNow.Add(-24*time.Hour)
 	for _, stage := range []core.Stage{core.StageSpec, core.StageImplement, core.StageVerify, core.StageReview} {

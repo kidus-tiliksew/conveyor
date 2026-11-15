@@ -10,7 +10,7 @@ import (
 
 // DeclarationState is what a caller found when it read the declaration at a
 // pull request's base SHA. The states mirror the documentation-policy
-// discovery states (feature-risk-based-review RR-2).
+// discovery states (component-risk-review invariant 15).
 type DeclarationState string
 
 const (

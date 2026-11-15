@@ -45,7 +45,7 @@ type Service struct {
 	SubmissionChangedPaths      func(context.Context, *config.Config, core.Task) ([]string, error)
 	DiscoverDocumentationPolicy func(context.Context, string, string) github.DocumentationPolicyDiscovery
 	// DiscoverRiskDeclaration reads .conveyor/risk.yaml at a base commit; nil
-	// uses the workspace GitHub App (feature-risk-based-review RR-2).
+	// uses the workspace GitHub App (component-risk-review invariant 6).
 	DiscoverRiskDeclaration func(context.Context, string, string) riskpolicy.DeclarationInput
 	Logf                    func(string, ...any)
 	RedactionSecrets        redact.SecretSource
@@ -99,7 +99,7 @@ type Context struct {
 	PullRequestDescription string                     `json:"pull_request_description"`
 	// RiskOrder is a risk order's subject, plan version or head paths and
 	// rules, and frozen tier table (req-risk-based-review AC-12.5;
-	// feature-risk-based-review RR-11).
+	// component-work-orders invariant 64).
 	RiskOrder *RiskContract `json:"risk_order,omitempty"`
 }
 
@@ -344,7 +344,7 @@ func (s *Service) claim(ctx context.Context, id string, claim core.WorkOrderClai
 	route, ok := cfg.Routing.Stages[string(order.Stage)]
 	if order.Stage == core.StageRisk {
 		// A risk order takes the review stage's timeout, so the policy
-		// gains no stage key (feature-risk-based-review RR-11).
+		// gains no stage key (component-work-orders invariant 4).
 		route, ok = cfg.Routing.Stages[string(core.StageReview)]
 	}
 	timeout := route.Timeout
@@ -471,7 +471,7 @@ func frozenStageTimeout(task core.Task, stage core.Stage) string {
 		return strings.TrimSpace(timeouts.Verify)
 	case core.StageReview, core.StageRisk:
 		// A risk order takes the review stage's frozen timeout
-		// (feature-risk-based-review RR-11).
+		// (component-work-orders invariant 4).
 		return strings.TrimSpace(timeouts.Review)
 	default:
 		return ""
@@ -660,7 +660,7 @@ func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reaso
 	}
 	// An enforcing task's retried round waits for its head's risk order like
 	// every other round; the retry command repeats the check in its
-	// transaction (feature-risk-based-review RR-12; req-risk-based-review
+	// transaction (component-review invariant 41; req-risk-based-review
 	// AC-5.10).
 	if held, holdErr := dispatch.ReviewRoundHeldByRiskOrder(ctx, s.Store, task, target.HeadSHA); holdErr != nil {
 		return store.ReviewRoundRetryResult{}, holdErr
@@ -823,7 +823,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	}
 	// A risk order delivers exactly the subject it stored: one plan version,
 	// or one head through the review order's comparison and diff reader
-	// (req-risk-based-review AC-12.5; feature-risk-based-review RR-11). A
+	// (req-risk-based-review AC-12.5; component-work-orders invariant 64). A
 	// subject that cannot be read fails the contract instead of rating
 	// another one.
 	var riskContract *RiskContract
@@ -870,7 +870,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		}
 	} else if order.Stage != core.StageRisk {
 		// A risk order rates its subject and cites no requirement, so it
-		// resolves no served requirement (feature-risk-based-review RR-11).
+		// resolves no served requirement (component-work-orders invariant 64).
 		servedAuthority, resolveErr := store.ServedRequirementsForTask(ctx, s.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 		if resolveErr != nil {
 			var budgetErr *store.AuthorityBudgetError
@@ -1051,7 +1051,7 @@ func (s *Service) reviewMaterialForOrder(ctx context.Context, order core.WorkOrd
 
 // reviewMaterialFor reads one comparison's diff and the branch's pull request
 // description. Review orders and head risk orders share it, so the factory
-// has one diff reader (feature-risk-based-review RR-11).
+// has one diff reader (component-work-orders invariant 64).
 func (s *Service) reviewMaterialFor(ctx context.Context, repo, branch string, comparison dispatch.ReviewComparison) (reviewMaterial, error) {
 	diff, err := s.reviewDiffBetween(ctx, repo, comparison.BaselineSHA, comparison.HeadSHA)
 	if err != nil {
@@ -1584,8 +1584,7 @@ func (s *Service) submitStageDocumentLocked(ctx context.Context, id, session str
 	// No submission approves a plan: the version waits at the plan_approval
 	// gate for a person's decision, so approved is always false
 	// (component-work-orders invariant 56; DEC-125(6)). A submission that
-	// created a risk order names it (req-risk-based-review AC-12.6;
-	// feature-risk-based-review RR-13).
+	// created a risk order names it (req-risk-based-review AC-12.6).
 	result := map[string]any{"task_id": task.ID, "version": submitted.Version.Version, "approved": false, "next_stage": current.NextStage}
 	if submitted.RiskWorkOrderID != "" {
 		result["risk_work_order_id"] = submitted.RiskWorkOrderID

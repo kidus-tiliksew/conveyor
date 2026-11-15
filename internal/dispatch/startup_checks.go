@@ -240,7 +240,7 @@ func waitsOnGitHub(task core.Task, recordedPullRequest bool) bool {
 func mergeReadinessCanAct(task core.Task) bool {
 	// A task at the merge gate is the gate-on pass's whatever its frozen
 	// gate, since an enforcing gate-off task can wait there too
-	// (feature-risk-based-review RR-6).
+	// (component-review invariant 21).
 	if task.MergeApproval || task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval {
 		return task.State == core.TaskApproved || task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
 	}

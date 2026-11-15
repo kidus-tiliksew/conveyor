@@ -228,7 +228,7 @@ func init() {
 	// An enforcing task at plan approval waits for its plan version's risk
 	// rating. The statement names the rating, never a review, and asks no
 	// person for the approval (req-risk-based-review AC-11.3;
-	// feature-risk-based-review RR-16).
+	// component-next-action, The statement, row 3a).
 	planRiskWorking := catalogueTable[catalogueKey{KindWorking, "", "", "", ""}]
 	planRiskWorking.Label = "Rating plan risk"
 	planRiskWorking.Summary = text("An agent is rating the risk of the plan. Plan approval waits for this rating.")

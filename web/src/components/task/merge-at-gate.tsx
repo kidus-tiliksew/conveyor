@@ -372,7 +372,7 @@ function MergeAtGateAction({
   const headName = gateAct ? 'reviewed head' : 'approved head'
   // While more than one approval remains the server labels the merge choice
   // Approve: the act records the person's approval and merges nothing
-  // (req-risk-based-review AC-8.7; feature-risk-based-review RR-7).
+  // (req-risk-based-review AC-8.7; component-web-task-surfaces invariant 45).
   const approveOnly = choice?.label === 'Approve'
   // The server's effect names what the merge still needs after this
   // approval; the confirmation repeats it rather than guessing.

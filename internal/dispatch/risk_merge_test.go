@@ -20,7 +20,7 @@ import (
 
 // Tests for the merge hold of enforcing tasks (req-risk-based-review AC-8.1,
 // AC-8.2, AC-8.7; req-review-gates-evidence AC-1.1, AC-1.3;
-// feature-risk-based-review RR-6).
+// component-submission-merge invariant 64).
 
 type riskMergeCase struct {
 	mode      riskpolicy.Mode
@@ -462,7 +462,8 @@ func TestHeldTaskNeedingTwoApprovalsOffersApprove(t *testing.T) {
 // that holds the lock first lands under the tier it read, and the raise
 // waits for it. A raise that holds the lock first is read by the merge,
 // which then records the person's approval and lands nothing
-// (feature-risk-based-review RR-6; req-risk-based-review AC-8.7, AC-8.8).
+// (component-submission-merge invariant 64; component-risk-review invariant
+// 18; req-risk-based-review AC-8.7, AC-8.8).
 func TestRaiseAndMergeSerialize(t *testing.T) {
 	t.Run("MergeFirst", func(t *testing.T) {
 		ctx, st, task, d, forge := riskApprovedTask(t, "risk-serial-merge-first", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierMedium, 0})

@@ -139,7 +139,7 @@ const (
 	WorkOrderCmdSubmitSpec          WorkOrderCommand = "submit_spec"
 	WorkOrderCmdSubmitReviewVerdict WorkOrderCommand = "submit_review_verdict"
 	// WorkOrderCmdSubmitRiskRating completes a claimed risk order with its
-	// rating (feature-risk-based-review RR-11; req-risk-based-review AC-12.2).
+	// rating (component-work-orders invariant 65; req-risk-based-review AC-12.2).
 	WorkOrderCmdSubmitRiskRating WorkOrderCommand = "submit_risk_rating"
 	WorkOrderCmdReviewTerminal   WorkOrderCommand = "review.terminal"
 	WorkOrderCmdReviewRevise     WorkOrderCommand = "review.revise"

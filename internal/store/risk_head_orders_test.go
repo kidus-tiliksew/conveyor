@@ -102,7 +102,7 @@ func TestReviewRoundRiskHold(t *testing.T) {
 // TestReviewRoundDispatchComparison proves the head a review round reviews:
 // the refresh pair while the approval is stale, the newest submission
 // comparison that names both commits otherwise, and the refresh pair when
-// none is recorded (feature-risk-based-review RR-12).
+// none is recorded (component-review invariant 41).
 func TestReviewRoundDispatchComparison(t *testing.T) {
 	opened := func(base, head string) core.Event {
 		return core.Event{Kind: SubmissionComparisonEventKind, Payload: core.JSONPayload(map[string]any{"base_sha": base, "head_sha": head})}
@@ -138,8 +138,8 @@ func TestReviewRoundDispatchComparison(t *testing.T) {
 // is open, holds nothing for a terminal, missing, plan, or other-head order,
 // reads nothing for record, off, or a task outside review, reads no
 // comparison while the approval is stale, and returns a read error rather
-// than no hold (feature-risk-based-review RR-12, RR-13; req-risk-based-review
-// AC-1.6, AC-5.10; component-risk-review invariant 13).
+// than no hold (component-review invariant 41; req-risk-based-review AC-1.6,
+// AC-5.10; component-risk-review invariant 13).
 func TestQueuedReviewRiskHold(t *testing.T) {
 	submitted := func(head string) []core.Event {
 		return []core.Event{{Kind: SubmissionComparisonEventKind, Payload: core.JSONPayload(map[string]any{"base_sha": "base", "head_sha": head})}}
@@ -207,7 +207,7 @@ func TestQueuedReviewRiskHold(t *testing.T) {
 // submission admitted resolves to the tier's agent reviews with source risk
 // when a later risk rating raised the floor, and that every other declaration
 // below the floor stays declared, so the round-building command refuses it
-// (feature-risk-based-review RR-12; req-review-gates-evidence AC-2.3;
+// (component-review invariants 2 and 7; req-review-gates-evidence AC-2.3;
 // req-risk-based-review AC-7.1).
 func TestDeclaredCountBelowARaisedRiskFloor(t *testing.T) {
 	two, four := 2, 4
@@ -268,7 +268,8 @@ func TestRiskSeatCountAtSubmission(t *testing.T) {
 // TestPolicyHandoffWaitsForTheHeadRiskOrder proves a handoff to review keeps
 // the submitted head at review and opens no round while an enforcing task's
 // risk order for that head is open, opens the round otherwise, and that a
-// claimed risk order blocks no policy change (feature-risk-based-review RR-12).
+// claimed risk order blocks no policy change (component-review invariant 41;
+// component-task-lifecycle invariant 45).
 func TestPolicyHandoffWaitsForTheHeadRiskOrder(t *testing.T) {
 	disabled := false
 	for _, mode := range []riskpolicy.Mode{riskpolicy.ModeEnforce, riskpolicy.ModeRecord} {

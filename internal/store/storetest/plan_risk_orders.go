@@ -22,7 +22,7 @@ import (
 // that a risk agent rating counts once its version is approved, in either
 // order (req-risk-based-review AC-4.3, AC-4.7 to AC-4.9, AC-12.3, AC-1.6;
 // req-task-plan-state AC-1.2, AC-1.3, AC-3.1, AC-3.2;
-// feature-risk-based-review RR-13; component-risk-review invariants 12 and
+// component-plan-state invariants 9 and 10; component-risk-review invariants 12 and
 // 13).
 func RunPlanRiskOrderConformance(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context

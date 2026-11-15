@@ -16,7 +16,7 @@ import (
 // without an enabled policy stores the contract bytes it stored before risk
 // review existed, and that a task's frozen risk policy survives a later
 // workspace edit unchanged (req-risk-based-review REQ-1, AC-1.1, AC-1.3,
-// AC-1.5; feature-risk-based-review RR-1).
+// AC-1.5; component-runtime invariant 19).
 func RunRiskPolicyFreezeConformance(t *testing.T, x Fixture) {
 	st, ctx, workspace := x.Backend, x.Context, x.Workspace
 	saveRisk := func(t *testing.T, settings *riskpolicy.Settings) config.UpdateReceipt {

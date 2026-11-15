@@ -17,8 +17,7 @@ import (
 
 // Tests for the conveyor/review-policy status and recorded merge bypasses
 // (req-risk-based-review AC-10.1, AC-10.2, AC-10.3; component-git-delivery
-// invariant 37; component-submission-merge invariants 49, 59, 65, 66;
-// feature-risk-based-review RR-9).
+// invariant 37; component-submission-merge invariants 49, 59, 65, 66).
 
 // policyForge records each status write, and the order of status writes and
 // merge requests.

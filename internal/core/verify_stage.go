@@ -63,8 +63,8 @@ func ConflictingExecutorClaims(a, b WorkOrder) bool {
 	}
 	if a.Stage == b.Stage {
 		// Review seats and risk orders run beside their peers: a plan version
-		// and a head may each have an open risk order (feature-risk-based-review
-		// RR-11, RR-12).
+		// and a head may each have an open risk order (component-work-orders
+		// invariant 62).
 		return a.Stage != StageReview && a.Stage != StageRisk
 	}
 	return (a.Stage == StageVerify && b.Stage == StageImplement) || (a.Stage == StageImplement && b.Stage == StageVerify)

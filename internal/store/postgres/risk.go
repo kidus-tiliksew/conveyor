@@ -72,14 +72,14 @@ func (s *Store) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, se
 		}
 		// A raise to high cancels the task's open risk orders in the same
 		// transaction (req-risk-based-review AC-12.3;
-		// feature-risk-based-review RR-15).
+		// component-work-orders invariant 66).
 		if store.RiskTierReachesHigh(append(existing, result)) {
 			cancelled, cancelErr := cancelRiskOrdersTx(ctx, tx, q, task.ID, "", store.RiskTierHighCancelReason, result.CreatedAt)
 			if cancelErr != nil || len(cancelled) == 0 {
 				return cancelErr
 			}
 			// A cancelled head risk order ends the round's wait
-			// (feature-risk-based-review RR-12, RR-15).
+			// (component-work-orders invariant 66; component-review invariant 41).
 			return s.wakeTaskAfterRiskOrderTx(ctx, tx, task)
 		}
 		return err

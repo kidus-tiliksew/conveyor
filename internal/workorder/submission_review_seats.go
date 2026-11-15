@@ -11,7 +11,7 @@ import (
 )
 
 // ReviewSeatsBelowFloorCode is the refusal code for a declared review seat
-// count below the task's seat floor (req-review-gates-evidence AC-2.3; DEC-123;
+// count below the task's seat floor (req-review-gates-evidence AC-2.3; DEC-135;
 // feature-review-seat-minimum RS-4).
 const ReviewSeatsBelowFloorCode = "review_seats_below_floor"
 
@@ -66,7 +66,8 @@ func (s *Service) admitReviewSeats(ctx context.Context, cfg *config.Config, task
 	}
 	// An enforcing task's tier, including the path minimum this submission
 	// recorded before it reached this check, raises the floor
-	// (req-risk-based-review REQ-7; feature-risk-based-review RR-3, RR-5).
+	// (req-risk-based-review REQ-7; component-submission-merge invariant 67;
+	// component-review invariant 1).
 	risk := 0
 	if task.SetupContract.Risk.Enforcing() {
 		ratings, err := s.Store.ListTaskRiskRatings(ctx, task.ID)

@@ -377,8 +377,8 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, obs
 	// A refresh that reviews the head creates its risk order, and cancels
 	// earlier heads' open risk orders, before its approval is marked stale
 	// and its round is dispatched. Creation replays by subject, so a retry
-	// after a later failure finds the same order (feature-risk-based-review
-	// RR-12; req-risk-based-review AC-5.8, AC-5.11).
+	// after a later failure finds the same order (component-submission-merge
+	// invariant 69; req-risk-based-review AC-5.8, AC-5.11).
 	skipped := scope == config.RefreshReviewNone && !conflict && !task.SetupContract.VerifyStage
 	if !skipped {
 		if err = d.ensureRefreshHeadRiskOrder(ctx, cfg, task, observed, rated); err != nil {
@@ -989,7 +989,8 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	// deadlines included, and a person's merge records that person's approval
 	// and lands only when the approvals meet every requirement
 	// (req-risk-based-review AC-8.1, AC-8.2, AC-8.7, AC-9.2;
-	// feature-risk-based-review RR-6, RR-7). A pull request GitHub already
+	// component-submission-merge invariant 64; component-risk-review
+	// invariant 22). A pull request GitHub already
 	// merged is reconciled above, not merged.
 	var final *core.TaskApproval
 	if act.operator == nil {
@@ -1347,7 +1348,7 @@ func (d *Dispatcher) reconcileMergeReadinessTask(ctx context.Context, task core.
 func (d *Dispatcher) gateOnMergeReadiness(ctx context.Context, task core.Task) (bool, error) {
 	// A task waiting at the merge gate takes the gate-on read whatever its
 	// frozen gate: an enforcing gate-off task that needs a person waits there
-	// too (req-risk-based-review AC-8.2; feature-risk-based-review RR-6).
+	// too (req-risk-based-review AC-8.2; component-review invariant 21).
 	atGate := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
 	if !atGate && (!task.MergeApproval || task.State != core.TaskApproved) {
 		return false, nil

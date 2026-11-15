@@ -13,7 +13,7 @@ import (
 // the risk order that the authenticated claimant's own session holds with a
 // tier and a one-line reason; the subject, the paths, the rules, and the model
 // come from the stored order and its claim, never from the call
-// (req-risk-based-review AC-12.2; feature-risk-based-review RR-11). A
+// (req-risk-based-review AC-12.2; component-work-orders invariant 65). A
 // missing, mistyped, or invalid tier or reason is refused before any write,
 // so the order stays claimed.
 func (s *Server) submitRiskRatingTool(ctx context.Context, args map[string]any, session string) (any, error) {

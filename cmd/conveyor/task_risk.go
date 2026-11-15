@@ -59,7 +59,8 @@ func riskSetterLabel(risk *core.TaskRisk) string {
 }
 
 // riskOrderLines states each risk order of the task with what it rates and
-// its state (req-risk-based-review AC-11.2; feature-risk-based-review RR-16).
+// its state (req-risk-based-review AC-11.2; component-risk-review, Public
+// surfaces).
 func riskOrderLines(risk *core.TaskRisk) []string {
 	if risk == nil {
 		return nil

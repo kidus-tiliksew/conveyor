@@ -14,7 +14,7 @@ const tierLabels: Record<RiskTier, string> = { low: 'Low', medium: 'Medium', hig
 
 // plan and reviewer stay for ratings recorded before risk orders
 // (req-risk-based-review AC-5.6). risk_agent names a completed risk order's
-// rating (feature-risk-based-review RR-16).
+// rating (component-web-task-surfaces invariant 66).
 const sourceLabels: Record<RiskSource, string> = {
   plan: 'the plan',
   path_rule: 'path rules',

@@ -51,7 +51,8 @@ func requireGateRow(t *testing.T, na NextAction) {
 // An enforcing task whose plan version's risk order is queued or claimed names
 // the agent and the risk order ahead of the gate row. It asks no person for a
 // judgment and offers no approval, because the approval route refuses it
-// (req-risk-based-review AC-4.8, AC-11.3; feature-risk-based-review RR-16).
+// (req-risk-based-review AC-4.8, AC-11.3; component-next-action, The
+// statement, row 3a).
 func TestPlanRiskWaitWinsOverTheGateRow(t *testing.T) {
 	for _, tc := range []struct {
 		state            core.WorkOrderState
@@ -91,7 +92,7 @@ func TestPlanRiskWaitWinsOverTheGateRow(t *testing.T) {
 // Every other shape keeps the gate row: modes other than enforce, a missing
 // order, an order of an earlier plan version, an order of another task or
 // stage, and a head risk order that is not the plan's (req-risk-based-review
-// AC-1.6, AC-11.3; feature-risk-based-review RR-15, RR-16).
+// AC-1.6, AC-11.3; component-next-action, The statement, row 3a).
 func TestPlanRiskWaitLeavesTheGateRowOtherwise(t *testing.T) {
 	cases := map[string]func() Input{
 		"completed": func() Input { return planRiskInput(riskpolicy.ModeEnforce, core.WorkOrderCompleted) },
@@ -166,7 +167,7 @@ func TestPlanRiskWaitKeepsEarlierRows(t *testing.T) {
 // Under record, a risk order is never the order a next action names while
 // another order of the task is queued or claimed. A lone risk order is named
 // with risk wording, and enforce keeps its risk order selectable
-// (feature-risk-based-review RR-15; req-risk-based-review AC-1.6).
+// (component-next-action, The statement; req-risk-based-review AC-1.6).
 func TestRecordRiskOrderNeverDisplacesAnotherOpenOrder(t *testing.T) {
 	implement := func(state core.WorkOrderState) core.WorkOrder {
 		return core.WorkOrder{ID: "t-implement-1", TaskID: "t", Stage: core.StageImplement, State: state, Claimable: state == core.WorkOrderQueued,

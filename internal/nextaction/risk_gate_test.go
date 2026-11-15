@@ -70,7 +70,7 @@ func ptr[T any](v T) *T { return &v }
 // store does. The merge choice keeps the label Merge only when the act lands
 // the head; otherwise it is Approve with what is still needed, or withheld
 // with the reason (req-risk-based-review AC-8.7, AC-11.1, REQ-9;
-// feature-risk-based-review RR-7).
+// component-next-action, The statement).
 func TestRiskApprovalChoiceGrid(t *testing.T) {
 	type role string
 	const (

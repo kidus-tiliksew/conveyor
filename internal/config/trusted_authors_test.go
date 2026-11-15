@@ -9,8 +9,8 @@ import (
 
 // repos[].trusted_authors loads, copies without aliasing, round-trips through
 // the stored policy document, and refuses blank, spaced, and duplicate user
-// IDs (req-risk-based-review REQ-9, AC-9.1, AC-9.3; feature-risk-based-review
-// RR-1).
+// IDs (req-risk-based-review REQ-9, AC-9.1, AC-9.3; component-risk-review
+// invariant 19).
 func TestRepoTrustedAuthors(t *testing.T) {
 	load := func(t *testing.T, trusted string) (*Config, error) {
 		t.Helper()

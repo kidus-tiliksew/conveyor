@@ -76,7 +76,7 @@ reports that default. It reports a harness
 or model that it cannot start and never replaces it. It changes a stage
 preference only on the operator's direct instruction. Where agents run, how
 many tasks run at once, and the review seat count rule stay in agent memory
-(DEC-131(3); DEC-123(3)). A review primary only starts the seat agents: it
+(DEC-131(3); DEC-135(3)). A review primary only starts the seat agents: it
 claims no seat, submits no verdict, and awaits no verdict. Delegated planners,
 verifiers, risk agents, reviewers, and review primaries never record gate or
 proposal decisions and never write a stage preference.

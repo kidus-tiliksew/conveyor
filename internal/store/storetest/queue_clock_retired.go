@@ -158,7 +158,7 @@ func waitingOrder(t *testing.T, x Fixture, stage core.Stage, mutate func(*core.T
 // waitingRiskOrder files a record-mode task and one risk order created
 // formerQueueAge ago through the risk creation command, with a one-hour
 // queue timeout: the risk stage follows the common rule with no special case
-// (feature-risk-based-review RR-15).
+// (component-work-orders invariant 5).
 func waitingRiskOrder(t *testing.T, x Fixture) core.WorkOrder {
 	t.Helper()
 	st, ctx := x.Backend, x.Context

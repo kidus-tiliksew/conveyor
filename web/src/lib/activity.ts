@@ -884,8 +884,8 @@ export type TimelineEntry =
       detail?: string
       tone: 'active' | 'alarm' | 'waiting' | 'done'
       order: WorkOrder
-      // A risk order's subject and its own rating (feature-risk-based-review
-      // RR-16).
+      // A risk order's subject and its own rating (component-web-task-surfaces
+      // invariants 72 and 73).
       risk?: RiskOrderFacts
     }
   | { type: 'intervention'; at: string; intervention: Intervention }
@@ -1643,7 +1643,8 @@ function expiredOrderParts(order: WorkOrder) {
 }
 
 // What one risk order rates and the rating it recorded, if any
-// (feature-risk-based-review RR-11, RR-16; req-risk-based-review AC-5.6).
+// (component-web-task-surfaces invariants 72 and 73; req-risk-based-review
+// AC-5.6).
 export interface RiskOrderFacts {
   subject?: RiskOrderSubject
   rating?: RiskRating
@@ -1706,8 +1707,8 @@ export function riskSubjectText(subject: RiskOrderSubject | undefined): string |
 // A risk order runs beside the task's serial stage and can wait while another
 // stage works, so each of its states is an entry: queued and in progress name
 // the order, a rated order shows its own tier chip, and a cancelled order
-// says so. Its job adds no entry of its own (feature-risk-based-review RR-16;
-// req-risk-based-review AC-1.6).
+// says so. Its job adds no entry of its own (component-web-task-surfaces
+// invariant 72; req-risk-based-review AC-1.6).
 function riskOrderEntry(order: WorkOrder, risk: TaskRisk | undefined): Extract<TimelineEntry, { type: 'order' }> {
   const facts = riskOrderFacts(order, risk)
   const base = {

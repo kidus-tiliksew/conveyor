@@ -94,8 +94,8 @@ export const workOrderStageLabels: Record<string, string> = {
   implement: 'Implementation',
   review: 'Review',
   verify: 'Verification',
-  // A risk order rates a plan version or a head (feature-risk-based-review
-  // RR-16).
+  // A risk order rates a plan version or a head (component-web-task-surfaces
+  // invariant 72).
   risk: 'Risk rating',
 }
 

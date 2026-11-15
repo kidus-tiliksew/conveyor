@@ -836,8 +836,8 @@ function TimelineRow({
         ]
       : []
     // A risk order names what it rates, and a rated one shows its own tier
-    // chip in place of the state badge (feature-risk-based-review RR-16;
-    // DEC-127(2)).
+    // chip in place of the state badge (component-web-task-surfaces
+    // invariants 72 and 73; DEC-127(2)).
     const subject = entry.risk ? riskSubjectText(entry.risk.subject) : undefined
     const subjectTitle = entry.risk?.subject?.head_sha
       ? [

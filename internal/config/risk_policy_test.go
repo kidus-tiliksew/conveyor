@@ -165,7 +165,7 @@ func TestParseWorkspaceDocumentRiskPolicy(t *testing.T) {
 	}
 }
 
-// AC-1.5; feature-risk-based-review RR-1: an enabled policy freezes by value,
+// AC-1.5; component-runtime invariant 19: an enabled policy freezes by value,
 // round-trips through the stored contract, and a later workspace edit leaves
 // the frozen policy and the task's projected configuration unchanged.
 func TestRiskPolicyFreezesByValue(t *testing.T) {

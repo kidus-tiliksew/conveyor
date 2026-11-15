@@ -1006,7 +1006,7 @@ func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.T
 		}
 		// The head's risk order is created, and earlier heads' open risk
 		// orders cancelled, in the act that completes the implement order
-		// (feature-risk-based-review RR-12).
+		// (component-submission-merge invariant 68).
 		if request.HeadRisk != nil {
 			_, err = s.applyHeadRiskOrderTx(ctx, tx, order.TaskID, *request.HeadRisk)
 		}
@@ -1239,7 +1239,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 			}
 		}
 		// Review seats and risk orders run beside their peers
-		// (feature-risk-based-review RR-11).
+		// (component-task-lifecycle invariant 2).
 		if o.Stage != core.StageReview && o.Stage != core.StageRisk {
 			var active string
 			err := tx.QueryRowContext(ctx, `SELECT id FROM work_orders WHERE workspace_id=? AND task_id=? AND stage=? AND id<>? AND state='claimed' ORDER BY created_at,id LIMIT 1`, documentWorkspace(ctx), o.TaskID, o.Stage, id).Scan(&active)
@@ -1408,7 +1408,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 			return err
 		}
 		// A risk order stands beside the serial stage, so its claim leaves
-		// the task state as it is (feature-risk-based-review RR-11).
+		// the task state as it is (component-work-orders invariant 62).
 		if task.State == core.TaskQueued && o.Stage != core.StageRisk {
 			state, err := core.TransitionTask(task.State, core.TaskOrderClaim)
 			if err != nil {

@@ -20,7 +20,7 @@ import (
 
 // Tests for POST /v1/tasks/{id}/approvals and
 // POST /v1/tasks/{id}/approvals/waive-author (req-risk-based-review AC-8.3,
-// AC-8.5, AC-8.7, AC-11.2; feature-risk-based-review RR-7;
+// AC-8.5, AC-8.7, AC-11.2; component-risk-review invariants 22 and 23;
 // component-http-api invariant 17).
 
 const approvalHead = "approval-head"

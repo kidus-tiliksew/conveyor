@@ -1,32 +1,5 @@
 package riskpolicy
 
-// TierInput holds every input of a task's tier (req-risk-based-review AC-5.5):
-// the path minimum at the current head, each approved plan version's tier,
-// each tier a review seat stated, each tier a person raised it to, and the
-// tier already recorded for the task. An empty or unknown tier in any input
-// adds nothing.
-type TierInput struct {
-	Current      Tier
-	PathMinimum  Tier
-	PlanTiers    []Tier
-	HeadRatings  []Tier
-	PersonRaises []Tier
-}
-
-// TaskTier returns the largest tier among its inputs, and low when no input
-// states one. The current tier is an input, so no later rating, plan, or act
-// lowers a task's tier (component-risk-review invariants 3 and 4).
-func TaskTier(in TierInput) Tier {
-	tier := MaxTier(TierLow, in.Current)
-	tier = MaxTier(tier, in.PathMinimum)
-	for _, group := range [][]Tier{in.PlanTiers, in.HeadRatings, in.PersonRaises} {
-		for _, rated := range group {
-			tier = MaxTier(tier, rated)
-		}
-	}
-	return tier
-}
-
 // Floors are the requirements a task's frozen pipeline policy gives without
 // risk: the frozen minimum review seat count and the frozen merge gate.
 type Floors struct {

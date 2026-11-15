@@ -95,7 +95,7 @@ func (s *Server) attachTaskPlan(w http.ResponseWriter, r *http.Request) {
 // frozen-policy exception span the /policy route shares, so a claim, a
 // policy change, and the attach serialize on the task
 // (component-task-lifecycle invariant 44). No tier rule applies to the plan
-// (feature-risk-based-review RR-13). The command creates the attached
+// (component-risk-review invariant 8). The command creates the attached
 // version's risk order in its own transaction (req-risk-based-review
 // AC-4.7).
 func (s *Server) attachPlan(ctx context.Context, request store.AttachPlanRequest) (store.AttachPlanResult, error) {

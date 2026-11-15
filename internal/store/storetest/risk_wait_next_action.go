@@ -23,7 +23,7 @@ import (
 // completes or is cancelled. It also proves that a record-mode task keeps its
 // plan approval gate, and that a record-mode risk order never displaces
 // another queued or claimed order of the task (req-risk-based-review AC-1.6,
-// AC-4.8, AC-11.3; feature-risk-based-review RR-15, RR-16).
+// AC-4.8, AC-11.3; component-next-action, The statement, row 3a).
 func RunRiskWaitNextActionConformance(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	repo := "conveyor"

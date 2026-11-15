@@ -29,8 +29,9 @@ import (
 // round and an older head's open order never hold it; completing or cancelling
 // an enforcing task's risk order enqueues the queued task's dispatch on a
 // durable backend; a claimed risk order blocks no policy change; and merge and
-// close cancel the task's open risk orders (feature-risk-based-review RR-12,
-// RR-15; req-risk-based-review AC-1.6, AC-5.8 to AC-5.11, AC-12.3;
+// close cancel the task's open risk orders (component-submission-merge
+// invariants 68 and 69; component-review invariant 41; component-work-orders
+// invariant 66; req-risk-based-review AC-1.6, AC-5.8 to AC-5.11, AC-12.3;
 // component-risk-review invariants 12 and 13).
 func RunHeadRiskOrderConformance(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
@@ -418,7 +419,7 @@ func RunHeadRiskOrderConformance(t *testing.T, x Fixture) {
 	// drift, so reconcile enqueues nothing and reports no repair for it. Once
 	// the order ends, or for record and off tasks, other heads, a missing
 	// order, and plan orders, reconcile repairs a lost dispatch as before
-	// (feature-risk-based-review RR-12, RR-13; req-risk-based-review AC-1.6,
+	// (component-review invariant 41; req-risk-based-review AC-1.6,
 	// AC-5.10; component-risk-review invariant 13; component-durable-queue
 	// "Reconciliation between tasks and jobs"). The memory backend keeps no
 	// durable queue to reconcile.

@@ -1,7 +1,7 @@
 package riskpolicy
 
 // RiskSubjectKind names what a risk order rates: a plan version or a head
-// with its base (feature-risk-based-review RR-11).
+// with its base (component-work-orders invariant 62).
 type RiskSubjectKind string
 
 const (

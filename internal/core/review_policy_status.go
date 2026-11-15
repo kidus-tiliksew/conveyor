@@ -7,7 +7,7 @@ import (
 )
 
 // Risk policy status publication (req-risk-based-review AC-10.1, AC-10.2;
-// component-git-delivery invariant 37; feature-risk-based-review RR-9). An
+// component-git-delivery invariant 37). An
 // enforcing task holds at most one row per head. The row records the state
 // the head's requirements last called for (Desired) and the state GitHub last
 // accepted for the conveyor/review-policy context (Published). The handler

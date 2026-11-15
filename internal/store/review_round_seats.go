@@ -17,9 +17,9 @@ import (
 )
 
 // Review round seat sources (feature-review-seat-minimum RS-2; DEC-77,
-// DEC-123; req-review-gates-evidence AC-2.4, AC-2.7). Risk names a round whose
+// DEC-135; req-review-gates-evidence AC-2.4, AC-2.7). Risk names a round whose
 // seat count an enforcing task's tier set (req-risk-based-review AC-7.1;
-// feature-risk-based-review RR-5).
+// component-review invariant 2).
 const (
 	ReviewSeatSourceDeclared = "declared"
 	ReviewSeatSourcePlanned  = "planned"
@@ -145,9 +145,9 @@ func ReviewSeatMinimum(setup config.PolicyContract, workspaceSeats int) int {
 }
 
 // ReviewSeatFloor is the largest of the minimum, the planned count, and the
-// agent reviews an enforcing task's tier requires (DEC-123(2);
+// agent reviews an enforcing task's tier requires (DEC-135(2);
 // req-review-gates-evidence AC-2.3; req-risk-based-review REQ-7;
-// feature-risk-based-review RR-5). risk is 0 for a task that does not enforce.
+// component-review invariant 1). risk is 0 for a task that does not enforce.
 func ReviewSeatFloor(minimum int, planned *int, risk int) int {
 	if minimum < 1 {
 		minimum = 1
@@ -171,7 +171,7 @@ func ResolveReviewRoundSeats(in ReviewRoundSeatInputs) ReviewRoundSeatResolution
 	switch {
 	// A declaration that the submission admitted and that a later risk
 	// rating's agent reviews now exceed opens the tier's count with source
-	// risk (feature-risk-based-review RR-12; req-review-gates-evidence
+	// risk (component-review invariants 2 and 7; req-review-gates-evidence
 	// AC-2.3; req-risk-based-review AC-5.10, AC-7.1).
 	case in.ImplementationWorkOrderID != "" && in.DeclaredSeatCount != nil && !in.DeclarationConsumed && riskRaisedAboveDeclaration(in, minimum, floor):
 		result.SeatCount, result.Source = in.RiskSeatCount, ReviewSeatSourceRisk
@@ -276,7 +276,7 @@ type ReviewRoundSeatReader interface {
 // read omits them (feature-review-seat-minimum; component-work-orders,
 // Snapshot-free fold reads). An enforcing task's ratings give the tier's
 // agent reviews; the round-building command revalidates them in its
-// transaction (feature-risk-based-review RR-5).
+// transaction (component-review invariants 1 and 3).
 func LoadReviewRoundSeatInputs(ctx context.Context, reader ReviewRoundSeatReader, task core.Task, minimum, round int) (ReviewRoundSeatInputs, error) {
 	taskID := task.ID
 	orders, err := reader.ListWorkOrdersForTasks(ctx, []string{taskID})
@@ -371,7 +371,7 @@ type PolicyHandoffSeatInputs struct {
 	RiskRatings []core.RiskRating
 	// RiskOrders are the task's risk orders, read only for an enforcing
 	// task, so a handoff to review can wait for its head's risk order
-	// (feature-risk-based-review RR-12; component-risk-review invariant 13).
+	// (component-review invariant 41; component-risk-review invariant 13).
 	RiskOrders []core.RiskOrder
 }
 
@@ -440,7 +440,7 @@ type memoryReviewRoundSeats struct {
 }
 
 // Operator review-seat addition (feature-review-seat-minimum RS-5;
-// req-review-gates-evidence AC-2.5, AC-2.6; DEC-77, DEC-123).
+// req-review-gates-evidence AC-2.5, AC-2.6; DEC-77, DEC-135).
 
 var (
 	// ErrReviewRoundNotOpen refuses an addition to a task without an open

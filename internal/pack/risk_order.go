@@ -10,7 +10,7 @@ import (
 
 // RiskOrderContract states what one claimed risk order rates and what each
 // tier requires in the task's frozen policy (req-risk-based-review AC-12.5;
-// feature-risk-based-review RR-11). It names the subject by plan version or by
+// component-work-orders invariant 64). It names the subject by plan version or by
 // head and base commit, and the matched path rules by count only: their
 // descriptions come from the repository declaration and stay in the
 // structured risk_order field as data, never in the instructions (AC-5.7).

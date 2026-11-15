@@ -33,7 +33,8 @@ func riskTask(t *testing.T, ctx context.Context, st store.Store, id string, mode
 
 // TestRecordHeadPathRisk covers the shared path-recording operation that
 // submission and refresh call (req-risk-based-review AC-1.1, AC-3.2, AC-3.3,
-// AC-3.4, AC-3.5, AC-5.1, AC-5.4; feature-risk-based-review RR-2, RR-3).
+// AC-3.4, AC-3.5, AC-5.1, AC-5.4; component-risk-review invariants 6 and 15;
+// component-submission-merge invariant 67).
 func TestRecordHeadPathRisk(t *testing.T) {
 	base, head := strings.Repeat("b", 40), strings.Repeat("a", 40)
 	declared := []byte("schema_version: 1\nrules:\n  - paths: [\"internal/billing/**\"]\n    min_tier: high\n    description: billing\n    min_human_approvals: 2\n")

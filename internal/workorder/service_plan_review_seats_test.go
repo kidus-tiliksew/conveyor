@@ -23,7 +23,7 @@ import (
 // refused with the plan order left claimed and nothing written, an accepted
 // count is stored on the plan version through approval, and the latest
 // approved plan's count is the plan's contribution to the seat floor
-// (req-review-gates-evidence AC-2.8, AC-2.3, AC-2.4; DEC-123).
+// (req-review-gates-evidence AC-2.8, AC-2.3, AC-2.4; DEC-135).
 
 const planSeatsMarkdown = "## Approach\nPlan the panel.\n\n## Files touched\n- internal/workorder/service.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Drift.\n\n## Done criteria\n- The planned count persists."
 

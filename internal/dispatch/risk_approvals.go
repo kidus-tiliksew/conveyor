@@ -2,8 +2,8 @@ package dispatch
 
 // Counted human approvals at the merge gate of an enforcing task
 // (req-risk-based-review REQ-8, REQ-9, AC-8.3 to AC-8.8, AC-9.1 to AC-9.3;
-// req-review-gates-evidence AC-1.3; DEC-124; feature-risk-based-review RR-7;
-// component-submission-merge). Off and record tasks never reach this file:
+// req-review-gates-evidence AC-1.3; DEC-124; component-risk-review invariants
+// 19 to 23; component-submission-merge). Off and record tasks never reach this file:
 // DEC-64 and DEC-66 govern them unchanged.
 
 import (
@@ -259,7 +259,7 @@ func (d *Dispatcher) recordApprovalLocked(ctx context.Context, current core.Task
 // approval only at a ready head. It never merges. It returns the evaluation
 // after the act; *RiskApprovalPending reports a recorded approval that leaves
 // the task short, and a nil error means every requirement is met
-// (req-risk-based-review AC-8.3, AC-8.6; feature-risk-based-review RR-7).
+// (req-risk-based-review AC-8.3, AC-8.6; component-risk-review invariant 22).
 func (d *Dispatcher) RecordApproval(ctx context.Context, task core.Task, actor core.Actor, head string) (store.ApprovalEvaluation, error) {
 	var out store.ApprovalEvaluation
 	err := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {

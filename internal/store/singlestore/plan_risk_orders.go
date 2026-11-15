@@ -10,7 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// Plan risk orders on SingleStore (feature-risk-based-review RR-13;
+// Plan risk orders on SingleStore (component-plan-state invariants 9 and 10;
 // req-risk-based-review AC-4.7 to AC-4.9). Each helper runs inside the
 // caller's taskTx, which holds the task operation lock, so a plan version, its
 // plan-state move, and its risk order commit together.

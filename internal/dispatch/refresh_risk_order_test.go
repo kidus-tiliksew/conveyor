@@ -22,7 +22,7 @@ import (
 // risk order ends, while a record refresh opens its round at once; and that a
 // repeated refresh observation creates no second order
 // (req-risk-based-review AC-1.6, AC-5.8, AC-5.10, AC-5.11;
-// feature-risk-based-review RR-12).
+// component-submission-merge invariant 69).
 func TestRefreshCreatesTheHeadRiskOrder(t *testing.T) {
 	for _, mode := range []riskpolicy.Mode{riskpolicy.ModeRecord, riskpolicy.ModeEnforce} {
 		t.Run(string(mode), func(t *testing.T) {

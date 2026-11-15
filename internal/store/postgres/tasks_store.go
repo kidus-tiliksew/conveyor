@@ -189,7 +189,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'','',NULL,$10,$11)`,
 	if !spec.Approved {
 		// A plan filed for approval gets its risk order in the creating
 		// transaction; a plan the filer approves gets none
-		// (req-risk-based-review AC-4.7; feature-risk-based-review RR-13).
+		// (req-risk-based-review AC-4.7; component-plan-state invariant 9).
 		if request, ok := store.PlanRiskOrderRequest(task, nil, spec.Version, task.CreatedAt); ok {
 			_, _, err := createRiskOrderTx(ctx, tx, q, task, request)
 			return err

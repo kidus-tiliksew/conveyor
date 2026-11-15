@@ -82,7 +82,7 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 			}
 		}
 		// An enforcing task's round waits for its head's risk order
-		// (feature-risk-based-review RR-12; req-risk-based-review AC-5.10).
+		// (component-review invariant 41; req-risk-based-review AC-5.10).
 		if err := reviewRoundRiskHoldTx(ctx, tx, task, store.ReviewRoundHead(orders)); err != nil {
 			return err
 		}
@@ -399,7 +399,7 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 		}
 		if !completed {
 			// A verdict records no rating and adds no seat
-			// (req-risk-based-review AC-5.7; feature-risk-based-review RR-14).
+			// (req-risk-based-review AC-5.7; component-review invariant 13).
 			if err := taskEvent(ctx, tx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: reviewDecisionPayload(decision)}); err != nil {
 				return err
 			}

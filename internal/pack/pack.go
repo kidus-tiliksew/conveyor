@@ -21,8 +21,8 @@ import (
 type Loader struct{ Dir string }
 
 // pipelineStages lists the stages that load one role file each. The risk
-// stage's role file is pack/roles/risk.md (feature-risk-based-review RR-11;
-// component-cli-onboarding).
+// stage's role file is pack/roles/risk.md (component-work-orders invariant
+// 64; component-cli-onboarding).
 var pipelineStages = []core.Stage{core.StageTriage, core.StageSpec, core.StageImplement, core.StageVerify, core.StageReview, core.StageRisk}
 
 type Bundle struct {

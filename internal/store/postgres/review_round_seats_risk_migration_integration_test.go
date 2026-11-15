@@ -14,7 +14,7 @@ import (
 
 // TestReviewRoundSeatsRiskSourceMigrationIntegration upgrades a ledger from
 // version 162 through migration 163 (req-risk-based-review AC-7.1;
-// feature-risk-based-review RR-5): before it the column refuses the source
+// component-review invariant 2): before it the column refuses the source
 // risk, after it a round records risk, an unknown source is still refused, a
 // recorded source survives, and the migration replays cleanly.
 func TestReviewRoundSeatsRiskSourceMigrationIntegration(t *testing.T) {
