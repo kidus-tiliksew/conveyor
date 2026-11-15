@@ -50,6 +50,51 @@ const automaticRecoveryElapsedSQL = ` OR (
 			AND (next_automatic_recovery_at IS NULL OR next_automatic_recovery_at<=?)
 		)`
 
+// planGateRiskElapsedSQL selects the tasks of workspace ? whose plan gate
+// risk order the shared decision may act on: the risk order of the latest
+// plan version of an awaiting_human task at the plan_approval gate whose
+// frozen risk mode is enforce, in a recoverable stop (component-work-orders
+// invariant 46). It repeats the stop conditions of
+// automaticRecoveryElapsedSQL for the order w. The per-task transaction
+// decides again on locked rows.
+const planGateRiskElapsedSQL = `SELECT DISTINCT w.task_id FROM work_orders w
+		JOIN tasks t ON t.workspace_id=w.workspace_id AND t.id=w.task_id
+		JOIN risk_orders r ON r.workspace_id=w.workspace_id AND r.task_id=w.task_id AND r.work_order_id=w.id
+		WHERE w.workspace_id=? AND w.stage='risk'
+			AND t.state='awaiting_human' AND t.gate_kind='plan_approval'
+			AND COALESCE(JSON_EXTRACT_STRING(t.setup_contract,'risk','mode'),'')='enforce'
+			AND r.plan_version>0
+			AND EXISTS (SELECT 1 FROM task_specs s WHERE s.workspace_id=r.workspace_id AND s.task_id=r.task_id AND s.version=r.plan_version)
+			AND NOT EXISTS (SELECT 1 FROM task_specs later WHERE later.workspace_id=r.workspace_id AND later.task_id=r.task_id AND later.version>r.plan_version)
+			AND (w.retry_suppression_reason='' OR w.retry_suppression_reason='attempt retries exhausted')
+			AND JSON_LENGTH(w.checkpoint)=0
+			AND (
+				w.state='timed_out'
+				OR (w.state='queued' AND w.last_attempt_outcome='expired')
+				OR (w.state='queued' AND w.retry_suppressed AND w.retry_suppression_reason='attempt retries exhausted')
+				OR (w.state='claimed' AND w.lease_expires_at IS NOT NULL AND w.lease_expires_at<=?)
+			)
+			AND (w.next_automatic_recovery_at IS NULL OR w.next_automatic_recovery_at<=?)`
+
+// planGateRiskOrderIDTx resolves, inside the clock's task transaction, the
+// risk order the decision may act for while the task waits at its plan
+// approval gate: the open risk order of the task's latest plan version, which
+// the gate holds (component-work-orders invariant 46).
+func planGateRiskOrderIDTx(ctx context.Context, tx *sql.Tx, task core.Task) (string, error) {
+	if !store.PlanGateRiskTask(task) {
+		return "", nil
+	}
+	gate := 0
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM task_specs WHERE workspace_id=? AND task_id=?`, documentWorkspace(ctx), task.ID).Scan(&gate); err != nil {
+		return "", err
+	}
+	orders, err := taskRiskOrdersTx(ctx, tx, task.ID)
+	if err != nil {
+		return "", err
+	}
+	return store.PlanGateRiskOrderID(task, orders, gate), nil
+}
+
 // clockOrderRead names a point where the order clock has read a task's orders.
 type clockOrderRead int
 
@@ -134,6 +179,10 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx *sql.Tx, taskID
 		return 0, err
 	}
 	noteClockOrderRead(ctx, clockOrderReadRecovery)
+	planGateRiskOrderID, err := planGateRiskOrderIDTx(ctx, tx, task)
+	if err != nil {
+		return 0, err
+	}
 	sort.Slice(orders, func(i, j int) bool {
 		if !orders[i].QueueEnteredAt.Equal(orders[j].QueueEnteredAt) {
 			return orders[i].QueueEnteredAt.Before(orders[j].QueueEnteredAt)
@@ -156,7 +205,7 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx *sql.Tx, taskID
 			}
 			continue
 		}
-		decision := store.DecideAutomaticRecovery(policy, task, order, now)
+		decision := store.DecideAutomaticRecoveryAtPlanGate(policy, task, order, planGateRiskOrderID, now)
 		switch decision.Kind {
 		case store.AutomaticRecoverySchedule:
 			store.ScheduleAutomaticRecovery(&order, decision)

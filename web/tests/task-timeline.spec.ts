@@ -2835,7 +2835,7 @@ function riskAgentRating(
     ...subject,
     risk_work_order_id: `${taskId}-risk-${n}`,
     risk_model: model,
-    ...('head_sha' in subject ? { covered_paths: ['web/src/app.tsx'] } : {}),
+    ...('head_sha' in subject ? { covered_path_count: 1 } : {}),
     created_at: minutes(n * 10 + 2),
   }
 }

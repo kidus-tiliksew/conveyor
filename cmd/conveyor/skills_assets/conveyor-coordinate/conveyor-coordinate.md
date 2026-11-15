@@ -339,7 +339,7 @@ invariant 13; component-plan-state invariant 10; component-review invariant
 
 - **Enforce.** Plan approval waits for the plan version's risk order, and
   Conveyor refuses the approval with `plan_risk_rating_open` while the order
-  is queued or claimed. Do not record a plan approval then. A review round
+  is neither completed nor cancelled. Do not record a plan approval then. A review round
   opens only after the head's risk order completes or is cancelled.
   Verification runs beside the risk order and does not wait.
 - **Record.** Nothing waits. Start the risk thread anyway. The plan gate,

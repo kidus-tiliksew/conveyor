@@ -578,15 +578,25 @@ func WorkOrderHoldsStage(orders []WorkOrder, stage Stage) (WorkOrder, bool) {
 // older order no longer blocks. For review the latest order is one seat of
 // the latest round, and any seat of that round in a holding state holds the
 // stage, so a stale or timed-out seat is redispatched rather than re-rounded.
+// A risk order is created beside the task's other orders and never counts as
+// the latest order: it releases no hold and holds no stage of its own
+// (component-work-orders invariants 2 and 62; DEC-135(10)).
 // Stored and read-time projected states map onto the same set, so durable
 // reconcile filters use the same predicate (component-durable-queue
 // "Reconciliation between tasks and jobs").
 
 func WorkOrderBlocksStageMint(orders []WorkOrder, stage Stage) (WorkOrder, bool) {
-	if len(orders) == 0 {
+	latestIndex := -1
+	for i := len(orders) - 1; i >= 0; i-- {
+		if orders[i].Stage != StageRisk {
+			latestIndex = i
+			break
+		}
+	}
+	if latestIndex < 0 {
 		return WorkOrder{}, false
 	}
-	latest := orders[len(orders)-1]
+	latest := orders[latestIndex]
 	if latest.Stage != stage {
 		return WorkOrder{}, false
 	}

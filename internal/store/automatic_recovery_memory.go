@@ -20,13 +20,35 @@ func (m *memory) recoveryPolicyLocked(workspace string) (config.RecoveryPolicy, 
 	return config.DefaultRecoveryPolicy(), config.DefaultWorkOrderQueueTimeout
 }
 
-func (m *memory) automaticRecoveryCandidateLocked(order core.WorkOrder, now time.Time) bool {
+// planGateRiskOrderIDLocked resolves the risk order the clock may act for
+// while task waits at its plan approval gate (component-work-orders invariant
+// 46): the open risk order of the task's latest plan version, which the gate
+// holds. A risk order is stored under the workspace of the act that created
+// it, so the task's workspace is read first and the caller's second.
+func (m *memory) planGateRiskOrderIDLocked(ctx context.Context, task core.Task) string {
+	if !PlanGateRiskTask(task) {
+		return ""
+	}
+	versions := m.specs[task.ID]
+	if len(versions) == 0 {
+		return ""
+	}
+	gate := versions[len(versions)-1].Version
+	for _, workspace := range []string{task.Workspace, workspaceOrDefault(ctx, task.Workspace)} {
+		if id := PlanGateRiskOrderID(task, m.taskRiskOrdersLocked(workspace, task.ID), gate); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func (m *memory) automaticRecoveryCandidateLocked(ctx context.Context, order core.WorkOrder, now time.Time) bool {
 	task := m.tasks[order.TaskID]
 	policy, _ := m.recoveryPolicyLocked(task.Workspace)
 	if policy.AutomaticRecoveries == 0 {
 		return false
 	}
-	if task.State != core.TaskQueued && task.State != core.TaskRunning || core.TaskTerminal(task.State) {
+	if !AutomaticRecoveryTaskAdmits(task, order, m.planGateRiskOrderIDLocked(ctx, task)) {
 		return false
 	}
 	if order.RetrySuppressionReason != "" && order.RetrySuppressionReason != core.AttemptRetriesExhaustedReason {
@@ -47,6 +69,10 @@ func (m *memory) applyAutomaticRecoveryLocked(ctx context.Context, taskID string
 		return 0, nil
 	}
 	policy, queueTimeout := m.recoveryPolicyLocked(task.Workspace)
+	// The plan gate's risk order is resolved under the mutex the decision
+	// runs in, so a completion, cancellation, or later plan version that
+	// committed before this tick is seen (component-work-orders invariant 46).
+	planGateRiskOrderID := m.planGateRiskOrderIDLocked(ctx, task)
 	var orders []core.WorkOrder
 	for _, order := range m.workOrders {
 		if order.TaskID == taskID {
@@ -79,7 +105,7 @@ func (m *memory) applyAutomaticRecoveryLocked(ctx context.Context, taskID string
 			}
 			continue
 		}
-		decision := DecideAutomaticRecovery(policy, task, current, now)
+		decision := DecideAutomaticRecoveryAtPlanGate(policy, task, current, planGateRiskOrderID, now)
 		switch decision.Kind {
 		case AutomaticRecoverySchedule:
 			ScheduleAutomaticRecovery(&current, decision)

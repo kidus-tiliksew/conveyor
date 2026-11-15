@@ -49,7 +49,7 @@ func TestRiskAgentSourceAndOrders(t *testing.T) {
 	agent := core.RiskRating{Source: core.RiskSourceRiskAgent, Tier: riskpolicy.TierHigh, Reason: "schema change", RiskWorkOrderID: "t-risk-2", RiskModel: "rater-model", HeadSHA: "abc", BaseSHA: "def"}
 	historical := core.RiskRating{Source: core.RiskSourcePlan, Tier: riskpolicy.TierMedium, Reason: "plan line", PlanVersion: 1}
 	rated := &core.TaskRisk{Mode: riskpolicy.ModeRecord, Tier: riskpolicy.TierHigh, Source: core.RiskSourceRiskAgent, Reason: "schema change",
-		RequiredAgentReviews: 1, Ratings: []core.RiskRating{historical, agent},
+		RequiredAgentReviews: 1, Ratings: core.ServeRiskRatings([]core.RiskRating{historical, agent}),
 		Orders: []core.TaskRiskOrder{
 			{WorkOrderID: "t-risk-1", State: core.WorkOrderCancelled, Subject: core.RiskOrderSubject{PlanVersion: 1}},
 			{WorkOrderID: "t-risk-2", State: core.WorkOrderCompleted, Subject: core.RiskOrderSubject{HeadSHA: "abc", BaseSHA: "def"}, Model: "rater-model"},
@@ -65,7 +65,7 @@ func TestRiskAgentSourceAndOrders(t *testing.T) {
 	if riskOrderLines(nil) != nil {
 		t.Fatal("an off task listed risk orders")
 	}
-	planSetter := &core.TaskRisk{Mode: riskpolicy.ModeRecord, Tier: riskpolicy.TierMedium, Source: core.RiskSourcePlan, Reason: "plan line", RequiredAgentReviews: 1, Ratings: []core.RiskRating{historical}}
+	planSetter := &core.TaskRisk{Mode: riskpolicy.ModeRecord, Tier: riskpolicy.TierMedium, Source: core.RiskSourcePlan, Reason: "plan line", RequiredAgentReviews: 1, Ratings: core.ServeRiskRatings([]core.RiskRating{historical})}
 	if got := riskSummaryLine(planSetter); !strings.HasPrefix(got, "Risk tier: medium from plan (mode record): plan line;") {
 		t.Fatalf("historical plan line=%q", got)
 	}

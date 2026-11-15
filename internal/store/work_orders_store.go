@@ -1819,7 +1819,7 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 		// A released authority conflict is a candidate whatever the recovery
 		// bound (feature-bounded-automatic-recovery AR-3a).
 		answered := AnsweredAuthorityCandidate(m.tasks[order.TaskID], order)
-		if elapsedExecution || elapsedClaim || legacyStale || answered || m.automaticRecoveryCandidateLocked(order, now) {
+		if elapsedExecution || elapsedClaim || legacyStale || answered || m.automaticRecoveryCandidateLocked(ctx, order, now) {
 			seen[order.TaskID] = struct{}{}
 		}
 	}

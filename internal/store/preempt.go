@@ -59,6 +59,21 @@ func RefuseReviewSeatRetirement(order core.WorkOrder) error {
 	return fmt.Errorf("%w: work order %s is a queued review seat, and a seat cannot be removed from its round", ErrWorkOrderPreemptConflict, order.ID)
 }
 
+// RefuseRiskOrderRetirement refuses retiring a queued or stale risk order of
+// a task whose frozen risk mode is enforce. A retired risk order is no longer
+// open, so it would end the plan approval's or the review round's wait with no
+// rating. Under record the retirement stands, and preempting a claimed risk
+// order requeues it and removes nothing, so both stay legal. Each backend asks
+// before any write, on the order's stored state and the task it reads under
+// its own lock (component-work-orders invariant 43; req-risk-based-review
+// AC-4.8, AC-5.10, AC-12.3; DEC-135(11)).
+func RefuseRiskOrderRetirement(task core.Task, order core.WorkOrder) error {
+	if order.Stage != core.StageRisk || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderStale) || !task.SetupContract.Risk.Enforcing() {
+		return nil
+	}
+	return fmt.Errorf("%w: work order %s is an open risk order of a task whose risk mode is enforce, and retiring it would end a wait with no rating", ErrWorkOrderPreemptConflict, order.ID)
+}
+
 func (m *memory) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, raw WorkOrderPreemptRequest) (WorkOrderPreemptResult, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return WorkOrderPreemptResult{}, err
@@ -84,6 +99,9 @@ func (m *memory) PreemptWorkOrderCommand(ctx context.Context, lease taskops.Task
 		return WorkOrderPreemptResult{}, fmt.Errorf("work-order preempt requires a valid taskops lease")
 	}
 	if err := RefuseReviewSeatRetirement(order); err != nil {
+		return WorkOrderPreemptResult{}, err
+	}
+	if err := RefuseRiskOrderRetirement(m.tasks[order.TaskID], order); err != nil {
 		return WorkOrderPreemptResult{}, err
 	}
 	now := time.Now().UTC()
