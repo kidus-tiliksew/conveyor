@@ -11,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 // SingleStore reports query time and count, never acquisition latency.
@@ -71,4 +72,59 @@ func TestServerTimingHTTPIntegration(t *testing.T) {
 	if values := recorder.Result().Header.Values("Server-Timing"); recorder.Code != http.StatusOK || len(values) != 0 {
 		t.Fatalf("/healthz = %d Server-Timing %q", recorder.Code, values)
 	}
+}
+
+// The requirement detail reads its tasks and their plans in a fixed number of
+// statements: a requirement with 2 serving tasks and one with 40 serving
+// tasks and 10 confirmed links with plan versions report the same count
+// through the request's database metrics (component-persistence).
+func TestRequirementDetailStatementCountIntegration(t *testing.T) {
+	st := integrationStore(t)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "server-timing")
+	if _, err := st.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Timing", Email: "owner@example.test", DisplayName: "Owner"}, "server-timing-token"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "server-timing"}); err != nil {
+		t.Fatal(err)
+	}
+	server := httpapi.NewServer(st)
+	server.Workspaces = st
+	server.Workspace = "server-timing"
+	handler := server.Handler()
+	small := storetest.SeedRequirementDetail(t, st, ctx, "small", 2, 1)
+	large := storetest.SeedRequirementDetail(t, st, ctx, "large", 40, 10)
+	read := func(id string) (uint64, int) {
+		t.Helper()
+		get := func() *httptest.ResponseRecorder {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/v1/requirements/"+id, nil)
+			request.Header.Set("Authorization", "Bearer server-timing-token")
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("GET /v1/requirements/%s = %d %s", id, recorder.Code, recorder.Body)
+			}
+			return recorder
+		}
+		// The first verification of the fixture token stamps its last use;
+		// the measured request verifies by a read alone.
+		get()
+		recorder := get()
+		values := recorder.Result().Header.Values("Server-Timing")
+		if len(values) != 1 {
+			t.Fatalf("Server-Timing values = %q", values)
+		}
+		match := singleStoreServerTiming.FindStringSubmatch(values[0])
+		if match == nil {
+			t.Fatalf("Server-Timing = %q", values[0])
+		}
+		count, err := strconv.ParseUint(match[1], 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return count, recorder.Body.Len()
+	}
+	smallQueries, smallBytes := read(small)
+	largeQueries, largeBytes := read(large)
+	t.Logf("MEASUREMENT singlestore requirement detail: small (2 serving tasks, 1 confirmed link) statements=%d bytes=%d; large (40 serving tasks, 10 confirmed links) statements=%d bytes=%d",
+		smallQueries, smallBytes, largeQueries, largeBytes)
 }

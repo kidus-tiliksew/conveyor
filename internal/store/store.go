@@ -124,6 +124,7 @@ type Store interface {
 	RequirementInsightStore
 	ReconcileReadStore
 	TaskDetailReadStore
+	RequirementDetailReadStore
 	// DeadlineReader serves the deadline alarm (component-persistence,
 	// Deadlines).
 	DeadlineReader
