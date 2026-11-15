@@ -3,6 +3,7 @@ import { expect, type Locator, type Page, type Route } from '@playwright/test'
 import type { ActivityItem, TaskReviewSeatMetadata, TaskSummaries, WorkOrder } from '../src/lib/types'
 import { boundedView, type CompleteActivity, test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
+import { expectNoNextActionOmissions } from './helpers/next-action-omissions'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 import { waitForSheetSettled } from './helpers/sheet'
 import { activityFrame, controlTaskStreams, readyFrame } from './helpers/task-streams'
@@ -3094,21 +3095,22 @@ async function routeSevenCitationCheckpoint(page: Page, confirmed: Set<string>) 
   return { confirms, recoveries }
 }
 
-test('an authority-conflict checkpoint states the server question and groups seven citations into four documents', async ({
+test('an authority-conflict checkpoint states the decision request and groups seven citations into four documents', async ({
   page,
 }) => {
   const confirmed = new Set<string>()
   const { confirms, recoveries } = await routeSevenCitationCheckpoint(page, confirmed)
   await page.goto('/w/demo/tasks/operator-checkpoint/full')
 
-  // The current state is the server's label, the agent's decision request, and
-  // the server's question; nothing reads as a failure that needs recovery.
+  // The current state is the server's label and the agent's decision request;
+  // the server's question stays off the dashboard (req-operator-next-action
+  // AC-1.6, AC-1.9). Nothing reads as a failure that needs recovery.
   const banner = nextActionBox(page)
   await expect(nextActionBox(page).getByText('Cited revisions need a decision', { exact: true })).toBeVisible()
   await expect(banner.getByText(sevenCitationDecision, { exact: true })).toBeVisible()
-  await expect(
-    banner.getByText('Will you confirm or dismiss the cited revisions, then recover the order with direction?'),
-  ).toBeVisible()
+  await expectNoNextActionOmissions(banner, {
+    sentences: ['Will you confirm or dismiss the cited revisions, then recover the order with direction?'],
+  })
   await expect(page.getByText(/recovery needed/i)).toHaveCount(0)
   await expect(page.getByText(/try again/i)).toHaveCount(0)
 
@@ -3323,7 +3325,8 @@ test('a generic decision request keeps the generic direction guidance', async ({
   const banner = nextActionBox(page)
   await expect(nextActionBox(page).getByText('Agent question', { exact: true })).toBeVisible()
   await expect(banner.getByText('Should the migration keep the legacy column?', { exact: true })).toBeVisible()
-  await expect(banner.getByText('Answer the agent?')).toBeVisible()
+  // The agent's decision request stays; the server's question does not (AC-1.6, AC-1.9).
+  await expectNoNextActionOmissions(banner, { sentences: ['Answer the agent?'] })
   await expect(page.getByText(/recovery needed/i)).toHaveCount(0)
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(card.getByRole('button', { name: /& resume$/ })).toHaveCount(0)
