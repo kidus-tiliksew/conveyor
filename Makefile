@@ -378,7 +378,7 @@ test-github-apps:
 test-task-start-over:
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/core ./internal/taskops ./internal/store ./internal/store/storetest ./internal/store/postgres ./internal/store/singlestore ./internal/httpapi -run 'TestTaskStartOver|TestStartOver|TestMemoryConformance|TestBackendCoverage|TestEmbeddedMigrationVersionsAreUnique'
 
-.PHONY: test-document-events test-document-event-plans
+.PHONY: test-document-events test-document-event-plans test-document-event-plans-singlestore _test-document-event-plans-singlestore
 # Focused iteration; the full local and configured backend gates remain required.
 test-document-events:
 	go test -v ./internal/store ./internal/httpapi ./internal/store/postgres ./internal/store/singlestore -run 'TestMemoryConformance/Requirements/.*document|TestPostgresConformanceIntegration/Requirements/.*document|TestSingleStoreConformanceIntegration/Requirements/.*document|TestDocumentEvent|TestSystemDesignEventLookupIndexIntegration' -count=1
@@ -387,6 +387,20 @@ test-document-events:
 test-document-event-plans:
 	@test -n "$$CONVEYOR_TEST_DATABASE_URL" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
 	CONVEYOR_DOCUMENT_EVENT_MEASUREMENT=370000 go test -v ./internal/store/postgres -run '^TestDocumentEventQueryPlansIntegration$$' -count=1 -timeout=15m
+
+# Supply a SingleStore server whose configured database ends in _test through
+# CONVEYOR_TEST_SINGLESTORE_URL. The fixture lifecycle creates and removes one
+# owned database. DOCUMENT_EVENT_MEASUREMENT=0 checks results and plans only.
+DOCUMENT_EVENT_MEASUREMENT ?= 200000
+test-document-event-plans-singlestore: _singlestore-integration-url-check
+	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) --no-print-directory _test-document-event-plans-singlestore; else \
+		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/singlestore-document-plans-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
+		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend singlestore --url-env CONVEYOR_TEST_SINGLESTORE_URL --prepared-url-env CONVEYOR_TEST_SINGLESTORE_URL --state "$$state" -- $(MAKE) --no-print-directory _test-document-event-plans-singlestore; \
+	fi
+
+_test-document-event-plans-singlestore:
+	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "SingleStore fixture was not prepared" >&2; exit 1)
+	CONVEYOR_DOCUMENT_EVENT_MEASUREMENT=$(DOCUMENT_EVENT_MEASUREMENT) $(GO_TEST_REQUIRE_TESTS) -v ./internal/store/singlestore -run '^TestDocumentEventQueryPlansIntegration$$' -count=1 -timeout=45m
 
 # Focused context-entry and corpus regressions; full validation remains make test.
 .PHONY: test-context-eligibility
