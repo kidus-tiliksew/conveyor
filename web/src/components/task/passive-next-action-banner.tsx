@@ -1,26 +1,25 @@
-import { Copy, Cpu, ListTree, OctagonX } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { Copy, Cpu, OctagonX } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { selectModelLogo } from '../../lib/model-logo'
 import type { ActivityItem, NextAction, WorkOrder } from '../../lib/types'
 import { cn, fullTime } from '../../lib/utils'
 import { Disclosure } from '../ui/disclosure'
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '../ui/dropdown-menu'
 import { logoAssets } from './model-logo-assets'
-import { NextActionIDList } from './next-action-parts'
 import { PersonAvatar, personLabel, runClaimantUserId, usePersonResolver } from './run-by'
 import { WorkOrderPreemptControl } from './work-order-preempt-card'
 
 // The Timeline's banner for a `working` or `queued` statement that offers no
 // choice (component-web-task-surfaces invariant 32; req-operator-next-action
-// AC-7.1). It prints the server's label, actor, summary, if-ignored sentence,
-// and identifiers, and derives none of them (AC-1.7, AC-1.8;
-// component-next-action invariant 33). It prints no deadline, time left, or
-// deadline progress, and takes no tone from the deadline (DEC-129(1)). The
-// summary is the banner's one heading; the actor and the if-ignored sentence
-// sit in the chip's tooltip and accessible description; the identifiers and
-// the stop act sit behind one "More actions" menu. The model logo and the
-// elapsed time come from the stated current order alone, and a field the
-// order lacks prints nothing.
+// AC-7.1). It prints the server's label and summary, and derives neither
+// (AC-1.7; component-next-action invariant 33). It prints no deadline, time
+// left, or deadline progress, and takes no tone from the deadline
+// (DEC-129(1)). It prints no actor, if-ignored sentence, or identifier list,
+// not even behind a tooltip or menu (AC-1.9; component-next-action invariant
+// 41). The summary is the banner's one heading; the status chip is a plain
+// label; Copy order ID and the stop act sit behind one "More actions" menu.
+// The model logo and the elapsed time come from the stated current order
+// alone, and a field the order lacks prints nothing.
 //
 // The layout is one grid (DEC-129(3)). Below 640 px it has two lines: the
 // claimant avatar, the summary, and the menu; then the status chip, the model
@@ -36,7 +35,7 @@ export function PassiveNextActionBanner({
   action: NextAction
   preemptOrder: WorkOrder | undefined
 }) {
-  const [panel, setPanel] = useState<'ids' | 'stop' | null>(null)
+  const [panel, setPanel] = useState<'stop' | null>(null)
   const [copy, setCopy] = useState<'idle' | 'copied' | 'failed'>('idle')
   const copyAttempt = useRef(0)
   const section = useRef<HTMLElement>(null)
@@ -56,8 +55,8 @@ export function PassiveNextActionBanner({
 
   // `navigator.clipboard` is undefined outside a secure context, `writeText`
   // can throw before it returns a promise, and the browser can refuse the
-  // write. Each is a failed copy: the banner says so and points to Show IDs,
-  // and no error escapes the menu's handler. Only the newest attempt sets the
+  // write. Each is a failed copy: the banner says so, and no error escapes the
+  // menu's handler. Only the newest attempt sets the
   // result, so a slow earlier attempt cannot overwrite a later one. The result
   // is a local copy outcome, not a server statement (AC-1.7, AC-1.8).
   const copyOrderID = async (id: string) => {
@@ -157,10 +156,6 @@ export function PassiveNextActionBanner({
               Copy order ID
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem onSelect={() => setPanel((open) => (open === 'ids' ? null : 'ids'))}>
-            <ListTree aria-hidden="true" />
-            {panel === 'ids' ? 'Hide IDs' : 'Show IDs'}
-          </DropdownMenuItem>
           {preemptOrder && (
             <>
               <DropdownMenuSeparator />
@@ -177,13 +172,8 @@ export function PassiveNextActionBanner({
       </span>
       {copy === 'failed' && (
         <p data-copy-failed role="alert" className="mt-2 text-xs text-failure">
-          Could not copy the order ID. Use Show IDs to view it.
+          Could not copy the order ID.
         </p>
-      )}
-      {panel === 'ids' && (
-        <div data-next-action-ids className="mt-2">
-          <NextActionIDList value={{ details: action.details, current_order: action.current_order }} />
-        </div>
       )}
       {preemptOrder && (
         <div className={cn(panel === 'stop' && 'mt-2')}>
@@ -198,62 +188,33 @@ export function PassiveNextActionBanner({
   )
 }
 
-// The label as a compact status chip. The actor and the if-ignored sentence
-// are its tooltip, which opens on hover, keyboard focus, and tap, and the
-// if-ignored sentence is also its accessible description, so it never depends
-// on hover alone (component-next-action invariant 33). On a coarse pointer the
-// chip keeps its 24 px height: it opts out of the shared 40 px minimum and a
-// pseudo-element outside the layout box gives it 40 px of tap height, without
-// reaching the model logo's tap area (DEC-129(4)).
+// The label as a compact status chip: a plain label with no tooltip, no
+// accessible description, and no actor in its name (component-next-action
+// invariant 41). It keeps its 24 px height and, for a working order, a few
+// pulses when the banner mounts (DEC-129).
 function StatusChip({ action, className }: { action: NextAction; className?: string }) {
-  const descriptionID = useId()
   const working = action.kind === 'working'
-  const ignored = action.if_ignored ? `If ignored: ${action.if_ignored}` : ''
   return (
-    <>
-      <Disclosure
-        className={className}
-        contentClassName="space-y-1"
-        content={
-          <>
-            <span className="block capitalize">{action.actor}</span>
-            {ignored && <span className="block text-muted">{ignored}</span>}
-          </>
-        }
-        renderTrigger={(trigger) => (
-          <button
-            {...trigger}
-            aria-label={`${action.label}, ${action.actor}`}
-            aria-describedby={ignored ? descriptionID : undefined}
-            data-actor={action.actor}
-            data-status-chip={action.kind}
-            className={cn(
-              trigger.className,
-              'relative h-6 shrink-0 gap-1.5 rounded-[5px] bg-raised px-1.5 text-xs font-medium whitespace-nowrap text-muted outline-none focus-visible:outline-2 focus-visible:outline-primary',
-              'pointer-coarse:min-h-0 pointer-coarse:min-w-0 pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-2',
-            )}
-          >
-            <span aria-hidden="true" className="relative flex size-2">
-              {/* A few pulses when the banner mounts, then a steady dot: an
-                  endless animation would keep the Board sheet from settling. */}
-              {working && (
-                <span
-                  data-pulse
-                  className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60 [animation-iteration-count:3] motion-reduce:animate-none"
-                />
-              )}
-              <span className={cn('relative inline-flex size-2 rounded-full', working ? 'bg-primary' : 'bg-faint')} />
-            </span>
-            {action.label}
-          </button>
-        )}
-      />
-      {ignored && (
-        <span id={descriptionID} className="sr-only">
-          {ignored}
-        </span>
+    <span
+      data-status-chip={action.kind}
+      className={cn(
+        'inline-flex h-6 min-w-0 shrink-0 items-center gap-1.5 rounded-[5px] bg-raised px-1.5 text-xs font-medium whitespace-nowrap text-muted',
+        className,
       )}
-    </>
+    >
+      <span aria-hidden="true" className="relative flex size-2">
+        {/* A few pulses when the banner mounts, then a steady dot: an
+            endless animation would keep the Board sheet from settling. */}
+        {working && (
+          <span
+            data-pulse
+            className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60 [animation-iteration-count:3] motion-reduce:animate-none"
+          />
+        )}
+        <span className={cn('relative inline-flex size-2 rounded-full', working ? 'bg-primary' : 'bg-faint')} />
+      </span>
+      {action.label}
+    </span>
   )
 }
 

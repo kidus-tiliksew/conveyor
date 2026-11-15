@@ -2,6 +2,7 @@ import { expect, type Locator, type Page, type TestInfo } from '@playwright/test
 import type { NextAction, WorkOrder } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
+import { expectNoNextActionOmissions } from './helpers/next-action-omissions'
 
 // Task detail leads with the server's next action and acts only through the
 // server's choices (feature-operator-next-action NA-6, NA-4; AC-7.1, AC-1.7).
@@ -95,6 +96,13 @@ const gateAction: NextAction = {
   details: { gate_kind: 'plan_approval', reason_code: 'gate.plan' },
 }
 
+// The fields of gateAction that task detail withholds (AC-1.9).
+const gateOmissions = {
+  actor: 'operator',
+  sentences: ['Does this plan do what the task asks?', 'Implementation never starts.'],
+  identifiers: ['order-spec-7', 'gate.plan'],
+}
+
 async function mockAPI(page: Page, detail: () => object, action: () => NextAction, role = 'operator') {
   const posts: { method: string; path: string; body: unknown }[] = []
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
@@ -141,15 +149,14 @@ for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`
     const card = page.getByRole('region', { name: 'Next action' })
     await expect(card.getByText('The plan for Card task waits for your approval.')).toBeVisible()
     await expect(card.getByText('Approve the plan')).toBeVisible()
-    await expect(card.locator('[data-actor]')).toHaveText('operator')
     // One decision has one surface per view: on the Timeline the card is a
-    // one-line pointer, and the gate states everything else beside its choices.
+    // one-line pointer, and the gate carries the choices and the deadline.
     const gate = page.getByRole('region', { name: 'Human gate' })
     await expect(card.locator('[data-go-to-gate]')).toBeVisible()
-    await expect(gate.getByText('Does this plan do what the task asks?')).toBeVisible()
-    await expect(gate.getByText('If ignored: Implementation never starts.')).toBeVisible()
     await expect(gate.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-13T10:00:00Z')
-    await expect(card.getByText('Does this plan do what the task asks?')).toHaveCount(0)
+    // Neither the one-line card nor the gate prints the actor, the question,
+    // the if-ignored sentence, or the identifiers (AC-1.9).
+    for (const surface of [card, gate]) await expectNoNextActionOmissions(surface, gateOmissions)
 
     // Only allowed choices this client can build render, and the label is the
     // server's. With the gate open they render once, beside its evidence, and
@@ -165,16 +172,6 @@ for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`
     await expect(choices.nth(1)).toBeDisabled()
     await expect(choices.nth(2)).toBeDisabled()
 
-    // Show IDs discloses the server's identifiers as a labelled list, never
-    // as a JSON object (req-operator-next-action AC-1.8).
-    const ids = gate.locator('details')
-    await expect(ids.getByText('order-spec-7')).toBeHidden()
-    await ids.getByText('Show IDs').click()
-    await expect(ids.locator('dt')).toHaveText(['Order ID', 'Stage', 'Gate kind', 'Reason code'])
-    await expect(ids.locator('dd')).toHaveText(['order-spec-7', 'spec', 'plan_approval', 'gate.plan'])
-    await expect(ids).not.toContainText('{')
-    await expect(ids).not.toContainText('"')
-
     await choices.getByText('Approve plan').click()
     await expect.poll(() => posts.length).toBe(1)
     expect(posts[0].method).toBe('PUT')
@@ -183,37 +180,45 @@ for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`
   })
 }
 
-// Nested next-action details print as text under their own labels: a list
-// joins its items and an object lists its fields, so no braces or quotes reach
-// the disclosure (req-operator-next-action AC-1.8, AC-7.1).
-test('Show IDs flattens nested next-action details into labelled text', async ({ page }) => {
-  const nested: NextAction = {
-    ...gateAction,
-    details: {
-      ...gateAction.details,
-      order_ids: ['order-spec-6', 'order-spec-7'],
-      pending_proposals: [
-        { tier: 'requirement', id: 'req-cards', version: 3 },
-        { tier: 'system_design', id: 'component-cards', version: 8 },
-      ],
-    },
-  }
-  await mockAPI(
-    page,
-    () => activity('awaiting_human', nested),
-    () => nested,
-  )
-  await page.goto(`/w/demo/tasks/${taskId}/full`)
-  const ids = page.getByRole('region', { name: 'Human gate' }).locator('details[data-next-action-ids]')
-  await ids.getByText('Show IDs').click()
-  await expect(ids.locator('[data-next-action-id="Order IDs"] dd')).toHaveText('order-spec-6, order-spec-7')
-  await expect(ids.locator('[data-next-action-id="Pending proposals"] dd')).toHaveText(
-    'Tier: requirement, ID: req-cards, Version: 3; Tier: system_design, ID: component-cards, Version: 8',
-  )
-  await expect(ids.locator('pre')).toHaveCount(0)
-  await expect(ids).not.toContainText('{')
-  await expect(ids).not.toContainText('"')
-})
+// Nested next-action details reach no task detail surface: the CLI and MCP
+// reads keep them (req-operator-next-action AC-1.8, AC-1.9).
+for (const view of ['timeline', 'flow'] as const) {
+  test(`nested next-action details stay off the ${view} card and gate`, async ({ page }) => {
+    const nested: NextAction = {
+      ...gateAction,
+      details: {
+        ...gateAction.details,
+        order_ids: ['order-spec-6', 'order-spec-7'],
+        pending_proposals: [
+          { tier: 'requirement', id: 'req-cards', version: 3 },
+          { tier: 'system_design', id: 'component-cards', version: 8 },
+        ],
+      },
+    }
+    await page.addInitScript((value) => localStorage.setItem('conveyor-task-activity-view', value), view)
+    await mockAPI(
+      page,
+      () => activity('awaiting_human', nested),
+      () => nested,
+    )
+    await page.route(`**/v1/tasks/${taskId}/flow*`, (route) => route.fulfill({ status: 500, json: {} }))
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const card = page.getByRole('region', { name: 'Next action' })
+    await expect(card.getByText('The plan for Card task waits for your approval.')).toBeVisible()
+    const omissions = {
+      ...gateOmissions,
+      identifiers: [...gateOmissions.identifiers, 'order-spec-6', 'req-cards', 'component-cards'],
+    }
+    await expectNoNextActionOmissions(card, omissions)
+    if (view === 'timeline')
+      await expectNoNextActionOmissions(page.getByRole('region', { name: 'Human gate' }), omissions)
+    // The Flow card carries the choices and the gate's deadline itself.
+    if (view === 'flow') {
+      await expect(card.locator('[data-next-action-choices]').getByRole('button').first()).toHaveText('Approve plan')
+      await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-13T10:00:00Z')
+    }
+  })
+}
 
 // A running agent attempt reads as one banner on the Timeline: the server's
 // label as a status chip, its summary as the one heading, the current order's
@@ -278,6 +283,13 @@ const queuedOrder = {
   activity_snapshot: undefined,
 } as unknown as WorkOrder
 
+// The fields of workingAction that task detail withholds (AC-1.9).
+const workingOmissions = {
+  actor: 'agent',
+  sentences: ['The attempt continues.'],
+  identifiers: ['order-impl-running'],
+}
+
 const queuedAction: NextAction = {
   label: 'Queued',
   actor: 'agent',
@@ -333,12 +345,20 @@ for (const surface of surfaces) {
       const card = page.getByRole('region', { name: 'Next action' })
       await expect(card).toHaveCount(1)
 
-      // The label is a chip carrying the actor; its accessible description is
-      // the if-ignored sentence, and the working dot pulses.
-      const chip = card.getByRole('button', { name: 'Working, agent' })
-      await expect(chip).toHaveAttribute('data-actor', 'agent')
-      await expect(chip).toHaveAccessibleDescription('If ignored: The attempt continues.')
+      // The label is a plain status chip: no button, no tooltip, no actor in
+      // its name, and no accessible description. The working dot pulses
+      // (AC-1.9; component-next-action invariant 41).
+      const chip = card.locator('[data-status-chip="working"]')
+      await expect(chip).toHaveText('Working')
+      await expect(card.getByRole('button', { name: /Working/ })).toHaveCount(0)
+      await expect(chip).not.toHaveAttribute('aria-describedby')
+      await expect(chip).not.toHaveAttribute('aria-label')
+      await expect(chip).toHaveAccessibleDescription('')
+      expect(Math.round((await chip.boundingBox())?.height ?? 0)).toBe(24)
       await expect(chip.locator('[data-pulse]')).toHaveCount(1)
+      await chip.hover()
+      await expect(page.getByRole('tooltip')).toHaveCount(0)
+      await expectNoNextActionOmissions(card, workingOmissions)
 
       // The summary is the one heading, printed once on task detail.
       const heading = card.getByRole('heading', { name: 'An agent is implementing this task.' })
@@ -361,8 +381,8 @@ for (const surface of surfaces) {
       await expect(card.getByText(/\bleft\b|Deadline passed/)).toHaveCount(0)
       await expect(card).toHaveAttribute('data-tone', 'neutral')
 
-      // The stage line, the visible if-ignored line, the inline stop button,
-      // and the IDs disclosure are gone from the row.
+      // The stage line, the inline stop button, and the IDs disclosure are
+      // gone from the row.
       await expect(card.getByText('Implementation · Progressing', { exact: true })).toHaveCount(0)
       await expect(card.locator('[data-execution-status]')).toHaveCount(0)
       await expect(card.getByText(/^Deadline /)).toHaveCount(0)
@@ -423,9 +443,16 @@ for (const width of [375, 1280]) {
     )
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     const card = page.getByRole('region', { name: 'Next action' })
-    const chip = card.getByRole('button', { name: 'Queued, agent' })
-    await expect(chip).toHaveAccessibleDescription('If ignored: It stays in the queue.')
+    const chip = card.locator('[data-status-chip="queued"]')
+    await expect(chip).toHaveText('Queued')
+    await expect(chip).toHaveAccessibleDescription('')
+    expect(Math.round((await chip.boundingBox())?.height ?? 0)).toBe(24)
     await expect(chip.locator('[data-pulse]')).toHaveCount(0)
+    await expectNoNextActionOmissions(card, {
+      actor: 'agent',
+      sentences: ['It stays in the queue.'],
+      identifiers: ['order-impl-queued'],
+    })
     await expect(card.getByRole('heading', { name: 'The implementation order is waiting for an agent.' })).toBeVisible()
     // The queue age only: the earlier attempt's model is not this order's.
     await expect(card.locator('[data-banner-meta]')).toHaveText('queued 1h 30m ago')
@@ -439,14 +466,15 @@ for (const width of [375, 1280]) {
 }
 
 // On a 375 px touch screen the banner keeps its visual sizes: the chip stays
-// 24 px tall, and touch areas outside the layout box give the chip and the
-// model logo 40 px of height without overlapping. The summary sits on the
+// 24 px tall, and a touch area outside the layout box gives the model logo
+// 40 px of height without reaching the chip. The chip is a plain label with
+// nothing to tap (component-next-action invariant 41). The summary sits on the
 // first line, and the chip, logo, and elapsed time on the second, with the
 // time at the line's right edge (DEC-129(3), DEC-129(4)).
 test.describe('the banner on a 375 px touch screen', () => {
   test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true })
 
-  test('keeps the chip 24 px tall and gives the chip and logo separate 40 px touch areas', async ({ page }) => {
+  test('keeps the chip 24 px tall and gives the logo a 40 px touch area clear of the chip', async ({ page }) => {
     await page.clock.setFixedTime(oneHourIn)
     await mockAPI(
       page,
@@ -455,7 +483,7 @@ test.describe('the banner on a 375 px touch screen', () => {
     )
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     const card = page.getByRole('region', { name: 'Next action' })
-    const chip = card.getByRole('button', { name: 'Working, agent' })
+    const chip = card.locator('[data-status-chip="working"]')
     const logo = card.locator('[data-banner-model]')
     const heading = card.getByRole('heading', { name: 'An agent is implementing this task.' })
     const meta = card.locator('[data-banner-meta]')
@@ -482,7 +510,6 @@ test.describe('the banner on a 375 px touch screen', () => {
       )
     const chipCenter = chipBox.y + chipBox.height / 2
     const logoCenter = logoBox.y + logoBox.height / 2
-    expect(await hits(chipBox.x + chipBox.width / 2, chipCenter - 19.5, 40, '[data-status-chip]')).not.toContain(false)
     expect(await hits(logoBox.x + logoBox.width / 2, logoCenter - 19.5, 40, '[data-banner-model]')).not.toContain(false)
 
     // No point along the second line's center row lies in both touch areas.
@@ -504,7 +531,6 @@ test.describe('the banner on a 375 px touch screen', () => {
         logo: area(document.querySelector('[data-banner-model]') as Element),
       }
     })
-    expect(areas.chip.bottom - areas.chip.top).toBeGreaterThanOrEqual(40)
     expect(areas.logo.bottom - areas.logo.top).toBeGreaterThanOrEqual(40)
     for (let x = 0; x <= 375; x++) {
       const inChip = x >= areas.chip.left && x <= areas.chip.right
@@ -527,9 +553,13 @@ test.describe('the banner on a 375 px touch screen', () => {
     expect(Math.abs(timeBox.x + timeBox.width - (metaBox.x + metaBox.width))).toBeLessThanOrEqual(2)
     expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
 
-    // A tap on the logo opens its tooltip with the model name.
+    // A tap on the chip opens nothing; a tap on the logo opens its tooltip
+    // with the model name.
+    await chip.tap()
+    await expect(page.getByRole('tooltip')).toHaveCount(0)
     await logo.tap()
     await expect(card.getByRole('tooltip').filter({ hasText: /^claude-opus-5-5$/ })).toBeVisible()
+    await expectNoNextActionOmissions(card, workingOmissions)
   })
 })
 
@@ -693,10 +723,10 @@ for (const at of ['2026-10-12T13:30:00Z', '2026-10-12T13:36:00Z', '2026-10-12T14
   })
 }
 
-// The model logo and the chip keep their tooltips reachable by keyboard: the
-// logo's names the model, and the chip's names the actor and the if-ignored
-// sentence (DEC-129(2); component-next-action invariant 33).
-test('the model logo and the chip open their tooltips by keyboard', async ({ page }) => {
+// The model logo keeps its tooltip reachable by keyboard and names the model
+// (DEC-129(2)). The chip is a plain label: keyboard focus skips it, and it has
+// no tooltip (component-next-action invariant 41).
+test('the model logo opens its tooltip by keyboard and the chip takes no focus', async ({ page }) => {
   await page.clock.setFixedTime(oneHourIn)
   await mockAPI(
     page,
@@ -707,11 +737,13 @@ test('the model logo and the chip open their tooltips by keyboard', async ({ pag
   const card = page.getByRole('region', { name: 'Next action' })
   await card.locator('[data-banner-model]').focus()
   await expect(card.getByRole('tooltip').filter({ hasText: /^claude-opus-5-5$/ })).toBeVisible()
-  // The chip's tooltip names the actor and the if-ignored sentence on focus.
-  await card.getByRole('button', { name: 'Working, agent' }).focus()
-  const chipTip = card.getByRole('tooltip').filter({ hasText: 'If ignored: The attempt continues.' })
-  await expect(chipTip).toBeVisible()
-  await expect(chipTip).toContainText('agent')
+  // Tab from the logo's predecessor reaches no chip.
+  const chip = card.locator('[data-status-chip="working"]')
+  expect(await chip.evaluate((element) => element.matches('button, [tabindex]'))).toBe(false)
+  expect(await chip.evaluate((element) => element.querySelector('button, [tabindex]'))).toBeNull()
+  await chip.focus()
+  await expect(chip).not.toBeFocused()
+  await expect(card.getByRole('tooltip').filter({ hasText: /agent|If ignored/ })).toHaveCount(0)
 })
 
 // A model that names no known provider shows its harness logo and is named
@@ -741,8 +773,8 @@ for (const { name, agent, label, harness } of [
 }
 
 // The rare acts sit behind one menu: Copy order ID when the statement names an
-// order, Show IDs, and Stop attempt… only for recover_work and a claimed order
-// (req-operator-next-action AC-1.8, AC-7.1).
+// order, and Stop attempt… only for recover_work and a claimed order. The menu
+// offers no identifier list (req-operator-next-action AC-1.9, AC-7.1).
 for (const { role, stop } of [
   { role: 'operator', stop: true },
   { role: 'contributor', stop: false },
@@ -758,9 +790,7 @@ for (const { role, stop } of [
     const card = page.getByRole('region', { name: 'Next action' })
     await card.getByRole('button', { name: 'More actions' }).click()
     const items = page.getByRole('menu', { name: 'More actions' }).getByRole('menuitem')
-    await expect(items).toHaveText(
-      stop ? ['Copy order ID', 'Show IDs', 'Stop attempt…'] : ['Copy order ID', 'Show IDs'],
-    )
+    await expect(items).toHaveText(stop ? ['Copy order ID', 'Stop attempt…'] : ['Copy order ID'])
     await expect(page.getByRole('menu').getByRole('separator')).toHaveCount(stop ? 1 : 0)
   })
 }
@@ -777,15 +807,14 @@ test('the More actions menu works by keyboard and Escape returns focus', async (
   await button.focus()
   await page.keyboard.press('Enter')
   const items = page.getByRole('menu', { name: 'More actions' }).getByRole('menuitem')
+  await expect(items).toHaveText(['Copy order ID', 'Stop attempt…'])
   await expect(items.nth(0)).toBeFocused()
   await page.keyboard.press('ArrowDown')
   await expect(items.nth(1)).toBeFocused()
   await page.keyboard.press('ArrowDown')
-  await expect(items.nth(2)).toBeFocused()
-  await page.keyboard.press('ArrowDown')
   await expect(items.nth(0)).toBeFocused()
   await page.keyboard.press('ArrowUp')
-  await expect(items.nth(2)).toBeFocused()
+  await expect(items.nth(1)).toBeFocused()
   // Escape closes the menu, not the Board sheet, and focus returns.
   await page.keyboard.press('Escape')
   await expect(page.getByRole('menu')).toHaveCount(0)
@@ -797,7 +826,7 @@ test('the More actions menu works by keyboard and Escape returns focus', async (
   await expect(button).toBeFocused()
 })
 
-test('Show IDs and Copy order ID read the stated order', async ({ page, context }) => {
+test('Copy order ID reads the stated order', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await mockAPI(
     page,
@@ -808,29 +837,17 @@ test('Show IDs and Copy order ID read the stated order', async ({ page, context 
   const card = page.getByRole('region', { name: 'Next action' })
   const menu = card.getByRole('button', { name: 'More actions' })
   await menu.click()
-  await page.getByRole('menuitem', { name: 'Show IDs' }).click()
-  const ids = card.locator('[data-next-action-ids]')
-  await expect(ids.locator('[data-next-action-id="Order ID"] dd')).toHaveText('order-impl-running')
-  await expect(ids.locator('[data-next-action-id="Stage"] dd')).toHaveText('implement')
-  await expect(ids).not.toContainText('{')
-  // The list sits under the banner's row.
-  const headingBox = await card.getByRole('heading').boundingBox()
-  const idsBox = await ids.boundingBox()
-  expect(headingBox && idsBox && idsBox.y >= headingBox.y + headingBox.height).toBe(true)
-  await menu.click()
-  await page.getByRole('menuitem', { name: 'Hide IDs' }).click()
-  await expect(ids).toHaveCount(0)
-
-  await menu.click()
   await page.getByRole('menuitem', { name: 'Copy order ID' }).click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('order-impl-running')
   await expect(card.locator('[aria-live="polite"]')).toHaveText('Order ID copied')
   await expect(card.getByRole('alert')).toHaveCount(0)
+  // The copied ID never prints on the banner.
+  await expectNoNextActionOmissions(card, workingOmissions)
 })
 
 // Copy order ID treats a missing clipboard API, a write that throws, and a
-// refused write as a failed copy. The banner says so, keeps the order ID
-// behind Show IDs, and raises no uncaught error or unhandled rejection. The
+// refused write as a failed copy. The banner says so, prints no order ID, and
+// raises no uncaught error or unhandled rejection. The
 // confirmation appears only after a write resolves. Each test installs its
 // own clipboard before the page's scripts run, so no test depends on browser
 // permissions (req-operator-next-action AC-7.1; component-testing-strategy
@@ -844,7 +861,7 @@ type ClipboardProbe = {
   resolveCopy?: () => void
 }
 
-const copyFailedText = 'Could not copy the order ID. Use Show IDs to view it.'
+const copyFailedText = 'Could not copy the order ID.'
 
 async function stubClipboard(page: Page, mode: ClipboardMode) {
   const errors: string[] = []
@@ -933,7 +950,7 @@ for (const surface of surfaces) {
     { mode: 'throw', name: 'a write that throws' },
     { mode: 'reject', name: 'a refused write' },
   ] as const) {
-    test(`Copy order ID on the ${surface.name} reports ${name} and keeps Show IDs`, async ({ page }) => {
+    test(`Copy order ID on the ${surface.name} reports ${name} and keeps the menu`, async ({ page }) => {
       const clipboard = await stubClipboard(page, mode)
       await mockAPI(
         page,
@@ -954,18 +971,15 @@ for (const surface of surfaces) {
       expect(headingBox && failedBox && failedBox.y >= headingBox.y + headingBox.height).toBe(true)
       await expect(card.getByRole('heading', { name: 'An agent is implementing this task.' })).toBeVisible()
 
-      // The menu is unchanged, and Show IDs shows the stated order.
+      // The menu is unchanged, and the failure prints no order ID.
       await card.getByRole('button', { name: 'More actions' }).click()
       await expect(page.getByRole('menu', { name: 'More actions' }).getByRole('menuitem')).toHaveText([
         'Copy order ID',
-        'Show IDs',
         'Stop attempt…',
       ])
-      await page.getByRole('menuitem', { name: 'Show IDs' }).click()
-      await expect(card.locator('[data-next-action-ids] [data-next-action-id="Order ID"] dd')).toHaveText(
-        'order-impl-running',
-      )
+      await page.keyboard.press('Escape')
       await expect(failed).toHaveText(copyFailedText)
+      await expectNoNextActionOmissions(card, workingOmissions)
 
       expect(await clipboard.copied()).toEqual([])
       expect(await clipboard.failures()).toEqual([])
@@ -1085,7 +1099,7 @@ test('a claimed order the statement does not name keeps one Stop attempt in the 
     await expect(card.locator('[data-execution-status]')).toHaveCount(0)
     await expect(card.locator('[data-banner-meta]')).toHaveCount(0)
     await card.getByRole('button', { name: 'More actions' }).click()
-    await expect(page.getByRole('menuitem')).toHaveText(['Show IDs', 'Stop attempt…'])
+    await expect(page.getByRole('menuitem')).toHaveText(['Stop attempt…'])
     await page.keyboard.press('Escape')
   }
   await page.getByRole('region', { name: 'Next action' }).getByRole('button', { name: 'More actions' }).click()
@@ -1095,8 +1109,9 @@ test('a claimed order the statement does not name keeps one Stop attempt in the 
   await expect.poll(() => posts.map((post) => post.path)).toEqual(['/v1/work-orders/order-review-refresh/preempt'])
 })
 
-// The Flow view keeps the full card: its execution line, the visible
-// if-ignored sentence and deadline, and the non-inline Stop attempt control.
+// The Flow view keeps the full card: its execution line and the non-inline
+// Stop attempt control. A working card prints no deadline (component-next-action
+// invariant 33) and no actor, if-ignored sentence, or identifiers (AC-1.9).
 test('the Flow view keeps the full card for a running attempt', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'flow'))
   await mockAPI(
@@ -1110,8 +1125,9 @@ test('the Flow view keeps the full card for a running attempt', async ({ page })
   await expect(card.getByRole('heading', { name: 'An agent is implementing this task.' })).toBeVisible()
   await expect(card.locator('[data-passive-banner]')).toHaveCount(0)
   await expect(card.getByText('Implementation · Progressing', { exact: true })).toBeVisible()
-  await expect(card.getByText('If ignored: The attempt continues.')).toBeVisible()
-  await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-12T14:00:00Z')
+  await expect(card.locator('[data-next-action-deadline]')).toHaveCount(0)
+  await expect(card.getByText(/^Deadline /)).toHaveCount(0)
+  await expectNoNextActionOmissions(card, workingOmissions)
   await expect(card.getByRole('button', { name: 'More actions' })).toHaveCount(0)
   await card.getByRole('button', { name: 'Stop attempt' }).click()
   await expect(card.getByLabel('Reason for stopping this attempt')).toBeVisible()
@@ -1382,7 +1398,11 @@ test('the human gate takes its statement and buttons from the server, not the ev
   // The gate heads with the server label; the summary stays on the card (DEC-61).
   await expect(gate.getByRole('heading', { name: jobFailure.label })).toBeVisible()
   await expect(gate).not.toContainText(jobFailure.summary)
-  await expect(gate.getByText('Send it back with guidance, or close it?')).toBeVisible()
+  // The question stays in the statement and off the gate (AC-1.9).
+  await expectNoNextActionOmissions(gate, {
+    actor: 'operator',
+    sentences: ['Send it back with guidance, or close it?'],
+  })
   await expect(gate.locator('[data-next-action-choices]').first().getByRole('button')).toHaveText([
     'Redirect',
     'Reject',
@@ -2406,8 +2426,11 @@ for (const surface of [
     await expect(reason.getByRole('region', { name: 'Risks' }).getByRole('listitem')).toHaveText([
       'Guessing the surface could edit an unrelated page.',
     ])
-    // The catalogue question still follows the recorded facts.
-    await expect(card.getByText('Put it back, or close it?')).toBeVisible()
+    // The catalogue question and if-ignored sentence stay off the card (AC-1.9).
+    await expectNoNextActionOmissions(card, {
+      actor: 'operator',
+      sentences: ['Put it back, or close it?', 'It stays parked.'],
+    })
 
     // One button posts the redispatch route: the server's Recover choice.
     await expect(page.getByRole('button', { name: /^(Recover|Redispatch|Resume task)$/ })).toHaveCount(1)
@@ -3441,3 +3464,94 @@ test('the next-action card names the risk stage of a claimed risk order', async 
   await expect(card.locator('[data-execution-status="progressing"]')).toHaveText('Risk rating · Progressing')
   await expect(card.getByRole('heading', { name: wait.summary, exact: true })).toBeVisible()
 })
+
+// Every task detail surface that presents a next action withholds the actor,
+// the question, the if-ignored sentence, and the identifiers at a phone width
+// and at a desktop width, for an operator decision and for a working
+// statement, and keeps its choices and its deadline where one applies
+// (req-operator-next-action AC-1.9; component-next-action invariants 33 and
+// 41). The stubs keep every field the server sends.
+for (const width of [375, 1440]) {
+  test.describe(`task detail at ${width} px`, () => {
+    test.use({ viewport: { width, height: 900 } })
+
+    test('the one-line card and the gate withhold the AC-1.9 fields', async ({ page }) => {
+      await mockAPI(
+        page,
+        () => activity('awaiting_human', gateAction),
+        () => gateAction,
+      )
+      await page.goto(`/w/demo/tasks/${taskId}/full`)
+      const card = page.getByRole('region', { name: 'Next action' })
+      const gate = page.getByRole('region', { name: 'Human gate' })
+      await expect(card.locator('[data-go-to-gate]')).toBeVisible()
+      await expect(gate.getByRole('button', { name: 'Approve plan' })).toBeVisible()
+      await expect(gate.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-13T10:00:00Z')
+      for (const surface of [card, gate]) await expectNoNextActionOmissions(surface, gateOmissions)
+      expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+    })
+
+    for (const { name, state, action, orders, omissions } of [
+      {
+        name: 'an operator decision',
+        state: 'awaiting_human',
+        action: gateAction,
+        orders: [],
+        omissions: gateOmissions,
+      },
+      {
+        name: 'a working statement',
+        state: 'running',
+        action: workingAction,
+        orders: [runningOrder],
+        omissions: workingOmissions,
+      },
+    ]) {
+      test(`the Flow card for ${name} withholds the AC-1.9 fields`, async ({ page }) => {
+        await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'flow'))
+        await mockAPI(
+          page,
+          () => activity(state, action, orders),
+          () => action,
+        )
+        await page.route(`**/v1/tasks/${taskId}/flow*`, (route) => route.fulfill({ status: 500, json: {} }))
+        await page.goto(`/w/demo/tasks/${taskId}/full`)
+        const card = page.getByRole('region', { name: 'Next action' })
+        await expect(card.getByRole('heading', { name: action.summary })).toBeVisible()
+        if (action.kind === 'working') {
+          // A working card prints no deadline (invariant 33).
+          await expect(card.locator('[data-next-action-deadline]')).toHaveCount(0)
+          await expect(card.getByRole('button', { name: 'Stop attempt' })).toBeVisible()
+        } else {
+          await expect(card.getByRole('button', { name: 'Approve plan' })).toBeVisible()
+          await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute(
+            'datetime',
+            action.deadline ?? '',
+          )
+        }
+        await expectNoNextActionOmissions(card, omissions)
+      })
+    }
+
+    test('the passive banner withholds the AC-1.9 fields, even in its menu', async ({ page }) => {
+      await page.clock.setFixedTime(oneHourIn)
+      await mockAPI(
+        page,
+        () => activity('running', workingAction, [runningOrder]),
+        () => workingAction,
+      )
+      await page.goto(`/w/demo/tasks/${taskId}/full`)
+      const card = page.getByRole('region', { name: 'Next action' })
+      const chip = card.locator('[data-status-chip="working"]')
+      await expect(chip).toHaveText('Working')
+      expect(Math.round((await chip.boundingBox())?.height ?? 0)).toBe(24)
+      await expect(card.locator('[data-next-action-deadline]')).toHaveCount(0)
+      await expectNoNextActionOmissions(card, workingOmissions)
+      await card.getByRole('button', { name: 'More actions' }).click()
+      const menu = page.getByRole('menu', { name: 'More actions' })
+      await expect(menu.getByRole('menuitem')).toHaveText(['Copy order ID', 'Stop attempt…'])
+      await expectNoNextActionOmissions(menu, workingOmissions)
+      expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+    })
+  })
+}

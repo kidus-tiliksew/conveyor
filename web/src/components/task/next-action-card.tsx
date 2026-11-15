@@ -20,7 +20,7 @@ import { ExecutionFactRows, ExecutionStatusLine, ExecutionTitle } from './execut
 import { GateChoices } from './merge-at-gate'
 import { CheckStatusList } from './next-action-checks'
 import { NextActionParkReason } from './next-action-park-reason'
-import { NextActionDeadline, NextActionIDs } from './next-action-parts'
+import { NextActionDeadline } from './next-action-parts'
 import { PassiveNextActionBanner } from './passive-next-action-banner'
 import { gateAnchorId, isReviewable, useGateSurfaceMounted } from './review-panel'
 import type { TaskActivityView } from './task-activity-tabs'
@@ -40,7 +40,11 @@ const passiveKinds = new Set(['working', 'queued'])
 // its `facts` mark as saying more than that summary (DEC-61; AC-1.7). One
 // decision has one surface per view: on the Timeline the human gate carries the
 // statement and choices beside the evidence, and this card shrinks to one line
-// pointing at it. On Flow no gate is mounted, so this card carries them itself.
+// pointing at it. On Flow no gate is mounted, so this card carries them itself,
+// except that a `working` or `queued` card prints no deadline (invariant 33).
+// No form of the card prints the actor, the question, the if-ignored sentence,
+// or the statement's identifiers; the CLI and MCP reads keep them
+// (req-operator-next-action AC-1.9; component-next-action invariant 41).
 export function NextActionCard({
   item,
   routeVariant,
@@ -73,9 +77,6 @@ export function NextActionCard({
       <section aria-label="Next action" className="min-w-0 space-y-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-attention/40 bg-card px-3 py-2">
           {actionBadge}
-          <span className="text-xs capitalize text-faint" data-actor={action.actor}>
-            {action.actor}
-          </span>
           <h2
             className="min-w-0 text-sm font-medium max-sm:order-last max-sm:basis-full sm:flex-[1_1_14rem] sm:truncate"
             title={action.summary}
@@ -120,15 +121,11 @@ export function NextActionCard({
             )}
           >
             {actionBadge}
-            <span className="text-xs capitalize text-faint" data-actor={action.actor}>
-              {action.actor}
-            </span>
           </div>
           {execution && <ExecutionStatusLine state={execution} />}
           <h2 className="text-sm font-semibold leading-6">{action.summary}</h2>
           {execution && execution.title !== action.label && <ExecutionTitle state={execution} />}
           {action.kind === 'parked' && <NextActionParkReason item={item} />}
-          {action.question && <p className="text-sm text-muted">{action.question}</p>}
           {action.kind === 'verification_disposition' && <DispositionCheckpointRequest action={action} />}
           <CheckStatusList action={action} />
           {execution && <ExecutionFactRows state={execution} routeVariant={routeVariant} />}
@@ -138,14 +135,12 @@ export function NextActionCard({
             ) : (
               <GateChoices taskId={item.task.id} action={action} routeVariant={routeVariant} />
             ))}
-          {action.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
-          <NextActionDeadline deadline={action.deadline} />
+          {!passiveKinds.has(action.kind) && <NextActionDeadline deadline={action.deadline} />}
           {preemptOrder && (
             <div className="border-t border-border/60 pt-2.5">
               <WorkOrderPreemptControl order={preemptOrder} />
             </div>
           )}
-          <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
         </CardContent>
       </Card>
     </section>

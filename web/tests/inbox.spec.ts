@@ -2,6 +2,7 @@ import { expect, type Page, type Request, type Route } from '@playwright/test'
 import { citedSections, headingWords } from '../src/components/inbox/citation-matcher'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity, capabilitiesForRole } from './helpers/caller-identity'
+import { expectNoNextActionOmissions } from './helpers/next-action-omissions'
 
 // The operator inbox (feature-operator-next-action NA-6; REQ-2) over stubbed
 // GET /v1/next-actions, GET /v1/tasks/{id}/next-action and the retired
@@ -319,23 +320,23 @@ test('bands render in server order with the decision detail the server states', 
   // one, the bare ID otherwise.
   await expect(card.locator('[data-serves="REQ-2"]')).toHaveText('REQ-2Reproducible builds')
   await expect(card.locator('[data-serves="REQ-6"]')).toHaveText('REQ-6')
-  await expect(card.getByText('Does this plan meet the requirement?')).toBeVisible()
   // The recommendation is a callout, and the label a pill in its kind's tone.
   await expect(card.locator('[data-recommendation]')).toHaveText(
     'Agent recommendsApprove: the plan covers every criterion.',
   )
   await expect(card.locator('[data-decision-label]')).toHaveAttribute('data-kind-tone', 'gate')
   await expect(card.locator('[data-decision-label]')).not.toHaveClass(/attention/)
-  // The deadline is a countdown chip in the head line and a time of day in
-  // the footer's consequence line.
+  // The deadline is the countdown chip in the head line. The detail prints no
+  // actor, question, if-ignored sentence, or identifiers (AC-1.9, AC-2.8;
+  // component-next-action invariant 41).
   await expect(card.locator('[data-due]')).toHaveText(/^due in /)
-  await expect(card.locator('[data-decision-footer] [data-if-ignored]')).toHaveText(
-    /^If nobody acts by \d{1,2}:\d{2} [AP]M: The task waits at the plan gate\.$/,
-  )
+  await expect(card.locator('[data-due]')).toHaveAttribute('title', /\d/)
   await expect(card.locator('[data-context-heading]')).toHaveText('Plan')
-  await expect(card.locator('[data-next-action-deadline]')).toHaveAttribute('datetime', soon)
-  await card.getByText('Show IDs').click()
-  await expect(card.getByText('wo-zeta-1')).toBeVisible()
+  await expectNoNextActionOmissions(card, {
+    actor: 'operator',
+    sentences: ['Does this plan meet the requirement?', 'The task waits at the plan gate.'],
+    identifiers: ['wo-zeta-1'],
+  })
 
   // Every server choice renders (DEC-61): a disallowed choice and one this
   // client cannot build are disabled with the reason beside them.
@@ -601,13 +602,16 @@ test('the context checklist lists each proposed document checked, and Apply atta
   await expect(card.locator('[data-context-expand]')).toHaveCount(0)
   await expect(card).not.toContainText('cannot send')
 
-  // Raw target IDs and the proposer appear only inside the IDs disclosure.
+  // Raw target IDs and the proposer print nowhere: the detail has no IDs
+  // list (AC-1.9). The checklist itself stays.
   const outside = await textOutsideIDs(card)
   for (const target of [requirement, design]) expect(outside).not.toContain(target.id)
   expect(outside).not.toContain('system:triage')
-  // The labelled list mounts when the disclosure opens.
-  await card.locator('details').last().getByText('Show IDs').click()
-  await expect(card.locator('details').last()).toContainText(requirement.id)
+  await expectNoNextActionOmissions(card, {
+    actor: 'operator',
+    sentences: ['Confirm or dismiss the proposed context?'],
+    identifiers: [requirement.id, design.id, 'system:triage'],
+  })
 
   // A double click still runs once: one body-less POST per row, in order.
   await applyButton(card).dblclick()
@@ -2022,9 +2026,9 @@ test('a maintainer without confirm_documents reads proposals without acting', as
 })
 
 // The document-proposal detail reads like a task decision: the server's
-// label, question and if-ignored text, a footer band of choices, and raw IDs
-// only in the IDs disclosure (feature-operator-next-action NA-6;
-// req-operator-next-action AC-1.8, AC-2.6).
+// label, the version, origin, and age, and a footer band of choices. It
+// prints no question, if-ignored sentence, or identifiers
+// (req-operator-next-action AC-1.9, AC-2.6, AC-2.8).
 test('proposal details use the decision layout with server copy and a safe age', async ({ page }) => {
   await serve(page, proposalFixture())
   await page.goto('/w/demo/inbox')
@@ -2038,34 +2042,28 @@ test('proposal details use the decision layout with server copy and a safe age',
   await expect(requirement.locator('[data-proposal-version]')).toHaveText('v3')
   await expect(requirement.locator('[data-proposal-age]')).toHaveText(/ago$/)
   await expect(requirement.locator('[data-proposal-age]')).toHaveAttribute('title', /\d/)
-  await expect(requirement.getByText('Confirm or dismiss this proposed version?')).toBeVisible()
   await expect(requirement.getByRole('link', { name: 'Task' })).toHaveAttribute(
     'href',
     '/w/demo/tasks/review-task/full',
   )
   await expect(requirement.getByRole('link', { name: 'View changes →' })).toBeVisible()
 
-  // Footer band: primary Confirm, Revise, quiet Dismiss, then the consequence,
-  // the multi-version sentence and the IDs disclosure.
+  // Footer band: the multi-version sentence, then primary Confirm, Revise,
+  // and quiet Dismiss.
   const footer = requirement.locator('[data-decision-footer]')
   await expect(footer.getByRole('button')).toHaveText(['Confirm', 'Revise', 'Dismiss'])
   await expect(footer.getByRole('button', { name: 'Confirm' })).toHaveClass(/bg-primary/)
   await expect(footer.getByRole('button', { name: 'Dismiss' })).not.toHaveClass(/bg-failure/)
-  await expect(footer).toContainText('If you do nothing: The proposal stays pending.')
   await expect(footer).toContainText('Confirming a later one dismisses the earlier ones.')
+  const sentenceBox = await footer.getByText('Confirming a later one dismisses the earlier ones.').boundingBox()
+  const confirmBox = await footer.getByRole('button', { name: 'Confirm' }).boundingBox()
+  expect(sentenceBox && confirmBox && sentenceBox.y + sentenceBox.height <= confirmBox.y).toBe(true)
 
-  // Raw document and origin IDs appear only inside the IDs disclosure.
-  const visibleText = await requirement.evaluate((card) => {
-    const clone = card.cloneNode(true) as HTMLElement
-    for (const details of clone.querySelectorAll('details')) details.remove()
-    return clone.textContent ?? ''
+  // No question, if-ignored sentence, or raw document and origin IDs.
+  await expectNoNextActionOmissions(requirement, {
+    sentences: ['Confirm or dismiss this proposed version?', 'The proposal stays pending.'],
+    identifiers: ['req-attention', 'review-task'],
   })
-  expect(visibleText).not.toContain('req-attention')
-  expect(visibleText).not.toContain('review-task')
-  await requirement.getByText('Show IDs').click()
-  await expect(requirement.locator('details [data-next-action-id="Document"] dd')).toHaveText('req-attention')
-  await expect(requirement.locator('details [data-next-action-id="Origin ID"] dd')).toHaveText('review-task')
-  await expect(requirement.locator('details')).not.toContainText('{')
 
   // A missing or unusable age falls back to proposed_at.
   for (const title of ['Dashboard architecture', 'All FunnelFlux repositories']) {
@@ -2074,13 +2072,15 @@ test('proposal details use the decision layout with server copy and a safe age',
     await expect(age).toHaveAttribute('datetime', '2026-10-10T10:00:00.000Z')
   }
 
-  // A decision reads its own question and context link and its full title;
+  // A decision reads its own context link and its full title, and no question;
   // its list row clamps a long title to two lines and keeps the full text in
   // its tooltip.
   const decision = decisionDetail(page)
   await expect(decision.locator('[data-decision-label]')).toHaveText('Decision proposal')
   await expect(decision.locator('[data-proposal-version]')).toHaveCount(0)
-  await expect(decision.getByText('Confirm or dismiss this proposed decision?')).toBeVisible()
+  await expectNoNextActionOmissions(decision, {
+    sentences: ['Confirm or dismiss this proposed decision?', 'The proposal stays pending.'],
+  })
   // The context link opens the decision's own page (req-document-operating-surfaces AC-8.9).
   await expect(decision.getByRole('link', { name: 'View decision →' })).toHaveAttribute(
     'href',
@@ -2238,9 +2238,7 @@ test('each kind takes its tone, and attention marks only what unblocks others or
   const alpha = await select(page, 'Alpha agent question')
   await expect(alpha.locator('[data-decision-label]')).toHaveAttribute('data-kind-tone', 'question')
   await expect(alpha.locator('[data-due]')).toHaveAttribute('data-due', 'soon')
-  await expect(alpha.locator('[data-if-ignored]')).toHaveText(
-    /^If nobody acts by \d{1,2}:\d{2} [AP]M: Nothing moves\.$/,
-  )
+  await expectNoNextActionOmissions(alpha, { actor: 'operator', sentences: ['Nothing moves.'] })
   const mid = await select(page, 'Mid item without a deadline')
   await expect(mid.locator('[data-decision-label]')).toHaveAttribute('data-kind-tone', 'broken')
   await expect(mid.locator('[data-due]')).toHaveAttribute('data-due', 'overdue')
@@ -3656,7 +3654,13 @@ test('invalid-output limits name their stage and error, never review, and a retr
   // not the earlier reviewer feedback.
   const plan = await select(page, 'Planning output limit')
   await expect(plan).toContainText('Settle planning output')
-  await expect(plan).toContainText('Planning returned invalid output 3 times. Ask for changes, or reject?')
+  await expectNoNextActionOmissions(plan, {
+    actor: 'operator',
+    sentences: [
+      'Planning returned invalid output 3 times. Ask for changes, or reject?',
+      'The task stays at the human gate.',
+    ],
+  })
   // No review reached the gate, so the server offers no Approve.
   await expect(plan.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0)
   await expect(plan.getByRole('button', { name: /Ask for changes/ })).toBeVisible()
@@ -3668,7 +3672,10 @@ test('invalid-output limits name their stage and error, never review, and a retr
   // and its invalid output; its context is the recorded failure.
   const triage = await select(page, 'Triage output limit')
   await expect(triage).toContainText('Retry triage')
-  await expect(triage).toContainText('Retry triage, or reject the task?')
+  await expectNoNextActionOmissions(triage, {
+    actor: 'operator',
+    sentences: ['Retry triage, or reject the task?', 'The failure stays at the human gate.'],
+  })
   await expect(triage.getByRole('button', { name: 'Retry', exact: true })).toBeVisible()
   await expect(triage.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0)
   await expect(triage.getByRole('button', { name: /Ask for changes/ })).toHaveCount(0)
@@ -3682,3 +3689,77 @@ test('invalid-output limits name their stage and error, never review, and a retr
     'Conveyor will retry this automatically. The next retry is attempt 2.',
   )
 })
+
+// The Inbox decision detail, the proposal detail, and the automatic band print
+// no actor, question, if-ignored sentence, or identifier list at a phone width
+// and at a desktop width, and still show their choices and deadline
+// (req-operator-next-action AC-1.9, AC-2.6, AC-2.8; component-next-action
+// invariant 41). The stubs keep every field the server sends.
+for (const width of [375, 1440]) {
+  test(`Inbox details withhold the AC-1.9 fields at ${width} px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    const fixture = decisionsFixture()
+    fixture.actions['T-auto'] = {
+      kind: 'stalled',
+      label: 'Stalled',
+      actor: 'factory',
+      judgment: false,
+      summary: 'Will retry.',
+      question: 'Redispatch the stalled order?',
+      if_ignored: 'Conveyor retries it later.',
+      choices: [choice('redispatch', 'Redispatch', '/v1/tasks/T-auto/redispatch')],
+      current_order: {
+        id: 'wo-auto-1',
+        stage: 'implement',
+        state: 'queued',
+        queue_deadline: null,
+        execution_deadline: null,
+        lease_expires_at: null,
+      },
+      deadline: null,
+      details: { stall_reason: 'unclaimable_stall_code' },
+    }
+    await serve(page, fixture)
+    await page.goto('/w/demo/inbox')
+    const decision = await select(page, 'Zeta plan everyone waits on')
+    await expect(decision.getByRole('button', { name: 'Approve plan' })).toBeVisible()
+    await expect(decision.locator('[data-due]')).toHaveText(/^due in /)
+    await expectNoNextActionOmissions(decision, {
+      actor: 'operator',
+      sentences: ['Does this plan meet the requirement?', 'The task waits at the plan gate.'],
+      identifiers: ['wo-zeta-1'],
+    })
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    expect(overflow).toBeLessThanOrEqual(0)
+
+    // The automatic band reports the factory's work and offers its one
+    // server choice, with none of the withheld fields.
+    await page.goto('/w/demo/inbox?band=automatic')
+    const automatic = page.getByRole('region', { name: 'Automatic' })
+    await expect(automatic.getByRole('button', { name: 'Redispatch' })).toBeVisible()
+    await expectNoNextActionOmissions(automatic, {
+      actor: 'factory',
+      sentences: ['Redispatch the stalled order?', 'Conveyor retries it later.'],
+      identifiers: ['wo-auto-1', 'unclaimable_stall_code'],
+    })
+
+    await page.unrouteAll({ behavior: 'ignoreErrors' })
+    await serve(page, proposalFixture())
+    await page.goto('/w/demo/inbox')
+    const proposal = await select(page, 'Operator attention')
+    await expect(proposal.locator('[data-proposal-version]')).toHaveText('v3')
+    await expect(proposal.locator('[data-proposal-age]')).toHaveText(/ago$/)
+    await expect(proposal.getByRole('link', { name: 'Task' })).toBeVisible()
+    await expect(proposal.locator('[data-decision-footer]').getByRole('button')).toHaveText([
+      'Confirm',
+      'Revise',
+      'Dismiss',
+    ])
+    await expectNoNextActionOmissions(proposal, {
+      sentences: ['Confirm or dismiss this proposed version?', 'The proposal stays pending.'],
+      identifiers: ['req-attention', 'review-task'],
+    })
+    const proposalOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    expect(proposalOverflow).toBeLessThanOrEqual(0)
+  })
+}

@@ -1,11 +1,9 @@
 import { Link } from '@tanstack/react-router'
-import { ArrowUpRight, CornerDownRight, Sparkles } from 'lucide-react'
+import { ArrowUpRight, Sparkles } from 'lucide-react'
 import type { InboxItem, InboxPullRequest, NextActionBlocker, Task } from '../../lib/types'
-import { useMediaQuery } from '../../lib/use-media-query'
-import { cn, fullTime, relativeTime } from '../../lib/utils'
+import { cn, relativeTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { GateChoices } from '../task/merge-at-gate'
-import { NextActionIDs } from '../task/next-action-parts'
 import { Disclosure } from '../ui/disclosure'
 import { ErrorState } from '../ui/error-state'
 import { Skeleton } from '../ui/skeleton'
@@ -19,7 +17,7 @@ import {
 import { DecisionFooter } from './decision-footer'
 import { DecisionContext } from './inbox-context'
 import { ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
-import { DueChip, KindPill, timeOfDay } from './inbox-kind'
+import { DueChip, KindPill } from './inbox-kind'
 import { useNextAction } from './use-next-actions'
 
 // What the detail's context section holds, by next-action kind (AC-2.3).
@@ -39,8 +37,6 @@ const contextHeadings: Record<string, string> = {
 // which carries its own heading.
 const selfHeaded = new Set(['merge_approval', 'merge_execution'])
 
-const shortFooterQuery = '(max-width: 79.98rem)'
-
 const pill =
   'inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background/40 px-1.5 py-0.5'
 
@@ -53,10 +49,11 @@ export function pullRequestLabel(pullRequest: InboxPullRequest) {
 
 // The selected task decision in the Inbox's detail view (AC-2.1, AC-2.3,
 // AC-2.8; DEC-82(1)). The list item carries only the compact next action, so
-// the detail reads the task's full next action for the question, choices,
-// consequence, deadline and identifiers, and renders the decision's context in
-// place. The label, question, choices and consequence are server text; the
-// detail adds only its chrome. `onActed` runs after each recorded act, so the
+// the detail reads the task's full next action for its choices and deadline,
+// and renders the decision's context in place. The label and choices are
+// server text; the detail adds only its chrome. It shows no actor, question,
+// if-ignored sentence, or identifier list (AC-1.9; component-next-action
+// invariant 41). `onActed` runs after each recorded act, so the
 // page can move the selection when the item leaves (AC-2.10).
 export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task: Task; onActed: () => void }) {
   const { workspace } = useWorkspaceSelection()
@@ -77,30 +74,6 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
   const shortcut = action ? shortcutChoiceId(action) : null
   const deadline = action ? action.deadline : (item.deadline ?? compact?.deadline)
   const validDeadline = deadline && Number.isFinite(new Date(deadline).getTime()) ? deadline : undefined
-  // Below xl the detail is narrow and its footer's lines wrap, so only the
-  // actions and the readiness warning stay in view. The rest of the footer scrolls
-  // with the context, which keeps room to read what is being decided.
-  const shortFooter = useMediaQuery(shortFooterQuery)
-  const ids = action && <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
-  const consequence = action?.if_ignored && (
-    <p data-if-ignored className="flex min-w-0 items-start gap-1.5 text-xs text-muted">
-      <CornerDownRight className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-      <span className="min-w-0 break-words">
-        {validDeadline ? (
-          <>
-            If nobody acts by{' '}
-            <time data-next-action-deadline dateTime={validDeadline} title={fullTime(validDeadline)}>
-              {timeOfDay(validDeadline)}
-            </time>
-            :{' '}
-          </>
-        ) : (
-          'If nobody acts: '
-        )}
-        <span className="font-medium text-foreground">{action.if_ignored}</span>
-      </span>
-    </p>
-  )
   return (
     <ShortcutChoiceProvider choiceId={shortcut}>
       <article
@@ -175,11 +148,6 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               retrying={isFetching}
             />
           )}
-          {action?.question && (
-            <p data-decision-question className="break-words pt-1 text-base font-medium leading-relaxed">
-              {action.question}
-            </p>
-          )}
           {contextRows && (
             <div className="space-y-2">
               <MonitorOriginLine action={contextRows} />
@@ -209,19 +177,9 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               <DecisionContext taskId={task.id} kind={kind} />
             </div>
           )}
-          {shortFooter && !failed && (consequence || ids) && (
-            <div className="space-y-2 border-t border-border pt-3">
-              {consequence}
-              {ids}
-            </div>
-          )}
         </div>
         {!failed && (
-          <DecisionFooter
-            shortcutMerge={shortcut === 'merge'}
-            ids={!shortFooter && ids}
-            consequence={!shortFooter && consequence}
-          >
+          <DecisionFooter shortcutMerge={shortcut === 'merge'}>
             {contextRows ? (
               <ContextProposalFooter action={contextRows} selection={selection} sends={sends} />
             ) : (
