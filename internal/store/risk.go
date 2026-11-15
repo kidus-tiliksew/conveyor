@@ -287,9 +287,11 @@ func ProjectTaskRisk(task core.Task, ratings []core.RiskRating, seatMinimum int)
 		return nil
 	}
 	SortRiskRatings(ratings)
-	projection := &core.TaskRisk{Mode: policy.Mode, Head: task.ReviewedHeadSHA, Ratings: make([]core.RiskRating, 0, len(ratings)), Orders: []core.TaskRiskOrder{}}
+	// The read serves each rating with counts in place of its path lists.
+	// The tier and requirements below read the stored ratings
+	// (component-risk-review, Public surfaces).
+	projection := &core.TaskRisk{Mode: policy.Mode, Head: task.ReviewedHeadSHA, Ratings: core.ServeRiskRatings(ratings), Orders: []core.TaskRiskOrder{}}
 	for _, rating := range ratings {
-		projection.Ratings = append(projection.Ratings, cloneRiskRating(rating))
 		if rating.Source == core.RiskSourcePathRule {
 			projection.Head = rating.HeadSHA
 		}

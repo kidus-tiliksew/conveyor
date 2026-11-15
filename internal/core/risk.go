@@ -95,6 +95,87 @@ type RiskRating struct {
 	CreatedAt    time.Time       `json:"created_at"`
 }
 
+// ServedRiskRating is a recorded rating as every task read serves it in
+// TaskRisk.Ratings, and as submit_risk_rating answers it
+// (component-risk-review, Public surfaces; component-work-orders invariant
+// 65). It carries every field of RiskRating except the two path lists: a risk
+// agent's rating of a head carries CoveredPathCount in place of its covered
+// paths, and each matched rule carries PathCount in place of its paths. The
+// stored RiskRating keeps both lists, and no decision reads this shape.
+type ServedRiskRating struct {
+	Seq               int                         `json:"seq"`
+	TaskID            string                      `json:"task_id"`
+	Key               string                      `json:"key"`
+	Source            RiskSource                  `json:"source"`
+	Tier              riskpolicy.Tier             `json:"tier"`
+	HeadSHA           string                      `json:"head_sha,omitempty"`
+	Reason            string                      `json:"reason"`
+	MatchedRules      []ServedRuleMatch           `json:"matched_rules"`
+	HumanApprovals    int                         `json:"human_approvals,omitempty"`
+	BaseSHA           string                      `json:"base_sha,omitempty"`
+	DeclarationState  riskpolicy.DeclarationState `json:"declaration_state,omitempty"`
+	ReviewWorkOrderID string                      `json:"review_work_order_id,omitempty"`
+	ReviewRound       int                         `json:"review_round,omitempty"`
+	ReviewSeat        int                         `json:"review_seat,omitempty"`
+	ReviewerModel     string                      `json:"reviewer_model,omitempty"`
+	PlanVersion       int                         `json:"plan_version,omitempty"`
+	RiskWorkOrderID   string                      `json:"risk_work_order_id,omitempty"`
+	RiskModel         string                      `json:"risk_model,omitempty"`
+	// CoveredPathCount counts the changed paths a risk agent's rating of a
+	// head covered. It is set, zero included, for every such rating and for
+	// any other rating that stored covered paths, and absent otherwise.
+	CoveredPathCount *int            `json:"covered_path_count,omitempty"`
+	PlanPending      bool            `json:"plan_pending,omitempty"`
+	ActorID          string          `json:"actor_id,omitempty"`
+	PreviousTier     riskpolicy.Tier `json:"previous_tier,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
+}
+
+// ServedRuleMatch is a matched path rule as a served rating carries it: the
+// rule's evidence with PathCount in place of the matched paths
+// (component-risk-review, Public surfaces).
+type ServedRuleMatch struct {
+	Source            riskpolicy.RuleSource `json:"source"`
+	Index             int                   `json:"index"`
+	Description       string                `json:"description"`
+	MinTier           riskpolicy.Tier       `json:"min_tier"`
+	MinHumanApprovals int                   `json:"min_human_approvals"`
+	PathCount         int                   `json:"path_count"`
+}
+
+// ServeRiskRating projects a stored rating to its served shape. It counts the
+// stored path lists and never changes them, and it serves an empty matched
+// rule list, never null (component-risk-review, Public surfaces).
+func ServeRiskRating(r RiskRating) ServedRiskRating {
+	served := ServedRiskRating{
+		Seq: r.Seq, TaskID: r.TaskID, Key: r.Key, Source: r.Source, Tier: r.Tier, HeadSHA: r.HeadSHA, Reason: r.Reason,
+		MatchedRules: make([]ServedRuleMatch, 0, len(r.MatchedRules)), HumanApprovals: r.HumanApprovals,
+		BaseSHA: r.BaseSHA, DeclarationState: r.DeclarationState,
+		ReviewWorkOrderID: r.ReviewWorkOrderID, ReviewRound: r.ReviewRound, ReviewSeat: r.ReviewSeat, ReviewerModel: r.ReviewerModel,
+		PlanVersion: r.PlanVersion, RiskWorkOrderID: r.RiskWorkOrderID, RiskModel: r.RiskModel,
+		PlanPending: r.PlanPending, ActorID: r.ActorID, PreviousTier: r.PreviousTier, CreatedAt: r.CreatedAt,
+	}
+	for _, match := range r.MatchedRules {
+		served.MatchedRules = append(served.MatchedRules, ServedRuleMatch{Source: match.Source, Index: match.Index, Description: match.Description,
+			MinTier: match.MinTier, MinHumanApprovals: match.MinHumanApprovals, PathCount: len(match.Paths)})
+	}
+	if r.CoveredPaths != nil || (r.Source == RiskSourceRiskAgent && r.HeadSHA != "") {
+		count := len(r.CoveredPaths)
+		served.CoveredPathCount = &count
+	}
+	return served
+}
+
+// ServeRiskRatings projects stored ratings to their served shape in the same
+// order. It returns an empty list, never nil.
+func ServeRiskRatings(ratings []RiskRating) []ServedRiskRating {
+	served := make([]ServedRiskRating, 0, len(ratings))
+	for _, rating := range ratings {
+		served = append(served, ServeRiskRating(rating))
+	}
+	return served
+}
+
 // PathRiskKey is the uniqueness key of a head's path rating.
 func PathRiskKey(headSHA string) string { return "path_rule:" + headSHA }
 
@@ -228,18 +309,37 @@ func RiskRatedPayload(r RiskRating) map[string]any {
 // has no tier, and ok is false (req-risk-based-review AC-5.5). A risk agent
 // rating of a plan version that is not approved does not count
 // (req-risk-based-review AC-4.3).
-func RiskTierOf(ratings []RiskRating) (RiskRating, bool) {
-	var setter RiskRating
+// The same rule selects the setter from stored ratings and from the served
+// ratings of a task read.
+func RiskTierOf[R RiskTierRating](ratings []R) (R, bool) {
+	var setter R
 	found := false
 	for _, rating := range ratings {
-		if !rating.Tier.Valid() || rating.PlanPending {
+		tier, counts := rating.countedTier()
+		if !counts {
 			continue
 		}
-		if !found || rating.Tier.Rank() > setter.Tier.Rank() {
+		if setterTier, _ := setter.countedTier(); !found || tier.Rank() > setterTier.Rank() {
 			setter, found = rating, true
 		}
 	}
 	return setter, found
+}
+
+// RiskTierRating is a stored or served rating that RiskTierOf reads.
+type RiskTierRating interface {
+	RiskRating | ServedRiskRating
+	countedTier() (riskpolicy.Tier, bool)
+}
+
+// countedTier returns the rating's tier and whether it counts toward the
+// task's tier.
+func (r RiskRating) countedTier() (riskpolicy.Tier, bool) {
+	return r.Tier, r.Tier.Valid() && !r.PlanPending
+}
+
+func (r ServedRiskRating) countedTier() (riskpolicy.Tier, bool) {
+	return r.Tier, r.Tier.Valid() && !r.PlanPending
 }
 
 // RiskTierNotRaisedError refuses a tier request at or below the task's
@@ -283,11 +383,13 @@ type TaskRisk struct {
 	// AuthorWaiverNeeded is true when a trusted author's approval is
 	// required but an untrusted coauthor keeps every author's approval from
 	// counting, so only a non-author's waiver meets the condition.
-	AuthorWaiverNeeded bool         `json:"author_waiver_needed"`
-	UntrustedAuthor    bool         `json:"untrusted_author"`
-	ApprovalHead       string       `json:"approval_head,omitempty"`
-	ApprovalsSatisfied bool         `json:"approvals_satisfied"`
-	Ratings            []RiskRating `json:"ratings"`
+	AuthorWaiverNeeded bool   `json:"author_waiver_needed"`
+	UntrustedAuthor    bool   `json:"untrusted_author"`
+	ApprovalHead       string `json:"approval_head,omitempty"`
+	ApprovalsSatisfied bool   `json:"approvals_satisfied"`
+	// Ratings serve each recorded rating with counts in place of its path
+	// lists (component-risk-review, Public surfaces).
+	Ratings []ServedRiskRating `json:"ratings"`
 	// Orders lists the task's risk orders, oldest first, with what each
 	// rates and its state, so every task read names the same orders
 	// (req-risk-based-review AC-11.2; component-risk-review, Public surfaces).
