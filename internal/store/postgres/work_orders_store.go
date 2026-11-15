@@ -466,13 +466,15 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 		// even behind a newer stage. Without a claim, the latest-order holding
 		// predicate governs admission; review rounds use their own latest-round
 		// predicate (component-work-orders "Stages and order minting"; DEC-62).
+		// A risk order never counts as the later order, so it releases no
+		// hold (component-work-orders invariant 2; DEC-135(10)).
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(
 			SELECT 1 FROM work_orders wo
 			WHERE wo.workspace_id=$1 AND wo.task_id=$2 AND wo.stage=$3
 			  AND (wo.state='claimed' OR (wo.state IN ('queued','stale','timed_out') AND NOT EXISTS (
 			    SELECT 1 FROM work_orders later
-			    WHERE later.workspace_id=wo.workspace_id AND later.task_id=wo.task_id
+			    WHERE later.workspace_id=wo.workspace_id AND later.task_id=wo.task_id AND later.stage<>'risk'
 			      AND (later.created_at > wo.created_at OR (later.created_at = wo.created_at AND later.id > wo.id)))))
 		)`, workspaceID, job.TaskID, order.Stage).Scan(&exists); err != nil {
 			return err

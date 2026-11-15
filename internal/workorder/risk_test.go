@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // riskTaskStore freezes a risk policy into the evidence fixture's task as the
@@ -330,4 +331,93 @@ func TestReviewRoleCarriesNoRating(t *testing.T) {
 			}
 		}
 	}
+}
+
+// createRiskOrder creates one risk order for subject through the store
+// command the submission and plan acts use.
+func createRiskOrder(t *testing.T, f *reviewSeatsFixture, subject core.RiskOrderSubject) core.WorkOrder {
+	t.Helper()
+	order, err := taskops.ExecuteWorkOrder(f.ctx, f.st, f.task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+		order, _, err := f.st.CreateRiskOrderCommand(f.ctx, lease, store.RiskOrderCreateRequest{TaskID: f.task.ID, Subject: subject, QueueTimeout: time.Hour})
+		return order, err
+	})
+	if err != nil || order.ID == "" {
+		t.Fatalf("create risk order for %+v: order=%+v err=%v", subject, order, err)
+	}
+	return order
+}
+
+// requireHighCancelled asserts that the risk order was cancelled by the
+// high-tier rule, with a work_order.cancelled event naming its reason.
+func requireHighCancelled(t *testing.T, f *reviewSeatsFixture, id string) {
+	t.Helper()
+	order, err := f.st.GetWorkOrder(f.ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order.State != core.WorkOrderCancelled {
+		t.Fatalf("risk order %s state=%s, want cancelled", id, order.State)
+	}
+	events, err := f.st.ListEvents(f.ctx, f.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "work_order.cancelled" && event.JobID == order.JobID && strings.Contains(string(event.Payload), store.RiskTierHighCancelReason) {
+			return
+		}
+	}
+	t.Fatalf("no work_order.cancelled event for risk order %s with reason %q", id, store.RiskTierHighCancelReason)
+}
+
+// TestSubmissionHighPathMinimumCancelsOpenRiskOrders proves that a submission
+// on a repository whose pull request base commit is not observed records a
+// path minimum of high, and that the record cancels the task's open plan
+// version risk order with work_order.cancelled under record. Under enforce,
+// the cancellation stands when the same submission is refused later for a
+// declared seat count below the high tier's floor (component-work-orders
+// invariant 66; component-submission-merge invariants 67 and 68;
+// req-risk-based-review AC-5.4, AC-12.3).
+func TestSubmissionHighPathMinimumCancelsOpenRiskOrders(t *testing.T) {
+	changedPaths := func(context.Context, *config.Config, core.Task) ([]string, error) {
+		return []string{"internal/server.go"}, nil
+	}
+	t.Run("RecordPlanVersionOrder", func(t *testing.T) {
+		policy := riskpolicy.Policy{Mode: riskpolicy.ModeRecord, Tiers: riskpolicy.DefaultTable()}
+		f := newReviewSeatsFixture(t, "path-high-record", config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}, Risk: &policy}, 0)
+		f.service.SubmissionChangedPaths = changedPaths
+		f.plan(t, nil, true)
+		plan := createRiskOrder(t, f, core.RiskOrderSubject{PlanVersion: 1})
+		if _, err := f.submit(nil); err != nil {
+			t.Fatalf("submission refused: %v", err)
+		}
+		ratings, err := f.st.ListTaskRiskRatings(f.ctx, f.task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ratings) != 1 || ratings[0].Source != core.RiskSourcePathRule || ratings[0].Tier != riskpolicy.TierHigh || ratings[0].BaseSHA != "" {
+			t.Fatalf("ratings=%+v, want one high path minimum with no base commit", ratings)
+		}
+		requireHighCancelled(t, f, plan.ID)
+	})
+	t.Run("EnforceCancellationOutlivesALaterRefusal", func(t *testing.T) {
+		policy := riskpolicy.Policy{Mode: riskpolicy.ModeEnforce, Tiers: riskpolicy.DefaultTable()}
+		f := newReviewSeatsFixture(t, "path-high-refused", config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}, Risk: &policy}, 1)
+		f.service.SubmissionChangedPaths = changedPaths
+		earlier := createRiskOrder(t, f, core.RiskOrderSubject{HeadSHA: strings.Repeat("e", 40), BaseSHA: reviewSeatsBase})
+		_, err := f.submit(intPtr(1))
+		var refusal *ReviewSeatsBelowFloorError
+		if !errors.As(err, &refusal) || refusal.RiskSeatCount != 2 {
+			t.Fatalf("submission err=%v, want the high tier's seat floor refusal", err)
+		}
+		order, err := f.st.GetWorkOrder(f.ctx, f.implement)
+		if err != nil || order.State != core.WorkOrderClaimed {
+			t.Fatalf("implement order after the refusal=%+v err=%v", order, err)
+		}
+		ratings, err := f.st.ListTaskRiskRatings(f.ctx, f.task.ID)
+		if err != nil || len(ratings) != 1 || ratings[0].Tier != riskpolicy.TierHigh {
+			t.Fatalf("ratings after the refusal=%+v err=%v", ratings, err)
+		}
+		requireHighCancelled(t, f, earlier.ID)
+	})
 }

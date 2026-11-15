@@ -832,12 +832,14 @@ func (s *Store) EnsureTaskEnqueued(ctx context.Context, id string) error {
 		// A task held by a mint-blocking order waits for its claim or the order
 		// clock; a task redispatch cannot move it, so the operator is pointed at
 		// the order. Prefer the newest stored same-stage claim when several
-		// historical claims exist (component-durable-queue; DEC-62).
+		// historical claims exist (component-durable-queue; DEC-62). The held
+		// order is never a risk order, which holds no stage (component-work-orders
+		// invariants 2 and 62).
 		var holding string
 		err = tx.QueryRow(ctx, `SELECT wo.id FROM tasks t JOIN work_orders wo ON wo.workspace_id=t.workspace_id AND wo.task_id=t.id
 WHERE t.workspace_id=$1 AND t.id=$2 AND (
   (wo.stage=t.next_stage AND wo.stage<>'review' AND wo.state='claimed')
-  OR (`+blockingOrderSQL("t")+` AND wo.state IN ('queued','claimed','stale','timed_out'))
+  OR (`+blockingOrderSQL("t")+` AND wo.stage<>'risk' AND wo.state IN ('queued','claimed','stale','timed_out'))
 )
 ORDER BY CASE WHEN wo.stage=t.next_stage AND wo.state='claimed' THEN 0 ELSE 1 END, wo.created_at DESC, wo.id DESC LIMIT 1`, task.WorkspaceID, id).Scan(&holding)
 		if err == nil {

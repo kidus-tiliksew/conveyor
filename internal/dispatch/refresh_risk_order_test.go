@@ -133,3 +133,89 @@ func TestRefreshCreatesTheHeadRiskOrder(t *testing.T) {
 		})
 	}
 }
+
+// TestCleanUpdateRefreshKeepsTheHighPathCancellation proves that a refresh
+// head whose path minimum is high cancels the task's open risk order in the
+// act that records the rating, and that the cancellation stands when the
+// refresh then skips as clean-update, which creates no head risk order and
+// opens no round (component-work-orders invariant 66;
+// component-submission-merge invariants 67 and 69; req-risk-based-review
+// AC-5.4, AC-12.3).
+func TestCleanUpdateRefreshKeepsTheHighPathCancellation(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
+	st := store.NewMemory()
+	policy := riskpolicy.Policy{Mode: riskpolicy.ModeRecord, Tiers: riskpolicy.DefaultTable()}
+	task := core.Task{ID: "refresh-clean-high", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/refresh-clean-high", State: core.TaskApproved,
+		SetupContract: config.PolicyContract{RefreshReview: config.RefreshReviewNone, Risk: &policy}, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	base := strings.Repeat("c", 40)
+	earlier, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+		order, _, err := st.CreateRiskOrderCommand(ctx, lease, store.RiskOrderCreateRequest{TaskID: task.ID,
+			Subject: core.RiskOrderSubject{HeadSHA: "approved-head", BaseSHA: base}, ChangedPaths: []string{"internal/old.go"}})
+		return order, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}}, nil)
+	d.DisableMemoryQueueForTest()
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", BaseSHA: base, HeadSHA: "new-head"}, nil
+	}
+	d.DiscoverDocumentationPolicy = func(_ context.Context, _, revision string) githubtrigger.DocumentationPolicyDiscovery {
+		return githubtrigger.DocumentationPolicyDiscovery{Revision: revision, State: "absent"}
+	}
+	// A malformed declaration gives the refresh head a path minimum of high.
+	d.DiscoverRiskDeclaration = func(context.Context, string, string) riskpolicy.DeclarationInput {
+		return riskpolicy.DeclarationInput{State: riskpolicy.DeclarationPresent, Bytes: []byte("schema_version: 2\n")}
+	}
+	d.ReviewChangedPaths = func(context.Context, *config.Config, core.Task) ([]string, error) {
+		return []string{"internal/server.go"}, nil
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = d.MergeApprovedTaskAutomatically(ctx, current)
+
+	ratings, err := st.ListTaskRiskRatings(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ratings) != 1 || ratings[0].HeadSHA != "new-head" || ratings[0].Tier != riskpolicy.TierHigh {
+		t.Fatalf("refresh ratings=%+v, want one high path minimum for new-head", ratings)
+	}
+	order, err := st.GetWorkOrder(ctx, earlier.ID)
+	if err != nil || order.State != core.WorkOrderCancelled {
+		t.Fatalf("earlier head risk order=%+v err=%v", order, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped, cancelled := false, false
+	for _, event := range events {
+		switch {
+		case event.Kind == "review.refresh_skipped" && strings.Contains(string(event.Payload), "clean-update"):
+			skipped = true
+		case event.Kind == "work_order.cancelled" && event.JobID == earlier.JobID && strings.Contains(string(event.Payload), store.RiskTierHighCancelReason):
+			cancelled = true
+		}
+	}
+	if !skipped || !cancelled {
+		t.Fatalf("refresh skipped=%t high-tier cancellation=%t, want both", skipped, cancelled)
+	}
+	orders, err := st.ListTaskRiskOrders(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.HeadRiskOrderFor(orders, "new-head"); ok || len(orders) != 1 {
+		t.Fatalf("clean-update refresh risk orders=%+v, want only the cancelled earlier order", orders)
+	}
+}

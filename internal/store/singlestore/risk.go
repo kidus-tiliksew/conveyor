@@ -36,7 +36,19 @@ func (s *Store) RecordRiskRating(ctx context.Context, rating core.RiskRating) (c
 		if err != nil || !created {
 			return err
 		}
-		return insertRiskRatingTx(ctx, tx, result)
+		if err = insertRiskRatingTx(ctx, tx, result); err != nil {
+			return err
+		}
+		// A path rating that brings the tier to high cancels the task's
+		// open risk orders in the same transaction. The cancellation
+		// enqueues nothing, and it stands when the caller refuses or skips
+		// later (component-work-orders invariant 66;
+		// component-submission-merge invariants 67 to 69;
+		// req-risk-based-review AC-12.3).
+		if store.RiskTierReachesHigh(append(existing, result)) {
+			_, err = cancelRiskOrdersTx(ctx, tx, task.ID, "", store.RiskTierHighCancelReason, result.CreatedAt)
+		}
+		return err
 	})
 	if err != nil {
 		return core.RiskRating{}, false, err
