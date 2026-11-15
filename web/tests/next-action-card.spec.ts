@@ -3475,7 +3475,7 @@ for (const width of [375, 1440]) {
   test.describe(`task detail at ${width} px`, () => {
     test.use({ viewport: { width, height: 900 } })
 
-    test('the one-line card and the gate withhold the AC-1.9 fields', async ({ page }) => {
+    test('the one-line card and the gate withhold the AC-1.9 fields', async ({ page }, testInfo) => {
       await mockAPI(
         page,
         () => activity('awaiting_human', gateAction),
@@ -3489,6 +3489,9 @@ for (const width of [375, 1440]) {
       await expect(gate.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-13T10:00:00Z')
       for (const surface of [card, gate]) await expectNoNextActionOmissions(surface, gateOmissions)
       expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+      // The screenshot goes to the HTML report, which CI uploads (AGENTS.md).
+      await gate.scrollIntoViewIfNeeded()
+      await testInfo.attach(`gate-card-${width}.png`, { body: await gate.screenshot(), contentType: 'image/png' })
     })
 
     for (const { name, state, action, orders, omissions } of [
@@ -3507,7 +3510,7 @@ for (const width of [375, 1440]) {
         omissions: workingOmissions,
       },
     ]) {
-      test(`the Flow card for ${name} withholds the AC-1.9 fields`, async ({ page }) => {
+      test(`the Flow card for ${name} withholds the AC-1.9 fields`, async ({ page }, testInfo) => {
         await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'flow'))
         await mockAPI(
           page,
@@ -3530,10 +3533,14 @@ for (const width of [375, 1440]) {
           )
         }
         await expectNoNextActionOmissions(card, omissions)
+        await testInfo.attach(`next-action-card-${action.kind}-${width}.png`, {
+          body: await card.screenshot(),
+          contentType: 'image/png',
+        })
       })
     }
 
-    test('the passive banner withholds the AC-1.9 fields, even in its menu', async ({ page }) => {
+    test('the passive banner withholds the AC-1.9 fields, even in its menu', async ({ page }, testInfo) => {
       await page.clock.setFixedTime(oneHourIn)
       await mockAPI(
         page,
@@ -3547,11 +3554,16 @@ for (const width of [375, 1440]) {
       expect(Math.round((await chip.boundingBox())?.height ?? 0)).toBe(24)
       await expect(card.locator('[data-next-action-deadline]')).toHaveCount(0)
       await expectNoNextActionOmissions(card, workingOmissions)
+      await testInfo.attach(`passive-banner-${width}.png`, { body: await card.screenshot(), contentType: 'image/png' })
       await card.getByRole('button', { name: 'More actions' }).click()
       const menu = page.getByRole('menu', { name: 'More actions' })
       await expect(menu.getByRole('menuitem')).toHaveText(['Copy order ID', 'Stop attempt…'])
       await expectNoNextActionOmissions(menu, workingOmissions)
       expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+      await testInfo.attach(`passive-banner-menu-${width}.png`, {
+        body: await page.screenshot(),
+        contentType: 'image/png',
+      })
     })
   })
 }

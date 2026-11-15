@@ -3696,7 +3696,7 @@ test('invalid-output limits name their stage and error, never review, and a retr
 // (req-operator-next-action AC-1.9, AC-2.6, AC-2.8; component-next-action
 // invariant 41). The stubs keep every field the server sends.
 for (const width of [375, 1440]) {
-  test(`Inbox details withhold the AC-1.9 fields at ${width} px`, async ({ page }) => {
+  test(`Inbox details withhold the AC-1.9 fields at ${width} px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 })
     const fixture = decisionsFixture()
     fixture.actions['T-auto'] = {
@@ -3731,6 +3731,11 @@ for (const width of [375, 1440]) {
     })
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(overflow).toBeLessThanOrEqual(0)
+    // The screenshots go to the HTML report, which CI uploads (AGENTS.md).
+    await testInfo.attach(`inbox-decision-${width}.png`, {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
 
     // The automatic band reports the factory's work and offers its one
     // server choice, with none of the withheld fields.
@@ -3761,5 +3766,9 @@ for (const width of [375, 1440]) {
     })
     const proposalOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(proposalOverflow).toBeLessThanOrEqual(0)
+    await testInfo.attach(`inbox-proposal-${width}.png`, {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    })
   })
 }
