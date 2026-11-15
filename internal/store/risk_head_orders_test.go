@@ -122,7 +122,7 @@ func TestReviewRoundDispatchComparison(t *testing.T) {
 		{name: "StaleApprovalReviewsTheRefreshHead", task: stale, events: events, base: "rb", head: "rh"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			base, head, recorded := ReviewRoundDispatchComparison(tc.task, tc.events)
+			base, head, _, recorded := ReviewRoundDispatchComparison(tc.task, tc.events)
 			if base != tc.base || head != tc.head || recorded != tc.recorded {
 				t.Fatalf("comparison=(%q,%q,%t), want (%q,%q,%t)", base, head, recorded, tc.base, tc.head, tc.recorded)
 			}

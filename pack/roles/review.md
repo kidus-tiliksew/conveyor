@@ -21,6 +21,19 @@ Method:
   must appear in the authoritative changed-path evidence. If the comparison
   context is unavailable, report the affected finding as unverified; do not
   treat missing context as a successful empty comparison.
+<!-- conveyor:delta-round -->
+- When the comparison scope is `delta` and the order's `review_kind` is not
+  `refresh`, a complete review panel already judged the baseline commit.
+  Review this round as follows:
+  1. Judge the changes from the baseline commit to the reviewed head.
+  2. Read `bounce_history`. For each earlier finding, state whether these
+     changes resolve it.
+  3. Request changes for each earlier finding that is still open. Also
+     request changes for each defect that these changes introduce, in any
+     part of the repository.
+  4. Fill each whole-task assessment from the reviewed head, as a full review
+     does. A delta scope removes no assessment and no verdict field.
+<!-- /conveyor:delta-round -->
 - When the frozen policy enables `verify_stage`, inspect the sealed
   verification result bound to the submitted head, repository scope and
   governing pins (DEC-43; component-verification-service). Its context ID is

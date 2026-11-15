@@ -137,7 +137,7 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		if err != nil {
 			return "", err
 		}
-		comparison, err := RecordedReviewComparison(task, events)
+		comparison, _, err := RecordedReviewComparison(task, events)
 		if err != nil {
 			return "", err
 		}
@@ -560,7 +560,7 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 			return err
 		}
 	}
-	baseline, head, comparisonRecorded := store.ReviewRoundDispatchComparison(task, events)
+	baseline, head, scope, comparisonRecorded := store.ReviewRoundDispatchComparison(task, events)
 	// An enforcing task's round waits while its head's risk order is queued
 	// or claimed. The check comes before seat resolution, because the tier
 	// can still rise; completing or cancelling the risk order enqueues the
@@ -583,8 +583,15 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 		return err
 	}
 	if comparisonRecorded {
+		// A delta round is not a refresh round: its seats keep an empty
+		// review_kind and carry the delta scope with the judged head as their
+		// baseline (feature-delta-review-rounds DR-4; req-review-gates-evidence
+		// AC-12.4).
 		for i := range orders {
 			orders[i].BaselineSHA, orders[i].HeadSHA = baseline, head
+			if scope == store.ReviewScopeDelta {
+				orders[i].ReviewScope = store.ReviewScopeDelta
+			}
 		}
 	}
 	if _, err = taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (struct{}, error) {
@@ -709,7 +716,7 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 			if err != nil {
 				return err
 			}
-			comparison, err := RecordedReviewComparison(task, events)
+			comparison, scope, err := RecordedReviewComparison(task, events)
 			if err != nil {
 				return err
 			}
@@ -717,7 +724,13 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 				return fmt.Errorf("task %s recorded comparison does not match submitted head", task.ID)
 			}
 			// component-verification-service: verification and normal review consume the same commit pair.
+			// A head whose submission fixed a delta scope binds that scope and
+			// the judged head, as its review seats will (feature-delta-review-rounds
+			// DR-4; req-review-gates-evidence AC-12.4, AC-12.5).
 			order.BaselineSHA = comparison.BaseBranch
+			if scope == store.ReviewScopeDelta {
+				order.ReviewScope = store.ReviewScopeDelta
+			}
 		}
 	}
 	created, err := taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (bool, error) {
@@ -844,7 +857,19 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		return inprocess.Input{}, err
 	}
 	if stage == core.StageReview {
-		role = pack.InProcessReviewRole(role)
+		// The in-process reviewer reads the delta round instruction only for
+		// an ordinary head whose submission fixed a delta scope
+		// (feature-delta-review-rounds DR-5).
+		delta := false
+		if !task.ApprovalStale {
+			if events, eventsErr := d.Store.ListCompactEvents(ctx, task.ID); eventsErr == nil {
+				comparison, ok := store.LatestSubmissionComparison(events)
+				delta = ok && comparison.Delta()
+			}
+		}
+		role = pack.InProcessReviewRole(pack.WithDeltaRound(role, delta))
+	} else {
+		role = pack.WithDeltaRound(role, false)
 	}
 	servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 	if err != nil {

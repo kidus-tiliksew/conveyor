@@ -278,6 +278,34 @@ func renderDecisions(out *strings.Builder, decisions []core.GovernanceDecisionRe
 	}
 }
 
+const (
+	deltaRoundStart = "<!-- conveyor:delta-round -->\n"
+	deltaRoundEnd   = "<!-- /conveyor:delta-round -->\n"
+)
+
+// WithDeltaRound serves the review role's delta round instruction only to a
+// review order whose scope is delta and that is not a refresh round
+// (feature-delta-review-rounds DR-5; req-review-gates-evidence AC-12.4). Every
+// other order receives the role byte for byte as it was before delta rounds
+// existed, so a full review keeps the 64 KiB delivery bound that
+// TestWorkOrderDeliveryReviewListsPinsAndOrdersTheDiff checks. The marker lines
+// never reach the agent.
+func WithDeltaRound(role string, delta bool) string {
+	start := strings.Index(role, deltaRoundStart)
+	if start < 0 {
+		return role
+	}
+	end := strings.Index(role[start:], deltaRoundEnd)
+	if end < 0 {
+		return role
+	}
+	end += start
+	if delta {
+		return role[:start] + role[start+len(deltaRoundStart):end] + role[end+len(deltaRoundEnd):]
+	}
+	return role[:start] + role[end+len(deltaRoundEnd):]
+}
+
 // MCPReviewRole adds the terminal lifecycle contract used by operator-owned
 // Codex and Claude reviewers. Their prose or JSON output is never a verdict.
 func MCPReviewRole(role string) string {

@@ -154,7 +154,9 @@ const SubmissionComparisonEventKind = "pull_request.opened"
 // RecordedSubmissionComparison returns the base and head commits of the
 // latest recorded submission comparison in events, oldest first: the newest
 // pull_request.opened event that names both commits. Review input reads and
-// the round's head use this pair, never a mutable branch name.
+// the round's head use this pair, never a mutable branch name. It is the
+// whole-change pair, whatever review scope the record fixed
+// (feature-delta-review-rounds DR-5).
 func RecordedSubmissionComparison(events []core.Event) (base, head string, ok bool) {
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Kind != SubmissionComparisonEventKind {
@@ -172,19 +174,23 @@ func RecordedSubmissionComparison(events []core.Event) (base, head string, ok bo
 }
 
 // ReviewRoundDispatchComparison returns the commit pair that the next review
-// round of task reviews. While the approval is stale, the round reviews the
-// refresh baseline and head. Otherwise, it reviews the latest recorded
-// submission comparison in events, and recorded reports that one was found.
-// Without one, the refresh pair stands. Dispatch builds the round from this
-// pair, and durable reconcile asks the same question, so the two always name
-// the same head (component-review invariant 41).
-func ReviewRoundDispatchComparison(task core.Task, events []core.Event) (baseline, head string, recorded bool) {
+// round of task reviews, with the review scope recorded for its head. While
+// the approval is stale, the round reviews the refresh baseline and head, and
+// scope is the task's refresh scope (AC-12.6). Otherwise, it reviews the
+// latest recorded submission comparison in events: the judged head and the
+// head for a delta scope, the observed base commit and the head for a full
+// one, and recorded reports that one was found (feature-delta-review-rounds
+// DR-4; req-review-gates-evidence AC-12.4). Without one, the refresh pair
+// stands. Dispatch builds the round from this pair, and durable reconcile asks
+// the same question, so the two always name the same head (component-review
+// invariant 41).
+func ReviewRoundDispatchComparison(task core.Task, events []core.Event) (baseline, head, scope string, recorded bool) {
 	if !task.ApprovalStale {
-		if base, submitted, ok := RecordedSubmissionComparison(events); ok {
-			return base, submitted, true
+		if comparison, ok := LatestSubmissionComparison(events); ok {
+			return comparison.ReviewBaselineSHA, comparison.HeadSHA, comparison.ReviewScope, true
 		}
 	}
-	return task.RefreshBaselineSHA, task.RefreshHeadSHA, false
+	return task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope, false
 }
 
 // QueuedReviewRiskHold reports whether durable reconcile leaves a queued task
@@ -210,7 +216,7 @@ func QueuedReviewRiskHold(task core.Task, readComparisons func() ([]core.Event, 
 			return core.WorkOrder{}, false, fmt.Errorf("read recorded review comparisons: %w", err)
 		}
 	}
-	_, head, _ := ReviewRoundDispatchComparison(task, events)
+	_, head, _, _ := ReviewRoundDispatchComparison(task, events)
 	if strings.TrimSpace(head) == "" {
 		return core.WorkOrder{}, false, nil
 	}

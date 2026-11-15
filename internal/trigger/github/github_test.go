@@ -976,3 +976,52 @@ func TestVerificationForgeUsesAppCredentialAndReadback(t *testing.T) {
 		t.Fatalf("readback: %+v %v writes=%d", pr, err, writes)
 	}
 }
+
+// TestCompareAncestry reads the status and counts of GitHub's comparison of a
+// judged head with a submitted head through the compare endpoint, and refuses
+// a response it cannot trust (feature-delta-review-rounds DR-3).
+func TestCompareAncestry(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   CompareAncestryResult
+		cause  string
+	}{
+		{name: "ahead", body: `{"status":"ahead","ahead_by":2,"behind_by":0,"files":[]}`, want: CompareAncestryResult{Status: "ahead", AheadBy: 2}},
+		{name: "behind", body: `{"status":"behind","ahead_by":0,"behind_by":3}`, want: CompareAncestryResult{Status: "behind", BehindBy: 3}},
+		{name: "diverged", body: `{"status":"diverged","ahead_by":1,"behind_by":1}`, want: CompareAncestryResult{Status: "diverged", AheadBy: 1, BehindBy: 1}},
+		{name: "identical", body: `{"status":"identical","ahead_by":0,"behind_by":0}`, want: CompareAncestryResult{Status: "identical"}},
+		{name: "missing status", body: `{"ahead_by":1,"behind_by":0}`, cause: "status"},
+		{name: "missing behind", body: `{"status":"ahead","ahead_by":1}`, cause: "behind_by"},
+		{name: "negative count", body: `{"status":"ahead","ahead_by":1,"behind_by":-1}`, cause: "behind_by"},
+		{name: "unknown status", body: `{"status":"sideways","ahead_by":1,"behind_by":0}`, cause: "unknown"},
+		{name: "not found", status: 404, body: `{"message":"Not Found"}`, cause: "404"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer workspace-token" || r.URL.Path != "/repos/acme/app/compare/judged-sha...head-sha" || r.URL.Query().Get("per_page") != "1" {
+					t.Errorf("request %s", r.URL)
+				}
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+				}
+				fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			got, err := compareAncestry(t.Context(), "acme/app", "judged-sha", "head-sha", newRESTRunner(server.Client(), server.URL, "workspace-token", "workspace demo GitHub App"))
+			if tc.cause != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.cause) || !strings.Contains(err.Error(), "head-sha") {
+					t.Fatalf("err=%v", err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("got=%+v err=%v", got, err)
+			}
+		})
+	}
+	if _, err := compareAncestry(t.Context(), "acme/app", "", "head-sha", nil); err == nil {
+		t.Fatal("a blank base was read")
+	}
+}

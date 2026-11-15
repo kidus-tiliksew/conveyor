@@ -55,6 +55,14 @@ func newVerificationFixtureTask(t *testing.T, x Fixture, scope []core.Verificati
 // authoritative pin.
 func newVerificationFixtureServing(t *testing.T, x Fixture, scope []core.VerificationRevision, setup func(*core.Task), served int, empty ...bool) verificationFixture {
 	t.Helper()
+	return newVerificationFixtureBound(t, x, scope, setup, served, "", "", empty...)
+}
+
+// newVerificationFixtureBound is newVerificationFixtureServing whose verify
+// order and context bind reviewScope and baseline, as dispatch binds a head
+// whose submission fixed a delta scope (feature-delta-review-rounds DR-4).
+func newVerificationFixtureBound(t *testing.T, x Fixture, scope []core.VerificationRevision, setup func(*core.Task), served int, reviewScope, baseline string, empty ...bool) verificationFixture {
+	t.Helper()
 	revisions := append([]core.VerificationRevision{}, scope...)
 	sort.SliceStable(revisions, func(i, j int) bool { return revisions[i].Repository < revisions[j].Repository })
 	id := core.NewTaskID()
@@ -65,7 +73,7 @@ func newVerificationFixtureServing(t *testing.T, x Fixture, scope []core.Verific
 	}
 	requireOK(t, x.Backend.CreateTask(x.Context, task))
 	job := core.Job{ID: id + "-verify-1", TaskID: id, Stage: core.StageVerify, State: core.JobPending}
-	o := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: id, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, QueueEnteredAt: task.CreatedAt, QueueDeadline: task.CreatedAt.Add(time.Hour), CreatedAt: task.CreatedAt}
+	o := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: id, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, ReviewScope: reviewScope, BaselineSHA: baseline, QueueEnteredAt: task.CreatedAt, QueueDeadline: task.CreatedAt.Add(time.Hour), CreatedAt: task.CreatedAt}
 	_, err := CreateStageWorkOrder(x.Context, x.Backend, job, o)
 	requireOK(t, err)
 	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "verification", ClientToken: "verification-fixture-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
@@ -77,7 +85,7 @@ func newVerificationFixtureServing(t *testing.T, x Fixture, scope []core.Verific
 	for _, r := range revisions {
 		discovery = append(discovery, core.JSONPayload(map[string]any{"repository": r.Repository, "revision": r.SHA, "state": "no_manifest"}))
 	}
-	c := store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "prepare", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins, Discovery: discovery}}
+	c := store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "prepare", Context: &store.VerificationContext{ReviewScope: reviewScope, BaselineSHA: baseline, Revisions: v.revisions, GoverningPins: v.pins, Discovery: discovery}}
 	result := v.apply(t, c)
 	v.contextID = result.ID
 	replay := v.apply(t, c)

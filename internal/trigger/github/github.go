@@ -1073,6 +1073,47 @@ func compareChangedPaths(ctx context.Context, repo, base, head string, run ghRun
 	return paths, nil
 }
 
+// CompareAncestryResult is the part of GitHub's comparison of base with head
+// that states their ancestry: status is ahead, behind, identical, or
+// diverged, and BehindBy counts the commits of base that head lacks.
+type CompareAncestryResult struct {
+	Status   string `json:"status"`
+	AheadBy  int    `json:"ahead_by"`
+	BehindBy int    `json:"behind_by"`
+}
+
+// CompareAncestry reads GitHub's comparison of base with head through the
+// endpoint CompareChangedPaths calls and returns its status and counts. A
+// submission reads it to learn whether the judged head is an ancestor of the
+// submitted head (feature-delta-review-rounds DR-3; component-git-delivery).
+func CompareAncestry(ctx context.Context, repo, base, head string) (CompareAncestryResult, error) {
+	return compareAncestry(ctx, repo, base, head, gh)
+}
+
+func compareAncestry(ctx context.Context, repo, base, head string, run ghRunner) (CompareAncestryResult, error) {
+	if strings.TrimSpace(head) == "" || strings.TrimSpace(base) == "" {
+		return CompareAncestryResult{}, fmt.Errorf("compare ancestry of %q: base and head SHA are required", head)
+	}
+	raw, err := run(ctx, "api", "repos/"+repo+"/compare/"+url.PathEscape(base)+"..."+url.PathEscape(head)+"?per_page=1&page=1")
+	if err != nil {
+		return CompareAncestryResult{}, fmt.Errorf("compare ancestry of %s: %w", head, forgeCallError(err))
+	}
+	var comparison struct {
+		Status   *string `json:"status"`
+		AheadBy  *int    `json:"ahead_by"`
+		BehindBy *int    `json:"behind_by"`
+	}
+	if json.Unmarshal(raw, &comparison) != nil || comparison.Status == nil || comparison.AheadBy == nil || comparison.BehindBy == nil || *comparison.AheadBy < 0 || *comparison.BehindBy < 0 {
+		return CompareAncestryResult{}, fmt.Errorf("compare ancestry of %s: %w", head, forgeResponseError("missing or malformed status, ahead_by, or behind_by"))
+	}
+	switch *comparison.Status {
+	case "ahead", "behind", "identical", "diverged":
+	default:
+		return CompareAncestryResult{}, fmt.Errorf("compare ancestry of %s: %w", head, forgeResponseError("unknown comparison status"))
+	}
+	return CompareAncestryResult{Status: *comparison.Status, AheadBy: *comparison.AheadBy, BehindBy: *comparison.BehindBy}, nil
+}
+
 // SubmissionPullRequest is the existing open PR observed for a submission.
 type SubmissionPullRequest struct {
 	Number int    `json:"number"`
