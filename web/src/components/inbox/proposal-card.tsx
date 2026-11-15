@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Check, CornerDownRight, X } from 'lucide-react'
+import { Check, X } from 'lucide-react'
 import { useState } from 'react'
 import {
   confirmRequirementVersion,
@@ -18,7 +18,6 @@ import { relativeTime } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { VersionDismissDialog } from '../documents/version-dismiss-dialog'
 import { type ReviseTarget, VersionReviseDialog } from '../documents/version-revise-dialog'
-import { NextActionIDs } from '../task/next-action-parts'
 import { Button } from '../ui/button'
 import { DecisionFooter } from './decision-footer'
 import { Kbd } from './inbox-keyboard'
@@ -39,8 +38,9 @@ export function knownTier(tier: string): tier is PendingProposal['tier'] {
 // The selected pending document proposal in the Inbox's detail view
 // (component-next-action invariant 36; req-operator-next-action AC-1.8,
 // AC-2.6, AC-2.8, AC-2.9). It reads like a task decision: the server's label,
-// question and if-ignored text, the proposed change in place, a footer band of
-// choices with their keys, and raw identifiers only in the IDs disclosure.
+// the proposed change in place, and a footer band of choices with their keys.
+// It shows no question, if-ignored sentence, or identifier list (AC-1.9;
+// component-next-action invariant 41).
 // `onActed` runs after a confirm or dismiss succeeds and when the Revise
 // dialog closes; the page moves the selection only if the item then leaves
 // (AC-2.10). The acts keep the retired pending-proposals queue's
@@ -152,41 +152,14 @@ export function ProposalDetail({
           <span>Origin: {originLink(proposal, workspace)}</span>
           {known && contextLink(proposal, workspace)}
         </div>
-        {item.question && <p className="text-sm leading-6">{item.question}</p>}
         {known && (
           <div className="border-t border-border pt-3">
             <ProposalContext proposal={proposal} />
           </div>
         )}
       </div>
-      <DecisionFooter
-        ids={
-          <NextActionIDs
-            value={{
-              document: proposal.id,
-              tier: proposal.tier,
-              ...(proposal.version == null ? {} : { version: proposal.version }),
-              origin: proposal.origin_type,
-              ...(proposal.origin_id ? { origin_id: proposal.origin_id } : {}),
-            }}
-          />
-        }
-        consequence={
-          (item.if_ignored || item.sentence) && (
-            <div className="min-w-0 space-y-1 text-xs text-muted">
-              {item.if_ignored && (
-                <p className="flex min-w-0 items-start gap-1.5">
-                  <CornerDownRight className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-                  <span className="min-w-0 break-words">
-                    If you do nothing: <span className="font-medium text-foreground">{item.if_ignored}</span>
-                  </span>
-                </p>
-              )}
-              {item.sentence && <p className="min-w-0 break-words">{item.sentence}</p>}
-            </div>
-          )
-        }
-      >
+      <DecisionFooter>
+        {item.sentence && <p className="min-w-0 break-words text-xs text-muted">{item.sentence}</p>}
         {resolve.error && !dismissing && (
           <p className="text-xs text-failure">{errorMessage(resolve.error, 'Could not resolve this proposal.')}</p>
         )}
@@ -309,7 +282,8 @@ export function originWord(proposal: Pick<PendingProposal, 'origin_type' | 'orig
   return 'Operator'
 }
 
-// The origin in plain words; its identifier stays in the IDs disclosure.
+// The origin in plain words, linked where the factory has a page for it. Its
+// identifier stays in the CLI and MCP reads (AC-1.9).
 function originLink(proposal: PendingProposal, workspace: string) {
   if (proposal.origin_type === 'task' && proposal.origin_id)
     return (
