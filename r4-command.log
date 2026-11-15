@@ -1,0 +1,147 @@
+go test -v ./internal/store ./internal/httpapi ./internal/store/postgres ./internal/store/singlestore -run 'TestMemoryConformance/Requirements/.*document|TestPostgresConformanceIntegration/Requirements/.*document|TestSingleStoreConformanceIntegration/Requirements/.*document|TestDocumentEvent|TestSystemDesignEventLookupIndexIntegration' -count=1
+=== RUN   TestMemoryConformance
+=== RUN   TestMemoryConformance/Requirements
+=== RUN   TestMemoryConformance/Requirements/mixed_document_event_membership
+=== RUN   TestMemoryConformance/Requirements/system_design_pages_include_task_events_with_document_and_workspace_filtering
+=== RUN   TestMemoryConformance/Requirements/document_event_pages_retain_history_and_snapshot_across_appends
+=== RUN   TestMemoryConformance/Requirements/document_event_pages_retain_history_and_snapshot_across_appends/requirement
+=== RUN   TestMemoryConformance/Requirements/document_event_pages_retain_history_and_snapshot_across_appends/system_design
+=== RUN   TestMemoryConformance/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed
+=== RUN   TestMemoryConformance/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/unknown
+=== RUN   TestMemoryConformance/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/archived
+=== RUN   TestMemoryConformance/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/self
+=== RUN   TestMemoryConformance/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/cross_workspace
+=== RUN   TestMemoryConformance/Requirements/creation_commits_a_pending_document_and_its_first_version
+=== NAME  TestMemoryConformance
+    all.go:225: RunAll elapsed=473.399557ms
+--- PASS: TestMemoryConformance (0.47s)
+    --- PASS: TestMemoryConformance/Requirements (0.46s)
+        --- PASS: TestMemoryConformance/Requirements/mixed_document_event_membership (0.01s)
+        --- PASS: TestMemoryConformance/Requirements/system_design_pages_include_task_events_with_document_and_workspace_filtering (0.08s)
+        --- PASS: TestMemoryConformance/Requirements/document_event_pages_retain_history_and_snapshot_across_appends (0.36s)
+            --- PASS: TestMemoryConformance/Requirements/document_event_pages_retain_history_and_snapshot_across_appends/requirement (0.09s)
+            --- PASS: TestMemoryConformance/Requirements/document_event_pages_retain_history_and_snapshot_across_appends/system_design (0.23s)
+        --- PASS: TestMemoryConformance/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed (0.00s)
+            --- PASS: TestMemoryConformance/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/unknown (0.00s)
+            --- PASS: TestMemoryConformance/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/archived (0.00s)
+            --- PASS: TestMemoryConformance/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/self (0.00s)
+            --- PASS: TestMemoryConformance/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/cross_workspace (0.00s)
+        --- PASS: TestMemoryConformance/Requirements/creation_commits_a_pending_document_and_its_first_version (0.00s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/store	0.515s
+=== RUN   TestDocumentEventHTTP
+=== RUN   TestDocumentEventHTTP/requirements
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000001] "GET http://example.com/v1/requirements/req-delegated-execution HTTP/1.1" from 192.0.2.1:1234 - 200 86860B in 2.999434ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000002] "GET http://example.com/v1/requirements/req-delegated-execution/events?limit=200&offset=50&snapshot_id=1221 HTTP/1.1" from 192.0.2.1:1234 - 200 447307B in 2.855996ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000003] "GET http://example.com/v1/requirements/req-delegated-execution/events?limit=200&offset=250&snapshot_id=1221 HTTP/1.1" from 192.0.2.1:1234 - 200 447195B in 3.633829ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000004] "GET http://example.com/v1/requirements/req-delegated-execution/events?limit=200&offset=450&snapshot_id=1221 HTTP/1.1" from 192.0.2.1:1234 - 200 366621B in 3.547989ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000005] "GET http://example.com/v1/requirements/req-delegated-execution/events?limit=50&offset=9999 HTTP/1.1" from 192.0.2.1:1234 - 200 70B in 1.330945ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000006] "GET http://example.com/v1/requirements/req-delegated-execution/events?limit=0 HTTP/1.1" from 192.0.2.1:1234 - 400 32B in 20.468µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000007] "GET http://example.com/v1/requirements/req-delegated-execution/events?limit=201 HTTP/1.1" from 192.0.2.1:1234 - 400 32B in 4.068µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000008] "GET http://example.com/v1/requirements/req-delegated-execution/events?limit=1&limit=2 HTTP/1.1" from 192.0.2.1:1234 - 400 28B in 5.27µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000009] "GET http://example.com/v1/requirements/req-delegated-execution/events?limit=1&offset=-1 HTTP/1.1" from 192.0.2.1:1234 - 400 40B in 4.539µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000010] "GET http://example.com/v1/requirements/req-delegated-execution/events?limit=1&offset=2147483648 HTTP/1.1" from 192.0.2.1:1234 - 400 40B in 3.776µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000011] "GET http://example.com/v1/requirements/req-delegated-execution/events?offset=1 HTTP/1.1" from 192.0.2.1:1234 - 400 22B in 3.406µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000012] "GET http://example.com/v1/requirements/req-delegated-execution/events?snapshot_id=-1 HTTP/1.1" from 192.0.2.1:1234 - 400 33B in 15.239µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000013] "GET http://example.com/v1/requirements/req-delegated-execution/events?snapshot_id=x HTTP/1.1" from 192.0.2.1:1234 - 400 33B in 5.681µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000014] "GET http://example.com/v1/requirements/req-delegated-execution/events?snapshot_id=1&snapshot_id=2 HTTP/1.1" from 192.0.2.1:1234 - 400 34B in 3.827µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000015] "GET http://example.com/v1/requirements/req-delegated-execution/events HTTP/1.1" from 192.0.2.1:1234 - 200 84940B in 1.132171ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000016] "GET http://example.com/v1/requirements/req-delegated-execution/events HTTP/1.1" from 192.0.2.1:1234 - 401 13B in 8.456µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000017] "GET http://example.com/v1/requirements/missing/events HTTP/1.1" from 192.0.2.1:1234 - 404 40B in 7.374µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000018] "GET http://example.com/v1/requirements/req-delegated-execution/events?workspace_id=foreign HTTP/1.1" from 192.0.2.1:1234 - 404 64B in 7.724µs
+=== RUN   TestDocumentEventHTTP/system-designs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000019] "GET http://example.com/v1/system-designs/design-260805-973cd4 HTTP/1.1" from 192.0.2.1:1234 - 200 15632B in 5.283093ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000020] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?limit=200&offset=50&snapshot_id=1222 HTTP/1.1" from 192.0.2.1:1234 - 200 56904B in 4.953022ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000021] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?limit=200&offset=250&snapshot_id=1222 HTTP/1.1" from 192.0.2.1:1234 - 200 56845B in 5.243028ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000022] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?limit=200&offset=450&snapshot_id=1222 HTTP/1.1" from 192.0.2.1:1234 - 200 43661B in 4.751492ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000023] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?limit=50&offset=9999 HTTP/1.1" from 192.0.2.1:1234 - 200 70B in 5.299223ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000024] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?limit=0 HTTP/1.1" from 192.0.2.1:1234 - 400 32B in 26.299µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000025] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?limit=201 HTTP/1.1" from 192.0.2.1:1234 - 400 32B in 4.84µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000026] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?limit=1&limit=2 HTTP/1.1" from 192.0.2.1:1234 - 400 28B in 3.548µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000027] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?limit=1&offset=-1 HTTP/1.1" from 192.0.2.1:1234 - 400 40B in 3.637µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000028] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?limit=1&offset=2147483648 HTTP/1.1" from 192.0.2.1:1234 - 400 40B in 4.238µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000029] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?offset=1 HTTP/1.1" from 192.0.2.1:1234 - 400 22B in 3.396µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000030] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?snapshot_id=-1 HTTP/1.1" from 192.0.2.1:1234 - 400 33B in 7.014µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000031] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?snapshot_id=x HTTP/1.1" from 192.0.2.1:1234 - 400 33B in 4.107µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000032] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?snapshot_id=1&snapshot_id=2 HTTP/1.1" from 192.0.2.1:1234 - 400 34B in 4.558µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000033] "GET http://example.com/v1/system-designs/design-260805-973cd4/events HTTP/1.1" from 192.0.2.1:1234 - 200 14309B in 4.811917ms
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000034] "GET http://example.com/v1/system-designs/design-260805-973cd4/events HTTP/1.1" from 192.0.2.1:1234 - 401 13B in 10.62µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000035] "GET http://example.com/v1/system-designs/missing/events HTTP/1.1" from 192.0.2.1:1234 - 404 42B in 9.909µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000036] "GET http://example.com/v1/system-designs/design-260805-973cd4/events?workspace_id=foreign HTTP/1.1" from 192.0.2.1:1234 - 404 64B in 5.33µs
+--- PASS: TestDocumentEventHTTP (0.10s)
+    --- PASS: TestDocumentEventHTTP/requirements (0.03s)
+    --- PASS: TestDocumentEventHTTP/system-designs (0.05s)
+=== RUN   TestDocumentEventHTTPMixedMembership
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000037] "GET http://example.com/v1/requirements/req-membership-261115-e23920 HTTP/1.1" from 192.0.2.1:1234 - 200 5972B in 167.005µs
+2026/11/15 16:20:21 [box-node-ab27d82609d169ff/QGHz6rX7Rj-000038] "GET http://example.com/v1/system-designs/design-membership-261115-23a3aa HTTP/1.1" from 192.0.2.1:1234 - 200 3553B in 86.294µs
+--- PASS: TestDocumentEventHTTPMixedMembership (0.00s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/httpapi	0.122s
+=== RUN   TestPostgresConformanceIntegration
+=== RUN   TestPostgresConformanceIntegration/Requirements
+=== RUN   TestPostgresConformanceIntegration/Requirements/mixed_document_event_membership
+    all.go:248: fixture reset in 61ms
+=== RUN   TestPostgresConformanceIntegration/Requirements/system_design_pages_include_task_events_with_document_and_workspace_filtering
+    all.go:248: fixture reset in 62ms
+=== RUN   TestPostgresConformanceIntegration/Requirements/document_event_pages_retain_history_and_snapshot_across_appends
+    all.go:248: fixture reset in 62ms
+=== RUN   TestPostgresConformanceIntegration/Requirements/document_event_pages_retain_history_and_snapshot_across_appends/requirement
+=== RUN   TestPostgresConformanceIntegration/Requirements/document_event_pages_retain_history_and_snapshot_across_appends/system_design
+=== RUN   TestPostgresConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed
+    all.go:248: fixture reset in 63ms
+=== RUN   TestPostgresConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/unknown
+=== RUN   TestPostgresConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/archived
+=== RUN   TestPostgresConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/self
+=== RUN   TestPostgresConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/cross_workspace
+=== RUN   TestPostgresConformanceIntegration/Requirements/creation_commits_a_pending_document_and_its_first_version
+    all.go:248: fixture reset in 72ms
+2026/11/15 16:20:23 postgres: database operation failed: operation=CreateRequirement sqlstate=23505 message="duplicate key value violates unique constraint \"requirements_pkey\""
+=== NAME  TestPostgresConformanceIntegration
+    all.go:225: RunAll elapsed=2.346739516s
+--- PASS: TestPostgresConformanceIntegration (2.35s)
+    --- PASS: TestPostgresConformanceIntegration/Requirements (2.34s)
+        --- PASS: TestPostgresConformanceIntegration/Requirements/mixed_document_event_membership (0.85s)
+        --- PASS: TestPostgresConformanceIntegration/Requirements/system_design_pages_include_task_events_with_document_and_workspace_filtering (0.60s)
+        --- PASS: TestPostgresConformanceIntegration/Requirements/document_event_pages_retain_history_and_snapshot_across_appends (0.70s)
+            --- PASS: TestPostgresConformanceIntegration/Requirements/document_event_pages_retain_history_and_snapshot_across_appends/requirement (0.05s)
+            --- PASS: TestPostgresConformanceIntegration/Requirements/document_event_pages_retain_history_and_snapshot_across_appends/system_design (0.02s)
+        --- PASS: TestPostgresConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed (0.11s)
+            --- PASS: TestPostgresConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/unknown (0.00s)
+            --- PASS: TestPostgresConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/archived (0.00s)
+            --- PASS: TestPostgresConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/self (0.00s)
+            --- PASS: TestPostgresConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed/cross_workspace (0.00s)
+        --- PASS: TestPostgresConformanceIntegration/Requirements/creation_commits_a_pending_document_and_its_first_version (0.08s)
+=== RUN   TestDocumentEventQueryPlansIntegration
+--- PASS: TestDocumentEventQueryPlansIntegration (0.68s)
+=== RUN   TestSystemDesignEventLookupIndexIntegration
+--- PASS: TestSystemDesignEventLookupIndexIntegration (0.03s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/postgres	3.286s
+=== RUN   TestSingleStoreConformanceIntegration
+=== RUN   TestSingleStoreConformanceIntegration/Requirements
+=== RUN   TestSingleStoreConformanceIntegration/Requirements/mixed_document_event_membership
+    all_conformance_integration_test.go:189: CONVEYOR_TEST_SINGLESTORE_URL is unset
+=== RUN   TestSingleStoreConformanceIntegration/Requirements/system_design_pages_include_task_events_with_document_and_workspace_filtering
+    all_conformance_integration_test.go:189: CONVEYOR_TEST_SINGLESTORE_URL is unset
+=== RUN   TestSingleStoreConformanceIntegration/Requirements/document_event_pages_retain_history_and_snapshot_across_appends
+    all_conformance_integration_test.go:189: CONVEYOR_TEST_SINGLESTORE_URL is unset
+=== RUN   TestSingleStoreConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed
+    all_conformance_integration_test.go:189: CONVEYOR_TEST_SINGLESTORE_URL is unset
+=== RUN   TestSingleStoreConformanceIntegration/Requirements/creation_commits_a_pending_document_and_its_first_version
+    all_conformance_integration_test.go:189: CONVEYOR_TEST_SINGLESTORE_URL is unset
+=== NAME  TestSingleStoreConformanceIntegration
+    all.go:225: RunAll elapsed=8.184062ms
+--- PASS: TestSingleStoreConformanceIntegration (0.01s)
+    --- PASS: TestSingleStoreConformanceIntegration/Requirements (0.00s)
+        --- SKIP: TestSingleStoreConformanceIntegration/Requirements/mixed_document_event_membership (0.00s)
+        --- SKIP: TestSingleStoreConformanceIntegration/Requirements/system_design_pages_include_task_events_with_document_and_workspace_filtering (0.00s)
+        --- SKIP: TestSingleStoreConformanceIntegration/Requirements/document_event_pages_retain_history_and_snapshot_across_appends (0.00s)
+        --- SKIP: TestSingleStoreConformanceIntegration/Requirements/archive_superseding_documents_are_validated_persisted_and_exposed (0.00s)
+        --- SKIP: TestSingleStoreConformanceIntegration/Requirements/creation_commits_a_pending_document_and_its_first_version (0.00s)
+=== RUN   TestDocumentEventQueryPlansIntegration
+    document_event_plans_integration_test.go:56: CONVEYOR_TEST_SINGLESTORE_URL is unset
+--- SKIP: TestDocumentEventQueryPlansIntegration (0.00s)
+=== RUN   TestDocumentEventScanRoles
+--- PASS: TestDocumentEventScanRoles (0.00s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/singlestore	0.020s

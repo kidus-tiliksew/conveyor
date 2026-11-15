@@ -1,0 +1,677 @@
+CONVEYOR_DOCUMENT_EVENT_MEASUREMENT=0 env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH bash scripts/go-test-require-tests.sh -v ./internal/store/singlestore -run '^TestDocumentEventQueryPlansIntegration$' -count=1 -timeout=45m
+=== RUN   TestDocumentEventQueryPlansIntegration
+2026/11/15 16:09:39 singlestore: database operation failed: operation=Open error=1857 sqlstate=HY000 message="The open transaction was aborted due to being idle during a concurrent DDL operation."
+    document_event_plans_integration_test.go:56: fixture reset 86 tables in 1.21s
+=== RUN   TestDocumentEventQueryPlansIntegration/results
+=== RUN   TestDocumentEventQueryPlansIntegration/plans
+    document_event_plans_integration_test.go:101: requirement after query={Limit:50 Offset:0 SnapshotID:0} event scans=[events_columnstore_44: task membership by proposal task ID events_columnstore_42: accepted payload filter scan events_columnstore_50: page fetch by shard key and ID] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `event_shard_key`, `id`, `task_id`, `workspace_id` ENABLE;
+            ANALYZE TABLE conveyor_1794758941617385494_test.`task_context_proposals` COLUMNS `state`, `target_id`, `target_kind`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r5.total, CASE WHEN 0 > 0 THEN 0 ELSE r5.snapshot END  AS `CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, events_columnstore_50.id, COALESCE(events_columnstore_50.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(events_columnstore_50.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(events_columnstore_50.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(events_columnstore_50.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(events_columnstore_50.actor_role,'') AS `COALESCE(e.actor_role,'')`, events_...] est_rows:1
+        Sort [events_columnstore_50.at DESC, events_columnstore_50.id DESC]
+        HashJoin type:right est_rows:157
+        |---HashTableProbe [r5.event_shard_key = events_columnstore_50.event_shard_key AND r5.id = events_columnstore_50.id]
+        |   HashTableBuild alias:r5
+        |   Repartition [totals_29_39_48.total, totals_29_39_48.snapshot, r4.event_shard_key, r4.id] AS r5 shard_key:[event_shard_key] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r4 storage:list stream:no table_type:reference est_table_rows:8 est_filtered:8
+        |   |   Project [r3.id, r3.event_shard_key] alias:r4 parallelism_level:partition est_rows:8
+        |   |   Top offset:0
+        |   |   TopSort limit:50 [r3.at DESC, r3.id DESC]
+        |   |   TableScan r3 storage:list stream:yes table_type:reference est_table_rows:8 est_filtered:8
+        |   |   Broadcast [matched_32_47.id, matched_32_47.event_shard_key, matched_32_47.at] AS r3 distribution:direct parallelism_level:sub_partition est_rows:8 est_select_cost:64
+        |   |   TopSort limit:[?] [matched_32_47.at DESC, matched_32_47.id DESC]
+        |   |   TableScan m_matched_321 AS matched_32_47 storage:list stream:no table_type:sharded est_table_rows:8 est_filtered:8
+        |   |   MaterializedCTE alias:m_matched_321 est_rows:8
+        |   TableScan 1tmp AS totals_29_39_48 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r2.total) AS $0, MAX(r2.op_1) AS $1] groups:[r2.op_0]
+        |   TableScan r2 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r2 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:8
+        |   Aggregate [COUNT(*) AS total, MAX(matched_32_46.id) AS op_1]
+        |   TableScan m_matched_321 AS matched_32_46 storage:list stream:no table_type:sharded est_table_rows:8 est_filtered:8
+        |   MaterializedCTE [SUB_26_36_45.id, SUB_26_36_45.at, SUB_26_36_45.event_shard_key] alias:m_matched_321 parallelism_level:sub_partition est_rows:8
+        |   HashGroupBy [] groups:[SUB_26_36_45.id, SUB_26_36_45.at, SUB_26_36_45.event_shard_key]
+        |   TableScan 0tmp AS SUB_26_36_45 storage:list stream:yes est_table_rows:126 est_filtered:126
+        |   UnionAll est_rows:126
+        |   |---Project [events_columnstore_44.id, events_columnstore_44.at, events_columnstore_44.event_shard_key] est_rows:122 est_select_cost:2
+        |   |   Filter [r0.task_id = events_columnstore_44.task_id]
+        |   |   HashJoin
+        |   |   |---HashTableProbe [r0.workspace_id = events_columnstore_44.workspace_id AND r0.task_id = events_columnstore_44.event_shard_key]
+        |   |   |   HashTableBuild alias:r0
+        |   |   |   Repartition [task_context_proposals_43.task_id, task_context_proposals_43.workspace_id] AS r0 shard_key:[task_id] parallelism_level:partition est_rows:1
+        |   |   |   Filter [task_context_proposals_43.target_id = 'req-membership-261115-9e3584' AND task_context_proposals_43.target_kind = 'requirement']
+        |   |   |   IndexRangeScan conveyor_1794758941617385494_test.task_context_proposals AS task_context_proposals_43, KEY task_context_proposals_pending_idx (workspace_id, state, task_id, target_kind, target_id) scan:[workspace_id = 'document-plans-261115-046212' AND state = 'confirmed'] table_type:sharded_rowstore est_table_rows:1 est_filtered:1
+        |   |   ColumnStoreFilter [(<after per-thread scan begin> AND <before per-thread scan end> AND ((0 = 0 OR events_columnstore_44.id <= 0) AND events_columnstore_44.task_id = events_columnstore_44.event_shard_key) AND events_columnstore_44.workspace_id = 'document-plans-261115-046212' index) AND events_columnstore_44.event_shard_key = r0.task_id join index AND events_columnstore_44.workspace_id = r0.workspace_id join index]
+        |   |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_44, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:123
+        |   +---Project [events_columnstore_42.id, events_columnstore_42.at, events_columnstore_42.event_shard_key] est_rows:4
+        |       ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND (JSON_EXTRACT_STRING(events_columnstore_42.payload_json,'requirement_id') = 'req-membership-261115-9e3584' AND (0 = 0 OR events_columnstore_42.id <= 0)) AND events_columnstore_42.workspace_id = 'document-plans-261115-046212' index AND events_columnstore_42.task_id IS NULL index]
+        |       ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_42, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:4
+        ColumnStoreFilter [(<after per-thread scan begin> AND <before per-thread scan end> AND events_columnstore_50.workspace_id = 'document-plans-261115-046212' index) AND events_columnstore_50.event_shard_key = r5.event_shard_key join index AND events_columnstore_50.id = r5.id join index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_50, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:157
+    document_event_plans_integration_test.go:101: requirement after query={Limit:3 Offset:2 SnapshotID:1099511627776} event scans=[events_columnstore_44: task membership by proposal task ID events_columnstore_42: accepted payload filter scan events_columnstore_50: page fetch by shard key and ID] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `event_shard_key`, `id`, `task_id`, `workspace_id` ENABLE;
+            ANALYZE TABLE conveyor_1794758941617385494_test.`task_context_proposals` COLUMNS `state`, `target_id`, `target_kind`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r5.total, CASE WHEN 1099511627776 > 0 THEN 1099511627776 ELSE r5.snapshot END  AS `CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, events_columnstore_50.id, COALESCE(events_columnstore_50.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(events_columnstore_50.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(events_columnstore_50.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(events_columnstore_50.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(events_columnstore_50.actor_...] est_rows:1
+        Sort [events_columnstore_50.at DESC, events_columnstore_50.id DESC]
+        HashJoin type:right est_rows:157
+        |---HashTableProbe [r5.event_shard_key = events_columnstore_50.event_shard_key AND r5.id = events_columnstore_50.id]
+        |   HashTableBuild alias:r5
+        |   Repartition [totals_29_39_48.total, totals_29_39_48.snapshot, r4.event_shard_key, r4.id] AS r5 shard_key:[event_shard_key] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r4 storage:list stream:no table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Project [r3.id, r3.event_shard_key] alias:r4 parallelism_level:partition est_rows:3
+        |   |   Top offset:2
+        |   |   TopSort limit:3 [r3.at DESC, r3.id DESC]
+        |   |   TableScan r3 storage:list stream:yes table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Broadcast [matched_32_47.id, matched_32_47.event_shard_key, matched_32_47.at] AS r3 distribution:direct parallelism_level:sub_partition est_rows:3 est_select_cost:64
+        |   |   TopSort limit:[?] [matched_32_47.at DESC, matched_32_47.id DESC]
+        |   |   TableScan m_matched_321 AS matched_32_47 storage:list stream:no table_type:sharded est_table_rows:8 est_filtered:8
+        |   |   MaterializedCTE alias:m_matched_321 est_rows:8
+        |   TableScan 1tmp AS totals_29_39_48 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r2.total) AS $0, MAX(r2.op_1) AS $1] groups:[r2.op_0]
+        |   TableScan r2 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r2 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:8
+        |   Aggregate [COUNT(*) AS total, MAX(matched_32_46.id) AS op_1]
+        |   TableScan m_matched_321 AS matched_32_46 storage:list stream:no table_type:sharded est_table_rows:8 est_filtered:8
+        |   MaterializedCTE [SUB_26_36_45.id, SUB_26_36_45.at, SUB_26_36_45.event_shard_key] alias:m_matched_321 parallelism_level:sub_partition est_rows:8
+        |   HashGroupBy [] groups:[SUB_26_36_45.id, SUB_26_36_45.at, SUB_26_36_45.event_shard_key]
+        |   TableScan 0tmp AS SUB_26_36_45 storage:list stream:yes est_table_rows:126 est_filtered:126
+        |   UnionAll est_rows:126
+        |   |---Project [events_columnstore_44.id, events_columnstore_44.at, events_columnstore_44.event_shard_key] est_rows:122 est_select_cost:2
+        |   |   Filter [r0.task_id = events_columnstore_44.task_id]
+        |   |   HashJoin
+        |   |   |---HashTableProbe [r0.workspace_id = events_columnstore_44.workspace_id AND r0.task_id = events_columnstore_44.event_shard_key]
+        |   |   |   HashTableBuild alias:r0
+        |   |   |   Repartition [task_context_proposals_43.task_id, task_context_proposals_43.workspace_id] AS r0 shard_key:[task_id] parallelism_level:partition est_rows:1
+        |   |   |   Filter [task_context_proposals_43.target_id = 'req-membership-261115-9e3584' AND task_context_proposals_43.target_kind = 'requirement']
+        |   |   |   IndexRangeScan conveyor_1794758941617385494_test.task_context_proposals AS task_context_proposals_43, KEY task_context_proposals_pending_idx (workspace_id, state, task_id, target_kind, target_id) scan:[workspace_id = 'document-plans-261115-046212' AND state = 'confirmed'] table_type:sharded_rowstore est_table_rows:1 est_filtered:1
+        |   |   ColumnStoreFilter [(<after per-thread scan begin> AND <before per-thread scan end> AND ((1099511627776 = 0 OR events_columnstore_44.id <= 1099511627776) AND events_columnstore_44.task_id = events_columnstore_44.event_shard_key) AND events_columnstore_44.workspace_id = 'document-plans-261115-046212' index) AND events_columnstore_44.event_shard_key = r0.task_id join index AND events_columnstore_44.workspace_id = r0.workspace_id join index]
+        |   |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_44, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:123
+        |   +---Project [events_columnstore_42.id, events_columnstore_42.at, events_columnstore_42.event_shard_key] est_rows:4
+        |       ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND (JSON_EXTRACT_STRING(events_columnstore_42.payload_json,'requirement_id') = 'req-membership-261115-9e3584' AND (1099511627776 = 0 OR events_columnstore_42.id <= 1099511627776)) AND events_columnstore_42.workspace_id = 'document-plans-261115-046212' index AND events_columnstore_42.task_id IS NULL index]
+        |       ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_42, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:4
+        ColumnStoreFilter [(<after per-thread scan begin> AND <before per-thread scan end> AND events_columnstore_50.workspace_id = 'document-plans-261115-046212' index) AND events_columnstore_50.event_shard_key = r5.event_shard_key join index AND events_columnstore_50.id = r5.id join index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_50, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:157
+    document_event_plans_integration_test.go:101: requirement before query={Limit:50 Offset:0 SnapshotID:0} event scans=[events_columnstore_31: accepted payload filter scan events_columnstore_38: workspace read without a key lookup] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `id`, `workspace_id` ENABLE;
+            ANALYZE TABLE conveyor_1794758941617385494_test.`task_context_proposals` COLUMNS `state`, `target_id`, `target_kind`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r6.total, CASE WHEN 0 > 0 THEN 0 ELSE r6.snapshot END  AS `CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, r7.id, COALESCE(r7.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(r7.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(r7.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(r7.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(r7.actor_role,'') AS `COALESCE(e.actor_role,'')`, r7.payload_json, r7.at] est_rows:1
+        Sort [r7.at DESC, r7.id DESC]
+        HashJoin type:right est_rows:138
+        |---HashTableProbe [r7.id = r6.id]
+        |   HashTableBuild alias:r6
+        |   Repartition [totals_19_28_36.total, totals_19_28_36.snapshot, r5.id] AS r6 shard_key:[id] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r5 storage:list stream:no table_type:reference est_table_rows:50 est_filtered:50
+        |   |   Project [r4.id] alias:r5 parallelism_level:partition est_rows:50
+        |   |   Top offset:0
+        |   |   TopSort limit:50 [r4.at DESC, r4.id DESC]
+        |   |   TableScan r4 storage:list stream:yes table_type:reference est_table_rows:50 est_filtered:50
+        |   |   Broadcast [matched_22_35.id, matched_22_35.at] AS r4 distribution:direct parallelism_level:sub_partition est_rows:50 est_select_cost:1,104
+        |   |   TopSort limit:[?] [matched_22_35.at DESC, matched_22_35.id DESC]
+        |   |   TableScan m_matched_222 AS matched_22_35 storage:list stream:no table_type:sharded est_table_rows:138
+        |   |   MaterializedCTE alias:m_matched_222 est_rows:138
+        |   TableScan 1tmp AS totals_19_28_36 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r3.total) AS $0, MAX(r3.op_1) AS $1] groups:[r3.op_0]
+        |   TableScan r3 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r3 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:138
+        |   Aggregate [COUNT(*) AS total, MAX(matched_22_34.id) AS op_1]
+        |   TableScan m_matched_222 AS matched_22_34 storage:list stream:no table_type:sharded est_table_rows:138
+        |   MaterializedCTE [events_columnstore_31.id, events_columnstore_31.at] alias:m_matched_222 parallelism_level:sub_partition est_rows:138 est_select_cost:8
+        |   NestedLoopJoin type:extra extra_join_position:[2/2] extra_join_success_next:SUCCESS extra_join_failure_next:FAILURE est_rows:138
+        |   |---Filter [(events_columnstore_31.task_id IS NULL AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'requirement_id') = 'req-membership-261115-9e3584') OR ('requirement' = 'system_design' AND events_columnstore_31.kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'req-membership-261115-9e3584')]
+        |   |   TableScan 0tmp AS SUBQ_VWW_2_16_25_33 storage:list stream:no shared_build:yes est_table_rows:1 est_filtered:1
+        |   |   Project [1 AS empty_1] est_rows:1 est_select_cost:1
+        |   HashJoin type:extra extra_join_position:[1/2] extra_join_success_next:SUCCESS extra_join_failure_next:2 est_rows:138
+        |   |---HashTableProbe [r1.workspace_id = events_columnstore_31.workspace_id AND r1.task_id = events_columnstore_31.task_id]
+        |   |   HashTableBuild alias:r1
+        |   |   Broadcast [task_context_proposals_32.workspace_id, task_context_proposals_32.task_id] AS r1 distribution:tree parallelism_level:partition est_rows:1
+        |   |   Filter [task_context_proposals_32.target_kind = 'requirement' AND task_context_proposals_32.target_id = 'req-membership-261115-9e3584']
+        |   |   IndexRangeScan conveyor_1794758941617385494_test.task_context_proposals AS task_context_proposals_32, KEY task_context_proposals_pending_idx (workspace_id, state, task_id, target_kind, target_id) scan:[workspace_id = 'document-plans-261115-046212' AND state = 'confirmed'] table_type:sharded_rowstore est_table_rows:1 est_filtered:1
+        |   ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND ((0 = 0 OR events_columnstore_31.id <= 0) AND ('requirement' = 'requirement' OR (events_columnstore_31.kind LIKE 'system_design.%' AND ('requirement' = 'system_design' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'req-membership-261115-9e3584')))) AND events_columnstore_31.workspace_id = 'document-plans-261115-046212' index]
+        |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_31, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+        TableScan r7 storage:list stream:yes table_type:sharded est_table_rows:138 est_filtered:138
+        Repartition [events_columnstore_38.id, events_columnstore_38.task_id, events_columnstore_38.job_id, events_columnstore_38.kind, events_columnstore_38.actor_id, events_columnstore_38.actor_role, events_columnstore_38.payload_json, events_columnstore_38.at] AS r7 shard_key:[id] parallelism_level:segment est_rows:138
+        ColumnStoreFilter [events_columnstore_38.workspace_id = 'document-plans-261115-046212' index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_38, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+    document_event_plans_integration_test.go:101: requirement before query={Limit:3 Offset:2 SnapshotID:1099511627776} event scans=[events_columnstore_31: accepted payload filter scan events_columnstore_38: workspace read without a key lookup] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `id`, `workspace_id` ENABLE;
+            ANALYZE TABLE conveyor_1794758941617385494_test.`task_context_proposals` COLUMNS `state`, `target_id`, `target_kind`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r6.total, CASE WHEN 1099511627776 > 0 THEN 1099511627776 ELSE r6.snapshot END  AS `CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, r7.id, COALESCE(r7.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(r7.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(r7.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(r7.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(r7.actor_role,'') AS `COALESCE(e.actor_role,'')`, r7.payload_json, r7.at] est_rows:1
+        Sort [r7.at DESC, r7.id DESC]
+        HashJoin type:right est_rows:138
+        |---HashTableProbe [r7.id = r6.id]
+        |   HashTableBuild alias:r6
+        |   Repartition [totals_19_28_36.total, totals_19_28_36.snapshot, r5.id] AS r6 shard_key:[id] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r5 storage:list stream:no table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Project [r4.id] alias:r5 parallelism_level:partition est_rows:3
+        |   |   Top offset:2
+        |   |   TopSort limit:3 [r4.at DESC, r4.id DESC]
+        |   |   TableScan r4 storage:list stream:yes table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Broadcast [matched_22_35.id, matched_22_35.at] AS r4 distribution:direct parallelism_level:sub_partition est_rows:3 est_select_cost:1,104
+        |   |   TopSort limit:[?] [matched_22_35.at DESC, matched_22_35.id DESC]
+        |   |   TableScan m_matched_222 AS matched_22_35 storage:list stream:no table_type:sharded est_table_rows:138
+        |   |   MaterializedCTE alias:m_matched_222 est_rows:138
+        |   TableScan 1tmp AS totals_19_28_36 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r3.total) AS $0, MAX(r3.op_1) AS $1] groups:[r3.op_0]
+        |   TableScan r3 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r3 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:138
+        |   Aggregate [COUNT(*) AS total, MAX(matched_22_34.id) AS op_1]
+        |   TableScan m_matched_222 AS matched_22_34 storage:list stream:no table_type:sharded est_table_rows:138
+        |   MaterializedCTE [events_columnstore_31.id, events_columnstore_31.at] alias:m_matched_222 parallelism_level:sub_partition est_rows:138 est_select_cost:8
+        |   NestedLoopJoin type:extra extra_join_position:[2/2] extra_join_success_next:SUCCESS extra_join_failure_next:FAILURE est_rows:138
+        |   |---Filter [(events_columnstore_31.task_id IS NULL AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'requirement_id') = 'req-membership-261115-9e3584') OR ('requirement' = 'system_design' AND events_columnstore_31.kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'req-membership-261115-9e3584')]
+        |   |   TableScan 0tmp AS SUBQ_VWW_2_16_25_33 storage:list stream:no shared_build:yes est_table_rows:1 est_filtered:1
+        |   |   Project [1 AS empty_1] est_rows:1 est_select_cost:1
+        |   HashJoin type:extra extra_join_position:[1/2] extra_join_success_next:SUCCESS extra_join_failure_next:2 est_rows:138
+        |   |---HashTableProbe [r1.workspace_id = events_columnstore_31.workspace_id AND r1.task_id = events_columnstore_31.task_id]
+        |   |   HashTableBuild alias:r1
+        |   |   Broadcast [task_context_proposals_32.workspace_id, task_context_proposals_32.task_id] AS r1 distribution:tree parallelism_level:partition est_rows:1
+        |   |   Filter [task_context_proposals_32.target_kind = 'requirement' AND task_context_proposals_32.target_id = 'req-membership-261115-9e3584']
+        |   |   IndexRangeScan conveyor_1794758941617385494_test.task_context_proposals AS task_context_proposals_32, KEY task_context_proposals_pending_idx (workspace_id, state, task_id, target_kind, target_id) scan:[workspace_id = 'document-plans-261115-046212' AND state = 'confirmed'] table_type:sharded_rowstore est_table_rows:1 est_filtered:1
+        |   ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND ((1099511627776 = 0 OR events_columnstore_31.id <= 1099511627776) AND ('requirement' = 'requirement' OR (events_columnstore_31.kind LIKE 'system_design.%' AND ('requirement' = 'system_design' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'req-membership-261115-9e3584')))) AND events_columnstore_31.workspace_id = 'document-plans-261115-046212' index]
+        |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_31, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+        TableScan r7 storage:list stream:yes table_type:sharded est_table_rows:138 est_filtered:138
+        Repartition [events_columnstore_38.id, events_columnstore_38.task_id, events_columnstore_38.job_id, events_columnstore_38.kind, events_columnstore_38.actor_id, events_columnstore_38.actor_role, events_columnstore_38.payload_json, events_columnstore_38.at] AS r7 shard_key:[id] parallelism_level:segment est_rows:138
+        ColumnStoreFilter [events_columnstore_38.workspace_id = 'document-plans-261115-046212' index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_38, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+    document_event_plans_integration_test.go:101: requirement original membership with page lookup query={Limit:50 Offset:0 SnapshotID:0} event scans=[events_columnstore_31: accepted payload filter scan events_columnstore_38: page fetch by shard key and ID] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `event_shard_key`, `id`, `workspace_id` ENABLE;
+            ANALYZE TABLE conveyor_1794758941617385494_test.`task_context_proposals` COLUMNS `state`, `target_id`, `target_kind`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r6.total, CASE WHEN 0 > 0 THEN 0 ELSE r6.snapshot END  AS `CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, events_columnstore_38.id, COALESCE(events_columnstore_38.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(events_columnstore_38.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(events_columnstore_38.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(events_columnstore_38.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(events_columnstore_38.actor_role,'') AS `COALESCE(e.actor_role,'')`, events_...] est_rows:1
+        Sort [events_columnstore_38.at DESC, events_columnstore_38.id DESC]
+        HashJoin type:right est_rows:157
+        |---HashTableProbe [r6.event_shard_key = events_columnstore_38.event_shard_key AND r6.id = events_columnstore_38.id]
+        |   HashTableBuild alias:r6
+        |   Repartition [totals_19_28_36.total, totals_19_28_36.snapshot, r5.event_shard_key, r5.id] AS r6 shard_key:[event_shard_key] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r5 storage:list stream:no table_type:reference est_table_rows:50 est_filtered:50
+        |   |   Project [r4.id, r4.event_shard_key] alias:r5 parallelism_level:partition est_rows:50
+        |   |   Top offset:0
+        |   |   TopSort limit:50 [r4.at DESC, r4.id DESC]
+        |   |   TableScan r4 storage:list stream:yes table_type:reference est_table_rows:50 est_filtered:50
+        |   |   Broadcast [matched_22_35.id, matched_22_35.event_shard_key, matched_22_35.at] AS r4 distribution:direct parallelism_level:sub_partition est_rows:50 est_select_cost:1,104
+        |   |   TopSort limit:[?] [matched_22_35.at DESC, matched_22_35.id DESC]
+        |   |   TableScan m_matched_222 AS matched_22_35 storage:list stream:no table_type:sharded est_table_rows:138
+        |   |   MaterializedCTE alias:m_matched_222 est_rows:138
+        |   TableScan 1tmp AS totals_19_28_36 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r3.total) AS $0, MAX(r3.op_1) AS $1] groups:[r3.op_0]
+        |   TableScan r3 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r3 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:138
+        |   Aggregate [COUNT(*) AS total, MAX(matched_22_34.id) AS op_1]
+        |   TableScan m_matched_222 AS matched_22_34 storage:list stream:no table_type:sharded est_table_rows:138
+        |   MaterializedCTE [events_columnstore_31.id, events_columnstore_31.at, events_columnstore_31.event_shard_key] alias:m_matched_222 parallelism_level:sub_partition est_rows:138 est_select_cost:8
+        |   NestedLoopJoin type:extra extra_join_position:[2/2] extra_join_success_next:SUCCESS extra_join_failure_next:FAILURE est_rows:138
+        |   |---Filter [(events_columnstore_31.task_id IS NULL AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'requirement_id') = 'req-membership-261115-9e3584') OR ('requirement' = 'system_design' AND events_columnstore_31.kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'req-membership-261115-9e3584')]
+        |   |   TableScan 0tmp AS SUBQ_VWW_2_16_25_33 storage:list stream:no shared_build:yes est_table_rows:1 est_filtered:1
+        |   |   Project [1 AS empty_1] est_rows:1 est_select_cost:1
+        |   HashJoin type:extra extra_join_position:[1/2] extra_join_success_next:SUCCESS extra_join_failure_next:2 est_rows:138
+        |   |---HashTableProbe [r1.workspace_id = events_columnstore_31.workspace_id AND r1.task_id = events_columnstore_31.task_id]
+        |   |   HashTableBuild alias:r1
+        |   |   Broadcast [task_context_proposals_32.workspace_id, task_context_proposals_32.task_id] AS r1 distribution:tree parallelism_level:partition est_rows:1
+        |   |   Filter [task_context_proposals_32.target_kind = 'requirement' AND task_context_proposals_32.target_id = 'req-membership-261115-9e3584']
+        |   |   IndexRangeScan conveyor_1794758941617385494_test.task_context_proposals AS task_context_proposals_32, KEY task_context_proposals_pending_idx (workspace_id, state, task_id, target_kind, target_id) scan:[workspace_id = 'document-plans-261115-046212' AND state = 'confirmed'] table_type:sharded_rowstore est_table_rows:1 est_filtered:1
+        |   ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND ((0 = 0 OR events_columnstore_31.id <= 0) AND ('requirement' = 'requirement' OR (events_columnstore_31.kind LIKE 'system_design.%' AND ('requirement' = 'system_design' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'req-membership-261115-9e3584')))) AND events_columnstore_31.workspace_id = 'document-plans-261115-046212' index]
+        |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_31, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+        ColumnStoreFilter [(<after per-thread scan begin> AND <before per-thread scan end> AND events_columnstore_38.workspace_id = 'document-plans-261115-046212' index) AND events_columnstore_38.event_shard_key = r6.event_shard_key join index AND events_columnstore_38.id = r6.id join index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_38, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:157
+    document_event_plans_integration_test.go:101: requirement original membership with page lookup query={Limit:3 Offset:2 SnapshotID:1099511627776} event scans=[events_columnstore_31: accepted payload filter scan events_columnstore_38: page fetch by shard key and ID] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `event_shard_key`, `id`, `workspace_id` ENABLE;
+            ANALYZE TABLE conveyor_1794758941617385494_test.`task_context_proposals` COLUMNS `state`, `target_id`, `target_kind`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r6.total, CASE WHEN 1099511627776 > 0 THEN 1099511627776 ELSE r6.snapshot END  AS `CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, events_columnstore_38.id, COALESCE(events_columnstore_38.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(events_columnstore_38.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(events_columnstore_38.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(events_columnstore_38.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(events_columnstore_38.actor_...] est_rows:1
+        Sort [events_columnstore_38.at DESC, events_columnstore_38.id DESC]
+        HashJoin type:right est_rows:157
+        |---HashTableProbe [r6.event_shard_key = events_columnstore_38.event_shard_key AND r6.id = events_columnstore_38.id]
+        |   HashTableBuild alias:r6
+        |   Repartition [totals_19_28_36.total, totals_19_28_36.snapshot, r5.event_shard_key, r5.id] AS r6 shard_key:[event_shard_key] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r5 storage:list stream:no table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Project [r4.id, r4.event_shard_key] alias:r5 parallelism_level:partition est_rows:3
+        |   |   Top offset:2
+        |   |   TopSort limit:3 [r4.at DESC, r4.id DESC]
+        |   |   TableScan r4 storage:list stream:yes table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Broadcast [matched_22_35.id, matched_22_35.event_shard_key, matched_22_35.at] AS r4 distribution:direct parallelism_level:sub_partition est_rows:3 est_select_cost:1,104
+        |   |   TopSort limit:[?] [matched_22_35.at DESC, matched_22_35.id DESC]
+        |   |   TableScan m_matched_222 AS matched_22_35 storage:list stream:no table_type:sharded est_table_rows:138
+        |   |   MaterializedCTE alias:m_matched_222 est_rows:138
+        |   TableScan 1tmp AS totals_19_28_36 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r3.total) AS $0, MAX(r3.op_1) AS $1] groups:[r3.op_0]
+        |   TableScan r3 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r3 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:138
+        |   Aggregate [COUNT(*) AS total, MAX(matched_22_34.id) AS op_1]
+        |   TableScan m_matched_222 AS matched_22_34 storage:list stream:no table_type:sharded est_table_rows:138
+        |   MaterializedCTE [events_columnstore_31.id, events_columnstore_31.at, events_columnstore_31.event_shard_key] alias:m_matched_222 parallelism_level:sub_partition est_rows:138 est_select_cost:8
+        |   NestedLoopJoin type:extra extra_join_position:[2/2] extra_join_success_next:SUCCESS extra_join_failure_next:FAILURE est_rows:138
+        |   |---Filter [(events_columnstore_31.task_id IS NULL AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'requirement_id') = 'req-membership-261115-9e3584') OR ('requirement' = 'system_design' AND events_columnstore_31.kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'req-membership-261115-9e3584')]
+        |   |   TableScan 0tmp AS SUBQ_VWW_2_16_25_33 storage:list stream:no shared_build:yes est_table_rows:1 est_filtered:1
+        |   |   Project [1 AS empty_1] est_rows:1 est_select_cost:1
+        |   HashJoin type:extra extra_join_position:[1/2] extra_join_success_next:SUCCESS extra_join_failure_next:2 est_rows:138
+        |   |---HashTableProbe [r1.workspace_id = events_columnstore_31.workspace_id AND r1.task_id = events_columnstore_31.task_id]
+        |   |   HashTableBuild alias:r1
+        |   |   Broadcast [task_context_proposals_32.workspace_id, task_context_proposals_32.task_id] AS r1 distribution:tree parallelism_level:partition est_rows:1
+        |   |   Filter [task_context_proposals_32.target_kind = 'requirement' AND task_context_proposals_32.target_id = 'req-membership-261115-9e3584']
+        |   |   IndexRangeScan conveyor_1794758941617385494_test.task_context_proposals AS task_context_proposals_32, KEY task_context_proposals_pending_idx (workspace_id, state, task_id, target_kind, target_id) scan:[workspace_id = 'document-plans-261115-046212' AND state = 'confirmed'] table_type:sharded_rowstore est_table_rows:1 est_filtered:1
+        |   ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND ((1099511627776 = 0 OR events_columnstore_31.id <= 1099511627776) AND ('requirement' = 'requirement' OR (events_columnstore_31.kind LIKE 'system_design.%' AND ('requirement' = 'system_design' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'req-membership-261115-9e3584')))) AND events_columnstore_31.workspace_id = 'document-plans-261115-046212' index]
+        |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_31, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+        ColumnStoreFilter [(<after per-thread scan begin> AND <before per-thread scan end> AND events_columnstore_38.workspace_id = 'document-plans-261115-046212' index) AND events_columnstore_38.event_shard_key = r6.event_shard_key join index AND events_columnstore_38.id = r6.id join index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_38, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:157
+    document_event_plans_integration_test.go:101: requirement kind split with ID-only page fetch query={Limit:50 Offset:0 SnapshotID:0} event scans=[events_columnstore_44: task membership by proposal task ID events_columnstore_42: accepted payload filter scan events_columnstore_50: workspace read without a key lookup] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `id`, `task_id`, `workspace_id` ENABLE;
+            ANALYZE TABLE conveyor_1794758941617385494_test.`task_context_proposals` COLUMNS `state`, `target_id`, `target_kind`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r5.total, CASE WHEN 0 > 0 THEN 0 ELSE r5.snapshot END  AS `CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, r6.id, COALESCE(r6.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(r6.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(r6.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(r6.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(r6.actor_role,'') AS `COALESCE(e.actor_role,'')`, r6.payload_json, r6.at] est_rows:1
+        Sort [r6.at DESC, r6.id DESC]
+        HashJoin type:right est_rows:138
+        |---HashTableProbe [r6.id = r5.id]
+        |   HashTableBuild alias:r5
+        |   Repartition [totals_29_39_48.total, totals_29_39_48.snapshot, r4.id] AS r5 shard_key:[id] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r4 storage:list stream:no table_type:reference est_table_rows:8 est_filtered:8
+        |   |   Project [r3.id] alias:r4 parallelism_level:partition est_rows:8
+        |   |   Top offset:0
+        |   |   TopSort limit:50 [r3.at DESC, r3.id DESC]
+        |   |   TableScan r3 storage:list stream:yes table_type:reference est_table_rows:8 est_filtered:8
+        |   |   Broadcast [matched_32_47.id, matched_32_47.at] AS r3 distribution:direct parallelism_level:sub_partition est_rows:8 est_select_cost:64
+        |   |   TopSort limit:[?] [matched_32_47.at DESC, matched_32_47.id DESC]
+        |   |   TableScan m_matched_321 AS matched_32_47 storage:list stream:no table_type:sharded est_table_rows:8 est_filtered:8
+        |   |   MaterializedCTE alias:m_matched_321 est_rows:8
+        |   TableScan 1tmp AS totals_29_39_48 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r2.total) AS $0, MAX(r2.op_1) AS $1] groups:[r2.op_0]
+        |   TableScan r2 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r2 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:8
+        |   Aggregate [COUNT(*) AS total, MAX(matched_32_46.id) AS op_1]
+        |   TableScan m_matched_321 AS matched_32_46 storage:list stream:no table_type:sharded est_table_rows:8 est_filtered:8
+        |   MaterializedCTE [SUB_26_36_45.id, SUB_26_36_45.at] alias:m_matched_321 parallelism_level:sub_partition est_rows:8
+        |   HashGroupBy [] groups:[SUB_26_36_45.id, SUB_26_36_45.at, SUB_26_36_45.event_shard_key]
+        |   TableScan 0tmp AS SUB_26_36_45 storage:list stream:yes est_table_rows:126 est_filtered:126
+        |   UnionAll est_rows:126
+        |   |---Project [events_columnstore_44.id, events_columnstore_44.at, events_columnstore_44.event_shard_key] est_rows:122 est_select_cost:2
+        |   |   Filter [r0.task_id = events_columnstore_44.task_id]
+        |   |   HashJoin
+        |   |   |---HashTableProbe [r0.workspace_id = events_columnstore_44.workspace_id AND r0.task_id = events_columnstore_44.event_shard_key]
+        |   |   |   HashTableBuild alias:r0
+        |   |   |   Repartition [task_context_proposals_43.task_id, task_context_proposals_43.workspace_id] AS r0 shard_key:[task_id] parallelism_level:partition est_rows:1
+        |   |   |   Filter [task_context_proposals_43.target_id = 'req-membership-261115-9e3584' AND task_context_proposals_43.target_kind = 'requirement']
+        |   |   |   IndexRangeScan conveyor_1794758941617385494_test.task_context_proposals AS task_context_proposals_43, KEY task_context_proposals_pending_idx (workspace_id, state, task_id, target_kind, target_id) scan:[workspace_id = 'document-plans-261115-046212' AND state = 'confirmed'] table_type:sharded_rowstore est_table_rows:1 est_filtered:1
+        |   |   ColumnStoreFilter [(<after per-thread scan begin> AND <before per-thread scan end> AND ((0 = 0 OR events_columnstore_44.id <= 0) AND events_columnstore_44.task_id = events_columnstore_44.event_shard_key) AND events_columnstore_44.workspace_id = 'document-plans-261115-046212' index) AND events_columnstore_44.event_shard_key = r0.task_id join index AND events_columnstore_44.workspace_id = r0.workspace_id join index]
+        |   |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_44, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:123
+        |   +---Project [events_columnstore_42.id, events_columnstore_42.at, events_columnstore_42.event_shard_key] est_rows:4
+        |       ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND (JSON_EXTRACT_STRING(events_columnstore_42.payload_json,'requirement_id') = 'req-membership-261115-9e3584' AND (0 = 0 OR events_columnstore_42.id <= 0)) AND events_columnstore_42.workspace_id = 'document-plans-261115-046212' index AND events_columnstore_42.task_id IS NULL index]
+        |       ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_42, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:4
+        BloomFilter table:r5 fields:r6.id
+        TableScan r6 storage:list stream:yes table_type:sharded est_table_rows:138 est_filtered:138
+        Repartition [events_columnstore_50.id, events_columnstore_50.task_id, events_columnstore_50.job_id, events_columnstore_50.kind, events_columnstore_50.actor_id, events_columnstore_50.actor_role, events_columnstore_50.payload_json, events_columnstore_50.at] AS r6 shard_key:[id] parallelism_level:segment est_rows:138
+        ColumnStoreFilter [events_columnstore_50.workspace_id = 'document-plans-261115-046212' index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_50, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+    document_event_plans_integration_test.go:101: requirement kind split with ID-only page fetch query={Limit:3 Offset:2 SnapshotID:1099511627776} event scans=[events_columnstore_44: task membership by proposal task ID events_columnstore_42: accepted payload filter scan events_columnstore_50: workspace read without a key lookup] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `id`, `task_id`, `workspace_id` ENABLE;
+            ANALYZE TABLE conveyor_1794758941617385494_test.`task_context_proposals` COLUMNS `state`, `target_id`, `target_kind`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r5.total, CASE WHEN 1099511627776 > 0 THEN 1099511627776 ELSE r5.snapshot END  AS `CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, r6.id, COALESCE(r6.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(r6.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(r6.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(r6.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(r6.actor_role,'') AS `COALESCE(e.actor_role,'')`, r6.payload_json, r6.at] est_rows:1
+        Sort [r6.at DESC, r6.id DESC]
+        HashJoin type:right est_rows:138
+        |---HashTableProbe [r6.id = r5.id]
+        |   HashTableBuild alias:r5
+        |   Repartition [totals_29_39_48.total, totals_29_39_48.snapshot, r4.id] AS r5 shard_key:[id] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r4 storage:list stream:no table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Project [r3.id] alias:r4 parallelism_level:partition est_rows:3
+        |   |   Top offset:2
+        |   |   TopSort limit:3 [r3.at DESC, r3.id DESC]
+        |   |   TableScan r3 storage:list stream:yes table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Broadcast [matched_32_47.id, matched_32_47.at] AS r3 distribution:direct parallelism_level:sub_partition est_rows:3 est_select_cost:64
+        |   |   TopSort limit:[?] [matched_32_47.at DESC, matched_32_47.id DESC]
+        |   |   TableScan m_matched_321 AS matched_32_47 storage:list stream:no table_type:sharded est_table_rows:8 est_filtered:8
+        |   |   MaterializedCTE alias:m_matched_321 est_rows:8
+        |   TableScan 1tmp AS totals_29_39_48 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r2.total) AS $0, MAX(r2.op_1) AS $1] groups:[r2.op_0]
+        |   TableScan r2 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r2 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:8
+        |   Aggregate [COUNT(*) AS total, MAX(matched_32_46.id) AS op_1]
+        |   TableScan m_matched_321 AS matched_32_46 storage:list stream:no table_type:sharded est_table_rows:8 est_filtered:8
+        |   MaterializedCTE [SUB_26_36_45.id, SUB_26_36_45.at] alias:m_matched_321 parallelism_level:sub_partition est_rows:8
+        |   HashGroupBy [] groups:[SUB_26_36_45.id, SUB_26_36_45.at, SUB_26_36_45.event_shard_key]
+        |   TableScan 0tmp AS SUB_26_36_45 storage:list stream:yes est_table_rows:126 est_filtered:126
+        |   UnionAll est_rows:126
+        |   |---Project [events_columnstore_44.id, events_columnstore_44.at, events_columnstore_44.event_shard_key] est_rows:122 est_select_cost:2
+        |   |   Filter [r0.task_id = events_columnstore_44.task_id]
+        |   |   HashJoin
+        |   |   |---HashTableProbe [r0.workspace_id = events_columnstore_44.workspace_id AND r0.task_id = events_columnstore_44.event_shard_key]
+        |   |   |   HashTableBuild alias:r0
+        |   |   |   Repartition [task_context_proposals_43.task_id, task_context_proposals_43.workspace_id] AS r0 shard_key:[task_id] parallelism_level:partition est_rows:1
+        |   |   |   Filter [task_context_proposals_43.target_id = 'req-membership-261115-9e3584' AND task_context_proposals_43.target_kind = 'requirement']
+        |   |   |   IndexRangeScan conveyor_1794758941617385494_test.task_context_proposals AS task_context_proposals_43, KEY task_context_proposals_pending_idx (workspace_id, state, task_id, target_kind, target_id) scan:[workspace_id = 'document-plans-261115-046212' AND state = 'confirmed'] table_type:sharded_rowstore est_table_rows:1 est_filtered:1
+        |   |   ColumnStoreFilter [(<after per-thread scan begin> AND <before per-thread scan end> AND ((1099511627776 = 0 OR events_columnstore_44.id <= 1099511627776) AND events_columnstore_44.task_id = events_columnstore_44.event_shard_key) AND events_columnstore_44.workspace_id = 'document-plans-261115-046212' index) AND events_columnstore_44.event_shard_key = r0.task_id join index AND events_columnstore_44.workspace_id = r0.workspace_id join index]
+        |   |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_44, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:123
+        |   +---Project [events_columnstore_42.id, events_columnstore_42.at, events_columnstore_42.event_shard_key] est_rows:4
+        |       ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND (JSON_EXTRACT_STRING(events_columnstore_42.payload_json,'requirement_id') = 'req-membership-261115-9e3584' AND (1099511627776 = 0 OR events_columnstore_42.id <= 1099511627776)) AND events_columnstore_42.workspace_id = 'document-plans-261115-046212' index AND events_columnstore_42.task_id IS NULL index]
+        |       ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_42, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:4
+        BloomFilter table:r5 fields:r6.id
+        TableScan r6 storage:list stream:yes table_type:sharded est_table_rows:138 est_filtered:138
+        Repartition [events_columnstore_50.id, events_columnstore_50.task_id, events_columnstore_50.job_id, events_columnstore_50.kind, events_columnstore_50.actor_id, events_columnstore_50.actor_role, events_columnstore_50.payload_json, events_columnstore_50.at] AS r6 shard_key:[id] parallelism_level:segment est_rows:138
+        ColumnStoreFilter [events_columnstore_50.workspace_id = 'document-plans-261115-046212' index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_50, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+    document_event_plans_integration_test.go:101: system_design after query={Limit:50 Offset:0 SnapshotID:0} event scans=[events_columnstore_22: accepted payload filter scan events_columnstore_27: page fetch by shard key and ID] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `event_shard_key`, `id`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r4.total, CASE WHEN 0 > 0 THEN 0 ELSE r4.snapshot END  AS `CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, events_columnstore_27.id, COALESCE(events_columnstore_27.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(events_columnstore_27.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(events_columnstore_27.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(events_columnstore_27.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(events_columnstore_27.actor_role,'') AS `COALESCE(e.actor_role,'')`, events_...] est_rows:1
+        Sort [events_columnstore_27.at DESC, events_columnstore_27.id DESC]
+        HashJoin type:right est_rows:157
+        |---HashTableProbe [r4.event_shard_key = events_columnstore_27.event_shard_key AND r4.id = events_columnstore_27.id]
+        |   HashTableBuild alias:r4
+        |   Repartition [totals_12_19_25.total, totals_12_19_25.snapshot, r3.event_shard_key, r3.id] AS r4 shard_key:[event_shard_key] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r3 storage:list stream:no table_type:reference est_table_rows:50 est_filtered:50
+        |   |   Project [r2.id, r2.event_shard_key] alias:r3 parallelism_level:partition est_rows:50
+        |   |   Top offset:0
+        |   |   TopSort limit:50 [r2.at DESC, r2.id DESC]
+        |   |   TableScan r2 storage:list stream:yes table_type:reference est_table_rows:50 est_filtered:50
+        |   |   Broadcast [matched_15_24.id, matched_15_24.event_shard_key, matched_15_24.at] AS r2 distribution:direct parallelism_level:sub_partition est_rows:50 est_select_cost:496
+        |   |   TopSort limit:[?] [matched_15_24.at DESC, matched_15_24.id DESC]
+        |   |   TableScan m_matched_150 AS matched_15_24 storage:list stream:no table_type:sharded est_table_rows:62 est_filtered:62
+        |   |   MaterializedCTE alias:m_matched_150 est_rows:62
+        |   TableScan 0tmp AS totals_12_19_25 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r1.total) AS $0, MAX(r1.op_1) AS $1] groups:[r1.op_0]
+        |   TableScan r1 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r1 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:62
+        |   Aggregate [COUNT(*) AS total, MAX(matched_15_23.id) AS op_1]
+        |   TableScan m_matched_150 AS matched_15_23 storage:list stream:no table_type:sharded est_table_rows:62 est_filtered:62
+        |   MaterializedCTE [events_columnstore_22.id, events_columnstore_22.at, events_columnstore_22.event_shard_key] alias:m_matched_150 parallelism_level:sub_partition est_rows:62
+        |   ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND events_columnstore_22.kind LIKE 'system_design.%' AND (JSON_EXTRACT_STRING(events_columnstore_22.payload_json,'document_id') = 'design-membership-261115-7d4ca1' AND (0 = 0 OR events_columnstore_22.id <= 0)) AND events_columnstore_22.workspace_id = 'document-plans-261115-046212' index]
+        |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_22, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:63
+        ColumnStoreFilter [(<after per-thread scan begin> AND <before per-thread scan end> AND events_columnstore_27.workspace_id = 'document-plans-261115-046212' index) AND events_columnstore_27.event_shard_key = r4.event_shard_key join index AND events_columnstore_27.id = r4.id join index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_27, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:157
+    document_event_plans_integration_test.go:101: system_design after query={Limit:3 Offset:2 SnapshotID:1099511627776} event scans=[events_columnstore_22: accepted payload filter scan events_columnstore_27: page fetch by shard key and ID] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `event_shard_key`, `id`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r4.total, CASE WHEN 1099511627776 > 0 THEN 1099511627776 ELSE r4.snapshot END  AS `CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, events_columnstore_27.id, COALESCE(events_columnstore_27.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(events_columnstore_27.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(events_columnstore_27.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(events_columnstore_27.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(events_columnstore_27.actor_...] est_rows:1
+        Sort [events_columnstore_27.at DESC, events_columnstore_27.id DESC]
+        HashJoin type:right est_rows:157
+        |---HashTableProbe [r4.event_shard_key = events_columnstore_27.event_shard_key AND r4.id = events_columnstore_27.id]
+        |   HashTableBuild alias:r4
+        |   Repartition [totals_12_19_25.total, totals_12_19_25.snapshot, r3.event_shard_key, r3.id] AS r4 shard_key:[event_shard_key] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r3 storage:list stream:no table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Project [r2.id, r2.event_shard_key] alias:r3 parallelism_level:partition est_rows:3
+        |   |   Top offset:2
+        |   |   TopSort limit:3 [r2.at DESC, r2.id DESC]
+        |   |   TableScan r2 storage:list stream:yes table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Broadcast [matched_15_24.id, matched_15_24.event_shard_key, matched_15_24.at] AS r2 distribution:direct parallelism_level:sub_partition est_rows:3 est_select_cost:496
+        |   |   TopSort limit:[?] [matched_15_24.at DESC, matched_15_24.id DESC]
+        |   |   TableScan m_matched_150 AS matched_15_24 storage:list stream:no table_type:sharded est_table_rows:62 est_filtered:62
+        |   |   MaterializedCTE alias:m_matched_150 est_rows:62
+        |   TableScan 0tmp AS totals_12_19_25 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r1.total) AS $0, MAX(r1.op_1) AS $1] groups:[r1.op_0]
+        |   TableScan r1 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r1 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:62
+        |   Aggregate [COUNT(*) AS total, MAX(matched_15_23.id) AS op_1]
+        |   TableScan m_matched_150 AS matched_15_23 storage:list stream:no table_type:sharded est_table_rows:62 est_filtered:62
+        |   MaterializedCTE [events_columnstore_22.id, events_columnstore_22.at, events_columnstore_22.event_shard_key] alias:m_matched_150 parallelism_level:sub_partition est_rows:62
+        |   ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND events_columnstore_22.kind LIKE 'system_design.%' AND (JSON_EXTRACT_STRING(events_columnstore_22.payload_json,'document_id') = 'design-membership-261115-7d4ca1' AND (1099511627776 = 0 OR events_columnstore_22.id <= 1099511627776)) AND events_columnstore_22.workspace_id = 'document-plans-261115-046212' index]
+        |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_22, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:63
+        ColumnStoreFilter [(<after per-thread scan begin> AND <before per-thread scan end> AND events_columnstore_27.workspace_id = 'document-plans-261115-046212' index) AND events_columnstore_27.event_shard_key = r4.event_shard_key join index AND events_columnstore_27.id = r4.id join index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_27, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:157
+    document_event_plans_integration_test.go:101: system_design before query={Limit:50 Offset:0 SnapshotID:0} event scans=[events_columnstore_31: accepted payload filter scan events_columnstore_38: workspace read without a key lookup] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `id`, `workspace_id` ENABLE;
+            ANALYZE TABLE conveyor_1794758941617385494_test.`task_context_proposals` COLUMNS `state`, `target_id`, `target_kind`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r6.total, CASE WHEN 0 > 0 THEN 0 ELSE r6.snapshot END  AS `CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, r7.id, COALESCE(r7.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(r7.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(r7.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(r7.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(r7.actor_role,'') AS `COALESCE(e.actor_role,'')`, r7.payload_json, r7.at] est_rows:1
+        Sort [r7.at DESC, r7.id DESC]
+        HashJoin type:right est_rows:138
+        |---HashTableProbe [r7.id = r6.id]
+        |   HashTableBuild alias:r6
+        |   Repartition [totals_19_28_36.total, totals_19_28_36.snapshot, r5.id] AS r6 shard_key:[id] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r5 storage:list stream:no table_type:reference est_table_rows:50 est_filtered:50
+        |   |   Project [r4.id] alias:r5 parallelism_level:partition est_rows:50
+        |   |   Top offset:0
+        |   |   TopSort limit:50 [r4.at DESC, r4.id DESC]
+        |   |   TableScan r4 storage:list stream:yes table_type:reference est_table_rows:50 est_filtered:50
+        |   |   Broadcast [matched_22_35.id, matched_22_35.at] AS r4 distribution:direct parallelism_level:sub_partition est_rows:50 est_select_cost:496
+        |   |   TopSort limit:[?] [matched_22_35.at DESC, matched_22_35.id DESC]
+        |   |   TableScan m_matched_222 AS matched_22_35 storage:list stream:no table_type:sharded est_table_rows:62
+        |   |   MaterializedCTE alias:m_matched_222 est_rows:62
+        |   TableScan 1tmp AS totals_19_28_36 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r3.total) AS $0, MAX(r3.op_1) AS $1] groups:[r3.op_0]
+        |   TableScan r3 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r3 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:62
+        |   Aggregate [COUNT(*) AS total, MAX(matched_22_34.id) AS op_1]
+        |   TableScan m_matched_222 AS matched_22_34 storage:list stream:no table_type:sharded est_table_rows:62
+        |   MaterializedCTE [events_columnstore_31.id, events_columnstore_31.at] alias:m_matched_222 parallelism_level:sub_partition est_rows:62 est_select_cost:8
+        |   NestedLoopJoin type:extra extra_join_position:[2/2] extra_join_success_next:SUCCESS extra_join_failure_next:FAILURE est_rows:62
+        |   |---Filter [(events_columnstore_31.task_id IS NULL AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'requirement_id') = 'design-membership-261115-7d4ca1') OR ('system_design' = 'system_design' AND events_columnstore_31.kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'design-membership-261115-7d4ca1')]
+        |   |   TableScan 0tmp AS SUBQ_VWW_2_16_25_33 storage:list stream:no shared_build:yes est_table_rows:1 est_filtered:1
+        |   |   Project [1 AS empty_1] est_rows:1 est_select_cost:1
+        |   HashJoin type:extra extra_join_position:[1/2] extra_join_success_next:SUCCESS extra_join_failure_next:2 est_rows:62
+        |   |---HashTableProbe [r1.workspace_id = events_columnstore_31.workspace_id AND r1.task_id = events_columnstore_31.task_id]
+        |   |   HashTableBuild alias:r1
+        |   |   Broadcast [task_context_proposals_32.workspace_id, task_context_proposals_32.task_id] AS r1 distribution:tree parallelism_level:partition est_rows:1
+        |   |   Filter [task_context_proposals_32.target_kind = 'requirement' AND task_context_proposals_32.target_id = 'design-membership-261115-7d4ca1']
+        |   |   IndexRangeScan conveyor_1794758941617385494_test.task_context_proposals AS task_context_proposals_32, KEY task_context_proposals_pending_idx (workspace_id, state, task_id, target_kind, target_id) scan:[workspace_id = 'document-plans-261115-046212' AND state = 'confirmed'] table_type:sharded_rowstore est_table_rows:1 est_filtered:1
+        |   ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND ((0 = 0 OR events_columnstore_31.id <= 0) AND ('system_design' = 'requirement' OR (events_columnstore_31.kind LIKE 'system_design.%' AND ('system_design' = 'system_design' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'design-membership-261115-7d4ca1')))) AND events_columnstore_31.workspace_id = 'document-plans-261115-046212' index]
+        |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_31, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:63
+        BloomFilter table:r6 fields:r7.id
+        TableScan r7 storage:list stream:yes table_type:sharded est_table_rows:138 est_filtered:138
+        Repartition [events_columnstore_38.id, events_columnstore_38.task_id, events_columnstore_38.job_id, events_columnstore_38.kind, events_columnstore_38.actor_id, events_columnstore_38.actor_role, events_columnstore_38.payload_json, events_columnstore_38.at] AS r7 shard_key:[id] parallelism_level:segment est_rows:138
+        ColumnStoreFilter [events_columnstore_38.workspace_id = 'document-plans-261115-046212' index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_38, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+    document_event_plans_integration_test.go:101: system_design before query={Limit:3 Offset:2 SnapshotID:1099511627776} event scans=[events_columnstore_31: accepted payload filter scan events_columnstore_38: workspace read without a key lookup] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `id`, `workspace_id` ENABLE;
+            ANALYZE TABLE conveyor_1794758941617385494_test.`task_context_proposals` COLUMNS `state`, `target_id`, `target_kind`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r6.total, CASE WHEN 1099511627776 > 0 THEN 1099511627776 ELSE r6.snapshot END  AS `CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, r7.id, COALESCE(r7.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(r7.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(r7.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(r7.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(r7.actor_role,'') AS `COALESCE(e.actor_role,'')`, r7.payload_json, r7.at] est_rows:1
+        Sort [r7.at DESC, r7.id DESC]
+        HashJoin type:right est_rows:138
+        |---HashTableProbe [r7.id = r6.id]
+        |   HashTableBuild alias:r6
+        |   Repartition [totals_19_28_36.total, totals_19_28_36.snapshot, r5.id] AS r6 shard_key:[id] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r5 storage:list stream:no table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Project [r4.id] alias:r5 parallelism_level:partition est_rows:3
+        |   |   Top offset:2
+        |   |   TopSort limit:3 [r4.at DESC, r4.id DESC]
+        |   |   TableScan r4 storage:list stream:yes table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Broadcast [matched_22_35.id, matched_22_35.at] AS r4 distribution:direct parallelism_level:sub_partition est_rows:3 est_select_cost:496
+        |   |   TopSort limit:[?] [matched_22_35.at DESC, matched_22_35.id DESC]
+        |   |   TableScan m_matched_222 AS matched_22_35 storage:list stream:no table_type:sharded est_table_rows:62
+        |   |   MaterializedCTE alias:m_matched_222 est_rows:62
+        |   TableScan 1tmp AS totals_19_28_36 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r3.total) AS $0, MAX(r3.op_1) AS $1] groups:[r3.op_0]
+        |   TableScan r3 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r3 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:62
+        |   Aggregate [COUNT(*) AS total, MAX(matched_22_34.id) AS op_1]
+        |   TableScan m_matched_222 AS matched_22_34 storage:list stream:no table_type:sharded est_table_rows:62
+        |   MaterializedCTE [events_columnstore_31.id, events_columnstore_31.at] alias:m_matched_222 parallelism_level:sub_partition est_rows:62 est_select_cost:8
+        |   NestedLoopJoin type:extra extra_join_position:[2/2] extra_join_success_next:SUCCESS extra_join_failure_next:FAILURE est_rows:62
+        |   |---Filter [(events_columnstore_31.task_id IS NULL AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'requirement_id') = 'design-membership-261115-7d4ca1') OR ('system_design' = 'system_design' AND events_columnstore_31.kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'design-membership-261115-7d4ca1')]
+        |   |   TableScan 0tmp AS SUBQ_VWW_2_16_25_33 storage:list stream:no shared_build:yes est_table_rows:1 est_filtered:1
+        |   |   Project [1 AS empty_1] est_rows:1 est_select_cost:1
+        |   HashJoin type:extra extra_join_position:[1/2] extra_join_success_next:SUCCESS extra_join_failure_next:2 est_rows:62
+        |   |---HashTableProbe [r1.workspace_id = events_columnstore_31.workspace_id AND r1.task_id = events_columnstore_31.task_id]
+        |   |   HashTableBuild alias:r1
+        |   |   Broadcast [task_context_proposals_32.workspace_id, task_context_proposals_32.task_id] AS r1 distribution:tree parallelism_level:partition est_rows:1
+        |   |   Filter [task_context_proposals_32.target_kind = 'requirement' AND task_context_proposals_32.target_id = 'design-membership-261115-7d4ca1']
+        |   |   IndexRangeScan conveyor_1794758941617385494_test.task_context_proposals AS task_context_proposals_32, KEY task_context_proposals_pending_idx (workspace_id, state, task_id, target_kind, target_id) scan:[workspace_id = 'document-plans-261115-046212' AND state = 'confirmed'] table_type:sharded_rowstore est_table_rows:1 est_filtered:1
+        |   ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND ((1099511627776 = 0 OR events_columnstore_31.id <= 1099511627776) AND ('system_design' = 'requirement' OR (events_columnstore_31.kind LIKE 'system_design.%' AND ('system_design' = 'system_design' AND JSON_EXTRACT_STRING(events_columnstore_31.payload_json,'document_id') = 'design-membership-261115-7d4ca1')))) AND events_columnstore_31.workspace_id = 'document-plans-261115-046212' index]
+        |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_31, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:63
+        BloomFilter table:r6 fields:r7.id
+        TableScan r7 storage:list stream:yes table_type:sharded est_table_rows:138 est_filtered:138
+        Repartition [events_columnstore_38.id, events_columnstore_38.task_id, events_columnstore_38.job_id, events_columnstore_38.kind, events_columnstore_38.actor_id, events_columnstore_38.actor_role, events_columnstore_38.payload_json, events_columnstore_38.at] AS r7 shard_key:[id] parallelism_level:segment est_rows:138
+        ColumnStoreFilter [events_columnstore_38.workspace_id = 'document-plans-261115-046212' index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_38, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+    document_event_plans_integration_test.go:101: system_design kind split with ID-only page fetch query={Limit:50 Offset:0 SnapshotID:0} event scans=[events_columnstore_22: accepted payload filter scan events_columnstore_27: workspace read without a key lookup] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `id`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r4.total, CASE WHEN 0 > 0 THEN 0 ELSE r4.snapshot END  AS `CASE WHEN 0>0 THEN 0 ELSE totals.snapshot END`, r5.id, COALESCE(r5.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(r5.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(r5.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(r5.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(r5.actor_role,'') AS `COALESCE(e.actor_role,'')`, r5.payload_json, r5.at] est_rows:1
+        Sort [r5.at DESC, r5.id DESC]
+        HashJoin type:right est_rows:138
+        |---HashTableProbe [r5.id = r4.id]
+        |   HashTableBuild alias:r4
+        |   Repartition [totals_12_19_25.total, totals_12_19_25.snapshot, r3.id] AS r4 shard_key:[id] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r3 storage:list stream:no table_type:reference est_table_rows:50 est_filtered:50
+        |   |   Project [r2.id] alias:r3 parallelism_level:partition est_rows:50
+        |   |   Top offset:0
+        |   |   TopSort limit:50 [r2.at DESC, r2.id DESC]
+        |   |   TableScan r2 storage:list stream:yes table_type:reference est_table_rows:50 est_filtered:50
+        |   |   Broadcast [matched_15_24.id, matched_15_24.at] AS r2 distribution:direct parallelism_level:sub_partition est_rows:50 est_select_cost:496
+        |   |   TopSort limit:[?] [matched_15_24.at DESC, matched_15_24.id DESC]
+        |   |   TableScan m_matched_150 AS matched_15_24 storage:list stream:no table_type:sharded est_table_rows:62 est_filtered:62
+        |   |   MaterializedCTE alias:m_matched_150 est_rows:62
+        |   TableScan 0tmp AS totals_12_19_25 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r1.total) AS $0, MAX(r1.op_1) AS $1] groups:[r1.op_0]
+        |   TableScan r1 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r1 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:62
+        |   Aggregate [COUNT(*) AS total, MAX(matched_15_23.id) AS op_1]
+        |   TableScan m_matched_150 AS matched_15_23 storage:list stream:no table_type:sharded est_table_rows:62 est_filtered:62
+        |   MaterializedCTE [events_columnstore_22.id, events_columnstore_22.at] alias:m_matched_150 parallelism_level:sub_partition est_rows:62
+        |   ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND events_columnstore_22.kind LIKE 'system_design.%' AND (JSON_EXTRACT_STRING(events_columnstore_22.payload_json,'document_id') = 'design-membership-261115-7d4ca1' AND (0 = 0 OR events_columnstore_22.id <= 0)) AND events_columnstore_22.workspace_id = 'document-plans-261115-046212' index]
+        |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_22, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:63
+        BloomFilter table:r4 fields:r5.id
+        TableScan r5 storage:list stream:yes table_type:sharded est_table_rows:138 est_filtered:138
+        Repartition [events_columnstore_27.id, events_columnstore_27.task_id, events_columnstore_27.job_id, events_columnstore_27.kind, events_columnstore_27.actor_id, events_columnstore_27.actor_role, events_columnstore_27.payload_json, events_columnstore_27.at] AS r5 shard_key:[id] parallelism_level:segment est_rows:138
+        ColumnStoreFilter [events_columnstore_27.workspace_id = 'document-plans-261115-046212' index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_27, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+    document_event_plans_integration_test.go:101: system_design kind split with ID-only page fetch query={Limit:3 Offset:2 SnapshotID:1099511627776} event scans=[events_columnstore_22: accepted payload filter scan events_columnstore_27: workspace read without a key lookup] plan:
+        WARNING [AUTOSTATS_OUTDATED]: Automatically computed cardinality statistics are not yet up-to-date on conveyor_1794758941617385494_test.`events_columnstore` so older statistics have been used instead. See https://docs.memsql.com/docs/analyze#out-of-date-autostats for information and recommendations.
+        WARNING: Histograms have not been collected on the following columns. Consider running the following commands to collect them now:
+            ANALYZE TABLE conveyor_1794758941617385494_test.`events_columnstore` COLUMNS `id`, `workspace_id` ENABLE;
+        See https://docs.memsql.com/docs/analyze for more information on statistics collection.
+        Project [remote_0.total, remote_0.`CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, remote_0.id, remote_0.`COALESCE(e.task_id,'')`, remote_0.`COALESCE(e.job_id,'')`, remote_0.`COALESCE(e.kind,'')`, remote_0.`COALESCE(e.actor_id,'')`, remote_0.`COALESCE(e.actor_role,'')`, remote_0.payload_json, remote_0.at] est_rows:1
+        Sort [remote_0.at DESC, remote_0.id DESC]
+        Gather partitions:all est_rows:1 alias:remote_0 parallelism_level:sub_partition
+        Project [r4.total, CASE WHEN 1099511627776 > 0 THEN 1099511627776 ELSE r4.snapshot END  AS `CASE WHEN 1099511627776>0 THEN 1099511627776 ELSE totals.snapshot END`, r5.id, COALESCE(r5.task_id,'') AS `COALESCE(e.task_id,'')`, COALESCE(r5.job_id,'') AS `COALESCE(e.job_id,'')`, COALESCE(r5.kind,'') AS `COALESCE(e.kind,'')`, COALESCE(r5.actor_id,'') AS `COALESCE(e.actor_id,'')`, COALESCE(r5.actor_role,'') AS `COALESCE(e.actor_role,'')`, r5.payload_json, r5.at] est_rows:1
+        Sort [r5.at DESC, r5.id DESC]
+        HashJoin type:right est_rows:138
+        |---HashTableProbe [r5.id = r4.id]
+        |   HashTableBuild alias:r4
+        |   Repartition [totals_12_19_25.total, totals_12_19_25.snapshot, r3.id] AS r4 shard_key:[id] parallelism_level:sub_partition est_rows:1
+        |   NestedLoopJoin type:left
+        |   |---Filter [1 = 1]
+        |   |   TableScan r3 storage:list stream:no table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Project [r2.id] alias:r3 parallelism_level:partition est_rows:3
+        |   |   Top offset:2
+        |   |   TopSort limit:3 [r2.at DESC, r2.id DESC]
+        |   |   TableScan r2 storage:list stream:yes table_type:reference est_table_rows:3 est_filtered:3
+        |   |   Broadcast [matched_15_24.id, matched_15_24.at] AS r2 distribution:direct parallelism_level:sub_partition est_rows:3 est_select_cost:496
+        |   |   TopSort limit:[?] [matched_15_24.at DESC, matched_15_24.id DESC]
+        |   |   TableScan m_matched_150 AS matched_15_24 storage:list stream:no table_type:sharded est_table_rows:62 est_filtered:62
+        |   |   MaterializedCTE alias:m_matched_150 est_rows:62
+        |   TableScan 0tmp AS totals_12_19_25 storage:list stream:yes est_table_rows:1 est_filtered:1
+        |   Project [CAST(COALESCE($0,0) AS SIGNED) AS total, COALESCE($1,0) AS snapshot] est_rows:1
+        |   HashGroupBy [SUM(r1.total) AS $0, MAX(r1.op_1) AS $1] groups:[r1.op_0]
+        |   TableScan r1 storage:list stream:yes table_type:sharded est_table_rows:1 est_filtered:1
+        |   Repartition [total, NULL AS op_0, op_1] AS r1 shard_key:[op_0] parallelism_level:sub_partition est_rows:1 est_select_cost:62
+        |   Aggregate [COUNT(*) AS total, MAX(matched_15_23.id) AS op_1]
+        |   TableScan m_matched_150 AS matched_15_23 storage:list stream:no table_type:sharded est_table_rows:62 est_filtered:62
+        |   MaterializedCTE [events_columnstore_22.id, events_columnstore_22.at] alias:m_matched_150 parallelism_level:sub_partition est_rows:62
+        |   ColumnStoreFilter [<after per-thread scan begin> AND <before per-thread scan end> AND events_columnstore_22.kind LIKE 'system_design.%' AND (JSON_EXTRACT_STRING(events_columnstore_22.payload_json,'document_id') = 'design-membership-261115-7d4ca1' AND (1099511627776 = 0 OR events_columnstore_22.id <= 1099511627776)) AND events_columnstore_22.workspace_id = 'document-plans-261115-046212' index]
+        |   ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_22, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:63
+        BloomFilter table:r4 fields:r5.id
+        TableScan r5 storage:list stream:yes table_type:sharded est_table_rows:138 est_filtered:138
+        Repartition [events_columnstore_27.id, events_columnstore_27.task_id, events_columnstore_27.job_id, events_columnstore_27.kind, events_columnstore_27.actor_id, events_columnstore_27.actor_role, events_columnstore_27.payload_json, events_columnstore_27.at] AS r5 shard_key:[id] parallelism_level:segment est_rows:138
+        ColumnStoreFilter [events_columnstore_27.workspace_id = 'document-plans-261115-046212' index]
+        ColumnStoreScan conveyor_1794758941617385494_test.events_columnstore AS events_columnstore_27, SORT KEY workspace_id (workspace_id, task_id, at, id) table_type:sharded_columnstore est_table_rows:157 est_filtered:138
+--- PASS: TestDocumentEventQueryPlansIntegration (50.15s)
+    --- PASS: TestDocumentEventQueryPlansIntegration/results (8.68s)
+    --- PASS: TestDocumentEventQueryPlansIntegration/plans (0.31s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/singlestore	50.941s

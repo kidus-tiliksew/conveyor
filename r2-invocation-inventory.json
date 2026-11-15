@@ -1,0 +1,129 @@
+{
+ "argv": [
+  "make",
+  "test-document-event-plans-singlestore",
+  "DOCUMENT_EVENT_MEASUREMENT=200000"
+ ],
+ "checkout": "/home/user/conveyor-worktrees/conveyor-task-261115-661c39",
+ "cleanup": {
+  "detail": [],
+  "outcome": "success"
+ },
+ "configuration": {
+  "evidence": "/home/user/.local/state/conveyor/261115-661c39/attempt-20261115T161008Z-221321-0e1f5e7bd0d5",
+  "layer": "singlestore"
+ },
+ "created_at": 1794759008.5426965,
+ "detached": false,
+ "finished_at": 1794759444.184993,
+ "host": {
+  "hostname": "box-node-ab27d82609d169ff",
+  "machine": "b15cf33b4e5671192c99a5af269535abe188813115a74ddf521becc5f0f5ce02"
+ },
+ "invocation": "20261115t161008z-c398b194b266",
+ "kind": "conveyor-validation-invocation",
+ "outcome": "success",
+ "owner": {
+  "birth": {
+   "boot_id": "36da8c50-7b0d-4e66-ab24-a02c42f668ce",
+   "start_ticks": 540426
+  },
+  "pid": 221321,
+  "uid": 1000
+ },
+ "references": [
+  "/home/user/.local/state/conveyor/261115-661c39/attempt-20261115T161008Z-221321-0e1f5e7bd0d5"
+ ],
+ "resources": [
+  {
+   "detail": "removed disposable path /home/user/.cache/conveyor/261115-661c39/invocations/20261115t161008z-c398b194b266; Disregarded Linux user manager: pid=1184 uid=1000 service=user@1000.service main_pid=1184 start=576 monotonic_usec=5764964 reason=same-user-uninspectable-system-manager-reported-mainpid; Disregarded Linux user manager helper: pid=1199 parent=1184 uid=1000 command=(sd-pam) start=578 parent_start=576 clk_tck=100 reason=same-user-uninspectable-sd-pam-child-of-authenticated-user-manager-within-one-second",
+   "finished_at": 1794759444.1830218,
+   "id": "path-072a4e132111",
+   "identity": {
+    "boot_id": "36da8c50-7b0d-4e66-ab24-a02c42f668ce",
+    "created_ticks": 540433,
+    "device": 64769,
+    "inode": 1809921,
+    "path": "/home/user/.cache/conveyor/261115-661c39/invocations/20261115t161008z-c398b194b266"
+   },
+   "kind": "path",
+   "registered_at": 1794759008.5466878,
+   "registered_by": {
+    "birth": {
+     "boot_id": "36da8c50-7b0d-4e66-ab24-a02c42f668ce",
+     "start_ticks": 540426
+    },
+    "pid": 221321
+   },
+   "role": "tmp",
+   "sealed_at": 1794759008.5480423,
+   "state": "removed"
+  },
+  {
+   "detail": "owned fixture teardown dropped the database",
+   "finished_at": 1794759443.9931076,
+   "id": "database-cf2e22255c3d",
+   "identity": {
+    "backend": "singlestore",
+    "database": "conveyor_docplans_1026f3bd0841_test",
+    "endpoint": "127.0.0.1:3306",
+    "incarnation": null,
+    "server": "external",
+    "url_env": "CONVEYOR_TEST_SINGLESTORE_URL"
+   },
+   "kind": "database",
+   "registered_at": 1794759008.552743,
+   "registered_by": {
+    "birth": {
+     "boot_id": "36da8c50-7b0d-4e66-ab24-a02c42f668ce",
+     "start_ticks": 540426
+    },
+    "pid": 221321
+   },
+   "role": "fixture-database",
+   "sealed_at": 1794759019.5317352,
+   "state": "removed"
+  },
+  {
+   "detail": "process group 223530 has no remaining members",
+   "finished_at": 1794759434.1075068,
+   "id": "process-group-4ac75c0176d6",
+   "identity": {
+    "argv0": "make",
+    "birth": {
+     "boot_id": "36da8c50-7b0d-4e66-ab24-a02c42f668ce",
+     "start_ticks": 541738
+    },
+    "leader": 223530,
+    "pgid": 223530,
+    "uid": 1000
+   },
+   "kind": "process-group",
+   "registered_at": 1794759021.5984082,
+   "registered_by": {
+    "birth": {
+     "boot_id": "36da8c50-7b0d-4e66-ab24-a02c42f668ce",
+     "start_ticks": 540426
+    },
+    "pid": 221321
+   },
+   "role": "gate",
+   "sealed_at": 1794759021.600512,
+   "state": "removed"
+  }
+ ],
+ "schema": 1,
+ "state": "completed",
+ "task": "261115-661c39",
+ "tmp": {
+  "GOTMPDIR": "/home/user/.cache/conveyor/261115-661c39/invocations/20261115t161008z-c398b194b266/go-tmp",
+  "TMPDIR": "/home/user/.cache/conveyor/261115-661c39/invocations/20261115t161008z-c398b194b266/tmp"
+ },
+ "tmp_root": {
+  "backing": "disk",
+  "filesystem": "ext4",
+  "override": false,
+  "path": "/home/user/.cache/conveyor/261115-661c39",
+  "warning": null
+ }
+}

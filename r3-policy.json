@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "task": "261115-661c39",
+  "layer": "singlestore",
+  "command": [
+    "make",
+    "test-document-events"
+  ],
+  "environment": [
+    "PATH",
+    "HOME",
+    "LANG",
+    "GOCACHE",
+    "CONVEYOR_TEST_SINGLESTORE_URL",
+    "CONVEYOR_TEST_DATABASE_URL"
+  ],
+  "tools": {
+    "make": [
+      "make",
+      "--version"
+    ],
+    "git": [
+      "git",
+      "--version"
+    ],
+    "python3": [
+      "python3",
+      "--version"
+    ],
+    "sh": [
+      "sh",
+      "-c",
+      "printf POSIX-shell"
+    ],
+    "go": [
+      "go",
+      "version"
+    ],
+    "bash": [
+      "bash",
+      "--version"
+    ],
+    "env": [
+      "env",
+      "--version"
+    ],
+    "tee": [
+      "tee",
+      "--version"
+    ],
+    "mktemp": [
+      "mktemp",
+      "--version"
+    ],
+    "grep": [
+      "grep",
+      "--version"
+    ],
+    "awk": [
+      "awk",
+      "--version"
+    ]
+  },
+  "external_inputs": [
+    "/usr/local/go",
+    "/home/user/go/pkg/mod"
+  ],
+  "exclude": {},
+  "audit": {
+    "inputs_complete": true,
+    "input_rationale": "Inputs are the whole task worktree (hashed, nothing excluded), the Go launcher at /usr/local/go, and the Go module cache at /home/user/go/pkg/mod, which holds the go1.24.0 toolchain that GOTOOLCHAIN=auto selects from go.mod and every resolved module. GOCACHE points at a fresh empty directory for each run, so no earlier build output is reused. The Make targets run go test with -count=1, scripts/go-test-require-tests.sh (bash, tee, mktemp, grep, awk), and env through VALIDATION_CHILD_ENV. The database is a disposable owned fixture that this helper prepares and removes; its server is the backend probe. HOME is inventoried by fingerprint and the targets read no HOME configuration. No output directory is excluded.",
+    "git_metadata": "dependent",
+    "git_rationale": "Treated as Git-metadata dependent by default; these records are fresh backend executions, which the helper never reuses."
+  },
+  "backend": {
+    "isolation": "disposable-per-run",
+    "probe": [
+      "go",
+      "run",
+      "./scripts/validation-fixture-sql",
+      "--backend",
+      "singlestore",
+      "--action",
+      "probe",
+      "--dsn-env",
+      "CONVEYOR_TEST_SINGLESTORE_URL",
+      "--timeout",
+      "20s"
+    ]
+  },
+  "fixture": {
+    "backend": "singlestore",
+    "url_env": "CONVEYOR_TEST_SINGLESTORE_URL",
+    "prepared_url_env": "CONVEYOR_TEST_SINGLESTORE_URL",
+    "external_network_env": "CONVEYOR_TEST_EXTERNAL_NETWORK",
+    "database_prefix": "conveyor_docplans",
+    "minimum_free_bytes": 5368709120,
+    "timeout": "60s"
+  }
+}
