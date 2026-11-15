@@ -37,9 +37,10 @@ func (s *Service) ChangeTaskPolicy(ctx context.Context, taskID, reason, requestI
 		})
 		return changeErr
 	})
-	// A change holding only review_distinct_models moves no stage, so it has
-	// nothing to dispatch (req-review-gates-evidence AC-2.11).
-	if err == nil && s.Dispatcher != nil && !policy.OnlyDistinctModels() {
+	// A change holding only review_distinct_models or only later_round_review
+	// moves no stage, so it has nothing to dispatch (req-review-gates-evidence
+	// AC-2.11, AC-12.8).
+	if err == nil && s.Dispatcher != nil && !policy.MovesNoStage() {
 		s.Dispatcher.Enqueue(ctx, taskID)
 	}
 	return result, err

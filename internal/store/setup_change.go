@@ -93,6 +93,10 @@ func normalizeSetupChangeRequest(request SetupChangeRequest) SetupChangeRequest 
 			enabled := *policy.ReviewDistinctModels
 			policy.ReviewDistinctModels = &enabled
 		}
+		if policy.LaterRoundReview != nil {
+			scope := *policy.LaterRoundReview
+			policy.LaterRoundReview = &scope
+		}
 		if policy.PlanState != nil {
 			state := core.PlanState(strings.TrimSpace(string(*policy.PlanState)))
 			policy.PlanState = &state
@@ -193,8 +197,16 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 		return m.changeTaskPlanStateLocked(ctx, workspace, task, request)
 	}
 	var orders []core.WorkOrder
+	// A change holding only later_round_review is not refused while an order
+	// is claimed or a review verdict is submitted (feature-delta-review-rounds
+	// DR-6).
+	excludeExecuting := !request.Policy.OnlyLaterRoundReview()
 	for _, order := range m.workOrders {
 		if order.TaskID != task.ID {
+			continue
+		}
+		if !excludeExecuting {
+			orders = append(orders, order)
 			continue
 		}
 		// Submitted spec/implement attempts are delivered, not executing; only

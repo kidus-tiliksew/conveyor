@@ -1788,8 +1788,15 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 			return err
 		}
 		byID := map[string]core.WorkOrder{}
+		// A change holding only later_round_review is not refused while an
+		// order is claimed or a review verdict is submitted
+		// (feature-delta-review-rounds DR-6).
+		excludeExecuting := !r.Policy.OnlyLaterRoundReview()
 		for _, o := range orders {
 			byID[o.ID] = o
+			if !excludeExecuting {
+				continue
+			}
 			// A claimed risk order stands beside the stage and blocks nothing
 			// (component-task-lifecycle invariant 45).
 			if o.State == core.WorkOrderClaimed && o.Stage != core.StageRisk {

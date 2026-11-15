@@ -478,3 +478,56 @@ func TestWorkspaceConfigIssuePublicationRequiresManageWorkspace(t *testing.T) {
 		t.Fatalf("viewer read after turn-on status=%d body=%s", read.Code, read.Body)
 	}
 }
+
+// feature-delta-review-rounds DR-1; req-review-gates-evidence AC-4.3,
+// AC-12.1: the workspace save route accepts later_round_review of full or
+// delta and refresh_review of delta or full, refuses any other value with
+// the member named and the value withheld, serves the defaults for a
+// document without the members, and returns saved values on the next read.
+func TestWorkspaceConfigReviewScopesRoundTripAndRefusal(t *testing.T) {
+	document := contextualWorkspaceDocument()
+	backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 1}}
+	s := NewServer(store.NewMemory())
+	s.BearerToken = "token"
+	s.Deployment = &config.Config{Workspace: "demo", Database: config.Database{Backend: "memory"}}
+	s.ConfigStore = backend
+	h := s.Handler()
+	put := func(document config.WorkspaceDocument, version int64) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"document": document})
+		request := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
+		request.Header.Set("Authorization", "Bearer token")
+		request.Header.Set("If-Match", fmt.Sprint(version))
+		result := httptest.NewRecorder()
+		h.ServeHTTP(result, request)
+		return result
+	}
+	for _, tc := range []struct{ laterRound, refresh, field string }{
+		{"partial-value", "", "later_round_review"},
+		{"none", "", "later_round_review"},
+		{"", "none", "refresh_review"},
+		{"", "partial-value", "refresh_review"},
+	} {
+		refused := document
+		refused.LaterRoundReview, refused.RefreshReview = tc.laterRound, tc.refresh
+		result := put(refused, 1)
+		if result.Code != http.StatusUnprocessableEntity || backend.updates != 0 || !strings.Contains(result.Body.String(), `"field":"`+tc.field+`"`) || strings.Contains(result.Body.String(), "partial-value") {
+			t.Fatalf("%+v: status=%d updates=%d body=%s", tc, result.Code, backend.updates, result.Body)
+		}
+	}
+	// A document without the members saves with the defaults.
+	if result := put(document, 1); result.Code != http.StatusOK || !strings.Contains(result.Body.String(), `"later_round_review":"full"`) || !strings.Contains(result.Body.String(), `"refresh_review":"delta"`) {
+		t.Fatalf("default save status=%d body=%s", result.Code, result.Body)
+	}
+	saved := document
+	saved.LaterRoundReview, saved.RefreshReview = "delta", "full"
+	if result := put(saved, 2); result.Code != http.StatusOK || backend.record.Document.LaterRoundReview != "delta" || backend.record.Document.RefreshReview != "full" {
+		t.Fatalf("save status=%d document=%+v body=%s", result.Code, backend.record.Document, result.Body)
+	}
+	get := httptest.NewRequest(http.MethodGet, "/v1/workspace/config", nil)
+	get.Header.Set("Authorization", "Bearer token")
+	read := httptest.NewRecorder()
+	h.ServeHTTP(read, get)
+	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"later_round_review":"delta"`) || !strings.Contains(read.Body.String(), `"refresh_review":"full"`) {
+		t.Fatalf("GET status=%d body=%s", read.Code, read.Body)
+	}
+}
