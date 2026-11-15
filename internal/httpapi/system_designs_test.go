@@ -17,7 +17,7 @@ import (
 
 func TestSystemDesignViewSerializesDriftDetectedAt(t *testing.T) {
 	detectedAt := time.Date(2026, 8, 26, 7, 0, 0, 0, time.UTC)
-	view := buildSystemDesignView(core.SystemDesign{ID: "design-monitor"}, nil, nil, []monitor.Drift{{
+	view := buildSystemDesignView(core.SystemDesign{ID: "design-monitor"}, nil, []monitor.Drift{{
 		ID: "drift-1", SystemDesignID: "design-monitor", DetectedAt: detectedAt,
 	}})
 	raw, err := json.Marshal(view)
@@ -192,8 +192,17 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 	detail := httptest.NewRecorder()
 	handler.ServeHTTP(detail, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/system-designs/design-dispatch", nil)))
 	var detailView systemDesignView
-	if detail.Code != http.StatusOK || json.Unmarshal(detail.Body.Bytes(), &detailView) != nil || len(detailView.Lineage) != 2 || detailView.PendingVersions[0].Content == "" {
+	if detail.Code != http.StatusOK || json.Unmarshal(detail.Body.Bytes(), &detailView) != nil || detailView.PendingVersions[0].Content == "" {
 		t.Fatalf("detail status=%d view=%+v body=%s", detail.Code, detailView, detail.Body.String())
+	}
+	assertDetailHasNoDocumentEvents(t, detail.Body.Bytes())
+	// The workspace's own two events reach History through the events route;
+	// the sibling workspace's same-ID document contributes none.
+	events := httptest.NewRecorder()
+	handler.ServeHTTP(events, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/system-designs/design-dispatch/events", nil)))
+	var eventPage store.DocumentEventPage
+	if events.Code != http.StatusOK || json.Unmarshal(events.Body.Bytes(), &eventPage) != nil || len(eventPage.Events) != 2 || eventPage.Total != 2 {
+		t.Fatalf("events status=%d page=%+v body=%s", events.Code, eventPage, events.Body.String())
 	}
 
 	confirm := func(version, expected int) *httptest.ResponseRecorder {

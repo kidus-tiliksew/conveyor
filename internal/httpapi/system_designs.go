@@ -17,15 +17,15 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
+// systemDesignView is the per-document read model. It carries no document
+// events: the History view reads them from GET /v1/system-designs/{id}/events
+// (component-web-document-surfaces).
 type systemDesignView struct {
-	Document          core.SystemDesign          `json:"document"`
-	CurrentVersion    *core.SystemDesignVersion  `json:"current_version,omitempty"`
-	PendingVersions   []core.SystemDesignVersion `json:"pending_versions"`
-	Versions          []core.SystemDesignVersion `json:"versions"`
-	Lineage           []core.Event               `json:"lineage"`
-	LineageTotal      int                        `json:"lineage_total"`
-	LineageSnapshotID int64                      `json:"lineage_snapshot_id"`
-	Drift             []monitor.Drift            `json:"drift"`
+	Document       core.SystemDesign          `json:"document"`
+	CurrentVersion  *core.SystemDesignVersion  `json:"current_version,omitempty"`
+	PendingVersions []core.SystemDesignVersion `json:"pending_versions"`
+	Versions        []core.SystemDesignVersion `json:"versions"`
+	Drift           []monitor.Drift            `json:"drift"`
 }
 
 // systemDesignSummary is the collection read model. Immutable document
@@ -70,17 +70,11 @@ func (s *Server) systemDesignView(r *http.Request, document core.SystemDesign, d
 	if err != nil {
 		return systemDesignView{}, err
 	}
-	page, err := s.Store.ListDocumentEventPage(r.Context(), core.LineageSystemDesign, document.ID, store.DocumentEventQuery{Limit: 50})
-	if err != nil {
-		return systemDesignView{}, err
-	}
-	view := buildSystemDesignView(document, versions, page.Events, drift)
-	view.LineageTotal, view.LineageSnapshotID = page.Total, page.SnapshotID
-	return view, nil
+	return buildSystemDesignView(document, versions, drift), nil
 }
 
-func buildSystemDesignView(document core.SystemDesign, versions []core.SystemDesignVersion, events []core.Event, drift []monitor.Drift) systemDesignView {
-	view := systemDesignView{Document: document, PendingVersions: []core.SystemDesignVersion{}, Versions: versions, Lineage: events, Drift: []monitor.Drift{}}
+func buildSystemDesignView(document core.SystemDesign, versions []core.SystemDesignVersion, drift []monitor.Drift) systemDesignView {
+	view := systemDesignView{Document: document, PendingVersions: []core.SystemDesignVersion{}, Versions: versions, Drift: []monitor.Drift{}}
 	for _, item := range drift {
 		if item.SystemDesignID == document.ID {
 			view.Drift = append(view.Drift, item)
