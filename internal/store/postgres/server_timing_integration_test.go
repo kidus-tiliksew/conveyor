@@ -330,8 +330,15 @@ func TestServerTimingIsolationIntegration(t *testing.T) {
 // through the request's database metrics (component-persistence).
 func TestRequirementDetailStatementCountIntegration(t *testing.T) {
 	st := openServerTimingStore(t, serverTimingSchemaURL(t), nil)
-	handler := serverTimingHandler(t, st, true)
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "server-timing")
+	if _, err := st.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Timing", Email: "owner@example.test", DisplayName: "Owner"}, serverTimingToken); err != nil {
+		t.Fatal(err)
+	}
+	// The fixture tasks name a registered repository.
+	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "server-timing", Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	handler := serverTimingHandler(t, st, false)
 	small := storetest.SeedRequirementDetail(t, st, ctx, "small", 2, 1)
 	large := storetest.SeedRequirementDetail(t, st, ctx, "large", 40, 10)
 	read := func(id string) (uint64, int) {
@@ -356,4 +363,7 @@ func TestRequirementDetailStatementCountIntegration(t *testing.T) {
 	largeQueries, largeBytes := read(large)
 	t.Logf("MEASUREMENT postgres requirement detail: small (2 serving tasks, 1 confirmed link) statements=%d bytes=%d; large (40 serving tasks, 10 confirmed links) statements=%d bytes=%d",
 		smallQueries, smallBytes, largeQueries, largeBytes)
+	if smallQueries == 0 || smallQueries != largeQueries {
+		t.Fatalf("requirement detail statements: small %d, large %d; want the same nonzero count", smallQueries, largeQueries)
+	}
 }

@@ -84,7 +84,8 @@ func TestRequirementDetailStatementCountIntegration(t *testing.T) {
 	if _, err := st.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Timing", Email: "owner@example.test", DisplayName: "Owner"}, "server-timing-token"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "server-timing"}); err != nil {
+	// The fixture tasks name a registered repository.
+	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "server-timing", Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
 	server := httpapi.NewServer(st)
@@ -127,4 +128,7 @@ func TestRequirementDetailStatementCountIntegration(t *testing.T) {
 	largeQueries, largeBytes := read(large)
 	t.Logf("MEASUREMENT singlestore requirement detail: small (2 serving tasks, 1 confirmed link) statements=%d bytes=%d; large (40 serving tasks, 10 confirmed links) statements=%d bytes=%d",
 		smallQueries, smallBytes, largeQueries, largeBytes)
+	if smallQueries == 0 || smallQueries != largeQueries {
+		t.Fatalf("requirement detail statements: small %d, large %d; want the same nonzero count", smallQueries, largeQueries)
+	}
 }

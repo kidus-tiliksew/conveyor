@@ -40,7 +40,7 @@ const requirement = {
         title: 'Ship bounded retries',
         state: 'awaiting_human',
       },
-      spec: { task_id: 'blueprint-task', version: 1, approved: false },
+      spec: { version: 1, approved: false },
     },
   ],
   planning_sessions: [
@@ -1629,6 +1629,174 @@ test('partial staleness is voiced and delivery is task-centric with blueprints a
     'href',
     '/w/demo/blueprints/blueprint-task',
   )
+})
+
+// The page sends one requirement list request, which includes archived
+// requirements, and starts the selected requirement's detail request beside
+// it. The canvas reads the cached detail and builds its successor candidates
+// from that list (component-web-document-surfaces).
+function requestOrderFixture() {
+  const live = {
+    ...requirement,
+    current_version: { ...requirement.pending_versions[0], confirmed: true, confirmed_at: '2026-07-30T10:06:00Z' },
+    pending_versions: [],
+    serving_tasks: [{ id: '260807-0e2bc1', title: 'Scale task operations queries', state: 'running' }],
+    staleness: { delivery_after_intent: false, active_drift: [], deliveries: [] },
+  }
+  const other = {
+    ...live,
+    requirement: { ...requirement.requirement, id: 'req-other', slug: 'other', title: 'Other live intent' },
+    serving_blueprints: [],
+    serving_tasks: [],
+  }
+  const archived = {
+    ...other,
+    requirement: {
+      ...requirement.requirement,
+      id: 'req-archived',
+      slug: 'archived',
+      title: 'Archived intent',
+      archived: true,
+      archived_at: '2026-07-31T10:00:00Z',
+    },
+  }
+  return { live, other, archived, list: [live, other, archived].map(summarizeRequirement) }
+}
+
+async function routeRequestOrder(
+  page: Page,
+  options: { listGate?: Promise<void>; detailGate?: Promise<void> },
+): Promise<{
+  listQueries: string[]
+  detailPaths: string[]
+  detailHitsAfterList: string[]
+  detailStartedBeforeList: () => boolean
+}> {
+  const fixture = requestOrderFixture()
+  const listQueries: string[] = []
+  // Completed detail requests. The detail query consumes its abort signal, so
+  // StrictMode's discarded first mount in a development build can abort and
+  // repeat it; an aborted request never finishes.
+  const detailPaths: string[] = []
+  const detailHitsAfterList: string[] = []
+  let listAnswered = false
+  let detailBeforeList = false
+  page.on('requestfinished', (request) => {
+    const path = new URL(request.url()).pathname
+    if (path.startsWith('/v1/requirements/') && !path.endsWith('/versions')) detailPaths.push(path)
+  })
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    const path = url.pathname
+    if (path === '/v1/requirements') {
+      listQueries.push(url.searchParams.get('include_archived') ?? '')
+      await options.listGate
+      listAnswered = true
+      return route.fulfill({ json: fixture.list })
+    }
+    if (path.endsWith('/versions')) return route.fulfill({ json: [fixture.live.current_version] })
+    if (path.startsWith('/v1/requirements/')) {
+      if (listAnswered) detailHitsAfterList.push(path)
+      else detailBeforeList = true
+      await options.detailGate
+      const id = decodeURIComponent(path.slice('/v1/requirements/'.length))
+      const view = [fixture.live, fixture.other, fixture.archived].find((item) => item.requirement.id === id)
+      return view ? route.fulfill({ json: view }) : route.fulfill({ status: 404, body: 'requirement not found' })
+    }
+    return route.fulfill({ json: [] })
+  })
+  return { listQueries, detailPaths, detailHitsAfterList, detailStartedBeforeList: () => detailBeforeList }
+}
+
+test('requirements starts the detail request before the list answers and sends one list request', async ({ page }) => {
+  await initShell(page)
+  let releaseList: () => void = () => {}
+  const listGate = new Promise<void>((resolve) => {
+    releaseList = resolve
+  })
+  const requests = await routeRequestOrder(page, { listGate })
+
+  await page.goto('/w/demo/requirements?requirement=req-retries')
+  // The detail request starts while the list request still waits.
+  await expect.poll(() => requests.detailPaths).toEqual(['/v1/requirements/req-retries'])
+  expect(requests.detailStartedBeforeList()).toBe(true)
+  await expect(
+    page.getByRole('region', { name: 'Requirement document' }).getByText('Loading requirements…'),
+  ).toBeVisible()
+  releaseList()
+
+  // The canvas reads the cached detail and sends no detail request of its own.
+  await expect(page.getByRole('button', { name: 'Archive' })).toBeVisible()
+  expect(requests.listQueries).toEqual(['true'])
+  expect(requests.detailPaths).toEqual(['/v1/requirements/req-retries'])
+  expect(requests.detailHitsAfterList).toEqual([])
+
+  // Successor candidates come from the one list: the other live requirement,
+  // without this requirement and without the archived one.
+  await page.getByRole('button', { name: 'Archive' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Archive Retry behavior' })
+  await expect(dialog.getByText('Other live intent')).toBeVisible()
+  await expect(dialog.getByText('Requirement · req-other')).toBeVisible()
+  await expect(dialog.getByText('Archived intent')).toHaveCount(0)
+  await expect(dialog.getByText('Requirement · req-retries')).toHaveCount(0)
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+
+  // History keeps the Delivery rows and the pre-retirement blueprint rows
+  // with their plan badge.
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
+  await expect(page.getByRole('link', { name: /Scale task operations queries/ })).toHaveAttribute(
+    'href',
+    '/w/demo/tasks/260807-0e2bc1/full',
+  )
+  await expect(page.getByRole('heading', { name: 'Delivery before blueprints retired' })).toBeVisible()
+  const blueprint = page.getByRole('link', { name: /Ship bounded retries/ })
+  await expect(blueprint).toHaveAttribute('href', '/w/demo/blueprints/blueprint-task')
+  await expect(blueprint).toContainText('Plan v1 awaiting approval')
+  expect(requests.listQueries).toEqual(['true'])
+  expect(requests.detailPaths).toEqual(['/v1/requirements/req-retries'])
+  expect(requests.detailHitsAfterList).toEqual([])
+})
+
+test('requirements waits for a detail that answers after the list and keeps selection and fallback', async ({
+  page,
+}) => {
+  await initShell(page)
+  let releaseDetail: () => void = () => {}
+  const detailGate = new Promise<void>((resolve) => {
+    releaseDetail = resolve
+  })
+  const requests = await routeRequestOrder(page, { detailGate })
+
+  await page.goto('/w/demo/requirements?requirement=req-retries')
+  await expect(page.getByText('Loading requirement…')).toBeVisible()
+  releaseDetail()
+  await expect(page.getByRole('button', { name: 'Archive' })).toBeVisible()
+  await expect.poll(() => requests.detailPaths).toEqual(['/v1/requirements/req-retries'])
+
+  // Choosing another requirement requests its detail once.
+  await page
+    .getByRole('navigation', { name: 'Document tree' })
+    .getByRole('button', { name: /^Other live intent/ })
+    .click()
+  await expect(page).toHaveURL(/requirement=req-other/)
+  await expect.poll(() => requests.detailPaths).toEqual(['/v1/requirements/req-retries', '/v1/requirements/req-other'])
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
+  await expect(page.getByText('No work has been planned against this requirement yet.')).toBeVisible()
+  expect(requests.listQueries).toEqual(['true'])
+})
+
+test('requirements replaces an address ID that the list lacks with the first live requirement', async ({ page }) => {
+  await initShell(page)
+  const requests = await routeRequestOrder(page, {})
+
+  await page.goto('/w/demo/requirements?requirement=req-missing')
+  await expect(page).toHaveURL(/requirement=req-retries/)
+  await expect(page.getByRole('button', { name: 'Archive' })).toBeVisible()
+  await expect(page.getByText('Could not load this requirement.')).toHaveCount(0)
+  expect(requests.listQueries).toEqual(['true'])
+  expect(requests.detailPaths).toContain('/v1/requirements/req-retries')
 })
 
 test('requirements deep-link exact versions, render statements, diff pending intent, and guard confirmation', async ({

@@ -30,7 +30,7 @@ type requirementView struct {
 	CurrentVersion       *core.RequirementVersion     `json:"current_version,omitempty"`
 	PendingVersions      []core.RequirementVersion    `json:"pending_versions"`
 	ServingBlueprints    []blueprintLineage           `json:"serving_blueprints"`
-	ServingTasks         []core.Task                  `json:"serving_tasks"`
+	ServingTasks         []requirementTaskSummary     `json:"serving_tasks"`
 	RequirementLinks     []core.RequirementServesLink `json:"requirement_links"`
 	PlanningSessions     []core.PlanningSession       `json:"planning_sessions"`
 	Artifacts            []core.Artifact              `json:"artifacts"`
@@ -104,9 +104,29 @@ type requirementDeliveryWatermark struct {
 	EventID int64
 }
 
+// blueprintLineage is one confirmed requirement link on the detail: the
+// linked task's ID, title, and state, and its latest plan version's number
+// and approval flag. Spec is absent when the task has no plan version. The
+// detail carries no task body and no plan content
+// (component-document-corpus; component-web-document-surfaces).
 type blueprintLineage struct {
-	Task core.Task         `json:"task"`
-	Spec *core.SpecVersion `json:"spec,omitempty"`
+	Task requirementTaskSummary  `json:"task"`
+	Spec *requirementPlanSummary `json:"spec,omitempty"`
+}
+
+type requirementPlanSummary struct {
+	Version  int  `json:"version"`
+	Approved bool `json:"approved"`
+}
+
+// requirementDetailTaskOf reduces a full task to the facts the requirement
+// read model labels and filters by.
+func requirementDetailTaskOf(task core.Task) store.RequirementDetailTask {
+	return store.RequirementDetailTask{ID: task.ID, Title: task.Title, State: task.State, HasChildren: core.BlueprintAnchor(task)}
+}
+
+func requirementTaskSummaryOf(task store.RequirementDetailTask) requirementTaskSummary {
+	return requirementTaskSummary{ID: task.ID, Title: task.Title, State: task.State}
 }
 
 func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
@@ -137,15 +157,11 @@ func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
 				CreatedAt:     view.CurrentVersion.CreatedAt,
 			}
 		}
-		servingTasks := make([]requirementTaskSummary, 0, len(view.ServingTasks))
-		for _, task := range view.ServingTasks {
-			servingTasks = append(servingTasks, requirementTaskSummary{ID: task.ID, Title: task.Title, State: task.State})
-		}
 		summaries = append(summaries, requirementSummary{
 			Requirement:          view.Requirement,
 			CurrentVersion:       current,
 			PendingVersionCount:  len(view.PendingVersions),
-			ServingTasks:         servingTasks,
+			ServingTasks:         view.ServingTasks,
 			Staleness:            view.Staleness,
 			ConfirmationEligible: view.ConfirmationEligible,
 		})
@@ -664,25 +680,45 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			return nil, err
 		}
 	}
-	tasksByID := map[string]core.Task{}
-	if !includeDetail {
+	// The detail reads every task it names, and the latest plan of every
+	// confirmed link, in one set read each, whatever the number of tasks
+	// (component-persistence). The list keeps its workspace task read.
+	tasksByID := map[string]store.RequirementDetailTask{}
+	plansByTask := map[string]store.PlanSummary{}
+	if includeDetail {
+		detailTaskIDs, linkedTaskIDs := requirementDetailTaskIDs(requirements, linksByRequirement, lineageByRequirement, deliveryGraphs)
+		tasksByID, err = s.Store.ListRequirementDetailTasks(r.Context(), detailTaskIDs)
+		if err != nil {
+			return nil, err
+		}
+		plansByTask, err = s.Store.ListLatestPlanSummaries(r.Context(), linkedTaskIDs)
+		if err != nil {
+			return nil, err
+		}
+	} else {
 		tasks, listErr := s.Store.ListTasks(r.Context())
 		if listErr != nil {
 			return nil, listErr
 		}
 		for _, task := range tasks {
-			tasksByID[task.ID] = task
+			tasksByID[task.ID] = requirementDetailTaskOf(task)
 		}
 	}
-	loadTask := func(taskID string) (core.Task, error) {
+	loadTask := func(taskID string) (store.RequirementDetailTask, error) {
 		if task, ok := tasksByID[taskID]; ok {
 			return task, nil
 		}
-		task, getErr := s.Store.GetTask(r.Context(), taskID)
-		if getErr == nil {
-			tasksByID[taskID] = task
+		if includeDetail {
+			// A named task that the batch read did not return fails the
+			// read, as the single-task read did.
+			return store.RequirementDetailTask{}, fmt.Errorf("%w: task %s", store.ErrNotFound, taskID)
 		}
-		return task, getErr
+		task, getErr := s.Store.GetTask(r.Context(), taskID)
+		if getErr != nil {
+			return store.RequirementDetailTask{}, getErr
+		}
+		tasksByID[taskID] = requirementDetailTaskOf(task)
+		return tasksByID[taskID], nil
 	}
 	views := make([]requirementView, 0, len(requirements))
 	for _, requirement := range requirements {
@@ -703,7 +739,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			Requirement:       requirement,
 			PendingVersions:   []core.RequirementVersion{},
 			ServingBlueprints: []blueprintLineage{},
-			ServingTasks:      []core.Task{},
+			ServingTasks:      []requirementTaskSummary{},
 			RequirementLinks:  linksByRequirement[requirement.ID],
 			PlanningSessions:  []core.PlanningSession{},
 			Artifacts:         []core.Artifact{},
@@ -764,11 +800,9 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			if getErr != nil {
 				return nil, getErr
 			}
-			item := blueprintLineage{Task: task}
-			if spec, exists, specErr := s.Store.GetLatestSpecVersion(r.Context(), task.ID); specErr != nil {
-				return nil, specErr
-			} else if exists {
-				item.Spec = &spec
+			item := blueprintLineage{Task: requirementTaskSummaryOf(task)}
+			if plan, exists := plansByTask[task.ID]; exists {
+				item.Spec = &requirementPlanSummary{Version: plan.Version, Approved: plan.Approved}
 			}
 			view.ServingBlueprints = append(view.ServingBlueprints, item)
 		}
@@ -785,8 +819,8 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			if getErr != nil {
 				return nil, getErr
 			}
-			if !core.BlueprintAnchor(task) {
-				view.ServingTasks = append(view.ServingTasks, task)
+			if !task.HasChildren {
+				view.ServingTasks = append(view.ServingTasks, requirementTaskSummaryOf(task))
 			}
 		}
 		sort.Slice(view.ServingTasks, func(i, j int) bool { return view.ServingTasks[i].ID < view.ServingTasks[j].ID })
@@ -841,6 +875,37 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		views = append(views, view)
 	}
 	return views, nil
+}
+
+// requirementDetailTaskIDs names every task the detail reads: the tasks of
+// confirmed requirement links, the directly serving tasks of the detail
+// lineage, and the delivery-reachable tasks. The second result names the
+// confirmed-link tasks, whose latest plan the detail shows.
+func requirementDetailTaskIDs(requirements []core.Requirement, links map[string][]core.RequirementServesLink, lineage map[string][]core.LineageLink, deliveryGraphs map[string]core.LineageTraversal) ([]string, []string) {
+	taskSet, linkedSet := map[string]bool{}, map[string]bool{}
+	for _, requirement := range requirements {
+		for _, link := range links[requirement.ID] {
+			if link.State == core.RequirementServesConfirmed {
+				taskSet[link.BlueprintTaskID], linkedSet[link.BlueprintTaskID] = true, true
+			}
+		}
+		for taskID := range directServingTaskIDs(lineage[requirement.ID], requirement.ID) {
+			taskSet[taskID] = true
+		}
+		for taskID := range deliveryReachableTasks(deliveryGraphs[requirement.ID].Links, requirement.ID) {
+			taskSet[taskID] = true
+		}
+	}
+	return sortedIDs(taskSet), sortedIDs(linkedSet)
+}
+
+func sortedIDs(set map[string]bool) []string {
+	ids := make([]string, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func directServingTaskIDs(links []core.LineageLink, requirementID string) map[string]bool {

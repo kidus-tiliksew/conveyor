@@ -63,7 +63,7 @@ func runRequirementDetailReads(t *testing.T, x Fixture) {
 
 	other := ws + "-requirement-detail"
 	otherCtx := store.WithActor(store.WithWorkspace(context.Background(), other), store.SystemActor())
-	_, err := st.CreateWorkspace(otherCtx, other, "Requirement detail", &config.Config{Workspace: other})
+	_, err := st.CreateWorkspace(otherCtx, other, "Requirement detail", &config.Config{Workspace: other, Repos: requirementConformanceRepos})
 	requireOK(t, err)
 	foreign := newTask(otherCtx, other, "Foreign", "", core.TaskQueued)
 	newTask(otherCtx, other, "Foreign child", foreign.ID, core.TaskQueued)
@@ -155,6 +155,8 @@ func runRequirementDetailReads(t *testing.T, x Fixture) {
 // SeedRequirementDetail creates one confirmed requirement served through
 // attached task context by serving tasks. The first linked of them also hold
 // a confirmed requirement link and two plan versions, the first approved.
+// Every task names the repository "conveyor", which the context's workspace
+// must register.
 // Both durable backends' statement-count tests and the HTTP tests read the
 // detail route over it. It returns the requirement ID.
 func SeedRequirementDetail(t *testing.T, st store.Store, ctx context.Context, name string, serving, linked int) string {
