@@ -49,7 +49,8 @@ func requireGateRow(t *testing.T, na NextAction) {
 }
 
 // An enforcing task whose plan version's risk order is queued or claimed names
-// the agent and the risk order ahead of the gate row. It asks no person for a
+// the agent and the risk order ahead of the gate row. The other open states
+// are covered by TestPlanRiskWaitStatesEveryOpenState. It asks no person for a
 // judgment and offers no approval, because the approval route refuses it
 // (req-risk-based-review AC-4.8, AC-11.3; component-next-action, The
 // statement, row 3a).
@@ -235,5 +236,219 @@ func TestRecordRiskOrderStaysOutOfEverySelector(t *testing.T) {
 	}
 	if na.Actor != ActorFactory || na.CurrentOrder == nil || na.CurrentOrder.ID != "t-implement-2" {
 		t.Fatalf("next action %s/%s order %+v, want the factory naming the implementation order", na.Actor, na.Kind, na.CurrentOrder)
+	}
+}
+
+// requireNoPlanApproval fails when a statement offers or refuses a plan
+// approval choice: row 3a carries none in any kind it states.
+func requireNoPlanApproval(t *testing.T, na NextAction) {
+	t.Helper()
+	for _, id := range []string{"approve", "redirect", "reject"} {
+		if hasChoice(na, id) || hasRefusal(na, id) {
+			t.Fatalf("row 3a carried the plan approval choice %s: choices=%+v refusals=%+v", id, na.Choices, na.Details.Refusals)
+		}
+	}
+	if na.Details.GateKind != "" {
+		t.Fatalf("gate kind=%q, want none", na.Details.GateKind)
+	}
+}
+
+// requireRiskOrder fails unless the statement names the risk order and only
+// that order.
+func requireRiskOrder(t *testing.T, na NextAction, id, state string) {
+	t.Helper()
+	if na.CurrentOrder == nil || na.CurrentOrder.ID != id || na.CurrentOrder.Stage != string(core.StageRisk) || na.CurrentOrder.State != state {
+		t.Fatalf("current order=%+v, want risk order %s in %s", na.CurrentOrder, id, state)
+	}
+	if len(na.Details.OrderIDs) != 1 || na.Details.OrderIDs[0] != id {
+		t.Fatalf("order ids=%v, want [%s]", na.Details.OrderIDs, id)
+	}
+}
+
+// withRiskOrder sets the plan risk order in the input and in its orders.
+func withRiskOrder(in Input, order core.WorkOrder) Input {
+	ref := *in.PlanRiskOrder
+	ref.Order = order
+	in.PlanRiskOrder = &ref
+	in.Orders = []core.WorkOrder{order}
+	return in
+}
+
+// Row 3a states the plan version's open risk order in every open state, as
+// rows 10, 15, 18, 19, and 20 would state it. Only the working and queued
+// statements carry the reason code plan_risk_rating, and no statement carries
+// the plan approval choice (component-next-action, The statement, row 3a;
+// req-risk-based-review AC-11.3; req-operator-next-action AC-1.3, AC-1.6).
+func TestPlanRiskWaitStatesEveryOpenState(t *testing.T) {
+	scheduled := riskWaitNow.Add(5 * time.Minute)
+	base := planRiskInput(riskpolicy.ModeEnforce, core.WorkOrderQueued)
+	for _, tc := range []struct {
+		name     string
+		in       Input
+		actor    string
+		kind     string
+		judgment bool
+		reason   string
+		stall    string
+		state    core.WorkOrderState
+		choices  []string
+		deadline *time.Time
+	}{
+		{name: "agent question", in: func() Input {
+			order := riskOrder("t-risk-1", core.WorkOrderQueued)
+			order.LastAttemptOutcome = core.WorkOrderOutcomeReleased
+			order.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: "Which plan step does the rating cover?"}
+			return withRiskOrder(base, order)
+		}(), actor: ActorOperator, kind: KindAgentQuestion, judgment: true, state: core.WorkOrderQueued, choices: []string{"answer"}},
+		{name: "timed out", in: withRiskOrder(base, riskOrder("t-risk-1", core.WorkOrderTimedOut)),
+			actor: ActorOperator, kind: KindStalled, reason: StallTimedOut, stall: StallTimedOut, state: core.WorkOrderTimedOut, choices: []string{"recover"}},
+		{name: "automatic recovery exhausted", in: func() Input {
+			order := riskOrder("t-risk-1", core.WorkOrderTimedOut)
+			order.RetrySuppressed, order.RetrySuppressionReason = true, core.AutomaticRecoveryExhaustedReason
+			in := withRiskOrder(base, order)
+			in.Recovery = map[string]AutomaticRecovery{order.ID: {Exhausted: true}}
+			return in
+		}(), actor: ActorOperator, kind: KindStalled, reason: StallAutomaticRecoveryExhausted, stall: StallAutomaticRecoveryExhausted, state: core.WorkOrderTimedOut, choices: []string{"recover"}},
+		{name: "retry suppressed", in: func() Input {
+			order := riskOrder("t-risk-1", core.WorkOrderQueued)
+			order.RetrySuppressed, order.RetrySuppressionReason = true, core.IdenticalFailureSuppressionReason
+			return withRiskOrder(base, order)
+		}(), actor: ActorOperator, kind: KindStalled, reason: StallRetrySuppressed, stall: StallRetrySuppressed, state: core.WorkOrderQueued, choices: []string{"recover"}},
+		{name: "unclaimable", in: func() Input {
+			in := withRiskOrder(base, riskOrder("t-risk-1", core.WorkOrderQueued))
+			in.Task.Assignee = &core.TaskAssignee{UserID: "usr_away"}
+			in.LiveClaimants = &ClaimantView{UserIDs: []string{"usr_other"}}
+			return in
+		}(), actor: ActorOperator, kind: KindStalled, reason: StallUnclaimable, stall: StallUnclaimable, state: core.WorkOrderQueued, choices: []string{"recover"}},
+		{name: "retrying", in: func() Input {
+			order := riskOrder("t-risk-1", core.WorkOrderTimedOut)
+			order.NextAutomaticRecoveryAt = scheduled
+			in := withRiskOrder(base, order)
+			in.Recovery = map[string]AutomaticRecovery{order.ID: {NextAt: &scheduled, Attempt: 1}}
+			return in
+		}(), actor: ActorFactory, kind: KindRetrying, reason: "automatic_recovery", state: core.WorkOrderTimedOut, deadline: &scheduled},
+		{name: "working", in: withRiskOrder(base, riskOrder("t-risk-1", core.WorkOrderClaimed)),
+			actor: ActorAgent, kind: KindWorking, reason: PlanRiskRating, state: core.WorkOrderClaimed, deadline: timePtr(riskWaitNow.Add(time.Hour))},
+		{name: "queued", in: withRiskOrder(base, riskOrder("t-risk-1", core.WorkOrderQueued)),
+			actor: ActorAgent, kind: KindQueued, reason: PlanRiskRating, state: core.WorkOrderQueued},
+		{name: "stored stale reads as queued", in: withRiskOrder(base, riskOrder("t-risk-1", core.WorkOrderStale)),
+			actor: ActorAgent, kind: KindQueued, reason: PlanRiskRating, state: core.WorkOrderQueued},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			na := Project(tc.in)
+			if na.Actor != tc.actor || na.Kind != tc.kind || na.Judgment != tc.judgment {
+				t.Fatalf("next action %s/%s judgment=%t, want %s/%s judgment=%t", na.Actor, na.Kind, na.Judgment, tc.actor, tc.kind, tc.judgment)
+			}
+			if na.Details.ReasonCode != tc.reason || na.Details.StallReason != tc.stall {
+				t.Fatalf("reason=%q stall=%q, want %q %q", na.Details.ReasonCode, na.Details.StallReason, tc.reason, tc.stall)
+			}
+			requireRiskOrder(t, na, "t-risk-1", string(tc.state))
+			requireNoPlanApproval(t, na)
+			for _, id := range tc.choices {
+				if !hasChoice(na, id) && !hasRefusal(na, id) {
+					t.Fatalf("choices=%+v refusals=%+v, want %s", na.Choices, na.Details.Refusals, id)
+				}
+			}
+			if tc.deadline == nil && na.Deadline != nil || tc.deadline != nil && (na.Deadline == nil || !na.Deadline.Equal(*tc.deadline)) {
+				t.Fatalf("deadline=%v want %v", na.Deadline, tc.deadline)
+			}
+			if !hasSecondary(na, KindPlanApproval) {
+				t.Fatalf("secondary=%+v, want plan_approval", na.Details.Secondary)
+			}
+		})
+	}
+}
+
+// The statements keep the precedence of rows 10, 15, 18, 19, and 20: a
+// decision request wins over a stall, a stall wins over a recovery whose time
+// has passed, and a recovery scheduled in the future wins over the stall of
+// the timeout it recovers (component-next-action invariant 5).
+func TestPlanRiskWaitPrecedence(t *testing.T) {
+	base := planRiskInput(riskpolicy.ModeEnforce, core.WorkOrderQueued)
+	question := riskOrder("t-risk-1", core.WorkOrderQueued)
+	question.LastAttemptOutcome = core.WorkOrderOutcomeReleased
+	question.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: "Which plan step does the rating cover?"}
+	question.RetrySuppressed, question.RetrySuppressionReason = true, core.IdenticalFailureSuppressionReason
+	if na := Project(withRiskOrder(base, question)); na.Kind != KindAgentQuestion || na.Details.Checkpoint != question.Checkpoint.DecisionRequest {
+		t.Fatalf("question beside a suppression kind=%s checkpoint=%q, want the agent question", na.Kind, na.Details.Checkpoint)
+	}
+	passed := riskWaitNow.Add(-time.Minute)
+	due := riskOrder("t-risk-1", core.WorkOrderTimedOut)
+	in := withRiskOrder(base, due)
+	in.Recovery = map[string]AutomaticRecovery{due.ID: {NextAt: &passed, Attempt: 1}}
+	if na := Project(in); na.Kind != KindStalled || na.Details.StallReason != StallTimedOut {
+		t.Fatalf("due recovery kind=%s stall=%s, want the timed-out stall", na.Kind, na.Details.StallReason)
+	}
+}
+
+// Row 3a reads only its own order. A newer order of the task that is
+// released at a checkpoint, scheduled for recovery, or claimed never takes
+// the statement, and the risk order's own checkpoint is the one presented.
+func TestPlanRiskWaitNamesOnlyItsOrder(t *testing.T) {
+	scheduled := riskWaitNow.Add(5 * time.Minute)
+	other := core.WorkOrder{ID: "t-spec-2", TaskID: "t", Stage: core.StageSpec, State: core.WorkOrderTimedOut,
+		QueueEnteredAt: riskWaitNow.Add(-time.Minute), NextAutomaticRecoveryAt: scheduled}
+	claimed := core.WorkOrder{ID: "t-spec-3", TaskID: "t", Stage: core.StageSpec, State: core.WorkOrderClaimed,
+		QueueEnteredAt: riskWaitNow.Add(-time.Minute), LeaseExpiresAt: riskWaitNow.Add(time.Hour), ExecutionDeadline: riskWaitNow.Add(time.Hour)}
+	for _, tc := range []struct {
+		name  string
+		risk  core.WorkOrder
+		kind  string
+		check string
+	}{
+		{"queued", riskOrder("t-risk-1", core.WorkOrderQueued), KindQueued, ""},
+		{"claimed", riskOrder("t-risk-1", core.WorkOrderClaimed), KindWorking, ""},
+		{"timed out", riskOrder("t-risk-1", core.WorkOrderTimedOut), KindStalled, ""},
+		{"question", func() core.WorkOrder {
+			order := riskOrder("t-risk-1", core.WorkOrderQueued)
+			order.LastAttemptOutcome = core.WorkOrderOutcomeReleased
+			order.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: "Rate the plan or the head?"}
+			return order
+		}(), KindAgentQuestion, "Rate the plan or the head?"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := planRiskInput(riskpolicy.ModeEnforce, core.WorkOrderQueued)
+			in.PlanRiskOrder.Order = tc.risk
+			in.Orders = []core.WorkOrder{tc.risk, other, claimed}
+			in.Recovery = map[string]AutomaticRecovery{other.ID: {NextAt: &scheduled, Attempt: 1}}
+			// A task-level checkpoint marker of another order never replaces
+			// the risk order's own decision request.
+			in.Markers = Markers{CheckpointDecision: true, Checkpoint: "Another order's question"}
+			na := Project(in)
+			if na.Kind != tc.kind {
+				t.Fatalf("kind=%s want %s", na.Kind, tc.kind)
+			}
+			requireRiskOrder(t, na, "t-risk-1", string(tc.risk.State))
+			requireNoPlanApproval(t, na)
+			if na.Details.Checkpoint != tc.check {
+				t.Fatalf("checkpoint=%q want %q", na.Details.Checkpoint, tc.check)
+			}
+		})
+	}
+}
+
+// An authority-conflict decision request of the risk agent is presented with
+// its own citations and the cited pending proposals, as row 10 presents one.
+func TestPlanRiskWaitAuthorityQuestion(t *testing.T) {
+	order := riskOrder("t-risk-1", core.WorkOrderQueued)
+	order.LastAttemptOutcome = core.WorkOrderOutcomeReleased
+	citation := core.WorkOrderAuthorityConflictCitation{DocumentID: "component-risk-review", CitedVersion: 4, StatementOrSectionID: "s3"}
+	order.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: "The tier table conflicts with the plan.", Class: core.WorkOrderCheckpointClassAuthorityConflict,
+		Citations: []core.WorkOrderAuthorityConflictCitation{citation}}
+	in := withRiskOrder(planRiskInput(riskpolicy.ModeEnforce, core.WorkOrderQueued), order)
+	in.PendingProposals = []ProposalRef{{Tier: "system_design", ID: "component-risk-review", Version: 5}}
+	if got := PlanRiskCheckpointCitations(in); len(got) != 1 || got[0] != citation {
+		t.Fatalf("citations=%+v", got)
+	}
+	na := Project(in)
+	if na.Kind != KindAgentQuestion || na.Details.CheckpointClass != core.WorkOrderCheckpointClassAuthorityConflict || len(na.Details.Citations) != 1 || len(na.Details.PendingProposals) != 1 {
+		t.Fatalf("next action kind=%s details=%+v", na.Kind, na.Details)
+	}
+	requireRiskOrder(t, na, "t-risk-1", string(core.WorkOrderQueued))
+	requireNoPlanApproval(t, na)
+	// A plain question carries no citations to read.
+	order.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: "Which plan step?"}
+	if got := PlanRiskCheckpointCitations(withRiskOrder(in, order)); got != nil {
+		t.Fatalf("plain question citations=%+v", got)
 	}
 }

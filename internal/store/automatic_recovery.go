@@ -5,6 +5,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 )
 
 // AutomaticRecoveryKind is the pure decision for one order at one clock tick.
@@ -31,9 +32,23 @@ type AutomaticRecoveryDecision struct {
 
 // DecideAutomaticRecovery is the shared clock decision. The first matching
 // row wins. Callers fill order.RecoveryRefusal from WorkOrderRecoveryRefusal
-// before calling, and apply deadline transitions before that.
+// before calling, and apply deadline transitions before that. It admits no
+// order of a task that is not queued or running; the clock uses
+// DecideAutomaticRecoveryAtPlanGate so the plan gate's risk order is decided
+// too.
 func DecideAutomaticRecovery(policy config.RecoveryPolicy, task core.Task, order core.WorkOrder, now time.Time) AutomaticRecoveryDecision {
-	if task.State != core.TaskQueued && task.State != core.TaskRunning || core.TaskTerminal(task.State) {
+	return DecideAutomaticRecoveryAtPlanGate(policy, task, order, "", now)
+}
+
+// DecideAutomaticRecoveryAtPlanGate is DecideAutomaticRecovery with the one
+// exception of component-work-orders invariant 46: planGateRiskOrderID names
+// the risk order of the plan version at the plan approval gate of an
+// enforcing task, as PlanGateRiskOrderID returns it, and the decision then
+// applies to that order while the task is awaiting_human. Every other
+// exclusion still applies. An empty ID admits no order of a gated task
+// (req-bounded-automatic-recovery AC-1.1, AC-2.3; DEC-117(4)).
+func DecideAutomaticRecoveryAtPlanGate(policy config.RecoveryPolicy, task core.Task, order core.WorkOrder, planGateRiskOrderID string, now time.Time) AutomaticRecoveryDecision {
+	if !AutomaticRecoveryTaskAdmits(task, order, planGateRiskOrderID) {
 		return AutomaticRecoveryDecision{Kind: AutomaticRecoveryNone}
 	}
 	if order.State == core.WorkOrderClaimed && liveClaim(order, now) {
@@ -88,6 +103,52 @@ func DecideAutomaticRecovery(policy config.RecoveryPolicy, task core.Task, order
 		windowStart = now
 	}
 	return AutomaticRecoveryDecision{Kind: kind, At: now, Number: number, WindowStartedAt: windowStart}
+}
+
+// AutomaticRecoveryTaskAdmits is the task half of the decision. The clock
+// acts for the orders of a queued or running task. The one exception is the
+// risk order of the plan version at the plan approval gate of an
+// awaiting_human task whose frozen risk mode is enforce: planGateRiskOrderID
+// names it, and only that order is admitted. A recovery of it returns the
+// order to the queue, applies no task command, records no approval, and
+// leaves the gate as it is (component-work-orders invariant 46 and its State
+// and failure entry "Stopped risk order of a task at a gate"; DEC-117(4)).
+func AutomaticRecoveryTaskAdmits(task core.Task, order core.WorkOrder, planGateRiskOrderID string) bool {
+	if core.TaskTerminal(task.State) {
+		return false
+	}
+	if task.State == core.TaskQueued || task.State == core.TaskRunning {
+		return true
+	}
+	return planGateRiskOrderID != "" && order.ID == planGateRiskOrderID && order.Stage == core.StageRisk &&
+		order.TaskID == task.ID && PlanGateRiskTask(task)
+}
+
+// PlanGateRiskTask reports whether the task waits where the exception of
+// invariant 46 applies: awaiting_human at the plan_approval gate with a frozen
+// risk mode of enforce. Under record, and at every other gate, the clock
+// leaves the task's orders alone.
+func PlanGateRiskTask(task core.Task) bool {
+	return task.State == core.TaskAwaiting && task.GateKind == core.GateKindPlanApproval && task.SetupContract.Risk.Enforcing()
+}
+
+// PlanGateRiskOrderID returns the ID of the open risk order whose subject is
+// gateVersion, the plan version at the task's plan approval gate, or empty
+// when the task is not a PlanGateRiskTask or the version has no open risk
+// order. An earlier plan version's order and a head's order never match.
+// Every backend resolves gateVersion as the task's latest plan version, the
+// version the gate holds, inside the clock's per-task transaction or mutex.
+func PlanGateRiskOrderID(task core.Task, orders []core.RiskOrder, gateVersion int) string {
+	if !PlanGateRiskTask(task) || gateVersion <= 0 {
+		return ""
+	}
+	for _, order := range orders {
+		if order.Order.TaskID == task.ID && order.Order.Stage == core.StageRisk && order.Subject.Kind() == riskpolicy.RiskSubjectPlan &&
+			order.Subject.PlanVersion == gateVersion && order.Open() {
+			return order.Order.ID
+		}
+	}
+	return ""
 }
 
 // ScheduleAutomaticRecovery applies a schedule decision to the ledger. A
