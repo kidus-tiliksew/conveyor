@@ -43,8 +43,6 @@ const design = {
   current_version: designVersion,
   pending_versions: [],
   versions: [designVersion],
-  lineage_total: 0,
-  lineage: [],
   drift: [],
 }
 const { content: _content, governs: _governs, ...designVersionSummary } = designVersion
@@ -226,9 +224,6 @@ const layoutRequirement = {
   serving_tasks: [],
   planning_sessions: [],
   artifacts: [],
-  lineage: [],
-  lineage_total: 0,
-  lineage_snapshot_id: 1,
   staleness: { delivery_after_intent: false, partial_evaluation: false, deliveries: [], active_drift: [] },
   migrated_seed: false,
   confirmation_eligible: true,

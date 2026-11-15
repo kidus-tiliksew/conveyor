@@ -24,7 +24,10 @@ import (
 // requirementView is the dashboard read model for one living requirement.
 // It deliberately exposes immutable versions and pipeline-owned lineage
 // together so the UI never has to reconstruct authority from feature-tree
-// assignments (component-document-corpus).
+// assignments (component-document-corpus). It carries no document events:
+// the History view reads them from GET /v1/requirements/{id}/events, so the
+// Document and Changes views never wait for that read
+// (component-web-document-surfaces).
 type requirementView struct {
 	Requirement          core.Requirement             `json:"requirement"`
 	CurrentVersion       *core.RequirementVersion     `json:"current_version,omitempty"`
@@ -34,9 +37,6 @@ type requirementView struct {
 	RequirementLinks     []core.RequirementServesLink `json:"requirement_links"`
 	PlanningSessions     []core.PlanningSession       `json:"planning_sessions"`
 	Artifacts            []core.Artifact              `json:"artifacts"`
-	Lineage              []core.Event                 `json:"lineage"`
-	LineageTotal         int                          `json:"lineage_total"`
-	LineageSnapshotID    int64                        `json:"lineage_snapshot_id"`
 	Staleness            requirementStaleness         `json:"staleness"`
 	MigratedSeed         bool                         `json:"migrated_seed"`
 	ConfirmationEligible bool                         `json:"confirmation_eligible"`
@@ -743,7 +743,6 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			RequirementLinks:  linksByRequirement[requirement.ID],
 			PlanningSessions:  []core.PlanningSession{},
 			Artifacts:         []core.Artifact{},
-			Lineage:           []core.Event{},
 			Staleness:         requirementStaleness{Deliveries: []requirementDelivery{}, ActiveDrift: []monitor.Drift{}},
 		}
 		if view.RequirementLinks == nil {
@@ -775,14 +774,6 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			if artifact.RequirementID == requirement.ID {
 				view.Artifacts = append(view.Artifacts, artifact)
 			}
-		}
-		if includeDetail {
-			page, pageErr := s.Store.ListDocumentEventPage(r.Context(), core.LineageRequirement, requirement.ID, store.DocumentEventQuery{Limit: 50})
-			if pageErr != nil {
-				return nil, pageErr
-			}
-			view.Lineage = annotateBackfilledEvents(page.Events)
-			view.LineageTotal, view.LineageSnapshotID = page.Total, page.SnapshotID
 		}
 		for _, session := range sessions {
 			if session.RequirementContextID != requirement.ID &&

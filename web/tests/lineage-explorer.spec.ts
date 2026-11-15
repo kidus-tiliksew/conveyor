@@ -121,7 +121,6 @@ const requirement = {
   serving_blueprints: [],
   planning_sessions: [],
   artifacts: [],
-  lineage: [],
   migrated_seed: false,
   confirmation_eligible: true,
 }
@@ -151,7 +150,6 @@ const design = {
   current_version: designVersion,
   pending_versions: [],
   versions: [designVersion],
-  lineage: [],
   drift: [],
 }
 
