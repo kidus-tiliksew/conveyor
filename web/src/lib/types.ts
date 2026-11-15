@@ -1187,7 +1187,11 @@ export interface TaskPolicyContract {
   max_bounces: number
   stage_timeouts: Record<'spec' | 'implement' | 'review', string>
   review: { seats?: WorkspaceReviewSeat[]; fail_fast?: boolean; distinct_models?: boolean }
+  // A frozen contract may hold none, which no workspace save accepts.
   refresh_review: 'delta' | 'full' | 'none'
+  // Absent on contracts frozen before the member existed; absent reads as full
+  // (feature-delta-review-rounds DR-1).
+  later_round_review?: LaterRoundReview
   // Present only when the task froze a risk policy in mode record or enforce
   // (req-risk-based-review REQ-1, AC-1.1).
   risk?: RiskPolicy
@@ -1310,12 +1314,20 @@ export interface ConfigWarning {
   available: number
 }
 
+export type LaterRoundReview = 'full' | 'delta'
+export type WorkspaceRefreshReview = 'delta' | 'full'
+
 export interface WorkspaceConfigDocument {
   workspace: string
   max_bounces: number
   work_order_queue_timeout: string
   stage_timeouts: Record<'spec' | 'implement' | 'review', string>
   review: { seats: WorkspaceReviewSeat[]; fail_fast?: boolean; distinct_models?: boolean }
+  // Review scopes a task freezes at intake. Absent reads as full and delta,
+  // and fetchWorkspaceConfig fills both (feature-delta-review-rounds DR-1;
+  // req-review-gates-evidence AC-4.3, AC-12.1).
+  later_round_review?: LaterRoundReview
+  refresh_review?: WorkspaceRefreshReview
   execution: ExecutionPolicy
   repos: WorkspaceConfigRepo[]
   monitor?: {
