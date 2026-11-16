@@ -28,7 +28,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS risk_orders (
 -- order row. A risk claim is refused for any identity that claimed a plan,
 -- implementation, or review order of the task. No event or read exposes the
 -- hash.
-CREATE ROWSTORE TABLE IF NOT EXISTS work_order_claim_identities (
+CREATE TABLE IF NOT EXISTS work_order_claim_identities (
  workspace_id VARCHAR(191) NOT NULL,
  task_id VARCHAR(191) NOT NULL,
  work_order_id VARCHAR(191) NOT NULL,
@@ -37,7 +37,8 @@ CREATE ROWSTORE TABLE IF NOT EXISTS work_order_claim_identities (
  session_id VARCHAR(255) NOT NULL DEFAULT '',
  client_token_hash VARCHAR(128) NOT NULL DEFAULT '',
  claimed_at DATETIME(6) NOT NULL,
- PRIMARY KEY (workspace_id, task_id, work_order_id, attempt_id),
+ SORT KEY (workspace_id, task_id, work_order_id, attempt_id),
+ PRIMARY KEY (workspace_id, task_id, work_order_id, attempt_id) USING HASH,
  SHARD KEY (workspace_id, task_id)
 ) COLLATE utf8mb4_bin;
 

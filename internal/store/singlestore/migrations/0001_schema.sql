@@ -2,7 +2,7 @@
 -- This is a fresh schema, not a replay of PostgreSQL migrations.
 -- Unsupported constraints are listed in README.md.
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `artifact_links` (
+CREATE TABLE IF NOT EXISTS `artifact_links` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `artifact_id` LONGTEXT NOT NULL,
  `task_id` LONGTEXT,
@@ -10,6 +10,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `artifact_links` (
  `role` LONGTEXT NOT NULL DEFAULT 'task_context',
  `requirement_id` LONGTEXT,
  `planning_session_id` LONGTEXT,
+ SORT KEY (`workspace_id`),
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
@@ -82,7 +83,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `decisions` (
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `deployment_events` (
+CREATE TABLE IF NOT EXISTS `deployment_events` (
  `id` BIGINT NOT NULL AUTO_INCREMENT,
  `org_id` VARCHAR(255) NOT NULL DEFAULT 'deployment',
  `kind` LONGTEXT NOT NULL,
@@ -90,8 +91,9 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `deployment_events` (
  `actor_role` LONGTEXT NOT NULL,
  `payload_json` JSON NOT NULL,
  `at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`id`),
- KEY `deployment_events_timeline_idx` (`org_id`, `at`, `id`),
+ SORT KEY (`id`),
+ PRIMARY KEY (`id`) USING HASH,
+ KEY `deployment_events_timeline_idx` (`org_id`, `at`, `id`) USING HASH,
  SHARD KEY (`id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
@@ -150,7 +152,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `github_lifecycles` (
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `interrupted_review_recoveries` (
+CREATE TABLE IF NOT EXISTS `interrupted_review_recoveries` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `request_id` VARCHAR(255) NOT NULL,
  `task_id` VARCHAR(255) NOT NULL,
@@ -158,12 +160,13 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `interrupted_review_recoveries` (
  `actor_id` LONGTEXT NOT NULL,
  `result_json` JSON NOT NULL,
  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `request_id`),
- KEY `interrupted_review_recoveries_task_round_idx` (`workspace_id`, `task_id`, `review_round`),
+ SORT KEY (`workspace_id`, `request_id`),
+ PRIMARY KEY (`workspace_id`, `request_id`) USING HASH,
+ KEY `interrupted_review_recoveries_task_round_idx` (`workspace_id`, `task_id`, `review_round`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `interventions` (
+CREATE TABLE IF NOT EXISTS `interventions` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `id` BIGINT NOT NULL AUTO_INCREMENT,
  `task_id` VARCHAR(255) NOT NULL,
@@ -174,8 +177,9 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `interventions` (
  `reason_code` LONGTEXT NOT NULL,
  `comment` LONGTEXT NOT NULL DEFAULT '',
  `at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `id`),
- KEY `interventions_task_idx` (`task_id`, `at`, `id`),
+ SORT KEY (`workspace_id`, `id`),
+ PRIMARY KEY (`workspace_id`, `id`) USING HASH,
+ KEY `interventions_task_idx` (`task_id`, `at`, `id`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
@@ -215,16 +219,17 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `jobs` (
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `legacy_spec_gate_versions` (
+CREATE TABLE IF NOT EXISTS `legacy_spec_gate_versions` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `task_id` VARCHAR(255) NOT NULL,
  `spec_version` INT NOT NULL,
  `captured_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `task_id`, `spec_version`),
+ SORT KEY (`workspace_id`, `task_id`, `spec_version`),
+ PRIMARY KEY (`workspace_id`, `task_id`, `spec_version`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `lineage_repair_exclusions` (
+CREATE TABLE IF NOT EXISTS `lineage_repair_exclusions` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `src_type` VARCHAR(255) NOT NULL,
  `src_id` VARCHAR(255) NOT NULL,
@@ -233,11 +238,12 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `lineage_repair_exclusions` (
  `kind` VARCHAR(255) NOT NULL,
  `reason` LONGTEXT NOT NULL,
  `created_by_event_id` BIGINT,
- PRIMARY KEY (`workspace_id`, `src_type`, `src_id`, `dst_type`, `dst_id`, `kind`),
+ SORT KEY (`workspace_id`, `src_type`, `src_id`, `dst_type`, `dst_id`, `kind`),
+ PRIMARY KEY (`workspace_id`, `src_type`, `src_id`, `dst_type`, `dst_id`, `kind`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `links` (
+CREATE TABLE IF NOT EXISTS `links` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `src_type` VARCHAR(255) NOT NULL,
  `src_id` VARCHAR(255) NOT NULL,
@@ -247,22 +253,24 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `links` (
  `legacy_created_by_event` LONGTEXT,
  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
  `created_by_event_id` BIGINT,
- PRIMARY KEY (`workspace_id`, `src_type`, `src_id`, `dst_type`, `dst_id`, `kind`),
- KEY `links_destination_idx` (`workspace_id`, `dst_type`, `dst_id`, `kind`),
+ SORT KEY (`workspace_id`, `src_type`, `src_id`, `dst_type`, `dst_id`, `kind`),
+ PRIMARY KEY (`workspace_id`, `src_type`, `src_id`, `dst_type`, `dst_id`, `kind`) USING HASH,
+ KEY `links_destination_idx` (`workspace_id`, `dst_type`, `dst_id`, `kind`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `monitor_activity` (
+CREATE TABLE IF NOT EXISTS `monitor_activity` (
  `id` BIGINT NOT NULL AUTO_INCREMENT,
  `workspace_id` VARCHAR(255) NOT NULL,
  `kind` LONGTEXT NOT NULL,
  `payload_json` JSON NOT NULL DEFAULT '{}',
  `at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `id`),
+ SORT KEY (`workspace_id`, `id`),
+ PRIMARY KEY (`workspace_id`, `id`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `monitor_observations` (
+CREATE TABLE IF NOT EXISTS `monitor_observations` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `identity` VARCHAR(255) NOT NULL,
  `repository` LONGTEXT NOT NULL,
@@ -286,7 +294,8 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `monitor_observations` (
  `updated_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
  `changed_paths` JSON NOT NULL DEFAULT '[]',
  `causal_event_id` BIGINT,
- PRIMARY KEY (`workspace_id`, `identity`),
+ SORT KEY (`workspace_id`, `identity`),
+ PRIMARY KEY (`workspace_id`, `identity`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
@@ -326,7 +335,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `planning_bundles` (
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `planning_messages` (
+CREATE TABLE IF NOT EXISTS `planning_messages` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `session_id` VARCHAR(255) NOT NULL,
  `seq` INT NOT NULL,
@@ -334,7 +343,8 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `planning_messages` (
  `content` LONGTEXT NOT NULL DEFAULT '',
  `parts_json` JSON NOT NULL DEFAULT '[]',
  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `session_id`, `seq`),
+ SORT KEY (`workspace_id`, `session_id`, `seq`),
+ PRIMARY KEY (`workspace_id`, `session_id`, `seq`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
@@ -365,7 +375,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `planning_sessions` (
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `reference_document_versions` (
+CREATE TABLE IF NOT EXISTS `reference_document_versions` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `document_id` VARCHAR(255) NOT NULL,
  `version` INT NOT NULL,
@@ -375,7 +385,8 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `reference_document_versions` (
  `supersedes_version` INT,
  `created_by` LONGTEXT NOT NULL,
  `created_at` DATETIME(6) NOT NULL,
- PRIMARY KEY (`workspace_id`, `document_id`, `version`),
+ SORT KEY (`workspace_id`, `document_id`, `version`),
+ PRIMARY KEY (`workspace_id`, `document_id`, `version`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
@@ -549,7 +560,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `system_designs` (
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `task_context_proposals` (
+CREATE TABLE IF NOT EXISTS `task_context_proposals` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `task_id` VARCHAR(255) NOT NULL,
  `target_kind` VARCHAR(255) NOT NULL,
@@ -564,8 +575,9 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `task_context_proposals` (
  `decided_by` LONGTEXT NOT NULL DEFAULT '',
  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
  `updated_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `task_id`, `target_kind`, `target_id`),
- KEY `task_context_proposals_pending_idx` (`workspace_id`, `state`, `task_id`, `target_kind`, `target_id`),
+ SORT KEY (`workspace_id`, `task_id`, `target_kind`, `target_id`),
+ PRIMARY KEY (`workspace_id`, `task_id`, `target_kind`, `target_id`) USING HASH,
+ KEY `task_context_proposals_pending_idx` (`workspace_id`, `state`, `task_id`, `target_kind`, `target_id`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
@@ -579,7 +591,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `task_dependencies` (
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `task_dependency_additions` (
+CREATE TABLE IF NOT EXISTS `task_dependency_additions` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `request_id` VARCHAR(255) NOT NULL,
  `task_id` LONGTEXT NOT NULL,
@@ -589,11 +601,12 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `task_dependency_additions` (
  `actor_role` LONGTEXT NOT NULL,
  `added` BOOLEAN NOT NULL,
  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `request_id`),
+ SORT KEY (`workspace_id`, `request_id`),
+ PRIMARY KEY (`workspace_id`, `request_id`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `task_dependency_removals` (
+CREATE TABLE IF NOT EXISTS `task_dependency_removals` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `request_id` VARCHAR(255) NOT NULL,
  `task_id` LONGTEXT NOT NULL,
@@ -602,11 +615,12 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `task_dependency_removals` (
  `actor_id` LONGTEXT NOT NULL,
  `actor_role` LONGTEXT NOT NULL,
  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `request_id`),
+ SORT KEY (`workspace_id`, `request_id`),
+ PRIMARY KEY (`workspace_id`, `request_id`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `task_setup_changes` (
+CREATE TABLE IF NOT EXISTS `task_setup_changes` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `request_id` VARCHAR(255) NOT NULL,
  `task_id` VARCHAR(255) NOT NULL,
@@ -614,8 +628,9 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `task_setup_changes` (
  `result_json` JSON NOT NULL,
  `actor_id` LONGTEXT NOT NULL,
  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `request_id`),
- KEY `task_setup_changes_task_idx` (`workspace_id`, `task_id`, `created_at`),
+ SORT KEY (`workspace_id`, `request_id`),
+ PRIMARY KEY (`workspace_id`, `request_id`) USING HASH,
+ KEY `task_setup_changes_task_idx` (`workspace_id`, `task_id`, `created_at`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
@@ -677,13 +692,14 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `tasks` (
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `transcripts` (
+CREATE TABLE IF NOT EXISTS `transcripts` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `job_id` VARCHAR(255) NOT NULL,
  `uri` LONGTEXT NOT NULL,
  `redaction_stats` JSON NOT NULL DEFAULT '{}',
  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `job_id`),
+ SORT KEY (`workspace_id`, `job_id`),
+ PRIMARY KEY (`workspace_id`, `job_id`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
@@ -736,7 +752,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `work_order_activity_snapshots` (
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `work_order_preemptions` (
+CREATE TABLE IF NOT EXISTS `work_order_preemptions` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `request_id` VARCHAR(255) NOT NULL,
  `work_order_id` VARCHAR(255) NOT NULL,
@@ -747,17 +763,19 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `work_order_preemptions` (
  `revoked_worker_id` VARCHAR(255) NOT NULL,
  `actor_id` LONGTEXT NOT NULL,
  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `request_id`),
- KEY `work_order_preemptions_claim_idx` (`workspace_id`, `work_order_id`, `revoked_worker_id`, `revoked_session_id`),
+ SORT KEY (`workspace_id`, `request_id`),
+ PRIMARY KEY (`workspace_id`, `request_id`) USING HASH,
+ KEY `work_order_preemptions_claim_idx` (`workspace_id`, `work_order_id`, `revoked_worker_id`, `revoked_session_id`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS `work_order_recoveries` (
+CREATE TABLE IF NOT EXISTS `work_order_recoveries` (
  `workspace_id` VARCHAR(255) NOT NULL,
  `work_order_id` VARCHAR(255) NOT NULL,
  `request_id` VARCHAR(255) NOT NULL,
  `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
- PRIMARY KEY (`workspace_id`, `work_order_id`, `request_id`),
+ SORT KEY (`workspace_id`, `work_order_id`, `request_id`),
+ PRIMARY KEY (`workspace_id`, `work_order_id`, `request_id`) USING HASH,
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
