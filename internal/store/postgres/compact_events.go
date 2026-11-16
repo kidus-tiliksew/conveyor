@@ -36,7 +36,7 @@ func (s *Store) ListCompactEvents(ctx context.Context, taskID string) ([]core.Ev
 // (component-persistence, Compact task event reads).
 func (s *Store) ListTaskContextEvents(ctx context.Context, taskID string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskContextEvents")
-	rows, err := s.boundary.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,`+compactEventPayloadColumn+` AS payload_json,e.at
+	rows, err := s.boundary.Query(ctx, `SELECT e.id,COALESCE(e.task_id,''),COALESCE(e.job_id,''),e.kind,COALESCE(e.actor_id,''),COALESCE(e.actor_role,''),`+compactEventPayloadColumn+` AS payload_json,e.at
 		FROM events e
 		JOIN tasks t ON t.id = e.task_id
 		WHERE e.task_id = $1 AND t.workspace_id = $2 AND e.kind = ANY($3::text[])
