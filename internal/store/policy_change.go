@@ -174,6 +174,7 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 		return r, fmt.Errorf("%w: submitted head is required for policy handoff", ErrSetupChangeConflict)
 	}
 	baseline := task.RefreshBaselineSHA
+	scope := task.RefreshReviewScope
 	if task.ApprovalStale {
 		if baseline == "" || task.RefreshHeadSHA == "" || (task.RefreshReviewScope != config.RefreshReviewDelta && task.RefreshReviewScope != config.RefreshReviewFull) {
 			return r, fmt.Errorf("%w: refresh binding is required for policy handoff", ErrSetupChangeConflict)
@@ -181,10 +182,18 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	} else {
 		// Inherit the trusted current-stage binding that sealed review
 		// acceptance checks (component-verification-service), never a branch
-		// name or an approved head from a different review cycle.
+		// name or an approved head from a different review cycle. A head whose
+		// submission fixed a delta scope hands off with that scope and its
+		// recorded baseline, the judged head; every other head keeps the
+		// binding it has today (feature-delta-review-rounds DR-4;
+		// req-review-gates-evidence AC-12.4).
+		recordedBaseline := ""
+		if comparison, ok := LatestSubmissionComparison(seats.Events); ok && comparison.Delta() && comparison.HeadSHA == task.ReviewedHeadSHA {
+			scope, recordedBaseline = ReviewScopeDelta, comparison.ReviewBaselineSHA
+		}
 		baseline = ""
 		for _, order := range orders {
-			if order.TaskID != task.ID || order.Stage != task.NextStage || order.HeadSHA != task.ReviewedHeadSHA || order.ReviewScope != task.RefreshReviewScope || order.BaselineSHA == "" || !policyHandoffBaselineState(order, task) {
+			if order.TaskID != task.ID || order.Stage != task.NextStage || order.HeadSHA != task.ReviewedHeadSHA || order.ReviewScope != scope || order.BaselineSHA == "" || !policyHandoffBaselineState(order, task) {
 				continue
 			}
 			if baseline != "" && baseline != order.BaselineSHA {
@@ -194,6 +203,9 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 		}
 		if baseline == "" {
 			return r, fmt.Errorf("%w: current order binding is required for policy handoff", ErrSetupChangeConflict)
+		}
+		if recordedBaseline != "" && baseline != recordedBaseline {
+			return r, fmt.Errorf("%w: current order baseline %s does not match the recorded delta baseline %s", ErrSetupChangeConflict, baseline, recordedBaseline)
 		}
 	}
 	verifyAttempt, reviewRound := 1, 1
@@ -242,7 +254,7 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 			id = fmt.Sprintf("%s-review-%d-seat-%d", task.ID, reviewRound, seat)
 		}
 		job := core.Job{ID: id, TaskID: task.ID, Stage: target, Harness: "external-mcp", AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
-		order := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: target, State: core.WorkOrderQueued, Claimable: true, HeadSHA: core.VerifyStageHead(task), ReviewScope: task.RefreshReviewScope, BaselineSHA: baseline, ExecutionTimeoutText: timeout, CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(config.DefaultWorkOrderQueueTimeout)}
+		order := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: target, State: core.WorkOrderQueued, Claimable: true, HeadSHA: core.VerifyStageHead(task), ReviewScope: scope, BaselineSHA: baseline, ExecutionTimeoutText: timeout, CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(config.DefaultWorkOrderQueueTimeout)}
 		if target == core.StageReview {
 			order.ReviewRound, order.ReviewSeat = reviewRound, seat
 			if task.ApprovalStale {

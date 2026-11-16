@@ -531,11 +531,15 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot_digest
-		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,$19,$13,$14,$15,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$16,$16,$17,$18)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'',$20,$12,$19,$13,$14,$15,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$16,$16,$17,$18)`,
 			order.ID, workspaceID, job.TaskID, job.ID, order.Stage, order.State,
 			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 			order.ReasonCode, order.BaselineSHA, order.QueueEnteredAt, order.QueueDeadline,
-			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), digest, order.HeadSHA)
+			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), digest, order.HeadSHA,
+			// A verify order binds the head's review scope with its baseline,
+			// as the memory and SingleStore backends store it
+			// (feature-delta-review-rounds DR-4; component-verification-service).
+			order.ReviewScope)
 		if err != nil {
 			return err
 		}

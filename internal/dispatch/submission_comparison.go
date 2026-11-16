@@ -49,15 +49,13 @@ type ReviewComparison struct {
 
 // RecordedReviewComparisonContext labels the same recorded SHA pair consumed
 // by review diff resolution. Full reviews compare the submitted base and head;
-// delta refresh reviews compare the frozen approved head and replacement head.
+// delta refresh reviews compare the frozen approved head and replacement head;
+// an ordinary head whose submission fixed a delta scope compares the judged
+// head and the head (feature-delta-review-rounds DR-4).
 func RecordedReviewComparisonContext(task core.Task, events []core.Event) (ReviewComparison, error) {
-	comparison, err := RecordedReviewComparison(task, events)
+	comparison, scope, err := RecordedReviewComparison(task, events)
 	if err != nil {
 		return ReviewComparison{}, err
-	}
-	scope := config.RefreshReviewFull
-	if task.ApprovalStale && task.RefreshReviewScope == config.RefreshReviewDelta {
-		scope = config.RefreshReviewDelta
 	}
 	return ReviewComparison{
 		Source:      ReviewComparisonSourceGitHub,
@@ -68,17 +66,32 @@ func RecordedReviewComparisonContext(task core.Task, events []core.Event) (Revie
 }
 
 // RecordedReviewComparison projects the verified commit pair, never mutable
-// branch names, into a transient task used solely for review input reads.
-func RecordedReviewComparison(task core.Task, events []core.Event) (core.Task, error) {
+// branch names, into a transient task used solely for review input reads, and
+// returns the review scope of that pair. While the approval is stale, the
+// refresh scope alone decides it (req-review-gates-evidence AC-12.6): a delta
+// refresh compares the refresh pair, and a full refresh compares the recorded
+// base commit and head. Otherwise the scope and baseline are the ones the
+// head's submission recorded, and a record without a scope reads as full
+// (feature-delta-review-rounds DR-3, DR-4; AC-12.4).
+func RecordedReviewComparison(task core.Task, events []core.Event) (core.Task, string, error) {
 	if task.ApprovalStale && task.RefreshBaselineSHA != "" && task.RefreshHeadSHA != "" && task.RefreshReviewScope == config.RefreshReviewDelta {
 		task.BaseBranch, task.ReviewedHeadSHA = task.RefreshBaselineSHA, task.RefreshHeadSHA
-		return task, nil
+		return task, config.RefreshReviewDelta, nil
 	}
-	if base, head, ok := store.RecordedSubmissionComparison(events); ok {
-		task.BaseBranch, task.ReviewedHeadSHA = base, head
-		return task, nil
+	if comparison, ok := store.LatestSubmissionComparison(events); ok {
+		if task.ApprovalStale {
+			// The stale label is the one this read has always given.
+			scope := config.RefreshReviewFull
+			if task.RefreshReviewScope == config.RefreshReviewDelta {
+				scope = config.RefreshReviewDelta
+			}
+			task.BaseBranch, task.ReviewedHeadSHA = comparison.BaseSHA, comparison.HeadSHA
+			return task, scope, nil
+		}
+		task.BaseBranch, task.ReviewedHeadSHA = comparison.ReviewBaselineSHA, comparison.HeadSHA
+		return task, comparison.ReviewScope, nil
 	}
-	return core.Task{}, fmt.Errorf("task %s has no recorded review comparison", task.ID)
+	return core.Task{}, "", fmt.Errorf("task %s has no recorded review comparison", task.ID)
 }
 
 func validateDoneCriteriaCoverage(result *pipeline.Review, hasPlan bool) error {

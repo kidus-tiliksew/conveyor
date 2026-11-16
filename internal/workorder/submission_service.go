@@ -147,6 +147,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	}
 	var target github.SubmissionPullRequest
 	var documentationEvidence *core.DocumentationGateEvidence
+	var reviewScope map[string]any
 	authorID := ""
 	forgeCtx := ctx
 	if repo.GitHub != "" {
@@ -175,6 +176,12 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		}
 		target, err = s.observeSubmissionPR(ctx, forgeCtx, lookup, repo.GitHub, task.Branch, task.BaseBranch, headSHA)
 		if err != nil {
+			return nil, err
+		}
+		// The head's review scope is fixed once, before the first submission
+		// effect, and recorded with the comparison below
+		// (feature-delta-review-rounds DR-3; req-review-gates-evidence AC-12.3).
+		if reviewScope, err = s.submissionReviewScope(ctx, task, order, repo.GitHub, target.Base.SHA, headSHA); err != nil {
 			return nil, err
 		}
 		authorID, err = store.WorkOrderOwnerUserID(ctx, s.Store, order)
@@ -286,11 +293,15 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		if publications, ok := s.Store.(store.VerificationDeliveryStore); ok {
 			recordPR = publications.RecordVerificationPullRequest
 		}
-		if err = recordPR(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{
+		opened := map[string]any{
 			"url": prURL, "number": target.Number, "base_sha": target.Base.SHA, "head_sha": headSHA,
 			"repository": repo.GitHub, "work_order_id": order.ID, "evidence_ids": evidenceIDs,
 			"forge_author_class": core.ForgeAuthorExecutingUser, "forge_author_user_id": authorID,
-		})}); err != nil {
+		}
+		for key, value := range reviewScope {
+			opened[key] = value
+		}
+		if err = recordPR(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "pull_request.opened", Payload: core.JSONPayload(opened)}); err != nil {
 			return nil, fmt.Errorf("record reviewed PR head: %w", err)
 		}
 	}
@@ -302,10 +313,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	if err != nil {
 		return nil, err
 	}
-	// Only a fix dispatched from the approved head refreshes that approval. A
-	// pre-review fix (baseline is the unreviewed conflicting head) is an
-	// ordinary submission (feature-bounded-automatic-recovery AR-4).
-	if order.ReasonCode == "merge-conflict" && task.ApprovedHeadSHA != "" && (order.BaselineSHA == "" || order.BaselineSHA == task.ApprovedHeadSHA) {
+	if submissionMarksApprovalStale(task, order) {
 		if _, err = s.Store.MarkTaskApprovalStale(ctx, task.ID, task.ApprovedHeadSHA, reviewedHead, conflictRefreshScope(task), "merge-conflict"); err != nil {
 			return nil, err
 		}
@@ -341,6 +349,80 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		result["risk_work_order_id"] = riskWorkOrderID
 	}
 	return withReviewSeatsResult(result, reviewSeats, true), nil
+}
+
+// submissionMarksApprovalStale reports a conflict fix dispatched from the
+// approved head, whose submission refreshes that approval. Only such a fix
+// refreshes it. A pre-review fix (baseline is the unreviewed conflicting head)
+// is an ordinary submission (feature-bounded-automatic-recovery AR-4).
+func submissionMarksApprovalStale(task core.Task, order core.WorkOrder) bool {
+	return order.ReasonCode == "merge-conflict" && task.ApprovedHeadSHA != "" && (order.BaselineSHA == "" || order.BaselineSHA == task.ApprovedHeadSHA)
+}
+
+// submissionReviewScope fixes the review scope and review baseline of the
+// submitted head and returns the pull_request.opened fields that record them
+// (feature-delta-review-rounds DR-3; req-review-gates-evidence AC-12.3).
+//
+//   - A submission that marks the approval stale, or that arrives while it is
+//     stale, records no scope: the refresh rules alone decide its rounds
+//     (AC-12.6), and the record reads as full from its base commit as it
+//     always has.
+//   - A head already recorded with a scope keeps it. A replayed or partly
+//     retried submission therefore keeps the scope recorded first, and a later
+//     policy change moves no fixed scope (AC-12.8). A full head keeps the
+//     base commit it was first fixed at, even after the pull request base
+//     moves; the record's base_sha is still the base observed now, which
+//     the whole-change readers use (DR-3, DR-5).
+//   - Otherwise store.DecideSubmissionReviewScope decides from the frozen
+//     later_round_review policy, the judged head, and GitHub's comparison of
+//     the judged head with the submitted head. A failed comparison read gives
+//     full and never refuses the submission.
+func (s *Service) submissionReviewScope(ctx context.Context, task core.Task, order core.WorkOrder, slug, baseSHA, headSHA string) (map[string]any, error) {
+	if task.ApprovalStale || submissionMarksApprovalStale(task, order) {
+		return nil, nil
+	}
+	fields := func(scope, baseline string) map[string]any {
+		return map[string]any{"review_scope": scope, "review_baseline_sha": baseline}
+	}
+	events, err := s.Store.ListCompactEvents(ctx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	if fixed, ok := store.FixedHeadComparison(events, headSHA); ok {
+		return fields(fixed.ReviewScope, fixed.ReviewBaselineSHA), nil
+	}
+	policy := task.SetupContract.LaterRoundReviewScope()
+	judged := ""
+	if policy == store.ReviewScopeDelta {
+		orders, listErr := s.Store.ListWorkOrdersForTasks(ctx, []string{task.ID})
+		if listErr != nil {
+			return nil, listErr
+		}
+		judged, _ = store.JudgedHead(events, orders)
+	}
+	scope, baseline := store.DecideSubmissionReviewScope(store.SubmissionReviewScopeInput{
+		LaterRoundReview: policy, JudgedHead: judged, SubmittedHead: headSHA, BaseSHA: baseSHA,
+		Ancestry: func() (store.SubmissionAncestry, error) {
+			result, ancestryErr := s.submissionAncestry(ctx, slug, judged, headSHA)
+			if ancestryErr != nil {
+				s.logf("submission_review_scope task_id=%s head=%s judged_head=%s outcome=full ancestry_error=%v", task.ID, headSHA, judged, ancestryErr)
+			}
+			return store.SubmissionAncestry{Status: result.Status, BehindBy: result.BehindBy}, ancestryErr
+		},
+	})
+	return fields(scope, baseline), nil
+}
+
+// submissionAncestry reads GitHub's comparison of base with head.
+func (s *Service) submissionAncestry(ctx context.Context, slug, base, head string) (github.CompareAncestryResult, error) {
+	if s.SubmissionAncestry != nil {
+		return s.SubmissionAncestry(ctx, slug, base, head)
+	}
+	forgeCtx, err := s.workspaceForgeContext(ctx, slug)
+	if err != nil {
+		return github.CompareAncestryResult{}, err
+	}
+	return github.CompareAncestry(forgeCtx, slug, base, head)
 }
 
 // submittedHeadRiskOrder names the open risk order of the submitted head and

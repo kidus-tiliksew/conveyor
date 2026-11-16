@@ -37,12 +37,16 @@ type Service struct {
 	ConfigProvider func(context.Context) (*config.Config, error)
 	SubmissionPR   func(context.Context, string, string) (github.SubmissionPullRequest, error)
 	// SubmissionPRWait replaces the bounded PR-head re-read delay in tests.
-	SubmissionPRWait            func(context.Context, time.Duration) error
-	ReconcileSubmissionPR       func(context.Context, string, github.SubmissionPullRequest, string) error
-	ReviewTarget                func(context.Context, string, string) (github.ReviewTarget, error)
-	ReviewDiffBetween           func(context.Context, string, string, string) (string, error)
-	ReviewPRDescription         func(context.Context, string, string) (string, error)
-	SubmissionChangedPaths      func(context.Context, *config.Config, core.Task) ([]string, error)
+	SubmissionPRWait       func(context.Context, time.Duration) error
+	ReconcileSubmissionPR  func(context.Context, string, github.SubmissionPullRequest, string) error
+	ReviewTarget           func(context.Context, string, string) (github.ReviewTarget, error)
+	ReviewDiffBetween      func(context.Context, string, string, string) (string, error)
+	ReviewPRDescription    func(context.Context, string, string) (string, error)
+	SubmissionChangedPaths func(context.Context, *config.Config, core.Task) ([]string, error)
+	// SubmissionAncestry reads GitHub's comparison of a judged head with a
+	// submitted head; nil uses the workspace GitHub App
+	// (feature-delta-review-rounds DR-3).
+	SubmissionAncestry          func(context.Context, string, string, string) (github.CompareAncestryResult, error)
 	DiscoverDocumentationPolicy func(context.Context, string, string) github.DocumentationPolicyDiscovery
 	// DiscoverRiskDeclaration reads .conveyor/risk.yaml at a base commit; nil
 	// uses the workspace GitHub App (component-risk-review invariant 6).
@@ -678,6 +682,21 @@ func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reaso
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
+	// A retried round of an ordinary head keeps the baseline and head its
+	// submission recorded, as dispatch gives the head's first round, so the
+	// seats and the head's verify context hold one pair. A delta head's seats
+	// also carry review_scope delta; a full head's seats keep the empty scope
+	// dispatch gives them. While the approval is stale, the refresh binding
+	// stands and nothing is copied (feature-delta-review-rounds DR-4;
+	// req-review-gates-evidence AC-12.4, AC-12.6).
+	if baseline, head, scope, recorded := store.ReviewRoundDispatchComparison(task, events); recorded && head == target.HeadSHA {
+		for i := range newOrders {
+			newOrders[i].BaselineSHA, newOrders[i].HeadSHA = baseline, head
+			if scope == store.ReviewScopeDelta {
+				newOrders[i].ReviewScope = store.ReviewScopeDelta
+			}
+		}
+	}
 	request := store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA, Automatic: automatic}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.ReviewRoundRetryResult, error) {
 		return s.Store.RetryReviewRoundCommand(ctx, lease, request, seats, jobs, newOrders)
@@ -819,7 +838,9 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		return Context{}, err
 	}
 	if order.Stage == core.StageReview {
-		role = pack.MCPReviewRole(role)
+		// Only a delta seat that is not a refresh seat reads the delta round
+		// instruction (feature-delta-review-rounds DR-5).
+		role = pack.MCPReviewRole(pack.WithDeltaRound(role, order.ReviewKind != "refresh" && order.ReviewScope == store.ReviewScopeDelta))
 	}
 	// A risk order delivers exactly the subject it stored: one plan version,
 	// or one head through the review order's comparison and diff reader
@@ -1038,7 +1059,15 @@ func (s *Service) reviewMaterialForOrder(ctx context.Context, order core.WorkOrd
 	if order.ReviewKind == "refresh" && order.ReviewScope == config.RefreshReviewDelta && order.BaselineSHA != "" && order.HeadSHA != "" {
 		comparison = dispatch.ReviewComparison{Source: dispatch.ReviewComparisonSourceGitHub, BaselineSHA: order.BaselineSHA, HeadSHA: order.HeadSHA, Scope: config.RefreshReviewDelta}
 	} else if order.ReviewKind != "refresh" && order.BaselineSHA != "" && order.HeadSHA != "" {
-		comparison = dispatch.ReviewComparison{Source: dispatch.ReviewComparisonSourceGitHub, BaselineSHA: order.BaselineSHA, HeadSHA: order.HeadSHA, Scope: config.RefreshReviewFull}
+		// An ordinary order takes its scope from the order: delta compares
+		// the judged head with the head, and an empty or full scope compares
+		// the base commit with it (feature-delta-review-rounds DR-4;
+		// req-review-gates-evidence AC-12.4).
+		scope := config.RefreshReviewFull
+		if order.ReviewScope == store.ReviewScopeDelta {
+			scope = store.ReviewScopeDelta
+		}
+		comparison = dispatch.ReviewComparison{Source: dispatch.ReviewComparisonSourceGitHub, BaselineSHA: order.BaselineSHA, HeadSHA: order.HeadSHA, Scope: scope}
 	} else {
 		var compareErr error
 		comparison, compareErr = dispatch.RecordedReviewComparisonContext(task, events)
