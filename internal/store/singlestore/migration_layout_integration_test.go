@@ -120,9 +120,14 @@ func TestHistoryMigrationLayoutsIntegration(t *testing.T) {
 			t.Errorf("published %s storage = %s, error %v", table, storage, err)
 		}
 	}
-	const keys = `SELECT table_name,index_name,non_unique,seq_in_index,column_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND index_type <> 'CLUSTERED COLUMNSTORE'`
+	const keys = `SELECT table_name,index_name,non_unique,seq_in_index,column_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND index_type NOT IN ('CLUSTERED COLUMNSTORE','SHARD')`
 	if a, b := queryRows(t, published, ctx, keys), queryRows(t, fresh, ctx, keys); !reflect.DeepEqual(a, b) {
 		t.Errorf("published and fresh keys differ\npublished: %v\nfresh: %v", a, b)
+	}
+	// SingleStore assigns different generated names to rowstore and columnstore shard keys.
+	const shards = `SELECT table_name,seq_in_index,column_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND index_type='SHARD'`
+	if a, b := queryRows(t, published, ctx, shards), queryRows(t, fresh, ctx, shards); !reflect.DeepEqual(a, b) {
+		t.Errorf("published and fresh shard keys differ\npublished: %v\nfresh: %v", a, b)
 	}
 	link := `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind) VALUES ('history-proof','task','a','task','b','related')`
 	if _, err := fresh.db.ExecContext(ctx, link); err != nil {
