@@ -124,13 +124,16 @@ func (r ReviewRoundSeatResolution) Record(taskID string, round int, at time.Time
 // ReviewRoundCreatedPayload is the review.round_created payload for a newly
 // committed round. It carries the round's scope and baseline, taken from the
 // round's own seat orders through ReviewRoundScope (feature-delta-review-rounds
-// DR-7; req-review-gates-evidence AC-12.7). orders may hold other stages or
-// rounds; only the review orders of round count. Callers add
-// retry_request_id for a retried round.
+// DR-7; req-review-gates-evidence AC-12.7). orders may hold orders of other
+// rounds, such as a handoff's verify order with round 0; only the orders of
+// round count. The selection reads no Stage, because a backend writes every
+// round member as a review order whatever Stage the caller set, and the event
+// must describe the orders it committed. Callers add retry_request_id for a
+// retried round.
 func ReviewRoundCreatedPayload(round int, seats ReviewRoundSeatResolution, orders []core.WorkOrder) map[string]any {
 	members := make([]core.WorkOrder, 0, len(orders))
 	for _, order := range orders {
-		if order.Stage == core.StageReview && order.ReviewRound == round {
+		if order.ReviewRound == round {
 			members = append(members, order)
 		}
 	}

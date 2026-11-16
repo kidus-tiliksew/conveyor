@@ -323,11 +323,18 @@ func TestReviewRoundSeatsScope(t *testing.T) {
 			t.Fatalf("%s: scope=%q baseline=%q, want %q %q", tc.name, scope, baseline, tc.scope, tc.baseline)
 		}
 	}
-	// The payload counts only the round's own review orders.
-	orders := []core.WorkOrder{order("delta", "judged"), {Stage: core.StageVerify, ReviewScope: "", BaselineSHA: "base"}, {Stage: core.StageReview, ReviewRound: 1, BaselineSHA: "base"}}
+	// The payload counts only the round's own orders. A member without a
+	// Stage still counts, as a backend writes it as a review order.
+	unstaged := order("delta", "judged")
+	unstaged.Stage = ""
+	orders := []core.WorkOrder{order("delta", "judged"), unstaged, {Stage: core.StageVerify, ReviewScope: "", BaselineSHA: "base"}, {Stage: core.StageReview, ReviewRound: 1, BaselineSHA: "base"}}
 	payload := store.ReviewRoundCreatedPayload(2, store.ReviewRoundSeatResolution{SeatCount: 1, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: 1}, orders)
 	if payload["review_scope"] != store.ReviewScopeDelta || payload["baseline_sha"] != "judged" || payload["seat_count"] != 1 || payload["review_round"] != 2 {
 		t.Fatalf("payload=%+v", payload)
+	}
+	alone := store.ReviewRoundCreatedPayload(2, store.ReviewRoundSeatResolution{SeatCount: 1, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: 1}, []core.WorkOrder{unstaged})
+	if alone["review_scope"] != store.ReviewScopeDelta || alone["baseline_sha"] != "judged" {
+		t.Fatalf("unstaged member payload=%+v", alone)
 	}
 	full := store.ReviewRoundCreatedPayload(1, store.ReviewRoundSeatResolution{SeatCount: 1, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: 1}, orders)
 	if full["review_scope"] != store.ReviewScopeFull || full["baseline_sha"] != "" {
