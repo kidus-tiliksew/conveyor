@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"strings"
@@ -34,7 +35,7 @@ type Store struct {
 var _ store.Backend = (*Store)(nil)
 
 // connectionConfig accepts a URL or a MySQL DSN without exposing credentials in errors.
-func connectionConfig(raw string) (*mysql.Config, error) {
+func connectionConfig(raw string, compress ...bool) (*mysql.Config, error) {
 	var cfg *mysql.Config
 	if strings.Contains(raw, "://") {
 		u, err := url.Parse(raw)
@@ -65,6 +66,13 @@ func connectionConfig(raw string) (*mysql.Config, error) {
 	}
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	requested := true
+	if len(compress) > 0 {
+		requested = compress[0]
+	}
+	if err := cfg.Apply(mysql.EnableCompression(requested)); err != nil {
+		return nil, fmt.Errorf("invalid SingleStore compression configuration")
+	}
 	// DATETIME(6) rejects nanosecond fractions in strict SingleStore sessions.
 	// Apply this to every write, including future aggregate SQL (component-persistence).
 	if err := cfg.Apply(mysql.TimeTruncate(time.Microsecond)); err != nil {
@@ -88,8 +96,8 @@ func connectionConfig(raw string) (*mysql.Config, error) {
 	return cfg, nil
 }
 
-func Open(ctx context.Context, raw string) (*Store, error) {
-	cfg, err := connectionConfig(raw)
+func Open(ctx context.Context, raw string, compress ...bool) (*Store, error) {
+	cfg, err := connectionConfig(raw, compress...)
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +136,8 @@ func Open(ctx context.Context, raw string) (*Store, error) {
 		db.Close()
 		return nil, translateBackendConflict(err)
 	}
+	requested := len(compress) == 0 || compress[0]
+	slog.Info("SingleStore connection compression", "requested", requested, "server_support", "unknown")
 	return st, nil
 }
 func (s *Store) Close()              { s.db.Close() }

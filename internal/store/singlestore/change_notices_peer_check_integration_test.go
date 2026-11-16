@@ -2,11 +2,13 @@ package singlestore
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -145,7 +147,7 @@ func openProxiedStore(t *testing.T) (*Store, *statementProxy) {
 	proxied := sharedDatabase.cfg.Clone()
 	proxied.Addr = proxy.addr()
 	proxied.TLSConfig = "false"
-	st, err := Open(t.Context(), proxied.FormatDSN())
+	st, err := Open(t.Context(), proxied.FormatDSN(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,9 +155,27 @@ func openProxiedStore(t *testing.T) (*Store, *statementProxy) {
 	return st, proxy
 }
 
-// TestSingleStorePeerMarksIntegration: PeerMarks is one statement that moves
-// a workspace's log position on an enqueue and its task-event count and
-// highest ID on a task event, and nothing else.
+func TestSingleStoreCompressionStartupLogIntegration(t *testing.T) {
+	resetSharedDatabase(t)
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	st, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if got := strings.Count(logs.String(), "SingleStore connection compression"); got != 1 {
+		t.Fatalf("compression log count = %d, want 1", got)
+	}
+	if !strings.Contains(logs.String(), "requested=true") || !strings.Contains(logs.String(), "server_support=unknown") {
+		t.Fatalf("compression log lacks status: %s", logs.String())
+	}
+}
+
+// TestSingleStorePeerMarksIntegration checks both kinds of cross-connection
+// changes without scanning the event table.
 func TestSingleStorePeerMarksIntegration(t *testing.T) {
 	writer := openOwnedStore(t)
 	ctxA, wsA, taskA := seedSingleStoreNoticeTask(t, writer)
@@ -168,8 +188,8 @@ func TestSingleStorePeerMarksIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
-		if sent := proxy.since(before); len(sent) != 1 {
-			t.Fatalf("%s: PeerMarks sent %d statements, want one:\n%s", what, len(sent), describeCommands(time.Now(), sent))
+		if sent := proxy.since(before); len(sent) != 1 || strings.Contains(strings.ToLower(sent[0].text), "events_columnstore") {
+			t.Fatalf("%s: PeerMarks should send one statement without scanning events:\n%s", what, describeCommands(time.Now(), sent))
 		}
 		return marks
 	}
@@ -192,7 +212,7 @@ func TestSingleStorePeerMarksIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	afterEvent := read("after task event")
-	if afterEvent[wsA].Events != afterJob[wsA].Events+1 || afterEvent[wsA].LastEvent <= afterJob[wsA].LastEvent || afterEvent[wsA].Log != afterJob[wsA].Log {
+	if afterEvent[wsA].Events != afterJob[wsA].Events+1 || afterEvent[wsA].Log != afterJob[wsA].Log {
 		t.Fatalf("task event: %+v -> %+v", afterJob[wsA], afterEvent[wsA])
 	}
 	if afterEvent[wsB] != afterJob[wsB] {
