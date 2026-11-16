@@ -107,8 +107,12 @@ func (c SubmissionComparison) Delta() bool {
 }
 
 // decodeSubmissionComparison reads one pull_request.opened payload. A record
-// without both commits answers nothing. A record that names delta without a
-// baseline, or any other scope, reads as full from its base commit.
+// without both commits answers nothing. An explicit full or delta record with
+// a non-blank review_baseline_sha compares from that baseline, so a full head
+// retried after the pull request base moved keeps the base it was first fixed
+// at, while BaseSHA stays the base this record observed for the whole-change
+// readers (DR-3, DR-5). A record without review data, a delta record without a
+// baseline, and any other scope read as full from the record's base commit.
 func decodeSubmissionComparison(event core.Event) (SubmissionComparison, bool) {
 	if event.Kind != SubmissionComparisonEventKind {
 		return SubmissionComparison{}, false
@@ -125,8 +129,12 @@ func decodeSubmissionComparison(event core.Event) (SubmissionComparison, bool) {
 	comparison := SubmissionComparison{BaseSHA: target.Base, HeadSHA: target.Head, ReviewScope: ReviewScopeFull, ReviewBaselineSHA: target.Base}
 	if target.Scope != nil {
 		comparison.Fixed = true
-		if *target.Scope == ReviewScopeDelta && target.Baseline != "" {
-			comparison.ReviewScope, comparison.ReviewBaselineSHA = ReviewScopeDelta, target.Baseline
+		baseline := strings.TrimSpace(target.Baseline)
+		switch {
+		case *target.Scope == ReviewScopeDelta && baseline != "":
+			comparison.ReviewScope, comparison.ReviewBaselineSHA = ReviewScopeDelta, baseline
+		case *target.Scope == ReviewScopeFull && baseline != "":
+			comparison.ReviewBaselineSHA = baseline
 		}
 	}
 	return comparison, true

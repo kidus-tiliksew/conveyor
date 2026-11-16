@@ -9,7 +9,12 @@ import (
 )
 
 func deltaOpened(scope, baseline string) core.Event {
-	payload := map[string]string{"base_sha": "base", "head_sha": "head"}
+	return deltaOpenedAt("base", scope, baseline)
+}
+
+// deltaOpenedAt records a submission whose pull request base was base.
+func deltaOpenedAt(base, scope, baseline string) core.Event {
+	payload := map[string]string{"base_sha": base, "head_sha": "head"}
 	if scope != "" {
 		payload["review_scope"], payload["review_baseline_sha"] = scope, baseline
 	}
@@ -34,6 +39,7 @@ func TestDeltaReviewRecordedReviewComparison(t *testing.T) {
 		{name: "Legacy", event: deltaOpened("", ""), baseline: "base", head: "head", scope: config.RefreshReviewFull},
 		{name: "Full", event: deltaOpened(store.ReviewScopeFull, "base"), baseline: "base", head: "head", scope: config.RefreshReviewFull},
 		{name: "Delta", event: deltaOpened(store.ReviewScopeDelta, "judged"), baseline: "judged", head: "head", scope: store.ReviewScopeDelta},
+		{name: "FullAfterBaseMoved", event: deltaOpenedAt("moved-base", store.ReviewScopeFull, "base"), baseline: "base", head: "head", scope: config.RefreshReviewFull},
 		{name: "StaleDeltaRefresh", task: stale, event: deltaOpened(store.ReviewScopeDelta, "judged"), baseline: "approved", head: "head", scope: config.RefreshReviewDelta},
 		{name: "StaleFullRefresh", task: staleFull, event: deltaOpened(store.ReviewScopeDelta, "judged"), baseline: "base", head: "head", scope: config.RefreshReviewFull},
 	} {
@@ -58,8 +64,9 @@ func TestDeltaReviewRecordedReviewComparison(t *testing.T) {
 func TestDeltaReviewDispatchCarriesRecordedPair(t *testing.T) {
 	route := config.StageRoute{Execution: config.ExecutionMCP, TimeoutText: "1h"}
 	for _, tc := range []struct {
-		name, scope, baseline, wantScope, wantBaseline string
+		name, base, scope, baseline, wantScope, wantBaseline string
 	}{
+		{name: "FullAfterBaseMoved", base: "moved-base", scope: store.ReviewScopeFull, baseline: "base", wantScope: "", wantBaseline: "base"},
 		{name: "Delta", scope: store.ReviewScopeDelta, baseline: "judged", wantScope: store.ReviewScopeDelta, wantBaseline: "judged"},
 		{name: "Full", scope: store.ReviewScopeFull, baseline: "base", wantScope: "", wantBaseline: "base"},
 		{name: "Legacy", wantScope: "", wantBaseline: "base"},
@@ -75,7 +82,11 @@ func TestDeltaReviewDispatchCarriesRecordedPair(t *testing.T) {
 				if err := st.CreateTask(ctx, task); err != nil {
 					t.Fatal(err)
 				}
-				event := deltaOpened(tc.scope, tc.baseline)
+				base := tc.base
+				if base == "" {
+					base = "base"
+				}
+				event := deltaOpenedAt(base, tc.scope, tc.baseline)
 				event.TaskID = task.ID
 				if err := st.AppendEvent(ctx, event); err != nil {
 					t.Fatal(err)

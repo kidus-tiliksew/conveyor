@@ -49,8 +49,8 @@ type deltaFixture struct {
 	service    *Service
 	implement  string
 	session    int
-	// head is the pull request head the forge reports.
-	head string
+	// head and base are the pull request head and base the forge reports.
+	head, base string
 	// ancestry answers the comparison of the judged head with the head.
 	ancestry      githubtrigger.CompareAncestryResult
 	ancestryErr   error
@@ -64,7 +64,7 @@ func newDeltaFixture(t *testing.T, policy string) *deltaFixture {
 	t.Helper()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	memory := store.NewMemory()
-	f := &deltaFixture{ctx: ctx, head: deltaJudged, ancestry: githubtrigger.CompareAncestryResult{Status: "ahead", AheadBy: 1}}
+	f := &deltaFixture{ctx: ctx, head: deltaJudged, base: deltaBase, ancestry: githubtrigger.CompareAncestryResult{Status: "ahead", AheadBy: 1}}
 	f.st = failingSubmissionStore{Store: memory, fail: &f.failNext}
 	f.task = core.Task{ID: "delta-task", Workspace: "demo", Repo: "app", Title: "Delta", Branch: "conveyor/delta-task", BaseBranch: "main", PolicyVersion: 1,
 		State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
@@ -88,11 +88,11 @@ func newDeltaFixture(t *testing.T, policy string) *deltaFixture {
 	f.service = &Service{Store: f.st, Dispatcher: f.dispatcher, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return f.cfg, nil },
 		SubmissionPR: func(_ context.Context, _, branch string) (githubtrigger.SubmissionPullRequest, error) {
 			pr := githubtrigger.SubmissionPullRequest{Number: 9, URL: "https://github.com/acme/app/pull/9"}
-			pr.Head.Ref, pr.Head.SHA, pr.Base.Ref, pr.Base.SHA = branch, f.head, "main", deltaBase
+			pr.Head.Ref, pr.Head.SHA, pr.Base.Ref, pr.Base.SHA = branch, f.head, "main", f.base
 			return pr, nil
 		},
 		ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
-			return githubtrigger.ReviewTarget{Number: 9, BaseSHA: deltaBase, HeadSHA: f.head}, nil
+			return githubtrigger.ReviewTarget{Number: 9, BaseSHA: f.base, HeadSHA: f.head}, nil
 		},
 		SubmissionChangedPaths: func(_ context.Context, _ *config.Config, task core.Task) ([]string, error) {
 			f.changed = append(f.changed, task.BaseBranch+"..."+task.ReviewedHeadSHA)
@@ -387,6 +387,59 @@ func TestDeltaReviewPartialRetryAndReplayKeepFirstScope(t *testing.T) {
 	}
 	if after := len(f.comparisons(t)); after != before {
 		t.Fatalf("replay recorded %d comparisons, want %d", after, before)
+	}
+}
+
+// A full-scope submission that fails after recording its comparison and is
+// retried after the pull request base moves keeps the review baseline it was
+// first fixed at, while the retry's record and its whole-change reads use the
+// base observed now: the changed paths and the admission diff read the new
+// base, and the recorded whole-change pair names it (DR-3 to DR-5; AC-12.3,
+// AC-12.4).
+func TestDeltaReviewFullPartialRetryKeepsFirstBaseline(t *testing.T) {
+	movedBase := strings.Repeat("e", 40)
+	f := newDeltaFixture(t, config.LaterRoundReviewFull)
+	f.judgedThenNextHead(t)
+	f.failNext = true
+	if _, err := f.submit(); err == nil {
+		t.Fatal("the failed completion was reported as a submission")
+	}
+	recorded := f.comparisons(t)
+	if first := recorded[len(recorded)-1]; first.Delta() || !first.Fixed || first.ReviewBaselineSHA != deltaBase || first.BaseSHA != deltaBase || first.HeadSHA != deltaHead {
+		t.Fatalf("partial submission comparison=%+v", first)
+	}
+	f.base = movedBase
+	f.changed, f.diffs = nil, nil
+	f.mustSubmit(t)
+	recorded = f.comparisons(t)
+	retried := recorded[len(recorded)-1]
+	if retried.Delta() || !retried.Fixed || retried.ReviewBaselineSHA != deltaBase || retried.BaseSHA != movedBase || retried.HeadSHA != deltaHead {
+		t.Fatalf("retried comparison=%+v, want full from the first base with the moved base recorded", retried)
+	}
+	// The whole-change readers use the base observed now.
+	if len(f.changed) == 0 || f.changed[0] != movedBase+"..."+deltaHead || len(f.diffs) == 0 || f.diffs[0] != movedBase+"..."+deltaHead {
+		t.Fatalf("whole-change reads changed=%v diffs=%v", f.changed, f.diffs)
+	}
+	events, err := f.st.ListCompactEvents(f.ctx, f.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base, head, ok := store.RecordedSubmissionComparison(events); !ok || base != movedBase || head != deltaHead {
+		t.Fatalf("whole-change pair=(%q,%q,%t)", base, head, ok)
+	}
+	// Dispatch and the seat context review from the first base.
+	seats := f.round(t, 2)
+	requireDeltaSeats(t, seats, "", deltaBase, deltaHead)
+	session := "full-retry-review-" + seats[0].ID
+	if _, err = f.service.Claim(f.ctx, seats[0].ID, core.WorkOrderClaim{SessionID: session, ClientToken: "token", ClaimantID: "reviewer", OwnerUserID: "usr-reviewer", Agent: "codex", Model: "reviewer", Lease: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	contextResult, err := f.service.Get(f.ctx, seats[0].ID, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := contextResult.ReviewComparison; c == nil || c.Scope != config.RefreshReviewFull || c.BaselineSHA != deltaBase || contextResult.Diff != "diff "+deltaBase+"..."+deltaHead {
+		t.Fatalf("seat comparison=%+v diff=%q", contextResult.ReviewComparison, contextResult.Diff)
 	}
 }
 

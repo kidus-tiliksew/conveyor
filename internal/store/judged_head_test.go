@@ -137,6 +137,25 @@ func TestDeltaReviewComparisonRecords(t *testing.T) {
 	if got, _ := LatestSubmissionComparison(events); got.Delta() || got.BaseSHA != "b2" {
 		t.Fatalf("latest record=%+v", got)
 	}
+	// An explicit full record keeps its review baseline after the pull
+	// request base moves, and base_sha stays the base it observed for the
+	// whole-change readers. A blank full baseline reads from base_sha.
+	moved := opened("b2", "h2", map[string]any{"review_scope": "full", "review_baseline_sha": "b1"})
+	if got, ok := LatestSubmissionComparison([]core.Event{moved}); !ok || got.Delta() || !got.Fixed || got.ReviewBaselineSHA != "b1" || got.BaseSHA != "b2" {
+		t.Fatalf("moved full record=%+v ok=%t", got, ok)
+	}
+	if got, _ := LatestSubmissionComparison([]core.Event{opened("b2", "h2", map[string]any{"review_scope": "full", "review_baseline_sha": " "})}); got.ReviewBaselineSHA != "b2" || !got.Fixed {
+		t.Fatalf("full record without a baseline=%+v", got)
+	}
+	if got, ok := FixedHeadComparison([]core.Event{opened("b1", "h2", map[string]any{"review_scope": "full", "review_baseline_sha": "b1"}), moved}, "h2"); !ok || got.ReviewBaselineSHA != "b1" || got.BaseSHA != "b1" {
+		t.Fatalf("first fixed full record=%+v ok=%t", got, ok)
+	}
+	if base, head, ok := RecordedSubmissionComparison([]core.Event{moved}); !ok || base != "b2" || head != "h2" {
+		t.Fatalf("moved whole-change pair=(%q,%q,%t)", base, head, ok)
+	}
+	if baseline, head, scope, recorded := ReviewRoundDispatchComparison(core.Task{}, []core.Event{moved}); !recorded || baseline != "b1" || head != "h2" || scope != ReviewScopeFull {
+		t.Fatalf("moved full dispatch comparison=(%q,%q,%q,%t)", baseline, head, scope, recorded)
+	}
 	if base, head, ok := RecordedSubmissionComparison([]core.Event{delta}); !ok || base != "b1" || head != "h1" {
 		t.Fatalf("whole-change pair=(%q,%q,%t)", base, head, ok)
 	}

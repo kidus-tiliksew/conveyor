@@ -369,8 +369,10 @@ func submissionMarksApprovalStale(task core.Task, order core.WorkOrder) bool {
 //     always has.
 //   - A head already recorded with a scope keeps it. A replayed or partly
 //     retried submission therefore keeps the scope recorded first, and a later
-//     policy change moves no fixed scope (AC-12.8). A full head compares from
-//     the base commit observed now.
+//     policy change moves no fixed scope (AC-12.8). A full head keeps the
+//     base commit it was first fixed at, even after the pull request base
+//     moves; the record's base_sha is still the base observed now, which
+//     the whole-change readers use (DR-3, DR-5).
 //   - Otherwise store.DecideSubmissionReviewScope decides from the frozen
 //     later_round_review policy, the judged head, and GitHub's comparison of
 //     the judged head with the submitted head. A failed comparison read gives
@@ -387,10 +389,7 @@ func (s *Service) submissionReviewScope(ctx context.Context, task core.Task, ord
 		return nil, err
 	}
 	if fixed, ok := store.FixedHeadComparison(events, headSHA); ok {
-		if fixed.Delta() {
-			return fields(store.ReviewScopeDelta, fixed.ReviewBaselineSHA), nil
-		}
-		return fields(store.ReviewScopeFull, baseSHA), nil
+		return fields(fixed.ReviewScope, fixed.ReviewBaselineSHA), nil
 	}
 	policy := task.SetupContract.LaterRoundReviewScope()
 	judged := ""

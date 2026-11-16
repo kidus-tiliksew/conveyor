@@ -29,6 +29,7 @@ const (
 func runDeltaReviewRounds(t *testing.T, x Fixture) {
 	t.Run("DeltaAfterReviewerBounce", func(t *testing.T) { runDeltaAfterReviewerBounce(t, x) })
 	t.Run("DeltaAfterMergeGateRequestChanges", func(t *testing.T) { runDeltaAfterMergeGateRequest(t, x) })
+	t.Run("FailFastWithoutCancellationJudgesHead", func(t *testing.T) { runDeltaFailFastJudged(t, x) })
 	t.Run("FullFallback", func(t *testing.T) { runDeltaFullFallback(t, x) })
 	t.Run("VerifyAndReviewHoldOnePair", func(t *testing.T) { runDeltaVerifyReviewPair(t, x) })
 	t.Run("RoundRetryKeepsDelta", func(t *testing.T) { runDeltaRoundRetry(t, x) })
@@ -209,6 +210,17 @@ func runDeltaAfterMergeGateRequest(t *testing.T, x Fixture) {
 	}
 }
 
+// A fail-fast round whose last seat requested changes cancels no seat, so its
+// commit is the judged head (DR-2; AC-12.2).
+func runDeltaFailFastJudged(t *testing.T, x Fixture) {
+	task := drTask(t, x, 1, config.LaterRoundReviewDelta, func(task *core.Task) { task.SetupContract.Review.FailFast = true })
+	round := drRound(t, x, task.ID, 1, 1, drJudged, "", drBase)
+	requireOK(t, drVerdict(t, x, round[0], "changes_requested", drJudged, false))
+	if judged, ok := drJudgedHead(t, x, task.ID); !ok || judged != drJudged {
+		t.Fatalf("a fail-fast round that cancelled nothing gave judged=%q ok=%t", judged, ok)
+	}
+}
+
 // Every case outside delta gives full from the observed base commit: a round
 // that cancelled a seat, a round whose seats reviewed different commits, a
 // frozen full policy, an equal head, and a comparison that fails or reports
@@ -234,14 +246,6 @@ func runDeltaFullFallback(t *testing.T, x Fixture) {
 		}
 		scope, baseline := drDecide(task, judged, drAhead, nil)
 		full(t, "cancelled seat", scope, baseline)
-	})
-	t.Run("FailFastEverySeatAnswered", func(t *testing.T) {
-		task := drTask(t, x, 1, config.LaterRoundReviewDelta, func(task *core.Task) { task.SetupContract.Review.FailFast = true })
-		round := drRound(t, x, task.ID, 1, 1, drJudged, "", drBase)
-		requireOK(t, drVerdict(t, x, round[0], "changes_requested", drJudged, false))
-		if judged, ok := drJudgedHead(t, x, task.ID); !ok || judged != drJudged {
-			t.Fatalf("a fail-fast round that cancelled nothing gave judged=%q ok=%t", judged, ok)
-		}
 	})
 	t.Run("HeadMismatch", func(t *testing.T) {
 		task := drTask(t, x, 2, config.LaterRoundReviewDelta, nil)
