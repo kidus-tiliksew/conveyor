@@ -223,6 +223,7 @@ func deliveryMetadataBatchTx(ctx context.Context, tx pgx.Tx, task string, source
 			return nil, err
 		}
 	}
+	store.NoteVerificationRead(store.VerificationReadMetadata, workspace(ctx), task, len(out))
 	return out, nil
 }
 

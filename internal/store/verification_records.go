@@ -229,6 +229,7 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 }
 
 func prepareVerificationMutation(ctx context.Context, source redact.SecretSource, ops VerificationOperationScope, c VerificationCommand, rows []VerificationRow, now time.Time) (VerificationMutation, error) {
+	noteVerificationReadTask(ctx, VerificationReadRows, c.Access.TaskID, len(rows))
 	var out VerificationMutation
 	if encoded, err := json.Marshal(c); err != nil || len(encoded) > 8<<20 {
 		return out, ErrVerificationInvalid

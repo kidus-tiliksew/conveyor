@@ -302,6 +302,7 @@ func (s *Store) ReadVerification(ctx context.Context, a store.VerificationAccess
 		if err != nil {
 			return err
 		}
+		store.NoteVerificationRead(store.VerificationReadRows, documentWorkspace(ctx), a.TaskID, len(rows))
 		result, err = store.VerificationReadSnapshot(rows, a, id, order.Stage)
 		if err != nil {
 			return err
@@ -422,6 +423,7 @@ func deliveryLatestRowTx(ctx context.Context, tx *sql.Tx, ws, key string) (core.
 	if err = json.Unmarshal(raw, &d); err != nil {
 		return core.VerificationDelivery{}, false, err
 	}
+	store.NoteVerificationRead(store.VerificationReadDelivery, ws, d.TaskID, 1)
 	return d, true, nil
 }
 
@@ -717,6 +719,7 @@ func verificationDeliveryDueTx(ctx context.Context, tx *sql.Tx, ws string, now t
 		}
 		out = append(out, d)
 	}
+	store.NoteVerificationRead(store.VerificationReadDue, ws, "", len(out))
 	return out, rows.Err()
 }
 
@@ -774,6 +777,7 @@ func verificationDeliveryBodiesTx(ctx context.Context, tx *sql.Tx, ws string, ca
 	for _, f := range found {
 		out = append(out, f.d)
 	}
+	store.NoteVerificationRead(store.VerificationReadBodies, ws, "", len(out))
 	return out, nil
 }
 

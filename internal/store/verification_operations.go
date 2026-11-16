@@ -326,6 +326,7 @@ func verificationForeignOperationConflicts(ctx context.Context, ops Verification
 	if err != nil {
 		return err
 	}
+	noteVerificationReadTask(ctx, VerificationReadWorkspace, c.Access.TaskID, len(foreign))
 	for _, row := range foreign {
 		if row.TaskID == c.Access.TaskID || verificationOperationResolved(row.State) {
 			continue

@@ -263,6 +263,7 @@ func deliveryMetadataBatchTx(ctx context.Context, tx *sql.Tx, task string, sourc
 			return nil, err
 		}
 	}
+	store.NoteVerificationRead(store.VerificationReadMetadata, documentWorkspace(ctx), task, len(out))
 	return out, nil
 }
 

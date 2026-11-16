@@ -72,6 +72,7 @@ func VerificationReconciliationCommands(ctx context.Context, rows []Verification
 	if actor.Role != core.ActorSystem || actor.ID != "verification-reconciler" {
 		return nil, ErrVerificationAccess
 	}
+	noteVerificationReadTask(ctx, VerificationReadRows, "", len(rows))
 	var result []VerificationCommand
 	for _, row := range rows {
 		if row.Table != "verification_attempts" || (row.State != "running" && row.State != "pending") {

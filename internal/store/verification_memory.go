@@ -260,6 +260,7 @@ func (m *volatileMemory) ReadVerification(ctx context.Context, a VerificationAcc
 		}
 	}
 	rows := m.verificationRowsLocked(ws, a.TaskID, VerificationSnapshotTables)
+	noteVerificationReadTask(ctx, VerificationReadRows, a.TaskID, len(rows))
 	snapshot, err := VerificationReadSnapshot(rows, a, id, m.workOrders[a.WorkOrderID].Stage)
 	if err != nil {
 		return VerificationSnapshot{}, err
@@ -271,6 +272,18 @@ func (m *volatileMemory) ReadVerification(ctx context.Context, a VerificationAcc
 		}
 	}
 	AttachVerificationDeliverySnapshot(&snapshot, ds)
+	if len(snapshot.Publications) > 0 {
+		// One batched metadata pass over the task's deliveries, so the read's
+		// statement count does not grow with one lookup per publication
+		// (component-persistence, Database read accounting).
+		attached := 0
+		for i := range snapshot.Publications {
+			if snapshot.Publications[i].Delivery != nil {
+				attached++
+			}
+		}
+		noteVerificationReadTask(ctx, VerificationReadMetadata, a.TaskID, attached)
+	}
 	return snapshot, nil
 }
 func (m *volatileMemory) ReadVerificationArtifact(ctx context.Context, a VerificationAccess, evidenceID, artifactID string) (core.Artifact, []byte, error) {
@@ -516,6 +529,7 @@ func (m *volatileMemory) RunVerificationDelivery(ctx context.Context, a queue.Ve
 	if !ok {
 		return nil
 	}
+	noteVerificationReadTask(ctx, VerificationReadDelivery, current.TaskID, 1)
 	view := current
 	save := func(command string, next core.VerificationDelivery) error {
 		if command == "check" {
@@ -590,9 +604,14 @@ func (m *volatileMemory) ReconcileVerificationDeliveries(ctx context.Context) er
 		newest[key] = d.Generation
 		window = append(window, d)
 	}
+	noteVerificationReadTask(ctx, VerificationReadDue, "", len(due))
 	if len(window) > VerificationDeliveryReconcileWindow {
 		window = window[:VerificationDeliveryReconcileWindow]
 	}
+	// Only the acted rows' bodies are decoded, so a superseded generation's
+	// retained payload is never read by a pass (component-persistence, Database
+	// read accounting).
+	noteVerificationReadTask(ctx, VerificationReadBodies, "", len(window))
 	for _, d := range window {
 		{
 			due := d.State == "failed"

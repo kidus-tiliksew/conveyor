@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"time"
 
@@ -241,6 +242,7 @@ func (s *Store) ReadVerification(ctx context.Context, a store.VerificationAccess
 		if err != nil {
 			return err
 		}
+		store.NoteVerificationRead(store.VerificationReadRows, workspace(ctx), a.TaskID, len(records))
 		result, err = store.VerificationReadSnapshot(verificationRows(records), a, id, order.Stage)
 		if err != nil {
 			return err
@@ -482,6 +484,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 		if e = json.Unmarshal(record.Body, &d); e != nil {
 			return core.VerificationDelivery{}, false, e
 		}
+		store.NoteVerificationRead(store.VerificationReadDelivery, workspace(ctx), d.TaskID, 1)
 		return d, true, nil
 	}
 	current, ok, err := load()
@@ -627,6 +630,7 @@ func verificationDeliveryDueTx(ctx context.Context, tx pgx.Tx, ws string, now ti
 		}
 		out = append(out, d)
 	}
+	store.NoteVerificationRead(store.VerificationReadDue, ws, "", len(out))
 	return out, rows.Err()
 }
 
@@ -634,23 +638,28 @@ func verificationDeliveryDueTx(ctx context.Context, tx pgx.Tx, ws string, now ti
 // generation of each due pull-request key, in one statement.
 func verificationDeliveryBodiesTx(ctx context.Context, tx pgx.Tx, ws string, candidates []verificationDeliveryDue) ([]core.VerificationDelivery, error) {
 	newest := map[string]int64{}
-	var keys []string
 	for _, c := range candidates {
-		if generation, found := newest[c.Key]; found && generation >= c.Generation {
+		if generation, found := newest[c.Key]; !found || c.Generation > generation {
+			newest[c.Key] = c.Generation
+		}
+	}
+	acted := make([]verificationDeliveryDue, 0, len(candidates))
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		if newest[c.Key] != c.Generation || seen[c.Key] {
 			continue
 		}
-		if _, found := newest[c.Key]; !found {
-			keys = append(keys, c.Key)
-		}
-		newest[c.Key] = c.Generation
+		seen[c.Key] = true
+		acted = append(acted, c)
 	}
-	sort.Strings(keys)
-	args := make([]any, 0, 1+len(keys))
+	args := make([]any, 0, 1+2*len(acted))
 	args = append(args, ws)
-	for _, key := range keys {
-		args = append(args, key)
+	clauses := make([]string, 0, len(acted))
+	for _, c := range acted {
+		clauses = append(clauses, fmt.Sprintf("(pr_key=$%d AND generation=$%d)", len(args)+1, len(args)+2))
+		args = append(args, c.Key, c.Generation)
 	}
-	rows, err := tx.Query(ctx, `SELECT body FROM verification_publication_deliveries WHERE workspace_id=$1 AND pr_key IN (`+verificationPlaceholders(2, len(keys))+`)`, args...)
+	rows, err := tx.Query(ctx, `SELECT body FROM verification_publication_deliveries WHERE workspace_id=$1 AND (`+strings.Join(clauses, " OR ")+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -665,10 +674,6 @@ func verificationDeliveryBodiesTx(ctx context.Context, tx pgx.Tx, ws string, can
 		if err = json.Unmarshal(raw, &d); err != nil {
 			return nil, err
 		}
-		key := store.VerificationDeliveryKey(d.Repository, d.PullRequestNumber)
-		if newest[key] != int64(d.Generation) {
-			continue
-		}
 		out = append(out, d)
 	}
 	if err = rows.Err(); err != nil {
@@ -681,5 +686,6 @@ func verificationDeliveryBodiesTx(ctx context.Context, tx pgx.Tx, ws string, can
 		}
 		return out[i].Generation < out[j].Generation
 	})
+	store.NoteVerificationRead(store.VerificationReadBodies, ws, "", len(out))
 	return out, nil
 }
