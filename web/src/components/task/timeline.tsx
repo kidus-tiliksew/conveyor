@@ -130,7 +130,11 @@ export function Timeline({
   useEffect(() => {
     if (!currentExecution) return
     if (priorExecutionStatus.current !== 'paused' && currentExecution.status === 'paused') {
-      setExecutionAnnouncement(`${currentExecution.title}. ${currentExecution.nextAction}`)
+      setExecutionAnnouncement(
+        currentExecution.nextAction
+          ? `${currentExecution.title}. ${currentExecution.nextAction}`
+          : currentExecution.title,
+      )
     }
     priorExecutionStatus.current = currentExecution.status
   }, [currentExecution?.status, currentExecution?.title, currentExecution?.nextAction])

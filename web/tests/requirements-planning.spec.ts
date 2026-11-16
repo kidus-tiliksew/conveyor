@@ -61,19 +61,6 @@ const requirement = {
     },
   ],
   artifacts: [],
-  lineage: [
-    {
-      id: 1,
-      task_id: '',
-      kind: 'requirement.version_proposed',
-      actor_id: 'planner',
-      actor_role: 'system',
-      payload: {},
-      at: '2026-07-30T10:05:00Z',
-    },
-  ],
-  lineage_total: 1,
-  lineage_snapshot_id: 1,
   staleness: {
     delivery_after_intent: true,
     deliveries: [
@@ -105,6 +92,33 @@ const requirement = {
   },
   migrated_seed: false,
   confirmation_eligible: true,
+}
+
+// Requirement activity comes from the events route, never the detail
+// (component-web-document-surfaces invariant 8).
+const requirementEvents = [
+  {
+    id: 1,
+    task_id: '',
+    kind: 'requirement.version_proposed',
+    actor_id: 'planner',
+    actor_role: 'system',
+    payload: {} as Record<string, unknown>,
+    at: '2026-07-30T10:05:00Z',
+  },
+]
+
+function documentEventPage(
+  events: Array<{ id: number }>,
+  options: { total?: number; offset?: number; snapshot?: number } = {},
+) {
+  return {
+    events,
+    total: options.total ?? events.length,
+    limit: 50,
+    offset: options.offset ?? 0,
+    snapshot_id: options.snapshot ?? Math.max(0, ...events.map((event) => event.id)),
+  }
 }
 
 function summarizeRequirement(view: {
@@ -220,6 +234,8 @@ test('requirements renders a document tree, one attention surface, and confirms 
       await detailReady
       return route.fulfill({ json: requirement })
     }
+    if (url.pathname === '/v1/requirements/req-retries/events')
+      return route.fulfill({ json: documentEventPage(requirementEvents) })
     if (url.pathname === '/v1/requirements/req-retries/versions')
       return route.fulfill({ json: requirement.pending_versions })
     if (url.pathname === '/v1/requirements/req-retries/versions/1/confirm') {
@@ -330,22 +346,6 @@ test('requirements archive and restore from the canvas while preserving archived
       archived_by: archived ? 'Operator One' : undefined,
       archived_at: archived ? archivedAt : undefined,
     },
-    lineage_total: archived ? 2 : 1,
-    lineage_snapshot_id: archived ? 2 : 1,
-    lineage: archived
-      ? [
-          {
-            id: 2,
-            task_id: '',
-            kind: 'requirement.archived',
-            actor_id: 'Operator One',
-            actor_role: 'human',
-            payload: {},
-            at: archivedAt,
-          },
-          ...requirement.lineage,
-        ]
-      : requirement.lineage,
   })
 
   await page.route('**/v1/**', async (route) => {
@@ -617,6 +617,8 @@ test('requirement staleness can file one linked follow-up and be dismissed in pl
     if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(view())] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view() })
     if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/requirements/req-retries/events')
+      return route.fulfill({ json: documentEventPage(requirementEvents) })
     if (url.pathname.endsWith('/staleness/signal-blueprint/follow-up')) {
       followUpRequests++
       state = 'linked'
@@ -831,7 +833,6 @@ test('design drift names its subject, counts once, and clears every rendering fr
     },
     pending_versions: [],
     versions: [],
-    lineage: [],
     drift: resolved ? [] : [drift],
   })
   const designSummary = () => {
@@ -1683,7 +1684,8 @@ async function routeRequestOrder(
   let detailBeforeList = false
   page.on('requestfinished', (request) => {
     const path = new URL(request.url()).pathname
-    if (path.startsWith('/v1/requirements/') && !path.endsWith('/versions')) detailPaths.push(path)
+    if (path.startsWith('/v1/requirements/') && !path.endsWith('/versions') && !path.endsWith('/events'))
+      detailPaths.push(path)
   })
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
@@ -1697,6 +1699,7 @@ async function routeRequestOrder(
       return route.fulfill({ json: fixture.list })
     }
     if (path.endsWith('/versions')) return route.fulfill({ json: [fixture.live.current_version] })
+    if (path.endsWith('/events')) return route.fulfill({ json: documentEventPage([]) })
     if (path.startsWith('/v1/requirements/')) {
       if (listAnswered) detailHitsAfterList.push(path)
       else detailBeforeList = true
@@ -1843,6 +1846,8 @@ test('requirements deep-link exact versions, render statements, diff pending int
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view })
     if (url.pathname === '/v1/requirements/req-retries/versions')
       return route.fulfill({ json: [confirmed, pending2, pending3] })
+    if (url.pathname === '/v1/requirements/req-retries/events')
+      return route.fulfill({ json: documentEventPage(requirementEvents) })
     const confirmation = /\/versions\/(\d+)\/confirm$/.exec(url.pathname)
     if (confirmation) {
       confirmedVersion = Number(confirmation[1])
@@ -2854,36 +2859,51 @@ test('a deep link opens the document the URL asked for, not the first in the cor
   await expect(page.getByRole('complementary', { name: 'Planning assistant' })).toHaveCount(0)
 })
 
-test('requirement activity pages on demand and opens the explorer independently', async ({ page }) => {
+test('requirement activity loads only in History, pages from the first snapshot, and opens the explorer independently', async ({
+  page,
+}) => {
   await initShell(page)
   const events = Array.from({ length: 51 }, (_, index) => ({
-    ...requirement.lineage[0],
+    ...requirementEvents[0],
     id: 100 - index,
     kind: index === 50 ? 'fixture.oldest' : 'requirement.version_proposed',
+    payload: index === 0 ? { backfilled: true } : {},
   }))
-  const item = { ...requirement, lineage: events.slice(0, 50), lineage_total: 51, lineage_snapshot_id: 100 }
-  let eventReads = 0
+  const eventReads: Array<{ offset: string | null; snapshot: string | null; limit: string | null }> = []
   let graphReads = 0
   // Walks that delivered a response. The explorer's read consumes its abort
   // signal, so StrictMode's discarded first mount aborts a read the page never
   // receives.
+  // Event reads that delivered a response. A read consumes its abort signal,
+  // so StrictMode's discarded first mount aborts a read the page never
+  // receives.
   page.on('requestfinished', (request) => {
-    if (new URL(request.url()).pathname === '/v1/lineage/requirement/req-retries') graphReads++
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/lineage/requirement/req-retries') graphReads++
+    if (url.pathname === '/v1/requirements/req-retries/events')
+      eventReads.push({
+        offset: url.searchParams.get('offset'),
+        snapshot: url.searchParams.get('snapshot_id'),
+        limit: url.searchParams.get('limit'),
+      })
   })
   await page.route('**/v1/**', async (route) => {
     const handled = shellResponse(route)
     if (handled) return await handled
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(item)] })
-    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: item })
-    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: item.pending_versions })
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(requirement)] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: requirement.pending_versions })
     if (url.pathname === '/v1/requirements/req-retries/events') {
-      eventReads++
       expect(url.searchParams.get('workspace_id')).toBe('demo')
-      expect(url.searchParams.get('offset')).toBe('50')
-      expect(url.searchParams.get('snapshot_id')).toBe('100')
-      expect(url.searchParams.get('limit')).toBe('50')
-      return route.fulfill({ json: { events: events.slice(50), total: 51, limit: 50, offset: 50, snapshot_id: 100 } })
+      const offset = url.searchParams.get('offset')
+      return route.fulfill({
+        json:
+          offset === '0'
+            ? documentEventPage(events.slice(0, 50), { total: 51, snapshot: 100 })
+            : documentEventPage(events.slice(50), { total: 51, offset: 50, snapshot: 100 }),
+      })
     }
     if (url.pathname === '/v1/lineage/requirement/req-retries') {
       expect(url.searchParams.get('workspace_id')).toBe('demo')
@@ -2899,21 +2919,178 @@ test('requirement activity pages on demand and opens the explorer independently'
     return route.fulfill({ json: [] })
   })
   await page.goto('/w/demo/requirements?requirement=req-retries')
+  await expect(
+    page.getByRole('region', { name: 'Requirement document' }).getByRole('heading', { name: 'Retry behavior' }),
+  ).toBeVisible()
+  await page.getByRole('tab', { name: 'changes', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Version comparison', exact: true })).toBeVisible()
+  // Document and Changes send no events request.
+  expect(eventReads).toEqual([])
   await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByText('Technical activity', { exact: true })).toBeVisible()
-  expect(eventReads).toBe(0)
+  // The first page names no snapshot.
+  await expect.poll(() => eventReads).toEqual([{ offset: '0', snapshot: null, limit: '50' }])
+  await expect(page.getByText('51', { exact: true })).toBeVisible()
   expect(graphReads).toBe(0)
   await page.getByText('Technical activity', { exact: true }).click()
   await expect(page.getByText('Revision proposed', { exact: true })).toHaveCount(50)
+  await expect(page.getByText('Backfilled', { exact: true })).toHaveCount(1)
   await page.getByRole('button', { name: 'Load older activity' }).click()
   await expect(page.getByText('Fixture oldest', { exact: true })).toBeVisible()
+  await expect(page.getByText('Revision proposed', { exact: true })).toHaveCount(50)
   await expect(page.getByRole('button', { name: 'Load older activity' })).toHaveCount(0)
-  expect(eventReads).toBe(1)
+  // The older page passes the first page's snapshot and the next offset.
+  await expect
+    .poll(() => eventReads)
+    .toEqual([
+      { offset: '0', snapshot: null, limit: '50' },
+      { offset: '50', snapshot: '100', limit: '50' },
+    ])
   expect(graphReads).toBe(0)
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   await expect(page.getByRole('dialog', { name: 'Knowledge explorer' })).toBeVisible()
   await expect.poll(() => graphReads).toBe(1)
 })
+
+// History shows the version list without waiting for activity, states a
+// pending or failed first read, and never fills one requirement's activity
+// with another's late response.
+async function routeDelayedRequirementEvents(page: Page) {
+  const other = {
+    ...requirement,
+    requirement: { ...requirement.requirement, id: 'req-other', title: 'Other intent' },
+  }
+  const reads: string[] = []
+  const gates = new Map<string, Array<() => void>>()
+  let fail = false
+  await page.route('**/v1/**', async (route) => {
+    const handled = shellResponse(route)
+    if (handled) return await handled
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/requirements')
+      return route.fulfill({ json: [summarizeRequirement(requirement), summarizeRequirement(other)] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
+    if (url.pathname === '/v1/requirements/req-other') return route.fulfill({ json: other })
+    if (url.pathname.endsWith('/versions')) return route.fulfill({ json: requirement.pending_versions })
+    const events = /^\/v1\/requirements\/([^/]+)\/events$/.exec(url.pathname)
+    if (events) {
+      const id = decodeURIComponent(events[1])
+      reads.push(id)
+      await new Promise<void>((resolve) => gates.set(id, [...(gates.get(id) ?? []), resolve]))
+      if (fail) return route.fulfill({ status: 500, body: 'internal server error' })
+      return route
+        .fulfill({
+          json: documentEventPage([
+            { ...requirementEvents[0], kind: id === 'req-other' ? 'fixture.other_document' : 'fixture.this_document' },
+          ]),
+        })
+        .catch(() => {})
+    }
+    return route.fulfill({ json: [] })
+  })
+  return {
+    // The documents read, in order. StrictMode's discarded first mount sends
+    // and aborts one extra read, so repeats of one document collapse.
+    reads: () => reads.filter((id, index) => id !== reads[index - 1]),
+    release: (id: string) => {
+      for (const resolve of gates.get(id) ?? []) resolve()
+      gates.delete(id)
+    },
+    releaseAll: () => {
+      for (const resolves of gates.values()) for (const resolve of resolves) resolve()
+      gates.clear()
+    },
+    failReads: () => {
+      fail = true
+    },
+  }
+}
+
+test('requirement History keeps versions while activity loads and states a failed activity read', async ({ page }) => {
+  await initShell(page)
+  const events = await routeDelayedRequirementEvents(page)
+  await page.goto('/w/demo/requirements?requirement=req-retries&tab=history')
+  const versions = page.getByRole('region', { name: 'Version history' })
+  await expect(versions).toContainText('v1')
+  await expect(page.getByRole('status').filter({ hasText: 'Loading activity…' })).toBeVisible()
+  await expect(page.getByText('Activity appears as planning and delivery advance.')).toHaveCount(0)
+  await expect.poll(() => events.reads()).toEqual(['req-retries'])
+  events.release('req-retries')
+  await expect(page.getByText('Technical activity', { exact: true })).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: 'Loading activity…' })).toHaveCount(0)
+
+  // A failed first read states the failure and keeps the version list.
+  events.failReads()
+  await page.reload()
+  const release = setInterval(() => events.releaseAll(), 50)
+  try {
+    await expect(page.getByRole('alert').filter({ hasText: 'Could not load activity.' })).toBeVisible()
+  } finally {
+    clearInterval(release)
+  }
+  await expect(versions).toContainText('v1')
+  await expect(page.getByText('Technical activity', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('Activity appears as planning and delivery advance.')).toHaveCount(0)
+})
+
+test('requirement activity from a late response never fills another document and starts no read outside History', async ({
+  page,
+}) => {
+  await initShell(page)
+  const events = await routeDelayedRequirementEvents(page)
+  await page.goto('/w/demo/requirements?requirement=req-retries&tab=history')
+  await expect.poll(() => events.reads()).toEqual(['req-retries'])
+  // Leave History for another document while the first read is outstanding.
+  await page
+    .getByRole('navigation', { name: 'Document tree' })
+    .getByRole('button', { name: /Other intent/ })
+    .click()
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByRole('heading', { name: 'Other intent' })).toBeVisible()
+  events.release('req-retries')
+  await page.getByRole('tab', { name: 'document', exact: true }).click()
+  await expect(page.getByRole('tab', { name: 'document', exact: true })).toHaveAttribute('aria-selected', 'true')
+  expect(events.reads()).toEqual(['req-retries'])
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
+  await expect.poll(() => events.reads()).toEqual(['req-retries', 'req-other'])
+  events.release('req-other')
+  await page.getByText('Technical activity', { exact: true }).click()
+  await expect(page.getByText('Fixture other document', { exact: true })).toBeVisible()
+  await expect(page.getByText('Fixture this document', { exact: true })).toHaveCount(0)
+})
+
+// The canvas scrolls inside its own column, so each viewport is tall enough
+// to show the version list and the Activity card in one capture.
+for (const viewport of [
+  { name: 'mobile', width: 375, height: 3000 },
+  { name: 'desktop', width: 1280, height: 1900 },
+]) {
+  test(`capture requirement History loading and loaded activity at ${viewport.width} px`, async ({
+    page,
+  }, testInfo) => {
+    await initShell(page)
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    const events = await routeDelayedRequirementEvents(page)
+    await page.goto('/w/demo/requirements?requirement=req-retries&tab=history')
+    await expect(page.getByRole('region', { name: 'Version history' })).toContainText('v1')
+    await expect(page.getByRole('status').filter({ hasText: 'Loading activity…' })).toBeVisible()
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    for (const state of ['loading', 'loaded'] as const) {
+      if (state === 'loaded') {
+        events.release('req-retries')
+        await page.getByText('Technical activity', { exact: true }).click()
+        await expect(page.getByText('Fixture this document', { exact: true })).toBeVisible()
+      }
+      await page
+        .getByText(state === 'loading' ? 'Loading activity…' : 'Fixture this document', { exact: true })
+        .scrollIntoViewIfNeeded()
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      const name = `requirement-history-${state}-${viewport.name}.png`
+      const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+      await testInfo.attach(name, { body: image, contentType: 'image/png' })
+    }
+  })
+}
 
 test('Requirement pending attention revises its first version and refreshes history', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))

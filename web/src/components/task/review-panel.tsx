@@ -285,7 +285,6 @@ function GenericReviewPanel({
               the summary once per surface, and everything else about the
               decision prints here (DEC-61; component-web-task-surfaces invariant 2). */}
           <h3 className={cn('text-sm font-semibold', style.title)}>{action.label}</h3>
-          {action.question && <p className="mt-0.5 text-xs leading-5 text-muted">{action.question}</p>}
         </div>
       </div>
       <div className="space-y-3 px-4 py-2.5">

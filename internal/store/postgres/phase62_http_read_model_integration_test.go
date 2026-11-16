@@ -67,18 +67,20 @@ func TestPhase62RequirementsHTTPIncludesWorkspaceRequirementLineageIntegration(t
 	server.Credentials = nil // exercise the explicit memory-style shared-token fixture
 	server.Workspace, server.BearerToken = workspace, "token"
 	response := httptest.NewRecorder()
+	// The History view reads requirement events from the events route; the
+	// detail response carries none (component-web-document-surfaces).
 	request := httptest.NewRequest(
-		http.MethodGet, "/v1/requirements/"+requirementID, nil,
+		http.MethodGet, "/v1/requirements/"+requirementID+"/events", nil,
 	)
 	request.Header.Set("Authorization", "Bearer token")
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	var view struct {
-		Lineage []core.Event `json:"lineage"`
+	var page struct {
+		Events []core.Event `json:"events"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
 		t.Fatal(err)
 	}
 	wantKinds := []string{
@@ -86,12 +88,12 @@ func TestPhase62RequirementsHTTPIncludesWorkspaceRequirementLineageIntegration(t
 		"requirement.version_proposed",
 		"requirement.created",
 	}
-	if len(view.Lineage) != len(wantKinds) {
-		t.Fatalf("lineage=%+v", view.Lineage)
+	if len(page.Events) != len(wantKinds) {
+		t.Fatalf("events=%+v", page.Events)
 	}
 	for index, want := range wantKinds {
-		if view.Lineage[index].Kind != want || view.Lineage[index].TaskID != "" {
-			t.Fatalf("lineage[%d]=%+v want kind=%q taskless", index, view.Lineage[index], want)
+		if page.Events[index].Kind != want || page.Events[index].TaskID != "" {
+			t.Fatalf("events[%d]=%+v want kind=%q taskless", index, page.Events[index], want)
 		}
 	}
 }

@@ -535,14 +535,23 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(view.Artifacts) != 1 || view.Artifacts[0].ID != artifact.ID ||
-		len(view.PlanningSessions) != 1 || len(view.Lineage) < 2 {
+		len(view.PlanningSessions) != 1 {
 		t.Fatalf("detail requirement view=%+v", view)
 	}
+	assertDetailHasNoDocumentEvents(t, detail.Body.Bytes())
 	if guard.neighborhood != 1 || guard.scopedArtifacts != 1 {
 		t.Fatalf("detail queries neighborhood=%d scoped_artifacts=%d", guard.neighborhood, guard.scopedArtifacts)
 	}
-	if guard.singleVersions != 1 || guard.singleEvents != 1 || guard.singleDelivery != 1 {
-		t.Fatalf("detail requirement reads versions=%d events=%d delivery=%d", guard.singleVersions, guard.singleEvents, guard.singleDelivery)
+	if guard.singleVersions != 1 || guard.singleEvents != 1 || guard.singleDelivery != 1 || guard.eventPages != 0 {
+		t.Fatalf("detail requirement reads versions=%d events=%d delivery=%d event_pages=%d", guard.singleVersions, guard.singleEvents, guard.singleDelivery, guard.eventPages)
+	}
+	// The requirement's activity is served by the events route alone.
+	events := httptest.NewRecorder()
+	handler.ServeHTTP(events, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet,
+		"/v1/requirements/"+requirement.ID+"/events", nil)))
+	var page store.DocumentEventPage
+	if events.Code != http.StatusOK || json.Unmarshal(events.Body.Bytes(), &page) != nil || len(page.Events) < 2 || guard.eventPages != 1 {
+		t.Fatalf("requirement events status=%d event_pages=%d body=%s", events.Code, guard.eventPages, events.Body.String())
 	}
 }
 
@@ -550,7 +559,12 @@ type requirementsScopedStore struct {
 	store.Store
 	fullLineage, fullArtifacts, neighborhood, scopedArtifacts                 int
 	batchVersions, batchEvents, batchDelivery, batchDeliveryEvents, taskLists int
-	singleVersions, singleEvents, singleDelivery                              int
+	singleVersions, singleEvents, singleDelivery, eventPages                  int
+}
+
+func (st *requirementsScopedStore) ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, query store.DocumentEventQuery) (store.DocumentEventPage, error) {
+	st.eventPages++
+	return st.Store.ListDocumentEventPage(ctx, kind, id, query)
 }
 
 func (st *requirementsScopedStore) ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error) {
@@ -1691,17 +1705,28 @@ func TestRequirementsHTTPDistinguishesMigratedSeedFromStaleConfirmableRevision(t
 		t.Fatal(err)
 	}
 	if !view.MigratedSeed || view.ConfirmationEligible || view.Staleness.DeliveryAfterIntent ||
-		len(view.PendingVersions) != 1 || len(view.Lineage) != 2 {
+		len(view.PendingVersions) != 1 {
 		t.Fatalf("migrated seed view=%+v", view)
 	}
+	assertDetailHasNoDocumentEvents(t, response.Body.Bytes())
+	// The backfill annotation now reaches the History view through the
+	// requirement events route.
+	eventsResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(eventsResponse, authenticatedMemoryRead(server, httptest.NewRequest(
+		http.MethodGet, "/v1/requirements/"+seed.ID+"/events", nil,
+	)))
+	var page store.DocumentEventPage
+	if eventsResponse.Code != http.StatusOK || json.Unmarshal(eventsResponse.Body.Bytes(), &page) != nil || len(page.Events) != 2 {
+		t.Fatalf("migrated seed events status=%d body=%s", eventsResponse.Code, eventsResponse.Body.String())
+	}
 	var backfilled bool
-	for _, event := range view.Lineage {
+	for _, event := range page.Events {
 		var payload map[string]any
 		_ = json.Unmarshal(event.Payload, &payload)
 		backfilled = backfilled || payload["backfilled"] == true
 	}
 	if !backfilled {
-		t.Fatalf("migrated seed lineage lacks backfilled annotation: %+v", view.Lineage)
+		t.Fatalf("migrated seed events lack backfilled annotation: %+v", page.Events)
 	}
 	if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{
 		RequirementID: seed.ID,

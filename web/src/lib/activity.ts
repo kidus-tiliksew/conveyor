@@ -553,7 +553,12 @@ function withDependencyContext(state: CurrentExecutionState, item: ActivityItem)
   return {
     ...state,
     blocker: `${state.blocker} ${subject} ${dependencies.length === 1 ? 'is' : 'are'} also unresolved.`,
-    nextAction: `${state.nextAction} The task remains dependency-gated until ${dependencies.length === 1 ? 'that dependency is' : 'those dependencies are'} resolved.`,
+    nextAction: [
+      state.nextAction,
+      `The task remains dependency-gated until ${dependencies.length === 1 ? 'that dependency is' : 'those dependencies are'} resolved.`,
+    ]
+      .filter(Boolean)
+      .join(' '),
     blockingDependencies: dependencies,
   }
 }
@@ -665,10 +670,11 @@ export function deriveCurrentExecutionState(
 }
 
 // A deliberate checkpoint is a question for the operator, not a failure: its
-// title, next step, and blocker are the server's label and question and the
-// agent's own decision request, and the summary stays on NextActionCard
-// (component-web-task-surfaces, Implementation checkpoints;
-// req-operator-next-action AC-1.7). A checkpoint without a decision request
+// title and blocker are the server's label and the agent's own decision
+// request, and the summary stays on NextActionCard. It states no next step:
+// the statement's question stays off the dashboard (component-web-task-surfaces,
+// Implementation checkpoints; req-operator-next-action AC-1.7, AC-1.9;
+// component-next-action invariant 41). A checkpoint without a decision request
 // keeps the released wording (req-260820-394cac AC-1.3), and a verify order
 // keeps its verification checkpoint presentation.
 function checkpointDecisionState(
@@ -688,8 +694,6 @@ function checkpointDecisionState(
     title: action.label,
     blocker: decisionRequest,
     retry: 'No automatic retry is pending.',
-    nextAction: action.question,
-    // The next step is the question, which the next-action card prints.
     facts: { ...allFacts, nextAction: false },
     action: 'recover',
   }
