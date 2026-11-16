@@ -58,7 +58,13 @@ func TestTakeInReadyIssueRedactsTitleAndRecordsCounts(t *testing.T) {
 	if strings.Contains(task.Title, issueTitleStoredKey) || !strings.Contains(task.Title, "[REDACTED:exact]") {
 		t.Fatal("the stored title was not redacted")
 	}
-	if task.Body != body {
+	// The body is read through the single-task detail read: list reads state
+	// no body (component-persistence, Database read accounting).
+	detail, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Body != body {
 		t.Fatal("the body did not stay as submitted")
 	}
 	if *moved != 1 {

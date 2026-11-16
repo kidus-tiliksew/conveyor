@@ -314,7 +314,12 @@ func runGitHubTitleRedaction(t *testing.T, x Fixture) {
 			t.Fatal("the issue created no task")
 		}
 		requireOK(t, titleViolation(ctx, f.st, stored.ID, titleFixtureCount))
-		if stored.Body != body {
+		// The body is read through the single-task detail read: list reads
+		// state no body, so the list row above cannot prove it
+		// (component-persistence, Database read accounting).
+		detail, err := f.st.GetTask(ctx, stored.ID)
+		requireOK(t, err)
+		if detail.Body != body {
 			t.Fatal("the body did not stay as submitted")
 		}
 	})
