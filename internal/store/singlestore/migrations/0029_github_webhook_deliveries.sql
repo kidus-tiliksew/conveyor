@@ -13,12 +13,13 @@ CREATE ROWSTORE TABLE IF NOT EXISTS workspace_github_webhook_secrets (
  SHARD KEY (workspace_id)
 ) COLLATE utf8mb4_bin;
 
-CREATE ROWSTORE TABLE IF NOT EXISTS github_webhook_deliveries (
+CREATE TABLE IF NOT EXISTS github_webhook_deliveries (
  workspace_id VARCHAR(255) NOT NULL,
  delivery_id VARCHAR(255) NOT NULL,
  event VARCHAR(255) NOT NULL,
  received_at DATETIME(6) NOT NULL,
- PRIMARY KEY (workspace_id, delivery_id),
- KEY github_webhook_deliveries_received (workspace_id, received_at),
+ SORT KEY (workspace_id, delivery_id),
+ PRIMARY KEY (workspace_id, delivery_id) USING HASH,
+ KEY github_webhook_deliveries_received (workspace_id, received_at) USING HASH,
  SHARD KEY (workspace_id)
 ) COLLATE utf8mb4_bin;

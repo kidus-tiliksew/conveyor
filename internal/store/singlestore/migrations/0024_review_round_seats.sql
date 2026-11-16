@@ -14,7 +14,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS review_round_seats (
  PRIMARY KEY (workspace_id, task_id, review_round),
  SHARD KEY (workspace_id)
 ) COLLATE utf8mb4_bin;
-CREATE ROWSTORE TABLE IF NOT EXISTS review_seat_additions (
+CREATE TABLE IF NOT EXISTS review_seat_additions (
  workspace_id VARCHAR(255) NOT NULL,
  request_id VARCHAR(255) NOT NULL,
  task_id VARCHAR(255) NOT NULL,
@@ -24,6 +24,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS review_seat_additions (
  reason LONGTEXT NOT NULL,
  actor_id LONGTEXT NOT NULL,
  created_at DATETIME(6) NOT NULL,
- PRIMARY KEY (workspace_id, request_id),
+ SORT KEY (workspace_id, request_id),
+ PRIMARY KEY (workspace_id, request_id) USING HASH,
  SHARD KEY (workspace_id)
 ) COLLATE utf8mb4_bin;
