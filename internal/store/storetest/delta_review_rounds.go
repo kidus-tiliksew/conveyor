@@ -33,6 +33,8 @@ func runDeltaReviewRounds(t *testing.T, x Fixture) {
 	t.Run("FullFallback", func(t *testing.T) { runDeltaFullFallback(t, x) })
 	t.Run("VerifyAndReviewHoldOnePair", func(t *testing.T) { runDeltaVerifyReviewPair(t, x) })
 	t.Run("RoundRetryKeepsDelta", func(t *testing.T) { runDeltaRoundRetry(t, x) })
+	t.Run("RoundRetryKeepsFullPair", func(t *testing.T) { runDeltaRoundRetryFull(t, x) })
+	t.Run("VerifiedFullRetryAcceptsVerdict", func(t *testing.T) { runDeltaVerifiedFullRetry(t, x) })
 	t.Run("SeatAdditionKeepsDelta", func(t *testing.T) { runDeltaSeatAddition(t, x) })
 	t.Run("PolicyHandoffDuringDeltaRound", func(t *testing.T) { runDeltaPolicyHandoff(t, x) })
 	t.Run("PolicyHandoffRefusesForeignBaseline", func(t *testing.T) { runDeltaPolicyHandoffMismatch(t, x) })
@@ -336,25 +338,82 @@ func runDeltaVerifyReviewPair(t *testing.T, x Fixture) {
 // A retried round of a delta head persists the delta scope, the judged head,
 // and the head on every new seat (DR-4; AC-12.4).
 func runDeltaRoundRetry(t *testing.T, x Fixture) {
-	task := drTask(t, x, 2, config.LaterRoundReviewDelta, nil)
-	orders := drRound(t, x, task.ID, 1, 2, drHead, store.ReviewScopeDelta, drJudged)
-	first, err := ClaimWorkOrder(x.Context, x.Backend, orders[0].ID, core.WorkOrderClaim{SessionID: "delta-seat-one-" + task.ID, ClientToken: "one", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	runDeltaRoundRetryScoped(t, x, config.LaterRoundReviewDelta, store.ReviewScopeDelta, drJudged)
+}
+
+// A retried round of a full head persists the recorded base and the head on
+// every new seat and keeps the empty full scope (DR-4; AC-12.4).
+func runDeltaRoundRetryFull(t *testing.T, x Fixture) {
+	runDeltaRoundRetryScoped(t, x, config.LaterRoundReviewFull, "", drBase)
+}
+
+// drTimeOutRound completes seat 1 of a two-seat round without a verdict and
+// times out seat 2, so the round is recoverable by a retry.
+func drTimeOutRound(t *testing.T, x Fixture, taskID string, orders []core.WorkOrder) {
+	t.Helper()
+	first, err := ClaimWorkOrder(x.Context, x.Backend, orders[0].ID, core.WorkOrderClaim{SessionID: "dr-seat-one-" + taskID, ClientToken: "one", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
 	first.State = core.WorkOrderCompleted
 	requireOK(t, UpdateWorkOrder(x.Context, x.Backend, first, core.WorkOrderCmdSubmitReviewVerdict))
-	_, err = ClaimWorkOrder(x.Context, x.Backend, orders[1].ID, core.WorkOrderClaim{SessionID: "delta-seat-two-" + task.ID, ClientToken: "timeout", Lease: time.Minute, ExecutionTimeout: time.Nanosecond})
+	_, err = ClaimWorkOrder(x.Context, x.Backend, orders[1].ID, core.WorkOrderClaim{SessionID: "dr-seat-two-" + taskID, ClientToken: "timeout", Lease: time.Minute, ExecutionTimeout: time.Nanosecond})
 	requireOK(t, err)
 	_, err = taskops.New(x.Backend).TickOrderClock(x.Context, time.Now().UTC().Add(time.Second))
 	requireOK(t, err)
+}
+
+// A full head with verify_stage on: the sealed context and the first round's
+// seats bind the empty full scope and the recorded base. A retried round
+// whose seats carry the same pair accepts a seat verdict with its
+// verification assessment (DR-4; component-verification-service invariants
+// 11 and 48; AC-12.4).
+func runDeltaVerifiedFullRetry(t *testing.T, x Fixture) {
+	v := newVerificationFixtureBound(t, x, []core.VerificationRevision{{Repository: "conveyor", RemoteIdentity: "https://example.test/conveyor", SHA: strings.Repeat("f", 40)}},
+		func(task *core.Task) { task.SetupContract.LaterRoundReview = config.LaterRoundReviewFull }, 1, "", drBase, true)
+	coverage := verificationFixtureCoverage(v.snapshot(t))
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "succeeded", Coverage: coverage}})
+	verify, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
+	requireOK(t, err)
+	if verify.ReviewScope != "" || verify.BaselineSHA != drBase {
+		t.Fatalf("verify order scope=%q baseline=%q", verify.ReviewScope, verify.BaselineSHA)
+	}
+	jobs, orders := seatMembers(verify.TaskID, 1, 2)
+	for i := range orders {
+		orders[i].HeadSHA, orders[i].BaselineSHA = verify.HeadSHA, drBase
+	}
+	requireOK(t, CreateReviewRound(x.Context, x.Backend, verify.TaskID, jobs, orders))
+	drTimeOutRound(t, x, verify.TaskID, orders)
+	retryJobs, retried := seatMembers(verify.TaskID, 2, 2)
+	for i := range retried {
+		retried[i].HeadSHA, retried[i].BaselineSHA = verify.HeadSHA, drBase
+	}
+	result, err := RetryReviewRound(x.Context, x.Backend, store.ReviewRoundRetryRequest{TaskID: verify.TaskID, RequestID: "dr-verified-retry-" + verify.TaskID, PriorRound: 1, Reason: "seat timed out", PRHead: verify.HeadSHA}, retryJobs, retried)
+	requireOK(t, err)
+	drRequireOrders(t, "verified retry", result.WorkOrders, "", drBase, verify.HeadSHA)
+	seat, err := ClaimWorkOrder(x.Context, x.Backend, result.WorkOrders[0].ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("reviewer"), SessionID: "dr-retry-reviewer", ClientToken: "dr-retry-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: verify.ServedRequirementSnapshot})
+	requireOK(t, err)
+	if seat.VerificationContextID != v.contextID {
+		t.Fatalf("retried seat context=%q, want %q", seat.VerificationContextID, v.contextID)
+	}
+	ctx := store.WithActor(x.Context, store.Actor{ID: store.UserActorID("reviewer"), Role: core.ActorUser})
+	decision := core.ReviewDecision{TaskID: seat.TaskID, JobID: seat.JobID, ReviewWorkOrderID: seat.ID, ClaimSession: "dr-retry-reviewer", ReviewRound: 2, ReviewSeat: seat.ReviewSeat, Verdict: "approve", ReasonCode: "verified", Summary: "Retried full seat assessed",
+		ReviewedCommitSHA: verify.HeadSHA, HeadSHA: seat.HeadSHA, ReviewScope: seat.ReviewScope, BaselineSHA: seat.BaselineSHA, MaxBounces: 3,
+		VerificationAssessment: &core.VerificationAssessment{ContextIDs: []string{v.contextID}, RunIDs: []string{}, EvidenceIDs: []string{}, Mappings: []core.VerificationAssessmentMapping{{DocumentID: "req-fixture", Version: 1, AcceptanceCriterionID: "AC-1.1", EvidenceIDs: []string{}, Assessment: "The full context was sealed for this head"}}}}
+	requireOK(t, taskops.New(x.Backend).AcceptReviewDecision(ctx, decision))
+}
+
+func runDeltaRoundRetryScoped(t *testing.T, x Fixture, policy, scope, baseline string) {
+	task := drTask(t, x, 2, policy, nil)
+	orders := drRound(t, x, task.ID, 1, 2, drHead, scope, baseline)
+	drTimeOutRound(t, x, task.ID, orders)
 	seats := resolveSeats(t, x, task.ID, 2)
 	jobs, retried := seatMembers(task.ID, 2, seats.SeatCount)
 	for i := range retried {
-		retried[i].HeadSHA, retried[i].ReviewScope, retried[i].BaselineSHA = drHead, store.ReviewScopeDelta, drJudged
+		retried[i].HeadSHA, retried[i].ReviewScope, retried[i].BaselineSHA = drHead, scope, baseline
 	}
 	result, err := retrySeatRound(x, store.ReviewRoundRetryRequest{TaskID: task.ID, RequestID: "delta-retry-" + task.ID, PriorRound: 1, Reason: "seat timed out", PRHead: drHead}, seats, jobs, retried)
 	requireOK(t, err)
-	drRequireOrders(t, "retry result", result.WorkOrders, store.ReviewScopeDelta, drJudged, drHead)
-	drRequireOrders(t, "stored retry", reviewOrdersInRound(t, x, task.ID, 2), store.ReviewScopeDelta, drJudged, drHead)
+	drRequireOrders(t, "retry result", result.WorkOrders, scope, baseline, drHead)
+	drRequireOrders(t, "stored retry", reviewOrdersInRound(t, x, task.ID, 2), scope, baseline, drHead)
 }
 
 // An operator's added seat joins a delta round with its scope and baseline

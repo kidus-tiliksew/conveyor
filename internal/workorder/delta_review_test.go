@@ -477,9 +477,15 @@ func TestDeltaReviewRoundRetryKeepsPair(t *testing.T) {
 	f := newDeltaFixture(t, config.LaterRoundReviewDelta)
 	f.judgedThenNextHead(t)
 	f.mustSubmit(t)
-	seats := f.round(t, 2)
-	requireDeltaSeats(t, seats, store.ReviewScopeDelta, deltaJudged, deltaHead)
-	for _, seat := range seats {
+	requireDeltaSeats(t, f.round(t, 2), store.ReviewScopeDelta, deltaJudged, deltaHead)
+	f.retryRound(t, 2, store.ReviewScopeDelta, deltaJudged)
+}
+
+// retryRound times out every seat of round and retries it through the
+// service. The retried seats must carry scope, baseline, and the head.
+func (f *deltaFixture) retryRound(t *testing.T, round int, scope, baseline string) {
+	t.Helper()
+	for _, seat := range f.round(t, round) {
 		if _, err := storetest.For(f.st).ClaimWorkOrder(f.ctx, seat.ID, core.WorkOrderClaim{SessionID: "timeout-" + seat.ID, ClientToken: "timeout", ClaimantID: "reviewer", Lease: time.Minute, ExecutionTimeout: time.Nanosecond}); err != nil {
 			t.Fatal(err)
 		}
@@ -488,15 +494,47 @@ func TestDeltaReviewRoundRetryKeepsPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	user := store.WithActor(f.ctx, store.Actor{ID: "operator", Role: core.ActorUser})
-	result, err := f.service.RetryReviewRound(user, f.task.ID, "delta-retry", "seat timed out")
+	result, err := f.service.RetryReviewRound(user, f.task.ID, fmt.Sprintf("retry-%d", round), "seat timed out")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.WorkOrders) == 0 {
+	if len(result.WorkOrders) == 0 || result.NewRound != round+1 {
 		t.Fatalf("retry result=%+v", result)
 	}
-	requireDeltaSeats(t, result.WorkOrders, store.ReviewScopeDelta, deltaJudged, deltaHead)
-	requireDeltaSeats(t, f.round(t, result.NewRound), store.ReviewScopeDelta, deltaJudged, deltaHead)
+	requireDeltaSeats(t, result.WorkOrders, scope, baseline, deltaHead)
+	requireDeltaSeats(t, f.round(t, result.NewRound), scope, baseline, deltaHead)
+}
+
+// A retried round of a full head carries the recorded base and the head and
+// keeps the empty full scope, as the head's first round does (DR-4;
+// AC-12.4).
+func TestDeltaReviewFullRoundRetryKeepsPair(t *testing.T) {
+	for _, policy := range []string{"", config.LaterRoundReviewFull} {
+		t.Run("policy="+policy, func(t *testing.T) {
+			f := newDeltaFixture(t, policy)
+			f.judgedThenNextHead(t)
+			f.mustSubmit(t)
+			requireDeltaSeats(t, f.round(t, 2), "", deltaBase, deltaHead)
+			f.retryRound(t, 2, "", deltaBase)
+		})
+	}
+}
+
+// A full head whose submission was retried after the pull request base moved
+// keeps its first fixed baseline in a retried round too, while the pull
+// request base moves again before the round retry (DR-3, DR-4; AC-12.4).
+func TestDeltaReviewFullRoundRetryAfterBaseMoved(t *testing.T) {
+	f := newDeltaFixture(t, config.LaterRoundReviewFull)
+	f.judgedThenNextHead(t)
+	f.failNext = true
+	if _, err := f.submit(); err == nil {
+		t.Fatal("the failed completion was reported as a submission")
+	}
+	f.base = strings.Repeat("e", 40)
+	f.mustSubmit(t)
+	requireDeltaSeats(t, f.round(t, 2), "", deltaBase, deltaHead)
+	f.base = strings.Repeat("f", 40)
+	f.retryRound(t, 2, "", deltaBase)
 }
 
 // A policy handoff during a delta round inherits the recorded delta pair

@@ -682,14 +682,19 @@ func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reaso
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
-	// A retried round of a head whose submission fixed a delta scope keeps
-	// that scope, the judged head as its baseline, and the head, so its seats
-	// and the head's verify context hold one pair. A full head's retry is
-	// unchanged (feature-delta-review-rounds DR-4; req-review-gates-evidence
-	// AC-12.4).
-	if baseline, head, scope, recorded := store.ReviewRoundDispatchComparison(task, events); recorded && scope == store.ReviewScopeDelta && head == target.HeadSHA {
+	// A retried round of an ordinary head keeps the baseline and head its
+	// submission recorded, as dispatch gives the head's first round, so the
+	// seats and the head's verify context hold one pair. A delta head's seats
+	// also carry review_scope delta; a full head's seats keep the empty scope
+	// dispatch gives them. While the approval is stale, the refresh binding
+	// stands and nothing is copied (feature-delta-review-rounds DR-4;
+	// req-review-gates-evidence AC-12.4, AC-12.6).
+	if baseline, head, scope, recorded := store.ReviewRoundDispatchComparison(task, events); recorded && head == target.HeadSHA {
 		for i := range newOrders {
-			newOrders[i].ReviewScope, newOrders[i].BaselineSHA, newOrders[i].HeadSHA = store.ReviewScopeDelta, baseline, head
+			newOrders[i].BaselineSHA, newOrders[i].HeadSHA = baseline, head
+			if scope == store.ReviewScopeDelta {
+				newOrders[i].ReviewScope = store.ReviewScopeDelta
+			}
 		}
 	}
 	request := store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA, Automatic: automatic}
