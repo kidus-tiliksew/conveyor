@@ -44,7 +44,7 @@ func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, pendingProposalItem{PendingProposal: proposal, AgeSeconds: int64(age / time.Second)})
 	}
-	tasks, err := s.Store.CountOperatorAttention(r.Context())
+	tasks, err := s.attentionCount(r.Context())
 	if err != nil {
 		log.Printf("list pending proposals: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
