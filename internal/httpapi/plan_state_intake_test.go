@@ -239,6 +239,16 @@ func (w withheldCapability) AuthorizeWorkspace(ctx context.Context, userID, work
 	return allowed, err
 }
 
+func (w withheldCapability) AuthorizeWorkspaceUsers(ctx context.Context, userIDs []string, workspaceID string, capability core.Capability) (map[string]bool, error) {
+	decisions, err := w.lockedMemberships.AuthorizeWorkspaceUsers(ctx, userIDs, workspaceID, capability)
+	if err == nil && capability == w.capability {
+		if _, ok := decisions[w.userID]; ok {
+			decisions[w.userID] = false
+		}
+	}
+	return decisions, err
+}
+
 // TestRESTIntakeResolvesThePlanState proves intake's order: a filed plan, then
 // plan_state, then the legacy spec_approval, then the legacy level, then the
 // workspace default, which is needed when unset (component-plan-state
