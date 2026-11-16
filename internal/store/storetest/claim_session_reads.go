@@ -644,6 +644,9 @@ func RunRenewalReads(t *testing.T, x Fixture, scale ClaimSessionScale, renew Ren
 	if !stored.LeaseExpiresAt.Equal(short.LeaseExpiresAt) || !stored.ExecutionDeadline.Equal(before.ExecutionDeadline) || stored.SessionID != live.SessionID {
 		t.Fatalf("stored renewal = lease %s deadline %s session %q, want lease %s deadline %s", stored.LeaseExpiresAt, stored.ExecutionDeadline, stored.SessionID, short.LeaseExpiresAt, before.ExecutionDeadline)
 	}
+	if !stored.UpdatedAt.Equal(short.UpdatedAt) {
+		t.Fatalf("stored renewal update time %s, want returned %s", stored.UpdatedAt, short.UpdatedAt)
+	}
 	if stored.GovernanceSnapshot == nil || len(stored.GovernanceSnapshot.Designs[0].Content) != ClaimSessionSnapshotBytes || len(stored.ServedRequirementSnapshot) != 1 {
 		t.Fatal("renewal lost the order's pinned snapshots")
 	}

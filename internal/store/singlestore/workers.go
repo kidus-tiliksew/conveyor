@@ -52,7 +52,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskL
 		}
 		now := time.Now().UTC()
 		if claimAlive(o, c, now) {
-			expires := now.Add(duration)
+			expires := now.Add(duration).Truncate(time.Microsecond)
 			if !o.ExecutionDeadline.IsZero() && expires.After(o.ExecutionDeadline) {
 				expires = o.ExecutionDeadline
 			}
@@ -60,7 +60,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskL
 				return err
 			}
 			o.LeaseExpiresAt = expires
-			o.UpdatedAt = now
+			o.UpdatedAt = now.Truncate(time.Microsecond)
 			result = o
 			return taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": o.AttemptID, "lease_expires_at": expires})})
 		}
