@@ -128,7 +128,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
-	riskApprovals, err := readAssemblerRiskApprovals(ctx, st, tasks, opts)
+	riskApprovals, err := readAssemblerRiskApprovals(ctx, st, tasks, orders, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -541,31 +541,34 @@ func readAssemblerCheckStatus(ctx context.Context, st Store, tasks []core.Task) 
 // (req-risk-based-review AC-1.1, REQ-8, REQ-9, AC-11.1; DEC-124(2)). The
 // trust list is opts.TrustedAuthors' live answer; without it the empty list
 // applies, which trusts every person who holds operate_gates (AC-9.1).
-func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task, opts NextActionOptions) (map[string]nextaction.RiskApprovals, error) {
+func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task, orders []core.WorkOrder, opts NextActionOptions) (map[string]nextaction.RiskApprovals, error) {
 	out := map[string]nextaction.RiskApprovals{}
+	var candidates []core.Task
+	trusted := map[string][]string{}
 	for _, task := range tasks {
 		atGate := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
 		if !task.SetupContract.Risk.Enforcing() || (task.State != core.TaskApproved && !atGate) {
 			continue
 		}
-		scoped := ctx
-		if task.Workspace != "" {
-			scoped = WithWorkspace(ctx, task.Workspace)
-		}
-		var trusted []string
+		candidates = append(candidates, task)
 		if opts.TrustedAuthors != nil {
+			scoped := ctx
+			if task.Workspace != "" {
+				scoped = WithWorkspace(ctx, task.Workspace)
+			}
 			var err error
-			if trusted, err = opts.TrustedAuthors(scoped, task); err != nil {
+			trusted[task.ID], err = opts.TrustedAuthors(scoped, task)
+			if err != nil {
 				return nil, err
 			}
 		}
-		// The caller's own approval is evaluated too, so the merge choice is
-		// offered only when the caller's act can land the head
-		// (req-risk-based-review AC-8.7, AC-11.1).
-		evaluation, err := EvaluateTaskApprovals(scoped, st, task, trusted, opts.CallerUserID)
-		if err != nil {
-			return nil, err
-		}
+	}
+	evaluations, err := evaluateTaskApprovalsBatch(ctx, st, candidates, orders, true, trusted, opts.CallerUserID)
+	if err != nil {
+		return nil, err
+	}
+	for _, task := range candidates {
+		evaluation := evaluations[task.ID]
 		if evaluation.Base.Required < 1 {
 			continue
 		}
@@ -593,22 +596,27 @@ func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task
 // invariant 1).
 func readAssemblerPlanRiskOrders(ctx context.Context, st Store, tasks []core.Task, specs map[string]int) (map[string]nextaction.PlanRiskOrderRef, error) {
 	out := map[string]nextaction.PlanRiskOrderRef{}
+	byWorkspace := map[string][]string{}
 	for _, task := range tasks {
-		version := specs[task.ID]
-		if task.State != core.TaskAwaiting || task.GateKind != core.GateKindPlanApproval || !task.SetupContract.Risk.Enforcing() || version <= 0 {
+		if task.State != core.TaskAwaiting || task.GateKind != core.GateKindPlanApproval || !task.SetupContract.Risk.Enforcing() || specs[task.ID] <= 0 {
 			continue
 		}
-		scoped := ctx
-		if task.Workspace != "" {
-			scoped = WithWorkspace(ctx, task.Workspace)
+		workspaceID := task.Workspace
+		if workspaceID == "" {
+			workspaceID, _ = WorkspaceFromContext(ctx)
 		}
-		orders, err := st.ListTaskRiskOrders(scoped, task.ID)
+		byWorkspace[workspaceID] = append(byWorkspace[workspaceID], task.ID)
+	}
+	for workspaceID, ids := range byWorkspace {
+		ordersByTask, err := st.ListRiskOrdersForTasks(WithWorkspace(ctx, workspaceID), workspaceID, ids)
 		if err != nil {
 			return nil, err
 		}
-		for _, order := range orders {
-			if order.Order.TaskID == task.ID && order.Subject.Kind() == riskpolicy.RiskSubjectPlan && order.Subject.PlanVersion == version {
-				out[task.ID] = nextaction.PlanRiskOrderRef{PlanVersion: version, Order: order.Order}
+		for _, taskID := range ids {
+			for _, order := range ordersByTask[taskID] {
+				if order.Order.TaskID == taskID && order.Subject.Kind() == riskpolicy.RiskSubjectPlan && order.Subject.PlanVersion == specs[taskID] {
+					out[taskID] = nextaction.PlanRiskOrderRef{PlanVersion: specs[taskID], Order: order.Order}
+				}
 			}
 		}
 	}

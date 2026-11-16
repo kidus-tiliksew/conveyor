@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -370,6 +371,21 @@ func RunPlanRiskOrderConformance(t *testing.T, x Fixture) {
 		setPlanState(t, task.ID, core.PlanNeeded)
 		attach(t, task.ID, "lower-"+task.ID)
 		second := requireOrders(t, task.ID, 1, 2)[1]
+		t.Run("BatchMatchesPerTask", func(t *testing.T) {
+			none := planningTask(t, "")
+			one := planningTask(t, riskpolicy.ModeRecord)
+			mustSubmit(t, one.ID)
+			ids := []string{none.ID, one.ID, task.ID}
+			batch, err := st.ListRiskOrdersForTasks(ctx, x.Workspace, ids)
+			requireOK(t, err)
+			for _, id := range ids {
+				want, err := st.ListTaskRiskOrders(ctx, id)
+				requireOK(t, err)
+				if !reflect.DeepEqual(batch[id], want) {
+					t.Fatalf("task %s: batch=%+v, per-task=%+v", id, batch[id], want)
+				}
+			}
+		})
 		rate(t, task.ID, second.Order.ID, "lower-version", riskpolicy.TierLow)
 		requireOK(t, st.ApproveSpecVersion(ctx, task.ID, 2))
 		if got := tier(t, task.ID); got != riskpolicy.TierMedium {

@@ -75,6 +75,7 @@ type RiskOrderStore interface {
 	// oldest first. LatestCompletedHeadRiskPaths reads the need decision's
 	// rated paths from the result.
 	ListTaskRiskOrders(ctx context.Context, taskID string) ([]core.RiskOrder, error)
+	ListRiskOrdersForTasks(ctx context.Context, workspaceID string, taskIDs []string) (map[string][]core.RiskOrder, error)
 }
 
 // RiskOrderCreateRequest asks for one risk order. ChangedPaths and
@@ -793,6 +794,24 @@ func (m *memory) ListTaskRiskOrders(ctx context.Context, taskID string) ([]core.
 		orders = []core.RiskOrder{}
 	}
 	return orders, nil
+}
+
+func (m *memory) ListRiskOrdersForTasks(ctx context.Context, workspaceID string, taskIDs []string) (map[string][]core.RiskOrder, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string][]core.RiskOrder, len(taskIDs))
+	now := time.Now().UTC()
+	for _, taskID := range taskIDs {
+		orders := m.taskRiskOrdersLocked(workspaceID, taskID)
+		for i := range orders {
+			orders[i].Order = ProjectWorkOrderAt(orders[i].Order, now)
+		}
+		if orders == nil {
+			orders = []core.RiskOrder{}
+		}
+		result[taskID] = orders
+	}
+	return result, nil
 }
 
 // recordClaimIdentityLocked appends one accepted claim to the memory claim

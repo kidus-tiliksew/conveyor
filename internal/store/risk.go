@@ -34,6 +34,7 @@ type RiskRatingStore interface {
 	RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, seats RiskSeatSettings) (core.RiskRating, error)
 	// ListTaskRiskRatings returns a task's ratings in recorded order.
 	ListTaskRiskRatings(ctx context.Context, taskID string) ([]core.RiskRating, error)
+	ListRiskRatingsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.RiskRating, error)
 }
 
 // RiskSeatSettings are trusted, service-derived inputs of seats a raised tier
@@ -265,6 +266,21 @@ func (m *memory) ListTaskRiskRatings(ctx context.Context, taskID string) ([]core
 	}
 	SortRiskRatings(ratings)
 	return ratings, nil
+}
+
+func (m *memory) ListRiskRatingsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.RiskRating, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, _ := WorkspaceFromContext(ctx)
+	out := make(map[string][]core.RiskRating, len(taskIDs))
+	for _, taskID := range taskIDs {
+		key := memoryScopedKey{workspace: workspace, id: taskID}
+		for _, rating := range m.countedRiskRatingsLocked(m.riskRatings[key], taskID) {
+			out[taskID] = append(out[taskID], cloneRiskRating(rating))
+		}
+		SortRiskRatings(out[taskID])
+	}
+	return out, nil
 }
 
 func (m *memory) insertRiskRatingLocked(ctx context.Context, key memoryScopedKey, rating core.RiskRating) {

@@ -538,6 +538,26 @@ func NextActionEventKind(kind string) bool {
 	return slices.Contains(NextActionEventKinds, kind)
 }
 
+func (m *memory) ListClaimEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, scoped := WorkspaceFromContext(ctx)
+	out := make(map[string][]core.Event, len(taskIDs))
+	for _, id := range taskIDs {
+		task, ok := m.tasks[id]
+		if !ok || (scoped && workspace != "" && task.Workspace != workspace) {
+			continue
+		}
+		for _, event := range m.sortedEventsLocked(id) {
+			if event.Kind == "work_order.claimed" {
+				event.Payload = CompactEventPayload(event.Kind, event.Payload)
+				out[id] = append(out[id], event)
+			}
+		}
+	}
+	return out, nil
+}
+
 func (m *memory) ListNextActionEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

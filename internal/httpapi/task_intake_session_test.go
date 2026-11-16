@@ -50,6 +50,11 @@ func (l *lockedMemberships) AuthorizeWorkspace(ctx context.Context, userID, work
 	defer l.mu.Unlock()
 	return l.inner.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
 }
+func (l *lockedMemberships) AuthorizeWorkspaceUsers(ctx context.Context, userIDs []string, workspaceID string, capability core.Capability) (map[string]bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inner.AuthorizeWorkspaceUsers(ctx, userIDs, workspaceID, capability)
+}
 func (l *lockedMemberships) AuthorizeWorkspaceCapabilities(ctx context.Context, userID, workspaceID string, capabilities []core.Capability) (map[core.Capability]bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

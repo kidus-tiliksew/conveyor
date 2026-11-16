@@ -628,6 +628,11 @@ func (m *lockedMembership) AuthorizeWorkspace(ctx context.Context, userID, works
 	defer m.mu.Unlock()
 	return m.membershipFixture.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
 }
+func (m *lockedMembership) AuthorizeWorkspaceUsers(ctx context.Context, userIDs []string, workspaceID string, capability core.Capability) (map[string]bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.membershipFixture.AuthorizeWorkspaceUsers(ctx, userIDs, workspaceID, capability)
+}
 func (m *lockedMembership) AuthorizeDeployment(ctx context.Context, userID string, capability core.Capability) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

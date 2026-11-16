@@ -113,6 +113,44 @@ func (s *Store) ListTaskRiskRatings(ctx context.Context, taskID string) ([]core.
 	return listRiskRatings(ctx, s.db, taskID)
 }
 
+func (s *Store) ListRiskRatingsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.RiskRating, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRiskRatingsForTasks")
+	out := make(map[string][]core.RiskRating, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	args := append([]any{documentWorkspace(ctx)}, taskMapArgs(taskIDs)...)
+	rows, err := documentRows(ctx, s.db, `SELECT r.task_id,r.payload_json,(s.task_id IS NOT NULL)
+FROM task_risk_ratings r LEFT JOIN task_specs s ON s.workspace_id=r.workspace_id AND s.task_id=r.task_id
+AND s.version=JSON_EXTRACT_BIGINT(r.payload_json,'plan_version') AND s.approved=TRUE
+WHERE r.workspace_id=? AND r.task_id IN (`+taskMapMarks(len(taskIDs))+`) ORDER BY r.task_id,r.seq`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var taskID string
+		var raw []byte
+		var approved bool
+		if err := rows.Scan(&taskID, &raw, &approved); err != nil {
+			return nil, err
+		}
+		var rating core.RiskRating
+		if err := json.Unmarshal(raw, &rating); err != nil {
+			return nil, err
+		}
+		rating.PlanPending = rating.Source == core.RiskSourceRiskAgent && rating.PlanVersion > 0 && !approved
+		out[taskID] = append(out[taskID], rating)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, ratings := range out {
+		store.SortRiskRatings(ratings)
+	}
+	return out, nil
+}
+
 func listRiskRatings(ctx context.Context, db s2log.Executor, taskID string) ([]core.RiskRating, error) {
 	rows, err := documentRows(ctx, db, `SELECT payload_json FROM task_risk_ratings WHERE workspace_id=? AND task_id=? ORDER BY seq`, documentWorkspace(ctx), taskID)
 	if err != nil {

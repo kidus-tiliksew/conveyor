@@ -879,6 +879,18 @@ func (s mergeIdentityStore) AuthorizeWorkspace(_ context.Context, userID, _ stri
 	return userID != "" && !strings.HasPrefix(userID, "no-gates-") && capability == core.CapabilityOperateGates, nil
 }
 
+func (s mergeIdentityStore) AuthorizeWorkspaceUsers(ctx context.Context, userIDs []string, workspaceID string, capability core.Capability) (map[string]bool, error) {
+	out := make(map[string]bool, len(userIDs))
+	for _, userID := range userIDs {
+		allowed, err := s.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
+		if err != nil {
+			return nil, err
+		}
+		out[userID] = allowed
+	}
+	return out, nil
+}
+
 func TestOrdinaryReviewWithoutOrderHeadFallsBackToPullRequestOpenedHead(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()

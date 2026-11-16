@@ -726,3 +726,26 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.arg(decision_id)::text = '' OR decision_id = sqlc.arg(decision_id))
 ORDER BY decision_id, document_tier, document_id;
 
+-- name: ListTaskApprovalsForTasks :many
+SELECT task_id, payload_json FROM task_risk_approvals
+WHERE workspace_id = sqlc.arg(workspace_id) AND task_id = ANY(sqlc.arg(task_ids)::text[])
+ORDER BY task_id, seq;
+
+-- name: ListClaimEventsForTasks :many
+SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,
+  CASE WHEN jsonb_typeof(e.payload_json) = 'object'
+    THEN e.payload_json - 'governance_snapshot' - 'served_requirement_snapshot'
+    ELSE e.payload_json END::jsonb AS payload_json,
+  e.at,e.workspace_id
+FROM events e JOIN tasks t ON t.id = e.task_id
+WHERE t.workspace_id = sqlc.arg(workspace_id)
+  AND e.task_id = ANY(sqlc.arg(task_ids)::text[]) AND e.kind = 'work_order.claimed'
+ORDER BY e.task_id,e.at,e.id;
+
+-- name: ListRiskRatingsForTasks :many
+SELECT r.task_id,r.payload_json,
+  EXISTS (SELECT 1 FROM task_specs s WHERE s.task_id=r.task_id
+    AND s.version=CAST(r.payload_json->>'plan_version' AS integer) AND s.approved) AS plan_approved
+FROM task_risk_ratings r
+WHERE r.workspace_id=sqlc.arg(workspace_id) AND r.task_id=ANY(sqlc.arg(task_ids)::text[])
+ORDER BY r.task_id,r.seq;

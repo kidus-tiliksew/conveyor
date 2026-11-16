@@ -127,6 +127,32 @@ func runMonitor(t *testing.T, x Fixture) {
 	t.Run("tip and per-repository status", func(t *testing.T) { runMonitorTip(t, x) })
 	t.Run("task origins", func(t *testing.T) { runMonitorOrigins(t, x) })
 	t.Run("recovery link", func(t *testing.T) { runMonitorRecoveryLink(t, x) })
+	t.Run("latest pull requests", func(t *testing.T) {
+		none, one, many := newAggregateTask(t, x), newAggregateTask(t, x), newAggregateTask(t, x)
+		at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+		appendPR := func(task core.Task, number int, when time.Time) {
+			t.Helper()
+			requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", At: when, Payload: core.JSONPayload(map[string]int{"number": number})}))
+		}
+		appendPR(one, 1, at)
+		appendPR(many, 2, at)
+		appendPR(many, 3, at.Add(time.Second))
+		appendPR(many, 4, at.Add(time.Second))
+		got, err := st.ListLatestPullRequestEventsForTasks(ctx, []string{none.ID, one.ID, many.ID})
+		requireOK(t, err)
+		if len(got) != 2 {
+			t.Fatalf("got %d pull requests, want two", len(got))
+		}
+		for id, want := range map[string]int{one.ID: 1, many.ID: 4} {
+			var payload struct {
+				Number int `json:"number"`
+			}
+			requireOK(t, json.Unmarshal(got[id].Payload, &payload))
+			if payload.Number != want {
+				t.Errorf("task %s: pull request %d, want %d", id, payload.Number, want)
+			}
+		}
+	})
 }
 
 // recoveryLinkFault fails LinkRecoveryTask while err is set, as a store failure

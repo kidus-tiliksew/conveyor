@@ -2,6 +2,7 @@ package nextaction
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -157,6 +158,7 @@ func GateVariants() []string {
 }
 
 var catalogueTable = map[catalogueKey]Entry{}
+var catalogueKinds []string
 
 func init() {
 	text := func(s string) func(Vars) string {
@@ -195,6 +197,7 @@ func init() {
 		{KindRetrying, "Retrying", "Conveyor will retry this automatically.", "", "The next retry still runs.", nil, nil},
 	}
 	for _, item := range kindEntries {
+		catalogueKinds = append(catalogueKinds, item.kind)
 		entry := Entry{
 			Label: item.label, Summary: text(item.summary), Choices: item.choices, RunGate: item.run,
 		}
@@ -377,6 +380,13 @@ func init() {
 	}
 }
 
+// Kinds returns the distinct action kinds represented by the catalogue.
+func Kinds() []string {
+	kinds := slices.Clone(catalogueKinds)
+	slices.Sort(kinds)
+	return kinds
+}
+
 func Lookup(kind, stall, release, gate string) (Entry, bool) {
 	return LookupVariant(kind, stall, release, gate, "")
 }
@@ -408,17 +418,6 @@ func LookupVariant(kind, stall, release, gate, variant string) (Entry, bool) {
 // AgentQuestionVariants are the agent-question variants the catalogue must cover.
 func AgentQuestionVariants() []string {
 	return []string{AgentQuestionCitedRevisions, AgentQuestionCitedConfirmed, AgentQuestionRevisionNeeded}
-}
-
-// Kinds, StallReasons, ReleaseOutcomes, and GateKinds are the constants the
-// catalogue must cover.
-func Kinds() []string {
-	return []string{
-		KindTerminal, KindParked, KindDispatchExhausted, KindPlanApproval, KindPlanRevision,
-		KindMergeApproval, KindReviewBounceLimit, KindJobFailure, KindMergeConflict, KindMergeExecution,
-		KindCheckHold, KindMerging, KindContextProposal, KindAgentQuestion, KindVerificationDisposition, KindForgeFailure,
-		KindReviewRecovery, KindDependencyUnsatisfiable, KindStalled, KindBlocked, KindWorking, KindQueued, KindRetrying,
-	}
 }
 
 func StallReasons() []string {

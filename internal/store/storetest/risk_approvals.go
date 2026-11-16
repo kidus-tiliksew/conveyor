@@ -28,6 +28,14 @@ func (s gatedApprovalStore) AuthorizeWorkspace(_ context.Context, userID, _ stri
 	return capability == core.CapabilityOperateGates && s.gates[userID], nil
 }
 
+func (s gatedApprovalStore) AuthorizeWorkspaceUsers(_ context.Context, userIDs []string, _ string, capability core.Capability) (map[string]bool, error) {
+	out := make(map[string]bool, len(userIDs))
+	for _, userID := range userIDs {
+		out[userID] = capability == core.CapabilityOperateGates && s.gates[userID]
+	}
+	return out, nil
+}
+
 // RunTaskApprovalConformance proves on every backend that human approvals of
 // an enforcing task bind to the reviewed head and review round, count each
 // person once, refuse a stale head, a non-enforcing task, and a task away from
@@ -115,6 +123,22 @@ func RunTaskApprovalConformance(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		if len(listed) != 4 {
 			t.Fatalf("listed=%+v, want 4 records", listed)
+		}
+		batched, err := st.ListTaskApprovalsForTasks(ctx, []string{task.ID, "missing-task"})
+		requireOK(t, err)
+		if len(batched[task.ID]) != len(listed) || len(batched["missing-task"]) != 0 {
+			t.Fatalf("batch=%+v, want the recorded approvals and no missing-task approvals", batched)
+		}
+		for _, want := range listed {
+			found := false
+			for _, got := range batched[task.ID] {
+				if got.TaskID == want.TaskID && got.Kind == want.Kind && got.UserID == want.UserID && got.HeadSHA == want.HeadSHA && got.ReviewRound == want.ReviewRound {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("batch missing approval %+v", want)
+			}
 		}
 		if n := countEvents(t, task.ID, core.TaskApprovalEvent); n != 3 {
 			t.Fatalf("approval events=%d, want 3", n)
@@ -334,6 +358,12 @@ func RunTaskApprovalConformance(t *testing.T, x Fixture) {
 		reviewRound(t, task.ID, 1)
 		claim := core.WorkOrder{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, ClaimantID: core.TaskRunClaimantID("usr-author")}
 		requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "work_order.claimed", Payload: store.WorkOrderEventPayload(claim)}))
+		claims, err := st.ListClaimEventsForTasks(ctx, []string{task.ID, "missing-task"})
+		requireOK(t, err)
+		authors, unknown := store.TaskAuthors(claims[task.ID], nil)
+		if unknown || len(authors) != 1 || authors[0] != "usr-author" || len(claims["missing-task"]) != 0 {
+			t.Fatalf("claim events=%+v authors=%v unknown=%v", claims, authors, unknown)
+		}
 		for _, user := range []string{"usr-a", "usr-a", "usr-author"} {
 			_, _, err := st.RecordTaskApproval(ctx, approval(task.ID, user, 1))
 			requireOK(t, err)

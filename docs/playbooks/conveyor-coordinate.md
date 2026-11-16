@@ -24,6 +24,10 @@ acting. Pass the workspace explicitly on every MCP call and CLI command. Do not
 reuse task IDs, ports, credentials, versions, or paths from memory without
 checking them.
 
+Use `get_board` for an overview of open tasks. Continue from the offset plus
+the number of items until you reach the total, even when a page is short.
+Use `list_tasks` for filtered or terminal-task searches.
+
 Read the installed skill and playbook for each operation before running it:
 `conveyor-work` for a stage order and its human gates,
 `conveyor-kit-verify` for verification, `conveyor-file-tasks` for filing, and

@@ -58,6 +58,7 @@ func mcpReadDefinitions() []mcpReadDefinition {
 		{"list_workspaces", "List only your own workspace memberships. Supply a known workspace_id to authorize this bounded discovery read.", nil, nil},
 		{"list_repositories", "List repository names and base branches in the selected workspace; excludes local paths and configuration.", nil, nil},
 		{"list_tasks", "Find active or terminal tasks. An empty work-order list is not evidence that tasks do not exist.", map[string]any{"state": enum("active", "terminal", "all"), "repository": str(), "query": str()}, nil},
+		{"get_board", "Read one board page of open tasks. Continue at offset plus the number of items until reaching total; short pages can have more items. Each page is a separate read.", nil, nil},
 		{"get_task", "Read one task, including terminal tasks, without claiming or reconciling work. next_action carries the server-stated label, actor, kind, judgment, summary, deadline, and blockers; get_task_status returns the full statement. The complete single-item result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"task_id": str()}, []string{"task_id"}},
 		{"list_operator_inbox", "List the operator inbox in server order: decisions first, then tasks blocked by other tasks, then acts needing no judgment. Each item carries its band, task, next action, pull request, served requirements, recommendation, blockers, and deadline; pending document proposals appear among the decisions. Filters match GET /v1/next-actions.", map[string]any{"band": enum("decisions", "blocked", "automatic"), "state": str(), "repository": str(), "serves_requirement": str(), "governing_design": str(), "assignee": str(), "query": str()}, nil},
 		{"list_task_events", "Read recorded task events in chronological order with event-ID tie-breaks; actor/source are not inferred. Payload fields are allowlisted. Long histories arrive as bounded windows of at most 1000 events: total and offset page within one window, history_total counts the captured history, and next_cursor (never combined with any snapshot or offset argument, including offset 0) opens the next window. Restart on 'restart read'.", map[string]any{"task_id": str(), "event_kind": str(), "cursor": map[string]any{"type": "string", "minLength": 32, "maxLength": 32}}, []string{"task_id"}},
@@ -79,6 +80,11 @@ func mcpReadTools() []map[string]any {
 			"limit":        map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
 			"offset":       map[string]any{"type": "integer", "minimum": 0, "maximum": mcpReadMaxItems, "default": 0},
 			"snapshot":     map[string]any{"type": "string", "minLength": 32, "maxLength": 32},
+		}
+		if d.name == "get_board" {
+			delete(p, "snapshot")
+			p["limit"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "default": 100}
+			p["offset"] = map[string]any{"type": "integer", "minimum": 0, "maximum": store.MaxTaskOperationsOffset, "default": 0}
 		}
 		if mcpReadRefusesSnapshot(d.name) {
 			delete(p, "offset")
@@ -192,6 +198,9 @@ func validateMCPRead(name string, args map[string]any) (int, int, string, error)
 		}
 	}
 	limit, offset := 25, 0
+	if name == "get_board" {
+		limit = 100
+	}
 	if v, ok := args["limit"]; ok {
 		b, _ := json.Marshal(v)
 		_ = json.Unmarshal(b, &limit)
@@ -207,7 +216,7 @@ func validateMCPRead(name string, args map[string]any) (int, int, string, error)
 	if cursor && (snapshotArg || offsetArg) {
 		return 0, 0, "", fmt.Errorf("cursor cannot be combined with snapshot or offset")
 	}
-	if offset > 0 && snapshot == "" {
+	if name != "get_board" && offset > 0 && snapshot == "" {
 		return 0, 0, "", fmt.Errorf("offset requires snapshot")
 	}
 	return limit, offset, snapshot, nil
@@ -235,6 +244,10 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 		return nil, fmt.Errorf("workspace_not_found: workspace not found")
 	}
 	ctx := store.WithWorkspace(r.Context(), workspace)
+	if name == "get_board" {
+		page, _, err := s.readBoardPage(ctx, limit, offset)
+		return page, err
+	}
 	if name == "search_documents" {
 		return s.mcpDocumentSearch(ctx, args, limit)
 	}

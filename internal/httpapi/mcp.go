@@ -561,6 +561,7 @@ var mcpCapabilities = map[string]core.Capability{
 	"get_task":                   core.CapabilityViewWorkspace,
 	"get_task_status":            core.CapabilityViewWorkspace,
 	"list_operator_inbox":        core.CapabilityViewWorkspace,
+	"get_board":                  core.CapabilityViewWorkspace,
 	"list_tasks":                 core.CapabilityViewWorkspace,
 	"list_repositories":          core.CapabilityViewWorkspace,
 	"list_workspaces":            core.CapabilityViewWorkspace,

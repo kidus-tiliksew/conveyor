@@ -390,6 +390,7 @@ type DocumentStore interface {
 	// in the current workspace, ordered by time and ID per task. Empty IDs
 	// return an empty map without a database read.
 	ListMonitorPullRequestEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
+	ListLatestPullRequestEventsForTasks(ctx context.Context, taskIDs []string) (map[string]core.Event, error)
 	// MonitorOriginsForTasks returns, for each requested task whose source is
 	// monitor:<kind>, the earliest observation linked to it whose kind equals
 	// that source kind, by created_at and then identity, in the current
@@ -550,6 +551,7 @@ type ActivityStore interface {
 	AppendEvent(ctx context.Context, event core.Event) error
 	// ListEvents returns the per-task ledger ordered by event time, then ID.
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	ListClaimEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
 	// ListEventPage returns one page of ListEvents and the task's event count.
 	// A task outside the request's workspace reads as a task without events.
 	ListEventPage(ctx context.Context, taskID string, page PageQuery) (EventPage, error)

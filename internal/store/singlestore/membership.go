@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -63,6 +64,35 @@ func (s *Store) AuthorizeWorkspace(ctx context.Context, userID, workspaceID stri
 		return false, translateBackendConflict(err)
 	}
 	return core.RoleAllows(role, capability), nil
+}
+
+func (s *Store) AuthorizeWorkspaceUsers(ctx context.Context, userIDs []string, workspaceID string, capability core.Capability) (map[string]bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AuthorizeWorkspaceUsers")
+	out := make(map[string]bool, len(userIDs))
+	args := make([]any, 1, len(userIDs)+1)
+	args[0] = workspaceID
+	for _, userID := range userIDs {
+		out[userID] = false
+		args = append(args, userID)
+	}
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(userIDs)), ",")
+	rows, err := backendRows(ctx, s.db, `SELECT user_id,role FROM workspace_role_bindings WHERE workspace_id=? AND user_id IN (`+marks+`)`, args...)
+	if err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var userID string
+		var role core.WorkspaceRole
+		if err := rows.Scan(&userID, &role); err != nil {
+			return nil, translateBackendConflict(err)
+		}
+		out[userID] = core.RoleAllows(role, capability)
+	}
+	return out, translateBackendConflict(rows.Err())
 }
 
 // AuthorizeWorkspaceCapabilities issues AuthorizeWorkspace's single binding

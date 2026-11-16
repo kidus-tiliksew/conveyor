@@ -38,6 +38,28 @@ func (m *memory) ListMonitorPullRequestEventsForTasks(ctx context.Context, taskI
 	}
 	return result, nil
 }
+func (m *memory) ListLatestPullRequestEventsForTasks(ctx context.Context, taskIDs []string) (map[string]core.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]core.Event, len(taskIDs))
+	workspace, scoped := WorkspaceFromContext(ctx)
+	for _, id := range taskIDs {
+		task, exists := m.tasks[id]
+		if !exists || scoped && task.Workspace != workspace {
+			continue
+		}
+		for _, event := range m.events[id] {
+			if event.Kind != "pull_request.opened" {
+				continue
+			}
+			old, ok := result[id]
+			if !ok || event.At.After(old.At) || event.At.Equal(old.At) && event.ID > old.ID {
+				result[id] = event
+			}
+		}
+	}
+	return result, nil
+}
 
 func (m *memory) MonitorOriginsForTasks(ctx context.Context, taskIDs []string) (map[string]monitor.ObservationRecord, error) {
 	m.mu.RLock()

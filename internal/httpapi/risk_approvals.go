@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -240,6 +241,32 @@ func (s *Server) trustedAuthors(ctx context.Context, task core.Task) ([]string, 
 	}
 	repo, _ := cfg.Repo(task.Repo)
 	return repo.TrustedAuthors, nil
+}
+
+func (s *Server) requestTrustedAuthors() func(context.Context, core.Task) ([]string, error) {
+	type result struct {
+		cfg *config.Config
+		err error
+	}
+	cache := map[string]result{}
+	return func(ctx context.Context, task core.Task) ([]string, error) {
+		if s.ConfigProvider == nil {
+			return nil, nil
+		}
+		entry, ok := cache[task.Workspace]
+		if !ok {
+			entry.cfg, entry.err = s.ConfigProvider(store.WithWorkspace(ctx, task.Workspace))
+			cache[task.Workspace] = entry
+		}
+		if entry.err != nil {
+			return nil, fmt.Errorf("resolve trusted authors: %w", entry.err)
+		}
+		if entry.cfg == nil {
+			return nil, nil
+		}
+		repo, _ := entry.cfg.Repo(task.Repo)
+		return repo.TrustedAuthors, nil
+	}
 }
 
 // taskApprovalEvaluation evaluates an enforcing task's approvals with the

@@ -1036,6 +1036,90 @@ func (q *Queries) ListActivityMarkers(ctx context.Context, workspaceID string) (
 	return items, nil
 }
 
+const listRiskRatingsForTasks = `-- name: ListRiskRatingsForTasks :many
+SELECT r.task_id,r.payload_json,
+  EXISTS (SELECT 1 FROM task_specs s WHERE s.task_id=r.task_id
+    AND s.version=CAST(r.payload_json->>'plan_version' AS integer) AND s.approved) AS plan_approved
+FROM task_risk_ratings r
+WHERE r.workspace_id=$1 AND r.task_id=ANY($2::text[])
+ORDER BY r.task_id,r.seq
+`
+
+type ListRiskRatingsForTasksRow struct {
+	TaskID       string
+	PayloadJSON  []byte
+	PlanApproved bool
+}
+
+func (q *Queries) ListRiskRatingsForTasks(ctx context.Context, workspaceID string, taskIDs []string) ([]ListRiskRatingsForTasksRow, error) {
+	rows, err := q.db.Query(ctx, listRiskRatingsForTasks, workspaceID, taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ListRiskRatingsForTasksRow
+	for rows.Next() {
+		var row ListRiskRatingsForTasksRow
+		if err := rows.Scan(&row.TaskID, &row.PayloadJSON, &row.PlanApproved); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}
+
+const listClaimEventsForTasks = `-- name: ListClaimEventsForTasks :many
+SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,
+  CASE WHEN jsonb_typeof(e.payload_json) = 'object'
+    THEN e.payload_json - 'governance_snapshot' - 'served_requirement_snapshot'
+    ELSE e.payload_json END::jsonb AS payload_json,
+  e.at,e.workspace_id
+FROM events e JOIN tasks t ON t.id=e.task_id
+WHERE t.workspace_id=$1 AND e.task_id=ANY($2::text[]) AND e.kind='work_order.claimed'
+ORDER BY e.task_id,e.at,e.id
+`
+
+func (q *Queries) ListClaimEventsForTasks(ctx context.Context, workspaceID string, taskIDs []string) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listClaimEventsForTasks, workspaceID, taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Event])
+}
+
+const listTaskApprovalsForTasks = `-- name: ListTaskApprovalsForTasks :many
+SELECT task_id, payload_json FROM task_risk_approvals
+WHERE workspace_id = $1 AND task_id = ANY($2::text[])
+ORDER BY task_id, seq
+`
+
+type ListTaskApprovalsForTasksParams struct {
+	WorkspaceID string
+	TaskIDs     []string
+}
+
+type ListTaskApprovalsForTasksRow struct {
+	TaskID      string
+	PayloadJSON []byte
+}
+
+func (q *Queries) ListTaskApprovalsForTasks(ctx context.Context, arg ListTaskApprovalsForTasksParams) ([]ListTaskApprovalsForTasksRow, error) {
+	rows, err := q.db.Query(ctx, listTaskApprovalsForTasks, arg.WorkspaceID, arg.TaskIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ListTaskApprovalsForTasksRow
+	for rows.Next() {
+		var row ListTaskApprovalsForTasksRow
+		if err := rows.Scan(&row.TaskID, &row.PayloadJSON); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}
+
 const listEvents = `-- name: ListEvents :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id FROM events e
 JOIN tasks t ON t.id = e.task_id
