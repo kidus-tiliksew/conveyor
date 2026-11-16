@@ -200,7 +200,14 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				}
 				return result
 			}
-			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), DrainReadQueries: drainQueries, VerificationClaimReads: verificationClaimReads(ws), NestedTaskCommandsInterleave: true, DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
+			drainRows := func() map[string]uint64 {
+				result := map[string]uint64{}
+				for _, total := range st.ReadStats(1 << 16).Top {
+					result[total.Label] = total.Rows
+				}
+				return result
+			}
+			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), DrainReadQueries: drainQueries, DrainReadRows: drainRows, VerificationClaimReads: verificationClaimReads(ws), NestedTaskCommandsInterleave: true, DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
 				t.Helper()
 				if _, err := st.db.ExecContext(ctx, `UPDATE users SET status='deactivated' WHERE id=?`, userID); err != nil {
 					t.Fatal(err)

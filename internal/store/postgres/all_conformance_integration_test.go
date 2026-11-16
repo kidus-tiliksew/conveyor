@@ -221,7 +221,14 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				}
 				return result
 			}
-			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), DrainReadQueries: drainQueries, VerificationClaimReads: verificationClaimReads(workspace), AwaitTaskOperationWaiter: func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{}) {
+			drainRows := func() map[string]uint64 {
+				result := map[string]uint64{}
+				for _, total := range st.ReadStats(1 << 16).Top {
+					result[total.Label] = total.Rows
+				}
+				return result
+			}
+			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), DrainReadQueries: drainQueries, DrainReadRows: drainRows, VerificationClaimReads: verificationClaimReads(workspace), AwaitTaskOperationWaiter: func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{}) {
 				t.Helper()
 				awaitTaskOperationWaiter(t, ctx, st, workspace, taskID, done)
 			}, RestoreSupersededDeliveries: func(t *testing.T, ctx context.Context, taskID string) {

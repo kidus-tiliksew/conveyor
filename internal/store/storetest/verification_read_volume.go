@@ -116,7 +116,11 @@ func runVerificationOperationKeyScope(t *testing.T, x Fixture) {
 		if _, err := x.Backend.ApplyVerification(other.ctx, other.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "different-" + other.access.TaskID, Operation: operation("{}")})); !errors.Is(err, store.ErrVerificationState) {
 			t.Fatalf("another task's unresolved operation on the same subject: %v", err)
 		}
-		if _, err := x.Backend.ApplyVerification(other.ctx, other.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "different-" + other.access.TaskID, Operation: operation(`{"changed":true}`)})); !errors.Is(err, store.ErrVerificationConflict) {
+		changed := newVerificationFixture(t, x)
+		changed.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "start with different inputs"}})
+		attempt := changed.apply(t, store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: "start-changed", Attempt: &store.VerificationAttempt{Subject: changed.subject, SafeInputs: map[string]json.RawMessage{"changed": json.RawMessage("true")}, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}}})
+		changed.runID = attempt.ID
+		if _, err := x.Backend.ApplyVerification(changed.ctx, changed.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "different-" + changed.access.TaskID, Operation: operation(`{"changed":true}`)})); !errors.Is(err, store.ErrVerificationConflict) {
 			t.Fatalf("another task's unresolved operation with changed input: %v", err)
 		}
 		// Resolve the operation so only the key rule can refuse the other task:
@@ -129,7 +133,7 @@ func runVerificationOperationKeyScope(t *testing.T, x Fixture) {
 		if _, err := x.Backend.ApplyVerification(other.ctx, other.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: operation("{}")})); !errors.Is(err, store.ErrVerificationAccess) {
 			t.Fatalf("another task's key: %v", err)
 		}
-		if _, err := x.Backend.ApplyVerification(other.ctx, other.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: operation(`{"changed":true}`)})); !errors.Is(err, store.ErrVerificationConflict) {
+		if _, err := x.Backend.ApplyVerification(changed.ctx, changed.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: operation(`{"changed":true}`)})); !errors.Is(err, store.ErrVerificationAccess) {
 			t.Fatalf("another task's key with changed definition: %v", err)
 		}
 		// The refusal is about the key, not about registration: the other task
@@ -139,7 +143,10 @@ func runVerificationOperationKeyScope(t *testing.T, x Fixture) {
 		other.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: own.ID}, Observation: &store.VerificationOperationObservation{State: "dispatching", Source: "fixture", CapturedAt: time.Now().UTC()}})
 		other.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: own.ID}, Observation: &store.VerificationOperationObservation{State: "completed", Source: "fixture", CapturedAt: time.Now().UTC()}})
 		// A changed definition of the same key in its own task stays a conflict.
-		if _, err := x.Backend.ApplyVerification(owner.ctx, owner.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: operation(`{"changed":true}`)})); !errors.Is(err, store.ErrVerificationConflict) {
+		changedDefinition := operation("{}")
+		changedDefinition.IdempotencyScope = "changed-scope"
+		changedDefinition.IdempotencyValidUntil = time.Now().UTC().Add(time.Hour)
+		if _, err := x.Backend.ApplyVerification(owner.ctx, owner.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: changedDefinition})); !errors.Is(err, store.ErrVerificationConflict) {
 			t.Fatalf("changed definition: %v", err)
 		}
 		// The unchanged definition still replays the original receipt.
@@ -357,26 +364,26 @@ func runVerificationTaskIndependence(t *testing.T, x Fixture) {
 		probe, stop := probeVerificationReads(t)
 		defer stop()
 		probe.reset()
-		if x.DrainReadBytes != nil {
-			x.DrainReadBytes()
+		if x.DrainReadRows != nil {
+			x.DrainReadRows()
 			v.ctx = dbmetrics.WithReadLabel(v.ctx, "verification-task-flow")
 		}
 		flow(v, key)
 		if foreign := probe.foreign(x.Workspace, v.access.TaskID); len(foreign) != 0 {
 			t.Fatalf("%d reads decoded another task's rows: %+v", len(foreign), foreign)
 		}
-		var bytes uint64
-		if x.DrainReadBytes != nil {
-			bytes = x.DrainReadBytes()["verification-task-flow"]
-			if bytes == 0 {
-				t.Fatal("verification task flow recorded no database read bytes")
+		var databaseRows uint64
+		if x.DrainReadRows != nil {
+			databaseRows = x.DrainReadRows()["verification-task-flow"]
+			if databaseRows == 0 {
+				t.Fatal("verification task flow recorded no database rows")
 			}
 		}
 		rows, workspaceRows, reads := probe.totals(x.Workspace)
-		return rows, workspaceRows, reads, bytes
+		return rows, workspaceRows, reads, databaseRows
 	}
 	alone := newVerificationFixture(t, x)
-	aloneRows, aloneWorkspace, aloneReads, aloneBytes := measured(&alone, "alone-key")
+	aloneRows, aloneWorkspace, aloneReads, aloneDatabaseRows := measured(&alone, "alone-key")
 	for index := range otherTasks {
 		other := newVerificationFixture(t, x)
 		op := other.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: fmt.Sprintf("other-key-%d-%s", index, other.access.TaskID), Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
@@ -384,14 +391,14 @@ func runVerificationTaskIndependence(t *testing.T, x Fixture) {
 		other.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "completed", Source: "fixture", CapturedAt: time.Now().UTC()}})
 	}
 	crowded := newVerificationFixture(t, x)
-	crowdedRows, crowdedWorkspace, crowdedReads, crowdedBytes := measured(&crowded, "crowded-key")
+	crowdedRows, crowdedWorkspace, crowdedReads, crowdedDatabaseRows := measured(&crowded, "crowded-key")
 	if crowdedRows != aloneRows || crowdedReads != aloneReads {
 		t.Fatalf("one task's read volume grew with %d other tasks: rows %d then %d, reads %d then %d", otherTasks, aloneRows, crowdedRows, aloneReads, crowdedReads)
 	}
 	if crowdedWorkspace > 1 || aloneWorkspace > 1 {
 		t.Fatalf("workspace lookups returned %d then %d rows, want at most the one keyed row", aloneWorkspace, crowdedWorkspace)
 	}
-	if x.DrainReadBytes != nil && crowdedBytes > aloneBytes*2+1024 {
-		t.Fatalf("one task's database reads grew with %d other tasks: %d then %d bytes", otherTasks, aloneBytes, crowdedBytes)
+	if x.DrainReadRows != nil && crowdedDatabaseRows != aloneDatabaseRows {
+		t.Fatalf("one task's database reads grew with %d other tasks: %d then %d rows", otherTasks, aloneDatabaseRows, crowdedDatabaseRows)
 	}
 }

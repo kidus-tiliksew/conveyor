@@ -29,6 +29,7 @@ type Fixture struct {
 
 	RestoreSupersededDeliveries func(*testing.T, context.Context, string)
 	DrainReadQueries            func() map[string]uint64
+	DrainReadRows               func() map[string]uint64
 
 	// SeedHistoricalLink inserts one retained, non-projector-owned link row
 	// exactly as historical migrations left it, such as migration 046's
