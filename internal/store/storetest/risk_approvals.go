@@ -28,6 +28,14 @@ func (s gatedApprovalStore) AuthorizeWorkspace(_ context.Context, userID, _ stri
 	return capability == core.CapabilityOperateGates && s.gates[userID], nil
 }
 
+func (s gatedApprovalStore) AuthorizeWorkspaceUsers(_ context.Context, userIDs []string, _ string, capability core.Capability) (map[string]bool, error) {
+	out := make(map[string]bool, len(userIDs))
+	for _, userID := range userIDs {
+		out[userID] = capability == core.CapabilityOperateGates && s.gates[userID]
+	}
+	return out, nil
+}
+
 // RunTaskApprovalConformance proves on every backend that human approvals of
 // an enforcing task bind to the reviewed head and review round, count each
 // person once, refuse a stale head, a non-enforcing task, and a task away from

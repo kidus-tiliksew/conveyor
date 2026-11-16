@@ -65,6 +65,31 @@ func (s *Store) AuthorizeWorkspace(ctx context.Context, userID, workspaceID stri
 	return core.RoleAllows(role, capability), nil
 }
 
+func (s *Store) AuthorizeWorkspaceUsers(ctx context.Context, userIDs []string, workspaceID string, capability core.Capability) (map[string]bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AuthorizeWorkspaceUsers")
+	out := make(map[string]bool, len(userIDs))
+	for _, userID := range userIDs {
+		out[userID] = false
+	}
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT user_id,role FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=ANY($2::text[])`, workspaceID, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var userID string
+		var role core.WorkspaceRole
+		if err := rows.Scan(&userID, &role); err != nil {
+			return nil, err
+		}
+		out[userID] = core.RoleAllows(role, capability)
+	}
+	return out, rows.Err()
+}
+
 // AuthorizeWorkspaceCapabilities issues AuthorizeWorkspace's single binding
 // read once and answers every requested capability from that role
 // (component-identity-membership, Capability batches).

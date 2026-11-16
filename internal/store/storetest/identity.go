@@ -169,6 +169,11 @@ func runAuthorizeWorkspaceCapabilities(t *testing.T, x Fixture, ctx context.Cont
 			if batch[capability] != single {
 				t.Fatalf("%s %s: batch=%v single=%v", label, capability, batch[capability], single)
 			}
+			users, usersErr := st.AuthorizeWorkspaceUsers(ctx, []string{userID, "missing-user"}, workspaceID, capability)
+			requireOK(t, usersErr)
+			if len(users) != 2 || users[userID] != single || users["missing-user"] {
+				t.Fatalf("%s %s: users=%v single=%v", label, capability, users, single)
+			}
 		}
 	}
 	user, err := st.ProvisionIdentityUser(ctx, "capability-batch@example.test", "Capability batch")

@@ -335,6 +335,7 @@ func EvaluateTaskApprovals(ctx context.Context, st Store, task core.Task, truste
 // MembershipStore.
 type CapabilityAuthorizer interface {
 	AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error)
+	AuthorizeWorkspaceUsers(ctx context.Context, userIDs []string, workspaceID string, capability core.Capability) (map[string]bool, error)
 }
 
 // ProjectTaskApprovals fills the task read field risk's approval fields from
@@ -376,6 +377,10 @@ type capabilityStore struct {
 
 func (s capabilityStore) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
 	return s.authorizer.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
+}
+
+func (s capabilityStore) AuthorizeWorkspaceUsers(ctx context.Context, userIDs []string, workspaceID string, capability core.Capability) (map[string]bool, error) {
+	return s.authorizer.AuthorizeWorkspaceUsers(ctx, userIDs, workspaceID, capability)
 }
 
 // WithCapabilityAuthorizer returns st answering capability questions through
