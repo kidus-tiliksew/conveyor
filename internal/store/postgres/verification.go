@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"sort"
 	"strings"
-	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"time"
 
 	"github.com/jackc/pgx/v5"

@@ -301,4 +301,3 @@ func verificationMetadataArgs(sources []string) []any {
 	}
 	return args
 }
-

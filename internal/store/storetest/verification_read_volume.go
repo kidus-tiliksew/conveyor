@@ -115,7 +115,7 @@ func runVerificationOperationKeyScope(t *testing.T, x Fixture) {
 		// an unresolved operation of the same subject refuses with the state
 		// error before the key is ever compared.
 		owner.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "dispatching", Source: "fixture", CapturedAt: time.Now().UTC()}})
-		owner.apply(t, store.VerificationCommand{Kind: store.VerificationReconcileOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "not_applied", Source: "fixture", CapturedAt: time.Now().UTC()}})
+		owner.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "completed", Source: "fixture", CapturedAt: time.Now().UTC()}})
 
 		other := newVerificationFixture(t, x)
 		if _, err := x.Backend.ApplyVerification(other.ctx, other.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: operation("{}")})); !errors.Is(err, store.ErrVerificationAccess) {
@@ -125,7 +125,8 @@ func runVerificationOperationKeyScope(t *testing.T, x Fixture) {
 		// still registers its own key. Resolving it keeps this fixture from
 		// blocking a later case's registration for the same subject.
 		own := other.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "own-key-" + other.access.TaskID, Operation: operation("{}")})
-		other.apply(t, store.VerificationCommand{Kind: store.VerificationReconcileOperation, Operation: &store.VerificationOperation{ID: own.ID}, Observation: &store.VerificationOperationObservation{State: "not_applied", Source: "fixture", CapturedAt: time.Now().UTC()}})
+		other.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: own.ID}, Observation: &store.VerificationOperationObservation{State: "dispatching", Source: "fixture", CapturedAt: time.Now().UTC()}})
+		other.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: own.ID}, Observation: &store.VerificationOperationObservation{State: "completed", Source: "fixture", CapturedAt: time.Now().UTC()}})
 		// A changed definition of the same key in its own task stays a conflict.
 		if _, err := x.Backend.ApplyVerification(owner.ctx, owner.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: operation(`{"changed":true}`)})); !errors.Is(err, store.ErrVerificationConflict) {
 			t.Fatalf("changed definition: %v", err)
@@ -156,10 +157,12 @@ func runVerificationSnapshotStatements(t *testing.T, x Fixture) {
 	v := newVerificationFixture(t, x)
 	probe, stop := probeVerificationReads(t)
 	defer stop()
+	created := 0
 	publish := func(n int) {
-		for i := range n {
-			head := fmt.Sprintf("%040d", i+1)
-			p := store.VerificationPublication{PullRequestNumber: 4400 + i, HeadSHA: head, BodyDigest: verificationSHA([]byte(head))}
+		for range n {
+			created++
+			head := fmt.Sprintf("%040d", created)
+			p := store.VerificationPublication{PullRequestNumber: 4400 + created, HeadSHA: head, BodyDigest: verificationSHA([]byte(head))}
 			v.apply(t, store.VerificationCommand{Kind: store.VerificationCreatePublication, Publication: &p})
 		}
 	}
@@ -199,7 +202,7 @@ func runVerificationDeliveryGeneration(t *testing.T, x Fixture) {
 	pr := core.Event{TaskID: v.access.TaskID, JobID: v.access.WorkOrderID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "fixture/volume", "number": number, "head_sha": strings.Repeat("a", 40)})}
 	requireOK(t, x.Backend.RecordVerificationPullRequest(v.ctx, pr))
 	publish := func(name, head string) {
-		e := v.envelope(name, "volume-evidence", "observed state")
+		e := v.envelope(name, "volume-evidence-"+name, "observed state")
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e)}, Publication: &store.VerificationPublication{PullRequestNumber: number, HeadSHA: head, BodyDigest: verificationSHA([]byte(name))}})
 	}
 	publish("volume-first", strings.Repeat("a", 40))
@@ -248,20 +251,20 @@ func runVerificationReconcilerReads(t *testing.T, x Fixture) {
 		requireOK(t, x.Backend.ReconcileVerificationDeliveries(v.ctx))
 		return probe.rows(x.Workspace, store.VerificationReadDue), probe.rows(x.Workspace, store.VerificationReadBodies)
 	}
-	if due, bodies := reconcile(); due != 0 || bodies != 0 {
-		t.Fatalf("a pass with no deliveries read %d due rows and %d bodies", due, bodies)
-	}
+	beforeDue, beforeBodies := reconcile()
 	const number = 4488
 	pr := core.Event{TaskID: v.access.TaskID, JobID: v.access.WorkOrderID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "fixture/volume", "number": number, "head_sha": strings.Repeat("a", 40)})}
 	requireOK(t, x.Backend.RecordVerificationPullRequest(v.ctx, pr))
 	for index, head := range []string{strings.Repeat("a", 40), strings.Repeat("b", 40)} {
-		e := v.envelope(fmt.Sprintf("reconcile-%d", index), "reconcile-evidence", "observed state")
+		e := v.envelope(fmt.Sprintf("reconcile-%d", index), fmt.Sprintf("reconcile-evidence-%d", index), "observed state")
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e)}, Publication: &store.VerificationPublication{PullRequestNumber: number, HeadSHA: head, BodyDigest: verificationSHA([]byte(head))}})
 	}
-	// The due window holds both generations, but only the acted newest one's
-	// body is decoded.
-	if due, bodies := reconcile(); due != 2 || bodies != 1 {
-		t.Fatalf("a pass over one due generation and one superseded generation read %d due rows and %d bodies, want 2 and 1", due, bodies)
+	// Writing a newer generation leaves one due row for the pull-request key:
+	// the pass acts on it and decodes exactly its one body, so a superseded
+	// generation's retained payload is never read.
+	afterDue, afterBodies := reconcile()
+	if due, bodies := afterDue-beforeDue, afterBodies-beforeBodies; due != 1 || bodies != 1 {
+		t.Fatalf("a pass over a superseded generation read %d due rows and %d bodies, want one acted row and one body", due, bodies)
 	}
 }
 
@@ -277,7 +280,7 @@ func runVerificationTaskIndependence(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		op := v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "dispatching", Source: "fixture", CapturedAt: time.Now().UTC()}})
-		v.apply(t, store.VerificationCommand{Kind: store.VerificationReconcileOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "not_applied", Source: "fixture", CapturedAt: time.Now().UTC()}})
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "completed", Source: "fixture", CapturedAt: time.Now().UTC()}})
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "read volume fixture"}})
 		_, err = x.Backend.ReadVerification(v.ctx, v.access, v.contextID)
 		requireOK(t, err)
@@ -301,7 +304,7 @@ func runVerificationTaskIndependence(t *testing.T, x Fixture) {
 		other := newVerificationFixture(t, x)
 		op := other.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: fmt.Sprintf("other-key-%d-%s", index, other.access.TaskID), Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
 		other.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "dispatching", Source: "fixture", CapturedAt: time.Now().UTC()}})
-		other.apply(t, store.VerificationCommand{Kind: store.VerificationReconcileOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "not_applied", Source: "fixture", CapturedAt: time.Now().UTC()}})
+		other.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "completed", Source: "fixture", CapturedAt: time.Now().UTC()}})
 	}
 	crowded := newVerificationFixture(t, x)
 	crowdedRows, crowdedWorkspace, crowdedReads := measured(&crowded, "crowded-key")

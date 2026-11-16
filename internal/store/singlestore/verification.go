@@ -65,6 +65,7 @@ func verificationPutTx(ctx context.Context, tx *sql.Tx, ws string, v store.Verif
 	_, err := tx.ExecContext(ctx, "INSERT INTO "+v.Table+" (workspace_id,id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)"+suffix, ws, v.ID, v.TaskID, v.ContextID, v.RunID, v.LogicalKey, store.VerificationStorageKeyHash(v), v.State, []byte(v.Body), v.ExpiresAt)
 	return err
 }
+
 // verificationOperationScope serves the two operation lookups a registration
 // needs from the command's transaction: the row that owns a logical key
 // anywhere in the workspace, and another task's unresolved operations for one
