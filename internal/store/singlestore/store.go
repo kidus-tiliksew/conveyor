@@ -137,7 +137,17 @@ func Open(ctx context.Context, raw string, compress ...bool) (*Store, error) {
 		return nil, translateBackendConflict(err)
 	}
 	requested := len(compress) == 0 || compress[0]
-	slog.Info("SingleStore connection compression", "requested", requested, "server_support", "unknown")
+	status := "unknown"
+	var name, value string
+	if err := db.QueryRowContext(ctx, "SHOW SESSION STATUS LIKE 'Compression'").Scan(&name, &value); err == nil {
+		switch strings.ToLower(value) {
+		case "on", "yes", "1":
+			status = "enabled"
+		case "off", "no", "0":
+			status = "disabled"
+		}
+	}
+	slog.Info("SingleStore connection compression", "requested", requested, "status", status)
 	return st, nil
 }
 func (s *Store) Close()              { s.db.Close() }

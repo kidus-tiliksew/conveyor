@@ -289,6 +289,10 @@ Server (read by `conveyord`):
 | `CONVEYOR_ORGANIZATION_NAME`, `CONVEYOR_FIRST_OPERATOR_EMAIL`, `CONVEYOR_FIRST_OPERATOR_DISPLAY_NAME` | First-operator identity at bootstrap. |
 | `CONVEYOR_CONTROL_PLANE_MODEL`, `CONVEYOR_TRIAGE_MODEL`, `CONVEYOR_PLANNING_MODEL` | Process-level model overrides for in-process stages; never change stored config. |
 
+The database read statistics count wire bytes. When compression is negotiated,
+the reported bytes are compressed and are not directly comparable with
+statistics collected before compression was enabled.
+
 Client (read by `conveyor`):
 
 | Variable | Purpose |

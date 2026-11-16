@@ -169,14 +169,40 @@ func TestSingleStoreCompressionStartupLogIntegration(t *testing.T) {
 	if got := strings.Count(logs.String(), "SingleStore connection compression"); got != 1 {
 		t.Fatalf("compression log count = %d, want 1", got)
 	}
-	if !strings.Contains(logs.String(), "requested=true") || !strings.Contains(logs.String(), "server_support=unknown") {
+	if !strings.Contains(logs.String(), "requested=true") || !strings.Contains(logs.String(), "status=") {
 		t.Fatalf("compression log lacks status: %s", logs.String())
+	}
+}
+
+func TestSingleStoreCompressionWireIntegration(t *testing.T) {
+	on := openOwnedStore(t)
+	off, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer off.Close()
+	for _, tc := range []struct {
+		name string
+		st   *Store
+	}{{"requested", on}, {"disabled", off}} {
+		tc.st.ReadStats(0)
+		var payload string
+		if err := tc.st.db.QueryRowContext(t.Context(), "SELECT RPAD('', 262144, 'x')").Scan(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload) != 262144 {
+			t.Fatalf("%s returned %d payload bytes", tc.name, len(payload))
+		}
+		t.Logf("%s received %d wire bytes for %d decoded bytes", tc.name, tc.st.ReadStats(0).Bytes, len(payload))
 	}
 }
 
 // TestSingleStorePeerMarksIntegration checks both kinds of cross-connection
 // changes without scanning the event table.
 func TestSingleStorePeerMarksIntegration(t *testing.T) {
+	if strings.Contains(strings.ToLower(peerMarksSQL), "events_columnstore") {
+		t.Fatal("peer mark statement scans the events table")
+	}
 	writer := openOwnedStore(t)
 	ctxA, wsA, taskA := seedSingleStoreNoticeTask(t, writer)
 	_, wsB, _ := seedSingleStoreNoticeTask(t, writer)
@@ -188,8 +214,8 @@ func TestSingleStorePeerMarksIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
-		if sent := proxy.since(before); len(sent) != 1 || strings.Contains(strings.ToLower(sent[0].text), "events_columnstore") {
-			t.Fatalf("%s: PeerMarks should send one statement without scanning events:\n%s", what, describeCommands(time.Now(), sent))
+		if sent := proxy.since(before); len(sent) != 1 {
+			t.Fatalf("%s: PeerMarks should send one statement:\n%s", what, describeCommands(time.Now(), sent))
 		}
 		return marks
 	}
