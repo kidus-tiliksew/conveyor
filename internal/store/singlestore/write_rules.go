@@ -322,7 +322,12 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (result sql.Result, e
 		}
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	return tx.ExecContext(ctx, query, args...)
+	result, err = tx.ExecContext(ctx, query, args...)
+	if err == nil && w.table == "events_columnstore" && w.values["task_id"] != nil && w.values["task_id"] != "" {
+		ws, _ := w.values["workspace_id"].(string)
+		markTaskEvent(tx, ws)
+	}
+	return result, err
 }
 
 // identifierClaimPrefixes name the lock rows that claim task, job, and

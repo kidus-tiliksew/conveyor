@@ -127,6 +127,24 @@ func TestConnectionCompression(t *testing.T) {
 			}
 		})
 	}
+	for _, raw := range []string{
+		"root:fixture@tcp(localhost:3306)/conveyor_test?compress=false",
+		"singlestore://root:fixture@localhost/conveyor_test?compress=false",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			cfg, err := connectionConfig(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(cfg.FormatDSN(), "compress=true") {
+				t.Fatal("explicit DSN compression opt-out was ignored")
+			}
+			cfg, err = connectionConfig(raw, true)
+			if err != nil || !strings.Contains(cfg.FormatDSN(), "compress=true") {
+				t.Fatalf("explicit option did not override DSN: %v", err)
+			}
+		})
+	}
 }
 
 func TestUniqueRuleInputsFailBeforeSQL(t *testing.T) {

@@ -87,11 +87,11 @@ func OpenWithStats(ctx context.Context, database config.Database, options ...Opt
 		if connection == "" {
 			return nil, Stats{}, errDatabaseURLRequired
 		}
-		compress := true
+		var compression []bool
 		if database.SingleStoreCompress != nil {
-			compress = *database.SingleStoreCompress
+			compression = append(compression, *database.SingleStoreCompress)
 		}
-		st, err := singlestore.Open(ctx, connection, compress)
+		st, err := singlestore.Open(ctx, connection, compression...)
 		if err != nil {
 			return nil, Stats{}, err
 		}

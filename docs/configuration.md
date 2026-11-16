@@ -274,7 +274,7 @@ Server (read by `conveyord`):
 |---|---|
 | `CONVEYOR_DATABASE_URL` | PostgreSQL URL or SingleStore URL/DSN. Required unless `database.url` is set. |
 | `CONVEYOR_DATABASE_MAX_CONNS` | PostgreSQL pool size when `database.max_conns` is not set (default 32); an explicit `pool_max_conns` in the URL wins. See [PostgreSQL pool size](#postgresql-pool-size). |
-| `CONVEYOR_SINGLESTORE_COMPRESS` | Request SingleStore wire compression. Defaults to `true`; set to `false` to disable it. `database.singlestore_compress` in the deployment file takes precedence. |
+| `CONVEYOR_SINGLESTORE_COMPRESS` | Request SingleStore wire compression for `conveyord`. Defaults to `true`; set to `false` to disable it. `database.singlestore_compress` in the deployment file takes precedence. Direct `conveyor` CLI database connections do not read this setting; use `compress=false` in the SingleStore DSN or URL to opt them out. |
 | `CONVEYOR_API_TOKEN` | Bound as the first operator's token at bootstrap. Required. |
 | `CONVEYOR_LLM_API_KEY` | Key for the in-process triage and planning stages. Required. |
 | `CONVEYOR_LLM_BASE_URL` | OpenAI-compatible endpoint override. |

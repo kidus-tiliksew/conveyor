@@ -15,13 +15,18 @@ import (
 // published only after Commit returns. SingleStore has no change
 // notification, so a peered daemon runs the peer check on PeerMarks instead.
 
-// txBatches maps each open store transaction to its notice batch.
-var txBatches sync.Map // *sql.Tx -> *changes.Batch
+type txNoticeState struct {
+	batch          *changes.Batch
+	taskWorkspaces map[string]struct{}
+}
+
+// txBatches maps each open store transaction to its notice state.
+var txBatches sync.Map // *sql.Tx -> *txNoticeState
 
 // beginNotices registers tx's batch; finishNotices publishes it after a
 // commit or drops it.
 func (s *Store) beginNotices(tx *sql.Tx) {
-	txBatches.Store(tx, s.changes.Begin())
+	txBatches.Store(tx, &txNoticeState{batch: s.changes.Begin(), taskWorkspaces: make(map[string]struct{})})
 }
 
 func finishNotices(tx *sql.Tx, committed bool) {
@@ -29,7 +34,7 @@ func finishNotices(tx *sql.Tx, committed bool) {
 	if !ok {
 		return
 	}
-	batch := value.(*changes.Batch)
+	batch := value.(*txNoticeState).batch
 	if committed {
 		batch.Commit()
 		return
@@ -39,9 +44,15 @@ func finishNotices(tx *sql.Tx, committed bool) {
 
 func txBatch(tx *sql.Tx) *changes.Batch {
 	if value, ok := txBatches.Load(tx); ok {
-		return value.(*changes.Batch)
+		return value.(*txNoticeState).batch
 	}
 	return nil
+}
+
+func markTaskEvent(tx *sql.Tx, ws string) {
+	if value, ok := txBatches.Load(tx); ok {
+		value.(*txNoticeState).taskWorkspaces[ws] = struct{}{}
+	}
 }
 
 // raiseTx adds n to tx's batch. Every event writer runs in a registered

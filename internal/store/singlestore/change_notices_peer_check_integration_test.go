@@ -290,6 +290,35 @@ func TestSingleStorePeerMarksIntegration(t *testing.T) {
 	if afterRollback := read("after rollback"); afterRollback[wsA] != afterEvent[wsA] {
 		t.Fatalf("rolled-back event changed peer mark: %+v -> %+v", afterEvent[wsA], afterRollback[wsA])
 	}
+	if err := writer.AuditTask(ctxA, taskA, "peer.audit", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	afterAudit := read("after task audit")
+	if afterAudit[wsA].Events != afterEvent[wsA].Events+1 {
+		t.Fatalf("audit did not advance task mark: %+v -> %+v", afterEvent[wsA], afterAudit[wsA])
+	}
+	if _, err := writer.db.ExecContext(ctxA, "UPDATE tasks SET assignee_user_id=? WHERE workspace_id=? AND id=?", "peer-user", wsA, taskA); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.withTx(ctxA, func(tx *sql.Tx) error {
+		if err := clearMemberAssignments(ctxA, tx, wsA, "peer-user"); err != nil {
+			return err
+		}
+		var position int64
+		if err := tx.QueryRowContext(ctxA, "SELECT position FROM task_event_positions WHERE workspace_id=?", wsA).Scan(&position); err != nil {
+			return err
+		}
+		if position != afterAudit[wsA].Events {
+			return fmt.Errorf("task mark advanced before commit: %d", position)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	afterClear := read("after assignment clear")
+	if afterClear[wsA].Events != afterAudit[wsA].Events+1 {
+		t.Fatalf("assignment clear did not advance task mark: %+v -> %+v", afterAudit[wsA], afterClear[wsA])
+	}
 }
 
 const peerIdleToken = "peer-idle-token"
