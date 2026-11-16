@@ -1,7 +1,7 @@
 package postgres
 
 import (
-	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 func TestBoardStatementCountIntegration(t *testing.T) {
@@ -21,23 +22,18 @@ func TestBoardStatementCountIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	var counts []uint64
+	for _, state := range []core.TaskState{core.TaskMerged, core.TaskClosed} {
+		id := core.NewTaskID()
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: "board-count", Title: "terminal", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: state, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, size := range []int{10, 100} {
 		start := 0
 		if size == 100 {
 			start = 10
 		}
-		for i := start; i < size; i++ {
-			id := core.NewTaskID()
-			state := core.TaskQueued
-			if i%2 == 1 {
-				state = core.TaskParked
-			}
-			task := core.Task{ID: id, Workspace: "board-count", Title: fmt.Sprintf("task %d", i), Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: state, NextStage: core.StageImplement, CreatedAt: now}
-			if err := st.CreateTask(ctx, task); err != nil {
-				t.Fatal(err)
-			}
-		}
+		storetest.SeedBoardCount(t, ctx, st, start, size, now)
 		st.ReadStats(0)
 		collector := dbmetrics.NewCollector()
 		board, err := store.ReadBoard(dbmetrics.WithCollector(ctx, collector), st, store.BoardOptions{Limit: 100, NextAction: store.NextActionOptions{Now: now}})
@@ -47,26 +43,20 @@ func TestBoardStatementCountIntegration(t *testing.T) {
 		if len(board.Items) != size || board.Total != size {
 			t.Fatalf("size %d: items=%d total=%d", size, len(board.Items), board.Total)
 		}
-		kinds := map[string]int{}
-		for _, item := range board.Items {
-			kinds[string(item.NextAction.Kind)]++
+		stats := st.ReadStats(100)
+		wantRows := map[int]uint64{10: 49, 100: 490}
+		if stats.Rows != wantRows[size] || collector.Snapshot().Queries != 25 {
+			t.Errorf("size %d: rows=%d statements=%d, want rows=%d statements=25", size, stats.Rows, collector.Snapshot().Queries, wantRows[size])
 		}
-		if len(kinds) != 2 {
-			t.Fatalf("size %d: expected two next-action kinds, got %v", size, kinds)
+		labels := make(map[string]bool)
+		for _, entry := range stats.Top {
+			labels[entry.Label] = entry.Queries > 0
 		}
-		for _, count := range kinds {
-			if count != size/2 {
-				t.Fatalf("size %d: expected an even kind mix, got %v", size, kinds)
+		for _, label := range strings.Fields("ListRiskRatingsForTasks ListClaimEventsForTasks ListTaskApprovalsForTasks AuthorizeWorkspaceUsers ListRiskOrdersForTasks ListLatestPullRequestEventsForTasks") {
+			if !labels[label] {
+				t.Errorf("size %d: missing batched read %s; labels=%v", size, label, stats.Top)
 			}
 		}
-		rows := st.ReadStats(0).Rows
-		if rows != uint64(4*size) {
-			t.Fatalf("size %d: database rows=%d, want %d", size, rows, 4*size)
-		}
-		counts = append(counts, collector.Snapshot().Queries)
-		t.Logf("board size=%d items=%d database rows=%d statements=%d", size, len(board.Items), rows, counts[len(counts)-1])
-	}
-	if counts[0] == 0 || counts[0] != counts[1] {
-		t.Fatalf("board statements: 10=%d 100=%d; want equal nonzero counts", counts[0], counts[1])
+		t.Logf("board size=%d rows=%d statements=%d", size, stats.Rows, collector.Snapshot().Queries)
 	}
 }
