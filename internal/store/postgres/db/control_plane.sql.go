@@ -1036,6 +1036,25 @@ func (q *Queries) ListActivityMarkers(ctx context.Context, workspaceID string) (
 	return items, nil
 }
 
+const listClaimEventsForTasks = `-- name: ListClaimEventsForTasks :many
+SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,
+  CASE WHEN jsonb_typeof(e.payload_json) = 'object'
+    THEN e.payload_json - 'governance_snapshot' - 'served_requirement_snapshot'
+    ELSE e.payload_json END::jsonb AS payload_json,
+  e.at,e.workspace_id
+FROM events e JOIN tasks t ON t.id=e.task_id
+WHERE t.workspace_id=$1 AND e.task_id=ANY($2::text[]) AND e.kind='work_order.claimed'
+ORDER BY e.task_id,e.at,e.id
+`
+
+func (q *Queries) ListClaimEventsForTasks(ctx context.Context, workspaceID string, taskIDs []string) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listClaimEventsForTasks, workspaceID, taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Event])
+}
+
 const listTaskApprovalsForTasks = `-- name: ListTaskApprovalsForTasks :many
 SELECT task_id, payload_json FROM task_risk_approvals
 WHERE workspace_id = $1 AND task_id = ANY($2::text[])

@@ -132,6 +132,23 @@ ORDER BY latest.task_id, r.id`, workspaceID)
 	return out, rows.Err()
 }
 
+func (s *Store) ListClaimEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListClaimEventsForTasks")
+	out := map[string][]core.Event{}
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	events, err := s.queries.ListClaimEventsForTasks(ctx, workspace(ctx), taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, event := range events {
+		converted := eventFromDB(event)
+		out[converted.TaskID] = append(out[converted.TaskID], converted)
+	}
+	return out, nil
+}
+
 // ListNextActionEvents reads only the assembler's event kinds for the
 // requested tasks in one query, in the (at, id) order ListEvents returns.
 func (s *Store) ListNextActionEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {

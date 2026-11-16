@@ -358,6 +358,12 @@ func RunTaskApprovalConformance(t *testing.T, x Fixture) {
 		reviewRound(t, task.ID, 1)
 		claim := core.WorkOrder{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, ClaimantID: core.TaskRunClaimantID("usr-author")}
 		requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "work_order.claimed", Payload: store.WorkOrderEventPayload(claim)}))
+		claims, err := st.ListClaimEventsForTasks(ctx, []string{task.ID, "missing-task"})
+		requireOK(t, err)
+		authors, unknown := store.TaskAuthors(claims[task.ID], nil)
+		if unknown || len(authors) != 1 || authors[0] != "usr-author" || len(claims["missing-task"]) != 0 {
+			t.Fatalf("claim events=%+v authors=%v unknown=%v", claims, authors, unknown)
+		}
 		for _, user := range []string{"usr-a", "usr-a", "usr-author"} {
 			_, _, err := st.RecordTaskApproval(ctx, approval(task.ID, user, 1))
 			requireOK(t, err)

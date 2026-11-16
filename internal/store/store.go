@@ -550,6 +550,7 @@ type ActivityStore interface {
 	AppendEvent(ctx context.Context, event core.Event) error
 	// ListEvents returns the per-task ledger ordered by event time, then ID.
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	ListClaimEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
 	// ListEventPage returns one page of ListEvents and the task's event count.
 	// A task outside the request's workspace reads as a task without events.
 	ListEventPage(ctx context.Context, taskID string, page PageQuery) (EventPage, error)

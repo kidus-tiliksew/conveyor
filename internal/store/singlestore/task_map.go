@@ -217,6 +217,32 @@ ORDER BY e.task_id, e.at, e.id`, ws, store.TaskContextRequirementAdded, store.Ta
 	return out, nil
 }
 
+func (s *Store) ListClaimEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListClaimEventsForTasks")
+	out := map[string][]core.Event{}
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	ws, err := workspace(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,`+compactEventPayloadColumn+`,at FROM events_columnstore
+WHERE workspace_id=? AND task_id IN (`+taskMapMarks(len(taskIDs))+`) AND kind='work_order.claimed'
+ORDER BY task_id,at,id`, append([]any{ws}, taskMapArgs(taskIDs)...)...)
+	if err != nil {
+		return nil, err
+	}
+	events, err := scanDocumentEvents(rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, event := range events {
+		out[event.TaskID] = append(out[event.TaskID], event)
+	}
+	return out, nil
+}
+
 // ListNextActionEvents reads only the assembler's event kinds for the
 // requested tasks in one query, in the (at, id) order ListEvents returns.
 func (s *Store) ListNextActionEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
