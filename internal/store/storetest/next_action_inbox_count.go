@@ -340,17 +340,12 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 	_, _, err = st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: contextTask, TargetKind: core.TaskContextProposalSystemDesign, TargetID: confirmed.ID, Source: core.TaskContextProposalTriage, Justification: "Triage suggests this context."})
 	requireOK(t, err)
 	want[contextTask] = nextaction.KindContextProposal
-	disposition := seed(core.Task{State: core.TaskRunning, NextStage: core.StageVerify})
-	dispositionOrder := disposition + "-verify-1"
-	requireOK(t, st.CreateJob(ctx, core.Job{ID: dispositionOrder, TaskID: disposition, Stage: core.StageVerify, State: core.JobPending}))
-	requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{
-		ID: dispositionOrder, TaskID: disposition, JobID: dispositionOrder, Stage: core.StageVerify,
-		State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now,
-		LastAttemptID: "attempt-" + disposition, LastAttemptOutcome: core.WorkOrderOutcomeReleased,
-		RetrySuppressed: true, RetrySuppressionReason: core.WorkOrderReleaseReasonOperatorCheckpointReached,
-		Checkpoint: &core.WorkOrderCheckpoint{Verification: &core.WorkOrderVerificationCheckpoint{ContextID: "context-" + disposition, HeadSHA: "head", Reason: "unresolved", RequiredAction: "dispose", OperationIDs: []string{"operation-" + disposition}}},
-	}))
-	want[disposition] = nextaction.KindVerificationDisposition
+	verificationFixture := newVerificationFixture(t, x, true)
+	subject := recoveryFixtureRegister(t, &verificationFixture, recoveryFixtureObligation("attention-"+verificationFixture.access.TaskID, "operator_action_required", ""))
+	verificationFixture.runID = verificationFixture.apply(t, recoveryFixtureStart("attention", "", subject)).ID
+	verificationFixture.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "blocked", Explanation: "fixture environment unavailable"}})
+	verificationFixture.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: verificationFixtureCoverage(verificationFixture.snapshot(t)), Feedback: "The exercise needs an operator", RequiredAction: "Restore the fixture"}})
+	want[verificationFixture.access.TaskID] = nextaction.KindVerificationDisposition
 	_, _, err = st.CreateSystemDesign(ctx, core.SystemDesign{ID: "cw-body-free-pending-" + suffix, Title: "Body-free pending", Category: "Component design"}, core.SystemDesignVersion{Content: designContent("proposed"), Origin: core.SystemDesignOriginOperator})
 	requireOK(t, err)
 
