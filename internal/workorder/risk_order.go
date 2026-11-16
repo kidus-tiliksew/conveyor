@@ -106,7 +106,10 @@ func (s *Service) riskMaterialForOrder(ctx context.Context, order core.WorkOrder
 // claimed, and returns the recorded rating to a replay by the completing
 // session.
 func (s *Service) SubmitRiskRating(ctx context.Context, claim core.WorkOrderClaimIdentity, id, tier, reason string) (map[string]any, error) {
-	order, err := s.Store.GetWorkOrder(ctx, id)
+	// Admission reads only stage, state, claim identity and the lease, so it
+	// selects the snapshot-free order (component-work-orders, Snapshot-free
+	// fold reads).
+	order, err := s.Store.GetWorkOrderWithoutSnapshots(ctx, id)
 	if err != nil {
 		return nil, err
 	}
