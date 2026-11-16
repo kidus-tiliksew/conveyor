@@ -559,6 +559,12 @@ type ActivityStore interface {
 	// the ledger read for consumers that decode no snapshot body
 	// (component-persistence, Compact task event reads).
 	ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	// ListTaskContextEvents returns the task context fold's event kinds — the
+	// four attachment kinds — in ListEvents order with the compact payload
+	// projection, so a single-task context read never transfers the task's
+	// unrelated history (component-persistence, Compact task event reads;
+	// req-operator-next-action AC-2.7).
+	ListTaskContextEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	// ListFactoryActs returns the workspace factory log, newest first, after the
 	// Go filter. The query may only narrow candidates.
 	ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error)

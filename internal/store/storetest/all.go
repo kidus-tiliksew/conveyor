@@ -436,6 +436,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"LargeArgumentWrites", true, runLargeArgumentWrites},
 		{"AutomaticRecoveryAuthority", true, runAutomaticRecoveryAuthority},
 		{"ContextFreshness", true, runContextFreshness},
+		{"TaskContextReads", true, runTaskContextReads},
 		{"TaskTitleRedaction", true, runTaskTitleRedaction},
 		{"RedactionCounts", true, runRedactionCounts},
 		{"WorkOrderClocks", true, runWorkOrderClocks},
