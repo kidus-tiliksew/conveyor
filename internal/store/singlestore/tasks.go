@@ -873,6 +873,7 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 	}
 	return q, args
 }
+
 // ListTasks reads every workspace row with its body and frozen policy, for the
 // callers that state a whole task: the planner's approved-spec listing, the
 // blueprint and requirement detail projections, and the review-policy drift
