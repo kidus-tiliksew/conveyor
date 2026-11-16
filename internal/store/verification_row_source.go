@@ -59,7 +59,9 @@ func VerificationCommandTables(c VerificationCommand) VerificationTableSet {
 	case VerificationRegisterObligation:
 		return VerificationTableSet{"verification_contexts", "verification_obligations"}
 	case VerificationCreatePublication:
-		return VerificationTableSet{"verification_contexts", "verification_publications"}
+		// Creating a publication records its delivery intent, which decodes the
+		// context, its run, the operations, the evidence and the publications.
+		return VerificationDeliveryTables
 	case VerificationStageChunk:
 		return VerificationTableSet{"verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_evidence", "verification_upload_chunks", "verification_permission_grants", "verification_permission_revocations"}
 	case VerificationExpireChunks:

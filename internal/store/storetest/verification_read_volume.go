@@ -112,8 +112,9 @@ func runVerificationOperationKeyScope(t *testing.T, x Fixture) {
 		}
 		op := owner.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: operation("{}")})
 		// Resolve the operation so only the key rule can refuse the other task:
-		// an unresolved operation of the same subject refuses with the state
-		// error before the key is ever compared.
+		// the key lookup runs before the same-subject rule, but an unresolved
+		// operation of the same subject would still refuse with the state error
+		// when the other task's key differs.
 		owner.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "dispatching", Source: "fixture", CapturedAt: time.Now().UTC()}})
 		owner.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "completed", Source: "fixture", CapturedAt: time.Now().UTC()}})
 
