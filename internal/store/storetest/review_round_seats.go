@@ -35,6 +35,7 @@ func RunReviewRoundSeatsConformance(t *testing.T, x Fixture) {
 	t.Run("FailedCreateRollsBack", func(t *testing.T) { runSeatFailedCreate(t, x) })
 	t.Run("WorkspaceIsolation", func(t *testing.T) { runSeatWorkspaceIsolation(t, x) })
 	runReviewSeatAdditionConformance(t, x)
+	runReviewRoundScopeConformance(t, x)
 }
 
 const seatFixtureHead, seatFixtureBase = "submitted-head", "submitted-base"
@@ -556,4 +557,167 @@ func runSeatWorkspaceIsolation(t *testing.T, x Fixture) {
 	if len(home) != 1 {
 		t.Fatalf("home workspace records=%+v", home)
 	}
+}
+
+// runReviewRoundScopeConformance proves feature-delta-review-rounds DR-7 on
+// every backend: review.round_created carries review_scope and baseline_sha
+// from the round's own seat orders, and the read entry's source, the round's
+// orders read back from the backend through store.ReviewRoundScope, reports
+// the same pair. A delta round reports delta and its judged head. A full
+// round, whose orders hold an empty scope, reports full with no baseline. A
+// refresh round reports its own scope and baseline. A round recorded before
+// this change reads as full with no baseline (req-review-gates-evidence
+// AC-12.7).
+func runReviewRoundScopeConformance(t *testing.T, x Fixture) {
+	t.Run("ScopeDeltaRound", func(t *testing.T) {
+		runRoundScope(t, x, "", store.ReviewScopeDelta, "judged-head", store.ReviewScopeDelta, "judged-head")
+	})
+	t.Run("ScopeFullRound", func(t *testing.T) {
+		runRoundScope(t, x, "", "", seatFixtureBase, store.ReviewScopeFull, "")
+	})
+	t.Run("ScopeRefreshDeltaRound", func(t *testing.T) {
+		runRoundScope(t, x, "refresh", config.RefreshReviewDelta, "approved-head", store.ReviewScopeDelta, "approved-head")
+	})
+	t.Run("ScopeRefreshFullRound", func(t *testing.T) {
+		runRoundScope(t, x, "refresh", config.RefreshReviewFull, "approved-head", store.ReviewScopeFull, "approved-head")
+	})
+	t.Run("ScopeRoundWithoutFields", func(t *testing.T) { runRoundScopeLegacy(t, x) })
+	t.Run("ScopeRetriedRound", func(t *testing.T) { runRoundScopeRetry(t, x) })
+	t.Run("ScopePolicyHandoffRound", func(t *testing.T) { runRoundScopeHandoff(t, x) })
+	t.Run("ScopeKeptPerRound", func(t *testing.T) { runRoundScopePerRound(t, x) })
+}
+
+// requireRoundScope checks the scope pair on round's review.round_created
+// event and on the round's orders read back from the backend.
+func requireRoundScope(t *testing.T, x Fixture, taskID string, round int, payload map[string]any, scope, baseline string) {
+	t.Helper()
+	if payload != nil && (payload["review_scope"] != scope || payload["baseline_sha"] != baseline) {
+		t.Fatalf("round %d review.round_created=%+v, want review_scope=%q baseline_sha=%q", round, payload, scope, baseline)
+	}
+	gotScope, gotBaseline := store.ReviewRoundScope(reviewOrdersInRound(t, x, taskID, round))
+	if gotScope != scope || gotBaseline != baseline {
+		t.Fatalf("round %d read scope=%q baseline=%q, want %q %q", round, gotScope, gotBaseline, scope, baseline)
+	}
+}
+
+func runRoundScope(t *testing.T, x Fixture, kind, orderScope, orderBaseline, wantScope, wantBaseline string) {
+	task := seatTask(t, x, 2)
+	seats := resolveSeats(t, x, task.ID, 1)
+	jobs, orders := seatMembers(task.ID, 1, seats.SeatCount)
+	for i := range orders {
+		orders[i].ReviewKind, orders[i].ReviewScope, orders[i].BaselineSHA = kind, orderScope, orderBaseline
+	}
+	requireOK(t, createSeatRound(x, task.ID, seats, jobs, orders))
+	payload := requireRoundCreated(t, x, task.ID, 1, 2, store.ReviewSeatSourceMinimum, 2)
+	requireRoundScope(t, x, task.ID, 1, payload, wantScope, wantBaseline)
+}
+
+// A round recorded before this change has orders without a scope or
+// baseline and a review.round_created event without either key. It reads as
+// full with no baseline, and the next round's event carries both keys.
+func runRoundScopeLegacy(t *testing.T, x Fixture) {
+	task := seatTask(t, x, 2)
+	_, orders := seatMembers(task.ID, 1, 2)
+	for i := range orders {
+		orders[i].BaselineSHA = ""
+		requireOK(t, x.Backend.CreateJob(x.Context, core.Job{ID: orders[i].JobID, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}))
+		requireOK(t, CreateWorkOrder(x.Context, x.Backend, orders[i]))
+	}
+	requireOK(t, x.Backend.AppendEvent(x.Context, core.Event{TaskID: task.ID, Kind: "review.round_created",
+		Payload: core.JSONPayload(map[string]any{"review_round": 1, "seat_count": 2, "seat_count_source": store.ReviewSeatSourceMinimum, "minimum_seat_count": 2})}))
+	requireRoundScope(t, x, task.ID, 1, nil, store.ReviewScopeFull, "")
+	seats := resolveSeats(t, x, task.ID, 2)
+	jobs, next := seatMembers(task.ID, 2, seats.SeatCount)
+	for i := range next {
+		next[i].ReviewScope, next[i].BaselineSHA = store.ReviewScopeDelta, "judged-head"
+	}
+	requireOK(t, createSeatRound(x, task.ID, seats, jobs, next))
+	payload := requireRoundCreated(t, x, task.ID, 2, seats.SeatCount, seats.Source, seats.MinimumSeatCount)
+	requireRoundScope(t, x, task.ID, 2, payload, store.ReviewScopeDelta, "judged-head")
+	requireRoundScope(t, x, task.ID, 1, nil, store.ReviewScopeFull, "")
+}
+
+// A retried round's event carries the scope and baseline of its own new
+// orders beside retry_request_id.
+func runRoundScopeRetry(t *testing.T, x Fixture) {
+	task := seatTask(t, x, 2)
+	seats := resolveSeats(t, x, task.ID, 1)
+	jobs, orders := seatMembers(task.ID, 1, seats.SeatCount)
+	for i := range orders {
+		orders[i].ReviewScope, orders[i].BaselineSHA = store.ReviewScopeDelta, "judged-head"
+	}
+	requireOK(t, createSeatRound(x, task.ID, seats, jobs, orders))
+	seatTimeOut(t, x, task.ID, orders)
+	retrySeats := resolveSeats(t, x, task.ID, 2)
+	retryJobs, retried := seatMembers(task.ID, 2, retrySeats.SeatCount)
+	for i := range retried {
+		retried[i].ReviewScope, retried[i].BaselineSHA = store.ReviewScopeDelta, "judged-head"
+	}
+	request := store.ReviewRoundRetryRequest{TaskID: task.ID, RequestID: "scope-retry-" + task.ID, PriorRound: 1, Reason: "seat timed out", PRHead: seatFixtureHead}
+	_, err := retrySeatRound(x, request, retrySeats, retryJobs, retried)
+	requireOK(t, err)
+	payload := requireRoundCreated(t, x, task.ID, 2, retrySeats.SeatCount, retrySeats.Source, retrySeats.MinimumSeatCount)
+	if payload["retry_request_id"] != request.RequestID {
+		t.Fatalf("retried review.round_created=%+v, want retry_request_id %q", payload, request.RequestID)
+	}
+	requireRoundScope(t, x, task.ID, 2, payload, store.ReviewScopeDelta, "judged-head")
+}
+
+// seatTimeOut completes seat 1 of a two-seat round without a verdict and
+// times out seat 2, so the round is recoverable by a retry.
+func seatTimeOut(t *testing.T, x Fixture, taskID string, orders []core.WorkOrder) {
+	t.Helper()
+	first, err := ClaimWorkOrder(x.Context, x.Backend, orders[0].ID, core.WorkOrderClaim{SessionID: "scope-seat-one-" + taskID, ClientToken: "one", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	requireOK(t, err)
+	first.State = core.WorkOrderCompleted
+	requireOK(t, UpdateWorkOrder(x.Context, x.Backend, first, core.WorkOrderCmdSubmitReviewVerdict))
+	_, err = ClaimWorkOrder(x.Context, x.Backend, orders[1].ID, core.WorkOrderClaim{SessionID: "scope-seat-two-" + taskID, ClientToken: "timeout", Lease: time.Minute, ExecutionTimeout: time.Nanosecond})
+	requireOK(t, err)
+	_, err = taskops.New(x.Backend).TickOrderClock(x.Context, time.Now().UTC().Add(time.Second))
+	requireOK(t, err)
+}
+
+// Two delta rounds with different judged heads keep their own baselines: a
+// later round never rewrites an earlier round's event or read.
+func runRoundScopePerRound(t *testing.T, x Fixture) {
+	task := seatTask(t, x, 1)
+	steps := []struct {
+		round    int
+		baseline string
+		seats    store.ReviewRoundSeatResolution
+	}{{round: 1, baseline: "first-judged"}, {round: 2, baseline: "second-judged"}}
+	for i := range steps {
+		steps[i].seats = resolveSeats(t, x, task.ID, steps[i].round)
+		jobs, orders := seatMembers(task.ID, steps[i].round, steps[i].seats.SeatCount)
+		for j := range orders {
+			orders[j].ReviewScope, orders[j].BaselineSHA = store.ReviewScopeDelta, steps[i].baseline
+		}
+		requireOK(t, createSeatRound(x, task.ID, steps[i].seats, jobs, orders))
+	}
+	for _, step := range steps {
+		payload := requireRoundCreated(t, x, task.ID, step.round, step.seats.SeatCount, step.seats.Source, step.seats.MinimumSeatCount)
+		requireRoundScope(t, x, task.ID, step.round, payload, store.ReviewScopeDelta, step.baseline)
+	}
+}
+
+// A policy handoff back to review opens a round whose event carries the
+// head's recorded delta scope and judged head from its new orders.
+func runRoundScopeHandoff(t *testing.T, x Fixture) {
+	task := drHandoffTask(t, x, drJudged)
+	enabled, disabled := true, false
+	_, err := changeSeatPolicy(x, store.SetupChangeRequest{TaskID: task.ID, RequestID: "scope-verify-" + task.ID, Reason: "enable verification", Policy: &store.TaskPolicyChange{VerifyStage: &enabled}})
+	requireOK(t, err)
+	_, err = changeSeatPolicy(x, store.SetupChangeRequest{TaskID: task.ID, RequestID: "scope-review-" + task.ID, Reason: "disable verification", Policy: &store.TaskPolicyChange{VerifyStage: &disabled}})
+	requireOK(t, err)
+	seats := store.ReviewRoundSeats{}
+	records, err := x.Backend.ListReviewRoundSeats(x.Context, task.ID)
+	requireOK(t, err)
+	for _, record := range records {
+		if record.ReviewRound == 2 {
+			seats = record
+		}
+	}
+	payload := requireRoundCreated(t, x, task.ID, 2, seats.SeatCount, seats.SeatCountSource, seats.MinimumSeatCount)
+	requireRoundScope(t, x, task.ID, 2, payload, store.ReviewScopeDelta, drJudged)
+	requireRoundScope(t, x, task.ID, 1, nil, store.ReviewScopeDelta, drJudged)
 }

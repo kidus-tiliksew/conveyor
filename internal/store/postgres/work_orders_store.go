@@ -433,7 +433,7 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 		if err = insertReviewRoundSeatsTx(ctx, tx, workspace(ctx), seats.Record(taskID, round, now)); err != nil {
 			return err
 		}
-		return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(round, seats))})
+		return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(round, seats, orders))})
 	})
 }
 
@@ -754,7 +754,7 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	if err = insertReviewRoundSeatsTx(ctx, tx, workspaceID, seats.Record(request.TaskID, newRound, now)); err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
-	createdPayload := store.ReviewRoundCreatedPayload(newRound, seats)
+	createdPayload := store.ReviewRoundCreatedPayload(newRound, seats, orders)
 	createdPayload["retry_request_id"] = request.RequestID
 	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(createdPayload), At: now}); err != nil {
 		return store.ReviewRoundRetryResult{}, err

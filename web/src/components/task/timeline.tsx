@@ -1045,6 +1045,7 @@ function PanelEntry({
               {seatMetadata?.seat_count_source === 'risk' && ' · set by risk tier'}
               {seats.length > 1 && ' · unanimous to pass'}
               {entry.distinctModels && ' · task policy: distinct seat models'}
+              <ReviewRoundScopeFact metadata={seatMetadata} />
             </span>
             <span className="inline-flex items-center gap-[5px]" title={`${verdictsIn} of ${seats.length} verdicts in`}>
               {seats.map((seat) => (
@@ -1237,6 +1238,23 @@ function changesRequestedBanner(changes: number, seatCount: number, bounce?: num
 // words, never the source code (feature-review-seat-minimum RS-7). A count the
 // risk tier set is also named in the header itself (req-risk-based-review
 // AC-7.1).
+// A delta round states that it covers the changes since the judged head and
+// names that commit. A full round, and a round recorded before scopes
+// existed, states no scope, so its panel stays as it was
+// (feature-delta-review-rounds DR-7; req-review-gates-evidence AC-12.7).
+function ReviewRoundScopeFact({ metadata }: { metadata?: TaskReviewSeatMetadata }) {
+  const baseline = metadata?.baseline_sha
+  if (metadata?.review_scope !== 'delta' || !baseline) return null
+  return (
+    <span data-review-scope="delta">
+      {' · Changes since judged head '}
+      <code className="font-mono text-foreground" title={baseline}>
+        {baseline.slice(0, 7)}
+      </code>
+    </span>
+  )
+}
+
 function reviewSeatSourceTitle(metadata: TaskReviewSeatMetadata) {
   const source =
     metadata.seat_count_source === 'declared'

@@ -614,8 +614,16 @@ export interface TaskPlanCycle {
 // (req-risk-based-review AC-7.1).
 export type ReviewSeatCountSource = 'declared' | 'planned' | 'carried' | 'minimum' | 'risk'
 
+// A review round's scope: full compares the pull request's base commit with
+// the head, and delta compares the task's judged head with it
+// (feature-delta-review-rounds DR-7).
+export type ReviewRoundScope = 'full' | 'delta'
+
 // One review round's seat count beside the task's minimum
-// (feature-review-seat-minimum RS-7).
+// (feature-review-seat-minimum RS-7), and the round's scope and baseline
+// from its seat orders (feature-delta-review-rounds DR-7;
+// req-review-gates-evidence AC-12.7). A round recorded before scopes existed,
+// or whose orders hold an empty scope, reads as full with no baseline.
 export interface TaskReviewSeatMetadata {
   review_round: number
   seat_count: number
@@ -624,6 +632,8 @@ export interface TaskReviewSeatMetadata {
   planned_seat_count?: number
   carried_from_round?: number
   superseded?: boolean
+  review_scope?: ReviewRoundScope
+  baseline_sha?: string
 }
 
 // The result of POST /v1/tasks/{id}/review-round/seats (RS-5).

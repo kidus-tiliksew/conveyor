@@ -1245,7 +1245,7 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, JobID: job.ID, Kind: "work_order.created", Payload: WorkOrderEventPayload(order)})
 	}
 	m.putReviewRoundSeatsLocked(task.Workspace, record)
-	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(ReviewRoundCreatedPayload(round, seats))})
+	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(ReviewRoundCreatedPayload(round, seats, orders))})
 	return nil
 }
 
@@ -1468,7 +1468,7 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now})
 	m.putReviewRoundSeatsLocked(task.Workspace, record)
-	createdPayload := ReviewRoundCreatedPayload(newRound, seats)
+	createdPayload := ReviewRoundCreatedPayload(newRound, seats, orders)
 	createdPayload["retry_request_id"] = request.RequestID
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(createdPayload), At: now})
 	result := ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: request.PriorRound, NewRound: newRound, PRHead: request.PRHead, WorkOrders: created}
