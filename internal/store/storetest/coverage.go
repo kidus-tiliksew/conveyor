@@ -6,6 +6,7 @@ import "strings"
 // its shared fixtures and taskops command adapters. Additions to Backend
 // require an explicit declaration and a behavioral case (DEC-38).
 var suiteMethods = map[string][]string{
+	"BoardConformance":                  strings.Fields(`CreateTask GetTask ListTaskWorkOrders ListTasksFilteredWithoutBody ListWorkOrdersForTasks ListActivityMarkersForTasks ListLatestPullRequestEventsForTasks`),
 	"ChangeNotices":                     strings.Fields(`Changes EnablePeers AppendEvent ListEvents CreateTask GetTask Log CreateWorkspace GetWorkspace WorkspaceConfig UpdateWorkspaceConfig NextDeadline CreateJob CreateWorkOrderCommand GetWorkOrder ClaimWorkOrderCommand UpdateWorkOrderCommand RecordCheckStatusDeadline ClearCheckStatusDeadline`),
 	"RiskRatings":                       strings.Fields(`RecordRiskRating RaiseTaskRiskTier ListTaskRiskRatings ListRiskRatingsForTasks AcceptReviewDecisionCommand CreateReviewRoundCommand CreateTask GetTask ListEvents CreateSpecVersion ApproveSpecVersion CreateTaskWithDependenciesAndContext`),
 	"RiskOrders":                        strings.Fields(`CreateRiskOrderCommand CompleteRiskOrderCommand CancelRiskOrderCommand ListTaskRiskOrders ClaimWorkOrderCommand ReleaseWorkerClaimCommand RaiseTaskRiskTier RecordRiskRating ListTaskRiskRatings CreateTask GetTask GetWorkOrder ListEvents CreateJob CreateWorkOrderCommand CreateReviewRoundCommand CreateSpecVersion ApproveSpecVersion PreemptWorkOrderCommand ListTaskWorkOrders ListJobs`),

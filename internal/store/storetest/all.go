@@ -421,6 +421,7 @@ func RunAll(t *testing.T, factory Factory) {
 		enabled bool
 		run     func(*testing.T, Fixture)
 	}{
+		{"BoardConformance", true, runBoardConformance},
 		{"TaskOperationsPagination", true, runTaskPagination},
 		{"ReconcileReads", true, runReconcileReads},
 		{"TaskDetailReads", true, runTaskDetailReads},

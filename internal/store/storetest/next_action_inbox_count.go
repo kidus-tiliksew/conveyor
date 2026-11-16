@@ -246,6 +246,11 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 		return id
 	}
 	want := map[string]string{}
+	restoreRecoveryBound := setAutomaticRecoveryBound(t, st, ctx, 1)
+	recoveryTask, recoveryOrders := seedReviewRoundWithVerdict(t, st, ctx, x.Workspace)
+	exhaustReviewSeat(t, st, ctx, recoveryOrders[1].ID)
+	restoreRecoveryBound()
+	want[recoveryTask.ID] = nextaction.KindReviewRecovery
 
 	want[gated(core.TaskGateSpec)] = nextaction.KindPlanApproval
 	want[gated(core.TaskJobFail)] = nextaction.KindJobFailure
@@ -335,6 +340,17 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 	_, _, err = st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: contextTask, TargetKind: core.TaskContextProposalSystemDesign, TargetID: confirmed.ID, Source: core.TaskContextProposalTriage, Justification: "Triage suggests this context."})
 	requireOK(t, err)
 	want[contextTask] = nextaction.KindContextProposal
+	disposition := seed(core.Task{State: core.TaskRunning, NextStage: core.StageVerify})
+	dispositionOrder := disposition + "-verify-1"
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: dispositionOrder, TaskID: disposition, Stage: core.StageVerify, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{
+		ID: dispositionOrder, TaskID: disposition, JobID: dispositionOrder, Stage: core.StageVerify,
+		State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now,
+		LastAttemptID: "attempt-" + disposition, LastAttemptOutcome: core.WorkOrderOutcomeReleased,
+		RetrySuppressed: true, RetrySuppressionReason: core.WorkOrderReleaseReasonOperatorCheckpointReached,
+		Checkpoint: &core.WorkOrderCheckpoint{Verification: &core.WorkOrderVerificationCheckpoint{ContextID: "context-" + disposition, HeadSHA: "head", Reason: "unresolved", RequiredAction: "dispose", OperationIDs: []string{"operation-" + disposition}}},
+	}))
+	want[disposition] = nextaction.KindVerificationDisposition
 	_, _, err = st.CreateSystemDesign(ctx, core.SystemDesign{ID: "cw-body-free-pending-" + suffix, Title: "Body-free pending", Category: "Component design"}, core.SystemDesignVersion{Content: designContent("proposed"), Origin: core.SystemDesignOriginOperator})
 	requireOK(t, err)
 
@@ -472,6 +488,49 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 				t.Fatalf("seeded task %s = %+v found=%t, want kind %s", id, action, found, kind)
 			}
 		}
+	}
+	// Compare board lines with the full task-detail projection over the same
+	// heterogeneous fixtures used by the attention read.
+	boardSeen := make(map[string]bool)
+	boardKinds := make(map[string]bool)
+	for offset := 0; ; {
+		board, err := store.ReadBoard(ctx, st, store.BoardOptions{Offset: offset, NextAction: store.NextActionOptions{Now: now}})
+		requireOK(t, err)
+		for _, item := range board.Items {
+			task, err := st.GetTask(ctx, item.ID)
+			requireOK(t, err)
+			orders, err := st.ListTaskWorkOrders(ctx, item.ID)
+			requireOK(t, err)
+			detail, err := store.ReadNextActionForTask(ctx, st, task, orders, store.NextActionOptions{Now: now})
+			requireOK(t, err)
+			if compact := nextaction.CompactFrom(detail); !reflect.DeepEqual(item.NextAction, compact) {
+				t.Errorf("task %s board action %+v, detail %+v", item.ID, item.NextAction, compact)
+			}
+			boardSeen[item.ID] = true
+			boardKinds[item.NextAction.Kind] = true
+		}
+		offset += len(board.Items)
+		if offset >= board.Total {
+			break
+		}
+		if len(board.Items) == 0 {
+			t.Fatal("board pagination did not advance")
+		}
+	}
+	for id := range want {
+		if !boardSeen[id] {
+			t.Errorf("scenario task %s missing from board", id)
+		}
+	}
+	expectedKinds := make(map[string]bool)
+	for _, kind := range nextaction.Kinds() {
+		// Terminal tasks are excluded from the open-only board.
+		if kind != nextaction.KindTerminal {
+			expectedKinds[kind] = true
+		}
+	}
+	if !reflect.DeepEqual(boardKinds, expectedKinds) {
+		t.Errorf("board kinds %v, want catalogue open kinds %v", boardKinds, expectedKinds)
 	}
 	decisionsWas := 0
 	for _, task := range fullCandidates {
