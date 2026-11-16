@@ -21,9 +21,9 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// attentionBodyBytes is the body of every task the body-free count case seeds.
-// A count that transfers even one body receives at least this many bytes.
-const attentionBodyBytes = 96 << 10
+// attentionBodyBytes exceeds the legitimate traffic from this heterogeneous
+// fixture, so transferring even one body violates the byte bound.
+const attentionBodyBytes = 256 << 10
 
 // attentionOpenStates is the state set CountOperatorAttention reads.
 var attentionOpenStates = []core.TaskState{core.TaskClaiming, core.TaskQueued, core.TaskRunning, core.TaskAwaiting, core.TaskApproved, core.TaskParked}
