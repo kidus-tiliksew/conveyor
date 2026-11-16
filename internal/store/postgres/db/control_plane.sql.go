@@ -2492,6 +2492,7 @@ func verificationTable(table string) bool {
 	}
 	return false
 }
+
 // ListVerificationRecords reads one task's rows of the named tables. The
 // predicate is task-scoped for every table, so a read's bytes never grow with
 // another task's verification rows (component-persistence, Database read
