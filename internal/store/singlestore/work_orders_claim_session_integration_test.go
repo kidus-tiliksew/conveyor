@@ -26,7 +26,7 @@ const claimSessionDigits = `(SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2
 // receives (component-work-orders, Snapshot-free fold reads;
 // component-persistence, Database read accounting).
 func TestClaimSessionAndActivityReadsAtScaleSingleStoreIntegration(t *testing.T) {
-	st := openOwnedStore(t)
+	st := openOwnedStore(t, false)
 	workspace := "claim-session-scale-" + core.NewTaskID()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
@@ -44,7 +44,7 @@ func TestClaimSessionAndActivityReadsAtScaleSingleStoreIntegration(t *testing.T)
 // successful renewal keeps the fixed deadline and both snapshots
 // (component-work-orders, Snapshot-free fold reads).
 func TestRenewalReadsAtScaleSingleStoreIntegration(t *testing.T) {
-	st := openOwnedStore(t)
+	st := openOwnedStore(t, false)
 	workspace := "claim-session-scale-" + core.NewTaskID()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
