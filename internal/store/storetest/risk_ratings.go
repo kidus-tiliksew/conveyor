@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -57,6 +58,11 @@ func RunRiskRatingConformance(t *testing.T, x Fixture) {
 		t.Helper()
 		listed, err := st.ListTaskRiskRatings(ctx, taskID)
 		requireOK(t, err)
+		batched, batchErr := st.ListRiskRatingsForTasks(ctx, []string{taskID, "missing-task"})
+		requireOK(t, batchErr)
+		if len(listed) != len(batched[taskID]) || len(listed) > 0 && !reflect.DeepEqual(listed, batched[taskID]) || len(batched["missing-task"]) != 0 {
+			t.Fatalf("ratings batch=%+v single=%+v", batched, listed)
+		}
 		return listed
 	}
 

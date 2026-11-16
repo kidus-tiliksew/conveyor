@@ -110,6 +110,30 @@ func (s *Store) ListTaskRiskRatings(ctx context.Context, taskID string) ([]core.
 	return listRiskRatings(ctx, s.boundary, taskID)
 }
 
+func (s *Store) ListRiskRatingsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.RiskRating, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRiskRatingsForTasks")
+	out := make(map[string][]core.RiskRating, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.queries.ListRiskRatingsForTasks(ctx, workspace(ctx), taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		var rating core.RiskRating
+		if err := json.Unmarshal(row.PayloadJSON, &rating); err != nil {
+			return nil, err
+		}
+		rating.PlanPending = rating.Source == core.RiskSourceRiskAgent && rating.PlanVersion > 0 && !row.PlanApproved
+		out[row.TaskID] = append(out[row.TaskID], rating)
+	}
+	for _, ratings := range out {
+		store.SortRiskRatings(ratings)
+	}
+	return out, nil
+}
+
 type riskRowQuerier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }

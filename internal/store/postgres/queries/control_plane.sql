@@ -741,3 +741,11 @@ FROM events e JOIN tasks t ON t.id = e.task_id
 WHERE t.workspace_id = sqlc.arg(workspace_id)
   AND e.task_id = ANY(sqlc.arg(task_ids)::text[]) AND e.kind = 'work_order.claimed'
 ORDER BY e.task_id,e.at,e.id;
+
+-- name: ListRiskRatingsForTasks :many
+SELECT r.task_id,r.payload_json,
+  EXISTS (SELECT 1 FROM task_specs s WHERE s.task_id=r.task_id
+    AND s.version=CAST(r.payload_json->>'plan_version' AS integer) AND s.approved) AS plan_approved
+FROM task_risk_ratings r
+WHERE r.workspace_id=sqlc.arg(workspace_id) AND r.task_id=ANY(sqlc.arg(task_ids)::text[])
+ORDER BY r.task_id,r.seq;
