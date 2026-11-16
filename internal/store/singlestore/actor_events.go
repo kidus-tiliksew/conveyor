@@ -73,6 +73,11 @@ func insertWorkspaceEventInto(ctx context.Context, tx *sql.Tx, event core.Event,
 	if err != nil {
 		return err
 	}
+	if event.TaskID != "" {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO task_event_positions(workspace_id,position) VALUES(?,1) ON DUPLICATE KEY UPDATE position=position+1`, ws); err != nil {
+			return err
+		}
+	}
 	projection := store.ProjectLineageEvent(ws, event)
 	for _, l := range projection.Suppresses {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM links WHERE workspace_id=? AND src_type=? AND src_id=? AND dst_type=? AND dst_id=? AND kind=?`, ws, l.SrcType, l.SrcID, l.DstType, l.DstID, l.Kind); err != nil {
