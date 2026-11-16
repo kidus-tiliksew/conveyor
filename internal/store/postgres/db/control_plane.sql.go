@@ -7,9 +7,11 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -2490,15 +2492,17 @@ func verificationTable(table string) bool {
 	}
 	return false
 }
-func (q *Queries) ListVerificationRecords(ctx context.Context, workspaceID, taskID string) ([]VerificationRecord, error) {
-	tables := []string{"verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks", "verification_permission_grants", "verification_permission_revocations"}
+// ListVerificationRecords reads one task's rows of the named tables. The
+// predicate is task-scoped for every table, so a read's bytes never grow with
+// another task's verification rows (component-persistence, Database read
+// accounting).
+func (q *Queries) ListVerificationRecords(ctx context.Context, workspaceID, taskID string, tables []string) ([]VerificationRecord, error) {
 	var out []VerificationRecord
 	for _, table := range tables {
-		condition := "task_id=$2"
-		if table == "verification_operations" {
-			condition = "(task_id=$2 OR true)"
+		if !verificationTable(table) {
+			return nil, fmt.Errorf("invalid verification table")
 		}
-		rows, err := q.db.Query(ctx, "SELECT id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at FROM "+table+" WHERE workspace_id=$1 AND "+condition+" ORDER BY id", workspaceID, taskID)
+		rows, err := q.db.Query(ctx, "SELECT id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at FROM "+table+" WHERE workspace_id=$1 AND task_id=$2 ORDER BY id", workspaceID, taskID)
 		if err != nil {
 			return nil, err
 		}
@@ -2552,6 +2556,57 @@ func (q *Queries) ListVerificationPublicationDeliveries(ctx context.Context, ws,
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// LatestVerificationPublicationDelivery reads the newest generation of one
+// pull-request key: the row a delivery command advances, without the whole
+// generation history (component-persistence, Database read accounting).
+func (q *Queries) LatestVerificationPublicationDelivery(ctx context.Context, workspaceID, prKey string) (VerificationPublicationDeliveryRecord, bool, error) {
+	var r VerificationPublicationDeliveryRecord
+	err := q.db.QueryRow(ctx, `SELECT workspace_id,id,task_id,context_id,source_publication_id,pr_key,generation,state,body FROM verification_publication_deliveries WHERE workspace_id=$1 AND pr_key=$2 ORDER BY generation DESC LIMIT 1`, workspaceID, prKey).Scan(&r.WorkspaceID, &r.ID, &r.TaskID, &r.ContextID, &r.SourcePublicationID, &r.PRKey, &r.Generation, &r.State, &r.Body)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return VerificationPublicationDeliveryRecord{}, false, nil
+	}
+	if err != nil {
+		return VerificationPublicationDeliveryRecord{}, false, err
+	}
+	return r, true, nil
+}
+
+// VerificationOperationByKeyHash reads the operation that owns a logical key
+// anywhere in the workspace. Registration uses it instead of a workspace-wide
+// operation read (component-verification-service).
+func (q *Queries) VerificationOperationByKeyHash(ctx context.Context, workspaceID, keyHash string) (VerificationRecord, bool, error) {
+	var v VerificationRecord
+	err := q.db.QueryRow(ctx, `SELECT id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at FROM verification_operations WHERE workspace_id=$1 AND key_hash=$2 LIMIT 1`, workspaceID, keyHash).Scan(&v.ID, &v.TaskID, &v.ContextID, &v.RunID, &v.LogicalKey, &v.KeyHash, &v.State, &v.Body, &v.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return VerificationRecord{}, false, nil
+	}
+	if err != nil {
+		return VerificationRecord{}, false, err
+	}
+	v.Table, v.WorkspaceID = "verification_operations", workspaceID
+	return v, true, nil
+}
+
+// UnresolvedVerificationOperations reads the operations another task holds that
+// are unresolved for one subject, step, and target: changing the source cannot
+// hide an unresolved external action (component-verification-service).
+func (q *Queries) UnresolvedVerificationOperations(ctx context.Context, workspaceID, taskID, subjectKey, stepID, target string) ([]VerificationRecord, error) {
+	rows, err := q.db.Query(ctx, `SELECT id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at FROM verification_operations WHERE workspace_id=$1 AND task_id<>$2 AND state NOT IN ('applied','not_applied','completed') AND body::jsonb->>'SubjectKey'=$3 AND body::jsonb->>'StepID'=$4 AND body::jsonb->>'Target'=$5 ORDER BY id`, workspaceID, taskID, subjectKey, stepID, target)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []VerificationRecord
+	for rows.Next() {
+		v := VerificationRecord{Table: "verification_operations", WorkspaceID: workspaceID}
+		if err = rows.Scan(&v.ID, &v.TaskID, &v.ContextID, &v.RunID, &v.LogicalKey, &v.KeyHash, &v.State, &v.Body, &v.ExpiresAt); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
 	}
 	return out, rows.Err()
 }

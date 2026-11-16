@@ -1391,7 +1391,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		o.UpdatedAt = now
 		repin := false
 		if o.Stage == core.StageVerify {
-			verificationRows, rowsErr := verificationRowsTx(ctx, tx, documentWorkspace(ctx), o.TaskID)
+			verificationRows, rowsErr := verificationRowsTx(ctx, tx, documentWorkspace(ctx), o.TaskID, store.VerificationRepinTables)
 			if rowsErr != nil {
 				return rowsErr
 			}
@@ -1574,7 +1574,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			if err := s.orderSupersessionGuardTx(ctx, tx, store.ProjectWorkOrderAt(o, time.Now().UTC())); err != nil {
 				return err
 			}
-			rows, e := verificationRowsTx(ctx, tx, documentWorkspace(ctx), o.TaskID)
+			rows, e := verificationRowsTx(ctx, tx, documentWorkspace(ctx), o.TaskID, store.VerificationRecoveryTables)
 			if e != nil {
 				return e
 			}

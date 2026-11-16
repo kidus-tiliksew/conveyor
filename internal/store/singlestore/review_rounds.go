@@ -340,7 +340,7 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 		})
 		verificationState := store.VerificationReviewState{}
 		if before.SetupContract.VerifyStage {
-			rows, e := verificationRowsTx(ctx, tx, documentWorkspace(ctx), decision.TaskID)
+			rows, e := verificationRowsTx(ctx, tx, documentWorkspace(ctx), decision.TaskID, store.VerificationSnapshotTables)
 			if e != nil {
 				return e
 			}

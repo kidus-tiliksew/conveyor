@@ -53,7 +53,7 @@ func (m *volatileMemory) applyVerification(ctx context.Context, lease taskops.Ta
 		if err = VerifyVerificationClaim(ctx, c.Access, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], c.Kind != VerificationSeal, now); err != nil {
 			// component-verification-service: only the exact retained checkpoint claim may replay.
 			ws, _ := WorkspaceFromContext(ctx)
-			if c.Kind != VerificationSeal || VerifyVerificationCheckpointReplay(ctx, c.Access, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], m.verificationRowsLocked(ws, c.Access.TaskID), c.ContextID, now) != nil {
+			if c.Kind != VerificationSeal || VerifyVerificationCheckpointReplay(ctx, c.Access, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], m.verificationRowsLocked(ws, c.Access.TaskID, VerificationReplayTables), c.ContextID, now) != nil {
 				return VerificationReceipt{}, err
 			}
 		}
@@ -66,9 +66,9 @@ func (m *volatileMemory) applyVerification(ctx context.Context, lease taskops.Ta
 	}
 	BindVerificationAuthority(&c, authority, m.workOrders[c.Access.WorkOrderID])
 	ws, _ := WorkspaceFromContext(ctx)
-	rows := m.verificationRowsLocked(ws, c.Access.TaskID)
+	rows := m.verificationRowsLocked(ws, c.Access.TaskID, VerificationCommandTables(c))
 	c.SubmittedHeadSHA = m.workOrders[c.Access.WorkOrderID].HeadSHA
-	mutation, err := PrepareVerificationMutation(ctx, verificationSecrets(secrets), c, rows, now)
+	mutation, err := PrepareVerificationMutation(ctx, verificationSecrets(secrets), memoryVerificationScope{m: m.memory, task: c.Access.TaskID}, c, rows, now)
 	if err != nil {
 		return VerificationReceipt{}, err
 	}
@@ -167,10 +167,11 @@ func (m *volatileMemory) applyVerification(ctx context.Context, lease taskops.Ta
 	committed = true
 	return mutation.Receipt, nil
 }
-func (m *memory) verificationRowsLocked(ws, task string) []VerificationRow {
+func (m *memory) verificationRowsLocked(ws, task string, tables VerificationTableSet) []VerificationRow {
 	var rows []VerificationRow
+	wanted := tables.index()
 	for key, row := range m.verificationRows {
-		if len(key) > len(ws) && key[:len(ws)+1] == ws+"\x00" && (row.TaskID == task || row.Table == "verification_operations") {
+		if len(key) > len(ws) && key[:len(ws)+1] == ws+"\x00" && row.TaskID == task && wanted[row.Table] {
 			row.Body = append([]byte(nil), row.Body...)
 			rows = append(rows, row)
 		}
@@ -182,6 +183,62 @@ func (m *memory) verificationRowsLocked(ws, task string) []VerificationRow {
 		return rows[i].ID < rows[j].ID
 	})
 	return rows
+}
+
+// verificationOperationByKeyLocked returns the operation that owns a logical
+// key anywhere in the workspace, so a registration refuses another task's key
+// without reading every task's operation rows (component-verification-service).
+func (m *memory) verificationOperationByKeyLocked(ws, key string) (VerificationRow, bool) {
+	for k, row := range m.verificationRows {
+		if row.Table == "verification_operations" && row.LogicalKey == key && len(k) > len(ws) && k[:len(ws)+1] == ws+"\x00" {
+			row.Body = append([]byte(nil), row.Body...)
+			return row, true
+		}
+	}
+	return VerificationRow{}, false
+}
+
+// unresolvedVerificationOperationsLocked returns another task's unresolved
+// operations for one subject, step, and target: changing the source cannot hide
+// an unresolved external action (component-verification-service).
+func (m *memory) unresolvedVerificationOperationsLocked(ws, task, subjectKey, stepID, target string) []VerificationRow {
+	var rows []VerificationRow
+	for k, row := range m.verificationRows {
+		if row.Table != "verification_operations" || row.TaskID == task || verificationOperationResolved(row.State) || len(k) <= len(ws) || k[:len(ws)+1] != ws+"\x00" {
+			continue
+		}
+		op := verificationDecode[VerificationOperation](row)
+		if op.SubjectKey != subjectKey || op.StepID != stepID || op.Target != target {
+			continue
+		}
+		row.Body = append([]byte(nil), row.Body...)
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// memoryVerificationScope serves the operation lookups a registration needs
+// from the in-memory image the caller already holds locked.
+type memoryVerificationScope struct {
+	m    *memory
+	task string
+}
+
+func (s memoryVerificationScope) VerificationOperationByKey(ctx context.Context, key string) (VerificationRow, bool, error) {
+	ws, ok := WorkspaceFromContext(ctx)
+	if !ok {
+		return VerificationRow{}, false, ErrVerificationAccess
+	}
+	row, found := s.m.verificationOperationByKeyLocked(ws, key)
+	return row, found, nil
+}
+
+func (s memoryVerificationScope) UnresolvedVerificationOperations(ctx context.Context, subjectKey, stepID, target string) ([]VerificationRow, error) {
+	ws, ok := WorkspaceFromContext(ctx)
+	if !ok {
+		return nil, ErrVerificationAccess
+	}
+	return s.m.unresolvedVerificationOperationsLocked(ws, s.task, subjectKey, stepID, target), nil
 }
 func (m *volatileMemory) ReadVerification(ctx context.Context, a VerificationAccess, id string) (VerificationSnapshot, error) {
 	if err := AuthorizeVerificationUserRead(ctx, m, a); err != nil {
@@ -202,7 +259,7 @@ func (m *volatileMemory) ReadVerification(ctx context.Context, a VerificationAcc
 			return VerificationSnapshot{}, err
 		}
 	}
-	rows := m.verificationRowsLocked(ws, a.TaskID)
+	rows := m.verificationRowsLocked(ws, a.TaskID, VerificationSnapshotTables)
 	snapshot, err := VerificationReadSnapshot(rows, a, id, m.workOrders[a.WorkOrderID].Stage)
 	if err != nil {
 		return VerificationSnapshot{}, err
@@ -232,7 +289,7 @@ func (m *volatileMemory) ReadVerificationArtifact(ctx context.Context, a Verific
 			return core.Artifact{}, nil, err
 		}
 	}
-	rows := m.verificationRowsLocked(ws, a.TaskID)
+	rows := m.verificationRowsLocked(ws, a.TaskID, VerificationArtifactTables)
 	if err := VerificationArtifactAccess(rows, a, evidenceID, artifactID, m.workOrders[a.WorkOrderID].Stage); err != nil {
 		return core.Artifact{}, nil, err
 	}
@@ -320,7 +377,7 @@ func (m *volatileMemory) ReconcileVerificationClaims(ctx context.Context) (int, 
 	var rows []VerificationRow
 	for _, task := range m.tasks {
 		if task.Workspace == ws {
-			rows = append(rows, m.verificationRowsLocked(ws, task.ID)...)
+			rows = append(rows, m.verificationRowsLocked(ws, task.ID, VerificationClaimTables)...)
 		}
 	}
 	commands, err := VerificationReconciliationCommands(ctx, rows)
@@ -405,7 +462,7 @@ func (m *volatileMemory) RecordVerificationPullRequest(ctx context.Context, e co
 		}
 	}
 	events := append(append([]core.Event(nil), m.events[e.TaskID]...), e)
-	rows, updates, err := m.deliveryIntentLocked(ctx, e.TaskID, m.verificationRowsLocked(ws, e.TaskID), events, "")
+	rows, updates, err := m.deliveryIntentLocked(ctx, e.TaskID, m.verificationRowsLocked(ws, e.TaskID, VerificationDeliveryTables), events, "")
 	if err != nil {
 		return err
 	}
@@ -429,7 +486,7 @@ func (m *volatileMemory) TranslateVerificationPublication(ctx context.Context, p
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ws, _ := WorkspaceFromContext(ctx)
-	rows, updates, err := m.deliveryIntentLocked(ctx, p.TaskID, m.verificationRowsLocked(ws, p.TaskID), m.events[p.TaskID], p.ID)
+	rows, updates, err := m.deliveryIntentLocked(ctx, p.TaskID, m.verificationRowsLocked(ws, p.TaskID, VerificationDeliveryTables), m.events[p.TaskID], p.ID)
 	if err != nil {
 		return err
 	}
@@ -501,8 +558,43 @@ func (m *volatileMemory) ReconcileVerificationDeliveries(ctx context.Context) er
 			ReportDriftRepair(ctx, DriftVerificationDeliveryWithoutJob.For(taskID))
 		}
 	}()
+	now := time.Now().UTC()
+	// The pass acts on the newest due generation of each pull-request key, in
+	// the same bounded, due-time ordered window the SQL backends select
+	// (component-verification-publication; component-persistence, Database read
+	// accounting).
+	var due []core.VerificationDelivery
 	for _, d := range m.verificationDeliveries {
-		if d.WorkspaceID == ws && (d.State == "pending" || d.State == "retrying" || d.State == "failed" && d.NextAttemptAt != nil && !d.NextAttemptAt.After(time.Now().UTC())) {
+		if d.WorkspaceID == ws && (d.State == "pending" || d.State == "retrying" || d.State == "failed" && d.NextAttemptAt != nil && !d.NextAttemptAt.After(now)) {
+			due = append(due, d)
+		}
+	}
+	sort.Slice(due, func(i, j int) bool {
+		left, right := dueAt(due[i]), dueAt(due[j])
+		if !left.Equal(right) {
+			return left.Before(right)
+		}
+		leftKey, rightKey := VerificationDeliveryKey(due[i].Repository, due[i].PullRequestNumber), VerificationDeliveryKey(due[j].Repository, due[j].PullRequestNumber)
+		if leftKey != rightKey {
+			return leftKey < rightKey
+		}
+		return due[i].Generation < due[j].Generation
+	})
+	newest := map[string]int{}
+	var window []core.VerificationDelivery
+	for _, d := range due {
+		key := VerificationDeliveryKey(d.Repository, d.PullRequestNumber)
+		if generation, found := newest[key]; found && generation >= d.Generation {
+			continue
+		}
+		newest[key] = d.Generation
+		window = append(window, d)
+	}
+	if len(window) > VerificationDeliveryReconcileWindow {
+		window = window[:VerificationDeliveryReconcileWindow]
+	}
+	for _, d := range window {
+		{
 			due := d.State == "failed"
 			if due {
 				next, err := AdvanceVerificationDelivery(d, "retry", d, time.Now().UTC())
@@ -523,4 +615,13 @@ func (m *volatileMemory) ReconcileVerificationDeliveries(ctx context.Context) er
 		}
 	}
 	return nil
+}
+
+// dueAt is the reconcile order key: a row that has never been attempted sorts
+// first, matching the SQL backends' COALESCE(next_attempt_at, epoch).
+func dueAt(d core.VerificationDelivery) time.Time {
+	if d.NextAttemptAt == nil {
+		return time.Unix(0, 0).UTC()
+	}
+	return d.NextAttemptAt.UTC()
 }

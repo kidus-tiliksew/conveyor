@@ -209,8 +209,8 @@ func VerificationSnapshotFromRows(rows []VerificationRow, contextID string) (Ver
 // PrepareVerificationMutation has no persistence side effects. It redacts
 // before validating or hashing and produces a complete transaction write set.
 // Adapters discard the write set on every failed check or write.
-func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource, c VerificationCommand, rows []VerificationRow, now time.Time) (VerificationMutation, error) {
-	out, err := prepareVerificationMutation(ctx, source, c, rows, now)
+func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource, ops VerificationOperationScope, c VerificationCommand, rows []VerificationRow, now time.Time) (VerificationMutation, error) {
+	out, err := prepareVerificationMutation(ctx, source, ops, c, rows, now)
 	var refusal *VerificationRefusal
 	if err != nil && errors.As(err, &refusal) {
 		// component-verification-service: refusal text passes the configured
@@ -228,7 +228,7 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 	return out, err
 }
 
-func prepareVerificationMutation(ctx context.Context, source redact.SecretSource, c VerificationCommand, rows []VerificationRow, now time.Time) (VerificationMutation, error) {
+func prepareVerificationMutation(ctx context.Context, source redact.SecretSource, ops VerificationOperationScope, c VerificationCommand, rows []VerificationRow, now time.Time) (VerificationMutation, error) {
 	var out VerificationMutation
 	if encoded, err := json.Marshal(c); err != nil || len(encoded) > 8<<20 {
 		return out, ErrVerificationInvalid
@@ -346,7 +346,7 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 		if c.Selection != nil {
 			selectionCommand := c
 			selectionCommand.Kind, selectionCommand.ContextID = VerificationRecordSelection, v.ID
-			selected, err := prepareVerificationMutation(ctx, source, selectionCommand, append(append([]VerificationRow{}, rows...), out.Rows...), now)
+			selected, err := prepareVerificationMutation(ctx, source, ops, selectionCommand, append(append([]VerificationRow{}, rows...), out.Rows...), now)
 			if err != nil {
 				return VerificationMutation{}, err
 			}
@@ -530,7 +530,7 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 				return out, err
 			}
 		case VerificationPrepareOperation, VerificationObserveOperation, VerificationReconcileOperation:
-			if err := verificationOperationMutation(c, rows, actor, now, redactor, &out); err != nil {
+			if err := verificationOperationMutation(ctx, ops, c, rows, actor, now, redactor, &out); err != nil {
 				return out, err
 			}
 		case VerificationStageChunk:
@@ -696,6 +696,19 @@ func VerificationStorageKey(v VerificationRow) string {
 		return v.ID
 	}
 	return v.LogicalKey
+}
+
+// VerificationStorageKeyHash is the indexed key_hash a backend stores beside a
+// row, so a row can be read by its logical key without a table scan.
+func VerificationStorageKeyHash(v VerificationRow) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(VerificationStorageKey(v))))
+}
+
+// VerificationOperationKeyHash is the key_hash of an operation's logical key:
+// the whole workspace shares it, so an operation owned by another task is found
+// without reading every task's operation rows.
+func VerificationOperationKeyHash(key string) string {
+	return VerificationStorageKeyHash(VerificationRow{Table: "verification_operations", LogicalKey: key})
 }
 
 type verificationClockKey struct{}
