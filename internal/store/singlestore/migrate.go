@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"path"
 	"sort"
 	"strconv"
@@ -19,13 +20,27 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
+var publishedChecksums = map[int]string{
+	1:  "1a9c85919365f9352515e0a069a587ebd953f87587cb31f3cf2fc2e9c0f1ee35",
+	9:  "2235143c675191ee33b9f85936be2aabc4b07143b52dba6d59ee17be604095c7",
+	23: "017d008eaa42648d1dad93876ef7512aa8612122bb351c7e0699b7e81b2902ac",
+	24: "ee062c65e202b7d6cb3bd0193c792b3286dda80ddec095832cf39d17f1916b81",
+	29: "4cabbd3ca03f66a0ce798afaaac677a7824ebf52f684b4c837272b29e80c8536",
+	37: "ba16c2cb61b72c697e683faa7568744d8bc52b46382b2df705a5e3fa50bd048e",
+	40: "c15d529ff645ccac79ae4e9a504adb042d3f7dda8cabb4c3352b4247a9577043",
+}
+
 type migration struct {
 	version             int
 	name, checksum, sql string
 }
 
 func migrations() ([]migration, error) {
-	entries, err := migrationFiles.ReadDir("migrations")
+	return migrationsFrom(migrationFiles)
+}
+
+func migrationsFrom(files fs.FS) ([]migration, error) {
+	entries, err := fs.ReadDir(files, "migrations")
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +54,7 @@ func migrations() ([]migration, error) {
 			return nil, fmt.Errorf("invalid or duplicate migration %s", name)
 		}
 		seen[version] = true
-		data, err := migrationFiles.ReadFile(path.Join("migrations", name))
+		data, err := fs.ReadFile(files, path.Join("migrations", name))
 		if err != nil {
 			return nil, err
 		}
@@ -59,7 +74,7 @@ func checkLedger(record migration, embedded map[int]migration, latest int) error
 	if record.name != expected.name {
 		return fmt.Errorf("SingleStore migration %d name mismatch", record.version)
 	}
-	if record.checksum != expected.checksum {
+	if prior, ok := publishedChecksums[record.version]; record.checksum != expected.checksum && (!ok || record.checksum != prior) {
 		return fmt.Errorf("SingleStore migration %d checksum mismatch", record.version)
 	}
 	return nil
@@ -74,6 +89,11 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.migrateFiles(ctx, files)
+}
+
+func (s *Store) migrateFiles(ctx context.Context, files []migration) error {
+	var err error
 	if len(files) == 0 {
 		return fmt.Errorf("no SingleStore migrations embedded")
 	}

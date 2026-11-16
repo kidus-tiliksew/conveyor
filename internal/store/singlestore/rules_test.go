@@ -1,7 +1,11 @@
 package singlestore
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +91,65 @@ func TestMigrationLedgerRefusals(t *testing.T) {
 	}
 	if err := checkLedger(file, embedded, 1); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPublishedMigrationChecksums(t *testing.T) {
+	files, err := migrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	embedded := make(map[int]migration, len(files))
+	for _, file := range files {
+		embedded[file.version] = file
+	}
+	for version, checksum := range publishedChecksums {
+		file := embedded[version]
+		data, err := os.ReadFile(filepath.Join("testdata", "published_migrations", file.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != checksum {
+			t.Errorf("%s: published checksum = %s, want %s", file.name, got, checksum)
+		}
+		for _, accepted := range []string{checksum, file.checksum} {
+			record := file
+			record.checksum = accepted
+			if err := checkLedger(record, embedded, files[len(files)-1].version); err != nil {
+				t.Errorf("version %d checksum %s: %v", version, accepted, err)
+			}
+		}
+		for otherVersion, otherChecksum := range publishedChecksums {
+			if otherVersion == version {
+				continue
+			}
+			for _, foreign := range []string{otherChecksum, embedded[otherVersion].checksum} {
+				record := file
+				record.checksum = foreign
+				if checkLedger(record, embedded, files[len(files)-1].version) == nil {
+					t.Errorf("version %d accepted version %d checksum", version, otherVersion)
+				}
+			}
+		}
+		record := file
+		record.name = "wrong"
+		record.checksum = checksum
+		if checkLedger(record, embedded, files[len(files)-1].version) == nil {
+			t.Errorf("version %d accepted wrong name", version)
+		}
+	}
+	for _, version := range []int{1, 2} {
+		for _, checksum := range []string{"", "arbitrary"} {
+			record := embedded[version]
+			record.checksum = checksum
+			if checkLedger(record, embedded, files[len(files)-1].version) == nil {
+				t.Errorf("version %d accepted checksum %q", version, checksum)
+			}
+		}
+	}
+	if checkLedger(migration{version: 0}, embedded, files[len(files)-1].version) == nil ||
+		checkLedger(migration{version: files[len(files)-1].version + 1}, embedded, files[len(files)-1].version) == nil {
+		t.Fatal("unknown or newer migration accepted")
 	}
 }
 func TestConnectionSettings(t *testing.T) {
