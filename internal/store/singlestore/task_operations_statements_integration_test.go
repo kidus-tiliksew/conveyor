@@ -30,7 +30,7 @@ func TestTaskOperationsStatementBoundIntegration(t *testing.T) {
 		t.Helper()
 		workspace := fmt.Sprintf("task-operations-statements-%d", size)
 		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
-		if _, err := st.CreateWorkspace(ctx, workspace, "Statements", &config.Config{Workspace: workspace}); err != nil {
+		if _, err := st.CreateWorkspace(ctx, workspace, workspace, &config.Config{Workspace: workspace}); err != nil {
 			t.Fatal(err)
 		}
 		for i := range size {
