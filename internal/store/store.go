@@ -390,6 +390,7 @@ type DocumentStore interface {
 	// in the current workspace, ordered by time and ID per task. Empty IDs
 	// return an empty map without a database read.
 	ListMonitorPullRequestEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
+	ListLatestPullRequestEventsForTasks(ctx context.Context, taskIDs []string) (map[string]core.Event, error)
 	// MonitorOriginsForTasks returns, for each requested task whose source is
 	// monitor:<kind>, the earliest observation linked to it whose kind equals
 	// that source kind, by created_at and then identity, in the current

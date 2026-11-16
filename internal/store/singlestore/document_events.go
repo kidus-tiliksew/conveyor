@@ -657,6 +657,26 @@ func (s *Store) ListMonitorPullRequestEventsForTasks(ctx context.Context, ids []
 	}
 	return out, rows.Err()
 }
+func (s *Store) ListLatestPullRequestEventsForTasks(ctx context.Context, ids []string) (map[string]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListLatestPullRequestEventsForTasks")
+	out := make(map[string]core.Event, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := documentBatchRows(ctx, s.db, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at FROM (SELECT id,task_id,COALESCE(job_id,'') AS job_id,kind,actor_id,actor_role,payload_json,at,ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY at DESC,id DESC) AS rn FROM events_columnstore WHERE workspace_id=? AND task_id IN (%s) AND kind='pull_request.opened') ranked WHERE rn=1`, documentWorkspace(ctx), ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e core.Event
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.JobID, &e.Kind, &e.ActorID, &e.ActorRole, &e.Payload, &e.At); err != nil {
+			return nil, err
+		}
+		out[e.TaskID] = e
+	}
+	return out, rows.Err()
+}
 func (s *Store) ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, q store.DocumentEventQuery) (store.DocumentEventPage, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListDocumentEventPage")
 	page := store.DocumentEventPage{Events: []core.Event{}, Limit: q.Limit, Offset: q.Offset}
