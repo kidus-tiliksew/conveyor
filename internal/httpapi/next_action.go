@@ -135,16 +135,35 @@ func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOpti
 }
 
 func (s *Server) getNextAction(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "id")
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return
 	}
-	action, err := store.ReadNextAction(r.Context(), s.Store, chi.URLParam(r, "id"), opts)
+	// An unchanged poll is answered from the validation read alone, before
+	// the task read and the projection, exactly as the Board activity read
+	// does (component-http-api, Activity conditional admission).
+	now := activityClock().UTC()
+	opts.Now = now
+	validation, err := s.Store.ReadActivityValidation(r.Context(), now)
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	conditional := &activityConditional{now: now, opts: opts, scope: taskObservationValidatorScope(r.Context(), taskID, opts.Capabilities), validation: validation}
+	if tag, admitted := conditional.admits(r.Header.Get("If-None-Match")); admitted {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", tag.raw)
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	action, err := store.ReadNextAction(r.Context(), s.Store, taskID, opts)
 	if err != nil {
 		writeClassifiedStoreError(w, r, err, refuseSentinel(store.ErrNotFound, http.StatusNotFound, "task not found"))
 		return
 	}
+	w.Header().Set("ETag", conditional.etag(taskObservationValidUntil(now, action), ""))
 	writeJSON(w, http.StatusOK, action)
 }
 

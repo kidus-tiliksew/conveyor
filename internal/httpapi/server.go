@@ -282,6 +282,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/task-map", s.getTaskMap)
 			r.Get("/tasks/{id}", s.getTask)
 			r.Get("/tasks/{id}/next-action", s.getNextAction)
+			r.Get("/tasks/{id}/observation", s.getTaskObservation)
 			r.Get("/tasks/{id}/flow", s.getTaskFlow)
 			r.Get("/inbox", s.listInbox)
 			r.Get("/next-actions", s.listNextActions)

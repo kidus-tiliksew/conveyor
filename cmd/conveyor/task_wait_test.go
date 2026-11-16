@@ -3,14 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -107,6 +110,7 @@ type taskWaitFixture struct {
 	active taskWaitStep
 	reads  int
 	paths  []string
+	tags   []string
 	server *httptest.Server
 }
 
@@ -134,6 +138,12 @@ func (f *taskWaitFixture) requestPaths() []string {
 	return append([]string(nil), f.paths...)
 }
 
+func (f *taskWaitFixture) requestTags() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.tags...)
+}
+
 func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		f.t.Errorf("task wait sent %s %s; only GET is allowed", r.Method, r.URL.Path)
@@ -148,9 +158,10 @@ func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.paths = append(f.paths, r.URL.RequestURI())
+	f.tags = append(f.tags, r.Header.Get("If-None-Match"))
 	f.mu.Unlock()
 	taskPath := "/v1/tasks/" + taskWaitTestTaskID
-	if r.URL.Path == taskPath {
+	if r.URL.Path == taskPath+"/observation" {
 		f.mu.Lock()
 		step := f.steps[min(f.next, len(f.steps)-1)]
 		f.next++
@@ -170,40 +181,40 @@ func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, http.StatusText(step.status), step.status)
 			return
 		}
-		task := core.Task{ID: taskWaitTestTaskID, State: step.state, Title: step.title}
+		view := taskWaitObservationView{TaskID: taskWaitTestTaskID, State: step.state, ClaimableOrders: taskWaitTestClaimableOrders(step)}
 		if step.gate != nil && step.gate.Kind == taskWaitGateMergeExecution && step.state == core.TaskApproved && !step.frozenGateOff {
-			task.MergeApproval = true
+			view.MergeApproval = true
 		}
 		action := step.nextAction
 		if action == nil {
 			action = &nextActionView{Label: "Label " + step.title, Actor: "agent", Kind: step.gate.nextActionKind()}
 		}
-		_ = json.NewEncoder(w).Encode(struct {
-			core.Task
-			NextAction *nextActionView `json:"next_action"`
-		}{task, action})
+		view.NextAction = action
+		body, err := json.Marshal(view)
+		if err != nil {
+			f.t.Errorf("marshal observation: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		// The tag names the body and the gate a later read would report, so a
+		// repeated poll of an unchanged step is certified with 304 and
+		// transfers no body, while a gate version or readiness change moves
+		// the tag exactly as the server's validation read does.
+		tagged := append(append([]byte(nil), body...), taskWaitTestGateTag(step)...)
+		tag := fmt.Sprintf("%q", fmt.Sprintf("obs-%x", sha256.Sum256(tagged)))
+		w.Header().Set("ETag", tag)
+		if r.Header.Get("If-None-Match") == tag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
 		return
 	}
 	f.mu.Lock()
 	step := f.active
 	f.mu.Unlock()
 	switch r.URL.Path {
-	case "/v1/work-orders":
-		// Decoys: another task's claimable order and this task's claimed order.
-		orders := []core.WorkOrder{
-			{ID: "other-task-implement-1", TaskID: "other-task", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true},
-			{ID: taskWaitTestTaskID + "-claimed", TaskID: taskWaitTestTaskID, Stage: core.StageSpec, State: core.WorkOrderClaimed},
-		}
-		if step.order.ID != "" {
-			order := step.order
-			order.TaskID, order.State, order.Claimable = taskWaitTestTaskID, core.WorkOrderQueued, true
-			orders = append(orders, order)
-		}
-		for _, order := range step.orders {
-			order.TaskID = taskWaitTestTaskID
-			orders = append(orders, order)
-		}
-		_ = json.NewEncoder(w).Encode(orders)
 	case "/v1/pending-proposals":
 		items := []core.PendingProposal{{ID: "other-design", Tier: "system_design", Version: 3, OriginType: "task", OriginID: "other-task"}}
 		for _, proposal := range step.proposals {
@@ -234,6 +245,35 @@ func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 		f.t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		http.NotFound(w, r)
 	}
+}
+
+// taskWaitTestGateTag is the part of a step's tag that a later gate read
+// reports: the plan version and the merge readiness state.
+func taskWaitTestGateTag(step taskWaitStep) []byte {
+	if step.gate == nil {
+		return nil
+	}
+	return []byte(fmt.Sprintf("%d/%d/%v", step.gate.SpecVersion, step.gate.PlanVersion, step.gate.MergeReadiness))
+}
+
+// taskWaitTestClaimableOrders projects a step's orders onto the observation's
+// claimable list. The decoys prove the list holds this task's queued, claimable
+// orders alone (component-cli-onboarding invariant 22).
+func taskWaitTestClaimableOrders(step taskWaitStep) []taskWaitOrder {
+	orders := []core.WorkOrder{
+		{ID: "other-task-implement-1", TaskID: "other-task", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true},
+		{ID: taskWaitTestTaskID + "-claimed", TaskID: taskWaitTestTaskID, Stage: core.StageSpec, State: core.WorkOrderClaimed},
+	}
+	if step.order.ID != "" {
+		order := step.order
+		order.TaskID, order.State, order.Claimable = taskWaitTestTaskID, core.WorkOrderQueued, true
+		orders = append(orders, order)
+	}
+	for _, order := range step.orders {
+		order.TaskID = taskWaitTestTaskID
+		orders = append(orders, order)
+	}
+	return taskWaitClaimableOrders(orders, taskWaitTestTaskID)
 }
 
 func taskWaitTestOptions(timeout time.Duration) taskWaitOptions {
@@ -570,6 +610,58 @@ func TestTaskWaitHumanOutputMatchesJSONFields(t *testing.T) {
 	}
 }
 
+// The wait polls the narrow observation route and sends the tag it holds, so
+// an unchanged poll transfers no body (req-agent-skills AC-4.2, AC-4.3).
+func TestTaskWaitPollsObservationWithIfNoneMatch(t *testing.T) {
+	f := newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskRunning},
+		taskWaitStep{state: core.TaskRunning},
+		taskWaitStep{state: core.TaskMerged},
+	)
+	if result, err := runTaskWaitJSON(t, f, 5*time.Second); err != nil || result.Reason != taskWaitReasonTerminal {
+		t.Fatalf("err=%v result=%+v", err, result)
+	}
+	observationPath := "/v1/tasks/" + taskWaitTestTaskID + "/observation"
+	paths := f.requestPaths()
+	if len(paths) < 3 {
+		t.Fatalf("polls=%v, want at least three", paths)
+	}
+	for _, path := range paths {
+		if path != observationPath {
+			t.Fatalf("the wait read %s, want %s alone", path, observationPath)
+		}
+	}
+	tags := f.requestTags()
+	if tags[0] != "" {
+		t.Fatalf("the first poll sent If-None-Match %q", tags[0])
+	}
+	for i, tag := range tags[1:] {
+		if tag == "" {
+			t.Fatalf("poll %d sent no If-None-Match", i+2)
+		}
+	}
+}
+
+// The cadence starts at two seconds, doubles to a fifteen-second ceiling while
+// nothing changes, and returns to two seconds after a change
+// (req-agent-skills AC-4.2).
+func TestTaskWaitPollerDoublesToTheCeiling(t *testing.T) {
+	poller := &taskWaitPoller{base: taskWaitPollInterval, maximum: taskWaitPollCeiling, current: taskWaitPollInterval, jitter: func(delay, _ time.Duration) time.Duration { return delay }}
+	delays := make([]time.Duration, 0, 5)
+	for range 5 {
+		delays = append(delays, poller.delay())
+		poller.observe(false)
+	}
+	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second, 15 * time.Second}
+	if !slices.Equal(delays, want) {
+		t.Fatalf("delays=%v, want %v", delays, want)
+	}
+	poller.observe(true)
+	if delay := poller.delay(); delay != 2*time.Second {
+		t.Fatalf("delay after a change=%s, want 2s", delay)
+	}
+}
+
 func TestTaskWaitRejectsInvalidArgumentsBeforeRequests(t *testing.T) {
 	f := newTaskWaitFixture(t, taskWaitStep{state: core.TaskRunning})
 	for _, timeout := range []time.Duration{0, -time.Second} {
@@ -609,7 +701,7 @@ func TestTaskWaitCommandDefaultsAndHelp(t *testing.T) {
 	if command.Flags().Lookup("json") == nil {
 		t.Fatal("--json flag missing")
 	}
-	for _, text := range []string{"0  the observation changed or the task is merged, closed, or parked", "2  the timeout elapsed", "1  failure", "250ms to a 2s ceiling"} {
+	for _, text := range []string{"0  the observation changed or the task is merged, closed, or parked", "2  the timeout elapsed", "1  failure", "2s to a 15s ceiling"} {
 		if !strings.Contains(command.Long, text) {
 			t.Errorf("help lacks %q", text)
 		}
@@ -992,8 +1084,7 @@ func TestTaskWaitReadsOnlySurvivingRoutes(t *testing.T) {
 		t.Fatalf("err=%v result=%+v", err, result)
 	}
 	allowed := map[string]bool{
-		"/v1/tasks/" + taskWaitTestTaskID:                            true,
-		"/v1/work-orders":                                            true,
+		"/v1/tasks/" + taskWaitTestTaskID + "/observation":           true,
 		"/v1/tasks/" + taskWaitTestTaskID + "/spec":                  true,
 		"/v1/tasks/" + taskWaitTestTaskID + "/activity?view=bounded": true,
 	}
