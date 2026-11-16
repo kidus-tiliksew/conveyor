@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -46,12 +47,15 @@ merge execution, check hold, plan revision, or human recovery, with the plan
 version when one applies and the merge readiness state for merge execution), and the next
 claimable work order ID and stage. The result also lists every claimable order
 of the task in claimable_orders, in the same order as the next order, and an
-empty list when there is none. The list is reported and is not compared. The command reads GET /v1/tasks/{id} and
-GET /v1/work-orders, plus GET /v1/tasks/{id}/spec at a plan or plan-revision
-gate and GET /v1/tasks/{id}/activity at a merge-execution gate, with the
-ordinary server, workspace, and credential resolution. It re-reads with jittered backoff from
-250ms to a 2s ceiling and returns when the state, the pending gate, or the next
-order differs from the first observation. A merged, closed, or parked task returns at once, at start
+empty list when there is none. The list is reported and is not compared. Each poll reads GET /v1/tasks/{id}/observation,
+which carries only the state, the frozen merge approval, the compact next
+action, and the task's own claimable orders, plus GET /v1/tasks/{id}/spec at a
+plan or plan-revision gate and GET /v1/tasks/{id}/activity at a merge-execution
+gate, with the ordinary server, workspace, and credential resolution. A poll
+sends the last ETag, so a server that certifies the observation unchanged
+answers 304 and transfers no body. It re-reads with jittered backoff from 2s to a 15s ceiling,
+resetting on a change, and returns when the state, the pending gate, or the
+next order differs from the first observation. A merged, closed, or parked task returns at once, at start
 or during the wait, and so does a task at a check hold, which needs an operator.
 
 Transport errors and server 5xx responses after the first observation are
@@ -65,7 +69,7 @@ timeout, last_read_error names the most recent failed read when the final
 poll failed.
 
 --until operator|terminal|stage=<stage> instead waits for a target. Each poll
-decodes the next_action embedded in GET /v1/tasks/{id}; the wait ends with
+decodes the next_action of GET /v1/tasks/{id}/observation; the wait ends with
 reason reached when next_action.actor is operator, when the task is merged,
 closed, or parked (terminal), or when next_action.current_order.stage equals
 the named work-order stage (spec, implement, verify, review, risk). A task that turns
@@ -266,7 +270,8 @@ func waitForTask(ctx context.Context, c *client, taskID string, options taskWait
 	waitCtx, cancel := context.WithTimeout(ctx, options.timeout)
 	defer cancel()
 
-	baseline, err := c.observeTaskWait(waitCtx, taskID, options.now, false)
+	reader := &taskWaitReader{client: c}
+	baseline, err := reader.observe(waitCtx, taskID, options.now, false)
 	if err != nil {
 		if ctx.Err() != nil {
 			return taskWaitResult{}, ctx.Err()
@@ -294,7 +299,7 @@ func waitForTask(ctx context.Context, c *client, taskID string, options taskWait
 			return taskWaitDeadline(ctx, latest, lastErr)
 		case <-timer.C:
 		}
-		current, err := c.observeTaskWait(waitCtx, taskID, options.now, false)
+		current, err := reader.observe(waitCtx, taskID, options.now, false)
 		if err != nil {
 			if waitCtx.Err() != nil {
 				return taskWaitDeadline(ctx, latest, lastErr)
@@ -359,7 +364,8 @@ func waitForTaskTarget(ctx context.Context, c *client, taskID string, target tas
 		return "", nil
 	}
 
-	latest, err := c.observeTaskWait(waitCtx, taskID, options.now, true)
+	reader := &taskWaitReader{client: c}
+	latest, err := reader.observe(waitCtx, taskID, options.now, true)
 	if err != nil {
 		if ctx.Err() != nil {
 			return taskWaitResult{}, ctx.Err()
@@ -388,7 +394,7 @@ func waitForTaskTarget(ctx context.Context, c *client, taskID string, target tas
 			return finish(latest, taskWaitReasonTimeout, lastErr, true)
 		case <-timer.C:
 		}
-		current, err := c.observeTaskWait(waitCtx, taskID, options.now, true)
+		current, err := reader.observe(waitCtx, taskID, options.now, true)
 		if err != nil {
 			if waitCtx.Err() != nil {
 				if ctx.Err() != nil {
@@ -403,6 +409,7 @@ func waitForTaskTarget(ctx context.Context, c *client, taskID string, target tas
 			poller.observe(false)
 			continue
 		}
+		changed := !current.sameAs(latest) || !reflect.DeepEqual(current.NextAction, latest.NextAction)
 		latest, lastErr = current, nil
 		reason, err := settle(current)
 		if err != nil {
@@ -411,7 +418,7 @@ func waitForTaskTarget(ctx context.Context, c *client, taskID string, target tas
 		if reason != "" {
 			return finish(current, reason, nil, false)
 		}
-		poller.observe(false)
+		poller.observe(changed)
 	}
 }
 
@@ -427,17 +434,25 @@ func taskWaitDeadline(ctx context.Context, latest taskWaitObservation, lastErr e
 }
 
 // taskWaitPoller spaces the reads of one wait: jittered delays from 250 ms
-// doubling to a 2 s ceiling, so a real transition is observed within that
+// doubling to a 15 s ceiling, so a real transition is observed within that
 // ceiling and concurrent waits do not synchronize (component-cli-onboarding).
 type taskWaitPoller struct {
 	base, maximum, current time.Duration
 	jitter                 func(time.Duration, time.Duration) time.Duration
 }
 
-const taskWaitPollInterval = 250 * time.Millisecond
+const (
+	// taskWaitPollInterval is the first re-read delay of a wait and the delay
+	// after a change: a real transition is observed within two seconds.
+	taskWaitPollInterval = 2 * time.Second
+	// taskWaitPollCeiling bounds the delay while nothing changes, so a quiet
+	// wait costs one poll every fifteen seconds instead of one every two
+	// (req-agent-skills AC-4.2, AC-4.3; component-cli-onboarding).
+	taskWaitPollCeiling = 15 * time.Second
+)
 
 func newTaskWaitPoller() *taskWaitPoller {
-	return &taskWaitPoller{base: taskWaitPollInterval, maximum: taskWaitPollInterval * 8, current: taskWaitPollInterval, jitter: taskWaitPollJitter}
+	return &taskWaitPoller{base: taskWaitPollInterval, maximum: taskWaitPollCeiling, current: taskWaitPollInterval, jitter: taskWaitPollJitter}
 }
 
 func taskWaitPollJitter(delay, maximum time.Duration) time.Duration {
@@ -490,58 +505,104 @@ func taskWaitAwaitingGate(kind string) string {
 	}
 }
 
-// observeTaskWait reads the task with its embedded next action and the
-// workspace work-order listing, and at a gate the latest plan version or the
-// merge readiness (component-cli-onboarding).
+// taskWaitObservationView is the narrow observation body the wait polls
+// (GET /v1/tasks/{id}/observation): the state and frozen merge approval that
+// select the pending gate, the compact next action, and the task's own
+// claimable orders. It carries no task context, event ledger, or plan text
+// (req-agent-skills AC-4.1 through AC-4.3; component-cli-onboarding).
+type taskWaitObservationView struct {
+	TaskID          string          `json:"task_id"`
+	State           core.TaskState  `json:"state"`
+	MergeApproval   bool            `json:"merge_approval"`
+	NextAction      *nextActionView `json:"next_action"`
+	ClaimableOrders []taskWaitOrder `json:"claimable_orders"`
+}
+
+// taskWaitReader polls one task's observation for the length of one wait. It
+// holds the last tag and observation, so a poll the server certifies unchanged
+// transfers no body and reports the observation the caller already has
+// (req-agent-skills AC-4.3).
+type taskWaitReader struct {
+	client        *client
+	tag           string
+	last          taskWaitObservation
+	mergeApproval bool
+	actionKind    string
+}
+
+// observeTaskWait reads the narrow observation and, at a gate, the latest plan
+// version or the merge readiness (component-cli-onboarding).
 func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() time.Time, withNextAction bool) (taskWaitObservation, error) {
-	var task struct {
-		core.Task
-		NextAction *nextActionView `json:"next_action"`
-	}
-	escaped := url.PathEscape(taskID)
-	if err := c.workerDoContext(ctx, http.MethodGet, "/v1/tasks/"+escaped, nil, &task, c.token); err != nil {
+	return (&taskWaitReader{client: c}).observe(ctx, taskID, now, withNextAction)
+}
+
+func (r *taskWaitReader) observe(ctx context.Context, taskID string, now func() time.Time, withNextAction bool) (taskWaitObservation, error) {
+	var view taskWaitObservationView
+	tag, notModified, err := r.client.workerObserveContext(ctx, "/v1/tasks/"+url.PathEscape(taskID)+"/observation", r.tag, &view, r.client.token)
+	if err != nil {
 		return taskWaitObservation{}, err
 	}
-	if strings.TrimSpace(task.ID) == "" {
-		return taskWaitObservation{}, fmt.Errorf("task read returned no task")
-	}
-	if task.State == "" {
-		return taskWaitObservation{}, fmt.Errorf("task read returned no state")
-	}
-	var orders []core.WorkOrder
-	if err := c.workerDoContext(ctx, http.MethodGet, "/v1/work-orders", nil, &orders, c.token); err != nil {
-		return taskWaitObservation{}, err
-	}
-	observation := taskWaitObservation{TaskID: task.ID, State: task.State, ObservedAt: now().UTC()}
-	action := task.NextAction
-	if withNextAction {
-		if action == nil || strings.TrimSpace(action.Actor) == "" {
-			return taskWaitObservation{}, fmt.Errorf("task read returned no next_action")
-		}
-		observation.NextAction = &taskWaitNextAction{Label: action.Label, Actor: action.Actor, Kind: action.Kind}
-		if action.CurrentOrder != nil {
-			observation.NextAction.Stage = action.CurrentOrder.Stage
-		}
-	}
+	var observation taskWaitObservation
+	var task core.Task
 	actionKind := ""
-	if action != nil {
-		actionKind = action.Kind
-	}
-	observation.ClaimableOrders = taskWaitClaimableOrders(orders, task.ID)
-	if len(observation.ClaimableOrders) > 0 {
-		first := observation.ClaimableOrders[0]
-		observation.NextOrder = &first
+	if notModified {
+		// The tag covers the database validation read, the route scope, and the
+		// UTC minute. It does not cover the gate's plan version or the live
+		// merge readiness, so the gate is read again and the observation is
+		// restamped with this poll's instant even though the body is unchanged
+		// (req-agent-skills AC-4.1, AC-4.3; component-cli-onboarding).
+		observation = r.last
+		observation.ObservedAt = now().UTC()
+		observation.PendingGate = nil
+		task = core.Task{ID: observation.TaskID, State: observation.State, MergeApproval: r.mergeApproval}
+		actionKind = r.actionKind
+	} else {
+		if strings.TrimSpace(view.TaskID) == "" {
+			return taskWaitObservation{}, fmt.Errorf("task read returned no task")
+		}
+		if view.State == "" {
+			return taskWaitObservation{}, fmt.Errorf("task read returned no state")
+		}
+		observation = taskWaitObservation{TaskID: view.TaskID, State: view.State, ObservedAt: now().UTC()}
+		action := view.NextAction
+		if withNextAction {
+			if action == nil || strings.TrimSpace(action.Actor) == "" {
+				return taskWaitObservation{}, fmt.Errorf("task read returned no next_action")
+			}
+			observation.NextAction = &taskWaitNextAction{Label: action.Label, Actor: action.Actor, Kind: action.Kind}
+			if action.CurrentOrder != nil {
+				observation.NextAction.Stage = action.CurrentOrder.Stage
+			}
+		}
+		if action != nil {
+			actionKind = action.Kind
+		}
+		observation.ClaimableOrders = view.ClaimableOrders
+		if observation.ClaimableOrders == nil {
+			observation.ClaimableOrders = []taskWaitOrder{}
+		}
+		if len(observation.ClaimableOrders) > 0 {
+			first := observation.ClaimableOrders[0]
+			observation.NextOrder = &first
+		}
+		task = core.Task{ID: view.TaskID, State: view.State, MergeApproval: view.MergeApproval}
 	}
 	// A pending plan revision is read even beside a claimable order, so a new
 	// plan version ends the wait wherever the order stands (AC-4.1).
 	planRevision := task.State == core.TaskAwaiting && actionKind == nextaction.KindPlanRevision
 	if observation.NextOrder == nil || planRevision {
-		gate, err := c.taskWaitGate(ctx, task.Task, actionKind)
+		gate, err := r.client.taskWaitGate(ctx, task, actionKind)
 		if err != nil {
 			return taskWaitObservation{}, err
 		}
 		observation.PendingGate = gate
 	}
+	if !notModified {
+		r.tag = tag
+		r.mergeApproval = view.MergeApproval
+		r.actionKind = actionKind
+	}
+	r.last = observation
 	return observation, nil
 }
 

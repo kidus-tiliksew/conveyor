@@ -119,9 +119,11 @@ func NormalizeTaskContextInput(input TaskContextInput) (TaskContextInput, error)
 
 // TaskContextForTask folds the append-only attachment audit stream into the
 // active read model. Requirement versions remain live; designs retain the
-// confirmed version pinned by the add event.
+// confirmed version pinned by the add event. It reads only the attachment
+// kinds, so the read does not grow with a task's unrelated history
+// (component-persistence, Compact task event reads).
 func TaskContextForTask(ctx context.Context, st Store, taskID string) (core.TaskContext, error) {
-	events, err := st.ListCompactEvents(ctx, taskID)
+	events, err := st.ListTaskContextEvents(ctx, taskID)
 	if err != nil {
 		return core.TaskContext{}, err
 	}

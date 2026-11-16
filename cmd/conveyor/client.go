@@ -698,6 +698,44 @@ func transientWorkerError(err error) bool {
 	return errors.As(err, &network)
 }
 
+// workerObserveContext issues one conditional GET: it sends ifNoneMatch, and
+// reports the response's tag and whether the server certified the body the
+// caller already holds with 304 Not Modified. An unchanged poll therefore
+// transfers no body (req-agent-skills AC-4.3; component-cli-onboarding).
+func (c *client) workerObserveContext(ctx context.Context, path, ifNoneMatch string, out any, credential string) (string, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return "", false, err
+	}
+	if credential != "" {
+		req.Header.Set("Authorization", "Bearer "+credential)
+	}
+	if c.workspace != "" {
+		req.Header.Set("X-Workspace-ID", c.workspace)
+	}
+	if ifNoneMatch != "" {
+		req.Header.Set("If-None-Match", ifNoneMatch)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", false, fmt.Errorf("API transport: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified {
+		return ifNoneMatch, true, nil
+	}
+	if resp.StatusCode >= 300 {
+		message, _ := io.ReadAll(resp.Body)
+		return "", false, &workerHTTPError{StatusCode: resp.StatusCode, Status: resp.Status, Message: string(bytes.TrimSpace(message)), Code: resp.Header.Get("X-Conveyor-Error-Code")}
+	}
+	if out != nil {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			return "", false, err
+		}
+	}
+	return resp.Header.Get("ETag"), false, nil
+}
+
 func (c *client) workerDoContext(ctx context.Context, method, path string, body []byte, out any, credential string) (resultErr error) {
 	defer func() {
 		if c.gitCredentials != nil {

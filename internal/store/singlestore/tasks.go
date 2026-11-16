@@ -873,10 +873,19 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 	}
 	return q, args
 }
+
+// ListTasks reads every workspace row with its body and frozen policy, for the
+// callers that state a whole task: the planner's approved-spec listing, the
+// blueprint and requirement detail projections, and the review-policy drift
+// pass, which decides enforcement from the frozen policy
+// (component-persistence, Database read accounting).
 func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasks")
-	return s.ListTasksFiltered(ctx, store.TaskFilter{})
+	return s.listTaskRowsSelecting(ctx, taskColumns, store.TaskOperationsQuery{TaskFilter: store.TaskFilter{}})
 }
+
+// ListTasksFiltered reads taskListColumns without bodies but retains frozen
+// policy for next-action projections (req-operator-next-action AC-2.7).
 func (s *Store) ListTasksFiltered(ctx context.Context, f store.TaskFilter) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFiltered")
 	if err := f.Validate(); err != nil {
@@ -885,18 +894,18 @@ func (s *Store) ListTasksFiltered(ctx context.Context, f store.TaskFilter) ([]co
 	return s.listTaskRows(ctx, store.TaskOperationsQuery{TaskFilter: f})
 }
 
-// ListTasksFilteredWithoutBody runs ListTasksFiltered's predicate and hydration
-// over taskMapColumns, whose body is an empty string, so the read transfers no
-// task body (req-operator-next-action AC-2.7).
+// ListTasksFilteredWithoutBody is the explicit body-free spelling of
+// ListTasksFiltered for callers that state the guarantee, such as the
+// attention count (req-operator-next-action AC-2.7).
 func (s *Store) ListTasksFilteredWithoutBody(ctx context.Context, f store.TaskFilter) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFilteredWithoutBody")
 	if err := f.Validate(); err != nil {
 		return nil, err
 	}
-	return s.listTaskRowsSelecting(ctx, taskMapColumns, store.TaskOperationsQuery{TaskFilter: f})
+	return s.listTaskRows(ctx, store.TaskOperationsQuery{TaskFilter: f})
 }
 func (s *Store) listTaskRows(ctx context.Context, q store.TaskOperationsQuery) ([]core.Task, error) {
-	return s.listTaskRowsSelecting(ctx, taskColumns, q)
+	return s.listTaskRowsSelecting(ctx, taskListColumns, q)
 }
 func (s *Store) listTaskRowsSelecting(ctx context.Context, columns string, q store.TaskOperationsQuery) ([]core.Task, error) {
 	predicate, args := taskPredicate(ctx, q.TaskFilter)
@@ -948,35 +957,120 @@ func (s *Store) ListTaskOperations(ctx context.Context, q store.TaskOperationsQu
 		return store.TaskOperationsPage{}, err
 	}
 	out := store.TaskOperationsPage{Tasks: page.Tasks, Total: page.Total, Events: map[string][]core.Event{}, Plans: map[string]core.SpecVersion{}}
-	if err = s.taskOperationsDetails(ctx, &out); err != nil {
+	if err = s.taskOperationsDetails(ctx, q, &out); err != nil {
 		return store.TaskOperationsPage{}, err
 	}
 	return out, nil
 }
 
-// taskOperationsDetails reads each page row's operations events and latest
-// plan for ListTaskOperations; its reads grow with the page only.
-func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOperationsPage) error {
+// taskOperationsEventKinds are the event kinds the Tasks projection folds:
+// the four context attachments and the audited state command. A page read
+// states them, so it never transfers a task's whole timeline
+// (component-task-lifecycle, Compact event reads).
+var taskOperationsEventKinds = []string{
+	store.TaskContextRequirementAdded, store.TaskContextRequirementRemoved,
+	store.TaskContextDesignAdded, store.TaskContextDesignRemoved, "task.state_changed",
+}
+
+// taskOperationsDetails reads the page's operations events, latest plan
+// metadata, and legacy gate markers in three statements, and plan text only
+// when the caller asked for it, so the statement count does not grow with the
+// page (component-persistence, Database read accounting).
+func (s *Store) taskOperationsDetails(ctx context.Context, q store.TaskOperationsQuery, page *store.TaskOperationsPage) error {
+	if len(page.Tasks) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(page.Tasks))
 	for _, t := range page.Tasks {
-		events, err := s.ListCompactEvents(ctx, t.ID)
+		ids = append(ids, t.ID)
+	}
+	in := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	pageArgs := make([]any, 0, len(ids)+1)
+	pageArgs = append(pageArgs, documentWorkspace(ctx))
+	for _, id := range ids {
+		pageArgs = append(pageArgs, id)
+	}
+	eventArgs := make([]any, 0, len(pageArgs)+len(taskOperationsEventKinds))
+	eventArgs = append(eventArgs, pageArgs...)
+	for _, kind := range taskOperationsEventKinds {
+		eventArgs = append(eventArgs, kind)
+	}
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,`+compactEventPayloadColumn+`,at FROM events_columnstore WHERE workspace_id=? AND task_id IN (`+in+`) AND task_id=event_shard_key AND kind IN (?,?,?,?,?) ORDER BY task_id,at,id`, eventArgs...)
+	if err != nil {
+		return err
+	}
+	events, err := scanDocumentEvents(rows)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		page.Events[event.TaskID] = append(page.Events[event.TaskID], event)
+	}
+	if q.IncludePlanText {
+		// The caller stated it reads plan text, so the same single statement
+		// carries it for the page's latest versions (component-persistence).
+		rows, err := documentRows(ctx, s.db, `SELECT `+specColumns+` FROM (SELECT `+specColumns+`,ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY version DESC) AS rn FROM task_specs WHERE workspace_id=? AND task_id IN (`+in+`)) ranked WHERE rn=1`, pageArgs...)
 		if err != nil {
 			return err
 		}
-		for _, event := range events {
-			switch event.Kind {
-			case store.TaskContextRequirementAdded, store.TaskContextRequirementRemoved, store.TaskContextDesignAdded, store.TaskContextDesignRemoved, "task.state_changed":
-				page.Events[t.ID] = append(page.Events[t.ID], event)
-			}
+		if err = s.scanPageSpecs(rows, page, true); err != nil {
+			return err
 		}
-		plan, ok, err := s.GetLatestSpecVersion(ctx, t.ID)
+	} else {
+		rows, err := documentRows(ctx, s.db, `SELECT task_id,version,approved,created_at,approved_at FROM (SELECT task_id,version,approved,created_at,approved_at,ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY version DESC) AS rn FROM task_specs WHERE workspace_id=? AND task_id IN (`+in+`)) ranked WHERE rn=1`, pageArgs...)
 		if err != nil {
 			return err
 		}
-		if ok {
-			page.Plans[t.ID] = plan
+		if err = s.scanPageSpecs(rows, page, false); err != nil {
+			return err
 		}
 	}
-	return nil
+	legacy, err := documentRows(ctx, s.db, `SELECT task_id,spec_version FROM legacy_spec_gate_versions WHERE workspace_id=? AND task_id IN (`+in+`)`, pageArgs...)
+	if err != nil {
+		return err
+	}
+	defer legacy.Close()
+	for legacy.Next() {
+		var taskID string
+		var version int
+		if err = legacy.Scan(&taskID, &version); err != nil {
+			return err
+		}
+		plan, ok := page.Plans[taskID]
+		if ok && plan.Version == version {
+			plan.LegacyGate = true
+			page.Plans[taskID] = plan
+		}
+	}
+	return legacy.Err()
+}
+
+// scanPageSpecs reads the page's latest spec versions into the page. A
+// metadata-only read states no content, acceptance, decomposition, agent,
+// model, review seat count, origin, or base commit, so those fields stay
+// empty and the row equals what the other backends return for a list read.
+func (s *Store) scanPageSpecs(rows *documentResultSet, page *store.TaskOperationsPage, withText bool) error {
+	defer rows.Close()
+	for rows.Next() {
+		if withText {
+			spec, err := scanSpec(rows)
+			if err != nil {
+				return err
+			}
+			page.Plans[spec.TaskID] = spec
+			continue
+		}
+		var spec core.SpecVersion
+		var approvedAt *time.Time
+		if err := rows.Scan(&spec.TaskID, &spec.Version, &spec.Approved, &spec.CreatedAt, &approvedAt); err != nil {
+			return err
+		}
+		if approvedAt != nil {
+			spec.ApprovedAt = *approvedAt
+		}
+		page.Plans[spec.TaskID] = spec
+	}
+	return rows.Err()
 }
 
 func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error) {

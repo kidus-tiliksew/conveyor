@@ -18,6 +18,15 @@ import (
 // so the map read never transfers task bodies (req-board-map AC-3.1).
 var taskMapColumns = strings.Replace(taskColumns, ",body,", ",'' AS body,", 1)
 
+// taskListColumns is taskColumns with the LONGTEXT body replaced by an empty
+// string, so a list or page read never transfers task bodies. The frozen policy
+// snapshot stays: the next-action projection over these rows reads
+// SetupContract.Risk (record-mode risk waits, plan-risk orders, risk approvals),
+// so a list view that dropped it would name a different next action than the
+// task detail (req-operator-next-action AC-1.7, AC-2.7; DEC-61;
+// component-persistence, Database read accounting).
+var taskListColumns = strings.Replace(taskColumns, ",body,", ",'' AS body,", 1)
+
 func taskMapMarks(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }

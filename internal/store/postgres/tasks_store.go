@@ -300,34 +300,32 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 }
 
 // ListTasksFiltered narrows the workspace with the shared Tasks/Board predicate
-// (AC-2.4). An inactive filter routes to ListTasks so the many callers that
-// never filter keep their existing plan.
+// (AC-2.4) over the list column set, so a list read transfers no task body.
+// Frozen policy remains available to next-action projection; ListTasks is the
+// whole-row read (req-operator-next-action AC-2.7).
 func (s *Store) ListTasksFiltered(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFiltered")
 	if err := filter.Validate(); err != nil {
 		return nil, err
 	}
-	if !filter.Active() {
-		return s.ListTasks(ctx)
-	}
 	// A zero page limit is the query's own "no LIMIT" spelling, so the paged
 	// Tasks read and this unpaged one stay one SQL predicate.
-	rows, err := s.queries.ListTaskOperationsTasks(ctx, taskOperationsListParams(ctx, filter, 0, 0))
+	rows, err := s.queries.ListTaskOperationsTasksForList(ctx, taskOperationsListParams(ctx, filter, 0, 0))
 	if err != nil {
 		return nil, err
 	}
 	return s.hydrateTaskRows(ctx, rows)
 }
 
-// ListTasksFilteredWithoutBody runs ListTasksFiltered's predicate and hydration
-// over a task row whose body is an empty string, so the read transfers no task
-// body (req-operator-next-action AC-2.7).
+// ListTasksFilteredWithoutBody is the explicit body-free spelling of
+// ListTasksFiltered for callers that state the guarantee, such as the attention
+// count (req-operator-next-action AC-2.7).
 func (s *Store) ListTasksFilteredWithoutBody(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFilteredWithoutBody")
 	if err := filter.Validate(); err != nil {
 		return nil, err
 	}
-	rows, err := s.queries.ListTaskOperationsTasksWithoutBody(ctx, taskOperationsListParams(ctx, filter, 0, 0))
+	rows, err := s.queries.ListTaskOperationsTasksForList(ctx, taskOperationsListParams(ctx, filter, 0, 0))
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +403,7 @@ func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperatio
 	if err != nil {
 		return store.TaskOperationsPage{}, err
 	}
-	rows, err := s.queries.ListTaskOperationsTasks(ctx, taskOperationsListParams(ctx, query.TaskFilter, query.Limit, query.Offset))
+	rows, err := s.queries.ListTaskOperationsTasksForList(ctx, taskOperationsListParams(ctx, query.TaskFilter, query.Limit, query.Offset))
 	if err != nil {
 		return store.TaskOperationsPage{}, err
 	}
@@ -435,7 +433,7 @@ func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperatio
 	if err = s.hydrateGitHubLifecyclesBatch(ctx, page.Tasks); err != nil {
 		return store.TaskOperationsPage{}, err
 	}
-	if err = s.taskOperationsDetails(ctx, &page, filter.WorkspaceID, taskIDs); err != nil {
+	if err = s.taskOperationsDetails(ctx, &page, filter.WorkspaceID, taskIDs, query.IncludePlanText); err != nil {
 		return store.TaskOperationsPage{}, err
 	}
 	return page, nil
@@ -443,7 +441,7 @@ func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperatio
 
 // taskOperationsDetails reads the operations events, latest plans, and legacy
 // plan-gate marks of the given tasks into page for ListTaskOperations.
-func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOperationsPage, workspaceID string, taskIDs []string) error {
+func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOperationsPage, workspaceID string, taskIDs []string, includePlanText bool) error {
 	events, err := s.queries.ListTaskOperationsEvents(ctx, db.ListTaskOperationsEventsParams{WorkspaceID: workspaceID, TaskIds: taskIDs})
 	if err != nil {
 		return err
@@ -452,12 +450,16 @@ func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOpera
 		converted := eventFromDB(event)
 		page.Events[converted.TaskID] = append(page.Events[converted.TaskID], converted)
 	}
-	plans, err := s.queries.ListTaskOperationsLatestPlans(ctx, db.ListTaskOperationsLatestPlansParams{WorkspaceID: workspaceID, TaskIds: taskIDs})
-	if err != nil {
+	if includePlanText {
+		plans, err := s.queries.ListTaskOperationsLatestPlans(ctx, db.ListTaskOperationsLatestPlansParams{WorkspaceID: workspaceID, TaskIds: taskIDs})
+		if err != nil {
+			return err
+		}
+		for _, plan := range plans {
+			page.Plans[plan.TaskID] = specFromDB(plan)
+		}
+	} else if err := s.taskOperationsPlanMetadata(ctx, page, workspaceID, taskIDs); err != nil {
 		return err
-	}
-	for _, plan := range plans {
-		page.Plans[plan.TaskID] = specFromDB(plan)
 	}
 	legacyRows, err := s.boundary.Query(ctx, `SELECT task_id,spec_version FROM legacy_spec_gate_versions
 		WHERE workspace_id=$1 AND task_id=ANY($2::text[])`, workspaceID, taskIDs)
@@ -480,6 +482,33 @@ func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOpera
 	return legacyRows.Err()
 }
 
+// taskOperationsPlanMetadata reads the page's latest plan versions without
+// their text: the Tasks projection renders plan status from version and
+// approval alone (component-persistence, Database read accounting).
+func (s *Store) taskOperationsPlanMetadata(ctx context.Context, page *store.TaskOperationsPage, workspaceID string, taskIDs []string) error {
+	rows, err := s.boundary.Query(ctx, `SELECT DISTINCT ON (s.task_id) s.task_id,s.version,s.approved,s.created_at,s.approved_at
+		FROM task_specs s
+		JOIN tasks t ON t.id = s.task_id
+		WHERE t.workspace_id=$1 AND s.task_id=ANY($2::text[])
+		ORDER BY s.task_id, s.version DESC`, workspaceID, taskIDs)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var plan core.SpecVersion
+		var approvedAt *time.Time
+		if err = rows.Scan(&plan.TaskID, &plan.Version, &plan.Approved, &plan.CreatedAt, &approvedAt); err != nil {
+			return err
+		}
+		if approvedAt != nil {
+			plan.ApprovedAt = *approvedAt
+		}
+		page.Plans[plan.TaskID] = plan
+	}
+	return rows.Err()
+}
+
 func (s *Store) ListTaskPage(ctx context.Context, query store.TaskOperationsQuery) (store.TaskPage, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskPage")
 	if err := query.Validate(); err != nil {
@@ -490,7 +519,7 @@ func (s *Store) ListTaskPage(ctx context.Context, query store.TaskOperationsQuer
 	if err != nil {
 		return store.TaskPage{}, err
 	}
-	rows, err := s.queries.ListTaskOperationsTasks(ctx, taskOperationsListParams(ctx, query.TaskFilter, query.Limit, query.Offset))
+	rows, err := s.queries.ListTaskOperationsTasksForList(ctx, taskOperationsListParams(ctx, query.TaskFilter, query.Limit, query.Offset))
 	if err != nil {
 		return store.TaskPage{}, err
 	}

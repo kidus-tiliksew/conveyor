@@ -51,8 +51,11 @@ type Server struct {
 	// mergeReadiness bounds merge-readiness reads of task detail and next
 	// actions (component-http-api, Request-scoped detail reads).
 	mergeReadiness mergeReadinessCache
-	Store          store.Store
-	Credentials    CredentialVerifier
+	// attention serves the workspace attention count the badge reads from a
+	// cache bounded by attentionCountReuse (attention_count.go).
+	attention   *attentionCountCache
+	Store       store.Store
+	Credentials CredentialVerifier
 	// Release is the build-injected binary identity reported by /v1/version.
 	Release                  string
 	planningBundleMu         sync.Mutex
@@ -202,6 +205,11 @@ func NewServer(s store.Store) *Server {
 	if source, ok := s.(interface{ Changes() *changes.Hub }); ok {
 		server.Changes = source.Changes()
 	}
+	// The attention cache hears the same hub, so a change notice drops the
+	// workspace's counted total instead of waiting out attentionCountReuse
+	// (req-operator-next-action AC-2.7).
+	server.attention = &attentionCountCache{}
+	server.attention.subscribe(server.Changes)
 	return server
 }
 
@@ -274,6 +282,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/task-map", s.getTaskMap)
 			r.Get("/tasks/{id}", s.getTask)
 			r.Get("/tasks/{id}/next-action", s.getNextAction)
+			r.Get("/tasks/{id}/observation", s.getTaskObservation)
 			r.Get("/tasks/{id}/flow", s.getTaskFlow)
 			r.Get("/inbox", s.listInbox)
 			r.Get("/next-actions", s.listNextActions)
@@ -2445,6 +2454,16 @@ func parseTaskOperationsQuery(r *http.Request) (store.TaskOperationsQuery, bool,
 		return query, false, err
 	}
 	query.Limit, query.Offset = page.Limit, page.Offset
+	// Plan text is opt-in: `plan_text=true` asks the page to carry each latest
+	// plan's text, and every other request states metadata only
+	// (component-persistence, Database read accounting).
+	if raw := strings.TrimSpace(values.Get("plan_text")); raw != "" {
+		include, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			return store.TaskOperationsQuery{}, false, fmt.Errorf("plan_text must be a boolean: %w", parseErr)
+		}
+		query.IncludePlanText = include
+	}
 	return query, page.Paged, nil
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -347,34 +348,62 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 	_, err = plane.SetAssignee(ctx, working, assignee)
 	requireOK(t, err)
 
+	// Record mode keeps an ordinary order ahead of risk; enforce mode waits
+	// for the submitted plan's risk rating instead of offering approval.
+	policy := func(mode riskpolicy.Mode) config.PolicyContract {
+		return config.PolicyContract{MaxBounces: 3, Risk: &riskpolicy.Policy{Mode: mode, Tiers: riskpolicy.DefaultTable()}}
+	}
+	recordTask := seed(core.Task{State: core.TaskRunning, NextStage: core.StageRisk, SetupContract: policy(riskpolicy.ModeRecord)})
+	order(recordTask)
+	riskOrderID := recordTask + "-risk-1"
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: riskOrderID, TaskID: recordTask, Stage: core.StageRisk, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: riskOrderID, TaskID: recordTask, JobID: riskOrderID, Stage: core.StageRisk, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}))
+	enforceTask := seed(core.Task{State: core.TaskRunning, NextStage: core.StageSpec, PlanState: core.PlanNeeded, PolicyVersion: 1, SetupContract: policy(riskpolicy.ModeEnforce)})
+	_, err = plane.Perform(ctx, enforceTask, taskops.Command{
+		Kind: core.TaskGateSpec, RecoveryStage: core.StageImplement, ProjectStages: true,
+		PlanState:   &taskops.PlanStateMove{To: core.PlanAwaitingApproval, Cause: core.PlanCausePlanSubmitted},
+		PlanVersion: &core.SpecVersion{Content: planRiskPlan("", ""), Acceptance: []byte(`[]`), Decomposition: []byte(`[]`), Agent: "codex", Model: "planner"},
+	})
+	requireOK(t, err)
+
 	if seededBodies < 1<<20 {
 		t.Fatalf("seeded %d open body bytes, want at least 1 MiB", seededBodies)
 	}
 
-	// The rows differ from ListTasksFiltered in Body alone, for the count's
-	// filter, an inactive filter, and a narrowing filter.
+	// List reads omit bodies but retain frozen policy. Both spellings agree for
+	// the count's filter, an inactive filter, and a narrowing filter; ListTasks
+	// remains a whole-row read (req-operator-next-action AC-2.7;
+	// component-persistence, Database read
+	// accounting).
 	openFilter := store.TaskFilter{States: attentionOpenStates}
-	sameRows := func(name string, filter store.TaskFilter) (full, lean []core.Task) {
+	listRows := func(name string, filter store.TaskFilter) (lean []core.Task) {
 		t.Helper()
-		full, err := st.ListTasksFiltered(ctx, filter)
+		lean, err := st.ListTasksFiltered(ctx, filter)
 		requireOK(t, err)
-		lean, err = st.ListTasksFilteredWithoutBody(ctx, filter)
+		withoutBody, err := st.ListTasksFilteredWithoutBody(ctx, filter)
 		requireOK(t, err)
-		bodies := 0
-		cleared := make([]core.Task, len(full))
-		for i, task := range full {
-			bodies += len(task.Body)
-			task.Body = ""
-			cleared[i] = task
+		if len(lean) == 0 || !reflect.DeepEqual(lean, withoutBody) {
+			t.Fatalf("%s filter: ListTasksFilteredWithoutBody differs from ListTasksFiltered:\n lean %+v\n without %+v", name, lean, withoutBody)
 		}
-		if len(lean) == 0 || bodies == 0 || !reflect.DeepEqual(lean, cleared) {
-			t.Fatalf("%s filter: ListTasksFilteredWithoutBody differs from ListTasksFiltered beyond Body (%d body bytes):\n lean %+v\n full %+v", name, bodies, lean, cleared)
+		for _, task := range lean {
+			if task.Body != "" {
+				t.Fatalf("%s filter: list read states task %s with a %d-byte body", name, task.ID, len(task.Body))
+			}
 		}
-		return full, lean
+		return lean
 	}
-	sameRows("inactive", store.TaskFilter{})
-	sameRows("query", store.TaskFilter{States: attentionOpenStates, Query: working})
-	fullRows, leanRows := sameRows("open", openFilter)
+	listRows("inactive", store.TaskFilter{})
+	listRows("query", store.TaskFilter{States: attentionOpenStates, Query: working})
+	leanRows := listRows("open", openFilter)
+	whole, err := st.ListTasks(ctx)
+	requireOK(t, err)
+	wholeBodies := 0
+	for _, task := range whole {
+		wholeBodies += len(task.Body)
+	}
+	if wholeBodies == 0 {
+		t.Fatal("ListTasks states no body, so the body-free assertion is vacuous")
+	}
 	inverted := store.TaskFilter{UpdatedFrom: now, UpdatedTo: now.Add(-time.Hour)}
 	if _, err := st.ListTasksFilteredWithoutBody(ctx, inverted); err == nil {
 		t.Fatal("ListTasksFilteredWithoutBody accepted an inverted range")
@@ -393,8 +422,29 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 		}
 		return open, candidates
 	}
-	fullOpen, fullCandidates := split(fullRows)
+	// The full side is the whole-row read, so a projection over body-free rows
+	// is compared with the projection over rows that still state everything
+	// (component-persistence, Read labels).
+	fullOpen, fullCandidates := split(whole)
 	leanOpen, leanCandidates := split(leanRows)
+	// The frozen policy the next-action projection reads stays on list rows, so
+	// a list view names the same action as the task detail (DEC-61).
+	policies := make(map[string]config.PolicyContract, len(whole))
+	for _, task := range whole {
+		policies[task.ID] = task.SetupContract
+	}
+	retained := 0
+	for _, task := range leanRows {
+		if !reflect.DeepEqual(task.SetupContract, policies[task.ID]) {
+			t.Fatalf("list read lost task %s's frozen policy: %+v, whole row %+v", task.ID, task.SetupContract, policies[task.ID])
+		}
+		if task.SetupContract.HasFrozenPolicy() {
+			retained++
+		}
+	}
+	if retained == 0 {
+		t.Fatal("no seeded task carries a frozen policy, so the retention assertion is vacuous")
+	}
 	if slices.ContainsFunc(leanCandidates, func(task core.Task) bool { return task.ID == anchor }) {
 		t.Fatalf("anchor %s lost its children in the body-free read", anchor)
 	}
@@ -410,6 +460,12 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 		if compact {
 			previous = was
 			continue
+		}
+		if action := got[enforceTask]; action.Details.ReasonCode != nextaction.PlanRiskRating {
+			t.Fatalf("enforcing task does not wait for plan risk: %+v", action)
+		}
+		if action := got[recordTask]; action.CurrentOrder == nil || action.CurrentOrder.ID != recordTask+"-implement-1" {
+			t.Fatalf("record task did not select its implement order: %+v", action)
 		}
 		for id, kind := range want {
 			if action, found := got[id]; !found || action.Kind != kind {
@@ -481,7 +537,7 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 	// shows only in its rows: they keep matching ListTasksFiltered, and on a
 	// durable backend, which scopes that read, they hold no foreign task.
 	for name, filter := range map[string]store.TaskFilter{"foreign open": openFilter, "foreign inactive": {}} {
-		_, lean := sameRows(name, filter)
+		lean := listRows(name, filter)
 		foreign := slices.ContainsFunc(lean, func(task core.Task) bool { return task.Workspace != x.Workspace })
 		if foreign && x.DrainReadBytes != nil {
 			t.Fatalf("%s filter: ListTasksFilteredWithoutBody returned another workspace's task", name)
@@ -497,10 +553,16 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 		return
 	}
 	x.DrainReadBytes()
-	_, err = st.ListTasksFiltered(dbmetrics.WithReadLabel(ctx, "attention-body-control"), openFilter)
+	_, err = st.ListTasks(dbmetrics.WithReadLabel(ctx, "attention-body-control"))
 	requireOK(t, err)
 	if got := x.DrainReadBytes()["attention-body-control"]; got < uint64(seededBodies) {
-		t.Fatalf("the body-bearing read received %d bytes, want at least the %d seeded body bytes", got, seededBodies)
+		t.Fatalf("the whole-row read received %d bytes, want at least the %d seeded body bytes", got, seededBodies)
+	}
+	x.DrainReadBytes()
+	_, err = st.ListTasksFiltered(dbmetrics.WithReadLabel(ctx, "attention-list-body-free"), openFilter)
+	requireOK(t, err)
+	if got := x.DrainReadBytes()["attention-list-body-free"]; got >= attentionBodyBytes {
+		t.Fatalf("ListTasksFiltered received %d bytes, want fewer than one %d-byte body of the %d seeded body bytes", got, attentionBodyBytes, seededBodies)
 	}
 	again, err := st.CountOperatorAttention(dbmetrics.WithReadLabel(ctx, "attention-body-free"))
 	requireOK(t, err)

@@ -66,3 +66,29 @@ func (m *memory) ListCompactEvents(ctx context.Context, taskID string) ([]core.E
 	}
 	return events, nil
 }
+
+// IsTaskContextEventKind reports whether kind is one the context fold reads.
+func IsTaskContextEventKind(kind string) bool {
+	for _, candidate := range TaskContextEventKinds {
+		if kind == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// ListTaskContextEvents is the volatile backend's context read: the compact
+// ledger copy narrowed to the kinds TaskContextFromEvents folds.
+func (m *memory) ListTaskContextEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	events, err := m.ListCompactEvents(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	contextEvents := make([]core.Event, 0, len(events))
+	for _, event := range events {
+		if IsTaskContextEventKind(event.Kind) {
+			contextEvents = append(contextEvents, event)
+		}
+	}
+	return contextEvents, nil
+}

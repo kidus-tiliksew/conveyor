@@ -98,11 +98,15 @@ func (f TaskFilter) Validate() error {
 // TaskOperationsQuery is the bounded input for the daily Tasks projection.
 // A zero Limit preserves the historical unpaginated array response; callers
 // that opt into pagination use a positive Limit and receive Total alongside
-// the selected page.
+// the selected page. IncludePlanText is the explicit opt-in for the latest
+// plans' text: the projection renders plan status from version and approval
+// alone, so a page states metadata and transfers no plan text unless asked
+// (component-persistence, Database read accounting).
 type TaskOperationsQuery struct {
 	TaskFilter
-	Limit  int
-	Offset int
+	Limit           int
+	Offset          int
+	IncludePlanText bool
 }
 
 // CallerAttentionQuery is the bounded input for the personal attention read.
@@ -1025,12 +1029,20 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 	return out, nil
 }
 
+// ListTasksFiltered omits task bodies but retains frozen policy, matching the
+// SQL list column sets (req-operator-next-action AC-2.7;
+// component-persistence, Database read accounting).
 func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error) {
 	if err := filter.Validate(); err != nil {
 		return nil, err
 	}
 	if !filter.Active() {
-		return m.ListTasks(ctx)
+		tasks, err := m.ListTasks(ctx)
+		if err != nil {
+			return nil, err
+		}
+		clearListTaskDetail(tasks)
+		return tasks, nil
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1045,6 +1057,7 @@ func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]co
 		}
 		out = append(out, m.hydrateTaskLocked(t))
 	}
+	clearListTaskDetail(out)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].ID < out[j].ID
@@ -1055,14 +1068,17 @@ func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]co
 }
 
 func (m *memory) ListTasksFilteredWithoutBody(ctx context.Context, filter TaskFilter) ([]core.Task, error) {
-	tasks, err := m.ListTasksFiltered(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
+	return m.ListTasksFiltered(ctx, filter)
+}
+
+// clearListTaskDetail drops the one column a list read does not select: the
+// task body. The frozen policy snapshot stays, because the next-action
+// projection over these rows reads SetupContract.Risk
+// (req-operator-next-action AC-1.7, AC-2.7; DEC-61).
+func clearListTaskDetail(tasks []core.Task) {
 	for i := range tasks {
 		tasks[i].Body = ""
 	}
-	return tasks, nil
 }
 
 // taskMatchesFilterLocked evaluates the shared surface predicate. The Postgres
@@ -1199,13 +1215,15 @@ func (m *memory) ListTaskOperations(ctx context.Context, query TaskOperationsQue
 		end = start + query.Limit
 	}
 	page.Tasks = append([]core.Task(nil), tasks[start:end]...)
-	m.taskOperationsDetailsLocked(&page)
+	m.taskOperationsDetailsLocked(query, &page)
 	return page, nil
 }
 
 // taskOperationsDetailsLocked fills the operations events and latest plans of
-// the page's tasks for ListTaskOperations.
-func (m *memory) taskOperationsDetailsLocked(page *TaskOperationsPage) {
+// the page's tasks for ListTaskOperations. The plan entry states metadata
+// unless the caller asked for plan text, so every backend answers a list read
+// alike (component-persistence, Database read accounting).
+func (m *memory) taskOperationsDetailsLocked(query TaskOperationsQuery, page *TaskOperationsPage) {
 	for _, task := range page.Tasks {
 		for _, event := range m.events[task.ID] {
 			if taskOperationsEventKind(event.Kind) {
@@ -1213,8 +1231,25 @@ func (m *memory) taskOperationsDetailsLocked(page *TaskOperationsPage) {
 			}
 		}
 		if versions := m.specs[task.ID]; len(versions) > 0 {
-			page.Plans[task.ID] = versions[len(versions)-1]
+			latest := versions[len(versions)-1]
+			if !query.IncludePlanText {
+				latest = ListPlanMetadata(latest)
+			}
+			page.Plans[task.ID] = latest
 		}
+	}
+}
+
+// ListPlanMetadata states one plan version's metadata and no text, matching
+// the columns a metadata-only plan read selects.
+func ListPlanMetadata(plan core.SpecVersion) core.SpecVersion {
+	return core.SpecVersion{
+		TaskID:     plan.TaskID,
+		Version:    plan.Version,
+		Approved:   plan.Approved,
+		LegacyGate: plan.LegacyGate,
+		CreatedAt:  plan.CreatedAt,
+		ApprovedAt: plan.ApprovedAt,
 	}
 }
 
