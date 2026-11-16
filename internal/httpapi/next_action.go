@@ -116,7 +116,11 @@ var nextActionCapabilities = []core.Capability{core.CapabilityOperateGates, core
 // the caller's workspace role when memberships are configured, otherwise
 // the operator credential scope.
 func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOptions, error) {
-	opts := store.NextActionOptions{Now: time.Now().UTC(), Capabilities: map[core.Capability]bool{}}
+	now := time.Now().UTC()
+	if s.nextActionClock != nil {
+		now = s.nextActionClock()
+	}
+	opts := store.NextActionOptions{Now: now, Capabilities: map[core.Capability]bool{}}
 	for _, capability := range nextActionCapabilities {
 		allowed, err := s.callerCapability(ctx, capability)
 		if err != nil {

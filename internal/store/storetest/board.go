@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -13,6 +14,23 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+type boardTaskReadRecorder struct {
+	store.Store
+	calls        int
+	terminalRows int
+}
+
+func (r *boardTaskReadRecorder) ListTasksFilteredWithoutBody(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
+	r.calls++
+	tasks, err := r.Store.ListTasksFilteredWithoutBody(ctx, filter)
+	for _, task := range tasks {
+		if core.TaskTerminal(task.State) {
+			r.terminalRows++
+		}
+	}
+	return tasks, err
+}
 
 func runBoardConformance(t *testing.T, x Fixture) {
 	ctx, st := x.Context, x.Backend
@@ -45,8 +63,13 @@ func runBoardConformance(t *testing.T, x Fixture) {
 		return strings.Compare(a.ID, b.ID)
 	})
 	offset := 0
+	recorder := &boardTaskReadRecorder{Store: st}
 	for offset < len(expected) {
-		board, err := store.ReadBoard(ctx, st, store.BoardOptions{Offset: offset, Limit: 1000, NextAction: opts})
+		recorder.calls, recorder.terminalRows = 0, 0
+		board, err := store.ReadBoard(ctx, recorder, store.BoardOptions{Offset: offset, Limit: 1000, NextAction: opts})
+		if recorder.calls != 1 || recorder.terminalRows != 0 {
+			t.Fatalf("board task reads=%d terminal rows=%d, want one read with no terminal rows", recorder.calls, recorder.terminalRows)
+		}
 		requireOK(t, err)
 		if board.Total != len(expected) {
 			t.Fatalf("total %d, want %d", board.Total, len(expected))

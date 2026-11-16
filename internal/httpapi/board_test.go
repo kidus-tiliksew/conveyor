@@ -100,6 +100,38 @@ func TestBoardRESTAndMCP(t *testing.T) {
 	}
 }
 
+func TestBoardETagIgnoresClockButTracksState(t *testing.T) {
+	f := newGovernanceAuthFixture(t)
+	token := f.user("usr_board_etag", core.WorkspaceRoleContributor)
+	f.order("board-etag", core.StageImplement)
+	now := time.Now().UTC()
+	f.server.nextActionClock = func() time.Time { return now }
+	get := func(tag string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/board?workspace_id="+governanceWorkspace, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("If-None-Match", tag)
+		w := httptest.NewRecorder()
+		f.server.Handler().ServeHTTP(w, req)
+		return w
+	}
+	first := get("")
+	if first.Code != http.StatusOK || first.Header().Get("ETag") == "" {
+		t.Fatalf("first board: status=%d etag=%q body=%s", first.Code, first.Header().Get("ETag"), first.Body.String())
+	}
+	tag := first.Header().Get("ETag")
+	now = now.Add(2 * time.Second)
+	if unchanged := get(tag); unchanged.Code != http.StatusNotModified {
+		t.Fatalf("unchanged board: status=%d body=%s", unchanged.Code, unchanged.Body.String())
+	}
+	if err := f.store.CreateTask(f.ctx, core.Task{ID: "board-etag-new", Workspace: governanceWorkspace, Title: "New task", State: core.TaskQueued, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	changed := get(tag)
+	if changed.Code != http.StatusOK || changed.Header().Get("ETag") == tag || changed.Header().Get("ETag") == "" {
+		t.Fatalf("changed board: status=%d etag=%q body=%s", changed.Code, changed.Header().Get("ETag"), changed.Body.String())
+	}
+}
+
 func TestBoardShortPageContinuation(t *testing.T) {
 	f := newGovernanceAuthFixture(t)
 	token := f.user("usr_board_large", core.WorkspaceRoleContributor)

@@ -44,7 +44,8 @@ import (
 )
 
 type Server struct {
-	mcpReads mcpReadCache
+	mcpReads        mcpReadCache
+	nextActionClock func() time.Time
 	// documentVersions holds parsed immutable document versions for section
 	// reads and search (mcp_document_cache.go).
 	documentVersions mcpDocumentCache

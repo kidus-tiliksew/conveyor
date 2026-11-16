@@ -14,7 +14,6 @@ import (
 
 type BoardOptions struct {
 	Workspace  string
-	Filter     TaskFilter
 	Limit      int
 	Offset     int
 	NextAction NextActionOptions
@@ -27,15 +26,13 @@ type BoardOrder struct {
 }
 
 type BoardItem struct {
-	ID                  string             `json:"id"`
-	Title               string             `json:"title"`
-	State               core.TaskState     `json:"state"`
-	Stage               core.Stage         `json:"stage,omitempty"`
-	CurrentOrder        *BoardOrder        `json:"current_order,omitempty"`
-	PullRequest         int                `json:"pull_request,omitempty"`
-	NextAction          nextaction.Compact `json:"next_action"`
-	LastChange          *time.Time         `json:"last_change,omitempty"`
-	StageElapsedSeconds *int64             `json:"stage_elapsed_seconds,omitempty"`
+	ID           string             `json:"id"`
+	Title        string             `json:"title"`
+	State        core.TaskState     `json:"state"`
+	Stage        core.Stage         `json:"stage,omitempty"`
+	CurrentOrder *BoardOrder        `json:"current_order,omitempty"`
+	PullRequest  int                `json:"pull_request,omitempty"`
+	NextAction   nextaction.Compact `json:"next_action"`
 }
 
 // MarshalJSON preserves the shared compact projection while omitting absent fields on the board.
@@ -73,16 +70,21 @@ func ReadBoard(ctx context.Context, st Store, opts BoardOptions) (Board, error) 
 	if opts.Limit < 1 || opts.Offset < 0 {
 		return Board{}, fmt.Errorf("board limit must be positive and offset must be nonnegative")
 	}
-	filter := opts.Filter
-	filter.Open = true
-	filter.ExcludeBlueprintAnchors = true
-	all, err := st.ListTasksFilteredWithoutBody(ctx, TaskFilter{})
+	states := make([]core.TaskState, 0, len(core.TaskStates()))
+	for _, state := range core.TaskStates() {
+		if !core.TaskTerminal(state) {
+			states = append(states, state)
+		}
+	}
+	all, err := st.ListTasksFilteredWithoutBody(ctx, TaskFilter{States: states})
 	if err != nil {
 		return Board{}, err
 	}
-	tasks, err := st.ListTasksFilteredWithoutBody(ctx, filter)
-	if err != nil {
-		return Board{}, err
+	tasks := make([]core.Task, 0, len(all))
+	for _, task := range all {
+		if !core.BlueprintAnchor(task) {
+			tasks = append(tasks, task)
+		}
 	}
 	workspace, scoped := WorkspaceFromContext(ctx)
 	if scoped && workspace != "" {
@@ -132,17 +134,8 @@ func ReadBoard(ctx context.Context, st Store, opts BoardOptions) (Board, error) 
 		return strings.Compare(a.ID, b.ID)
 	})
 	latest := make(map[string]core.WorkOrder)
-	stageSince := make(map[string]time.Time)
 	for _, order := range orders {
-		old, ok := latest[order.TaskID]
-		if !ok || old.Stage != order.Stage {
-			stageSince[order.TaskID] = order.CreatedAt
-		}
 		latest[order.TaskID] = order
-	}
-	markerByID := make(map[string]ActivityMarker, len(markers))
-	for _, marker := range markers {
-		markerByID[marker.TaskID] = marker
 	}
 	for _, task := range tasks {
 		title := []rune(task.Title)
@@ -151,23 +144,8 @@ func ReadBoard(ctx context.Context, st Store, opts BoardOptions) (Board, error) 
 		}
 		action := actions[task.ID]
 		item := BoardItem{ID: task.ID, Title: string(title), State: task.State, Stage: latest[task.ID].Stage, NextAction: nextaction.CompactFrom(action)}
-		if since := stageSince[task.ID]; !since.IsZero() {
-			now := opts.NextAction.Now
-			if now.IsZero() {
-				now = time.Now().UTC()
-			}
-			seconds := max(int64(now.Sub(since).Seconds()), 0)
-			item.StageElapsedSeconds = &seconds
-		}
 		if action.CurrentOrder != nil {
 			item.CurrentOrder = &BoardOrder{ID: action.CurrentOrder.ID, Stage: action.CurrentOrder.Stage, State: action.CurrentOrder.State}
-		}
-		at := markerByID[task.ID].LastEventAt
-		if at.IsZero() {
-			at = task.CreatedAt
-		}
-		if !at.IsZero() {
-			item.LastChange = &at
 		}
 		if event, ok := pulls[task.ID]; ok {
 			var payload struct {
