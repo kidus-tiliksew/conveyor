@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -52,6 +53,41 @@ func (s *Store) ListTaskApprovals(ctx context.Context, taskID string) ([]core.Ta
 		return nil, err
 	}
 	return listTaskApprovals(ctx, s.db, taskID)
+}
+
+func (s *Store) ListTaskApprovalsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.TaskApproval, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskApprovalsForTasks")
+	out := make(map[string][]core.TaskApproval, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	args := make([]any, 1, len(taskIDs)+1)
+	args[0] = documentWorkspace(ctx)
+	for _, id := range taskIDs {
+		args = append(args, id)
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(taskIDs)), ",")
+	rows, err := documentRows(ctx, s.db, `SELECT task_id,payload_json FROM task_risk_approvals WHERE workspace_id=? AND task_id IN (`+marks+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var taskID string
+		var raw []byte
+		if err := rows.Scan(&taskID, &raw); err != nil {
+			return nil, err
+		}
+		var approval core.TaskApproval
+		if err := json.Unmarshal(raw, &approval); err != nil {
+			return nil, err
+		}
+		out[taskID] = append(out[taskID], approval)
+	}
+	for _, approvals := range out {
+		slices.SortStableFunc(approvals, func(a, b core.TaskApproval) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	}
+	return out, rows.Err()
 }
 
 func listTaskApprovals(ctx context.Context, db interface {

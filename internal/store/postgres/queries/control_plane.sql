@@ -726,3 +726,7 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.arg(decision_id)::text = '' OR decision_id = sqlc.arg(decision_id))
 ORDER BY decision_id, document_tier, document_id;
 
+-- name: ListTaskApprovalsForTasks :many
+SELECT task_id, payload_json FROM task_risk_approvals
+WHERE workspace_id = sqlc.arg(workspace_id) AND task_id = ANY(sqlc.arg(task_ids)::text[])
+ORDER BY task_id, seq;

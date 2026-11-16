@@ -72,6 +72,26 @@ func (s *Store) ListTaskApprovals(ctx context.Context, taskID string) ([]core.Ta
 	return approvals, rows.Err()
 }
 
+func (s *Store) ListTaskApprovalsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.TaskApproval, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskApprovalsForTasks")
+	out := make(map[string][]core.TaskApproval, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.queries.ListTaskApprovalsForTasks(ctx, db.ListTaskApprovalsForTasksParams{WorkspaceID: workspace(ctx), TaskIDs: taskIDs})
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		var approval core.TaskApproval
+		if err := json.Unmarshal(row.PayloadJSON, &approval); err != nil {
+			return nil, err
+		}
+		out[row.TaskID] = append(out[row.TaskID], approval)
+	}
+	return out, nil
+}
+
 // insertTaskApprovalTx inserts one prepared approval and its activity event
 // inside the caller's transaction, which holds the task lock. A key already
 // recorded, by a replay or a concurrent writer, inserts nothing and returns

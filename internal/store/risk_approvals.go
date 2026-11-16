@@ -31,6 +31,7 @@ type TaskApprovalStore interface {
 	// ListTaskApprovals returns every recorded approval and waiver of a task
 	// in recorded order.
 	ListTaskApprovals(ctx context.Context, taskID string) ([]core.TaskApproval, error)
+	ListTaskApprovalsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.TaskApproval, error)
 }
 
 // PrepareTaskApproval validates a record against the task under the task
@@ -159,6 +160,18 @@ func (m *memory) ListTaskApprovals(ctx context.Context, taskID string) ([]core.T
 		return nil, err
 	}
 	return slices.Clone(m.taskApprovals[key]), nil
+}
+
+func (m *memory) ListTaskApprovalsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.TaskApproval, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, _ := WorkspaceFromContext(ctx)
+	out := make(map[string][]core.TaskApproval, len(taskIDs))
+	for _, taskID := range taskIDs {
+		key := memoryScopedKey{workspace: workspace, id: taskID}
+		out[taskID] = slices.Clone(m.taskApprovals[key])
+	}
+	return out, nil
 }
 
 // TaskAuthors reads a task's authors: the people whose sessions claimed its

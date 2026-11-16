@@ -124,6 +124,22 @@ func RunTaskApprovalConformance(t *testing.T, x Fixture) {
 		if len(listed) != 4 {
 			t.Fatalf("listed=%+v, want 4 records", listed)
 		}
+		batched, err := st.ListTaskApprovalsForTasks(ctx, []string{task.ID, "missing-task"})
+		requireOK(t, err)
+		if len(batched[task.ID]) != len(listed) || len(batched["missing-task"]) != 0 {
+			t.Fatalf("batch=%+v, want the recorded approvals and no missing-task approvals", batched)
+		}
+		for _, want := range listed {
+			found := false
+			for _, got := range batched[task.ID] {
+				if got.TaskID == want.TaskID && got.Kind == want.Kind && got.UserID == want.UserID && got.HeadSHA == want.HeadSHA && got.ReviewRound == want.ReviewRound {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("batch missing approval %+v", want)
+			}
+		}
 		if n := countEvents(t, task.ID, core.TaskApprovalEvent); n != 3 {
 			t.Fatalf("approval events=%d, want 3", n)
 		}
