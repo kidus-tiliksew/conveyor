@@ -128,7 +128,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
-	riskApprovals, err := readAssemblerRiskApprovals(ctx, st, tasks, opts)
+	riskApprovals, err := readAssemblerRiskApprovals(ctx, st, tasks, orders, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -541,31 +541,34 @@ func readAssemblerCheckStatus(ctx context.Context, st Store, tasks []core.Task) 
 // (req-risk-based-review AC-1.1, REQ-8, REQ-9, AC-11.1; DEC-124(2)). The
 // trust list is opts.TrustedAuthors' live answer; without it the empty list
 // applies, which trusts every person who holds operate_gates (AC-9.1).
-func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task, opts NextActionOptions) (map[string]nextaction.RiskApprovals, error) {
+func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task, orders []core.WorkOrder, opts NextActionOptions) (map[string]nextaction.RiskApprovals, error) {
 	out := map[string]nextaction.RiskApprovals{}
+	var candidates []core.Task
+	trusted := map[string][]string{}
 	for _, task := range tasks {
 		atGate := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
 		if !task.SetupContract.Risk.Enforcing() || (task.State != core.TaskApproved && !atGate) {
 			continue
 		}
-		scoped := ctx
-		if task.Workspace != "" {
-			scoped = WithWorkspace(ctx, task.Workspace)
-		}
-		var trusted []string
+		candidates = append(candidates, task)
 		if opts.TrustedAuthors != nil {
+			scoped := ctx
+			if task.Workspace != "" {
+				scoped = WithWorkspace(ctx, task.Workspace)
+			}
 			var err error
-			if trusted, err = opts.TrustedAuthors(scoped, task); err != nil {
+			trusted[task.ID], err = opts.TrustedAuthors(scoped, task)
+			if err != nil {
 				return nil, err
 			}
 		}
-		// The caller's own approval is evaluated too, so the merge choice is
-		// offered only when the caller's act can land the head
-		// (req-risk-based-review AC-8.7, AC-11.1).
-		evaluation, err := EvaluateTaskApprovals(scoped, st, task, trusted, opts.CallerUserID)
-		if err != nil {
-			return nil, err
-		}
+	}
+	evaluations, err := evaluateTaskApprovalsBatch(ctx, st, candidates, orders, true, trusted, opts.CallerUserID)
+	if err != nil {
+		return nil, err
+	}
+	for _, task := range candidates {
+		evaluation := evaluations[task.ID]
 		if evaluation.Base.Required < 1 {
 			continue
 		}

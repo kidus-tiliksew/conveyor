@@ -127,7 +127,7 @@ func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOpti
 		}
 	}
 	opts.MergeReadiness = s.mergeReadiness.lastKnown
-	opts.TrustedAuthors = s.trustedAuthors
+	opts.TrustedAuthors = s.requestTrustedAuthors()
 	if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialUser {
 		opts.CallerUserID = credential.OwnerUserID
 	}

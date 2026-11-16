@@ -261,86 +261,20 @@ func (e ApprovalEvaluation) IsAuthor(userID string) bool {
 // AC-9.3). A store without a membership boundary counts no approval, so the
 // evaluation fails closed.
 func EvaluateTaskApprovals(ctx context.Context, st Store, task core.Task, trusted []string, prospective string) (ApprovalEvaluation, error) {
-	if !task.SetupContract.Risk.Enforcing() {
-		return ApprovalEvaluation{}, nil
-	}
-	if task.Workspace != "" {
-		ctx = WithWorkspace(ctx, task.Workspace)
-	}
-	ratings, err := st.ListTaskRiskRatings(ctx, task.ID)
-	if err != nil {
-		return ApprovalEvaluation{}, err
-	}
-	requirements, tier, _ := EnforcedRiskRequirements(task, ratings)
-	events, err := st.ListEvents(ctx, task.ID)
-	if err != nil {
-		return ApprovalEvaluation{}, err
-	}
-	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
-	if err != nil {
-		return ApprovalEvaluation{}, err
-	}
-	records, err := st.ListTaskApprovals(ctx, task.ID)
-	if err != nil {
-		return ApprovalEvaluation{}, err
-	}
-	authors, unknown := TaskAuthors(events, orders)
-	evaluation := ApprovalEvaluation{
-		Enforced: true, Head: strings.TrimSpace(task.ReviewedHeadSHA), ReviewRound: LatestReviewRound(orders),
-		Tier: tier, Requirements: requirements, Authors: authors,
-	}
-	var approvers []string
-	waived := false
-	for _, record := range records {
-		if evaluation.Head == "" || record.HeadSHA != evaluation.Head || record.ReviewRound != evaluation.ReviewRound {
-			continue
+	if task.SetupContract.Risk.Enforcing() {
+		scoped := ctx
+		if task.Workspace != "" {
+			scoped = WithWorkspace(ctx, task.Workspace)
 		}
-		switch record.Kind {
-		case core.TaskApprovalPerson:
-			evaluation.Approvals = append(evaluation.Approvals, record)
-			approvers = append(approvers, record.UserID)
-		case core.TaskApprovalAuthorWaiver:
-			evaluation.Waivers = append(evaluation.Waivers, record)
-		}
-	}
-	people := slices.Concat(authors, approvers)
-	for _, waiver := range evaluation.Waivers {
-		people = append(people, waiver.UserID)
-	}
-	if prospective != "" {
-		people = append(people, prospective)
-	}
-	gatekeepers := map[string]bool{}
-	membership, _ := st.(CapabilityAuthorizer)
-	for _, userID := range people {
-		if _, done := gatekeepers[userID]; done || membership == nil || userID == "" {
-			continue
-		}
-		allowed, err := membership.AuthorizeWorkspace(ctx, userID, task.Workspace, core.CapabilityOperateGates)
-		if err != nil {
+		if _, err := st.GetTask(scoped, task.ID); err != nil {
 			return ApprovalEvaluation{}, err
 		}
-		gatekeepers[userID] = allowed
 	}
-	// A waiver counts only from a person who holds operate_gates now and is
-	// not an author (AC-8.5).
-	for _, waiver := range evaluation.Waivers {
-		if !slices.Contains(authors, waiver.UserID) && gatekeepers[waiver.UserID] {
-			waived = true
-			break
-		}
+	evaluations, err := EvaluateTaskApprovalsBatch(ctx, st, []core.Task{task}, map[string][]string{task.ID: trusted}, prospective)
+	if err != nil {
+		return ApprovalEvaluation{}, err
 	}
-	input := riskpolicy.ApprovalInput{
-		Required: requirements.HumanApprovals, Authors: authors, UnknownAuthor: unknown, TrustedAuthors: trusted,
-		Gatekeepers: gatekeepers, Approvals: approvers, Waived: waived, Prospective: prospective,
-	}
-	evaluation.Status = riskpolicy.EvaluateApprovals(input)
-	evaluation.Base = evaluation.Status
-	if prospective != "" {
-		input.Prospective = ""
-		evaluation.Base = riskpolicy.EvaluateApprovals(input)
-	}
-	return evaluation, nil
+	return evaluations[task.ID], nil
 }
 
 // CapabilityAuthorizer answers whether one person holds a capability in a
