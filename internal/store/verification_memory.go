@@ -594,16 +594,7 @@ func (m *volatileMemory) ReconcileVerificationDeliveries(ctx context.Context) er
 		}
 		return due[i].Generation < due[j].Generation
 	})
-	newest := map[string]int{}
-	var window []core.VerificationDelivery
-	for _, d := range due {
-		key := VerificationDeliveryKey(d.Repository, d.PullRequestNumber)
-		if generation, found := newest[key]; found && generation >= d.Generation {
-			continue
-		}
-		newest[key] = d.Generation
-		window = append(window, d)
-	}
+	window := due
 	noteVerificationReadTask(ctx, VerificationReadDue, "", len(due))
 	if len(window) > VerificationDeliveryReconcileWindow {
 		window = window[:VerificationDeliveryReconcileWindow]

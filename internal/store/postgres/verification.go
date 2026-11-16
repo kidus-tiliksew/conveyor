@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -634,22 +635,17 @@ func verificationDeliveryDueTx(ctx context.Context, tx pgx.Tx, ws string, now ti
 	return out, rows.Err()
 }
 
-// verificationDeliveryBodiesTx decodes the retained body of the newest due
-// generation of each due pull-request key, in one statement.
+// verificationDeliveryBodiesTx decodes the retained body of every due
+// delivery, in one statement, so a pass acts on exactly the rows its due
+// window selected.
 func verificationDeliveryBodiesTx(ctx context.Context, tx pgx.Tx, ws string, candidates []verificationDeliveryDue) ([]core.VerificationDelivery, error) {
-	newest := map[string]int64{}
-	for _, c := range candidates {
-		if generation, found := newest[c.Key]; !found || c.Generation > generation {
-			newest[c.Key] = c.Generation
-		}
-	}
 	acted := make([]verificationDeliveryDue, 0, len(candidates))
 	seen := map[string]bool{}
 	for _, c := range candidates {
-		if newest[c.Key] != c.Generation || seen[c.Key] {
+		if seen[c.Key+"\x00"+strconv.FormatInt(c.Generation, 10)] {
 			continue
 		}
-		seen[c.Key] = true
+		seen[c.Key+"\x00"+strconv.FormatInt(c.Generation, 10)] = true
 		acted = append(acted, c)
 	}
 	args := make([]any, 0, 1+2*len(acted))

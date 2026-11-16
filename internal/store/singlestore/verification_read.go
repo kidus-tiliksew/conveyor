@@ -223,20 +223,12 @@ func deliveryMetadataBatchTx(ctx context.Context, tx *sql.Tx, task string, sourc
 	out := map[string]core.VerificationDelivery{}
 	for start := 0; start < len(sources); start += verificationMetadataChunk {
 		chunk := sources[start:min(start+verificationMetadataChunk, len(sources))]
-		generations, err := deliveryMetadataGenerationsTx(ctx, tx, task, chunk)
-		if err != nil {
-			return nil, err
-		}
-		if len(generations) == 0 {
-			continue
-		}
-		args := make([]any, 0, 2+len(chunk)+len(generations))
+		args := make([]any, 0, 2+len(chunk))
 		args = append(args, documentWorkspace(ctx), task)
 		args = append(args, verificationMetadataArgs(chunk)...)
-		for _, generation := range generations {
-			args = append(args, generation)
-		}
-		rows, err := tx.QueryContext(ctx, `SELECT source_publication_id, `+deliveryMetadataColumns+` FROM verification_publication_deliveries WHERE workspace_id=? AND task_id=? AND source_publication_id IN (`+verificationMarks(len(chunk))+`) AND generation IN (`+verificationMarks(len(generations))+`)`, args...)
+		// One statement over the chunk; the newest generation per publication is
+		// chosen here, so no pre-query narrows anything.
+		rows, err := tx.QueryContext(ctx, `SELECT source_publication_id, `+deliveryMetadataColumns+` FROM verification_publication_deliveries WHERE workspace_id=? AND task_id=? AND source_publication_id IN (`+verificationMarks(len(chunk))+`)`, args...)
 		if err != nil {
 			return nil, err
 		}

@@ -183,20 +183,12 @@ func deliveryMetadataBatchTx(ctx context.Context, tx pgx.Tx, task string, source
 	out := map[string]core.VerificationDelivery{}
 	for start := 0; start < len(sources); start += verificationMetadataChunk {
 		chunk := sources[start:min(start+verificationMetadataChunk, len(sources))]
-		generations, err := deliveryMetadataGenerationsTx(ctx, tx, task, chunk)
-		if err != nil {
-			return nil, err
-		}
-		if len(generations) == 0 {
-			continue
-		}
-		args := make([]any, 0, 2+len(chunk)+len(generations))
+		args := make([]any, 0, 2+len(chunk))
 		args = append(args, workspace(ctx), task)
 		args = append(args, verificationMetadataArgs(chunk)...)
-		for _, generation := range generations {
-			args = append(args, generation)
-		}
-		rows, err := tx.Query(ctx, `SELECT source_publication_id, `+deliveryMetadataColumns+` FROM verification_publication_deliveries WHERE workspace_id=$1 AND task_id=$2 AND source_publication_id IN (`+verificationPlaceholders(3, len(chunk))+`) AND generation IN (`+verificationPlaceholders(3+len(chunk), len(generations))+`)`, args...)
+		// One statement over the chunk; the newest generation per publication is
+		// chosen here, so no pre-query narrows anything.
+		rows, err := tx.Query(ctx, `SELECT source_publication_id, `+deliveryMetadataColumns+` FROM verification_publication_deliveries WHERE workspace_id=$1 AND task_id=$2 AND source_publication_id IN (`+verificationPlaceholders(3, len(chunk))+`)`, args...)
 		if err != nil {
 			return nil, err
 		}
