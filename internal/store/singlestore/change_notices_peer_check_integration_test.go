@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -176,11 +177,39 @@ func TestSingleStoreCompressionStartupLogIntegration(t *testing.T) {
 
 func TestSingleStoreCompressionWireIntegration(t *testing.T) {
 	on := openOwnedStore(t)
+	conn, err := net.DialTimeout("tcp", sharedDatabase.cfg.Addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		t.Fatal(err)
+	}
+	size := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
+	packet := make([]byte, size)
+	if _, err := io.ReadFull(conn, packet); err != nil {
+		t.Fatal(err)
+	}
+	if len(packet) == 0 {
+		t.Fatal("empty server handshake")
+	}
+	versionEnd := bytes.IndexByte(packet[1:], 0)
+	if versionEnd < 0 || 1+versionEnd+1+4+8+1+2 > len(packet) {
+		t.Fatal("invalid server handshake")
+	}
+	capOffset := 1 + versionEnd + 1 + 4 + 8 + 1
+	advertised := binary.LittleEndian.Uint16(packet[capOffset:])&0x20 != 0
+	t.Logf("server advertises CLIENT_COMPRESS: %t", advertised)
 	off, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer off.Close()
+	wire := map[string]uint64{}
 	for _, tc := range []struct {
 		name string
 		st   *Store
@@ -193,7 +222,11 @@ func TestSingleStoreCompressionWireIntegration(t *testing.T) {
 		if len(payload) != 262144 {
 			t.Fatalf("%s returned %d payload bytes", tc.name, len(payload))
 		}
-		t.Logf("%s received %d wire bytes for %d decoded bytes", tc.name, tc.st.ReadStats(0).Bytes, len(payload))
+		wire[tc.name] = tc.st.ReadStats(0).Bytes
+		t.Logf("%s received %d wire bytes for %d decoded bytes", tc.name, wire[tc.name], len(payload))
+	}
+	if advertised && wire["requested"] >= wire["disabled"] {
+		t.Fatalf("server advertised compression, but requested read used %d bytes versus %d disabled", wire["requested"], wire["disabled"])
 	}
 }
 
@@ -243,6 +276,19 @@ func TestSingleStorePeerMarksIntegration(t *testing.T) {
 	}
 	if afterEvent[wsB] != afterJob[wsB] {
 		t.Fatalf("task event in %s moved %s", wsA, wsB)
+	}
+	rollback := errors.New("rollback probe")
+	err := writer.withTx(ctxA, func(tx *sql.Tx) error {
+		if err := taskEvent(ctxA, tx, core.Event{TaskID: taskA, Kind: "peer.rollback"}); err != nil {
+			return err
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatalf("rollback probe: %v", err)
+	}
+	if afterRollback := read("after rollback"); afterRollback[wsA] != afterEvent[wsA] {
+		t.Fatalf("rolled-back event changed peer mark: %+v -> %+v", afterEvent[wsA], afterRollback[wsA])
 	}
 }
 
