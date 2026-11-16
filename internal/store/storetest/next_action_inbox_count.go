@@ -361,7 +361,7 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 	enforceTask := seed(core.Task{State: core.TaskRunning, NextStage: core.StageSpec, PlanState: core.PlanNeeded, PolicyVersion: 1, SetupContract: policy(riskpolicy.ModeEnforce)})
 	_, err = plane.Perform(ctx, enforceTask, taskops.Command{
 		Kind: core.TaskGateSpec, RecoveryStage: core.StageImplement, ProjectStages: true,
-		PlanState: &taskops.PlanStateMove{To: core.PlanAwaitingApproval, Cause: core.PlanCausePlanSubmitted},
+		PlanState:   &taskops.PlanStateMove{To: core.PlanAwaitingApproval, Cause: core.PlanCausePlanSubmitted},
 		PlanVersion: &core.SpecVersion{Content: planRiskPlan("", ""), Acceptance: []byte(`[]`), Decomposition: []byte(`[]`), Agent: "codex", Model: "planner"},
 	})
 	requireOK(t, err)
