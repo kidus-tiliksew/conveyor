@@ -164,6 +164,7 @@ observational consultation of a claim-bound System Design read
 |---|---|---|
 | `list_workspaces` | None | Returns only the caller's own workspace memberships; use a known workspace ID as the explicit authorization scope. |
 | `list_repositories` | None | Returns repository `name` and `base_branch`; configuration, URLs, credentials, and checkout paths are omitted. |
+| `get_board` | None | One page of open tasks and their next actions. `limit` defaults to 100 and `offset` defaults to 0. Continue at `offset` plus the number of items until that sum reaches `total`, even when a page is short. Each page is a new read; it has no snapshot. |
 | `list_tasks` | None | `state`: `active` (default), `terminal`, or `all`; exact `repository`; `query` matches task ID, title, source, or branch. |
 | `get_task` | `task_id` | Includes terminal tasks and body; excludes execution setup and work-order credentials. `plan_state` is `not_required`, `needed`, `awaiting_approval`, or `completed`, and no `spec_approval` is served. `next_action` carries the server-stated `label`, `actor`, `kind`, `judgment`, `summary`, `deadline`, and `blocked_by`; `get_task_status` returns the full statement. While the task's frozen risk mode is on, `risk` carries the tier, its source and reason, the requirements, every rating (a `risk_agent` rating names its `risk_work_order_id` and `risk_model`), and `orders`: each risk order's `work_order_id`, `state`, `subject`, and reported `model`, the same as the REST task read and `conveyor task show`. A served rating carries no path list: a `risk_agent` rating of a head carries `covered_path_count` in place of its covered paths, and each entry of `matched_rules` carries `path_count` in place of its `paths`. The stored rating keeps both lists, and a head's risk order still serves its `changed_paths` and `matched_rules` with paths through `get_work_order` (`component-risk-review`, Public surfaces). |
 | `list_operator_inbox` | None | The inbox `GET /v1/next-actions` serves, in the same server order: decisions first, then tasks blocked by other tasks, then acts needing no judgment, with pending document proposals among the decisions. `band`: `decisions`, `blocked`, or `automatic`; exact `state`, `repository`, `serves_requirement`, `governing_design`, and `assignee`; `query` matches as the REST `q` filter does. |
@@ -176,15 +177,16 @@ observational consultation of a claim-bound System Design read
 | `list_decisions` | None | `query`; `include_history` adds superseded decisions to the default confirmed list. |
 | `get_decision` | `decision_id` | `include_history` is required for superseded or pending records; neither grants active authority. |
 
-Every tool accepts `limit` (integer 1–100, default 25). Every tool except
-`search_documents` also accepts `offset` (integer 0–1000, default 0) and
-`snapshot` (opaque 32-character hex token). Unknown
-fields, wrong types, fractional numbers, identifiers/text over 256 UTF-8 bytes,
-and argument objects over 8192 bytes fail validation. Document versions are
-integers from 1 through 1000000. An offset above zero requires a snapshot.
+Every tool accepts `limit` (integer 1–100, default 25; 100 for `get_board`).
+Every tool except `search_documents` also accepts `offset` (integer 0–1000,
+default 0; up to 2147483647 for `get_board`). Except for `search_documents`
+and `get_board`, the tools accept `snapshot` (opaque 32-character hex token)
+and require it for an offset above zero. Unknown fields, wrong types, fractional
+numbers, identifiers/text over 256 UTF-8 bytes, and argument objects over 8192
+bytes fail validation. Document versions are integers from 1 through 1000000.
 
-The response is `{items, total, limit, offset, next_offset?, snapshot,
-expires_at, evidence}`. Repeat the same tool and filters with the returned
+Except for `get_board`, the response is `{items, total, limit, offset,
+next_offset?, snapshot, expires_at, evidence}`. Repeat the same tool and filters with the returned
 `snapshot` and `next_offset`; only `limit` and `offset` may change. Each
 snapshot freezes rendered results for five minutes, is bound to the presenting
 credential (another credential of the same user cannot use it), workspace, and

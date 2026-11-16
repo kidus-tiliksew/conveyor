@@ -286,6 +286,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks/{id}/flow", s.getTaskFlow)
 			r.Get("/inbox", s.listInbox)
 			r.Get("/next-actions", s.listNextActions)
+			r.Get("/board", s.getBoard)
 			r.Get("/inbox/acts", s.listFactoryActs)
 			r.Get("/tasks/{id}/jobs", s.listJobs)
 			r.Get("/tasks/{id}/events", s.listEvents)

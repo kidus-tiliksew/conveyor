@@ -90,6 +90,7 @@ func newRootCmd() *cobra.Command {
 		taskCmd(),
 		planCmd(),
 		inboxCmd(),
+		boardCmd(),
 		orderCmd(),
 		artifactCmd(),
 		kitCmd(),
