@@ -102,13 +102,13 @@ func (c *attentionCountCache) get(workspace string) (int, bool) {
 	return entry.count, true
 }
 
-func (c *attentionCountCache) store(workspace string, count int) {
+func (c *attentionCountCache) store(workspace string, count int, at time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
 		c.entries = map[string]attentionCountEntry{}
 	}
-	c.entries[workspace] = attentionCountEntry{count: count, at: c.now()}
+	c.entries[workspace] = attentionCountEntry{count: count, at: at}
 }
 
 // attentionCount is the workspace's task attention count, served from the
@@ -122,10 +122,11 @@ func (s *Server) attentionCount(ctx context.Context) (int, error) {
 	if count, ok := s.attention.get(workspace); ok {
 		return count, nil
 	}
+	started := s.attention.now()
 	count, err := s.Store.CountOperatorAttention(ctx)
 	if err != nil {
 		return 0, err
 	}
-	s.attention.store(workspace, count)
+	s.attention.store(workspace, count, started)
 	return count, nil
 }

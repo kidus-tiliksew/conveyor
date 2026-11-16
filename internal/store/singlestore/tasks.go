@@ -884,9 +884,8 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 	return s.listTaskRowsSelecting(ctx, taskColumns, store.TaskOperationsQuery{TaskFilter: store.TaskFilter{}})
 }
 
-// ListTasksFiltered reads the filtered rows over taskListColumns, so a list
-// read transfers no task body and no frozen policy snapshot
-// (req-operator-next-action AC-2.7).
+// ListTasksFiltered reads taskListColumns without bodies but retains frozen
+// policy for next-action projections (req-operator-next-action AC-2.7).
 func (s *Store) ListTasksFiltered(ctx context.Context, f store.TaskFilter) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFiltered")
 	if err := f.Validate(); err != nil {

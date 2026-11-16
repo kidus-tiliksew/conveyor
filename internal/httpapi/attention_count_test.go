@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +18,10 @@ type countingAttentionStore struct {
 	store.Store
 	mu     sync.Mutex
 	counts int
+}
+
+func (s *countingAttentionStore) Changes() *changes.Hub {
+	return s.Store.(interface{ Changes() *changes.Hub }).Changes()
 }
 
 func (s *countingAttentionStore) CountOperatorAttention(ctx context.Context) (int, error) {
@@ -42,17 +48,16 @@ func TestAttentionCountServedFromCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewServer(counted)
-	// The counting wrapper promotes only the store contract, so the server
-	// resolves no hub from it; the cache subscribes to the memory hub the
-	// backend publishes on.
-	hub := memoryHub(t, counted.Store)
-	server.attention.subscribe(hub)
+	server.Workspace = "demo"
+	hub := counted.Changes()
 	now := time.Now().UTC()
 	server.attention.clock = func() time.Time { return now }
 	read := func() {
 		t.Helper()
-		if _, err := server.attentionCount(ctx); err != nil {
-			t.Fatal(err)
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/pending-proposals?workspace_id=demo", nil)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("pending proposals: status %d: %s", recorder.Code, recorder.Body.String())
 		}
 	}
 

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
@@ -1030,9 +1029,8 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 	return out, nil
 }
 
-// ListTasksFiltered states no task body and no frozen policy snapshot, as the
-// SQL backends' list column set does not select them, so every backend answers
-// a list read the same way (req-operator-next-action AC-2.7;
+// ListTasksFiltered omits task bodies but retains frozen policy, matching the
+// SQL list column sets (req-operator-next-action AC-2.7;
 // component-persistence, Database read accounting).
 func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error) {
 	if err := filter.Validate(); err != nil {
@@ -1073,12 +1071,13 @@ func (m *memory) ListTasksFilteredWithoutBody(ctx context.Context, filter TaskFi
 	return m.ListTasksFiltered(ctx, filter)
 }
 
-// clearListTaskDetail drops the two columns a list read does not select: the
-// task body and the frozen policy snapshot.
+// clearListTaskDetail drops the one column a list read does not select: the
+// task body. The frozen policy snapshot stays, because the next-action
+// projection over these rows reads SetupContract.Risk
+// (req-operator-next-action AC-1.7, AC-2.7; DEC-61).
 func clearListTaskDetail(tasks []core.Task) {
 	for i := range tasks {
 		tasks[i].Body = ""
-		tasks[i].SetupContract = config.PolicyContract{}
 	}
 }
 

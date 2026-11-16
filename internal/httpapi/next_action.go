@@ -151,7 +151,7 @@ func (s *Server) getNextAction(w http.ResponseWriter, r *http.Request) {
 		writeStoreFailure(w, r, err)
 		return
 	}
-	conditional := &activityConditional{now: now, opts: opts, scope: taskObservationValidatorScope(r.Context(), taskID, opts.Capabilities), validation: validation}
+	conditional := &activityConditional{now: now, opts: opts, scope: taskObservationValidatorScope(r.Context(), "next-action", taskID, opts.Capabilities), validation: validation}
 	if tag, admitted := conditional.admits(r.Header.Get("If-None-Match")); admitted {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("ETag", tag.raw)

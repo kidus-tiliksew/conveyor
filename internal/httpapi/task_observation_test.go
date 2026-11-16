@@ -76,6 +76,23 @@ func TestTaskObservationPollAnswersUnchangedWith304(t *testing.T) {
 	}
 }
 
+func TestTaskObservationAndNextActionValidatorsAreRouteScoped(t *testing.T) {
+	f := newActivityConditionalFixture(t)
+	f.task("task-scope", core.TaskRunning)
+	observation := "/v1/tasks/task-scope/observation?workspace_id=demo"
+	nextAction := "/v1/tasks/task-scope/next-action?workspace_id=demo"
+	for _, pair := range [][2]string{{observation, nextAction}, {nextAction, observation}} {
+		first := f.read(pair[0], "")
+		if first.Code != http.StatusOK || first.Header().Get("ETag") == "" {
+			t.Fatalf("first read: status=%d tag=%q", first.Code, first.Header().Get("ETag"))
+		}
+		second := f.read(pair[1], first.Header().Get("ETag"))
+		if second.Code != http.StatusOK {
+			t.Fatalf("cross-route read: status=%d body=%s", second.Code, second.Body.String())
+		}
+	}
+}
+
 // TestNextActionPollAnswersUnchangedWith304 proves the next-action read keeps
 // its body while an unchanged poll costs no projection, and a changed task
 // answers 200 with a new tag (req-agent-skills AC-4.3).

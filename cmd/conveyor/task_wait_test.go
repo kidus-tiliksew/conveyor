@@ -196,12 +196,13 @@ func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		// The tag names the body and the gate a later read would report, so a
-		// repeated poll of an unchanged step is certified with 304 and
-		// transfers no body, while a gate version or readiness change moves
-		// the tag exactly as the server's validation read does.
-		tagged := append(append([]byte(nil), body...), taskWaitTestGateTag(step)...)
-		tag := fmt.Sprintf("%q", fmt.Sprintf("obs-%x", sha256.Sum256(tagged)))
+		// The tag names the body, the route, and the UTC minute, which is what
+		// the server's validator covers (the database validation read plus the
+		// route scope). It covers neither the gate's plan version nor the live
+		// merge readiness, so a readiness change answers 304 and the wait must
+		// re-read the gate to observe it (req-agent-skills AC-4.1, AC-4.3).
+		tagged := fmt.Sprintf("%s|%s|%s", body, "observation", time.Now().UTC().Format("2006-01-02T15:04"))
+		tag := fmt.Sprintf("%q", fmt.Sprintf("obs-%x", sha256.Sum256([]byte(tagged))))
 		w.Header().Set("ETag", tag)
 		if r.Header.Get("If-None-Match") == tag {
 			w.WriteHeader(http.StatusNotModified)
@@ -924,6 +925,36 @@ func runTaskWaitUntil(t *testing.T, f *taskWaitFixture, until string, timeout ti
 		}
 	}
 	return result, progress.String(), err
+}
+
+func TestTaskWaitUntilResetsBackoffOnChange(t *testing.T) {
+	running := untilAction("Running", "agent", "running", "implement")
+	reviewing := untilAction("Reviewing", "agent", "review_pending", "review")
+	operator := untilAction("Approval", "operator", "plan_approval", "")
+	f := newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskRunning, nextAction: running},
+		taskWaitStep{state: core.TaskRunning, nextAction: running},
+		taskWaitStep{state: core.TaskRunning, nextAction: running},
+		taskWaitStep{state: core.TaskRunning, nextAction: reviewing},
+		taskWaitStep{state: core.TaskAwaiting, nextAction: operator},
+	)
+	var delays []time.Duration
+	options := taskWaitTestOptions(time.Second)
+	options.until = "operator"
+	options.newPoller = func() *taskWaitPoller {
+		return &taskWaitPoller{base: time.Millisecond, maximum: 8 * time.Millisecond, current: time.Millisecond,
+			jitter: func(delay, _ time.Duration) time.Duration {
+				delays = append(delays, delay)
+				return delay
+			}}
+	}
+	if err := runTaskWait(t.Context(), f.client(), io.Discard, taskWaitTestTaskID, true, options); err != nil {
+		t.Fatal(err)
+	}
+	want := []time.Duration{time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, time.Millisecond}
+	if !slices.Equal(delays, want) {
+		t.Fatalf("delays = %v, want %v", delays, want)
+	}
 }
 
 // TestTaskWaitUntil covers --until targets (req-operator-next-action AC-5.4).

@@ -38,7 +38,7 @@ func (s *Server) getTaskObservation(w http.ResponseWriter, r *http.Request) {
 		writeStoreFailure(w, r, err)
 		return
 	}
-	conditional := &activityConditional{now: now, opts: opts, scope: taskObservationValidatorScope(r.Context(), taskID, opts.Capabilities), validation: validation}
+	conditional := &activityConditional{now: now, opts: opts, scope: taskObservationValidatorScope(r.Context(), "observation", taskID, opts.Capabilities), validation: validation}
 	if tag, admitted := conditional.admits(r.Header.Get("If-None-Match")); admitted {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("ETag", tag.raw)
@@ -131,11 +131,9 @@ func taskObservationValidUntil(now time.Time, action nextaction.NextAction) time
 	return until
 }
 
-// taskObservationValidatorScope binds an observation tag to its workspace,
-// caller, capabilities, and task, so a tag from another task, workspace, or
-// capability set never admits a 304 (component-http-api, Activity conditional
-// admission).
-func taskObservationValidatorScope(ctx context.Context, taskID string, capabilities map[core.Capability]bool) []byte {
+// taskObservationValidatorScope binds a tag to its route, workspace, caller,
+// capabilities, and task (component-http-api, Activity conditional admission).
+func taskObservationValidatorScope(ctx context.Context, route, taskID string, capabilities map[core.Capability]bool) []byte {
 	workspaceID, _ := store.WorkspaceFromContext(ctx)
 	credential, _ := store.CredentialFromContext(ctx)
 	granted := make([]string, 0, len(nextActionCapabilities))
@@ -146,10 +144,11 @@ func taskObservationValidatorScope(ctx context.Context, taskID string, capabilit
 	}
 	scope, _ := json.Marshal(struct {
 		Version      string   `json:"version"`
+		Route        string   `json:"route"`
 		Workspace    string   `json:"workspace"`
 		User         string   `json:"user"`
 		Capabilities []string `json:"capabilities"`
 		Task         string   `json:"task"`
-	}{"task-observation-v1", workspaceID, credential.OwnerUserID, granted, taskID})
+	}{"task-observation-v1", route, workspaceID, credential.OwnerUserID, granted, taskID})
 	return scope
 }

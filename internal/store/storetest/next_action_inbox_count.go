@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -347,14 +348,32 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 	_, err = plane.SetAssignee(ctx, working, assignee)
 	requireOK(t, err)
 
+	// Record mode keeps an ordinary order ahead of risk; enforce mode waits
+	// for the submitted plan's risk rating instead of offering approval.
+	policy := func(mode riskpolicy.Mode) config.PolicyContract {
+		return config.PolicyContract{MaxBounces: 3, Risk: &riskpolicy.Policy{Mode: mode, Tiers: riskpolicy.DefaultTable()}}
+	}
+	recordTask := seed(core.Task{State: core.TaskRunning, NextStage: core.StageRisk, SetupContract: policy(riskpolicy.ModeRecord)})
+	order(recordTask)
+	riskOrderID := recordTask + "-risk-1"
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: riskOrderID, TaskID: recordTask, Stage: core.StageRisk, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: riskOrderID, TaskID: recordTask, JobID: riskOrderID, Stage: core.StageRisk, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}))
+	enforceTask := seed(core.Task{State: core.TaskRunning, NextStage: core.StageSpec, PlanState: core.PlanNeeded, PolicyVersion: 1, SetupContract: policy(riskpolicy.ModeEnforce)})
+	_, err = plane.Perform(ctx, enforceTask, taskops.Command{
+		Kind: core.TaskGateSpec, RecoveryStage: core.StageImplement, ProjectStages: true,
+		PlanState: &taskops.PlanStateMove{To: core.PlanAwaitingApproval, Cause: core.PlanCausePlanSubmitted},
+		PlanVersion: &core.SpecVersion{Content: planRiskPlan("", ""), Acceptance: []byte(`[]`), Decomposition: []byte(`[]`), Agent: "codex", Model: "planner"},
+	})
+	requireOK(t, err)
+
 	if seededBodies < 1<<20 {
 		t.Fatalf("seeded %d open body bytes, want at least 1 MiB", seededBodies)
 	}
 
-	// Every list read states no body and no frozen policy snapshot, and the
-	// two spellings agree, for the count's filter, an inactive filter, and a
-	// narrowing filter. ListTasks is the whole-row read that still states both
-	// (req-operator-next-action AC-2.7; component-persistence, Database read
+	// List reads omit bodies but retain frozen policy. Both spellings agree for
+	// the count's filter, an inactive filter, and a narrowing filter; ListTasks
+	// remains a whole-row read (req-operator-next-action AC-2.7;
+	// component-persistence, Database read
 	// accounting).
 	openFilter := store.TaskFilter{States: attentionOpenStates}
 	listRows := func(name string, filter store.TaskFilter) (lean []core.Task) {
@@ -367,8 +386,8 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 			t.Fatalf("%s filter: ListTasksFilteredWithoutBody differs from ListTasksFiltered:\n lean %+v\n without %+v", name, lean, withoutBody)
 		}
 		for _, task := range lean {
-			if task.Body != "" || task.SetupContract.HasFrozenPolicy() || task.SetupContract.Risk != nil || task.SetupContract.Review.Seats != nil || task.SetupContract.MaxBounces != 0 {
-				t.Fatalf("%s filter: list read states task %s with a body (%d bytes) or a frozen policy", name, task.ID, len(task.Body))
+			if task.Body != "" {
+				t.Fatalf("%s filter: list read states task %s with a %d-byte body", name, task.ID, len(task.Body))
 			}
 		}
 		return lean
@@ -403,8 +422,29 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 		}
 		return open, candidates
 	}
-	fullOpen, fullCandidates := split(leanRows)
+	// The full side is the whole-row read, so a projection over body-free rows
+	// is compared with the projection over rows that still state everything
+	// (component-persistence, Read labels).
+	fullOpen, fullCandidates := split(whole)
 	leanOpen, leanCandidates := split(leanRows)
+	// The frozen policy the next-action projection reads stays on list rows, so
+	// a list view names the same action as the task detail (DEC-61).
+	policies := make(map[string]config.PolicyContract, len(whole))
+	for _, task := range whole {
+		policies[task.ID] = task.SetupContract
+	}
+	retained := 0
+	for _, task := range leanRows {
+		if !reflect.DeepEqual(task.SetupContract, policies[task.ID]) {
+			t.Fatalf("list read lost task %s's frozen policy: %+v, whole row %+v", task.ID, task.SetupContract, policies[task.ID])
+		}
+		if task.SetupContract.HasFrozenPolicy() {
+			retained++
+		}
+	}
+	if retained == 0 {
+		t.Fatal("no seeded task carries a frozen policy, so the retention assertion is vacuous")
+	}
 	if slices.ContainsFunc(leanCandidates, func(task core.Task) bool { return task.ID == anchor }) {
 		t.Fatalf("anchor %s lost its children in the body-free read", anchor)
 	}
@@ -420,6 +460,12 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 		if compact {
 			previous = was
 			continue
+		}
+		if action := got[enforceTask]; action.Details.ReasonCode != nextaction.PlanRiskRating {
+			t.Fatalf("enforcing task does not wait for plan risk: %+v", action)
+		}
+		if action := got[recordTask]; action.CurrentOrder == nil || action.CurrentOrder.ID != recordTask+"-implement-1" {
+			t.Fatalf("record task did not select its implement order: %+v", action)
 		}
 		for id, kind := range want {
 			if action, found := got[id]; !found || action.Kind != kind {

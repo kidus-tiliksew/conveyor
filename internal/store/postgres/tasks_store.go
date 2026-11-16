@@ -300,9 +300,9 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 }
 
 // ListTasksFiltered narrows the workspace with the shared Tasks/Board predicate
-// (AC-2.4) over the list column set, so a list read transfers no task body and
-// no frozen policy snapshot. ListTasks is the whole-row read that states them
-// (req-operator-next-action AC-2.7).
+// (AC-2.4) over the list column set, so a list read transfers no task body.
+// Frozen policy remains available to next-action projection; ListTasks is the
+// whole-row read (req-operator-next-action AC-2.7).
 func (s *Store) ListTasksFiltered(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFiltered")
 	if err := filter.Validate(); err != nil {

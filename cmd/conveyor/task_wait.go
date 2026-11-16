@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -408,6 +409,7 @@ func waitForTaskTarget(ctx context.Context, c *client, taskID string, target tas
 			poller.observe(false)
 			continue
 		}
+		changed := !current.sameAs(latest) || !reflect.DeepEqual(current.NextAction, latest.NextAction)
 		latest, lastErr = current, nil
 		reason, err := settle(current)
 		if err != nil {
@@ -416,7 +418,7 @@ func waitForTaskTarget(ctx context.Context, c *client, taskID string, target tas
 		if reason != "" {
 			return finish(current, reason, nil, false)
 		}
-		poller.observe(false)
+		poller.observe(changed)
 	}
 }
 
@@ -521,9 +523,11 @@ type taskWaitObservationView struct {
 // transfers no body and reports the observation the caller already has
 // (req-agent-skills AC-4.3).
 type taskWaitReader struct {
-	client *client
-	tag    string
-	last   taskWaitObservation
+	client        *client
+	tag           string
+	last          taskWaitObservation
+	mergeApproval bool
+	actionKind    string
 }
 
 // observeTaskWait reads the narrow observation and, at a gate, the latest plan
@@ -538,48 +542,65 @@ func (r *taskWaitReader) observe(ctx context.Context, taskID string, now func() 
 	if err != nil {
 		return taskWaitObservation{}, err
 	}
-	if notModified {
-		return r.last, nil
-	}
-	r.tag = tag
-	if strings.TrimSpace(view.TaskID) == "" {
-		return taskWaitObservation{}, fmt.Errorf("task read returned no task")
-	}
-	if view.State == "" {
-		return taskWaitObservation{}, fmt.Errorf("task read returned no state")
-	}
-	observation := taskWaitObservation{TaskID: view.TaskID, State: view.State, ObservedAt: now().UTC()}
-	action := view.NextAction
-	if withNextAction {
-		if action == nil || strings.TrimSpace(action.Actor) == "" {
-			return taskWaitObservation{}, fmt.Errorf("task read returned no next_action")
-		}
-		observation.NextAction = &taskWaitNextAction{Label: action.Label, Actor: action.Actor, Kind: action.Kind}
-		if action.CurrentOrder != nil {
-			observation.NextAction.Stage = action.CurrentOrder.Stage
-		}
-	}
+	var observation taskWaitObservation
+	var task core.Task
 	actionKind := ""
-	if action != nil {
-		actionKind = action.Kind
-	}
-	observation.ClaimableOrders = view.ClaimableOrders
-	if observation.ClaimableOrders == nil {
-		observation.ClaimableOrders = []taskWaitOrder{}
-	}
-	if len(observation.ClaimableOrders) > 0 {
-		first := observation.ClaimableOrders[0]
-		observation.NextOrder = &first
+	if notModified {
+		// The tag covers the database validation read, the route scope, and the
+		// UTC minute. It does not cover the gate's plan version or the live
+		// merge readiness, so the gate is read again and the observation is
+		// restamped with this poll's instant even though the body is unchanged
+		// (req-agent-skills AC-4.1, AC-4.3; component-cli-onboarding).
+		observation = r.last
+		observation.ObservedAt = now().UTC()
+		observation.PendingGate = nil
+		task = core.Task{ID: observation.TaskID, State: observation.State, MergeApproval: r.mergeApproval}
+		actionKind = r.actionKind
+	} else {
+		if strings.TrimSpace(view.TaskID) == "" {
+			return taskWaitObservation{}, fmt.Errorf("task read returned no task")
+		}
+		if view.State == "" {
+			return taskWaitObservation{}, fmt.Errorf("task read returned no state")
+		}
+		observation = taskWaitObservation{TaskID: view.TaskID, State: view.State, ObservedAt: now().UTC()}
+		action := view.NextAction
+		if withNextAction {
+			if action == nil || strings.TrimSpace(action.Actor) == "" {
+				return taskWaitObservation{}, fmt.Errorf("task read returned no next_action")
+			}
+			observation.NextAction = &taskWaitNextAction{Label: action.Label, Actor: action.Actor, Kind: action.Kind}
+			if action.CurrentOrder != nil {
+				observation.NextAction.Stage = action.CurrentOrder.Stage
+			}
+		}
+		if action != nil {
+			actionKind = action.Kind
+		}
+		observation.ClaimableOrders = view.ClaimableOrders
+		if observation.ClaimableOrders == nil {
+			observation.ClaimableOrders = []taskWaitOrder{}
+		}
+		if len(observation.ClaimableOrders) > 0 {
+			first := observation.ClaimableOrders[0]
+			observation.NextOrder = &first
+		}
+		task = core.Task{ID: view.TaskID, State: view.State, MergeApproval: view.MergeApproval}
 	}
 	// A pending plan revision is read even beside a claimable order, so a new
 	// plan version ends the wait wherever the order stands (AC-4.1).
-	planRevision := view.State == core.TaskAwaiting && actionKind == nextaction.KindPlanRevision
+	planRevision := task.State == core.TaskAwaiting && actionKind == nextaction.KindPlanRevision
 	if observation.NextOrder == nil || planRevision {
-		gate, err := r.client.taskWaitGate(ctx, core.Task{ID: view.TaskID, State: view.State, MergeApproval: view.MergeApproval}, actionKind)
+		gate, err := r.client.taskWaitGate(ctx, task, actionKind)
 		if err != nil {
 			return taskWaitObservation{}, err
 		}
 		observation.PendingGate = gate
+	}
+	if !notModified {
+		r.tag = tag
+		r.mergeApproval = view.MergeApproval
+		r.actionKind = actionKind
 	}
 	r.last = observation
 	return observation, nil
