@@ -94,7 +94,8 @@ type kitVerifier struct {
 	lost   bool
 	// now is the verifier's clock; a test replaces it to advance the polling
 	// schedule without waiting.
-	now func() time.Time
+	now             func() time.Time
+	observationWait func(context.Context) error
 	// lastRenew and renewInterval schedule the claim renewal, and
 	// nextContext, contextInterval, contextDigest and lastContext schedule the
 	// verification-context read (component-verification-runner, Polling

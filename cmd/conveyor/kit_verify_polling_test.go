@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
@@ -165,5 +168,62 @@ func TestKitLiveNoticesExpiredLeaseWithoutAServerCall(t *testing.T) {
 	afterRenew, afterContexts := p.calls()
 	if afterRenew != renew || afterContexts != contexts {
 		t.Fatalf("the expired lease made %d renewals and %d context reads, want none", afterRenew-renew, afterContexts-contexts)
+	}
+}
+
+func TestKitObservationAcceptsEvidenceAtDeadline(t *testing.T) {
+	e := verification.Exercise{ID: "observe", Kind: "observation", TimeoutSeconds: 1, EvidenceOutputs: []verification.EvidenceOutput{{Type: "state_observation", MinimumItems: 1}}}
+	f := newKitExecutionFixture(t, e)
+	f.onContext = func(calls int) {
+		if calls == 2 {
+			f.snapshot.Evidence = append(f.snapshot.Evidence, store.VerificationEvidenceRecord{Envelope: core.VerificationEvidence{Type: "state_observation", RunID: "run", Subject: f.snapshot.Attempts[0].Subject}})
+		}
+	}
+	if err := f.v.observe(t.Context(), e, "run", "grant"); err != nil {
+		t.Fatal(err)
+	}
+	if f.outcome != "succeeded" {
+		t.Fatalf("outcome %q, want succeeded", f.outcome)
+	}
+}
+
+func TestKitObservationPollingKeepsProgressAndCallsBounded(t *testing.T) {
+	p := newPollingFixture(t)
+	e := verification.Exercise{ID: "check", Kind: "observation", TimeoutSeconds: 30, EvidenceOutputs: []verification.EvidenceOutput{{Type: "state_observation", MinimumItems: 1}}}
+	p.snapshot.Obligations[0].Contract = e
+	p.output.WriteString("existing progress\n")
+	var readTimes []time.Time
+	p.onContext = func(int) { readTimes = append(readTimes, p.now()) }
+	ticks := 0
+	p.v.observationWait = func(ctx context.Context) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		p.advance(time.Second)
+		ticks++
+		if ticks == 600 {
+			p.kitExecutionFixture.mu.Lock()
+			p.snapshot.Evidence = append(p.snapshot.Evidence, store.VerificationEvidenceRecord{Envelope: core.VerificationEvidence{Type: "state_observation", RunID: "run", Subject: p.snapshot.Attempts[0].Subject}})
+			p.kitExecutionFixture.mu.Unlock()
+		}
+		if ticks > 620 {
+			t.Fatal("observation missed completion evidence")
+		}
+		return nil
+	}
+	if err := p.v.observe(t.Context(), e, "run", "grant"); err != nil {
+		t.Fatal(err)
+	}
+	renew, contexts := p.calls()
+	if renew > 3 || contexts < 40 || contexts > 122 {
+		t.Fatalf("ten-minute observation: %d renewals, %d context reads", renew, contexts)
+	}
+	for i := 1; i < len(readTimes)-1; i++ {
+		if d := readTimes[i].Sub(readTimes[i-1]); d < 5*time.Second || d > 15*time.Second {
+			t.Fatalf("context read interval %s outside 5–15 seconds", d)
+		}
+	}
+	if got := p.output.String(); got != "existing progress\n" {
+		t.Fatalf("observation changed progress output: %q", got)
 	}
 }

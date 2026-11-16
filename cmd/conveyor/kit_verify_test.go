@@ -68,6 +68,7 @@ type kitExecutionFixture struct {
 	// loss detection (kit_verify_polling_test.go).
 	contextCalls int
 	contextFails bool
+	onContext    func(int)
 }
 
 func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecutionFixture {
@@ -168,6 +169,9 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 			// The real server answers every claim-bound call, this one
 			// included, only while the claim is held.
 			f.contextCalls++
+			if f.onContext != nil {
+				f.onContext(f.contextCalls)
+			}
 			failed = f.contextFails || f.loseClaim
 			result = f.snapshot
 		case "submit_verification_evidence":

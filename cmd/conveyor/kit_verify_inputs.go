@@ -178,9 +178,15 @@ func (v *kitVerifier) observe(ctx context.Context, e verification.Exercise, runI
 			state, explanation = "succeeded", ""
 			break
 		}
-		select {
-		case <-waitCtx.Done():
-		case <-ticker.C:
+		if v.observationWait != nil {
+			if err := v.observationWait(waitCtx); err != nil {
+				return err
+			}
+		} else {
+			select {
+			case <-waitCtx.Done():
+			case <-ticker.C:
+			}
 		}
 		if waitCtx.Err() != nil {
 			break
@@ -190,6 +196,11 @@ func (v *kitVerifier) observe(ctx context.Context, e verification.Exercise, runI
 	defer finishCancel()
 	if err := v.liveFresh(finishCtx, grantID); err != nil {
 		return err
+	}
+	if state != "succeeded" {
+		if snapshot, ok := v.freshContext(); ok && store.ValidateVerificationSuccess(snapshot, runID, nil) == nil {
+			state, explanation = "succeeded", ""
+		}
 	}
 	if err := v.rpc.call(finishCtx, "report_verification_outcome", workorder.VerificationOutcomeRequest{ContextID: v.snapshot.Contexts[0].ID, RunID: runID, State: state, Explanation: explanation}, nil); err != nil {
 		return err

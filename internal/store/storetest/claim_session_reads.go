@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -634,8 +635,20 @@ func RunRenewalReads(t *testing.T, x Fixture, scale ClaimSessionScale, renew Ren
 	if !renewed.ExecutionDeadline.Equal(before.ExecutionDeadline) || renewed.ExecutionDeadline.IsZero() || !renewed.LeaseExpiresAt.Equal(before.ExecutionDeadline) || renewed.AttemptID != before.AttemptID || renewed.State != core.WorkOrderClaimed {
 		t.Fatalf("renewal = lease %s deadline %s attempt %s state %s; want the lease capped at the fixed deadline %s and attempt %s", renewed.LeaseExpiresAt, renewed.ExecutionDeadline, renewed.AttemptID, renewed.State, before.ExecutionDeadline, before.AttemptID)
 	}
-	short, err := renewThrough(ctx, identity(live.SessionID), live.ID, time.Minute)
+	beforeShort, err := st.GetWorkOrder(ctx, live.ID)
 	requireOK(t, err)
+	eventsBefore, err := st.ListEvents(ctx, live.TaskID)
+	requireOK(t, err)
+	_ = drain()
+	recorder.Reset()
+	short, err := renewThrough(dbmetrics.WithReadLabel(ctx, "renewal-success"), identity(live.SessionID), live.ID, time.Minute)
+	requireOK(t, err)
+	if recorder.SnapshotBytes() != 0 || recorder.Calls("ListWorkOrders") != 0 {
+		t.Fatalf("successful renewal decoded %d snapshot bytes and made %d list calls", recorder.SnapshotBytes(), recorder.Calls("ListWorkOrders"))
+	}
+	if bytes := drain(); bytes != nil && bytes["renewal-success"] >= ClaimSessionSnapshotBytes {
+		t.Fatalf("successful renewal received %d bytes", bytes["renewal-success"])
+	}
 	if !short.LeaseExpiresAt.Before(before.ExecutionDeadline) || !short.ExecutionDeadline.Equal(before.ExecutionDeadline) {
 		t.Fatalf("one-minute renewal = lease %s deadline %s, want a lease before the fixed deadline %s", short.LeaseExpiresAt, short.ExecutionDeadline, before.ExecutionDeadline)
 	}
@@ -646,6 +659,33 @@ func RunRenewalReads(t *testing.T, x Fixture, scale ClaimSessionScale, renew Ren
 	}
 	if !stored.UpdatedAt.Equal(short.UpdatedAt) {
 		t.Fatalf("stored renewal update time %s, want returned %s", stored.UpdatedAt, short.UpdatedAt)
+	}
+	beforeShort.LeaseExpiresAt, stored.LeaseExpiresAt = time.Time{}, time.Time{}
+	beforeShort.UpdatedAt, stored.UpdatedAt = time.Time{}, time.Time{}
+	if !reflect.DeepEqual(beforeShort, stored) {
+		t.Fatal("renewal changed fields other than lease and update times")
+	}
+	eventsAfter, err := st.ListEvents(ctx, live.TaskID)
+	requireOK(t, err)
+	if len(eventsAfter) < len(eventsBefore) {
+		t.Fatal("renewal removed earlier events")
+	}
+	var renewals int
+	for _, event := range eventsAfter[len(eventsBefore):] {
+		if event.Kind != "work_order.lease_renewed" {
+			continue
+		}
+		renewals++
+		var payload struct {
+			LeaseExpiresAt time.Time `json:"lease_expires_at"`
+		}
+		requireOK(t, json.Unmarshal(event.Payload, &payload))
+		if !payload.LeaseExpiresAt.Equal(short.LeaseExpiresAt) {
+			t.Fatalf("renewal event lease %s, want %s", payload.LeaseExpiresAt, short.LeaseExpiresAt)
+		}
+	}
+	if renewals != 1 {
+		t.Fatalf("got %d renewal events, want one", renewals)
 	}
 	if stored.GovernanceSnapshot == nil || len(stored.GovernanceSnapshot.Designs[0].Content) != ClaimSessionSnapshotBytes || len(stored.ServedRequirementSnapshot) != 1 {
 		t.Fatal("renewal lost the order's pinned snapshots")
