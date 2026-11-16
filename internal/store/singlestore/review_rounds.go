@@ -99,7 +99,7 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 		if err := insertReviewRoundSeatsTx(ctx, tx, seats.Record(id, round, time.Now().UTC())); err != nil {
 			return err
 		}
-		return taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "review.round_created", Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(round, seats))})
+		return taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "review.round_created", Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(round, seats, orders))})
 	})
 }
 func (s *Store) insertReviewMemberTx(ctx context.Context, tx *sql.Tx, j core.Job, o core.WorkOrder) error {
@@ -732,7 +732,7 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		if err = insertReviewRoundSeatsTx(ctx, tx, seats.Record(r.TaskID, next, now)); err != nil {
 			return err
 		}
-		createdPayload := store.ReviewRoundCreatedPayload(next, seats)
+		createdPayload := store.ReviewRoundCreatedPayload(next, seats, orders)
 		createdPayload["retry_request_id"] = r.RequestID
 		if err = taskEvent(ctx, tx, core.Event{TaskID: r.TaskID, Kind: "review.round_created", At: now, Payload: core.JSONPayload(createdPayload)}); err != nil {
 			return err

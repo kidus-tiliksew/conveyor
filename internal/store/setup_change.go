@@ -346,7 +346,7 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 	}
 	if seatRecord != nil {
 		m.putReviewRoundSeatsLocked(task.Workspace, *seatRecord)
-		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "review.round_created", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(ReviewRoundCreatedPayload(seatRecord.ReviewRound, *request.ReviewRoundSeats)), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "review.round_created", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(ReviewRoundCreatedPayload(seatRecord.ReviewRound, *request.ReviewRoundSeats, request.NewWorkOrders)), At: now})
 	}
 	payload := setupChangePayload(workspace, actor, priorSetup, request, result)
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.setup.changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(payload), At: now})

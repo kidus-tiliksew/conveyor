@@ -11,11 +11,16 @@ import (
 
 // Review seat metadata of the bounded task-detail read
 // (feature-review-seat-minimum RS-7, RS-3; req-review-gates-evidence AC-2.7,
-// AC-2.8; component-http-api, Bounded detail view).
+// AC-2.8; component-http-api, Bounded detail view). Each round also reports
+// its review scope and baseline from its own seat orders
+// (feature-delta-review-rounds DR-7; req-review-gates-evidence AC-12.7).
 
 // taskReviewSeatMetadata is one review round's seat count beside the task's
 // minimum. A recorded round reports its stored record; a legacy round reports
-// its non-superseded seat orders with source minimum.
+// its non-superseded seat orders with source minimum. ReviewScope and
+// BaselineSHA come from the round's own seat orders through
+// store.ReviewRoundScope: an empty-scope or pre-scope round reads as full with
+// no baseline.
 type taskReviewSeatMetadata struct {
 	ReviewRound      int    `json:"review_round"`
 	SeatCount        int    `json:"seat_count"`
@@ -24,6 +29,8 @@ type taskReviewSeatMetadata struct {
 	PlannedSeatCount *int   `json:"planned_seat_count,omitempty"`
 	CarriedFromRound *int   `json:"carried_from_round,omitempty"`
 	Superseded       bool   `json:"superseded,omitempty"`
+	ReviewScope      string `json:"review_scope"`
+	BaselineSHA      string `json:"baseline_sha"`
 }
 
 // taskReviewRoundSeats keys seat metadata by positive review round and, for
@@ -116,13 +123,19 @@ func projectReviewRoundSeats(minimum int, planned *int, orders []core.WorkOrder,
 	}
 	live := map[int]int{}
 	retired := map[int]bool{}
+	// A round's scope reads from its non-superseded seat orders, or from all
+	// of its orders when every seat was superseded, so a historical round
+	// never takes another round's scope.
+	liveOrders := map[int][]core.WorkOrder{}
+	retiredOrders := map[int][]core.WorkOrder{}
 	for _, order := range orders {
 		if order.Stage != core.StageReview {
 			continue
 		}
 		if order.ReviewRound <= 0 {
+			scope, baseline := store.ReviewRoundScope([]core.WorkOrder{order})
 			entry := taskReviewSeatMetadata{SeatCount: 1, SeatCountSource: store.ReviewSeatSourceMinimum,
-				MinimumSeatCount: minimum, PlannedSeatCount: copyIntPointer(planned)}
+				MinimumSeatCount: minimum, PlannedSeatCount: copyIntPointer(planned), ReviewScope: scope, BaselineSHA: baseline}
 			if superseded[order.ID] {
 				entry.SeatCount, entry.Superseded = 0, true
 			}
@@ -132,13 +145,20 @@ func projectReviewRoundSeats(minimum int, planned *int, orders []core.WorkOrder,
 		exists[order.ReviewRound] = true
 		if superseded[order.ID] {
 			retired[order.ReviewRound] = true
+			retiredOrders[order.ReviewRound] = append(retiredOrders[order.ReviewRound], order)
 		} else {
 			live[order.ReviewRound]++
+			liveOrders[order.ReviewRound] = append(liveOrders[order.ReviewRound], order)
 		}
 	}
 	latest := 0
 	for round := range exists {
 		entry := taskReviewSeatMetadata{ReviewRound: round, PlannedSeatCount: copyIntPointer(planned), Superseded: retired[round]}
+		members := liveOrders[round]
+		if len(members) == 0 {
+			members = retiredOrders[round]
+		}
+		entry.ReviewScope, entry.BaselineSHA = store.ReviewRoundScope(members)
 		if record, ok := recorded[round]; ok {
 			entry.SeatCount, entry.SeatCountSource, entry.MinimumSeatCount = record.SeatCount, record.SeatCountSource, record.MinimumSeatCount
 		} else {

@@ -1931,7 +1931,7 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 			if err = insertReviewRoundSeatsTx(ctx, tx, r.ReviewRoundSeats.Record(t.ID, r.ResultingReviewRound, now)); err != nil {
 				return err
 			}
-			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "review.round_created", At: now, Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(r.ResultingReviewRound, *r.ReviewRoundSeats))}); err != nil {
+			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "review.round_created", At: now, Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(r.ResultingReviewRound, *r.ReviewRoundSeats, r.NewWorkOrders))}); err != nil {
 				return err
 			}
 		}
