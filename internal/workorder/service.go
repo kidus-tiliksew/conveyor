@@ -1197,7 +1197,10 @@ func (s *Service) planRevisionContextForOrder(ctx context.Context, order core.Wo
 	if direction != "" {
 		contract += "\n# Operator direction\n\n" + direction + "\n"
 	}
-	prior, getErr := s.Store.GetWorkOrder(ctx, request.WorkOrderID)
+	// The historical contract needs only progress and the last attempt, so it
+	// reads the snapshot-free order (component-work-orders, Snapshot-free fold
+	// reads).
+	prior, getErr := s.Store.GetWorkOrderWithoutSnapshots(ctx, request.WorkOrderID)
 	if getErr != nil {
 		return nil, "", getErr
 	}
@@ -1920,7 +1923,10 @@ func (s *Service) reviewRoundResult(ctx context.Context, taskID string, round in
 }
 
 func (s *Service) enforce(ctx context.Context, order core.WorkOrder) error {
-	current, err := s.Store.GetWorkOrder(ctx, order.ID)
+	// The re-check reads only the stored state, so it selects the snapshot-free
+	// order and no authority snapshot leaves the database
+	// (component-work-orders, Snapshot-free fold reads).
+	current, err := s.Store.GetWorkOrderWithoutSnapshots(ctx, order.ID)
 	if err != nil {
 		return err
 	}
