@@ -2766,6 +2766,20 @@ func TestInboxReadsActivityMarkersOnce(t *testing.T) {
 	}
 }
 
+// The handler reads markers for the selected inbox page once. The memory
+// store's internal attention projection is outside this wrapper's count.
+func TestCallerInboxReadsPageActivityMarkersOnce(t *testing.T) {
+	observed := &observedStore{Store: store.NewMemory()}
+	server, _ := ownedRoutesFixture(t, observed)
+	response := ownedRouteGet(t, server, withQuery("/v1/inbox", "limit=2"))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	if observed.listActivityMarkersCalls != 1 {
+		t.Fatalf("page marker reads = %d, want 1", observed.listActivityMarkersCalls)
+	}
+}
+
 func TestActivityDefaultsToBoundedPageAndSupportsExplicitPaging(t *testing.T) {
 	base := store.NewMemory()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
