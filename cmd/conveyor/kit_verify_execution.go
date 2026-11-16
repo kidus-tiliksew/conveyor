@@ -191,7 +191,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	if v.ui != nil {
 		origins = append(origins, fmt.Sprintf("http://127.0.0.1:%d", v.ui.Port))
 	}
-	relayCheckout, relayLive := v.checkCheckout, v.live
+	relayCheckout, relayLive := v.checkCheckout, v.liveFresh
 	if v.relayCheckout != nil {
 		relayCheckout = v.relayCheckout
 	}
@@ -304,7 +304,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	// Register the entire closed operation set before any child starts (component-verification-runner).
 	// A child that exits without signalling must still leave durable uncertainty.
 	for _, op := range e.Operations {
-		if err := v.live(launchCtx, grantID); err != nil {
+		if err := v.liveFresh(launchCtx, grantID); err != nil {
 			return err
 		}
 		key := fmt.Sprintf("%x", sha256.Sum256(core.JSONPayload([]any{v.task.ID, core.VerificationOperationSubject(subject), op.ID, op.TargetBinding, vc.Revisions})))
@@ -364,7 +364,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			}
 		}
 	}
-	if err := v.live(launchCtx, grantID); err != nil {
+	if err := v.liveFresh(launchCtx, grantID); err != nil {
 		return err
 	}
 	if err := launchCtx.Err(); err != nil {
@@ -501,7 +501,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		return fmt.Errorf("evidence retained in %s; upload unavailable: %w", spoolDir, err)
 	}
 	stopMonitoring()
-	if err = v.live(ctx, grantID); err != nil {
+	if err = v.liveFresh(ctx, grantID); err != nil {
 		return err
 	}
 	state, explanation := "succeeded", ""
@@ -573,7 +573,7 @@ func (v *kitVerifier) prelaunchBlocked(ctx context.Context, dir, runID, grantID,
 	if err := v.checkCheckout(ctx); err != nil {
 		return fmt.Errorf("%s; outcome not reported: %w", diagnostic, err)
 	}
-	if err := v.live(ctx, grantID); err != nil {
+	if err := v.liveFresh(ctx, grantID); err != nil {
 		return fmt.Errorf("%s; outcome not reported: %w", diagnostic, err)
 	}
 	if err := ctx.Err(); err != nil {

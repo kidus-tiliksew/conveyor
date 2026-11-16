@@ -134,7 +134,7 @@ func (v *kitVerifier) resumeSpool(ctx context.Context, root string, attempt stor
 	} else if err != nil {
 		return err
 	}
-	spool := verification.EvidenceSpool{Directory: dir, Limit: 8 << 20, Check: func(ctx context.Context) error { return v.live(ctx, attempt.GrantID) }}
+	spool := verification.EvidenceSpool{Directory: dir, Limit: 8 << 20, Check: func(ctx context.Context) error { return v.liveFresh(ctx, attempt.GrantID) }}
 	return spool.Flush(ctx, func(ctx context.Context, b []byte) error {
 		var batch workorder.VerificationEvidenceRequest
 		if err := json.Unmarshal(b, &batch); err != nil {
@@ -167,12 +167,12 @@ func (v *kitVerifier) observe(ctx context.Context, e verification.Exercise, runI
 			}
 			return err
 		}
-		var snapshot store.VerificationSnapshot
-		if err := v.rpc.call(waitCtx, "get_verification_context", workorder.VerificationContextRequest{ContextID: v.snapshot.Contexts[0].ID}, &snapshot); err != nil {
-			if waitCtx.Err() != nil {
-				break
-			}
-			return err
+		// The liveness check reads the context on its own schedule; the
+		// observation reuses that value instead of asking a second time per
+		// tick (component-verification-runner, Polling cadence).
+		snapshot, ok := v.freshContext()
+		if !ok {
+			return fmt.Errorf("verification context unavailable")
 		}
 		if store.ValidateVerificationSuccess(snapshot, runID, nil) == nil {
 			state, explanation = "succeeded", ""
@@ -188,7 +188,7 @@ func (v *kitVerifier) observe(ctx context.Context, e verification.Exercise, runI
 	}
 	finishCtx, finishCancel := v.finishContext(ctx)
 	defer finishCancel()
-	if err := v.live(finishCtx, grantID); err != nil {
+	if err := v.liveFresh(finishCtx, grantID); err != nil {
 		return err
 	}
 	if err := v.rpc.call(finishCtx, "report_verification_outcome", workorder.VerificationOutcomeRequest{ContextID: v.snapshot.Contexts[0].ID, RunID: runID, State: state, Explanation: explanation}, nil); err != nil {

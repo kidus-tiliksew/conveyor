@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
@@ -228,6 +229,9 @@ func TestKitRelayCancelTransientRenewalFailure(t *testing.T) {
 		f.mu.Lock()
 		f.offline = true
 		f.mu.Unlock()
+		f.v.mu.Lock()
+		f.v.lastRenew = time.Time{}
+		f.v.mu.Unlock()
 		err := f.v.live(ctx, grantID)
 		f.mu.Lock()
 		f.offline = false
@@ -318,6 +322,9 @@ func TestKitRelayCancelRefusedRenewal(t *testing.T) {
 		f.mu.Lock()
 		f.loseClaim = true
 		f.mu.Unlock()
+		f.v.mu.Lock()
+		f.v.lastRenew = time.Time{}
+		f.v.mu.Unlock()
 		err := f.v.live(ctx, grantID)
 		firstErr <- err
 		return err

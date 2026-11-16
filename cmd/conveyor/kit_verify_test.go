@@ -63,6 +63,11 @@ type kitExecutionFixture struct {
 	// startRefusal, when set, refuses start_verification_attempt with this
 	// raw MCP error text.
 	startRefusal string
+	// contextCalls counts verification-context reads, and contextFails answers
+	// them as a lost claim, so a test can prove the polling cadence and its
+	// loss detection (kit_verify_polling_test.go).
+	contextCalls int
+	contextFails bool
 }
 
 func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecutionFixture {
@@ -160,6 +165,10 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 		case "report_progress":
 			result = f.order
 		case "get_verification_context":
+			// The real server answers every claim-bound call, this one
+			// included, only while the claim is held.
+			f.contextCalls++
+			failed = f.contextFails || f.loseClaim
 			result = f.snapshot
 		case "submit_verification_evidence":
 			if f.onEvidence != nil {
@@ -571,7 +580,7 @@ func TestKitRunnerRevocationAndExpiryDuringRequest(t *testing.T) {
 			environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
 			started := time.Now()
 			err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, environment, nil)
-			if err == nil || time.Since(started) > 4*time.Second {
+			if err == nil || time.Since(started) > kitContextPollMax+4*time.Second {
 				t.Fatalf("teardown %v after %s", err, time.Since(started))
 			}
 			if f.uploads != 0 || f.outcome != "" {

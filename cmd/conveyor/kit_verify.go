@@ -92,6 +92,20 @@ type kitVerifier struct {
 	mu     sync.Mutex
 	liveMu sync.Mutex
 	lost   bool
+	// now is the verifier's clock; a test replaces it to advance the polling
+	// schedule without waiting.
+	now func() time.Time
+	// lastRenew and renewInterval schedule the claim renewal, and
+	// nextContext, contextInterval, contextDigest and lastContext schedule the
+	// verification-context read (component-verification-runner, Polling
+	// cadence).
+	lastRenew       time.Time
+	renewInterval   time.Duration
+	nextContext     time.Time
+	contextInterval time.Duration
+	contextDigest   [sha256.Size]byte
+	lastContext     store.VerificationSnapshot
+	hasContext      bool
 }
 
 func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerifyOptions, output io.Writer) error {
@@ -317,14 +331,92 @@ func normalizeKitRemote(s string) string {
 	return strings.TrimSuffix(s, ".git")
 }
 
+// kitContextPollStart and kitContextPollMax bound how often the verifier reads
+// the verification context while nothing changes: a start interval that doubles
+// up to the maximum, and a change that resets it to the start
+// (component-verification-runner, Polling cadence).
+const (
+	kitContextPollStart = 5 * time.Second
+	kitContextPollMax   = 15 * time.Second
+	// kitRenewShare is the share of the granted lease after which the claim is
+	// renewed. A failed renewal keeps the schedule unchanged, so the next check
+	// retries it instead of waiting another share.
+	kitRenewShare = 3
+	// kitRenewIntervalFloor and kitRenewIntervalCeiling bound the derived
+	// renewal interval so a capped lease near the execution deadline cannot
+	// collapse it.
+	kitRenewIntervalFloor   = 100 * time.Millisecond
+	kitRenewIntervalCeiling = 5 * time.Minute
+)
+
+// live is the periodic liveness check. It renews the claim at most once per
+// lease share and re-reads the verification context on its own backoff, so a
+// long-running observation no longer asks the server once per second
+// (component-verification-runner, Polling cadence).
 func (v *kitVerifier) live(ctx context.Context, grantID string) error {
+	return v.checkLive(ctx, grantID, false)
+}
+
+// liveFresh is live at a point where the run needs the current server state:
+// before it starts, after its own writes, and before it reports an outcome. It
+// always reads the verification context and renews the claim when the lease
+// share elapsed.
+func (v *kitVerifier) liveFresh(ctx context.Context, grantID string) error {
+	return v.checkLive(ctx, grantID, true)
+}
+
+func (v *kitVerifier) checkLive(ctx context.Context, grantID string, fresh bool) error {
 	v.liveMu.Lock()
 	defer v.liveMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := v.cachedLive(); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithDeadline(ctx, v.claimDeadline())
 	defer cancel()
+	now := v.clock()
+	if v.renewDue(now) {
+		if err := v.renew(ctx, now); err != nil {
+			return err
+		}
+	}
+	if !fresh && now.Before(v.contextDue()) {
+		return nil
+	}
+	return v.readContext(ctx, grantID, now)
+}
+
+// clock is the verifier's time source; a test replaces it to advance the
+// polling schedule without waiting.
+func (v *kitVerifier) clock() time.Time {
+	if v.now != nil {
+		return v.now()
+	}
+	return time.Now()
+}
+
+// renewDue reports whether a share of the granted lease elapsed since the last
+// successful renewal. The first check always renews, which also learns the
+// lease length.
+func (v *kitVerifier) renewDue(now time.Time) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.lastRenew.IsZero() || v.renewInterval <= 0 {
+		return true
+	}
+	return !now.Before(v.lastRenew.Add(v.renewInterval))
+}
+
+// contextDue is the earliest time the next verification-context read is due.
+func (v *kitVerifier) contextDue() time.Time {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.nextContext
+}
+
+func (v *kitVerifier) renew(ctx context.Context, now time.Time) error {
 	var order core.WorkOrder
 	if err := v.rpc.call(ctx, "renew_work_order", nil, &order); err != nil {
 		if ctx.Err() == nil && !transientWorkerError(err) {
@@ -332,13 +424,34 @@ func (v *kitVerifier) live(ctx context.Context, grantID string) error {
 		}
 		return err
 	}
-	if order.State != core.WorkOrderClaimed || order.SessionID != v.rpc.session || order.AttemptID != v.order.AttemptID || !order.LeaseExpiresAt.After(time.Now()) {
+	if order.State != core.WorkOrderClaimed || order.SessionID != v.rpc.session || order.AttemptID != v.order.AttemptID || !order.LeaseExpiresAt.After(now) {
 		v.markLost()
 		return fmt.Errorf("verification claim changed")
 	}
 	v.mu.Lock()
 	v.order.LeaseExpiresAt = order.LeaseExpiresAt
+	v.lastRenew = now
+	if v.renewInterval <= 0 {
+		v.renewInterval = leaseRenewInterval(order.LeaseExpiresAt.Sub(now))
+	}
 	v.mu.Unlock()
+	return nil
+}
+
+// leaseRenewInterval is a share of the granted lease, bounded so a lease capped
+// at the execution deadline still leaves room for one renewal before it ends.
+func leaseRenewInterval(lease time.Duration) time.Duration {
+	interval := lease / kitRenewShare
+	if interval < kitRenewIntervalFloor {
+		return kitRenewIntervalFloor
+	}
+	if interval > kitRenewIntervalCeiling {
+		return kitRenewIntervalCeiling
+	}
+	return interval
+}
+
+func (v *kitVerifier) readContext(ctx context.Context, grantID string, now time.Time) error {
 	var snapshot store.VerificationSnapshot
 	if err := v.rpc.call(ctx, "get_verification_context", workorder.VerificationContextRequest{ContextID: v.snapshot.Contexts[0].ID}, &snapshot); err != nil {
 		if ctx.Err() == nil && !transientWorkerError(err) {
@@ -352,7 +465,37 @@ func (v *kitVerifier) live(ctx context.Context, grantID string) error {
 			return fmt.Errorf("verification permission grant revoked")
 		}
 	}
+	v.recordContext(snapshot, now)
 	return nil
+}
+
+// recordContext keeps the last read context for the observation loop and
+// schedules the next read: unchanged content doubles the interval up to the
+// maximum, a change resets it to the start.
+func (v *kitVerifier) recordContext(snapshot store.VerificationSnapshot, now time.Time) {
+	digest := sha256.Sum256(core.JSONPayload(snapshot))
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if !v.hasContext || digest != v.contextDigest {
+		v.contextInterval = kitContextPollStart
+		v.contextDigest = digest
+		v.hasContext = true
+	} else if v.contextInterval < kitContextPollMax {
+		v.contextInterval *= 2
+		if v.contextInterval > kitContextPollMax {
+			v.contextInterval = kitContextPollMax
+		}
+	}
+	v.lastContext = snapshot
+	v.nextContext = now.Add(v.contextInterval)
+}
+
+// freshContext is the last verification context this verifier read, so the
+// observation loop never repeats the read its own liveness check just made.
+func (v *kitVerifier) freshContext() (store.VerificationSnapshot, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.lastContext, v.hasContext
 }
 
 // cachedLive is the claim state known without a server call: no recorded
@@ -485,7 +628,8 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 		// component-verification-runner: name the exact operator act that opens the grant window.
 		return &kitAdmissionError{fmt.Errorf("blocked: missing work-order authorization for exercise %s; required actions: %s; %s", e.ID, kitRequiredActions(e), kitMissingGrantRemedy(v.order.ID, vc.ID))}
 	}
-	if err := v.live(ctx, grant.ID); err != nil {
+	// Admission needs the current server state: this is the run's start.
+	if err := v.liveFresh(ctx, grant.ID); err != nil {
 		return err
 	}
 	// Checkout content cannot supply local authority: kit_permissions from a
