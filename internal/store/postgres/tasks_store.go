@@ -433,7 +433,7 @@ func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperatio
 	if err = s.hydrateGitHubLifecyclesBatch(ctx, page.Tasks); err != nil {
 		return store.TaskOperationsPage{}, err
 	}
-	if err = s.taskOperationsDetails(ctx, &page, filter.WorkspaceID, taskIDs); err != nil {
+	if err = s.taskOperationsDetails(ctx, &page, filter.WorkspaceID, taskIDs, query.IncludePlanText); err != nil {
 		return store.TaskOperationsPage{}, err
 	}
 	return page, nil
@@ -441,7 +441,7 @@ func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperatio
 
 // taskOperationsDetails reads the operations events, latest plans, and legacy
 // plan-gate marks of the given tasks into page for ListTaskOperations.
-func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOperationsPage, workspaceID string, taskIDs []string) error {
+func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOperationsPage, workspaceID string, taskIDs []string, includePlanText bool) error {
 	events, err := s.queries.ListTaskOperationsEvents(ctx, db.ListTaskOperationsEventsParams{WorkspaceID: workspaceID, TaskIds: taskIDs})
 	if err != nil {
 		return err
@@ -450,12 +450,16 @@ func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOpera
 		converted := eventFromDB(event)
 		page.Events[converted.TaskID] = append(page.Events[converted.TaskID], converted)
 	}
-	plans, err := s.queries.ListTaskOperationsLatestPlans(ctx, db.ListTaskOperationsLatestPlansParams{WorkspaceID: workspaceID, TaskIds: taskIDs})
-	if err != nil {
+	if includePlanText {
+		plans, err := s.queries.ListTaskOperationsLatestPlans(ctx, db.ListTaskOperationsLatestPlansParams{WorkspaceID: workspaceID, TaskIds: taskIDs})
+		if err != nil {
+			return err
+		}
+		for _, plan := range plans {
+			page.Plans[plan.TaskID] = specFromDB(plan)
+		}
+	} else if err := s.taskOperationsPlanMetadata(ctx, page, workspaceID, taskIDs); err != nil {
 		return err
-	}
-	for _, plan := range plans {
-		page.Plans[plan.TaskID] = specFromDB(plan)
 	}
 	legacyRows, err := s.boundary.Query(ctx, `SELECT task_id,spec_version FROM legacy_spec_gate_versions
 		WHERE workspace_id=$1 AND task_id=ANY($2::text[])`, workspaceID, taskIDs)
@@ -476,6 +480,33 @@ func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOpera
 		}
 	}
 	return legacyRows.Err()
+}
+
+// taskOperationsPlanMetadata reads the page's latest plan versions without
+// their text: the Tasks projection renders plan status from version and
+// approval alone (component-persistence, Database read accounting).
+func (s *Store) taskOperationsPlanMetadata(ctx context.Context, page *store.TaskOperationsPage, workspaceID string, taskIDs []string) error {
+	rows, err := s.boundary.Query(ctx, `SELECT DISTINCT ON (s.task_id) s.task_id,s.version,s.approved,s.created_at,s.approved_at
+		FROM task_specs s
+		JOIN tasks t ON t.id = s.task_id
+		WHERE t.workspace_id=$1 AND s.task_id=ANY($2::text[])
+		ORDER BY s.task_id, s.version DESC`, workspaceID, taskIDs)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var plan core.SpecVersion
+		var approvedAt *time.Time
+		if err = rows.Scan(&plan.TaskID, &plan.Version, &plan.Approved, &plan.CreatedAt, &approvedAt); err != nil {
+			return err
+		}
+		if approvedAt != nil {
+			plan.ApprovedAt = *approvedAt
+		}
+		page.Plans[plan.TaskID] = plan
+	}
+	return rows.Err()
 }
 
 func (s *Store) ListTaskPage(ctx context.Context, query store.TaskOperationsQuery) (store.TaskPage, error) {

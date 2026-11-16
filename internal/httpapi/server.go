@@ -2445,6 +2445,16 @@ func parseTaskOperationsQuery(r *http.Request) (store.TaskOperationsQuery, bool,
 		return query, false, err
 	}
 	query.Limit, query.Offset = page.Limit, page.Offset
+	// Plan text is opt-in: `plan_text=true` asks the page to carry each latest
+	// plan's text, and every other request states metadata only
+	// (component-persistence, Database read accounting).
+	if raw := strings.TrimSpace(values.Get("plan_text")); raw != "" {
+		include, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			return store.TaskOperationsQuery{}, false, fmt.Errorf("plan_text must be a boolean: %w", parseErr)
+		}
+		query.IncludePlanText = include
+	}
 	return query, page.Paged, nil
 }
 
