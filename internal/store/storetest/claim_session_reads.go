@@ -531,9 +531,10 @@ func (r *WorkOrderReadRecorder) RenewWorkerClaimCommand(ctx context.Context, lea
 // fewer bytes than one snapshot from the database, which bounds the command's
 // own reads. A renewal of the own live claim must extend the lease without
 // passing the fixed execution deadline, keep the attempt, persist the lease,
-// and keep both snapshots; a renewal of the same claim's completed order
-// returns that order with its snapshots (component-work-orders, Snapshot-free
-// fold reads; req-delegated-execution AC-1.1).
+// and keep both snapshots in the stored row while answering with the
+// snapshot-free order; a renewal of the same claim's completed order returns
+// that order with its snapshots (component-work-orders, Snapshot-free fold
+// reads; req-delegated-execution AC-1.1).
 func RunRenewalReads(t *testing.T, x Fixture, scale ClaimSessionScale, renew RenewFunc) {
 	st, ctx := x.Backend, x.Context
 	suffix := core.NewTaskID()
@@ -646,7 +647,10 @@ func RunRenewalReads(t *testing.T, x Fixture, scale ClaimSessionScale, renew Ren
 	if stored.GovernanceSnapshot == nil || len(stored.GovernanceSnapshot.Designs[0].Content) != ClaimSessionSnapshotBytes || len(stored.ServedRequirementSnapshot) != 1 {
 		t.Fatal("renewal lost the order's pinned snapshots")
 	}
-	if short.GovernanceSnapshot == nil || len(short.GovernanceSnapshot.Designs[0].Content) != ClaimSessionSnapshotBytes {
-		t.Fatal("the renewed order no longer carries its pinned snapshots")
+	if n := encodedSnapshotBytes([]core.WorkOrder{short}); n != 0 {
+		t.Fatalf("the renewal answered with %d snapshot bytes, want the snapshot-free order", n)
+	}
+	if n := encodedSnapshotBytes([]core.WorkOrder{renewed}); n != 0 {
+		t.Fatalf("the capped renewal answered with %d snapshot bytes, want the snapshot-free order", n)
 	}
 }

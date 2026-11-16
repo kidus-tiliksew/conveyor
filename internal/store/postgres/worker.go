@@ -43,9 +43,12 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	if _, err := store.RequireActor(ctx); err != nil {
 		return core.WorkOrder{}, err
 	}
-	// Refusals are decided from the order without its authority snapshots;
-	// only a successful renewal or a completed-order acknowledgement returns
-	// the full order (component-work-orders, Snapshot-free fold reads).
+	// Refusals and the renewal itself read and return the order without its
+	// authority snapshots: the single update writes only the lease and update
+	// times, so the stored snapshots stay in place while no snapshot leaves the
+	// database. Only a completed-order acknowledgement returns the full order
+	// (component-work-orders, Snapshot-free fold reads; req-delegated-execution
+	// AC-1.1).
 	current, err := s.GetWorkOrderWithoutSnapshots(ctx, workOrderID)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -55,7 +58,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	}
 	now := time.Now().UTC()
 	expires := now.Add(lease)
-	row := s.boundary.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND claimant_id=$6 AND session_id=$7 AND state='claimed' AND lease_expires_at>$2 AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+workOrderColumns, expires, now, workspace(ctx), workOrderID, claim.WorkerID, claim.ClaimantID, claim.SessionID)
+	row := s.boundary.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND claimant_id=$6 AND session_id=$7 AND state='claimed' AND lease_expires_at>$2 AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+activityWorkOrderColumns, expires, now, workspace(ctx), workOrderID, claim.WorkerID, claim.ClaimantID, claim.SessionID)
 	order, err := scanWorkOrder(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		current, getErr := s.GetWorkOrderWithoutSnapshots(ctx, workOrderID)

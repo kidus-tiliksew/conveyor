@@ -434,7 +434,10 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 	order.UpdatedAt = now
 	m.workOrders[workOrderID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": expires})})
-	return order, nil
+	// The renewal answers with the order the durable backends' snapshot-free
+	// renewal read returns; the stored order keeps both snapshots
+	// (component-work-orders, Snapshot-free fold reads).
+	return withoutAuthoritySnapshots(order), nil
 }
 
 func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error) {

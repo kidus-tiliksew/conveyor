@@ -40,34 +40,29 @@ func cancelledSessionMatches(ctx context.Context, tx *sql.Tx, ws, task, job, ses
 func (s *Store) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskLease, id string, c core.WorkOrderClaimIdentity, duration time.Duration) (core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "RenewWorkerClaimCommand")
 	var result core.WorkOrder
-	// Refusals are decided from the stored order without its authority
-	// snapshots. A successful renewal reads the full row before it writes, so
-	// the write keeps both snapshots, and a completed-order acknowledgement
-	// returns the full row (component-work-orders, Snapshot-free fold reads).
+	// Refusals and the renewal itself are decided from the stored order without
+	// its authority snapshots. A successful renewal writes only the lease and
+	// update times and returns the snapshot-free order it read; the row keeps
+	// both snapshots because the update never touches them. A completed-order
+	// acknowledgement returns the full row (component-work-orders,
+	// Snapshot-free fold reads; req-delegated-execution AC-1.1).
 	err := s.orderTxColumns(ctx, id, activityWorkOrderColumns, func(tx *sql.Tx, o core.WorkOrder) error {
 		if !lease.ValidForCommand(o.TaskID, string(core.WorkOrderCmdRenew)) {
 			return fmt.Errorf("work-order renewal requires a valid taskops lease")
 		}
 		now := time.Now().UTC()
 		if claimAlive(o, c, now) {
-			full, err := getOrderRow(ctx, tx, id)
-			if err != nil {
+			expires := now.Add(duration)
+			if !o.ExecutionDeadline.IsZero() && expires.After(o.ExecutionDeadline) {
+				expires = o.ExecutionDeadline
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE work_orders SET lease_expires_at=?, updated_at=? WHERE workspace_id=? AND id=?`, expires, now, documentWorkspace(ctx), id); err != nil {
 				return err
 			}
-			o = full
-			o.LeaseExpiresAt = now.Add(duration)
-			if !o.ExecutionDeadline.IsZero() && o.LeaseExpiresAt.After(o.ExecutionDeadline) {
-				o.LeaseExpiresAt = o.ExecutionDeadline
-			}
+			o.LeaseExpiresAt = expires
 			o.UpdatedAt = now
-			if err = orderWrite(ctx, tx, o); err != nil {
-				return err
-			}
-			result, err = getOrderRow(ctx, tx, id)
-			if err != nil {
-				return err
-			}
-			return taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": o.AttemptID, "lease_expires_at": result.LeaseExpiresAt})})
+			result = o
+			return taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": o.AttemptID, "lease_expires_at": expires})})
 		}
 		if o.State == core.WorkOrderCancelled {
 			match, err := cancelledSessionMatches(ctx, tx, documentWorkspace(ctx), o.TaskID, o.JobID, c.SessionID)
