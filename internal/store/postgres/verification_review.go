@@ -12,7 +12,7 @@ func (s *Store) ReadVerificationReview(ctx context.Context, taskID, orderID stri
 	ctx = dbmetrics.WithReadLabel(ctx, "ReadVerificationReview")
 	var state store.VerificationReviewState
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		records, err := q.ListVerificationRecords(ctx, workspace(ctx), taskID)
+		records, err := q.ListVerificationRecords(ctx, workspace(ctx), taskID, store.VerificationSnapshotTables)
 		if err != nil {
 			return err
 		}

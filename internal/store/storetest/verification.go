@@ -173,6 +173,7 @@ func runVerification(t *testing.T, x Fixture) {
 	runVerificationPublicationDelivery(t, x)
 	runVerificationPublicationLegacyAndRace(t, x)
 	runVerificationOperations(t, x)
+	runVerificationOperationKeyScope(t, x)
 	runVerificationScope(t, x)
 	runVerificationFinalization(t, x)
 	runVerificationClaimLoss(t, x)

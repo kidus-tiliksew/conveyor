@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -122,13 +124,17 @@ func (s *Store) ReadVerificationPage(ctx context.Context, a store.VerificationAc
 		for _, r := range rows {
 			items = append(items, store.VerificationReadItem{ID: r.ID, ContextID: r.ContextID, RunID: r.RunID, State: r.State, At: r.At, Metadata: r.Metadata})
 		}
-		if p.Kind == "publications" {
+		if p.Kind == "publications" && len(items) > 0 {
+			sources := make([]string, 0, len(items))
+			for _, item := range items {
+				sources = append(sources, item.ID)
+			}
+			deliveries, e := deliveryMetadataBatchTx(ctx, tx, a.TaskID, sources)
+			if e != nil {
+				return e
+			}
 			for i := range items {
-				d, found, e := readDeliveryMetadataTx(ctx, tx, a.TaskID, items[i].ContextID, items[i].ID)
-				if e != nil {
-					return e
-				}
-				if found {
+				if d, found := deliveries[items[i].ID]; found && d.ContextID == items[i].ContextID {
 					if e = store.JoinVerificationDelivery(&items[i], d); e != nil {
 						return e
 					}
@@ -166,16 +172,96 @@ func (s *Store) ReadVerificationDetail(ctx context.Context, a store.Verification
 	return result, nil
 }
 
-func readDeliveryMetadataTx(ctx context.Context, tx pgx.Tx, task, contextID, source string) (core.VerificationDelivery, bool, error) {
-	var d core.VerificationDelivery
-	var raw []byte
-	err := tx.QueryRow(ctx, `SELECT body - 'Summary' FROM verification_publication_deliveries WHERE workspace_id=$1 AND task_id=$2 AND context_id=$3 AND source_publication_id=$4 ORDER BY generation DESC LIMIT 1`, workspace(ctx), task, contextID, source).Scan(&raw)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return d, false, nil
+// deliveryMetadataColumns is the bounded projection a read joins onto a
+// publication: identity and outcome fields only, never the retained body.
+const deliveryMetadataColumns = `jsonb_build_object('WorkspaceID',left(body->>'WorkspaceID',2048),'Repository',left(body->>'Repository',2048),'TaskID',left(body->>'TaskID',2048),'ContextID',left(body->>'ContextID',2048),'SourcePublicationID',left(body->>'SourcePublicationID',2048),'ID',left(body->>'ID',2048),'IdempotencyKey',left(body->>'IdempotencyKey',2048),'TargetHead',left(body->>'TargetHead',2048),'ObservedHead',left(body->>'ObservedHead',2048),'TargetDigest',left(body->>'TargetDigest',2048),'ObservedDigest',left(body->>'ObservedDigest',2048),'Summary',left(body->>'Summary',2048),'State',left(body->>'State',2048),'ErrorClass',left(body->>'ErrorClass',2048),'Generation',(body->>'Generation')::bigint,'SourceGeneration',(body->>'SourceGeneration')::bigint,'PullRequestNumber',(body->>'PullRequestNumber')::bigint,'Attempts',(body->>'Attempts')::bigint,'CycleAttempts',(body->>'CycleAttempts')::bigint,'LastAttemptAt',body->'LastAttemptAt','NextAttemptAt',body->'NextAttemptAt')`
+
+// deliveryMetadataBatchTx reads the delivery metadata of many publications in
+// one statement, so a snapshot's statement count does not grow with one query
+// per publication (component-persistence, Database read accounting).
+func deliveryMetadataBatchTx(ctx context.Context, tx pgx.Tx, task string, sources []string) (map[string]core.VerificationDelivery, error) {
+	out := map[string]core.VerificationDelivery{}
+	for start := 0; start < len(sources); start += verificationMetadataChunk {
+		chunk := sources[start:min(start+verificationMetadataChunk, len(sources))]
+		generations, err := deliveryMetadataGenerationsTx(ctx, tx, task, chunk)
+		if err != nil {
+			return nil, err
+		}
+		if len(generations) == 0 {
+			continue
+		}
+		args := make([]any, 0, 2+len(chunk)+len(generations))
+		args = append(args, workspace(ctx), task)
+		args = append(args, verificationMetadataArgs(chunk)...)
+		for _, generation := range generations {
+			args = append(args, generation)
+		}
+		rows, err := tx.Query(ctx, `SELECT source_publication_id, `+deliveryMetadataColumns+` FROM verification_publication_deliveries WHERE workspace_id=$1 AND task_id=$2 AND source_publication_id IN (`+verificationPlaceholders(3, len(chunk))+`) AND generation IN (`+verificationPlaceholders(3+len(chunk), len(generations))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var source string
+			var raw []byte
+			if err = rows.Scan(&source, &raw); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			var d core.VerificationDelivery
+			if err = json.Unmarshal(raw, &d); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if prior, found := out[source]; found && prior.Generation >= d.Generation {
+				continue
+			}
+			out[source] = d
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
+	return out, nil
+}
+
+// verificationMetadataChunk bounds one statement's publication list.
+const verificationMetadataChunk = 500
+
+func deliveryMetadataGenerationsTx(ctx context.Context, tx pgx.Tx, task string, sources []string) ([]int64, error) {
+	args := make([]any, 0, 2+len(sources))
+	args = append(args, workspace(ctx), task)
+	args = append(args, verificationMetadataArgs(sources)...)
+	rows, err := tx.Query(ctx, `SELECT DISTINCT generation FROM verification_publication_deliveries WHERE workspace_id=$1 AND task_id=$2 AND source_publication_id IN (`+verificationPlaceholders(3, len(sources))+`)`, args...)
 	if err != nil {
-		return d, false, err
+		return nil, err
 	}
-	err = json.Unmarshal(raw, &d)
-	return d, err == nil, err
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var generation int64
+		if err = rows.Scan(&generation); err != nil {
+			return nil, err
+		}
+		out = append(out, generation)
+	}
+	return out, rows.Err()
+}
+
+// verificationPlaceholders numbers count arguments from first.
+func verificationPlaceholders(first, count int) string {
+	marks := make([]string, count)
+	for i := range marks {
+		marks[i] = fmt.Sprintf("$%d", first+i)
+	}
+	return strings.Join(marks, ",")
+}
+
+func verificationMetadataArgs(sources []string) []any {
+	args := make([]any, 0, len(sources))
+	for _, source := range sources {
+		args = append(args, source)
+	}
+	return args
 }

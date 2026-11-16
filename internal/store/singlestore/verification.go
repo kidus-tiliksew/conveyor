@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
@@ -654,8 +655,8 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 		if len(candidates) == 0 {
 			return nil
 		}
-		// Phase two decodes the body of the rows this pass acts on: the newest
-		// generation of each due pull-request key.
+		// Phase two decodes the body of exactly the rows this pass acts on, in
+		// the order phase one selected them.
 		ds, err := verificationDeliveryBodiesTx(ctx, tx, ws, candidates)
 		if err != nil {
 			return err
@@ -719,56 +720,65 @@ func verificationDeliveryDueTx(ctx context.Context, tx *sql.Tx, ws string, now t
 	return out, rows.Err()
 }
 
-// verificationDeliveryBodiesTx decodes the retained body of the newest due
-// generation of each due pull-request key, in one statement.
+// verificationDeliveryBodiesTx decodes the retained body of exactly the due
+// rows this pass acts on, in one statement, and returns them in the due order
+// phase one selected. Every other row of the same pull-request key keeps its
+// body on the server.
 func verificationDeliveryBodiesTx(ctx context.Context, tx *sql.Tx, ws string, candidates []verificationDeliveryDue) ([]core.VerificationDelivery, error) {
-	newest := map[string]int{}
-	var keys []string
-	for _, c := range candidates {
-		if generation, found := newest[c.Key]; found && generation >= c.Generation {
-			continue
-		}
-		if _, found := newest[c.Key]; !found {
-			keys = append(keys, c.Key)
-		}
-		newest[c.Key] = c.Generation
+	if len(candidates) == 0 {
+		return nil, nil
 	}
-	sort.Strings(keys)
-	args := make([]any, 0, 1+len(keys))
+	clauses := make([]string, 0, len(candidates))
+	args := make([]any, 0, 1+2*len(candidates))
 	args = append(args, ws)
-	for _, key := range keys {
-		args = append(args, key)
+	for _, c := range candidates {
+		clauses = append(clauses, `(pr_key=? AND generation=?)`)
+		args = append(args, c.Key, c.Generation)
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT body FROM verification_publication_deliveries WHERE workspace_id=? AND pr_key IN (`+verificationMarks(len(keys))+`)`, args...)
+	rows, err := tx.QueryContext(ctx, `SELECT pr_key, generation, body FROM verification_publication_deliveries WHERE workspace_id=? AND (`+strings.Join(clauses, " OR ")+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []core.VerificationDelivery
+	order := make(map[verificationDeliveryRow]int, len(candidates))
+	for index, c := range candidates {
+		order[verificationDeliveryRow{c.Key, c.Generation}] = index
+	}
+	type decoded struct {
+		index int
+		d     core.VerificationDelivery
+	}
+	var found []decoded
 	for rows.Next() {
+		var key string
+		var generation int
 		var raw []byte
-		if err = rows.Scan(&raw); err != nil {
+		if err = rows.Scan(&key, &generation, &raw); err != nil {
 			return nil, err
+		}
+		index, ok := order[verificationDeliveryRow{key, generation}]
+		if !ok {
+			continue
 		}
 		var d core.VerificationDelivery
 		if err = json.Unmarshal(raw, &d); err != nil {
 			return nil, err
 		}
-		key := store.VerificationDeliveryKey(d.Repository, d.PullRequestNumber)
-		if newest[key] != d.Generation {
-			continue
-		}
-		out = append(out, d)
+		found = append(found, decoded{index: index, d: d})
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
-	sort.Slice(out, func(i, j int) bool {
-		left, right := store.VerificationDeliveryKey(out[i].Repository, out[i].PullRequestNumber), store.VerificationDeliveryKey(out[j].Repository, out[j].PullRequestNumber)
-		if left != right {
-			return left < right
-		}
-		return out[i].Generation < out[j].Generation
-	})
+	sort.Slice(found, func(i, j int) bool { return found[i].index < found[j].index })
+	out := make([]core.VerificationDelivery, 0, len(found))
+	for _, f := range found {
+		out = append(out, f.d)
+	}
 	return out, nil
+}
+
+// verificationDeliveryRow identifies one stored delivery generation.
+type verificationDeliveryRow struct {
+	Key        string
+	Generation int
 }
