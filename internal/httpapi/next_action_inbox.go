@@ -114,15 +114,20 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 	for _, task := range candidates {
 		ids = append(ids, task.ID)
 	}
+	// Read the markers once and hand them to the projection: the inbox needs
+	// LastEventAt from the same rows, and a second marker read would repeat the
+	// whole event scan (activity-marker-bounds).
+	markers, err := s.Store.ListActivityMarkersForTasks(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	opts.MarkersLoaded = true
+	opts.Markers = markers
 	projected, err := store.ReadNextActions(ctx, s.Store, candidates, opts)
 	if err != nil {
 		return nil, err
 	}
 	proposals, err := s.Store.ListPendingProposals(ctx)
-	if err != nil {
-		return nil, err
-	}
-	markers, err := s.Store.ListActivityMarkersForTasks(ctx, ids)
 	if err != nil {
 		return nil, err
 	}

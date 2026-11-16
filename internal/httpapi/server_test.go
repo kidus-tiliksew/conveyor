@@ -2741,6 +2741,45 @@ func TestActivityIndexAvoidsPerTaskHistoryQueries(t *testing.T) {
 	}
 }
 
+// TestInboxReadsActivityMarkersOnce pins GET /v1/next-actions to one marker
+// read: the projection reuses the rows the inbox already read for LastEventAt
+// (activity-marker-bounds).
+func TestInboxReadsActivityMarkersOnce(t *testing.T) {
+	base := store.NewMemory()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	for i := 0; i < 3; i++ {
+		if err := base.CreateTask(ctx, core.Task{
+			ID: fmt.Sprintf("inbox-%d", i), Workspace: "demo", State: core.TaskQueued,
+			CreatedAt: time.Date(2026, 8, 1, 0, i, 0, 0, time.UTC),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observed := &observedStore{Store: base}
+	response := httptest.NewRecorder()
+	authenticatedMemoryHandler(NewServer(observed)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/next-actions", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	if observed.listActivityMarkersCalls != 1 {
+		t.Fatalf("marker reads = %d, want 1", observed.listActivityMarkersCalls)
+	}
+}
+
+// The handler reads markers for the selected inbox page once. The memory
+// store's internal attention projection is outside this wrapper's count.
+func TestCallerInboxReadsPageActivityMarkersOnce(t *testing.T) {
+	observed := &observedStore{Store: store.NewMemory()}
+	server, _ := ownedRoutesFixture(t, observed)
+	response := ownedRouteGet(t, server, withQuery("/v1/inbox", "limit=2"))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	if observed.listActivityMarkersCalls != 1 {
+		t.Fatalf("page marker reads = %d, want 1", observed.listActivityMarkersCalls)
+	}
+}
+
 func TestActivityDefaultsToBoundedPageAndSupportsExplicitPaging(t *testing.T) {
 	base := store.NewMemory()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
