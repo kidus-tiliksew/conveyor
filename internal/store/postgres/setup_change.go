@@ -279,7 +279,7 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 		if err = insertReviewRoundSeatsTx(ctx, tx, workspaceID, request.ReviewRoundSeats.Record(task.ID, request.ResultingReviewRound, now)); err != nil {
 			return store.SetupChangeResult{}, err
 		}
-		if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: "review.round_created", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(request.ResultingReviewRound, *request.ReviewRoundSeats)), At: now}); err != nil {
+		if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: "review.round_created", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(request.ResultingReviewRound, *request.ReviewRoundSeats, request.NewWorkOrders)), At: now}); err != nil {
 			return store.SetupChangeResult{}, err
 		}
 	}

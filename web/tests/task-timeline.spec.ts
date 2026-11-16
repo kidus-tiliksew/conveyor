@@ -1852,7 +1852,10 @@ const longNote = [
   'Add a second test that records the deadline only on the first pending read.',
 ].join('\n\n')
 
-function reviewPanel(seats: PanelSeatFixture[], extra: { bounce?: number; verdict?: string } = {}) {
+function reviewPanel(
+  seats: PanelSeatFixture[],
+  extra: { bounce?: number; verdict?: string; scope?: { review_scope?: 'full' | 'delta'; baseline_sha?: string } } = {},
+) {
   const id = (n: number) => `${taskId}-review-1-seat-${n}`
   const roundVerdict =
     extra.verdict ?? (seats.some((seat) => seat.verdict === 'changes_requested') ? 'changes_requested' : 'approve')
@@ -1905,7 +1908,13 @@ function reviewPanel(seats: PanelSeatFixture[], extra: { bounce?: number; verdic
       ...(extra.bounce === undefined ? {} : { review_bounces: { '1': extra.bounce } }),
       review_round_seats: {
         by_round: {
-          '1': { review_round: 1, seat_count: seats.length, seat_count_source: 'minimum', minimum_seat_count: 1 },
+          '1': {
+            review_round: 1,
+            seat_count: seats.length,
+            seat_count_source: 'minimum',
+            minimum_seat_count: 1,
+            ...extra.scope,
+          },
         },
         by_order: {},
       },
@@ -2024,6 +2033,71 @@ test('a one-seat changes-requested panel reads on a 375 px screen', async ({ pag
   await expect(panel.locator('[data-review-verdict]')).toHaveText('Changes requested')
   await expect(panel.locator('[data-review-banner]')).toHaveText('Sent back for changes · 1 bounce used')
   await expect(panel.getByText('Panel of 1 · minimum 1', { exact: true })).toBeVisible()
+})
+
+// A delta round's panel states that it covers the changes since the judged
+// head and names that commit beside the seat count. A full round, and a round
+// recorded before scopes existed, keep the panel facts they had
+// (feature-delta-review-rounds DR-7; req-review-gates-evidence AC-12.7). The
+// screenshots attach to the Playwright report.
+const judgedHead = '4f9c2e1d7b3a6c5e8f0a1b2c3d4e5f60718293a4'
+const deltaPanel = () =>
+  reviewPanel([{ model: name24[0], verdict: 'changes_requested', feedback: 'Fix the retry path.' }], {
+    bounce: 2,
+    scope: { review_scope: 'delta', baseline_sha: judgedHead },
+  })
+const fullPanel = () =>
+  reviewPanel([{ model: name24[0], verdict: 'changes_requested', feedback: 'Fix the retry path.' }], {
+    bounce: 1,
+    scope: { review_scope: 'full', baseline_sha: '' },
+  })
+
+async function expectNoSideScroll(page: Page, panel: Locator) {
+  const card = await panel.evaluate((element) => [element.scrollWidth, element.clientWidth])
+  expect(card[0]).toBeLessThanOrEqual(card[1])
+  const viewport = await page.evaluate(() => [
+    document.documentElement.scrollWidth,
+    document.documentElement.clientWidth,
+  ])
+  expect(viewport[0]).toBeLessThanOrEqual(viewport[1])
+}
+
+for (const width of [375, 1280]) {
+  test(`review scope: a delta round names the judged head beside the seat count at ${width} px`, async ({
+    page,
+  }, testInfo) => {
+    const panel = await openPanel(page, deltaPanel(), width)
+    const facts = panel.locator('[data-review-panel-facts]')
+    const scope = facts.locator('[data-review-scope="delta"]')
+    await expect(scope).toHaveText('· Changes since judged head 4f9c2e1')
+    const commit = scope.locator('code')
+    await expect(commit).toHaveText('4f9c2e1')
+    await expect(commit).toHaveAttribute('title', judgedHead)
+    // The seat facts it stood beside stay as they were.
+    await expect(facts.getByText('Panel of 1 · minimum 1', { exact: true })).toBeVisible()
+    await expect(panel.getByText(name24[0], { exact: true })).toBeVisible()
+    await expectNoSideScroll(page, panel)
+    await capture(page, testInfo, `review-scope-delta-${width}.png`)
+  })
+
+  test(`review scope: a full round states no scope at ${width} px`, async ({ page }, testInfo) => {
+    const panel = await openPanel(page, fullPanel(), width)
+    const facts = panel.locator('[data-review-panel-facts]')
+    await expect(facts.getByText('Panel of 1 · minimum 1', { exact: true })).toBeVisible()
+    await expect(panel.locator('[data-review-scope]')).toHaveCount(0)
+    await expect(panel.getByText(/judged head/i)).toHaveCount(0)
+    await expectNoSideScroll(page, panel)
+    await capture(page, testInfo, `review-scope-full-${width}.png`)
+  })
+}
+
+test('review scope: a round recorded before scopes existed keeps its panel facts', async ({ page }) => {
+  const panel = await openPanel(page, oneSeatChanges(), 1280)
+  await expect(
+    panel.locator('[data-review-panel-facts]').getByText('Panel of 1 · minimum 1', { exact: true }),
+  ).toBeVisible()
+  await expect(panel.locator('[data-review-scope]')).toHaveCount(0)
+  await expect(panel.getByText(/judged head/i)).toHaveCount(0)
 })
 
 test('a three-seat panel keeps each seat row on one line at 375 px and attributes each note', async ({ page }) => {

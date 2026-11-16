@@ -158,6 +158,33 @@ type seatMetaJSON struct {
 	PlannedSeatCount *int    `json:"planned_seat_count"`
 	CarriedFromRound *int    `json:"carried_from_round"`
 	Superseded       *bool   `json:"superseded"`
+	ReviewScope      *string `json:"review_scope"`
+	BaselineSHA      *string `json:"baseline_sha"`
+}
+
+// requireSeatScope checks an entry's review scope and baseline, which every
+// entry carries (feature-delta-review-rounds DR-7; req-review-gates-evidence
+// AC-12.7).
+func requireSeatScope(t *testing.T, label string, got seatMetaJSON, scope, baseline string) {
+	t.Helper()
+	if got.ReviewScope == nil || got.BaselineSHA == nil || *got.ReviewScope != scope || *got.BaselineSHA != baseline {
+		t.Fatalf("%s: review_scope=%v baseline_sha=%v, want %q %q", label, got.ReviewScope, got.BaselineSHA, scope, baseline)
+	}
+}
+
+// scopedRound opens a recorded round whose seats carry kind, scope, and
+// baseline, as dispatch writes them.
+func (f *seatMetaFixture) scopedRound(taskID string, round int, seats store.ReviewRoundSeatResolution, kind, scope, baseline string) []core.WorkOrder {
+	f.t.Helper()
+	jobs, orders := seatMetaMembers(taskID, round, 1, seats.SeatCount)
+	for i := range orders {
+		orders[i].ReviewKind, orders[i].ReviewScope, orders[i].BaselineSHA = kind, scope, baseline
+	}
+	_, err := taskops.ExecuteWorkOrder(f.ctx, f.st, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (struct{}, error) {
+		return struct{}{}, f.st.CreateReviewRoundCommand(f.ctx, lease, taskID, seats, jobs, orders)
+	})
+	requireOKHTTP(f.t, err)
+	return orders
 }
 
 // want describes an entry; zero planned and carried mean absent.
@@ -408,6 +435,57 @@ func TestTaskDetailReviewSeatMetadata(t *testing.T) {
 		if got := f.mustProject(NewServer(f.st), "cleared"); got.ReviewSeatPolicy.PlannedSeatCount != nil {
 			t.Fatalf("cleared planned=%d", *got.ReviewSeatPolicy.PlannedSeatCount)
 		}
+	})
+	t.Run("ReviewScope", func(t *testing.T) {
+		f := newSeatMetaFixture(t)
+		f.task("scoped", 1)
+		// A full round's orders hold an empty scope and the base commit; it
+		// reads as full with no baseline.
+		first := f.scopedRound("scoped", 1, seatResolution(1, store.ReviewSeatSourceMinimum, 1, ""), "", "", "base")
+		f.completeRound("scoped", 1, "changes_requested", first)
+		second := f.scopedRound("scoped", 2, seatResolution(1, store.ReviewSeatSourceCarried, 1, ""), "", store.ReviewScopeDelta, "judged-1")
+		f.completeRound("scoped", 2, "changes_requested", second)
+		third := f.scopedRound("scoped", 3, seatResolution(1, store.ReviewSeatSourceCarried, 1, ""), "", store.ReviewScopeDelta, "judged-2")
+		f.completeRound("scoped", 3, "approve", third)
+		// A refresh round reports its own order metadata.
+		f.scopedRound("scoped", 4, seatResolution(1, store.ReviewSeatSourceCarried, 1, ""), "refresh", config.RefreshReviewDelta, "approved-head")
+		got := f.mustProject(NewServer(f.st), "scoped")
+		requireSeatScope(t, "full round", got.ReviewRoundSeats.ByRound["1"], store.ReviewScopeFull, "")
+		requireSeatScope(t, "first delta round", got.ReviewRoundSeats.ByRound["2"], store.ReviewScopeDelta, "judged-1")
+		requireSeatScope(t, "second delta round", got.ReviewRoundSeats.ByRound["3"], store.ReviewScopeDelta, "judged-2")
+		requireSeatScope(t, "refresh round", got.ReviewRoundSeats.ByRound["4"], store.ReviewScopeDelta, "approved-head")
+		requireSeatScope(t, "latest round summary", got.ReviewRound.seatMetaJSON, store.ReviewScopeDelta, "approved-head")
+		// Seat counts are unchanged beside the scope.
+		requireSeatMeta(t, "second delta round seats", got.ReviewRoundSeats.ByRound["3"], seatMetaWant{round: 3, count: 1, source: "carried", minimum: 1, carried: 2})
+
+		// A refresh round with a full scope keeps its own baseline.
+		f.task("refresh-full", 1)
+		f.scopedRound("refresh-full", 1, seatResolution(1, store.ReviewSeatSourceMinimum, 1, ""), "refresh", config.RefreshReviewFull, "approved-head")
+		got = f.mustProject(NewServer(f.st), "refresh-full")
+		requireSeatScope(t, "full refresh round", got.ReviewRoundSeats.ByRound["1"], store.ReviewScopeFull, "approved-head")
+
+		// Rounds recorded before scopes existed read as full with no baseline,
+		// including round-zero panels.
+		f.task("unscoped", 2)
+		legacy := f.legacyRound("unscoped", 1, 2)
+		for _, order := range legacy {
+			if order.ReviewScope != "" {
+				t.Fatalf("legacy order scope=%q", order.ReviewScope)
+			}
+		}
+		zero := f.legacyRound("unscoped", 0, 1)
+		got = f.mustProject(NewServer(f.st), "unscoped")
+		requireSeatScope(t, "legacy round", got.ReviewRoundSeats.ByRound["1"], store.ReviewScopeFull, "")
+		requireSeatScope(t, "round-zero panel", got.ReviewRoundSeats.ByOrder[zero[0].ID], store.ReviewScopeFull, "")
+
+		// A superseded round keeps its own scope, and the next round keeps its own.
+		f.task("handoff", 1)
+		old := f.scopedRound("handoff", 1, seatResolution(1, store.ReviewSeatSourceMinimum, 1, ""), "", store.ReviewScopeDelta, "judged-old")
+		f.supersede("handoff", old[0].ID)
+		f.scopedRound("handoff", 2, seatResolution(1, store.ReviewSeatSourceCarried, 1, ""), "", "", "base")
+		got = f.mustProject(NewServer(f.st), "handoff")
+		requireSeatScope(t, "superseded round", got.ReviewRoundSeats.ByRound["1"], store.ReviewScopeDelta, "judged-old")
+		requireSeatScope(t, "round after handoff", got.ReviewRoundSeats.ByRound["2"], store.ReviewScopeFull, "")
 	})
 	t.Run("OpenRoundDoesNotApprove", func(t *testing.T) {
 		f := newSeatMetaFixture(t)

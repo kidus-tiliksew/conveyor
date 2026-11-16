@@ -294,3 +294,43 @@ func TestReviewSeatAdditionPlan(t *testing.T) {
 		}
 	})
 }
+
+// TestReviewRoundSeatsScope proves the round scope rule that
+// review.round_created and the bounded read share (feature-delta-review-rounds
+// DR-7; req-review-gates-evidence AC-12.7).
+func TestReviewRoundSeatsScope(t *testing.T) {
+	order := func(scope, baseline string) core.WorkOrder {
+		return core.WorkOrder{Stage: core.StageReview, ReviewRound: 2, ReviewScope: scope, BaselineSHA: baseline}
+	}
+	cases := []struct {
+		name            string
+		orders          []core.WorkOrder
+		scope, baseline string
+	}{
+		{"no orders", nil, store.ReviewScopeFull, ""},
+		{"delta", []core.WorkOrder{order("delta", "judged"), order("delta", "judged")}, store.ReviewScopeDelta, "judged"},
+		{"empty scope drops baseline", []core.WorkOrder{order("", "base")}, store.ReviewScopeFull, ""},
+		{"recorded before scopes", []core.WorkOrder{order("", "")}, store.ReviewScopeFull, ""},
+		{"explicit full keeps baseline", []core.WorkOrder{order("full", "approved")}, store.ReviewScopeFull, "approved"},
+		{"delta without baseline", []core.WorkOrder{order("delta", "")}, store.ReviewScopeFull, ""},
+		{"unknown scope", []core.WorkOrder{order("partial", "judged")}, store.ReviewScopeFull, ""},
+		{"mixed scopes", []core.WorkOrder{order("delta", "judged"), order("", "base")}, store.ReviewScopeFull, ""},
+		{"mixed baselines", []core.WorkOrder{order("delta", "judged"), order("delta", "other")}, store.ReviewScopeFull, ""},
+	}
+	for _, tc := range cases {
+		scope, baseline := store.ReviewRoundScope(tc.orders)
+		if scope != tc.scope || baseline != tc.baseline {
+			t.Fatalf("%s: scope=%q baseline=%q, want %q %q", tc.name, scope, baseline, tc.scope, tc.baseline)
+		}
+	}
+	// The payload counts only the round's own review orders.
+	orders := []core.WorkOrder{order("delta", "judged"), {Stage: core.StageVerify, ReviewScope: "", BaselineSHA: "base"}, {Stage: core.StageReview, ReviewRound: 1, BaselineSHA: "base"}}
+	payload := store.ReviewRoundCreatedPayload(2, store.ReviewRoundSeatResolution{SeatCount: 1, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: 1}, orders)
+	if payload["review_scope"] != store.ReviewScopeDelta || payload["baseline_sha"] != "judged" || payload["seat_count"] != 1 || payload["review_round"] != 2 {
+		t.Fatalf("payload=%+v", payload)
+	}
+	full := store.ReviewRoundCreatedPayload(1, store.ReviewRoundSeatResolution{SeatCount: 1, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: 1}, orders)
+	if full["review_scope"] != store.ReviewScopeFull || full["baseline_sha"] != "" {
+		t.Fatalf("full payload=%+v", full)
+	}
+}

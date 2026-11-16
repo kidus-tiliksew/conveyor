@@ -122,10 +122,53 @@ func (r ReviewRoundSeatResolution) Record(taskID string, round int, at time.Time
 }
 
 // ReviewRoundCreatedPayload is the review.round_created payload for a newly
-// committed round. Callers add retry_request_id for a retried round.
-func ReviewRoundCreatedPayload(round int, seats ReviewRoundSeatResolution) map[string]any {
+// committed round. It carries the round's scope and baseline, taken from the
+// round's own seat orders through ReviewRoundScope (feature-delta-review-rounds
+// DR-7; req-review-gates-evidence AC-12.7). orders may hold other stages or
+// rounds; only the review orders of round count. Callers add
+// retry_request_id for a retried round.
+func ReviewRoundCreatedPayload(round int, seats ReviewRoundSeatResolution, orders []core.WorkOrder) map[string]any {
+	members := make([]core.WorkOrder, 0, len(orders))
+	for _, order := range orders {
+		if order.Stage == core.StageReview && order.ReviewRound == round {
+			members = append(members, order)
+		}
+	}
+	scope, baseline := ReviewRoundScope(members)
 	return map[string]any{"review_round": round, "seat_count": seats.SeatCount,
-		"seat_count_source": seats.Source, "minimum_seat_count": seats.MinimumSeatCount}
+		"seat_count_source": seats.Source, "minimum_seat_count": seats.MinimumSeatCount,
+		"review_scope": scope, "baseline_sha": baseline}
+}
+
+// ReviewRoundScope is the scope and baseline of one review round, read from
+// that round's seat orders (feature-delta-review-rounds DR-7;
+// req-review-gates-evidence AC-12.7). A delta order reports delta with its
+// baseline, and an explicit full order, such as a full refresh seat, reports
+// full with its baseline. An order with an empty or unknown scope reads as
+// full with no baseline, so a round recorded before scopes existed, or with
+// no orders, reads as full with no baseline. Orders that disagree on scope or
+// baseline also read as full with no baseline: the record never claims a
+// delta scope that only some seats hold.
+func ReviewRoundScope(orders []core.WorkOrder) (scope, baseline string) {
+	if len(orders) == 0 {
+		return ReviewScopeFull, ""
+	}
+	first := orders[0]
+	for _, order := range orders[1:] {
+		if order.ReviewScope != first.ReviewScope || order.BaselineSHA != first.BaselineSHA {
+			return ReviewScopeFull, ""
+		}
+	}
+	switch first.ReviewScope {
+	case ReviewScopeDelta:
+		if first.BaselineSHA == "" {
+			return ReviewScopeFull, ""
+		}
+		return ReviewScopeDelta, first.BaselineSHA
+	case ReviewScopeFull:
+		return ReviewScopeFull, first.BaselineSHA
+	}
+	return ReviewScopeFull, ""
 }
 
 // ReviewSeatMinimum is the task's review seat minimum (DEC-77): the frozen
