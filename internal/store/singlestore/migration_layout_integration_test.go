@@ -94,7 +94,7 @@ func TestHistoryMigrationLayoutsIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		seen[table] = true
-		want := "ROWSTORE"
+		want := "INMEMORY_ROWSTORE"
 		if columnstore[table] {
 			want = "COLUMNSTORE"
 		}
@@ -116,11 +116,11 @@ func TestHistoryMigrationLayoutsIntegration(t *testing.T) {
 			continue
 		}
 		var storage string
-		if err := published.db.QueryRowContext(ctx, `SELECT storage_type FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?`, table).Scan(&storage); err != nil || storage != "ROWSTORE" {
+		if err := published.db.QueryRowContext(ctx, `SELECT storage_type FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?`, table).Scan(&storage); err != nil || storage != "INMEMORY_ROWSTORE" {
 			t.Errorf("published %s storage = %s, error %v", table, storage, err)
 		}
 	}
-	const keys = `SELECT table_name,index_name,non_unique,seq_in_index,column_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND index_type <> 'COLUMNSTORE'`
+	const keys = `SELECT table_name,index_name,non_unique,seq_in_index,column_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND index_type <> 'CLUSTERED COLUMNSTORE'`
 	if a, b := queryRows(t, published, ctx, keys), queryRows(t, fresh, ctx, keys); !reflect.DeepEqual(a, b) {
 		t.Errorf("published and fresh keys differ\npublished: %v\nfresh: %v", a, b)
 	}
