@@ -261,6 +261,61 @@ func (s *Store) ListTaskRiskOrders(ctx context.Context, taskID string) ([]core.R
 	return orders, nil
 }
 
+type riskOrderBatchScanner struct {
+	row   interface{ Scan(...any) error }
+	extra []any
+}
+
+func (s riskOrderBatchScanner) Scan(dest ...any) error {
+	return s.row.Scan(append(dest, s.extra...)...)
+}
+
+func (s *Store) ListRiskOrdersForTasks(ctx context.Context, workspaceID string, taskIDs []string) (map[string][]core.RiskOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRiskOrdersForTasks")
+	result := make(map[string][]core.RiskOrder, len(taskIDs))
+	for _, id := range taskIDs {
+		result[id] = []core.RiskOrder{}
+	}
+	if len(taskIDs) == 0 {
+		return result, nil
+	}
+	args := append([]any{workspaceID}, taskMapArgs(taskIDs)...)
+	rows, err := documentRows(ctx, s.db, `SELECT `+workOrderColumns+`, r.pv, r.hs, r.bs, r.paths, r.rules, r.created
+		FROM work_orders JOIN (SELECT workspace_id AS ws, task_id AS tid, work_order_id AS wid,
+		plan_version AS pv, head_sha AS hs, base_sha AS bs, changed_paths AS paths, matched_rules AS rules, created_at AS created
+		FROM risk_orders) r ON r.ws=work_orders.workspace_id AND r.tid=work_orders.task_id AND r.wid=work_orders.id
+		WHERE work_orders.workspace_id=? AND work_orders.task_id IN (`+taskMapMarks(len(taskIDs))+`) AND stage='risk'`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	now := time.Now().UTC()
+	for rows.Next() {
+		var risk core.RiskOrder
+		var paths, rules []byte
+		order, err := scanWorkOrder(riskOrderBatchScanner{rows, []any{&risk.Subject.PlanVersion, &risk.Subject.HeadSHA, &risk.Subject.BaseSHA, &paths, &rules, &risk.CreatedAt}})
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(paths, &risk.ChangedPaths); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(rules, &risk.MatchedRules); err != nil {
+			return nil, err
+		}
+		risk.CreatedAt = risk.CreatedAt.UTC()
+		risk.Order = store.ProjectWorkOrderAt(order, now)
+		result[order.TaskID] = append(result[order.TaskID], risk.Clone())
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, orders := range result {
+		store.SortRiskOrders(orders)
+	}
+	return result, nil
+}
+
 // cancelRiskOrdersTx cancels the task's open risk orders inside taskTx: only
 // onlyID when it is set. Each cancellation ends the live claim, fails the
 // job, and appends work_order.cancelled under the request's actor.

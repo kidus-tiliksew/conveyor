@@ -596,22 +596,27 @@ func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task
 // invariant 1).
 func readAssemblerPlanRiskOrders(ctx context.Context, st Store, tasks []core.Task, specs map[string]int) (map[string]nextaction.PlanRiskOrderRef, error) {
 	out := map[string]nextaction.PlanRiskOrderRef{}
+	byWorkspace := map[string][]string{}
 	for _, task := range tasks {
-		version := specs[task.ID]
-		if task.State != core.TaskAwaiting || task.GateKind != core.GateKindPlanApproval || !task.SetupContract.Risk.Enforcing() || version <= 0 {
+		if task.State != core.TaskAwaiting || task.GateKind != core.GateKindPlanApproval || !task.SetupContract.Risk.Enforcing() || specs[task.ID] <= 0 {
 			continue
 		}
-		scoped := ctx
-		if task.Workspace != "" {
-			scoped = WithWorkspace(ctx, task.Workspace)
+		workspaceID := task.Workspace
+		if workspaceID == "" {
+			workspaceID, _ = WorkspaceFromContext(ctx)
 		}
-		orders, err := st.ListTaskRiskOrders(scoped, task.ID)
+		byWorkspace[workspaceID] = append(byWorkspace[workspaceID], task.ID)
+	}
+	for workspaceID, ids := range byWorkspace {
+		ordersByTask, err := st.ListRiskOrdersForTasks(WithWorkspace(ctx, workspaceID), workspaceID, ids)
 		if err != nil {
 			return nil, err
 		}
-		for _, order := range orders {
-			if order.Order.TaskID == task.ID && order.Subject.Kind() == riskpolicy.RiskSubjectPlan && order.Subject.PlanVersion == version {
-				out[task.ID] = nextaction.PlanRiskOrderRef{PlanVersion: version, Order: order.Order}
+		for _, taskID := range ids {
+			for _, order := range ordersByTask[taskID] {
+				if order.Order.TaskID == taskID && order.Subject.Kind() == riskpolicy.RiskSubjectPlan && order.Subject.PlanVersion == specs[taskID] {
+					out[taskID] = nextaction.PlanRiskOrderRef{PlanVersion: specs[taskID], Order: order.Order}
+				}
 			}
 		}
 	}
