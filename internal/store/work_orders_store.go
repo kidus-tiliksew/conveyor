@@ -2006,7 +2006,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		}
 	}
 	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
-		repin := VerifyClaimRepinsAuthority(order, m.verificationRowsLocked(m.tasks[order.TaskID].Workspace, order.TaskID))
+		repin := VerifyClaimRepinsAuthority(order, m.verificationRowsLocked(m.tasks[order.TaskID].Workspace, order.TaskID, VerificationRepinTables))
 		if (order.ServedRequirementSnapshot == nil || repin) && claim.Requirements != nil {
 			order.ServedRequirementSnapshot = append([]core.ServedRequirementContext{}, claim.Requirements...)
 		}
@@ -2224,7 +2224,7 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 		if err = WorkOrderPlanRevisionRefusal(m.tasks[order.TaskID], m.events[order.TaskID], projected.ID); err != nil {
 			return core.WorkOrder{}, err
 		}
-		verificationRows, verificationEvents, err = PrepareVerificationRecovery(ctx, m.tasks[order.TaskID], order, m.verificationRowsLocked(workspace, order.TaskID), requestID, now)
+		verificationRows, verificationEvents, err = PrepareVerificationRecovery(ctx, m.tasks[order.TaskID], order, m.verificationRowsLocked(workspace, order.TaskID, VerificationRecoveryTables), requestID, now)
 		if err != nil {
 			return core.WorkOrder{}, err
 		}

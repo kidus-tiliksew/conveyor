@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,6 +27,32 @@ func verificationRows(records []db.VerificationRecord) []store.VerificationRow {
 		rows = append(rows, store.VerificationRow{Table: v.Table, ID: v.ID, TaskID: v.TaskID, ContextID: v.ContextID, RunID: v.RunID, LogicalKey: v.LogicalKey, State: v.State, Body: v.Body, ExpiresAt: v.ExpiresAt})
 	}
 	return rows
+}
+
+// verificationOperationScope serves the two operation lookups a registration
+// needs from the command's transaction: the row that owns a logical key
+// anywhere in the workspace, and another task's unresolved operations for one
+// subject, step, and target (component-verification-service).
+type verificationOperationScope struct {
+	q    *db.Queries
+	ws   string
+	task string
+}
+
+func (s verificationOperationScope) VerificationOperationByKey(ctx context.Context, key string) (store.VerificationRow, bool, error) {
+	record, found, err := s.q.VerificationOperationByKeyHash(ctx, s.ws, store.VerificationOperationKeyHash(key))
+	if err != nil || !found {
+		return store.VerificationRow{}, false, err
+	}
+	return verificationRows([]db.VerificationRecord{record})[0], true, nil
+}
+
+func (s verificationOperationScope) UnresolvedVerificationOperations(ctx context.Context, subjectKey, stepID, target string) ([]store.VerificationRow, error) {
+	records, err := s.q.UnresolvedVerificationOperations(ctx, s.ws, s.task, subjectKey, stepID, target)
+	if err != nil {
+		return nil, err
+	}
+	return verificationRows(records), nil
 }
 func (s *Store) verificationScopeTx(ctx context.Context, tx pgx.Tx, a store.VerificationAccess, write bool, reconcile ...bool) (core.WorkOrder, error) {
 	ws, ok := store.WorkspaceFromContext(ctx)
@@ -96,7 +125,7 @@ func (s *Store) applyVerification(ctx context.Context, lease taskops.TaskLease, 
 			if e != nil {
 				return err
 			}
-			records, e := q.ListVerificationRecords(ctx, workspace(ctx), c.Access.TaskID)
+			records, e := q.ListVerificationRecords(ctx, workspace(ctx), c.Access.TaskID, store.VerificationReplayTables)
 			if e != nil {
 				return err
 			}
@@ -120,12 +149,12 @@ func (s *Store) applyVerification(ctx context.Context, lease taskops.TaskLease, 
 			return err
 		}
 		store.BindVerificationAuthority(&c, authority, order)
-		records, err := q.ListVerificationRecords(ctx, workspace(ctx), c.Access.TaskID)
+		records, err := q.ListVerificationRecords(ctx, workspace(ctx), c.Access.TaskID, store.VerificationCommandTables(c))
 		if err != nil {
 			return err
 		}
 		c.SubmittedHeadSHA = order.HeadSHA
-		mutation, err := store.PrepareVerificationMutation(ctx, verificationSecretSnapshot(secrets), c, verificationRows(records), time.Now().UTC())
+		mutation, err := store.PrepareVerificationMutation(ctx, verificationSecretSnapshot(secrets), verificationOperationScope{q: q, ws: workspace(ctx), task: c.Access.TaskID}, c, verificationRows(records), time.Now().UTC())
 		if err != nil {
 			return err
 		}
@@ -210,22 +239,30 @@ func (s *Store) ReadVerification(ctx context.Context, a store.VerificationAccess
 		if err != nil {
 			return err
 		}
-		records, err := q.ListVerificationRecords(ctx, workspace(ctx), a.TaskID)
+		records, err := q.ListVerificationRecords(ctx, workspace(ctx), a.TaskID, store.VerificationSnapshotTables)
 		if err != nil {
 			return err
 		}
+		store.NoteVerificationRead(store.VerificationReadRows, workspace(ctx), a.TaskID, len(records))
 		result, err = store.VerificationReadSnapshot(verificationRows(records), a, id, order.Stage)
 		if err != nil {
 			return err
 		}
-		for i := range result.Publications {
-			p := &result.Publications[i]
-			d, found, e := readDeliveryMetadataTx(ctx, tx, a.TaskID, p.ContextID, p.ID)
+		if len(result.Publications) > 0 {
+			sources := make([]string, 0, len(result.Publications))
+			for _, p := range result.Publications {
+				sources = append(sources, p.ID)
+			}
+			deliveries, e := deliveryMetadataBatchTx(ctx, tx, a.TaskID, sources)
 			if e != nil {
 				return e
 			}
-			if found {
-				p.Delivery = &d
+			for i := range result.Publications {
+				p := &result.Publications[i]
+				if d, found := deliveries[p.ID]; found && d.ContextID == p.ContextID {
+					delivery := d
+					p.Delivery = &delivery
+				}
 			}
 		}
 		return nil
@@ -241,7 +278,7 @@ func (s *Store) ReadVerificationArtifact(ctx context.Context, a store.Verificati
 		if err != nil {
 			return err
 		}
-		records, err := q.ListVerificationRecords(ctx, workspace(ctx), a.TaskID)
+		records, err := q.ListVerificationRecords(ctx, workspace(ctx), a.TaskID, store.VerificationArtifactTables)
 		if err != nil {
 			return err
 		}
@@ -280,7 +317,7 @@ func (s *Store) ReconcileVerificationClaims(ctx context.Context) (int, error) {
 	count := 0
 	for _, taskID := range taskIDs {
 		observeVerificationClaimRead(workspace(ctx), taskID)
-		records, err := s.queries.ListVerificationRecords(ctx, workspace(ctx), taskID)
+		records, err := s.queries.ListVerificationRecords(ctx, workspace(ctx), taskID, store.VerificationClaimTables)
 		if err != nil {
 			return count, err
 		}
@@ -387,7 +424,7 @@ func (s *Store) RecordVerificationPullRequest(ctx context.Context, e core.Event)
 		if err := insertEvent(ctx, q, e); err != nil {
 			return err
 		}
-		records, err := q.ListVerificationRecords(ctx, workspace(ctx), e.TaskID)
+		records, err := q.ListVerificationRecords(ctx, workspace(ctx), e.TaskID, store.VerificationDeliveryTables)
 		if err != nil {
 			return err
 		}
@@ -406,7 +443,7 @@ func (s *Store) TranslateVerificationPublication(ctx context.Context, p store.Ve
 		if _, err := s.verificationScopeTx(ctx, tx, store.VerificationAccess{TaskID: p.TaskID, UserID: "internal-publication"}, false); err != nil {
 			return err
 		}
-		records, err := q.ListVerificationRecords(ctx, workspace(ctx), p.TaskID)
+		records, err := q.ListVerificationRecords(ctx, workspace(ctx), p.TaskID, store.VerificationDeliveryTables)
 		if err != nil {
 			return err
 		}
@@ -440,16 +477,16 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 		return err
 	}
 	load := func() (core.VerificationDelivery, bool, error) {
-		rs, e := q.ListVerificationPublicationDeliveries(ctx, workspace(ctx), key)
-		if e != nil {
+		record, found, e := q.LatestVerificationPublicationDelivery(ctx, workspace(ctx), key)
+		if e != nil || !found {
 			return core.VerificationDelivery{}, false, e
 		}
-		ds, e := deliveryRecords(rs)
-		if e != nil {
+		var d core.VerificationDelivery
+		if e = json.Unmarshal(record.Body, &d); e != nil {
 			return core.VerificationDelivery{}, false, e
 		}
-		d, ok := store.VerificationDeliveryLatest(ds)
-		return d, ok, nil
+		store.NoteVerificationRead(store.VerificationReadDelivery, workspace(ctx), d.TaskID, 1)
+		return d, true, nil
 	}
 	current, ok, err := load()
 	if err != nil {
@@ -518,26 +555,20 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:verification:"+workspace(ctx)); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT body FROM verification_publication_deliveries WHERE workspace_id=$1 AND (state IN ('pending','retrying') OR state='failed' AND next_attempt_at<=$2) ORDER BY pr_key,generation LIMIT 100`, workspace(ctx), time.Now().UTC())
+		// Phase one reads the due window without any retained body, so a pass
+		// that can act on nothing decodes nothing (component-persistence,
+		// Database read accounting). The window is ordered by due time, then
+		// pull-request key, and bounded per pass.
+		candidates, err := verificationDeliveryDueTx(ctx, tx, workspace(ctx), time.Now().UTC())
 		if err != nil {
 			return err
 		}
-		var ds []core.VerificationDelivery
-		for rows.Next() {
-			var raw []byte
-			if err = rows.Scan(&raw); err != nil {
-				rows.Close()
-				return err
-			}
-			var d core.VerificationDelivery
-			if err = json.Unmarshal(raw, &d); err != nil {
-				rows.Close()
-				return err
-			}
-			ds = append(ds, d)
+		if len(candidates) == 0 {
+			return nil
 		}
-		err = rows.Err()
-		rows.Close()
+		// Phase two decodes the body of the rows this pass acts on: the newest
+		// generation of each due pull-request key.
+		ds, err := verificationDeliveryBodiesTx(ctx, tx, workspace(ctx), candidates)
 		if err != nil {
 			return err
 		}
@@ -571,4 +602,86 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 		store.ReportDriftRepair(ctx, store.DriftVerificationDeliveryWithoutJob.For(taskID))
 	}
 	return nil
+}
+
+// verificationDeliveryReconcileWindow bounds one pass's due deliveries.
+const verificationDeliveryReconcileWindow = 100
+
+// verificationDeliveryDue is one due delivery without its retained body.
+type verificationDeliveryDue struct {
+	Key        string
+	Generation int64
+	State      string
+}
+
+// verificationDeliveryDueTx selects the due deliveries of one pass: pending and
+// retrying rows, and failed rows whose next attempt time has passed. It reads no
+// body, so a pass that finds nothing to do reads no retained payload.
+func verificationDeliveryDueTx(ctx context.Context, tx pgx.Tx, ws string, now time.Time) ([]verificationDeliveryDue, error) {
+	rows, err := tx.Query(ctx, `SELECT pr_key, generation, state FROM verification_publication_deliveries WHERE workspace_id=$1 AND (state IN ('pending','retrying') OR (state='failed' AND next_attempt_at<=$2)) ORDER BY COALESCE(next_attempt_at,'1970-01-01 00:00:00'::timestamptz), pr_key, generation LIMIT $3`, ws, now, verificationDeliveryReconcileWindow)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []verificationDeliveryDue
+	for rows.Next() {
+		var d verificationDeliveryDue
+		if err = rows.Scan(&d.Key, &d.Generation, &d.State); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	store.NoteVerificationRead(store.VerificationReadDue, ws, "", len(out))
+	return out, rows.Err()
+}
+
+// verificationDeliveryBodiesTx decodes the retained body of every due
+// delivery, in one statement, so a pass acts on exactly the rows its due
+// window selected.
+func verificationDeliveryBodiesTx(ctx context.Context, tx pgx.Tx, ws string, candidates []verificationDeliveryDue) ([]core.VerificationDelivery, error) {
+	acted := make([]verificationDeliveryDue, 0, len(candidates))
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		if seen[c.Key+"\x00"+strconv.FormatInt(c.Generation, 10)] {
+			continue
+		}
+		seen[c.Key+"\x00"+strconv.FormatInt(c.Generation, 10)] = true
+		acted = append(acted, c)
+	}
+	args := make([]any, 0, 1+2*len(acted))
+	args = append(args, ws)
+	clauses := make([]string, 0, len(acted))
+	for _, c := range acted {
+		clauses = append(clauses, fmt.Sprintf("(pr_key=$%d AND generation=$%d)", len(args)+1, len(args)+2))
+		args = append(args, c.Key, c.Generation)
+	}
+	rows, err := tx.Query(ctx, `SELECT body FROM verification_publication_deliveries WHERE workspace_id=$1 AND (`+strings.Join(clauses, " OR ")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []core.VerificationDelivery
+	for rows.Next() {
+		var raw []byte
+		if err = rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var d core.VerificationDelivery
+		if err = json.Unmarshal(raw, &d); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left, right := store.VerificationDeliveryKey(out[i].Repository, out[i].PullRequestNumber), store.VerificationDeliveryKey(out[j].Repository, out[j].PullRequestNumber)
+		if left != right {
+			return left < right
+		}
+		return out[i].Generation < out[j].Generation
+	})
+	store.NoteVerificationRead(store.VerificationReadBodies, ws, "", len(out))
+	return out, nil
 }

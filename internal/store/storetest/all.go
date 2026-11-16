@@ -26,6 +26,10 @@ type Fixture struct {
 	Workspace          string
 	Config             *config.Config
 	SeedLegacy         func(*testing.T, string) (int, func(*testing.T))
+
+	RestoreSupersededDeliveries func(*testing.T, context.Context, string)
+	DrainReadQueries            func() map[string]uint64
+
 	// SeedHistoricalLink inserts one retained, non-projector-owned link row
 	// exactly as historical migrations left it, such as migration 046's
 	// historical_feature_assignment with legacy feature.migrated provenance.

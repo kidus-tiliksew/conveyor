@@ -214,9 +214,22 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), DrainReadRows: conformanceReadRows(st), VerificationClaimReads: verificationClaimReads(workspace), AwaitTaskOperationWaiter: func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{}) {
+			drainQueries := func() map[string]uint64 {
+				result := map[string]uint64{}
+				for _, total := range st.ReadStats(1 << 16).Top {
+					result[total.Label] = total.Queries
+				}
+				return result
+			}
+			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), DrainReadQueries: drainQueries, DrainReadRows: conformanceReadRows(st), VerificationClaimReads: verificationClaimReads(workspace), AwaitTaskOperationWaiter: func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{}) {
 				t.Helper()
 				awaitTaskOperationWaiter(t, ctx, st, workspace, taskID, done)
+			}, RestoreSupersededDeliveries: func(t *testing.T, ctx context.Context, taskID string) {
+				t.Helper()
+				tag, err := st.pool.Exec(ctx, `UPDATE verification_publication_deliveries SET state='pending', body=jsonb_set(body, '{State}', '"pending"') WHERE workspace_id=$1 AND task_id=$2 AND state='superseded'`, workspace, taskID)
+				if err != nil || tag.RowsAffected() == 0 {
+					t.Fatalf("restore superseded delivery: %v, rows %d", err, tag.RowsAffected())
+				}
 			}, ReopenVerification: func(t *testing.T) store.Backend {
 				pool, err := pgxpool.NewWithConfig(t.Context(), st.pool.Config())
 				if err != nil {

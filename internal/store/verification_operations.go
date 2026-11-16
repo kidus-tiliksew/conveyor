@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/hex"
 	"strings"
 	"time"
@@ -27,7 +28,7 @@ func sameVerificationAuthority(a, b core.VerificationBinding) bool {
 	return a.ReviewScope == b.ReviewScope && a.BaselineSHA == b.BaselineSHA && verificationEqual(a.Revisions, b.Revisions) && verificationEqual(a.GoverningPins, b.GoverningPins)
 }
 
-func verificationOperationMutation(c VerificationCommand, rows []VerificationRow, actor string, now time.Time, redactor *redact.Redactor, out *VerificationMutation) error {
+func verificationOperationMutation(ctx context.Context, ops VerificationOperationScope, c VerificationCommand, rows []VerificationRow, actor string, now time.Time, redactor *redact.Redactor, out *VerificationMutation) error {
 	if c.Operation == nil {
 		return ErrVerificationInvalid
 	}
@@ -124,6 +125,9 @@ func verificationOperationMutation(c VerificationCommand, rows []VerificationRow
 				}
 				return ErrVerificationState
 			}
+		}
+		if err := verificationForeignOperationConflicts(ctx, ops, c, v); err != nil {
+			return err
 		}
 		v.ID, v.CreatedAt = verificationID(), now
 		v.History = []VerificationOperationObservation{{State: "registered", Actor: actor, Source: "operation.prepare", CapturedAt: now, ContextID: c.ContextID, RunID: c.RunID, WorkOrderAttemptID: c.Access.WorkOrderAttemptID}}
@@ -298,4 +302,43 @@ func verificationOperationRun(row VerificationRow) string {
 		return op.Successors[len(op.Successors)-1].RunID
 	}
 	return op.RunID
+}
+
+// verificationForeignOperationConflicts applies the two workspace-wide rules a
+// registration keeps after a store reads only the task's own operation rows: a
+// logical key another task owns is refused, and another task's unresolved
+// operation for the same subject, step, and target blocks this registration
+// (component-verification-service).
+func verificationForeignOperationConflicts(ctx context.Context, ops VerificationOperationScope, c VerificationCommand, v VerificationOperation) error {
+	if ops == nil {
+		return nil
+	}
+	if c.Key != "" {
+		row, found, err := ops.VerificationOperationByKey(ctx, c.Key)
+		if err != nil {
+			return err
+		}
+		if found && row.TaskID != c.Access.TaskID {
+			return ErrVerificationAccess
+		}
+	}
+	foreign, err := ops.UnresolvedVerificationOperations(ctx, v.SubjectKey, v.StepID, v.Target)
+	if err != nil {
+		return err
+	}
+	noteVerificationReadTask(ctx, VerificationReadWorkspace, c.Access.TaskID, len(foreign))
+	for _, row := range foreign {
+		if row.TaskID == c.Access.TaskID || verificationOperationResolved(row.State) {
+			continue
+		}
+		old := verificationDecode[VerificationOperation](row)
+		if old.SubjectKey != v.SubjectKey || old.StepID != v.StepID || old.Target != v.Target {
+			continue
+		}
+		if old.InputDigest != v.InputDigest {
+			return ErrVerificationConflict
+		}
+		return ErrVerificationState
+	}
+	return nil
 }

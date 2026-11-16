@@ -1473,7 +1473,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	attemptID := core.NewWorkOrderAttemptID()
 	repin := false
 	if order.Stage == core.StageVerify {
-		records, recordsErr := s.queries.WithTx(tx).ListVerificationRecords(ctx, workspace(ctx), order.TaskID)
+		records, recordsErr := s.queries.WithTx(tx).ListVerificationRecords(ctx, workspace(ctx), order.TaskID, store.VerificationRepinTables)
 		if recordsErr != nil {
 			return core.WorkOrder{}, recordsErr
 		}
@@ -1665,7 +1665,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			return core.WorkOrder{}, err
 		}
 		q := s.queries.WithTx(tx)
-		records, e := q.ListVerificationRecords(ctx, workspace(ctx), taskID)
+		records, e := q.ListVerificationRecords(ctx, workspace(ctx), taskID, store.VerificationRecoveryTables)
 		if e != nil {
 			return core.WorkOrder{}, e
 		}
@@ -2215,7 +2215,7 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 		})
 		verificationState := store.VerificationReviewState{}
 		if taskFromDB(before).SetupContract.VerifyStage {
-			records, e := q.ListVerificationRecords(ctx, workspace(ctx), decision.TaskID)
+			records, e := q.ListVerificationRecords(ctx, workspace(ctx), decision.TaskID, store.VerificationSnapshotTables)
 			if e != nil {
 				return e
 			}
