@@ -246,8 +246,9 @@ func (s *Store) CancelRiskOrderCommand(ctx context.Context, lease taskops.TaskLe
 
 func (s *Store) ListTaskRiskOrders(ctx context.Context, taskID string) ([]core.RiskOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskRiskOrders")
-	if _, err := getTaskRow(ctx, s.db, taskID); err != nil {
-		return nil, err
+	var exists int
+	if err := documentRow(ctx, s.db, `SELECT 1 FROM tasks WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), taskID).Scan(&exists); err != nil {
+		return nil, notFound(err, "task %s", taskID)
 	}
 	orders, err := taskRiskOrdersTx(ctx, s.db, taskID)
 	if err != nil {
