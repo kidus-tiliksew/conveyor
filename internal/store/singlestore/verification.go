@@ -413,7 +413,7 @@ func (s *Store) ReconcileVerificationClaims(ctx context.Context) (int, error) {
 // accounting).
 func deliveryLatestRowTx(ctx context.Context, tx *sql.Tx, ws, key string) (core.VerificationDelivery, bool, error) {
 	var raw []byte
-	err := tx.QueryRowContext(ctx, `SELECT body FROM verification_publication_deliveries WHERE workspace_id=? AND pr_key=? ORDER BY generation DESC LIMIT 1`, ws, key).Scan(&raw)
+	err := tx.QueryRowContext(ctx, `SELECT body FROM verification_publication_deliveries WHERE workspace_id=? AND pr_key=? AND state<>'superseded' ORDER BY generation DESC LIMIT 1`, ws, key).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.VerificationDelivery{}, false, nil
 	}

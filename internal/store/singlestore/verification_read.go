@@ -262,26 +262,6 @@ func deliveryMetadataBatchTx(ctx context.Context, tx *sql.Tx, task string, sourc
 // verificationMetadataChunk bounds one statement's publication list.
 const verificationMetadataChunk = 500
 
-func deliveryMetadataGenerationsTx(ctx context.Context, tx *sql.Tx, task string, sources []string) ([]int64, error) {
-	args := make([]any, 0, 2+len(sources))
-	args = append(args, documentWorkspace(ctx), task)
-	args = append(args, verificationMetadataArgs(sources)...)
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT generation FROM verification_publication_deliveries WHERE workspace_id=? AND task_id=? AND source_publication_id IN (`+verificationMarks(len(sources))+`)`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var generation int64
-		if err = rows.Scan(&generation); err != nil {
-			return nil, err
-		}
-		out = append(out, generation)
-	}
-	return out, rows.Err()
-}
-
 func verificationMarks(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }

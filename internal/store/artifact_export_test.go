@@ -93,6 +93,19 @@ func SeedStoredTaskHoldForTest(t *testing.T, st Backend, taskID string) {
 	m.tasks[taskID] = task
 }
 
+func RestoreSupersededDeliveriesForTest(t *testing.T, st Backend, taskID string) {
+	t.Helper()
+	m := st.(*volatileMemory).memory
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, d := range m.verificationDeliveries {
+		if d.TaskID == taskID && d.State == "superseded" {
+			d.State = "pending"
+			m.verificationDeliveries[key] = d
+		}
+	}
+}
+
 // SeedStoredStaleWorkOrderForTest sets one stored order to the retired stale
 // value, as a row the retired queue clock left would read; no command writes
 // it any more (component-work-orders invariant 5). With exhausted it stores

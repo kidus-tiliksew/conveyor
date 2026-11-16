@@ -11,6 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // verificationReadProbe collects the verification reads a conformance case
@@ -111,6 +112,13 @@ func runVerificationOperationKeyScope(t *testing.T, x Fixture) {
 			return &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte(digest))}
 		}
 		op := owner.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: operation("{}")})
+		other := newVerificationFixture(t, x)
+		if _, err := x.Backend.ApplyVerification(other.ctx, other.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "different-" + other.access.TaskID, Operation: operation("{}")})); !errors.Is(err, store.ErrVerificationState) {
+			t.Fatalf("another task's unresolved operation on the same subject: %v", err)
+		}
+		if _, err := x.Backend.ApplyVerification(other.ctx, other.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "different-" + other.access.TaskID, Operation: operation(`{"changed":true}`)})); !errors.Is(err, store.ErrVerificationConflict) {
+			t.Fatalf("another task's unresolved operation with changed input: %v", err)
+		}
 		// Resolve the operation so only the key rule can refuse the other task:
 		// the key lookup runs before the same-subject rule, but an unresolved
 		// operation of the same subject would still refuse with the state error
@@ -118,9 +126,11 @@ func runVerificationOperationKeyScope(t *testing.T, x Fixture) {
 		owner.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "dispatching", Source: "fixture", CapturedAt: time.Now().UTC()}})
 		owner.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "completed", Source: "fixture", CapturedAt: time.Now().UTC()}})
 
-		other := newVerificationFixture(t, x)
 		if _, err := x.Backend.ApplyVerification(other.ctx, other.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: operation("{}")})); !errors.Is(err, store.ErrVerificationAccess) {
 			t.Fatalf("another task's key: %v", err)
+		}
+		if _, err := x.Backend.ApplyVerification(other.ctx, other.command(store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: operation(`{"changed":true}`)})); !errors.Is(err, store.ErrVerificationConflict) {
+			t.Fatalf("another task's key with changed definition: %v", err)
 		}
 		// The refusal is about the key, not about registration: the other task
 		// still registers its own key. Resolving it keeps this fixture from
@@ -145,6 +155,7 @@ func runVerificationOperationKeyScope(t *testing.T, x Fixture) {
 // (component-persistence, Database read accounting; req-verification-evidence).
 func runVerificationReadVolume(t *testing.T, x Fixture) {
 	t.Run("SnapshotStatementsFixed", func(t *testing.T) { runVerificationSnapshotStatements(t, x) })
+	t.Run("PublicationCreateSummary", func(t *testing.T) { runVerificationPublicationCreateSummary(t, x) })
 	t.Run("DeliveryReadsNewestGeneration", func(t *testing.T) { runVerificationDeliveryGeneration(t, x) })
 	t.Run("ReconcilerReadsActedRows", func(t *testing.T) { runVerificationReconcilerReads(t, x) })
 	t.Run("OneTaskIndependentOfOthers", func(t *testing.T) { runVerificationTaskIndependence(t, x) })
@@ -164,12 +175,26 @@ func runVerificationSnapshotStatements(t *testing.T, x Fixture) {
 			created++
 			head := fmt.Sprintf("%040d", created)
 			p := store.VerificationPublication{PullRequestNumber: 4400 + created, HeadSHA: head, BodyDigest: verificationSHA([]byte(head))}
+			pr := core.Event{TaskID: v.access.TaskID, JobID: v.access.WorkOrderID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "fixture/volume", "number": p.PullRequestNumber, "head_sha": head})}
+			requireOK(t, x.Backend.RecordVerificationPullRequest(v.ctx, pr))
 			v.apply(t, store.VerificationCommand{Kind: store.VerificationCreatePublication, Publication: &p})
 		}
 	}
-	measure := func(publications int) (reads, metadata, metadataRows int) {
+	measure := func(publications int) (reads, metadata, metadataRows int, queries uint64) {
 		probe.reset()
+		original := v.ctx
+		if x.DrainReadQueries != nil {
+			x.DrainReadQueries()
+			v.ctx = dbmetrics.WithReadLabel(v.ctx, "verification-snapshot")
+		}
 		snapshot := v.snapshot(t)
+		v.ctx = original
+		if x.DrainReadQueries != nil {
+			queries = x.DrainReadQueries()["verification-snapshot"]
+			if queries == 0 {
+				t.Fatal("snapshot recorded no database queries")
+			}
+		}
 		if len(snapshot.Publications) != publications {
 			t.Fatalf("publications = %d, want %d", len(snapshot.Publications), publications)
 		}
@@ -177,21 +202,54 @@ func runVerificationSnapshotStatements(t *testing.T, x Fixture) {
 		if workspaceRows != 0 {
 			t.Fatalf("a snapshot read issued %d workspace rows", workspaceRows)
 		}
-		return reads, probe.count(x.Workspace, store.VerificationReadMetadata), probe.rows(x.Workspace, store.VerificationReadMetadata)
+		return reads, probe.count(x.Workspace, store.VerificationReadMetadata), probe.rows(x.Workspace, store.VerificationReadMetadata), queries
 	}
 	publish(1)
-	oneReads, oneMetadata, oneRows := measure(1)
+	oneReads, oneMetadata, oneRows, oneQueries := measure(1)
 	publish(5)
-	sixReads, sixMetadata, sixRows := measure(6)
+	sixReads, sixMetadata, sixRows, sixQueries := measure(6)
 	if oneMetadata != 1 || sixMetadata != 1 {
 		t.Fatalf("metadata statements: one publication %d, six publications %d", oneMetadata, sixMetadata)
 	}
-	if oneRows > 1 || sixRows > 6 {
-		t.Fatalf("metadata rows: one publication %d, six publications %d", oneRows, sixRows)
+	if oneRows != 1 || sixRows != 6 {
+		t.Fatalf("metadata rows: one publication %d, six publications %d; want 1 and 6", oneRows, sixRows)
 	}
 	if oneReads != sixReads {
 		t.Fatalf("snapshot statements grew with publications: %d then %d", oneReads, sixReads)
 	}
+	if x.DrainReadQueries != nil && oneQueries != sixQueries {
+		t.Fatalf("snapshot database statements grew with publications: %d then %d", oneQueries, sixQueries)
+	}
+}
+
+func runVerificationPublicationCreateSummary(t *testing.T, x Fixture) {
+	v := newVerificationFixture(t, x)
+	const number = 4498
+	head := strings.Repeat("a", 40)
+	e := v.envelope("summary-evidence", "summary-evidence-key", "observed state")
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e)}})
+	pr := core.Event{TaskID: v.access.TaskID, JobID: v.access.WorkOrderID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "fixture/volume", "number": number, "head_sha": head})}
+	requireOK(t, x.Backend.RecordVerificationPullRequest(v.ctx, pr))
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationCreatePublication, Publication: &store.VerificationPublication{PullRequestNumber: number, HeadSHA: head, BodyDigest: verificationSHA([]byte("summary"))}})
+	var delivery *core.VerificationDelivery
+	for _, p := range v.snapshot(t).Publications {
+		if p.Delivery != nil && (delivery == nil || p.Delivery.Generation > delivery.Generation) {
+			d := *p.Delivery
+			delivery = &d
+		}
+	}
+	if delivery == nil {
+		t.Fatal("publication did not create a delivery")
+	}
+	requireOK(t, x.Backend.RunVerificationDelivery(v.ctx, store.VerificationDeliveryArgs(*delivery), func(d *core.VerificationDelivery, _ func(string, core.VerificationDelivery) error) error {
+		if !strings.Contains(d.Summary, "Records: 2\n") {
+			t.Fatalf("summary missing attempt and evidence records: %q", d.Summary)
+		}
+		if want := verificationSHA([]byte(d.Summary)); d.TargetDigest != want {
+			t.Fatalf("target digest = %q, want %q", d.TargetDigest, want)
+		}
+		return nil
+	}))
 }
 
 // runVerificationDeliveryGeneration proves a delivery run decodes only the
@@ -267,6 +325,14 @@ func runVerificationReconcilerReads(t *testing.T, x Fixture) {
 	if due, bodies := afterDue-beforeDue, afterBodies-beforeBodies; due != 1 || bodies != 1 {
 		t.Fatalf("a pass over a superseded generation read %d due rows and %d bodies, want one acted row and one body", due, bodies)
 	}
+	if x.RestoreSupersededDeliveries == nil {
+		t.Fatal("fixture cannot restore a historical pending generation")
+	}
+	x.RestoreSupersededDeliveries(t, v.ctx, v.access.TaskID)
+	twoDue, twoBodies := reconcile()
+	if due, bodies := twoDue-beforeDue, twoBodies-beforeBodies; due != 2 || bodies != 2 {
+		t.Fatalf("two pending generations read %d due rows and %d bodies, want both acted on", due, bodies)
+	}
 }
 
 // runVerificationTaskIndependence proves reading, registering, applying and
@@ -286,21 +352,31 @@ func runVerificationTaskIndependence(t *testing.T, x Fixture) {
 		_, err = x.Backend.ReadVerification(v.ctx, v.access, v.contextID)
 		requireOK(t, err)
 	}
-	measured := func(v *verificationFixture, key string) (int, int, int) {
+	measured := func(v *verificationFixture, key string) (int, int, int, uint64) {
 		t.Helper()
 		probe, stop := probeVerificationReads(t)
 		defer stop()
 		probe.reset()
+		if x.DrainReadBytes != nil {
+			x.DrainReadBytes()
+			v.ctx = dbmetrics.WithReadLabel(v.ctx, "verification-task-flow")
+		}
 		flow(v, key)
 		if foreign := probe.foreign(x.Workspace, v.access.TaskID); len(foreign) != 0 {
 			t.Fatalf("%d reads decoded another task's rows: %+v", len(foreign), foreign)
 		}
-		return probe.totals(x.Workspace)
+		var bytes uint64
+		if x.DrainReadBytes != nil {
+			bytes = x.DrainReadBytes()["verification-task-flow"]
+			if bytes == 0 {
+				t.Fatal("verification task flow recorded no database read bytes")
+			}
+		}
+		rows, workspaceRows, reads := probe.totals(x.Workspace)
+		return rows, workspaceRows, reads, bytes
 	}
 	alone := newVerificationFixture(t, x)
-	aloneRows, aloneWorkspace, aloneReads := measured(&alone, "alone-key")
-	// Every other task holds a resolved operation row of its own, which is the
-	// row a workspace-wide read would have returned before the narrowing.
+	aloneRows, aloneWorkspace, aloneReads, aloneBytes := measured(&alone, "alone-key")
 	for index := range otherTasks {
 		other := newVerificationFixture(t, x)
 		op := other.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: fmt.Sprintf("other-key-%d-%s", index, other.access.TaskID), Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
@@ -308,11 +384,14 @@ func runVerificationTaskIndependence(t *testing.T, x Fixture) {
 		other.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "completed", Source: "fixture", CapturedAt: time.Now().UTC()}})
 	}
 	crowded := newVerificationFixture(t, x)
-	crowdedRows, crowdedWorkspace, crowdedReads := measured(&crowded, "crowded-key")
+	crowdedRows, crowdedWorkspace, crowdedReads, crowdedBytes := measured(&crowded, "crowded-key")
 	if crowdedRows != aloneRows || crowdedReads != aloneReads {
 		t.Fatalf("one task's read volume grew with %d other tasks: rows %d then %d, reads %d then %d", otherTasks, aloneRows, crowdedRows, aloneReads, crowdedReads)
 	}
 	if crowdedWorkspace > 1 || aloneWorkspace > 1 {
 		t.Fatalf("workspace lookups returned %d then %d rows, want at most the one keyed row", aloneWorkspace, crowdedWorkspace)
+	}
+	if x.DrainReadBytes != nil && crowdedBytes > aloneBytes*2+1024 {
+		t.Fatalf("one task's database reads grew with %d other tasks: %d then %d bytes", otherTasks, aloneBytes, crowdedBytes)
 	}
 }

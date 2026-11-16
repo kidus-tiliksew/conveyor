@@ -2566,7 +2566,7 @@ func (q *Queries) ListVerificationPublicationDeliveries(ctx context.Context, ws,
 // generation history (component-persistence, Database read accounting).
 func (q *Queries) LatestVerificationPublicationDelivery(ctx context.Context, workspaceID, prKey string) (VerificationPublicationDeliveryRecord, bool, error) {
 	var r VerificationPublicationDeliveryRecord
-	err := q.db.QueryRow(ctx, `SELECT workspace_id,id,task_id,context_id,source_publication_id,pr_key,generation,state,body FROM verification_publication_deliveries WHERE workspace_id=$1 AND pr_key=$2 ORDER BY generation DESC LIMIT 1`, workspaceID, prKey).Scan(&r.WorkspaceID, &r.ID, &r.TaskID, &r.ContextID, &r.SourcePublicationID, &r.PRKey, &r.Generation, &r.State, &r.Body)
+	err := q.db.QueryRow(ctx, `SELECT workspace_id,id,task_id,context_id,source_publication_id,pr_key,generation,state,body FROM verification_publication_deliveries WHERE workspace_id=$1 AND pr_key=$2 AND state<>'superseded' ORDER BY generation DESC LIMIT 1`, workspaceID, prKey).Scan(&r.WorkspaceID, &r.ID, &r.TaskID, &r.ContextID, &r.SourcePublicationID, &r.PRKey, &r.Generation, &r.State, &r.Body)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return VerificationPublicationDeliveryRecord{}, false, nil
 	}

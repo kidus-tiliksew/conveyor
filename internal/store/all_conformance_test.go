@@ -89,6 +89,8 @@ func TestMemoryConformance(t *testing.T) {
 				return store.WorkspaceConfigYAMLForTest(t, st, workspace)
 			}, SeedSetupContract: func(t *testing.T, _ context.Context, taskID, raw string) {
 				store.SeedSetupContractForTest(t, st, taskID, raw)
+			}, RestoreSupersededDeliveries: func(t *testing.T, _ context.Context, taskID string) {
+				store.RestoreSupersededDeliveriesForTest(t, st, taskID)
 			}, SeedStoredTaskHold: func(t *testing.T, _ context.Context, taskID string) {
 				store.SeedStoredTaskHoldForTest(t, st, taskID)
 			}, SeedStoredStaleWorkOrder: func(t *testing.T, _ context.Context, orderID string, exhausted bool, scheduledAt time.Time) {

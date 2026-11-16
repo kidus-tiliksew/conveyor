@@ -193,10 +193,26 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), VerificationClaimReads: verificationClaimReads(ws), NestedTaskCommandsInterleave: true, DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
+			drainQueries := func() map[string]uint64 {
+				result := map[string]uint64{}
+				for _, total := range st.ReadStats(1 << 16).Top {
+					result[total.Label] = total.Queries
+				}
+				return result
+			}
+			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), DrainReadQueries: drainQueries, VerificationClaimReads: verificationClaimReads(ws), NestedTaskCommandsInterleave: true, DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
 				t.Helper()
 				if _, err := st.db.ExecContext(ctx, `UPDATE users SET status='deactivated' WHERE id=?`, userID); err != nil {
 					t.Fatal(err)
+				}
+			}, RestoreSupersededDeliveries: func(t *testing.T, ctx context.Context, taskID string) {
+				t.Helper()
+				result, err := st.db.ExecContext(ctx, `UPDATE verification_publication_deliveries SET state='pending', body=JSON_SET_STRING(body, 'State', 'pending') WHERE workspace_id=? AND task_id=? AND state='superseded'`, ws, taskID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n, err := result.RowsAffected(); err != nil || n == 0 {
+					t.Fatalf("restore superseded delivery: %d rows, %v", n, err)
 				}
 			}, ReopenVerification: func(t *testing.T) store.Backend {
 				reopened, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN())
