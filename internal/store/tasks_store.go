@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
@@ -1025,12 +1026,21 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 	return out, nil
 }
 
+// ListTasksFiltered states no task body and no frozen policy snapshot, as the
+// SQL backends' list column set does not select them, so every backend answers
+// a list read the same way (req-operator-next-action AC-2.7;
+// component-persistence, Database read accounting).
 func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error) {
 	if err := filter.Validate(); err != nil {
 		return nil, err
 	}
 	if !filter.Active() {
-		return m.ListTasks(ctx)
+		tasks, err := m.ListTasks(ctx)
+		if err != nil {
+			return nil, err
+		}
+		clearListTaskDetail(tasks)
+		return tasks, nil
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1045,6 +1055,7 @@ func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]co
 		}
 		out = append(out, m.hydrateTaskLocked(t))
 	}
+	clearListTaskDetail(out)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].ID < out[j].ID
@@ -1055,14 +1066,16 @@ func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]co
 }
 
 func (m *memory) ListTasksFilteredWithoutBody(ctx context.Context, filter TaskFilter) ([]core.Task, error) {
-	tasks, err := m.ListTasksFiltered(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
+	return m.ListTasksFiltered(ctx, filter)
+}
+
+// clearListTaskDetail drops the two columns a list read does not select: the
+// task body and the frozen policy snapshot.
+func clearListTaskDetail(tasks []core.Task) {
 	for i := range tasks {
 		tasks[i].Body = ""
+		tasks[i].SetupContract = config.PolicyContract{}
 	}
-	return tasks, nil
 }
 
 // taskMatchesFilterLocked evaluates the shared surface predicate. The Postgres

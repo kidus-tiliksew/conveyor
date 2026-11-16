@@ -1592,16 +1592,19 @@ type ListTaskOperationsTasksRow struct {
 	HasChildren     bool `json:"has_children"`
 }
 
-// listTaskOperationsTasksWithoutBody is listTaskOperationsTasks with the body
-// column replaced by an empty string, so its predicate and order cannot drift.
-var listTaskOperationsTasksWithoutBody = strings.Replace(listTaskOperationsTasks, "t.title, t.body, t.class", "t.title, ''::text AS body, t.class", 1)
+// listTaskOperationsTasksForList is listTaskOperationsTasks with the body
+// column and the frozen policy snapshot replaced by constants, so a list or
+// page read transfers neither while its predicate and order cannot drift
+// (req-operator-next-action AC-2.7; component-persistence, Database read
+// accounting).
+var listTaskOperationsTasksForList = strings.Replace(strings.Replace(listTaskOperationsTasks, "t.title, t.body, t.class", "t.title, ''::text AS body, t.class", 1), "t.setup_contract,", "'{}'::jsonb AS setup_contract,", 1)
 
 func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error) {
 	return q.listTaskOperationsTasksRows(ctx, listTaskOperationsTasks, arg)
 }
 
-func (q *Queries) ListTaskOperationsTasksWithoutBody(ctx context.Context, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error) {
-	return q.listTaskOperationsTasksRows(ctx, listTaskOperationsTasksWithoutBody, arg)
+func (q *Queries) ListTaskOperationsTasksForList(ctx context.Context, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error) {
+	return q.listTaskOperationsTasksRows(ctx, listTaskOperationsTasksForList, arg)
 }
 
 func (q *Queries) listTaskOperationsTasksRows(ctx context.Context, query string, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error) {

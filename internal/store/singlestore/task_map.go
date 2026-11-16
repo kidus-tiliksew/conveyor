@@ -18,6 +18,17 @@ import (
 // so the map read never transfers task bodies (req-board-map AC-3.1).
 var taskMapColumns = strings.Replace(taskColumns, ",body,", ",'' AS body,", 1)
 
+// taskListColumns is taskColumns with the LONGTEXT body and the frozen policy
+// snapshot replaced by constants, so a list or page read transfers neither.
+// No list consumer projects a body or a setup contract: a row's body is read
+// only by the single-task detail reads that return it, and the frozen policy
+// is read only by the dispatch and detail paths that hold one task
+// (req-operator-next-action AC-2.7; component-persistence, Database read
+// accounting).
+var taskListColumns = strings.Replace(
+	strings.Replace(taskColumns, ",body,", ",'' AS body,", 1),
+	",setup_contract,", ",NULL AS setup_contract,", 1)
+
 func taskMapMarks(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }

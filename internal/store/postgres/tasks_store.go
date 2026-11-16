@@ -300,34 +300,32 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 }
 
 // ListTasksFiltered narrows the workspace with the shared Tasks/Board predicate
-// (AC-2.4). An inactive filter routes to ListTasks so the many callers that
-// never filter keep their existing plan.
+// (AC-2.4) over the list column set, so a list read transfers no task body and
+// no frozen policy snapshot. ListTasks is the whole-row read that states them
+// (req-operator-next-action AC-2.7).
 func (s *Store) ListTasksFiltered(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFiltered")
 	if err := filter.Validate(); err != nil {
 		return nil, err
 	}
-	if !filter.Active() {
-		return s.ListTasks(ctx)
-	}
 	// A zero page limit is the query's own "no LIMIT" spelling, so the paged
 	// Tasks read and this unpaged one stay one SQL predicate.
-	rows, err := s.queries.ListTaskOperationsTasks(ctx, taskOperationsListParams(ctx, filter, 0, 0))
+	rows, err := s.queries.ListTaskOperationsTasksForList(ctx, taskOperationsListParams(ctx, filter, 0, 0))
 	if err != nil {
 		return nil, err
 	}
 	return s.hydrateTaskRows(ctx, rows)
 }
 
-// ListTasksFilteredWithoutBody runs ListTasksFiltered's predicate and hydration
-// over a task row whose body is an empty string, so the read transfers no task
-// body (req-operator-next-action AC-2.7).
+// ListTasksFilteredWithoutBody is the explicit body-free spelling of
+// ListTasksFiltered for callers that state the guarantee, such as the attention
+// count (req-operator-next-action AC-2.7).
 func (s *Store) ListTasksFilteredWithoutBody(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFilteredWithoutBody")
 	if err := filter.Validate(); err != nil {
 		return nil, err
 	}
-	rows, err := s.queries.ListTaskOperationsTasksWithoutBody(ctx, taskOperationsListParams(ctx, filter, 0, 0))
+	rows, err := s.queries.ListTaskOperationsTasksForList(ctx, taskOperationsListParams(ctx, filter, 0, 0))
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +403,7 @@ func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperatio
 	if err != nil {
 		return store.TaskOperationsPage{}, err
 	}
-	rows, err := s.queries.ListTaskOperationsTasks(ctx, taskOperationsListParams(ctx, query.TaskFilter, query.Limit, query.Offset))
+	rows, err := s.queries.ListTaskOperationsTasksForList(ctx, taskOperationsListParams(ctx, query.TaskFilter, query.Limit, query.Offset))
 	if err != nil {
 		return store.TaskOperationsPage{}, err
 	}
@@ -490,7 +488,7 @@ func (s *Store) ListTaskPage(ctx context.Context, query store.TaskOperationsQuer
 	if err != nil {
 		return store.TaskPage{}, err
 	}
-	rows, err := s.queries.ListTaskOperationsTasks(ctx, taskOperationsListParams(ctx, query.TaskFilter, query.Limit, query.Offset))
+	rows, err := s.queries.ListTaskOperationsTasksForList(ctx, taskOperationsListParams(ctx, query.TaskFilter, query.Limit, query.Offset))
 	if err != nil {
 		return store.TaskPage{}, err
 	}

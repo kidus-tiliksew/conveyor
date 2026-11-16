@@ -873,10 +873,19 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 	}
 	return q, args
 }
+// ListTasks reads every workspace row with its body and frozen policy, for the
+// callers that state a whole task: the planner's approved-spec listing, the
+// blueprint and requirement detail projections, and the review-policy drift
+// pass, which decides enforcement from the frozen policy
+// (component-persistence, Database read accounting).
 func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasks")
-	return s.ListTasksFiltered(ctx, store.TaskFilter{})
+	return s.listTaskRowsSelecting(ctx, taskColumns, store.TaskOperationsQuery{TaskFilter: store.TaskFilter{}})
 }
+
+// ListTasksFiltered reads the filtered rows over taskListColumns, so a list
+// read transfers no task body and no frozen policy snapshot
+// (req-operator-next-action AC-2.7).
 func (s *Store) ListTasksFiltered(ctx context.Context, f store.TaskFilter) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFiltered")
 	if err := f.Validate(); err != nil {
@@ -885,18 +894,18 @@ func (s *Store) ListTasksFiltered(ctx context.Context, f store.TaskFilter) ([]co
 	return s.listTaskRows(ctx, store.TaskOperationsQuery{TaskFilter: f})
 }
 
-// ListTasksFilteredWithoutBody runs ListTasksFiltered's predicate and hydration
-// over taskMapColumns, whose body is an empty string, so the read transfers no
-// task body (req-operator-next-action AC-2.7).
+// ListTasksFilteredWithoutBody is the explicit body-free spelling of
+// ListTasksFiltered for callers that state the guarantee, such as the
+// attention count (req-operator-next-action AC-2.7).
 func (s *Store) ListTasksFilteredWithoutBody(ctx context.Context, f store.TaskFilter) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFilteredWithoutBody")
 	if err := f.Validate(); err != nil {
 		return nil, err
 	}
-	return s.listTaskRowsSelecting(ctx, taskMapColumns, store.TaskOperationsQuery{TaskFilter: f})
+	return s.listTaskRows(ctx, store.TaskOperationsQuery{TaskFilter: f})
 }
 func (s *Store) listTaskRows(ctx context.Context, q store.TaskOperationsQuery) ([]core.Task, error) {
-	return s.listTaskRowsSelecting(ctx, taskColumns, q)
+	return s.listTaskRowsSelecting(ctx, taskListColumns, q)
 }
 func (s *Store) listTaskRowsSelecting(ctx context.Context, columns string, q store.TaskOperationsQuery) ([]core.Task, error) {
 	predicate, args := taskPredicate(ctx, q.TaskFilter)

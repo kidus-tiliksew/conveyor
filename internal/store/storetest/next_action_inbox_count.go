@@ -351,30 +351,40 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 		t.Fatalf("seeded %d open body bytes, want at least 1 MiB", seededBodies)
 	}
 
-	// The rows differ from ListTasksFiltered in Body alone, for the count's
-	// filter, an inactive filter, and a narrowing filter.
+	// Every list read states no body and no frozen policy snapshot, and the
+	// two spellings agree, for the count's filter, an inactive filter, and a
+	// narrowing filter. ListTasks is the whole-row read that still states both
+	// (req-operator-next-action AC-2.7; component-persistence, Database read
+	// accounting).
 	openFilter := store.TaskFilter{States: attentionOpenStates}
-	sameRows := func(name string, filter store.TaskFilter) (full, lean []core.Task) {
+	listRows := func(name string, filter store.TaskFilter) (lean []core.Task) {
 		t.Helper()
-		full, err := st.ListTasksFiltered(ctx, filter)
+		lean, err := st.ListTasksFiltered(ctx, filter)
 		requireOK(t, err)
-		lean, err = st.ListTasksFilteredWithoutBody(ctx, filter)
+		withoutBody, err := st.ListTasksFilteredWithoutBody(ctx, filter)
 		requireOK(t, err)
-		bodies := 0
-		cleared := make([]core.Task, len(full))
-		for i, task := range full {
-			bodies += len(task.Body)
-			task.Body = ""
-			cleared[i] = task
+		if len(lean) == 0 || !reflect.DeepEqual(lean, withoutBody) {
+			t.Fatalf("%s filter: ListTasksFilteredWithoutBody differs from ListTasksFiltered:\n lean %+v\n without %+v", name, lean, withoutBody)
 		}
-		if len(lean) == 0 || bodies == 0 || !reflect.DeepEqual(lean, cleared) {
-			t.Fatalf("%s filter: ListTasksFilteredWithoutBody differs from ListTasksFiltered beyond Body (%d body bytes):\n lean %+v\n full %+v", name, bodies, lean, cleared)
+		for _, task := range lean {
+			if task.Body != "" || task.SetupContract.HasFrozenPolicy() || task.SetupContract.Risk != nil || task.SetupContract.Review.Seats != nil || task.SetupContract.MaxBounces != 0 {
+				t.Fatalf("%s filter: list read states task %s with a body (%d bytes) or a frozen policy", name, task.ID, len(task.Body))
+			}
 		}
-		return full, lean
+		return lean
 	}
-	sameRows("inactive", store.TaskFilter{})
-	sameRows("query", store.TaskFilter{States: attentionOpenStates, Query: working})
-	fullRows, leanRows := sameRows("open", openFilter)
+	listRows("inactive", store.TaskFilter{})
+	listRows("query", store.TaskFilter{States: attentionOpenStates, Query: working})
+	leanRows := listRows("open", openFilter)
+	whole, err := st.ListTasks(ctx)
+	requireOK(t, err)
+	wholeBodies := 0
+	for _, task := range whole {
+		wholeBodies += len(task.Body)
+	}
+	if wholeBodies == 0 {
+		t.Fatal("ListTasks states no body, so the body-free assertion is vacuous")
+	}
 	inverted := store.TaskFilter{UpdatedFrom: now, UpdatedTo: now.Add(-time.Hour)}
 	if _, err := st.ListTasksFilteredWithoutBody(ctx, inverted); err == nil {
 		t.Fatal("ListTasksFilteredWithoutBody accepted an inverted range")
@@ -393,7 +403,7 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 		}
 		return open, candidates
 	}
-	fullOpen, fullCandidates := split(fullRows)
+	fullOpen, fullCandidates := split(leanRows)
 	leanOpen, leanCandidates := split(leanRows)
 	if slices.ContainsFunc(leanCandidates, func(task core.Task) bool { return task.ID == anchor }) {
 		t.Fatalf("anchor %s lost its children in the body-free read", anchor)
@@ -481,7 +491,7 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 	// shows only in its rows: they keep matching ListTasksFiltered, and on a
 	// durable backend, which scopes that read, they hold no foreign task.
 	for name, filter := range map[string]store.TaskFilter{"foreign open": openFilter, "foreign inactive": {}} {
-		_, lean := sameRows(name, filter)
+		lean := listRows(name, filter)
 		foreign := slices.ContainsFunc(lean, func(task core.Task) bool { return task.Workspace != x.Workspace })
 		if foreign && x.DrainReadBytes != nil {
 			t.Fatalf("%s filter: ListTasksFilteredWithoutBody returned another workspace's task", name)
@@ -497,10 +507,16 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 		return
 	}
 	x.DrainReadBytes()
-	_, err = st.ListTasksFiltered(dbmetrics.WithReadLabel(ctx, "attention-body-control"), openFilter)
+	_, err = st.ListTasks(dbmetrics.WithReadLabel(ctx, "attention-body-control"))
 	requireOK(t, err)
 	if got := x.DrainReadBytes()["attention-body-control"]; got < uint64(seededBodies) {
-		t.Fatalf("the body-bearing read received %d bytes, want at least the %d seeded body bytes", got, seededBodies)
+		t.Fatalf("the whole-row read received %d bytes, want at least the %d seeded body bytes", got, seededBodies)
+	}
+	x.DrainReadBytes()
+	_, err = st.ListTasksFiltered(dbmetrics.WithReadLabel(ctx, "attention-list-body-free"), openFilter)
+	requireOK(t, err)
+	if got := x.DrainReadBytes()["attention-list-body-free"]; got >= attentionBodyBytes {
+		t.Fatalf("ListTasksFiltered received %d bytes, want fewer than one %d-byte body of the %d seeded body bytes", got, attentionBodyBytes, seededBodies)
 	}
 	again, err := st.CountOperatorAttention(dbmetrics.WithReadLabel(ctx, "attention-body-free"))
 	requireOK(t, err)
