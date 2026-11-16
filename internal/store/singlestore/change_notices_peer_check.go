@@ -13,20 +13,14 @@ import (
 // SingleStore offers no change notification, so a peered daemon reads every
 // workspace's marks in this one statement once per peer check interval.
 //
-// A workspace's log position advances under its head row lock in commit
-// order, and its task-event count grows with every committed insert whatever
-// the order in which AUTO_INCREMENT IDs commit, so a change committed after
-// one read always moves a value the next read returns. The highest ID is
-// read too, so a deletion paired with an insert still moves a value.
+// Both positions advance under a workspace row lock in commit order.
 const peerMarksSQL = `SELECT workspace_id, 0 AS source, position AS n, 0 AS last_id FROM event_log_positions
 UNION ALL
-SELECT workspace_id, 1 AS source, COUNT(*) AS n, MAX(id) AS last_id FROM events_columnstore WHERE task_id IS NOT NULL GROUP BY workspace_id`
+SELECT workspace_id, 1 AS source, position AS n, 0 AS last_id FROM task_event_positions`
 
 var _ changes.PeerReader = (*Store)(nil)
 
-// PeerMarks returns each workspace's log head position and the count and
-// highest ID of its task events, in one statement. A failed read returns no
-// marks.
+// PeerMarks returns each workspace's log and task-event positions.
 func (s *Store) PeerMarks(ctx context.Context) (map[string]changes.PeerMark, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "PeerMarks")
 	rows, err := backendRows(ctx, s.db, peerMarksSQL)

@@ -274,6 +274,7 @@ Server (read by `conveyord`):
 |---|---|
 | `CONVEYOR_DATABASE_URL` | PostgreSQL URL or SingleStore URL/DSN. Required unless `database.url` is set. |
 | `CONVEYOR_DATABASE_MAX_CONNS` | PostgreSQL pool size when `database.max_conns` is not set (default 32); an explicit `pool_max_conns` in the URL wins. See [PostgreSQL pool size](#postgresql-pool-size). |
+| `CONVEYOR_SINGLESTORE_COMPRESS` | Request SingleStore wire compression for `conveyord`. Defaults to `true`; set to `false` to disable it. `database.singlestore_compress` in the deployment file takes precedence. Direct `conveyor` CLI database connections do not read this setting; use `compress=false` in the SingleStore DSN or URL to opt them out. |
 | `CONVEYOR_API_TOKEN` | Bound as the first operator's token at bootstrap. Required. |
 | `CONVEYOR_LLM_API_KEY` | Key for the in-process triage and planning stages. Required. |
 | `CONVEYOR_LLM_BASE_URL` | OpenAI-compatible endpoint override. |
@@ -287,6 +288,10 @@ Server (read by `conveyord`):
 | `CONVEYOR_SMTP_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_FROM` | Invitation email delivery. Configured only when host and from are both set; otherwise links are surfaced for manual delivery. |
 | `CONVEYOR_ORGANIZATION_NAME`, `CONVEYOR_FIRST_OPERATOR_EMAIL`, `CONVEYOR_FIRST_OPERATOR_DISPLAY_NAME` | First-operator identity at bootstrap. |
 | `CONVEYOR_CONTROL_PLANE_MODEL`, `CONVEYOR_TRIAGE_MODEL`, `CONVEYOR_PLANNING_MODEL` | Process-level model overrides for in-process stages; never change stored config. |
+
+The database read statistics count wire bytes. When compression is negotiated,
+the reported bytes are compressed and are not directly comparable with
+statistics collected before compression was enabled.
 
 Client (read by `conveyor`):
 

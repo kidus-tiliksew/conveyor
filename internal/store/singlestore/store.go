@@ -6,8 +6,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,8 +37,9 @@ type Store struct {
 var _ store.Backend = (*Store)(nil)
 
 // connectionConfig accepts a URL or a MySQL DSN without exposing credentials in errors.
-func connectionConfig(raw string) (*mysql.Config, error) {
+func connectionConfig(raw string, compress ...bool) (*mysql.Config, error) {
 	var cfg *mysql.Config
+	dsnCompression := false
 	if strings.Contains(raw, "://") {
 		u, err := url.Parse(raw)
 		if err != nil || (u.Scheme != "singlestore" && u.Scheme != "mysql") || u.Hostname() == "" || strings.Trim(u.Path, "/") == "" {
@@ -56,15 +60,41 @@ func connectionConfig(raw string) (*mysql.Config, error) {
 		if tls := u.Query().Get("tls"); tls != "" {
 			cfg.TLSConfig = tls
 		}
+		if value, ok := u.Query()["compress"]; ok {
+			if len(value) != 1 {
+				return nil, fmt.Errorf("invalid SingleStore compression configuration")
+			}
+			enabled, err := strconv.ParseBool(value[0])
+			if err != nil || cfg.Apply(mysql.EnableCompression(enabled)) != nil {
+				return nil, fmt.Errorf("invalid SingleStore compression configuration")
+			}
+			dsnCompression = true
+		}
 	} else {
 		var err error
 		cfg, err = mysql.ParseDSN(raw)
 		if err != nil || cfg.DBName == "" {
 			return nil, fmt.Errorf("invalid SingleStore DSN")
 		}
+		if _, query, ok := strings.Cut(raw[strings.LastIndex(raw, "/")+1:], "?"); ok {
+			params, err := url.ParseQuery(query)
+			if err != nil {
+				return nil, fmt.Errorf("invalid SingleStore DSN")
+			}
+			_, dsnCompression = params["compress"]
+		}
 	}
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	if len(compress) > 0 || !dsnCompression {
+		requested := true
+		if len(compress) > 0 {
+			requested = compress[0]
+		}
+		if err := cfg.Apply(mysql.EnableCompression(requested)); err != nil {
+			return nil, fmt.Errorf("invalid SingleStore compression configuration")
+		}
+	}
 	// DATETIME(6) rejects nanosecond fractions in strict SingleStore sessions.
 	// Apply this to every write, including future aggregate SQL (component-persistence).
 	if err := cfg.Apply(mysql.TimeTruncate(time.Microsecond)); err != nil {
@@ -88,8 +118,8 @@ func connectionConfig(raw string) (*mysql.Config, error) {
 	return cfg, nil
 }
 
-func Open(ctx context.Context, raw string) (*Store, error) {
-	cfg, err := connectionConfig(raw)
+func Open(ctx context.Context, raw string, compress ...bool) (*Store, error) {
+	cfg, err := connectionConfig(raw, compress...)
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +158,21 @@ func Open(ctx context.Context, raw string) (*Store, error) {
 		db.Close()
 		return nil, translateBackendConflict(err)
 	}
+	dsn := cfg.FormatDSN()
+	_, query, _ := strings.Cut(dsn[strings.LastIndex(dsn, "/")+1:], "?")
+	params, _ := url.ParseQuery(query)
+	requested := params.Get("compress") == "true"
+	status := "unknown"
+	var name, value string
+	if err := db.QueryRowContext(ctx, "SHOW SESSION STATUS LIKE 'Compression'").Scan(&name, &value); err == nil {
+		switch strings.ToLower(value) {
+		case "on", "yes", "1":
+			status = "enabled"
+		case "off", "no", "0":
+			status = "disabled"
+		}
+	}
+	slog.Info("SingleStore connection compression", "requested", requested, "status", status)
 	return st, nil
 }
 func (s *Store) Close()              { s.db.Close() }
@@ -151,6 +196,19 @@ func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	}()
 	if err = fn(tx); err != nil {
 		return translateBackendConflict(err)
+	}
+	if value, ok := txBatches.Load(tx); ok {
+		state := value.(*txNoticeState)
+		workspaces := make([]string, 0, len(state.taskWorkspaces))
+		for ws := range state.taskWorkspaces {
+			workspaces = append(workspaces, ws)
+		}
+		sort.Strings(workspaces)
+		for _, ws := range workspaces {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO task_event_positions(workspace_id,position) VALUES(?,1) ON DUPLICATE KEY UPDATE position=position+1`, ws); err != nil {
+				return translateBackendConflict(err)
+			}
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return translateBackendConflict(err)

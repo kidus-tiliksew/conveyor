@@ -126,10 +126,10 @@ func integrationStore(t *testing.T) *Store {
 }
 
 // openOwnedStore opens a private pool on the shared, emptied database.
-func openOwnedStore(t *testing.T) *Store {
+func openOwnedStore(t *testing.T, compress ...bool) *Store {
 	t.Helper()
 	resetSharedDatabase(t)
-	st, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN())
+	st, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN(), compress...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +187,11 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 		Capabilities:      storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			st := integrationStore(t)
+			// These controls compare socket bytes against decoded body sizes.
+			// Keep compression off so their payload-elision bounds remain exact.
+			if strings.HasSuffix(t.Name(), "/InboxAttentionCountBodyFree") || strings.HasSuffix(t.Name(), "/ActivityMarkerCompactReads") {
+				st = openOwnedStore(t, false)
+			}
 			ws := "conformance-" + core.NewTaskID()
 			ctx := store.WithActor(store.WithWorkspace(t.Context(), ws), store.SystemActor())
 			cfg := &config.Config{Workspace: ws, Repos: repos, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}, "review": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}}

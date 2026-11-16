@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -389,6 +390,15 @@ func normalizeDeployment(c *Config, path string) (*Config, error) {
 	}
 	if err := resolveDeploymentDatabaseMaxConns(&c.Database, os.LookupEnv); err != nil {
 		return nil, err
+	}
+	if raw, ok := os.LookupEnv("CONVEYOR_SINGLESTORE_COMPRESS"); ok {
+		value, err := strconv.ParseBool(strings.TrimSpace(raw))
+		if err != nil {
+			return nil, fmt.Errorf("CONVEYOR_SINGLESTORE_COMPRESS must be a boolean")
+		}
+		if c.Database.SingleStoreCompress == nil {
+			c.Database.SingleStoreCompress = &value
+		}
 	}
 	triage.Model = strings.TrimSpace(triage.Model)
 	triage.Effort = strings.TrimSpace(triage.Effort)

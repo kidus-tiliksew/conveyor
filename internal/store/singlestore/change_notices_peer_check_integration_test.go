@@ -2,11 +2,14 @@ package singlestore
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -145,7 +148,7 @@ func openProxiedStore(t *testing.T) (*Store, *statementProxy) {
 	proxied := sharedDatabase.cfg.Clone()
 	proxied.Addr = proxy.addr()
 	proxied.TLSConfig = "false"
-	st, err := Open(t.Context(), proxied.FormatDSN())
+	st, err := Open(t.Context(), proxied.FormatDSN(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,10 +156,86 @@ func openProxiedStore(t *testing.T) (*Store, *statementProxy) {
 	return st, proxy
 }
 
-// TestSingleStorePeerMarksIntegration: PeerMarks is one statement that moves
-// a workspace's log position on an enqueue and its task-event count and
-// highest ID on a task event, and nothing else.
+func TestSingleStoreCompressionStartupLogIntegration(t *testing.T) {
+	resetSharedDatabase(t)
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	st, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if got := strings.Count(logs.String(), "SingleStore connection compression"); got != 1 {
+		t.Fatalf("compression log count = %d, want 1", got)
+	}
+	if !strings.Contains(logs.String(), "requested=true") || !strings.Contains(logs.String(), "status=") {
+		t.Fatalf("compression log lacks status: %s", logs.String())
+	}
+}
+
+func TestSingleStoreCompressionWireIntegration(t *testing.T) {
+	on := openOwnedStore(t)
+	conn, err := net.DialTimeout("tcp", sharedDatabase.cfg.Addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		t.Fatal(err)
+	}
+	size := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
+	packet := make([]byte, size)
+	if _, err := io.ReadFull(conn, packet); err != nil {
+		t.Fatal(err)
+	}
+	if len(packet) == 0 {
+		t.Fatal("empty server handshake")
+	}
+	versionEnd := bytes.IndexByte(packet[1:], 0)
+	if versionEnd < 0 || 1+versionEnd+1+4+8+1+2 > len(packet) {
+		t.Fatal("invalid server handshake")
+	}
+	capOffset := 1 + versionEnd + 1 + 4 + 8 + 1
+	advertised := binary.LittleEndian.Uint16(packet[capOffset:])&0x20 != 0
+	t.Logf("server advertises CLIENT_COMPRESS: %t", advertised)
+	off, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer off.Close()
+	wire := map[string]uint64{}
+	for _, tc := range []struct {
+		name string
+		st   *Store
+	}{{"requested", on}, {"disabled", off}} {
+		tc.st.ReadStats(0)
+		var payload string
+		if err := tc.st.db.QueryRowContext(t.Context(), "SELECT RPAD('', 262144, 'x')").Scan(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload) != 262144 {
+			t.Fatalf("%s returned %d payload bytes", tc.name, len(payload))
+		}
+		wire[tc.name] = tc.st.ReadStats(0).Bytes
+		t.Logf("%s received %d wire bytes for %d decoded bytes", tc.name, wire[tc.name], len(payload))
+	}
+	if advertised && wire["requested"] >= wire["disabled"] {
+		t.Fatalf("server advertised compression, but requested read used %d bytes versus %d disabled", wire["requested"], wire["disabled"])
+	}
+}
+
+// TestSingleStorePeerMarksIntegration checks both kinds of cross-connection
+// changes without scanning the event table.
 func TestSingleStorePeerMarksIntegration(t *testing.T) {
+	if strings.Contains(strings.ToLower(peerMarksSQL), "events_columnstore") {
+		t.Fatal("peer mark statement scans the events table")
+	}
 	writer := openOwnedStore(t)
 	ctxA, wsA, taskA := seedSingleStoreNoticeTask(t, writer)
 	_, wsB, _ := seedSingleStoreNoticeTask(t, writer)
@@ -169,7 +248,7 @@ func TestSingleStorePeerMarksIntegration(t *testing.T) {
 			t.Fatalf("%s: %v", what, err)
 		}
 		if sent := proxy.since(before); len(sent) != 1 {
-			t.Fatalf("%s: PeerMarks sent %d statements, want one:\n%s", what, len(sent), describeCommands(time.Now(), sent))
+			t.Fatalf("%s: PeerMarks should send one statement:\n%s", what, describeCommands(time.Now(), sent))
 		}
 		return marks
 	}
@@ -192,11 +271,53 @@ func TestSingleStorePeerMarksIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	afterEvent := read("after task event")
-	if afterEvent[wsA].Events != afterJob[wsA].Events+1 || afterEvent[wsA].LastEvent <= afterJob[wsA].LastEvent || afterEvent[wsA].Log != afterJob[wsA].Log {
+	if afterEvent[wsA].Events != afterJob[wsA].Events+1 || afterEvent[wsA].Log != afterJob[wsA].Log {
 		t.Fatalf("task event: %+v -> %+v", afterJob[wsA], afterEvent[wsA])
 	}
 	if afterEvent[wsB] != afterJob[wsB] {
 		t.Fatalf("task event in %s moved %s", wsA, wsB)
+	}
+	rollback := errors.New("rollback probe")
+	err := writer.withTx(ctxA, func(tx *sql.Tx) error {
+		if err := taskEvent(ctxA, tx, core.Event{TaskID: taskA, Kind: "peer.rollback"}); err != nil {
+			return err
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatalf("rollback probe: %v", err)
+	}
+	if afterRollback := read("after rollback"); afterRollback[wsA] != afterEvent[wsA] {
+		t.Fatalf("rolled-back event changed peer mark: %+v -> %+v", afterEvent[wsA], afterRollback[wsA])
+	}
+	if err := writer.AuditTask(ctxA, taskA, "peer.audit", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	afterAudit := read("after task audit")
+	if afterAudit[wsA].Events != afterEvent[wsA].Events+1 {
+		t.Fatalf("audit did not advance task mark: %+v -> %+v", afterEvent[wsA], afterAudit[wsA])
+	}
+	if _, err := writer.db.ExecContext(ctxA, "UPDATE tasks SET assignee_user_id=? WHERE workspace_id=? AND id=?", "peer-user", wsA, taskA); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.withTx(ctxA, func(tx *sql.Tx) error {
+		if err := clearMemberAssignments(ctxA, tx, wsA, "peer-user"); err != nil {
+			return err
+		}
+		var position int64
+		if err := tx.QueryRowContext(ctxA, "SELECT position FROM task_event_positions WHERE workspace_id=?", wsA).Scan(&position); err != nil {
+			return err
+		}
+		if position != afterAudit[wsA].Events {
+			return fmt.Errorf("task mark advanced before commit: %d", position)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	afterClear := read("after assignment clear")
+	if afterClear[wsA].Events != afterAudit[wsA].Events+1 {
+		t.Fatalf("assignment clear did not advance task mark: %+v -> %+v", afterAudit[wsA], afterClear[wsA])
 	}
 }
 

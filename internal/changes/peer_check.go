@@ -20,9 +20,9 @@ import (
 type PeerMark struct {
 	// Log is the head position of the workspace's event log.
 	Log int64
-	// Events is the number of the workspace's task events.
+	// Events is a marker that changes with every committed task event.
 	Events int64
-	// LastEvent is the highest ID among the workspace's task events.
+	// LastEvent is an optional additional marker.
 	LastEvent int64
 }
 

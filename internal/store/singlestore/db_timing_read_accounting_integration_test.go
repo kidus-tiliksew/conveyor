@@ -22,7 +22,7 @@ const readAccountingFraming = 4096
 // the framing bound, then proves the store-boundary label through GetTask
 // (component-persistence, Database read accounting).
 func TestReadAccountingIntegration(t *testing.T) {
-	st := integrationStore(t)
+	st := openOwnedStore(t, false)
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "read-accounting")
 	st.ReadStats(0) // start from an empty interval
 

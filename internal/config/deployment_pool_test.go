@@ -93,6 +93,35 @@ func TestDeploymentDatabaseMaxConns(t *testing.T) {
 	}
 }
 
+func TestDeploymentSingleStoreCompression(t *testing.T) {
+	for _, tc := range []struct {
+		name, database, env string
+		want                bool
+		wantErr             bool
+	}{
+		{"environment disables", `{backend: singlestore, url: "singlestore://db/test"}`, "false", false, false},
+		{"file overrides environment", `{backend: singlestore, url: "singlestore://db/test", singlestore_compress: true}`, "false", true, false},
+		{"invalid environment", `{backend: singlestore, url: "singlestore://db/test"}`, "invalid", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CONVEYOR_SINGLESTORE_COMPRESS", tc.env)
+			cfg, err := ParseDeployment(deploymentWithDatabase(tc.database), "compression.yaml", nil)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("invalid compression setting was accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Database.SingleStoreCompress == nil || *cfg.Database.SingleStoreCompress != tc.want {
+				t.Fatalf("compression setting = %v, want %t", cfg.Database.SingleStoreCompress, tc.want)
+			}
+		})
+	}
+}
+
 func TestDeploymentDatabaseMaxConnsStaysOutOfPolicy(t *testing.T) {
 	t.Setenv(DatabaseMaxConnsEnv, "40")
 	cfg, err := ParseDeployment(deploymentWithDatabase(`{url: "postgres://db.invalid/conveyor"}`), "pool.yaml", nil)

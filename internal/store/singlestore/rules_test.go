@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,6 +166,47 @@ func TestConnectionSettings(t *testing.T) {
 		if !cfg.InterpolateParams {
 			t.Fatalf("connection form %d does not interpolate parameters", i)
 		}
+	}
+}
+
+func TestConnectionCompression(t *testing.T) {
+	const raw = "singlestore://root:fixture@localhost/conveyor_test"
+	for _, tc := range []struct {
+		name   string
+		option []bool
+		want   bool
+	}{
+		{"default", nil, true},
+		{"enabled", []bool{true}, true},
+		{"disabled", []bool{false}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := connectionConfig(raw, tc.option...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(cfg.FormatDSN(), "compress=true"); got != tc.want {
+				t.Fatalf("compression requested = %t, want %t", got, tc.want)
+			}
+		})
+	}
+	for _, raw := range []string{
+		"root:fixture@tcp(localhost:3306)/conveyor_test?compress=false",
+		"singlestore://root:fixture@localhost/conveyor_test?compress=false",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			cfg, err := connectionConfig(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(cfg.FormatDSN(), "compress=true") {
+				t.Fatal("explicit DSN compression opt-out was ignored")
+			}
+			cfg, err = connectionConfig(raw, true)
+			if err != nil || !strings.Contains(cfg.FormatDSN(), "compress=true") {
+				t.Fatalf("explicit option did not override DSN: %v", err)
+			}
+		})
 	}
 }
 

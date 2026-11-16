@@ -131,7 +131,8 @@ type Database struct {
 	// MaxConns is the deployment's PostgreSQL pool size; nil when absent.
 	// The deployment loader validates it and applies the environment
 	// fallback (component-runtime, Durable backend selection).
-	MaxConns *int64 `yaml:"max_conns,omitempty"`
+	MaxConns            *int64 `yaml:"max_conns,omitempty"`
+	SingleStoreCompress *bool  `yaml:"singlestore_compress,omitempty"`
 }
 
 type ExecutionMode string
