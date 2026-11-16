@@ -149,6 +149,10 @@ type Fixture struct {
 	// the volatile backend transfers no bytes and leaves it nil
 	// (component-persistence, Database read accounting).
 	DrainReadBytes func() map[string]uint64
+	// DrainReadRows drains the same read ledger and returns the rows received
+	// per read label, so a suite can bound the rows one read transfers. A
+	// backend that transfers no rows leaves it nil.
+	DrainReadRows func() map[string]uint64
 	// NestedTaskCommandsInterleave is true when a command started under a
 	// WithTaskSideEffectLock context skips the task-operation lock that the
 	// context already owns, so a second command of that context commits while
@@ -416,6 +420,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"TaskOperationsPagination", true, runTaskPagination},
 		{"ReconcileReads", true, runReconcileReads},
 		{"TaskDetailReads", true, runTaskDetailReads},
+		{"ActivityMarkerBounds", true, RunActivityMarkerBoundsConformance},
 		{"RequirementDetailReads", true, runRequirementDetailReads},
 		{"TaskLifecycle", true, runTaskLifecycle},
 		{"TaskBranchUniqueness", true, runTaskBranchUniqueness},

@@ -193,7 +193,7 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), VerificationClaimReads: verificationClaimReads(ws), NestedTaskCommandsInterleave: true, DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
+			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), DrainReadRows: conformanceReadRows(st), VerificationClaimReads: verificationClaimReads(ws), NestedTaskCommandsInterleave: true, DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
 				t.Helper()
 				if _, err := st.db.ExecContext(ctx, `UPDATE users SET status='deactivated' WHERE id=?`, userID); err != nil {
 					t.Fatal(err)
@@ -440,5 +440,17 @@ func conformanceReadBytes(st *Store) func() map[string]uint64 {
 			bytes[total.Label] = total.Bytes
 		}
 		return bytes
+	}
+}
+
+// conformanceReadRows drains the same ledger into rows per read label for the
+// conformance row bounds.
+func conformanceReadRows(st *Store) func() map[string]uint64 {
+	return func() map[string]uint64 {
+		rows := map[string]uint64{}
+		for _, total := range st.ReadStats(1 << 16).Top {
+			rows[total.Label] = total.Rows
+		}
+		return rows
 	}
 }

@@ -156,14 +156,6 @@ func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, q store.CallerA
 	if len(ids) == 0 {
 		return store.TaskPage{Tasks: []core.Task{}}, nil
 	}
-	markers, err := s.ListActivityMarkersForTasks(ctx, ids)
-	if err != nil {
-		return store.TaskPage{}, err
-	}
-	byID := map[string]store.ActivityMarker{}
-	for _, m := range markers {
-		byID[m.TaskID] = m
-	}
 	candidates := []core.Task{}
 	for _, t := range tasks {
 		if core.TaskTerminal(t.State) {
