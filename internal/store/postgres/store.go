@@ -899,12 +899,12 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	// contributes one row per (kind, order) instead of a thousand
 	// (activity-marker-bounds). The folds read rows in event order, so the
 	// kept rows must still arrive ordered by at and id.
-	// activityMarkerAllRowsKinds are the kinds whose folds read every row: the
-	// setup change that supersedes seats, the publication retries whose
-	// automatic flag bounds recovery, and implement submissions, whose merge
-	// evidence is the first submission of the order
-	// (component-submission-merge; feature-bounded-automatic-recovery AR-5).
-	activityMarkerAllRowsKinds := []string{"task.setup.changed", "github_issue.publication_retry", "review.publication_retry", "work_order.updated"}
+	// activityMarkerLatestKinds are the kinds whose folds read only the newest
+	// row of each order: a lease renewal supersedes the previous renewal and
+	// nothing else. Every other kind keeps all of its rows, because its fold
+	// reads the whole set or depends on the order of the rows it reads
+	// (activity-marker-bounds).
+	activityMarkerLatestKinds := []string{"work_order.lease_renewed"}
 	markerScope := `SELECT e.id,e.task_id,COALESCE(e.job_id,'') AS job_id,e.kind,` + compactEventPayloadColumn + ` AS event_payload,e.at AS event_at,
 		COALESCE(NULLIF(e.job_id,''),NULLIF(e.payload_json->>'review_work_order_id',''),NULLIF(e.payload_json->>'id',''),'') AS order_key
 		FROM events e JOIN tasks t ON t.id=e.task_id
@@ -921,16 +921,17 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	markerQuery := `WITH marker_scope AS (` + markerScope + `), ranked AS (
 		SELECT id,task_id,job_id,kind,event_payload,event_at,
 			ROW_NUMBER() OVER (PARTITION BY task_id,kind,order_key ORDER BY event_at DESC,id DESC) AS position
-		FROM marker_scope WHERE kind <> ALL($5::text[])
+		FROM marker_scope WHERE kind = ANY($5::text[])
+	), kept AS (
+		SELECT id,task_id,job_id,kind,event_payload,event_at FROM ranked WHERE position=1
+		UNION ALL
+		SELECT id,task_id,job_id,kind,event_payload,event_at FROM marker_scope WHERE kind <> ALL($5::text[])
 	)
-	SELECT id,task_id,job_id,kind,event_payload,event_at FROM ranked WHERE position=1
-	UNION ALL
-	SELECT id,task_id,job_id,kind,event_payload,event_at FROM marker_scope WHERE kind = ANY($5::text[])
-	ORDER BY event_at,id`
+	SELECT id,task_id,job_id,kind,event_payload,event_at FROM kept ORDER BY event_at,id`
 	// The forge failure kinds are the ones store.LatestForgeFailure reads;
 	// of work_order.updated it reads only an implement submission
 	// (component-next-action; component-submission-merge).
-	markerArgs := []any{workspace(ctx), emptyIfNil(taskIDs), emptyIfNil(reviewTaskIDs), store.ForgeFailureEventKinds, activityMarkerAllRowsKinds}
+	markerArgs := []any{workspace(ctx), emptyIfNil(taskIDs), emptyIfNil(reviewTaskIDs), store.ForgeFailureEventKinds, activityMarkerLatestKinds}
 	markerRows, err := s.boundary.Query(ctx, markerQuery, markerArgs...)
 	if err != nil {
 		return nil, nil, time.Time{}, err
