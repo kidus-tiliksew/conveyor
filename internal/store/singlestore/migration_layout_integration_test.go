@@ -125,7 +125,7 @@ func TestHistoryMigrationLayoutsIntegration(t *testing.T) {
 		t.Errorf("published and fresh keys differ\npublished: %v\nfresh: %v", a, b)
 	}
 	// SingleStore assigns different generated names to rowstore and columnstore shard keys.
-	const shards = `SELECT table_name,seq_in_index,column_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND index_type='SHARD'`
+	const shards = `SELECT table_name,non_unique,index_type,seq_in_index,column_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND index_type='SHARD'`
 	if a, b := queryRows(t, published, ctx, shards), queryRows(t, fresh, ctx, shards); !reflect.DeepEqual(a, b) {
 		t.Errorf("published and fresh shard keys differ\npublished: %v\nfresh: %v", a, b)
 	}
