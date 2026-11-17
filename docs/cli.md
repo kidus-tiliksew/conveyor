@@ -292,6 +292,23 @@ ends with `showing <n> of <total>` (from `X-Conveyor-Total`) and the count of
 recent factory acts; `--band automatic` also lists each act. `--json` writes
 the server body verbatim.
 
+## board
+
+```sh
+conveyor board [--limit N] [--offset N] [--json]
+conveyor board diff [--json] [--since POSITION | --reset]
+```
+
+`board` lists open tasks and their next actions. `board diff` reports changes
+since the last check. Its first run prints a summary and saves a local snapshot
+for the server and workspace. The snapshot contains no credential.
+
+Use `--reset` to replace the snapshot and print a new summary. Use `--since`
+with a second-precision RFC 3339 position to read changes without reading or
+writing the snapshot. An unchanged board prints nothing in text mode.
+`--json` prints the position and changes, plus a summary on the first run or
+reset. Incomplete histories appear in `incomplete`.
+
 ## order
 
 | Command | What it does |
