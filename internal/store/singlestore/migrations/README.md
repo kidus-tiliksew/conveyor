@@ -8,6 +8,12 @@ Migration 0027 keeps its original ledger identity but its retired automatic even
 
 Current audit events use operator-created `events_columnstore`; legacy `events` remains historical input.
 `governance_snapshots` is columnstore: append-only, write-once, keyed by `(workspace_id, digest)`.
+Fresh installations create the durable queue's `event_log` as columnstore, sorted by
+workspace and position. Its stream/version hash key is non-unique; append transactions
+serialize through the workspace position and stream head locks. The `event_log_positions`,
+`event_log_streams`, and `event_log_job_index` support tables remain rowstore.
+This is separate from the audit table `events_columnstore`. Startup does not convert
+or rekey an existing event log; its existing layout remains operator-managed.
 See the [events preparation guide](../../../../docs/singlestore-events-cutover.md) for existing databases and fresh installations.
 
 

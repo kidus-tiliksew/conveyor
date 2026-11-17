@@ -24,6 +24,9 @@ type Executor interface {
 
 // Schema is the driver's DDL. Every statement is idempotent so EnsureSchema
 // can run at every startup.
+// The stream key is non-unique: append locks the workspace position and stream
+// head, checks the expected version, and writes events, job index and both
+// heads in the same transaction.
 const Schema = `
 CREATE ROWSTORE TABLE IF NOT EXISTS event_log_positions (
  workspace_id VARCHAR(255) NOT NULL, position BIGINT NOT NULL DEFAULT 0,
@@ -33,12 +36,14 @@ CREATE ROWSTORE TABLE IF NOT EXISTS event_log_streams (
  workspace_id VARCHAR(255) NOT NULL, stream_id VARCHAR(768) NOT NULL, version BIGINT NOT NULL DEFAULT 0,
  PRIMARY KEY (workspace_id, stream_id), SHARD KEY (workspace_id)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
-CREATE ROWSTORE TABLE IF NOT EXISTS event_log (
+CREATE TABLE IF NOT EXISTS event_log (
  workspace_id VARCHAR(255) NOT NULL, position BIGINT NOT NULL,
  stream_id VARCHAR(768) NOT NULL, version BIGINT NOT NULL, kind VARCHAR(255) NOT NULL,
  actor_id VARCHAR(255) NOT NULL DEFAULT '', actor_role VARCHAR(255) NOT NULL DEFAULT '',
  payload JSON NOT NULL, at DATETIME(6) NOT NULL,
- PRIMARY KEY (workspace_id, position), UNIQUE KEY event_log_stream_version (workspace_id,stream_id,version),
+ SORT KEY (workspace_id, position),
+ PRIMARY KEY (workspace_id, position) USING HASH,
+ KEY event_log_stream_version (workspace_id,stream_id,version) USING HASH,
  SHARD KEY (workspace_id)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;` + JobIndexSchema
 
