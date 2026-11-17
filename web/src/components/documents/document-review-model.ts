@@ -2,7 +2,10 @@ import type { RequirementVersion } from '../../lib/types'
 
 export type ReviewBlock = { id: string; title: string; content: string }
 export type WordChange = { text: string; kind: 'same' | 'added' | 'removed' }
-export type InlineStyle = 'text' | 'code' | 'emphasis' | 'strong' | 'link'
+// `strong-code` and `emphasis-code` mark inline code inside a bold or emphasis
+// span. Each is one complete style, so a token keeps both styles through
+// alignment and stays distinct from the same word in plain code.
+export type InlineStyle = 'text' | 'code' | 'emphasis' | 'strong' | 'link' | 'strong-code' | 'emphasis-code'
 export type FormattedChange = WordChange & { style: InlineStyle; href?: string }
 // One list item. `marker` is the source marker (`31.`, `-`), and is empty for
 // text that precedes the first marker in its block. Nested items stay flat and
@@ -228,6 +231,52 @@ function plainInlineContent(text: string) {
   return text.length > 0 && !/[`*_[\]\\]/.test(text)
 }
 
+// Read one inline code span that opens at `start`. The span holds one backtick
+// on each side and no backtick run of two or more. Its content isn't empty and
+// has no newline and no leading or trailing whitespace. Returns undefined for
+// any other backtick.
+function codeSpan(text: string, start: number) {
+  if (text.startsWith('``', start)) return undefined
+  const end = text.indexOf('`', start + 1)
+  const content = end < 0 ? '' : text.slice(start + 1, end)
+  if (!content || content.includes('\n') || /^\s|\s$/.test(content) || text[end + 1] === '`') return undefined
+  return { content, end: end + 1 }
+}
+
+// Read a bold or emphasis span whose content starts at `start` and closes at
+// `marker`. The content holds only plain text and valid code spans. Code is
+// literal, so a marker inside it doesn't close the span. Every other nested or
+// malformed syntax, including a link or another emphasis, returns undefined.
+function styledSpan(text: string, start: number, marker: string, style: 'strong' | 'emphasis') {
+  const runs: InlineRun[] = []
+  let cursor = start
+  let plain = start
+  const flush = () => {
+    if (cursor > plain) runs.push({ text: text.slice(plain, cursor), style })
+  }
+  while (cursor < text.length && !text.startsWith(marker, cursor)) {
+    if (text[cursor] !== '`') {
+      cursor++
+      continue
+    }
+    const code = codeSpan(text, cursor)
+    if (!code) return undefined
+    flush()
+    runs.push({ text: code.content, style: style === 'strong' ? 'strong-code' : 'emphasis-code' })
+    cursor = plain = code.end
+  }
+  if (cursor >= text.length) return undefined
+  flush()
+  const content = text.slice(start, cursor)
+  if (
+    !content ||
+    /^\s|\s$/.test(content) ||
+    runs.some((run) => (run.style === 'strong' || run.style === 'emphasis') && !plainInlineContent(run.text))
+  )
+    return undefined
+  return { runs, end: cursor + marker.length }
+}
+
 // A GFM table's delimiter row. A bare dash line without a pipe is a setext
 // underline or thematic break, which other guards handle.
 function hasTableDelimiterRow(text: string) {
@@ -267,21 +316,17 @@ export function formattedParagraph(text: string): InlineRun[] | undefined {
   let cursor = 0
   while (cursor < text.length) {
     if (text[cursor] === '`') {
-      if (text.startsWith('``', cursor)) return undefined
-      const end = text.indexOf('`', cursor + 1)
-      const content = end < 0 ? '' : text.slice(cursor + 1, end)
-      if (!content || content.includes('\n') || /^\s|\s$/.test(content)) return undefined
-      append({ text: content, style: 'code' })
-      cursor = end + 1
+      const code = codeSpan(text, cursor)
+      if (!code) return undefined
+      append({ text: code.content, style: 'code' })
+      cursor = code.end
       continue
     }
     if (text.startsWith('**', cursor) || text.startsWith('__', cursor)) {
-      const marker = text.slice(cursor, cursor + 2)
-      const end = text.indexOf(marker, cursor + 2)
-      const content = end < 0 ? '' : text.slice(cursor + 2, end)
-      if (!plainInlineContent(content) || /^\s|\s$/.test(content)) return undefined
-      append({ text: content, style: 'strong' })
-      cursor = end + 2
+      const span = styledSpan(text, cursor + 2, text.slice(cursor, cursor + 2), 'strong')
+      if (!span) return undefined
+      for (const run of span.runs) append(run)
+      cursor = span.end
       continue
     }
     if (text[cursor] === '*' || text[cursor] === '_') {
@@ -293,11 +338,10 @@ export function formattedParagraph(text: string): InlineRun[] | undefined {
         cursor++
         continue
       }
-      const end = text.indexOf(marker, cursor + 1)
-      const content = end < 0 ? '' : text.slice(cursor + 1, end)
-      if (!plainInlineContent(content) || /^\s|\s$/.test(content)) return undefined
-      append({ text: content, style: 'emphasis' })
-      cursor = end + 1
+      const span = styledSpan(text, cursor + 1, marker, 'emphasis')
+      if (!span) return undefined
+      for (const run of span.runs) append(run)
+      cursor = span.end
       continue
     }
     if (text[cursor] === '[') {

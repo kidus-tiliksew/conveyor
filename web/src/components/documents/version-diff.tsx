@@ -335,6 +335,18 @@ function styledChange(word: FormattedChange) {
   if (word.style === 'code') content = <code>{content}</code>
   else if (word.style === 'emphasis') content = <em>{content}</em>
   else if (word.style === 'strong') content = <strong>{content}</strong>
+  else if (word.style === 'strong-code')
+    content = (
+      <strong>
+        <code>{content}</code>
+      </strong>
+    )
+  else if (word.style === 'emphasis-code')
+    content = (
+      <em>
+        <code>{content}</code>
+      </em>
+    )
   else if (word.style === 'link')
     content = (
       <a href={word.href} className="text-primary underline underline-offset-2">
