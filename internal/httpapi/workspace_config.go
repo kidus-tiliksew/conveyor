@@ -312,7 +312,9 @@ func writeValidationError(w http.ResponseWriter, field string, err error) {
 
 func validationField(err error) string {
 	message := err.Error()
-	for _, field := range []string{"later_round_review", "refresh_review", "risk_policy", "execution.default_plan_state", "recovery.automatic_recoveries", "recovery.window", "recovery", "execution_settings.control_plane.triage.effort", "execution_settings.spec.effort", "execution_settings.implementation.effort", "default_setup", "setups", "max_bounces", "work_order_queue_timeout", "execution_settings", "routing", "harnesses", "review", "repo", "workspace"} {
+	// execution.progress_report_interval comes before "repo", which its own
+	// name contains (req-delegated-execution AC-6.2).
+	for _, field := range []string{"later_round_review", "refresh_review", "risk_policy", "execution.default_plan_state", "execution.progress_report_interval", "recovery.automatic_recoveries", "recovery.window", "recovery", "execution_settings.control_plane.triage.effort", "execution_settings.spec.effort", "execution_settings.implementation.effort", "default_setup", "setups", "max_bounces", "work_order_queue_timeout", "execution_settings", "routing", "harnesses", "review", "repo", "workspace"} {
 		if strings.Contains(message, field) {
 			if field == "repo" {
 				return "repos"

@@ -114,6 +114,36 @@ For implementation orders, call `report_progress` at these milestones:
 Keep each progress message under a few sentences. Write it as
 [Readable timeline text](#readable-timeline-text) describes.
 
+### Report progress on an interval
+
+This rule applies to every order that a session claims under this playbook
+(req-agent-skills AC-2.4; component-cli-onboarding invariant 34):
+
+- Read `progress_report_interval_seconds` from `get_work_order`. It is the
+  workspace's progress report interval in whole seconds.
+- Call `report_progress` at least once in each interval while the claim is
+  live.
+- When the contract has no such field, use an interval of 10 minutes.
+- When the field is 0, no interval applies.
+- The four milestones above stay as written. A milestone report counts
+  toward the interval.
+- In each report, state what the session did since its previous report and
+  what it does next. Write it as
+  [Readable timeline text](#readable-timeline-text) describes.
+- When no step finished, name what the session waits for and how far that
+  has got. For example, state how many CI jobs have passed.
+- Before a step that can run longer than the interval, report first. Examples
+  are a long test run and a wait for CI, a review bot, or another agent.
+- Run that step so that control returns within the interval. Run it in the
+  background, or wait on it with a timeout that you repeat.
+- Report at each return.
+- The rule ends with the claim. A submitted or released order needs no
+  report, as [Keep the lease alive](#keep-the-lease-alive) says for renewal.
+
+Report timing gates nothing. Conveyor refuses no call because a report is
+late (req-delegated-execution AC-6.3). The lease cadence in
+[Keep the lease alive](#keep-the-lease-alive) does not change.
+
 ### Claim identity
 
 Every `claim_work_order` call names the harness and the model that run the

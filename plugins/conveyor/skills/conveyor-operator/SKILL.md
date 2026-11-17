@@ -66,7 +66,10 @@ parallel workflow.
    assigned branch. Implement the approved specification and run the
    repository's required validation there.
 8. Use `report_progress` for meaningful milestones and `report_usage` with
-   cumulative, truthful usage. Respect the lease and fixed execution deadline;
+   cumulative, truthful usage. Also call `report_progress` at least once in
+   each progress report interval while the claim is live. Read the interval
+   from `progress_report_interval_seconds` in `get_work_order`. Use 10 minutes
+   when the field is absent. When the field is 0, no interval applies. Respect the lease and fixed execution deadline;
    reclaiming an expired lease does not extend execution time. If a never-
    claimed order is reported `stale`, the order clock returns it to the queue;
    claim it with fresh credentials once it is claimable. If it stays stale, the

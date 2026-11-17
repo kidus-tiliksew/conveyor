@@ -105,6 +105,12 @@ type Context struct {
 	// rules, and frozen tier table (req-risk-based-review AC-12.5;
 	// component-work-orders invariant 64).
 	RiskOrder *RiskContract `json:"risk_order,omitempty"`
+	// ProgressReportIntervalSeconds is the workspace's progress report
+	// interval at the time of this read, in whole seconds, and 0 when no
+	// interval applies. It is read from the workspace configuration for
+	// every read and stored on no order (component-work-orders invariant 67;
+	// req-delegated-execution AC-6.1).
+	ProgressReportIntervalSeconds int64 `json:"progress_report_interval_seconds"`
 }
 
 // PlanRevisionContext carries the durable request that caused a plan-stage
@@ -955,6 +961,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		authoritySource = "pinned"
 	}
 	result := Context{Order: order, Task: task, AuthoritySource: authoritySource, RolePrompt: role, ServedRequirements: servedRequirements, GovernanceSnapshot: governance, PlanRevision: planRevision}
+	result.ProgressReportIntervalSeconds = config.ProgressReportIntervalSeconds(cfg)
 	if order.Stage == core.StageReview {
 		evidence, evidenceErr := s.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)
 		if evidenceErr == nil {

@@ -432,6 +432,13 @@ type ExecutionPolicy struct {
 	// the claim lease and fixed execution deadline (component-runtime).
 	FirstActivityTimeout     time.Duration `yaml:"-" json:"-"`
 	FirstActivityTimeoutText string        `yaml:"first_activity_timeout" json:"first_activity_timeout"`
+	// ProgressReportIntervalText is how often a session that holds a claim
+	// reports progress: 10m when absent or empty, 0 for no interval, or a
+	// duration from 1m to 60m. It is live workspace policy that freezes into
+	// no task, and every work-order read states it (component-runtime
+	// invariant 42; req-delegated-execution AC-6.2).
+	ProgressReportInterval     time.Duration `yaml:"-" json:"-"`
+	ProgressReportIntervalText string        `yaml:"progress_report_interval" json:"progress_report_interval"`
 }
 
 // RetiredEvidenceToggleKey is the execution key of the retired
@@ -598,6 +605,12 @@ const (
 	DefaultFirstActivityTimeoutText  = "2m"
 	DefaultWorkOrderQueueTimeout     = 24 * time.Hour
 	DefaultWorkOrderQueueTimeoutText = "24h"
+	// DefaultProgressReportInterval applies when a workspace states no
+	// progress report interval (req-delegated-execution AC-6.2).
+	DefaultProgressReportInterval     = 10 * time.Minute
+	DefaultProgressReportIntervalText = "10m"
+	MinProgressReportInterval         = time.Minute
+	MaxProgressReportInterval         = 60 * time.Minute
 )
 
 // Routing holds the pipeline stage routes and, apart from them, the
@@ -1100,6 +1113,9 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 		defaultLegacyExecution(&next.Execution)
 	}
 	if err := NormalizeDefaultPlanState(&next.Execution); err != nil {
+		return nil, err
+	}
+	if err := NormalizeProgressReportInterval(&next.Execution); err != nil {
 		return nil, err
 	}
 	next.Repos = document.Repos
@@ -1637,7 +1653,7 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 		}
 		c.Execution.FirstActivityTimeout = parsed
 	}
-	return nil
+	return NormalizeProgressReportInterval(&c.Execution)
 }
 
 // finishNormalization resolves the control-plane planning settings and
@@ -1804,6 +1820,10 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 	if execution.FirstActivityTimeoutText == "" {
 		execution.FirstActivityTimeout = DefaultFirstActivityTimeout
 		execution.FirstActivityTimeoutText = DefaultFirstActivityTimeoutText
+	}
+	if strings.TrimSpace(execution.ProgressReportIntervalText) == "" {
+		execution.ProgressReportInterval = DefaultProgressReportInterval
+		execution.ProgressReportIntervalText = DefaultProgressReportIntervalText
 	}
 	executionSettings := contextualExecutionSettings(c.Routing)
 	if c.ExecutionSettings != nil {
@@ -2110,6 +2130,43 @@ func (e ExecutionPolicy) mergeDefaultApplies() bool {
 	probe := e
 	probe.DefaultPlanState, probe.SpecApproval = "", nil
 	return probe == (ExecutionPolicy{})
+}
+
+// NormalizeProgressReportInterval resolves execution.progress_report_interval.
+// Absent or empty text is 10m, zero means that no interval applies, and any
+// other value must be a duration from 1m to 60m. The text stays as written,
+// so an explicit zero stays distinct from an absent value. A refusal names the
+// field and never the value (component-runtime invariant 42;
+// req-delegated-execution AC-6.2; req-security-boundaries REQ-2).
+func NormalizeProgressReportInterval(execution *ExecutionPolicy) error {
+	text := strings.TrimSpace(execution.ProgressReportIntervalText)
+	if text == "" {
+		execution.ProgressReportInterval = DefaultProgressReportInterval
+		execution.ProgressReportIntervalText = DefaultProgressReportIntervalText
+		return nil
+	}
+	parsed, err := time.ParseDuration(text)
+	if err != nil || parsed < 0 || (parsed != 0 && (parsed < MinProgressReportInterval || parsed > MaxProgressReportInterval)) {
+		return fmt.Errorf("execution.progress_report_interval must be 0 or a duration from 1m to 60m")
+	}
+	execution.ProgressReportInterval = parsed
+	execution.ProgressReportIntervalText = text
+	return nil
+}
+
+// ProgressReportIntervalSeconds is the workspace's progress report interval
+// in whole seconds, 0 when no interval applies, and the 10-minute default for
+// a nil configuration or unresolved text (component-work-orders invariant 67;
+// req-delegated-execution AC-6.1).
+func ProgressReportIntervalSeconds(cfg *Config) int64 {
+	if cfg == nil {
+		return int64(DefaultProgressReportInterval / time.Second)
+	}
+	execution := cfg.Execution
+	if err := NormalizeProgressReportInterval(&execution); err != nil {
+		return int64(DefaultProgressReportInterval / time.Second)
+	}
+	return int64(execution.ProgressReportInterval / time.Second)
 }
 
 // NormalizeDefaultPlanState resolves execution.default_plan_state: a stated

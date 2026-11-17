@@ -1374,3 +1374,171 @@ func TestLineageOperatorReadBudgetDefaultsToTheContextBudget(t *testing.T) {
 func loadDeploymentForTest(path string) (*Config, error) {
 	return LoadDeployment(path, nil)
 }
+
+// withoutExecutionBlock drops the execution block from a document, so a
+// loader reads the defaults an absent block takes.
+func withoutExecutionBlock(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	removeDirectMappingKey(root.Content[0], "execution")
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// The progress report interval defaults to 10m, accepts 0 and 1m through 60m,
+// and every load path refuses any other value with an error that names the
+// field and holds no value (component-runtime invariant 42;
+// req-delegated-execution AC-6.2).
+func TestProgressReportIntervalDefaultsRangeAndRefusals(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := normalizeDeployment(validConfig(), "progress interval deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := MarshalPolicyDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaders := executionBlockLoaders(t, example, deployment, policy)
+	delete(loaders, "strict stored row")
+	accepted := []struct {
+		name, block, text string
+		seconds           int64
+	}{
+		{"absent key", "{merge_approval: true}", "10m", 600},
+		{"empty text", "{progress_report_interval: ''}", "10m", 600},
+		{"blank text", "{progress_report_interval: '  '}", "10m", 600},
+		{"zero", "{progress_report_interval: '0'}", "0", 0},
+		{"zero seconds", "{progress_report_interval: 0s}", "0s", 0},
+		{"lower bound", "{progress_report_interval: 1m}", "1m", 60},
+		{"upper bound", "{progress_report_interval: 60m}", "60m", 3600},
+		{"upper bound in hours", "{progress_report_interval: 1h}", "1h", 3600},
+		{"five minutes", "{progress_report_interval: 5m}", "5m", 300},
+		{"seconds inside the range", "{progress_report_interval: 90s}", "90s", 90},
+	}
+	refused := []struct{ name, block string }{
+		{"not a duration", "{progress_report_interval: secret-interval-value}"},
+		{"negative", "{progress_report_interval: -5m}"},
+		{"below the lower bound", "{progress_report_interval: 30s}"},
+		{"just below the lower bound", "{progress_report_interval: 59s}"},
+		{"above the upper bound", "{progress_report_interval: 2h}"},
+		{"just above the upper bound", "{progress_report_interval: 60m1s}"},
+	}
+	for loaderName, load := range loaders {
+		for _, tc := range accepted {
+			t.Run(loaderName+"/"+tc.name, func(t *testing.T) {
+				execution, err := load(tc.block)
+				if err != nil {
+					t.Fatalf("load: %v", err)
+				}
+				if execution.ProgressReportIntervalText != tc.text || int64(execution.ProgressReportInterval/time.Second) != tc.seconds {
+					t.Fatalf("interval = %q (%s), want %q (%ds)", execution.ProgressReportIntervalText, execution.ProgressReportInterval, tc.text, tc.seconds)
+				}
+			})
+		}
+		for _, tc := range refused {
+			t.Run(loaderName+"/"+tc.name, func(t *testing.T) {
+				_, err := load(tc.block)
+				if err == nil {
+					t.Fatal("value was accepted")
+				}
+				if !strings.Contains(err.Error(), "execution.progress_report_interval") || strings.Contains(err.Error(), "secret-interval-value") {
+					t.Fatalf("refusal = %v, want the field name and no value", err)
+				}
+			})
+		}
+	}
+
+	// A file load fails on a refused value.
+	path := filepath.Join(t.TempDir(), "conveyor.yaml")
+	if err := os.WriteFile(path, withExecutionBlock(t, example, "{progress_report_interval: 2h}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadDeployment(path, nil); err == nil || !strings.Contains(err.Error(), "execution.progress_report_interval") {
+		t.Fatalf("file load = %v, want a refusal naming the field", err)
+	}
+
+	// No execution block reads the default on the file and document paths.
+	if err := os.WriteFile(path, withoutExecutionBlock(t, example), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fromFile, err := LoadDeployment(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromDocument, err := ParseWorkspaceDocument(withoutExecutionBlock(t, policy), deployment, "no execution block")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, cfg := range map[string]*Config{"file": fromFile, "document": fromDocument} {
+		if cfg.Execution.ProgressReportIntervalText != DefaultProgressReportIntervalText || ProgressReportIntervalSeconds(cfg) != 600 {
+			t.Fatalf("%s without an execution block = %q (%ds), want 10m (600s)", name, cfg.Execution.ProgressReportIntervalText, ProgressReportIntervalSeconds(cfg))
+		}
+	}
+}
+
+// Every workspace read and export serves the effective interval, so a
+// configuration that never set it reads 10m and an explicit 0 stays 0. The
+// setting is live policy and never enters a task's frozen policy
+// (req-delegated-execution AC-6.2).
+func TestProgressReportIntervalProjections(t *testing.T) {
+	unset := validConfig()
+	if got := unset.WorkspaceDocument().Execution.ProgressReportIntervalText; got != "10m" {
+		t.Fatalf("WorkspaceDocument interval = %q, want 10m", got)
+	}
+	if got := unset.PolicyDocument().Execution.ProgressReportIntervalText; got != "10m" {
+		t.Fatalf("PolicyDocument interval = %q, want 10m", got)
+	}
+	exported, err := MarshalPolicyDocument(unset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(exported), "progress_report_interval: 10m") {
+		t.Fatalf("exported policy lacks the default interval:\n%s", exported)
+	}
+	served, err := json.Marshal(unset.PolicyDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(served), `"progress_report_interval":"10m"`) {
+		t.Fatalf("served policy lacks the default interval: %s", served)
+	}
+	if got := ProgressReportIntervalSeconds(unset); got != 600 {
+		t.Fatalf("seconds for an unset interval = %d, want 600", got)
+	}
+	if got := ProgressReportIntervalSeconds(nil); got != 600 {
+		t.Fatalf("seconds for no configuration = %d, want 600", got)
+	}
+
+	off := validConfig()
+	off.Execution.ProgressReportIntervalText = "0"
+	if got := off.PolicyDocument().Execution.ProgressReportIntervalText; got != "0" {
+		t.Fatalf("PolicyDocument interval = %q, want 0", got)
+	}
+	if got := ProgressReportIntervalSeconds(off); got != 0 {
+		t.Fatalf("seconds for a zero interval = %d, want 0", got)
+	}
+	set := validConfig()
+	set.Execution.ProgressReportIntervalText = "5m"
+	if got := ProgressReportIntervalSeconds(set); got != 300 {
+		t.Fatalf("seconds for 5m = %d, want 300", got)
+	}
+
+	frozen, err := json.Marshal(set.FreezePolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(frozen), "progress_report") {
+		t.Fatalf("frozen policy carries the progress report interval: %s", frozen)
+	}
+}
