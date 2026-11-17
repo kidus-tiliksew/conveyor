@@ -3038,13 +3038,13 @@ for (const width of [375, 1280]) {
 }
 
 // Risk orders on task detail (req-risk-based-review REQ-11, AC-5.6, AC-11.2;
-// component-web-task-surfaces invariants 66, 72, and 73; DEC-127(1), (2)). The
+// component-web-task-surfaces invariants 66, 72, and 73; DEC-138(1), (5)). The
 // read is the server's: risk.orders names
 // each order's subject and state, and risk.ratings holds each completed
 // order's risk_agent rating with its order and reported model. A risk order
-// shows as an order entry that names its subject. A rated one shows its own
-// tier chip alone, never the task's tier, with its source, reason, and model
-// behind the chip.
+// shows as a card framed like a job card that names its subject. A rated one
+// shows its own tier chip, never the task's tier, with its source behind the
+// chip, the reason as the card body, and the reported model in the footer.
 const riskBase = 'f0e1d2c3b4a5968778695a4b3c2d1e0f12345678'
 const riskHeadA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
 const riskHeadB = 'b2c3d4e5f60718293a4b5c6d7e8f901234567890'
@@ -3199,21 +3199,62 @@ async function expectRiskEntries(page: Page) {
     'title',
     `Head ${riskHeadA} on base ${riskBase}`,
   )
-  // A completed order shows its own tier chip alone, and no state badge.
+  // Every risk order is one framed card with a header.
+  for (const n of [1, 2, 3, 4, 5]) {
+    const card = riskEntry(page, n).locator('article[data-risk-order-card]')
+    await expect(card).toHaveCount(1)
+    await expect(card).toHaveClass(/rounded-lg/)
+    await expect(card.locator('header[data-job-header]')).toContainText('Risk rating')
+  }
+  // A completed order shows its own tier chip, and no state badge. The chip
+  // names the tier and the source only.
   const planChip = riskEntry(page, 1).getByRole('button', {
-    name: 'Risk tier Medium. From a risk agent. The plan changes how the merge gate counts approvals. Reported model gpt-6.1-sol.',
+    name: 'Risk tier Medium. From a risk agent.',
     exact: true,
   })
   await expect(planChip).toHaveText('Medium')
   const headChip = riskEntry(page, 2).getByRole('button', {
-    name: 'Risk tier Low. From a risk agent. Only the dashboard copy changes. Reported model claude-sonnet-5-5.',
+    name: 'Risk tier Low. From a risk agent.',
     exact: true,
   })
   await expect(headChip).toHaveText('Low')
   for (const n of [1, 2]) {
-    await expect(riskEntry(page, n).locator('[data-risk-order-rating]')).toHaveCount(1)
+    await expect(riskEntry(page, n).locator('header [data-risk-order-rating]')).toHaveCount(1)
     await expect(riskEntry(page, n)).not.toContainText(/Queued|In progress|Completed|Cancelled/)
   }
+  // The rating's reason is the card body.
+  await expect(riskEntry(page, 1).locator('[data-risk-order-body="reason"]')).toHaveText(
+    'The plan changes how the merge gate counts approvals.',
+  )
+  await expect(riskEntry(page, 2).locator('[data-risk-order-body="reason"]')).toHaveText(
+    'Only the dashboard copy changes.',
+  )
+  // A started job's footer names the model and the run time, and the header
+  // then holds no entry time.
+  const footerModels = [
+    [1, 'gpt-6.1-sol'],
+    [2, 'claude-sonnet-5-5'],
+    [4, 'claude-opus-5-5'],
+  ] as const
+  for (const [n, model] of footerModels) {
+    const footer = riskEntry(page, n).locator('footer[data-job-footer]')
+    await expect(footer).toHaveCount(1)
+    await expect(footer.locator('[data-job-model]')).toContainText(model)
+    await expect(footer.locator('[data-job-time]')).toBeVisible()
+    await expect(riskEntry(page, n).locator('[data-risk-order-time]')).toHaveCount(0)
+  }
+  await expect(riskEntry(page, 1).locator('[data-job-footer] [data-job-duration]')).toHaveText('1m 00s')
+  await expect(riskEntry(page, 4).locator('[data-job-footer]')).toContainText('Running for')
+  // An order whose job has not started shows the entry time and no footer.
+  for (const n of [3, 5]) {
+    await expect(riskEntry(page, n).locator('header [data-risk-order-time]')).toBeVisible()
+    await expect(riskEntry(page, n).locator('[data-job-footer]')).toHaveCount(0)
+    await expect(riskEntry(page, n).locator('[data-risk-order-body]')).toHaveCount(0)
+  }
+  // A claimed unrated order's body is its state detail.
+  await expect(riskEntry(page, 4).locator('[data-risk-order-body="detail"]')).toHaveText(
+    'run:usr_operator · claude-code · claude-opus-5-5',
+  )
   // No entry borrows the task's tier, and the open and cancelled orders show none.
   await expect(timeline.locator('[data-order-stage="risk"] [data-risk-tier="high"]')).toHaveCount(0)
   for (const n of [3, 4, 5]) await expect(riskEntry(page, n).locator('[data-risk-order-rating]')).toHaveCount(0)
@@ -3237,15 +3278,20 @@ for (const viewport of [
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     await expectRiskEntries(page)
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width)
-    // The chip's facts open on keyboard focus, inside the viewport.
+    // Each card fits the viewport.
+    for (const n of [1, 2, 3, 4, 5]) {
+      const card = await riskEntry(page, n).locator('[data-risk-order-card]').boundingBox()
+      expect(card?.x ?? -1).toBeGreaterThanOrEqual(0)
+      expect((card?.x ?? 0) + (card?.width ?? 0)).toBeLessThanOrEqual(viewport.width)
+    }
+    // The chip's facts open on keyboard focus, inside the viewport, and hold
+    // the source only: the reason and the model are on the card.
     const chip = riskEntry(page, 1).locator('[data-risk-order-rating] button')
     await chip.focus()
     const details = riskEntry(page, 1).locator('[data-risk-order-rating-details]')
+    await expect(details).toHaveText('From a risk agent')
     await expect(details.locator('[data-risk-order-rating-source]')).toHaveText('From a risk agent')
-    await expect(details.locator('[data-risk-order-rating-reason]')).toHaveText(
-      'The plan changes how the merge gate counts approvals.',
-    )
-    await expect(details.locator('[data-risk-order-rating-model]')).toHaveText('Reported model gpt-6.1-sol')
+    await expect(details.locator('[data-risk-order-rating-reason], [data-risk-order-rating-model]')).toHaveCount(0)
     const bounds = await details.boundingBox()
     expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(viewport.width)
     await riskEntry(page, 1).scrollIntoViewIfNeeded()
@@ -3268,8 +3314,9 @@ test('a risk order chip opens its facts on hover and on Enter', async ({ page })
   const chip = riskEntry(page, 2).locator('[data-risk-order-rating] button')
   const details = riskEntry(page, 2).locator('[data-risk-order-rating-details]')
   await chip.hover()
-  await expect(details).toContainText('Only the dashboard copy changes.')
-  await expect(details).toContainText('Reported model claude-sonnet-5-5')
+  await expect(details).toHaveText('From a risk agent')
+  await expect(details).not.toContainText('Only the dashboard copy changes.')
+  await expect(details).not.toContainText('claude-sonnet-5-5')
   await page.mouse.move(0, 0)
   await expect(details).toHaveCount(0)
   await chip.focus()
@@ -3296,7 +3343,7 @@ test.describe('risk order chip on touch', () => {
     await chip.tap()
     await expect(chip).toHaveAttribute('aria-expanded', 'true')
     const details = riskEntry(page, 1).locator('[data-risk-order-rating-details]')
-    await expect(details).toContainText('Reported model gpt-6.1-sol')
+    await expect(details).toHaveText('From a risk agent')
     const box = await details.boundingBox()
     expect(box?.x ?? -1).toBeGreaterThanOrEqual(0)
     expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(375)
@@ -3320,8 +3367,13 @@ for (const [source, text] of [
     const chip = page.locator('[data-task-risk]').first().getByRole('button')
     await expect(chip).toHaveText('High')
     await expect(chip).toHaveAccessibleName(new RegExp(`^Risk tier High\\. ${text}\\.`))
+    // The task's chip keeps its reason behind it (invariant 66; DEC-138(2)).
+    await expect(chip).toHaveAccessibleName(/The release window needs a closer review\./)
     await chip.focus()
     await expect(page.locator('[data-task-risk-details]').first()).toContainText(text)
+    await expect(page.locator('[data-task-risk-reason]').first()).toHaveText(
+      'The release window needs a closer review.',
+    )
   })
 }
 
@@ -3369,4 +3421,111 @@ test('a risk order entry shows only the rating of its own order and subject', ()
   expect(byOrder(bare, 2)?.risk?.subject).toEqual({ head_sha: riskHeadA, base_sha: riskBase })
   expect(byOrder(bare, 2)?.risk?.rating).toBeUndefined()
   expect(byOrder(bare, 2)?.badge?.label).toBe('Completed')
+})
+
+// A risk order's card carries its own job for the footer, and the footer's
+// model is the rating's reported model, else the model a job card shows
+// (component-web-task-surfaces invariants 72 and 73). The job adds no entry.
+test('a risk order card carries its job and the footer model', () => {
+  const item = riskItem() as unknown as ActivityItem
+  const risk = item.risk
+  if (!risk) throw new Error('fixture has no risk')
+  const byOrder = (value: ActivityItem, n: number) =>
+    buildTimeline(value).find(
+      (entry): entry is Extract<TimelineEntry, { type: 'order' }> =>
+        entry.type === 'order' && entry.order.id === `${taskId}-risk-${n}`,
+    )
+  // No risk job renders an entry of its own.
+  expect(buildTimeline(item).filter((entry) => entry.type === 'job' && entry.job.stage === 'risk')).toHaveLength(0)
+  for (const n of [1, 2, 3, 4, 5]) expect(byOrder(item, n)?.risk?.job?.id).toBe(`${taskId}-risk-${n}`)
+  expect(byOrder(item, 3)?.risk?.job?.started_at).toBeUndefined()
+  expect(byOrder(item, 4)?.risk?.model).toBe('claude-opus-5-5')
+
+  // The rating's reported model wins over a different order model.
+  const withOrderModel = (value: ActivityItem, model: string, extra: Partial<WorkOrder> = {}) => ({
+    ...value,
+    work_orders: value.work_orders?.map((candidate) =>
+      candidate.id === `${taskId}-risk-1` ? { ...candidate, model, ...extra } : candidate,
+    ),
+  })
+  const differentOrder = withOrderModel(item, 'claude-haiku-5-5')
+  expect(byOrder(differentOrder, 1)?.risk?.model).toBe('gpt-6.1-sol')
+
+  // A missing or blank reported model falls back to the job card's model:
+  // the order's model for an operator-owned job, else the job's tier.
+  const withRatingModel = (value: ActivityItem, model: string | undefined) => ({
+    ...value,
+    risk: {
+      ...risk,
+      ratings: risk.ratings.map((rating) =>
+        rating.risk_work_order_id === `${taskId}-risk-1` ? { ...rating, risk_model: model } : rating,
+      ),
+    },
+  })
+  for (const model of [undefined, '', '   ']) {
+    expect(byOrder(withRatingModel(differentOrder, model), 1)?.risk?.model).toBe('claude-haiku-5-5')
+  }
+  const tiered = {
+    ...withRatingModel(differentOrder, undefined),
+    jobs: item.jobs.map((candidate) =>
+      candidate.id === `${taskId}-risk-1` ? { ...candidate, model_tier: 'standard' } : candidate,
+    ),
+  }
+  expect(byOrder(tiered, 1)?.risk?.model).toBe('standard')
+  const noOrderModel = withRatingModel(withOrderModel(item, ''), undefined)
+  expect(byOrder(noOrderModel, 1)?.risk?.model).toBe('operator-owned')
+
+  // A risk order without a job carries no job and no footer model.
+  const jobless = { ...item, jobs: item.jobs.filter((candidate) => candidate.id !== `${taskId}-risk-1`) }
+  expect(byOrder(jobless, 1)?.risk?.job).toBeUndefined()
+  expect(byOrder(jobless, 1)?.risk?.model).toBeUndefined()
+  expect(byOrder(jobless, 1)?.risk?.rating?.tier).toBe('medium')
+})
+
+// Stale and timed-out risk orders render as framed cards with their state
+// badge and their state detail as the body (invariant 72).
+test('stale and timed-out risk orders render as framed cards with their state', async ({ page }) => {
+  const item = riskItem()
+  const expired = {
+    ...item,
+    work_orders: item.work_orders.map((candidate: WorkOrder) =>
+      candidate.id === `${taskId}-risk-3`
+        ? { ...candidate, state: 'stale' as const }
+        : candidate.id === `${taskId}-risk-5`
+          ? { ...candidate, state: 'timed_out' as const, execution_deadline: minutes(55) }
+          : candidate,
+    ),
+  }
+  await mockAPI(page, expired, nextAction(`${taskId}-implement-1`))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const cases = [
+    [3, 'Stale', 'No agent claimed it before queue retention elapsed.'],
+    [5, 'Timed out', 'The execution deadline elapsed before the agent finished'],
+  ] as const
+  for (const [n, badge, detail] of cases) {
+    const card = riskEntry(page, n).locator('article[data-risk-order-card]')
+    await expect(card).toHaveCount(1)
+    await expect(card.locator('header')).toContainText('Risk rating')
+    await expect(card.locator('header')).toContainText(badge)
+    await expect(card.locator('header [data-risk-order-time]')).toBeVisible()
+    await expect(card.locator('[data-risk-order-body="detail"]')).toContainText(detail)
+    await expect(card.locator('[data-job-footer]')).toHaveCount(0)
+    await expect(card.locator('[data-risk-order-rating]')).toHaveCount(0)
+  }
+})
+
+// A rated order whose job is missing keeps its entry time and shows no
+// footer, and a running job's footer counts up.
+test('a risk order card without a started job keeps its time and has no footer', async ({ page }) => {
+  const item = riskItem()
+  const jobless = { ...item, jobs: item.jobs.filter((candidate) => candidate.id !== `${taskId}-risk-1`) }
+  await mockAPI(page, jobless, nextAction(`${taskId}-implement-1`))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = riskEntry(page, 1).locator('[data-risk-order-card]')
+  await expect(card.locator('[data-risk-order-rating="medium"]')).toHaveCount(1)
+  await expect(card.locator('[data-risk-order-body="reason"]')).toHaveText(
+    'The plan changes how the merge gate counts approvals.',
+  )
+  await expect(card.locator('header [data-risk-order-time]')).toBeVisible()
+  await expect(card.locator('[data-job-footer]')).toHaveCount(0)
 })
