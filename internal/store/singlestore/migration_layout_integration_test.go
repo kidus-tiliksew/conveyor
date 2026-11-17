@@ -138,14 +138,14 @@ func TestHistoryMigrationLayoutsIntegration(t *testing.T) {
 		name, typ, columns string
 		nonUnique          int
 	}{
-		{"PRIMARY", "HASH", "workspace_id,position", 0},
-		{"event_log_stream_version", "HASH", "workspace_id,stream_id,version", 1},
+		{"PRIMARY", "COLUMNSTORE HASH", "workspace_id,position", 0},
+		{"event_log_stream_version", "COLUMNSTORE HASH", "workspace_id,stream_id,version", 1},
 	} {
-		var columns string
-		var nonUnique int
-		err := fresh.db.QueryRowContext(ctx, `SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index SEPARATOR ','), MIN(non_unique) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='event_log' AND index_name=? AND index_type=?`, index.name, index.typ).Scan(&columns, &nonUnique)
-		if err != nil || columns != index.columns || nonUnique != index.nonUnique {
-			t.Errorf("event_log index %s: columns=%q non_unique=%d error=%v", index.name, columns, nonUnique, err)
+		var columns sql.NullString
+		var minUnique, maxUnique sql.NullInt64
+		err := fresh.db.QueryRowContext(ctx, `SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index SEPARATOR ','), MIN(non_unique), MAX(non_unique) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='event_log' AND index_name=? AND index_type=?`, index.name, index.typ).Scan(&columns, &minUnique, &maxUnique)
+		if err != nil || !columns.Valid || columns.String != index.columns || !minUnique.Valid || !maxUnique.Valid || minUnique.Int64 != int64(index.nonUnique) || maxUnique.Int64 != int64(index.nonUnique) {
+			t.Errorf("event_log index %s type %s: columns=%v non_unique min=%v max=%v error=%v", index.name, index.typ, columns, minUnique, maxUnique, err)
 		}
 	}
 	for _, index := range []struct{ typ, columns string }{
