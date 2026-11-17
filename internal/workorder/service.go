@@ -71,29 +71,23 @@ type Service struct {
 }
 
 type Context struct {
-	ContextFreshness core.ContextFreshness `json:"context_freshness"`
-	Order            core.WorkOrder        `json:"work_order"`
-	Task             core.Task             `json:"task"`
-	AuthoritySource  string                `json:"authority_source"`
-	ApprovedSpec     *core.SpecVersion     `json:"approved_spec,omitempty"`
-	PriorSpec        *core.SpecVersion     `json:"prior_spec,omitempty"`
-	TriageBrief      *pipeline.TriageBrief `json:"triage_brief,omitempty"`
-	RolePrompt       string                `json:"role_prompt"`
-	// ProgressReportIntervalSeconds is the workspace's progress report
-	// interval at the time of this read, in whole seconds, and 0 when no
-	// interval applies. It is read from the workspace configuration for
-	// every read and stored on no order (component-work-orders invariant 67;
-	// req-delegated-execution AC-6.1).
-	ProgressReportIntervalSeconds int64                           `json:"progress_report_interval_seconds"`
-	ServedRequirements            []core.ServedRequirementContext `json:"served_requirements,omitempty"`
-	GovernanceSnapshot            *core.GovernanceSnapshot        `json:"governance_snapshot,omitempty"`
-	DocumentationGateEvidence     *core.DocumentationGateEvidence `json:"documentation_gate_evidence,omitempty"`
-	BounceHistory                 []json.RawMessage               `json:"bounce_history,omitempty"`
-	ReviewSummaries               []json.RawMessage               `json:"review_summaries,omitempty"` // feature-review-round-summary SU-5
-	PriorFeedback                 []string                        `json:"prior_feedback,omitempty"`
-	PlanRevision                  *PlanRevisionContext            `json:"plan_revision,omitempty"`
-	Artifacts                     []ArtifactReference             `json:"artifacts,omitempty"`
-	LineageContext                lineagecontext.Result           `json:"lineage_context"`
+	ContextFreshness          core.ContextFreshness           `json:"context_freshness"`
+	Order                     core.WorkOrder                  `json:"work_order"`
+	Task                      core.Task                       `json:"task"`
+	AuthoritySource           string                          `json:"authority_source"`
+	ApprovedSpec              *core.SpecVersion               `json:"approved_spec,omitempty"`
+	PriorSpec                 *core.SpecVersion               `json:"prior_spec,omitempty"`
+	TriageBrief               *pipeline.TriageBrief           `json:"triage_brief,omitempty"`
+	RolePrompt                string                          `json:"role_prompt"`
+	ServedRequirements        []core.ServedRequirementContext `json:"served_requirements,omitempty"`
+	GovernanceSnapshot        *core.GovernanceSnapshot        `json:"governance_snapshot,omitempty"`
+	DocumentationGateEvidence *core.DocumentationGateEvidence `json:"documentation_gate_evidence,omitempty"`
+	BounceHistory             []json.RawMessage               `json:"bounce_history,omitempty"`
+	ReviewSummaries           []json.RawMessage               `json:"review_summaries,omitempty"` // feature-review-round-summary SU-5
+	PriorFeedback             []string                        `json:"prior_feedback,omitempty"`
+	PlanRevision              *PlanRevisionContext            `json:"plan_revision,omitempty"`
+	Artifacts                 []ArtifactReference             `json:"artifacts,omitempty"`
+	LineageContext            lineagecontext.Result           `json:"lineage_context"`
 	// ContextTruncated tells a client that the explicit lineage/node or
 	// artifact-reference budget was reached. Authorization uses the identical
 	// bounded selection, so an omitted artifact cannot be fetched by ID alone.
@@ -111,6 +105,12 @@ type Context struct {
 	// rules, and frozen tier table (req-risk-based-review AC-12.5;
 	// component-work-orders invariant 64).
 	RiskOrder *RiskContract `json:"risk_order,omitempty"`
+	// ProgressReportIntervalSeconds is the workspace's progress report
+	// interval at the time of this read, in whole seconds, and 0 when no
+	// interval applies. It is read from the workspace configuration for
+	// every read and stored on no order (component-work-orders invariant 67;
+	// req-delegated-execution AC-6.1).
+	ProgressReportIntervalSeconds int64 `json:"progress_report_interval_seconds"`
 }
 
 // PlanRevisionContext carries the durable request that caused a plan-stage
