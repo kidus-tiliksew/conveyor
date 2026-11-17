@@ -472,6 +472,161 @@ test('review model falls back one unsafe list item at a time', () => {
   expect(annotated(javascriptLink?.[1].changes)).toEqual([])
 })
 
+// A list item that opens with a bold title holding inline code, as System Design
+// invariants do: base, and target with an edit in a later sentence.
+const codeTitleBase =
+  '**`conveyor-work`: the claim.** A session claims its order with a `lease_seconds` of 300 and renews it.'
+const codeTitleTarget =
+  '**`conveyor-work`: the claim.** A session claims its order with a `lease_seconds` of 900 and renews it at each milestone.'
+
+test('review model parses inline code inside bold and emphasis spans', () => {
+  expect(formattedParagraph('**`conveyor-work`**')).toEqual([{ text: 'conveyor-work', style: 'strong-code' }])
+  expect(formattedParagraph('__`conveyor-work`__')).toEqual([{ text: 'conveyor-work', style: 'strong-code' }])
+  expect(formattedParagraph('*`lease_seconds`*')).toEqual([{ text: 'lease_seconds', style: 'emphasis-code' }])
+  expect(formattedParagraph('_`lease_seconds`_')).toEqual([{ text: 'lease_seconds', style: 'emphasis-code' }])
+  expect(formattedParagraph('**`conveyor-work`: the claim.** A session claims.')).toEqual([
+    { text: 'conveyor-work', style: 'strong-code' },
+    { text: ': the claim.', style: 'strong' },
+    { text: ' A session claims.', style: 'text' },
+  ])
+  expect(formattedParagraph('*Set `a` and `b` now.*')).toEqual([
+    { text: 'Set ', style: 'emphasis' },
+    { text: 'a', style: 'emphasis-code' },
+    { text: ' and ', style: 'emphasis' },
+    { text: 'b', style: 'emphasis-code' },
+    { text: ' now.', style: 'emphasis' },
+  ])
+  expect(formattedParagraph(codeTitleTarget)).toEqual([
+    { text: 'conveyor-work', style: 'strong-code' },
+    { text: ': the claim.', style: 'strong' },
+    { text: ' A session claims its order with a ', style: 'text' },
+    { text: 'lease_seconds', style: 'code' },
+    { text: ' of 900 and renews it at each milestone.', style: 'text' },
+  ])
+  // Code is literal, so a marker or other syntax inside it neither closes the
+  // span nor makes it unsafe.
+  expect(formattedParagraph('**`a**b` x**')).toEqual([
+    { text: 'a**b', style: 'strong-code' },
+    { text: ' x', style: 'strong' },
+  ])
+  expect(formattedParagraph('**Use `[x](y)` and `<b>`.**')).toEqual([
+    { text: 'Use ', style: 'strong' },
+    { text: '[x](y)', style: 'strong-code' },
+    { text: ' and ', style: 'strong' },
+    { text: '<b>', style: 'strong-code' },
+    { text: '.', style: 'strong' },
+  ])
+  // Single-style spans parse as before.
+  expect(formattedParagraph('Keep *slow* and **manual** `code`.')).toEqual([
+    { text: 'Keep ', style: 'text' },
+    { text: 'slow', style: 'emphasis' },
+    { text: ' and ', style: 'text' },
+    { text: 'manual', style: 'strong' },
+    { text: ' ', style: 'text' },
+    { text: 'code', style: 'code' },
+    { text: '.', style: 'text' },
+  ])
+  expect(formattedParagraph('snake_case_name')).toEqual([{ text: 'snake_case_name', style: 'text' }])
+
+  // Code inside a span keeps the code span rules, and every other nested or
+  // malformed syntax inside a span still refuses.
+  for (const unsafe of [
+    '**``double``**',
+    '**``a` x**',
+    '**`a``b`**',
+    '`a``b`',
+    '**`unclosed**',
+    '**`unclosed** later',
+    '*`unclosed*',
+    '**``**',
+    '**` lead`**',
+    '**`trail `**',
+    '**`new\nline`**',
+    '**[link](https://example.test)**',
+    '**`a` [link](https://example.test)**',
+    '*`a` [link](https://example.test)*',
+    '**`a` *nested***',
+    '**`a` _nested_**',
+    '*`a` **nested***',
+    '**`a` \\* escaped**',
+    '** `a`**',
+    '**`a` **',
+    '*`a` *',
+    '**`a`',
+    '**`a` <b>x</b>**',
+    '**`a` ~~struck~~**',
+  ]) {
+    expect(formattedParagraph(unsafe), unsafe).toBeUndefined()
+    expect(formattedParagraphChanges(unsafe, `${unsafe} changed`), unsafe).toBeUndefined()
+  }
+})
+
+test('review model highlights changes in list items with a bold title that holds code', () => {
+  // A later-sentence edit keeps the title's words unchanged.
+  const later = formattedParagraphChanges(codeTitleBase, codeTitleTarget)
+  expect(later?.slice(0, 2)).toEqual([
+    { text: 'conveyor-work', kind: 'same', style: 'strong-code' },
+    { text: ': the claim.', kind: 'same', style: 'strong' },
+  ])
+  expect(added(later)).toEqual(['900', ' at each milestone'])
+  expect(removed(later)).toEqual(['300'])
+  expect(annotated(later).every((change) => change.style === 'text')).toBe(true)
+
+  // A change inside the title's code keeps both styles, and so does a change
+  // in the title's text.
+  const title = formattedParagraphChanges(
+    '**`conveyor-work`: the claim.** A session claims.',
+    '**`conveyor-plan`: the draft.** A session claims.',
+  )
+  expect(title).toContainEqual({ text: 'work', kind: 'removed', style: 'strong-code' })
+  expect(title).toContainEqual({ text: 'plan', kind: 'added', style: 'strong-code' })
+  expect(title).toContainEqual({ text: 'claim', kind: 'removed', style: 'strong' })
+  expect(title).toContainEqual({ text: 'draft', kind: 'added', style: 'strong' })
+  const emphasis = formattedParagraphChanges(
+    '*`conveyor-kit`: optional.* Kits run.',
+    '*`conveyor-verify`: required.* Kits run.',
+  )
+  expect(emphasis).toContainEqual({ text: 'kit', kind: 'removed', style: 'emphasis-code' })
+  expect(emphasis).toContainEqual({ text: 'verify', kind: 'added', style: 'emphasis-code' })
+  expect(emphasis).toContainEqual({ text: 'optional', kind: 'removed', style: 'emphasis' })
+  expect(emphasis).toContainEqual({ text: 'required', kind: 'added', style: 'emphasis' })
+
+  // The same word in plain code and in bold or emphasis code is a change of style.
+  expect(annotated(formattedParagraphChanges('Use `name` now.', 'Use **`name`** now.'))).toEqual([
+    { text: 'name', kind: 'removed', style: 'code' },
+    { text: 'name', kind: 'added', style: 'strong-code' },
+  ])
+  expect(annotated(formattedParagraphChanges('Use **`name`** now.', 'Use *`name`* now.'))).toEqual([
+    { text: 'name', kind: 'removed', style: 'strong-code' },
+    { text: 'name', kind: 'added', style: 'emphasis-code' },
+  ])
+  expect(annotated(formattedParagraphChanges('Use **name** now.', 'Use **`name`** now.'))).toEqual([
+    { text: 'name', kind: 'removed', style: 'strong' },
+    { text: 'name', kind: 'added', style: 'strong-code' },
+  ])
+
+  // The changed item of a numbered list carries its changes, and its siblings
+  // keep theirs.
+  const items = listBlockChanges(
+    `33. **\`conveyor-plan\`: the draft.** Plans stay local.\n34. ${codeTitleBase}\n35. **\`conveyor-kit\`: kits.** Kits run.`,
+    `33. **\`conveyor-plan\`: the draft.** Plans stay local.\n34. ${codeTitleTarget}\n35. **\`conveyor-kit\`: kits.** Kits run.`,
+  )
+  expect(items?.map((item) => item.after?.marker)).toEqual(['33.', '34.', '35.'])
+  expect(items?.every((item) => item.changes !== undefined)).toBe(true)
+  expect(annotated(items?.[0].changes)).toEqual([])
+  expect(added(items?.[1].changes)).toEqual(['900', ' at each milestone'])
+  expect(items?.[1].changes?.[0]).toEqual({ text: 'conveyor-work', kind: 'same', style: 'strong-code' })
+  expect(annotated(items?.[2].changes)).toEqual([])
+
+  // An unsafe item still falls back alone beside a highlighted sibling.
+  const mixed = listBlockChanges(
+    `1. **\`a\`\` x** old\n2. ${codeTitleBase}`,
+    `1. **\`a\`\` x** new\n2. ${codeTitleTarget}`,
+  )
+  expect(mixed?.[0].changes).toBeUndefined()
+  expect(added(mixed?.[1].changes)).toEqual(['900', ' at each milestone'])
+})
+
 test('review model highlights literal characters and keeps real block structure as a fallback', () => {
   for (const [before, after, change] of [
     ['Route a -> b today.', 'Route a -> c today.', 'c'],
@@ -1339,6 +1494,64 @@ for (const tier of ['requirements', 'system-design'] as const) {
 // Records Chromium timing and heap observations for the representative guard
 // comparison. Durations depend on the host, so they are attached as evidence
 // rather than asserted.
+// Invariants whose bold or emphasis titles hold inline code: a title code and
+// text edit, a later-sentence edit, an emphasis code edit, and an unchanged item.
+const codeTitleList = (side: 'base' | 'target') =>
+  `# CLI onboarding\n\n## Invariants\n\n${[
+    side === 'base'
+      ? '33. **`conveyor-plan`: the draft.** Plans stay local until push.'
+      : '33. **`conveyor-draft`: the local draft.** Plans stay local until push.',
+    `34. ${side === 'base' ? codeTitleBase : codeTitleTarget}`,
+    side === 'base'
+      ? '35. *`conveyor-kit`: optional.* Kits run under a verify claim.'
+      : '35. *`conveyor-verify`: optional.* Kits run under a verify claim.',
+    '36. **Retention.** Events stay append-only.',
+  ].join('\n')}\n\n## Stable\n\nSame.`
+
+test('system-design: list items with bold titles holding code highlight changes in both comparison modes', async ({
+  page,
+}, testInfo) => {
+  const seed = await seedReview(page, 'system-design', {
+    baseContent: codeTitleList('base'),
+    targetContent: codeTitleList('target'),
+  })
+  await page.goto(seed.url)
+  const comparison = page.getByRole('region', { name: 'Version comparison', exact: true })
+  const block = comparison.getByRole('region', { name: 'Invariants', exact: true })
+  const items = block.getByRole('listitem')
+  for (const width of [1440, 375]) {
+    await page.setViewportSize({ width, height: 1000 })
+    for (const mode of ['Inline', 'Side by side']) {
+      await page.getByRole('button', { name: mode, exact: true }).click()
+      await expect(items).toHaveCount(4)
+      await expect(block).not.toContainText('Detailed highlighting unavailable')
+      // A title code edit and a title text edit keep bold and code.
+      await expect(items.nth(0).locator('del strong code').filter({ hasText: 'plan' })).toBeVisible()
+      await expect(items.nth(0).locator('ins strong code').filter({ hasText: 'draft' })).toBeVisible()
+      await expect(items.nth(0).locator('ins strong').filter({ hasText: 'local' })).toBeVisible()
+      // A later-sentence edit leaves the bold code title unmarked.
+      const title = items.nth(1).locator('strong code').filter({ hasText: 'conveyor-work' })
+      await expect(title.first()).toBeVisible()
+      expect(await title.first().evaluate((node) => node.closest('ins, del') === null)).toBe(true)
+      await expect(items.nth(1).locator('ins').filter({ hasText: '900' })).toBeVisible()
+      await expect(items.nth(1).locator('ins').filter({ hasText: 'at each milestone' })).toBeVisible()
+      await expect(items.nth(1).locator('del').filter({ hasText: '300' })).toBeVisible()
+      await expect(items.nth(1).locator('code').filter({ hasText: 'lease_seconds' }).first()).toBeVisible()
+      // An emphasis code edit keeps emphasis and code.
+      await expect(items.nth(2).locator('del em code').filter({ hasText: 'kit' })).toBeVisible()
+      await expect(items.nth(2).locator('ins em code').filter({ hasText: 'verify' })).toBeVisible()
+      await expect(items.nth(3).locator('ins, del')).toHaveCount(0)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      // The screenshots attach to the Playwright report, which CI uploads as an artifact.
+      await block.scrollIntoViewIfNeeded()
+      const name = `code-title-list-${mode === 'Inline' ? 'inline' : 'side-by-side'}-${width}`
+      const path = testInfo.outputPath(`${name}.png`)
+      await page.screenshot({ path, fullPage: true })
+      await testInfo.attach(name, { path, contentType: 'image/png' })
+    }
+  }
+})
+
 test('system-design: guard comparison timing and heap observations', async ({ page, browser }, testInfo) => {
   const samples = 10
   const seed = await seedReview(page, 'system-design', {
