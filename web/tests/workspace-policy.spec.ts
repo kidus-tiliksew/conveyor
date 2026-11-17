@@ -398,3 +398,34 @@ test('a refused progress report interval shows as a field error on the Policy ta
   await expect(interval).toHaveAttribute('aria-invalid', 'true')
   await expect(page.getByRole('tab', { name: /Policy/ })).toHaveAttribute('aria-selected', 'true')
 })
+
+// Visual record for the pull request: the Progress reports card with the
+// served value and with a server refusal, at 375 px and at a desktop width.
+// Each image is attached to the Playwright report, which CI uploads, and is
+// also written to PROGRESS_REPORT_SCREENSHOT_DIR when it is set, else to the
+// test's output directory. No image is committed.
+for (const width of [375, 1440]) {
+  test(`progress report interval screenshots at ${width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 })
+    const directory = process.env.PROGRESS_REPORT_SCREENSHOT_DIR
+    const target = (name: string) => (directory ? `${directory}/${name}` : testInfo.outputPath(name))
+    const shoot = async (name: string) => {
+      await page.getByText('Progress reports', { exact: true }).evaluate((element) => element.scrollIntoView())
+      await page.screenshot({ path: target(name) })
+      await testInfo.attach(name, { path: target(name), contentType: 'image/png' })
+    }
+    const message = 'execution.progress_report_interval must be 0 or a duration from 1m to 60m'
+    await mockReviewScopeAPIs(page, servedInterval, { field: 'execution.progress_report_interval', message })
+    await page.goto('/w/demo/workspace')
+    const interval = page.getByRole('textbox', { name: 'Progress report interval' })
+    await expect(interval).toHaveValue('10m')
+    // The page never scrolls sideways.
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+    await shoot(`progress-report-interval-served-${width}.png`)
+
+    await interval.fill('2h')
+    await page.getByRole('button', { name: 'Save changes' }).click()
+    await expect(interval.locator('xpath=ancestor::div[1]').getByRole('alert')).toHaveText(message)
+    await shoot(`progress-report-interval-refused-${width}.png`)
+  })
+}
