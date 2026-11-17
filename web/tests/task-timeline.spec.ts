@@ -809,6 +809,188 @@ test('suppression covers only Progress labels of the order whose job entry print
   })
 })
 
+// A deliberating review seat prints its order's progress report in its panel
+// row: the report reads once, in the seat, and the seat offers the full report
+// when its two-line clamp hides text. Every other agent-activity note stays
+// (component-web-task-surfaces; task 261117-fd5fe8).
+const seatOrderId = `${taskId}-review-1-seat-1`
+const seatReport =
+  'I claimed the document comparison review and read the approved plan; next I will check the change and its evidence independently.'
+const seatLongReport = [
+  seatReport,
+  'The diff changes the timeline builder and the seat row. I am reading each changed function against the governing design and the task body.',
+  'Next I will run the focused Playwright specs, compare the screenshots at both widths, and map every exit criterion to its evidence before I submit a verdict.',
+].join('\n')
+const seatProgress = {
+  last_agent_activity_at: minutes(7),
+  last_agent_activity_label: `Progress: ${seatReport.slice(0, 60)}…`,
+  progress: seatReport,
+}
+
+function deliberatingSeat(extra: Partial<WorkOrder> = {}, jobState = 'running') {
+  return activity({
+    latest_stage: 'review',
+    jobs: [job(seatOrderId, 'review', jobState)],
+    work_orders: [
+      order(seatOrderId, {
+        stage: 'review',
+        review_round: 1,
+        review_seat: 1,
+        agent: 'codex',
+        model: 'gpt-6',
+        ...seatProgress,
+        ...extra,
+      }),
+    ],
+  })
+}
+
+const panelSeatStatus = (entries: TimelineEntry[]) =>
+  entries.flatMap((entry) => (entry.type === 'panel' ? entry.seats.map((seat) => seat.status) : []))
+
+test('a deliberating panel seat that prints its progress adds no progress note for its order', () => {
+  const entries = timelineOf(deliberatingSeat())
+  expect(panelSeatStatus(entries)).toEqual(['deliberating'])
+  expect(agentActivity(entries)).toEqual([])
+  // A seat without a job still deliberates while its order is claimed.
+  const jobless = deliberatingSeat()
+  const joblessEntries = timelineOf({ ...jobless, jobs: [] })
+  expect(panelSeatStatus(joblessEntries)).toEqual(['deliberating'])
+  expect(agentActivity(joblessEntries)).toEqual([])
+})
+
+test('a panel order keeps its agent-activity note when its seat prints no progress report', () => {
+  const noteTitles = (item: object) => agentActivity(timelineOf(item)).map(titleOf)
+  // A label that is not a progress report keeps its note.
+  expect(noteTitles(deliberatingSeat({ last_agent_activity_label: 'Branch pushed' }))).toEqual([
+    'Agent activity — Branch pushed',
+  ])
+  // A report that is empty after the seat row's filtering prints nothing in
+  // the seat, so the note stays.
+  const progressNote = [`Agent activity — ${seatProgress.last_agent_activity_label}`]
+  for (const progress of ['conveyor run mode: self-claimed', '  \n ', undefined]) {
+    expect(noteTitles(deliberatingSeat({ progress })), String(progress)).toEqual(progressNote)
+  }
+  // A seat in any status other than deliberating prints no report.
+  const cases: [string, object][] = [
+    ['waiting', deliberatingSeat({ state: 'queued' })],
+    ['stale', deliberatingSeat({ state: 'stale' })],
+    ['timed_out', deliberatingSeat({ state: 'timed_out' })],
+    ['failed', deliberatingSeat({}, 'failed')],
+  ]
+  for (const [status, item] of cases) {
+    const entries = timelineOf(item)
+    expect(panelSeatStatus(entries), status).toEqual([status])
+    expect(agentActivity(entries).map(titleOf), status).toEqual(progressNote)
+    expect(agentActivity(entries)[0], status).toMatchObject({ fullProgress: seatReport })
+  }
+})
+
+test('a deliberating seat suppresses only its own order and leaves other orders their notes', () => {
+  const implementId = `${taskId}-implement-1`
+  const otherSeatId = `${taskId}-review-1-seat-2`
+  const item = activity({
+    latest_stage: 'review',
+    work_orders: [
+      order(implementId, {
+        state: 'claimed',
+        queue_entered_at: minutes(1),
+        last_agent_activity_at: minutes(3),
+        last_agent_activity_label: 'Progress: addressing the review',
+        progress: 'Addressing the review in full detail.',
+      }),
+      order(seatOrderId, { stage: 'review', review_round: 1, review_seat: 1, ...seatProgress }),
+      order(otherSeatId, {
+        stage: 'review',
+        review_round: 1,
+        review_seat: 2,
+        state: 'stale',
+        last_agent_activity_at: minutes(8),
+        last_agent_activity_label: 'Progress: reading the diff',
+        progress: 'Reading the diff in full detail.',
+      }),
+    ],
+  })
+  const notes = agentActivity(timelineOf(item))
+  expect(notes.map((entry) => entry.key)).toEqual([`agent-activity-${implementId}`, `agent-activity-${otherSeatId}`])
+  expect(notes.map(titleOf)).toEqual([
+    'Agent activity — Progress: addressing the review',
+    'Agent activity — Progress: reading the diff',
+  ])
+})
+
+for (const surface of surfaces) {
+  test(`the ${surface.name} prints a deliberating seat's progress report once, with no agent-activity row`, async ({
+    page,
+  }) => {
+    await mockAPI(page, deliberatingSeat(), nextAction(seatOrderId, 'review'))
+    await page.goto(surface.url)
+    const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+    const seat = seatRow(timeline, 1)
+    await expect(seat.getByText('Deliberating')).toBeVisible()
+    await expect(seat.getByText(seatReport, { exact: true })).toBeVisible()
+    await expect(timeline.getByText(seatReport, { exact: true })).toHaveCount(1)
+    await expect(timeline.getByText(/Agent activity/)).toHaveCount(0)
+  })
+
+  test(`the ${surface.name} offers a deliberating seat's full progress report only when the clamp hides text`, async ({
+    page,
+  }) => {
+    await mockAPI(page, deliberatingSeat({ progress: seatLongReport }), nextAction(seatOrderId, 'review'))
+    await page.goto(surface.url)
+    const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+    const seat = seatRow(timeline, 1)
+    await expect(seat.getByText('Deliberating')).toBeVisible()
+    await expect(timeline.getByText(/Agent activity/)).toHaveCount(0)
+    const disclosure = seat.getByText('Show full progress report', { exact: true })
+    await expect(disclosure).toBeVisible()
+    const full = seat.locator('details pre')
+    await expect(full).toBeHidden()
+    await disclosure.click()
+    await expect(full).toBeVisible()
+    await expect(full).toHaveText(seatLongReport)
+    await expect(timeline.getByText('Show full progress report')).toHaveCount(1)
+  })
+
+  test(`the ${surface.name} shows no full-report disclosure for a seat report that fits`, async ({ page }) => {
+    const short = 'Reading the timeline diff.'
+    await mockAPI(page, deliberatingSeat({ progress: short }), nextAction(seatOrderId, 'review'))
+    await page.goto(surface.url)
+    const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+    const seat = seatRow(timeline, 1)
+    await expect(seat.getByText(short, { exact: true })).toBeVisible()
+    await expect(timeline.getByText('Show full progress report')).toHaveCount(0)
+    await expect(timeline.getByText(/Agent activity/)).toHaveCount(0)
+  })
+}
+
+// Visual record for the pull request: the review panel with a deliberating
+// seat whose long report is clamped, then opened, at 375 px and a desktop
+// width. CONVEYOR_SCREENSHOT_DIR keeps a local copy; the Playwright report
+// carries each attachment.
+for (const width of [375, 1280]) {
+  test(`deliberating seat progress screenshots at ${width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 })
+    await mockAPI(page, deliberatingSeat({ progress: seatLongReport }), nextAction(seatOrderId, 'review'))
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+    const panel = timeline.locator('li article')
+    await expect(panel).toHaveCount(1)
+    await page.evaluate(() => document.fonts.ready)
+    if (width === 375) expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375)
+    await capturePanel(panel, testInfo, `deliberating-seat-progress-clamped-${width}.png`)
+    await seatRow(panel, 1).getByText('Show full progress report', { exact: true }).click()
+    await expect(seatRow(panel, 1).locator('details pre')).toBeVisible()
+    await capturePanel(panel, testInfo, `deliberating-seat-progress-open-${width}.png`)
+  })
+}
+
+async function capturePanel(panel: Locator, testInfo: TestInfo, name: string) {
+  const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+  const image = await panel.screenshot({ path: shots ? `${shots}/${name}` : undefined })
+  await testInfo.attach(name, { body: image, contentType: 'image/png' })
+}
+
 for (const surface of surfaces) {
   test(`the ${surface.name} prints a running job's progress report once, with no agent-activity row`, async ({
     page,
