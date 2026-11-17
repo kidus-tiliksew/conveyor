@@ -3,6 +3,7 @@ import { AlertTriangle, Check, ChevronDown, ChevronUp, Cpu, ExternalLink, Undo2,
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import {
   buildTimeline,
+  deliberatingSeatProgress,
   deriveCurrentExecutionState,
   failedTriage,
   historyNoteEntries,
@@ -1285,7 +1286,7 @@ function SeatRow({
   withPeople: boolean
   usageAvailable: boolean
 }) {
-  const progress = reviewSeatProgress(seat.order.progress)
+  const progress = deliberatingSeatProgress(seat)
   // A seat shows its current reported model with no self-reported label, and
   // never whether that model matches the implementer's (component-review
   // invariant 39; DEC-128).
@@ -1333,19 +1334,42 @@ function SeatRow({
       <span className="justify-self-end">
         <SeatState seat={seat} index={index} />
       </span>
-      {seat.status === 'deliberating' && progress && (
-        <p className="col-span-full line-clamp-2 text-xs leading-5 text-muted">{progress}</p>
-      )}
+      {progress && <SeatProgress progress={progress} />}
     </div>
   )
 }
 
-function reviewSeatProgress(progress?: string) {
-  return progress
-    ?.split('\n')
-    .filter((line) => !/^\s*conveyor run mode\s*:/i.test(line))
-    .join('\n')
-    .trim()
+// A deliberating seat's progress report previews two lines. The timeline adds
+// no agent-activity note for the seat's order, so when the clamp hides text the
+// seat offers the full report in place (component-web-task-surfaces).
+function SeatProgress({ progress }: { progress: string }) {
+  const textRef = useRef<HTMLParagraphElement>(null)
+  const [overflowing, setOverflowing] = useState(false)
+  useLayoutEffect(() => {
+    const element = textRef.current
+    if (!element) return
+    const measure = () => setOverflowing(element.scrollHeight > element.clientHeight + 1)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [progress])
+  return (
+    <div className="col-span-full min-w-0">
+      <p ref={textRef} className="line-clamp-2 text-xs leading-5 text-muted" data-seat-progress>
+        {progress}
+      </p>
+      {overflowing && (
+        <details className="mt-1 text-xs text-muted">
+          <summary className="cursor-pointer">Show full progress report</summary>
+          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface p-2 font-sans text-sm text-foreground">
+            {progress}
+          </pre>
+        </details>
+      )}
+    </div>
+  )
 }
 
 // A seat's review feedback rendered as a clipped document block — the same
