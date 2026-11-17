@@ -138,6 +138,16 @@ func runBoardDiff(c *client, w io.Writer, options boardDiffOptions) error {
 func (c *client) seedBoardDiff(now time.Time) (boardDiffState, boardDiffSummary, error) {
 	state := boardDiffState{Tasks: map[string]boardDiffTask{}, Recent: map[string]time.Time{}}
 	summary := boardDiffSummary{States: map[string]int{}, Stages: map[string]int{}, Decisions: []boardDiffSummaryDecision{}}
+	feed, err := c.readBoardDiffFeedMode(now, true)
+	if err != nil {
+		return state, summary, err
+	}
+	state.Position = feed.Position
+	for _, row := range feed.Items {
+		if !row.LastEventAt.Before(feed.Position.Add(-2 * time.Minute)) {
+			state.Recent[row.Task.ID] = row.LastEventAt
+		}
+	}
 	for offset := 0; ; {
 		q := url.Values{"limit": {"100"}, "offset": {strconv.Itoa(offset)}}
 		body, _, err := c.getRawWithHeader("/v1/board?" + q.Encode())
@@ -157,16 +167,6 @@ func (c *client) seedBoardDiff(now time.Time) (boardDiffState, boardDiffSummary,
 		}
 		if len(page.Items) == 0 {
 			return state, summary, fmt.Errorf("board page ended before total")
-		}
-	}
-	feed, err := c.readBoardDiffFeedMode(now, true)
-	if err != nil {
-		return state, summary, err
-	}
-	state.Position = feed.Position
-	for _, row := range feed.Items {
-		if !row.LastEventAt.Before(feed.Position.Add(-2 * time.Minute)) {
-			state.Recent[row.Task.ID] = row.LastEventAt
 		}
 	}
 	return state, summary, nil
@@ -191,6 +191,14 @@ func boardDiffSeedItem(state *boardDiffState, summary *boardDiffSummary, item st
 	summary.Open++
 	summary.States[string(item.State)]++
 	summary.Stages[stage]++
+}
+
+func formatBoardDiffDuration(seconds int64) string {
+	duration := (time.Duration(seconds) * time.Second).String()
+	if strings.HasSuffix(duration, "m0s") {
+		duration = strings.TrimSuffix(duration, "0s")
+	}
+	return duration
 }
 func writeBoardDiffText(w io.Writer, out boardDiffOutput) error {
 	if out.ResetReason != "" {
@@ -238,7 +246,7 @@ func writeBoardDiffText(w io.Writer, out boardDiffOutput) error {
 				if tr.PreviousSeconds == nil {
 					duration = "  (unknown duration)"
 				} else {
-					duration = fmt.Sprintf("  (%s %s)", tr.From, (time.Duration(*tr.PreviousSeconds) * time.Second).String())
+					duration = fmt.Sprintf("  (%s %s)", tr.From, formatBoardDiffDuration(*tr.PreviousSeconds))
 				}
 			}
 			if _, err := fmt.Fprintf(w, "  %s → %s  %s%s\n", tr.From, tr.To, tr.At.Format("15:04"), duration); err != nil {

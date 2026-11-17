@@ -159,27 +159,41 @@ func reduceBoardDiff(row boardDiffActivity, previous boardDiffTask, exists bool,
 		next.Stage = "unknown"
 	}
 	if next.EnteredAt == nil {
+		unknown := next.Stage == "unknown"
+		priorStage := ""
+		created := false
 		for _, e := range history.Events {
 			if e.At.After(cutoff) {
 				break
 			}
-			if e.Kind == "work_order.created" || e.Kind == "work_order.claimed" {
-				var stage string
-				if e.field("stage", &stage) && stage != "" {
-					if next.Stage == "unknown" {
-						next.Stage = stage
-					}
-					if next.Stage != stage {
-						next.EnteredAt = nil
-					} else if next.EnteredAt == nil {
-						at := e.At
-						next.EnteredAt = &at
-					}
-				}
+			if e.Kind == "task.created" {
+				created = true
 			}
+			if e.Kind != "work_order.created" && e.Kind != "work_order.claimed" {
+				continue
+			}
+			var stage string
+			if !e.field("stage", &stage) || stage == "" {
+				continue
+			}
+			if unknown && next.Stage != stage {
+				next.Stage = stage
+				next.EnteredAt = nil
+			}
+			if stage == next.Stage {
+				if next.EnteredAt == nil && (created || (priorStage != "" && priorStage != stage)) {
+					at := e.At
+					next.EnteredAt = &at
+				}
+			} else {
+				next.EnteredAt = nil
+			}
+			priorStage = stage
+			created = false
 		}
 	}
 	incomplete := history.Incomplete
+	terminalTransition := false
 	for _, e := range history.Events {
 		if !e.At.After(cutoff) {
 			continue
@@ -198,6 +212,9 @@ func reduceBoardDiff(row boardDiffActivity, previous boardDiffTask, exists bool,
 			if !e.field("from", &from) || from == "" {
 				from = "unknown"
 				incomplete = true
+			}
+			if to == "merged" || to == "closed" {
+				terminalTransition = true
 			}
 			if from != to {
 				change.Transitions = append(change.Transitions, boardDiffTransition{Kind: "state", From: from, To: to, At: e.At})
@@ -245,12 +262,12 @@ func reduceBoardDiff(row boardDiffActivity, previous boardDiffTask, exists bool,
 		}
 	}
 	next.Decision = decision
-	change.Terminal = next.State == "merged" || next.State == "closed"
+	change.Terminal = terminalTransition || (exists && previous.State != "merged" && previous.State != "closed" && (next.State == "merged" || next.State == "closed"))
 	return change, next, incomplete
 }
 
-// diffBoardActivities reads history only for changed overlap rows. Incomplete
-// tasks are returned separately so the caller can avoid advancing their marker.
+// diffBoardActivities reads history only for changed overlap rows and reports
+// tasks whose history could not be read completely.
 func (c *client) diffBoardActivities(state boardDiffState, feed boardDiffFeed) ([]boardDiffChange, boardDiffState, []boardDiffIncomplete, error) {
 	changes := []boardDiffChange{}
 	incomplete := []boardDiffIncomplete{}
@@ -282,10 +299,8 @@ func (c *client) diffBoardActivities(state boardDiffState, feed boardDiffFeed) (
 			return nil, state, nil, err
 		}
 		if history.NotVisible {
-			incomplete = append(incomplete, boardDiffIncomplete{ID: id, Reason: "task no longer visible"})
-			if wasRecent {
-				next.Recent[id] = seen
-			}
+			incomplete = append(incomplete, boardDiffIncomplete{ID: id, Reason: "task no longer visible; open task detail with conveyor task show " + id})
+			delete(next.Tasks, id)
 			continue
 		}
 		change, task, partial := reduceBoardDiff(row, old, exists, cutoff, history)
@@ -293,14 +308,11 @@ func (c *client) diffBoardActivities(state boardDiffState, feed boardDiffFeed) (
 			changes = append(changes, change)
 		}
 		if partial {
-			incomplete = append(incomplete, boardDiffIncomplete{ID: id, Reason: "history incomplete"})
-			if wasRecent {
-				next.Recent[id] = seen
-			}
-			continue
+			incomplete = append(incomplete, boardDiffIncomplete{ID: id, Reason: "history incomplete; open task detail with conveyor task show " + id})
+			task.Stage, task.EnteredAt = "unknown", nil
 		}
 		next.Recent[id] = row.LastEventAt
-		if change.Terminal {
+		if task.State == "merged" || task.State == "closed" {
 			delete(next.Tasks, id)
 		} else {
 			next.Tasks[id] = task

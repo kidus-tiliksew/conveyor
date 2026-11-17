@@ -76,6 +76,12 @@ func TestBoardDiffCommandEndToEnd(t *testing.T) {
 		if n == 0 && (out.Len() >= 1024 || strings.TrimSpace(out.String()) != fmt.Sprintf(`{"position":%q,"changes":[]}`, now.Format(time.RFC3339))) {
 			t.Fatalf("unchanged output %s", out.String())
 		}
+		if n == 0 {
+			out.Reset()
+			if err := runBoardDiff(c, &out, boardDiffOptions{}); err != nil || out.Len() != 0 || out.Len() >= 1024 {
+				t.Fatalf("unchanged text %q: %v", out.String(), err)
+			}
+		}
 		// Keep every task new to the overlap in the next case.
 		if n > 0 {
 			state, _, e := loadBoardDiffState(srv.URL, "", now)
