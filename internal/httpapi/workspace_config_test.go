@@ -366,6 +366,7 @@ func TestValidationFieldNamesEachRedactedSiteFamily(t *testing.T) {
 		{"repo name duplicate", triage + "repos: [{name: " + value + ", url: https://example.test/a}, {name: " + value + ", url: https://example.test/b}]\n", "repos"},
 		{"monitor unknown", triage + "repos: [{name: fine, url: https://example.test/a}]\nmonitor: {repositories: [" + value + "]}\n", "repos"},
 		{"monitor duplicate", triage + "repos: [{name: " + value + ", url: https://example.test/a}]\nmonitor: {repositories: [" + value + ", " + value + "]}\n", "repos"},
+		{"progress report interval", triage + "execution: {progress_report_interval: " + value + "}\n", "execution.progress_report_interval"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := config.ParseDeployment([]byte(database+tc.document), "deployment.yaml", nil)
@@ -529,5 +530,68 @@ func TestWorkspaceConfigReviewScopesRoundTripAndRefusal(t *testing.T) {
 	h.ServeHTTP(read, get)
 	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"later_round_review":"delta"`) || !strings.Contains(read.Body.String(), `"refresh_review":"full"`) {
 		t.Fatalf("GET status=%d body=%s", read.Code, read.Body)
+	}
+}
+
+// The workspace configuration serves the progress report interval, 10m when a
+// workspace never set it, saves 5m and 0, and refuses any other value with 422
+// validation_failed naming the field and holding no value
+// (req-delegated-execution AC-6.2, AC-6.4; component-runtime invariant 42).
+func TestWorkspaceConfigProgressReportIntervalRoundTripAndRefusal(t *testing.T) {
+	document := contextualWorkspaceDocument()
+	if document.Execution.ProgressReportIntervalText != "" {
+		t.Fatal("fixture document already sets the interval")
+	}
+	backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 1}}
+	s := NewServer(store.NewMemory())
+	s.BearerToken = "token"
+	s.Deployment = &config.Config{Workspace: "demo", Database: config.Database{Backend: "memory"}}
+	s.ConfigStore = backend
+	h := s.Handler()
+	read := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "/v1/workspace/config", nil)
+		request.Header.Set("Authorization", "Bearer token")
+		result := httptest.NewRecorder()
+		h.ServeHTTP(result, request)
+		return result
+	}
+	put := func(document config.WorkspaceDocument, version int64) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"document": document})
+		request := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
+		request.Header.Set("Authorization", "Bearer token")
+		request.Header.Set("If-Match", fmt.Sprint(version))
+		result := httptest.NewRecorder()
+		h.ServeHTTP(result, request)
+		return result
+	}
+
+	if result := read(); result.Code != http.StatusOK || !strings.Contains(result.Body.String(), `"progress_report_interval":"10m"`) {
+		t.Fatalf("unset GET status=%d body=%s", result.Code, result.Body)
+	}
+
+	for _, value := range []string{"30s", "2h", "-5m", "secret-interval-value", "60m1s"} {
+		refused := document
+		refused.Execution.ProgressReportIntervalText = value
+		result := put(refused, 1)
+		if result.Code != http.StatusUnprocessableEntity || backend.updates != 0 ||
+			!strings.Contains(result.Body.String(), `"error":"validation_failed"`) ||
+			!strings.Contains(result.Body.String(), `"field":"execution.progress_report_interval"`) ||
+			strings.Contains(result.Body.String(), "secret-interval-value") {
+			t.Fatalf("%q: status=%d updates=%d body=%s", value, result.Code, backend.updates, result.Body)
+		}
+	}
+
+	version := int64(1)
+	for _, value := range []string{"5m", "0", "1m", "60m"} {
+		saved := document
+		saved.Execution.ProgressReportIntervalText = value
+		result := put(saved, version)
+		if result.Code != http.StatusOK || backend.record.Document.Execution.ProgressReportIntervalText != value {
+			t.Fatalf("%q: save status=%d document=%+v body=%s", value, result.Code, backend.record.Document.Execution, result.Body)
+		}
+		version++
+		if got := read(); got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"progress_report_interval":"`+value+`"`) {
+			t.Fatalf("%q: GET status=%d body=%s", value, got.Code, got.Body)
+		}
 	}
 }

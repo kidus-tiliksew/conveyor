@@ -37,6 +37,23 @@ revocations").
    run. This is the cadence `conveyor-work` states. Renewal never extends the
    fixed execution deadline. If renewal fails or the server no longer reports
    the order claimed by this session, stop.
+
+   Also call `report_progress` at least once in each progress report interval
+   while the claim is live. This is the report rule `conveyor-work` states:
+   - Read the interval from `progress_report_interval_seconds` in
+     `get_work_order`. Use 10 minutes when the field is absent. When the
+     field is 0, no interval applies.
+   - The milestone reports count toward the interval.
+   - Each report states what the session did since its previous report and
+     what it does next. When no step finished, it names what the session
+     waits for and how far that has got.
+   - During the grant wait, report at least once in each interval. Name the
+     subjects that still have no grant and how many subjects have one.
+   - Before a kit run that can run longer than the interval, report first.
+     Run `conveyor kit verify` in the background, or wait on it with a timeout
+     that you repeat. Report at each return with the exercises that finished.
+   - The rule ends with the claim. A submitted or released order needs no
+     report.
 3. Run `conveyor checkout <task-id>` and use the dedicated worktree it prints
    for every step below.
 4. Fetch `get_work_order` with the exact workspace, order and session. Resolve
@@ -234,7 +251,9 @@ of releasing at once:
    [Toolchain environment and preflight](#toolchain-environment-and-preflight)
    shows.
 2. Keep renewing the claim. Reread `get_verification_context` at most every
-   30 seconds.
+   30 seconds. Report progress at least once in each progress report interval
+   while you wait, as step 2 of
+   [Establish the exact context](#establish-the-exact-context) describes.
 3. Continue when every selected subject has a grant. Stop waiting when the
    remaining execution time falls below the longest declared timeout among the
    ungranted subjects plus ten minutes. Then submit the operator checkpoint

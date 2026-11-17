@@ -536,6 +536,16 @@ dependency outcomes, evidence, and omission counts, without served requirement
 text or the walk's node and link lists. With a plan of 12 KiB, 37 designs, and
 103 long decisions, the response stays under 64 KiB excluding the review diff.
 
+`progress_report_interval_seconds` is a top-level integer on the response of
+every stage. It states the workspace's `execution.progress_report_interval` in
+whole seconds at the time of this read, and 0 when no interval applies. A
+workspace that never set the interval states 600. The order stores no copy, so
+a workspace change applies at the next read. A session calls
+`report_progress` at least once in each interval while its claim is live, as
+the `conveyor-work` playbook describes. Report timing gates nothing
+(`req-delegated-execution` AC-6.1, AC-6.3; `component-work-orders`
+invariant 67).
+
 **Designs.** Each design is listed by ID, title, and version, in three labeled
 groups: attached to the task, in attachment order; covering the task's diff;
 then every other design governing the repository, both by ID. A design in two

@@ -349,3 +349,52 @@ for (const refusal of [
     await expect(page.getByRole('alert').filter({ hasText: refusal.message })).toHaveCount(1)
   })
 }
+
+// req-delegated-execution AC-6.4; component-web-dashboard invariant 33: the
+// Policy tab shows the served progress report interval, says that 0 turns it
+// off, and saves the text under execution.progress_report_interval.
+const servedInterval = { ...document, execution: { ...document.execution, progress_report_interval: '10m' } }
+
+test('the progress report interval shows the served value and saves under its key', async ({ page }) => {
+  const saved = await mockReviewScopeAPIs(page, servedInterval)
+  await page.goto('/w/demo/workspace')
+
+  const interval = page.getByRole('textbox', { name: 'Progress report interval' })
+  await expect(interval).toHaveValue('10m')
+  await expect(interval).toHaveAccessibleDescription(/Use 0 to turn the interval off\./)
+  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0)
+
+  await interval.fill('5m')
+  await expect(page.getByText('Unsaved changes', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  expect(saved().at(-1)).toMatchObject({
+    execution: { ...document.execution, progress_report_interval: '5m' },
+  })
+
+  await page.reload()
+  await expect(page.getByRole('textbox', { name: 'Progress report interval' })).toHaveValue('5m')
+
+  await page.getByRole('textbox', { name: 'Progress report interval' }).fill('0')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  expect(saved().at(-1)).toMatchObject({ execution: { progress_report_interval: '0' } })
+})
+
+test('a refused progress report interval shows as a field error on the Policy tab', async ({ page }) => {
+  const message = 'execution.progress_report_interval must be 0 or a duration from 1m to 60m'
+  const saved = await mockReviewScopeAPIs(page, servedInterval, {
+    field: 'execution.progress_report_interval',
+    message,
+  })
+  await page.goto('/w/demo/workspace')
+
+  const interval = page.getByRole('textbox', { name: 'Progress report interval' })
+  await interval.fill('2h')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  expect(saved().at(-1)).toMatchObject({ execution: { progress_report_interval: '2h' } })
+  const control = interval.locator('xpath=ancestor::div[1]')
+  await expect(control.getByRole('alert')).toHaveText(message)
+  await expect(interval).toHaveAttribute('aria-invalid', 'true')
+  await expect(page.getByRole('tab', { name: /Policy/ })).toHaveAttribute('aria-selected', 'true')
+})
