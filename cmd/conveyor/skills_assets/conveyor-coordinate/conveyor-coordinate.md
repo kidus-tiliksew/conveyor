@@ -24,6 +24,10 @@ acting. Pass the workspace explicitly on every MCP call and CLI command. Do not
 reuse task IDs, ports, credentials, versions, or paths from memory without
 checking them.
 
+At session start, after compaction, and at each check-in, run
+`conveyor board diff --json`. Read task detail only for changed tasks or tasks
+that need action.
+
 Use `get_board` for an overview of open tasks. Continue from the offset plus
 the number of items until you reach the total, even when a page is short.
 Use `list_tasks` for filtered or terminal-task searches.
