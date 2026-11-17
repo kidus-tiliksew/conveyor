@@ -1542,11 +1542,12 @@ test('system-design: list items with bold titles holding code highlight changes 
       await expect(items.nth(2).locator('ins em code').filter({ hasText: 'verify' })).toBeVisible()
       await expect(items.nth(3).locator('ins, del')).toHaveCount(0)
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      // The screenshots attach to the Playwright report, which CI uploads as an artifact.
       await block.scrollIntoViewIfNeeded()
-      await page.screenshot({
-        path: testInfo.outputPath(`code-title-list-${mode === 'Inline' ? 'inline' : 'side-by-side'}-${width}.png`),
-        fullPage: true,
-      })
+      const name = `code-title-list-${mode === 'Inline' ? 'inline' : 'side-by-side'}-${width}`
+      const path = testInfo.outputPath(`${name}.png`)
+      await page.screenshot({ path, fullPage: true })
+      await testInfo.attach(name, { path, contentType: 'image/png' })
     }
   }
 })
