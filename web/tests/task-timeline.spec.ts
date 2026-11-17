@@ -3300,6 +3300,38 @@ test('a risk order card carries its job and the footer model', () => {
   expect(byOrder(jobless, 1)?.risk?.rating?.tier).toBe('medium')
 })
 
+// Stale and timed-out risk orders render as framed cards with their state
+// badge and their state detail as the body (invariant 72).
+test('stale and timed-out risk orders render as framed cards with their state', async ({ page }) => {
+  const item = riskItem()
+  const expired = {
+    ...item,
+    work_orders: item.work_orders.map((candidate: WorkOrder) =>
+      candidate.id === `${taskId}-risk-3`
+        ? { ...candidate, state: 'stale' as const }
+        : candidate.id === `${taskId}-risk-5`
+          ? { ...candidate, state: 'timed_out' as const, execution_deadline: minutes(55) }
+          : candidate,
+    ),
+  }
+  await mockAPI(page, expired, nextAction(`${taskId}-implement-1`))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const cases = [
+    [3, 'Stale', 'No agent claimed it before queue retention elapsed.'],
+    [5, 'Timed out', 'The execution deadline elapsed before the agent finished'],
+  ] as const
+  for (const [n, badge, detail] of cases) {
+    const card = riskEntry(page, n).locator('article[data-risk-order-card]')
+    await expect(card).toHaveCount(1)
+    await expect(card.locator('header')).toContainText('Risk rating')
+    await expect(card.locator('header')).toContainText(badge)
+    await expect(card.locator('header [data-risk-order-time]')).toBeVisible()
+    await expect(card.locator('[data-risk-order-body="detail"]')).toContainText(detail)
+    await expect(card.locator('[data-job-footer]')).toHaveCount(0)
+    await expect(card.locator('[data-risk-order-rating]')).toHaveCount(0)
+  }
+})
+
 // A rated order whose job is missing keeps its entry time and shows no
 // footer, and a running job's footer counts up.
 test('a risk order card without a started job keeps its time and has no footer', async ({ page }) => {
