@@ -167,6 +167,9 @@ type riskContractView struct {
 	Diff             string                     `json:"diff"`
 	ReviewComparison *dispatch.ReviewComparison `json:"review_comparison"`
 	PRDescription    string                     `json:"pull_request_description"`
+	// ProgressReportInterval is the workspace interval every order's contract
+	// states (component-work-orders invariant 67).
+	ProgressReportInterval *int64 `json:"progress_report_interval_seconds"`
 }
 
 func (f *riskOrderFixture) contract(t *testing.T, orderID, session string) riskContractView {
@@ -209,6 +212,9 @@ func TestRiskOrderContractDeliversTheExactHead(t *testing.T) {
 	}
 	if view.RiskOrder == nil {
 		t.Fatal("head contract has no risk_order")
+	}
+	if view.ProgressReportInterval == nil || *view.ProgressReportInterval != 600 {
+		t.Fatalf("head contract progress_report_interval_seconds = %v, want 600", view.ProgressReportInterval)
 	}
 	risk := *view.RiskOrder
 	if risk.Subject != (core.RiskOrderSubject{HeadSHA: riskHead, BaseSHA: riskBase}) || risk.Plan != nil ||

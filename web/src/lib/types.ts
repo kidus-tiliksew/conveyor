@@ -1190,6 +1190,10 @@ export interface ExecutionPolicy {
   implement_concurrency: number
   review_concurrency: number
   first_activity_timeout: string
+  // How often a session that holds a claim reports progress: duration text,
+  // 0 for no interval. The server serves 10m when the workspace never set it
+  // and judges every value (req-delegated-execution AC-6.2, AC-6.4).
+  progress_report_interval?: string
 }
 
 export interface TaskPolicyContract {

@@ -447,6 +447,21 @@ plans approved afterward; turning it off creates no further issues and leaves
 published ones unchanged. The server records `issue_publication.enabled_at`,
 the time the setting was last turned on, and ignores a value you send.
 
+`execution.progress_report_interval` sets how often an agent session that
+holds a claim reports progress. The value is duration text. It is `10m` when
+the document never set it, including a document with no `execution` block.
+`0` means that no interval applies. Any other value must be from `1m` to
+`60m`, both included. A save with another value, a negative value, or text
+that is not a duration is refused with 422 `validation_failed`, and the refusal
+names `execution.progress_report_interval`. A deployment file with such a
+value fails to load. Every configuration read and `conveyor config export`
+serve the effective value, so a workspace that never set it reads `10m`.
+
+No task freezes this setting. Each `get_work_order` read states the current
+value as `progress_report_interval_seconds`, so a change applies at the next
+read. Report timing gates no claim, lease renewal, submission, review, or
+merge (`req-delegated-execution` REQ-6; `component-runtime` invariant 42).
+
 ## Workspace GitHub App connection
 
 Connect the app through Workspace settings in an authenticated dashboard session.

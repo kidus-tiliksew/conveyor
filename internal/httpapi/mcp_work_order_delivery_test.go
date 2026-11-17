@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -64,7 +65,11 @@ func newDeliveryFixture(t *testing.T, id string, configure ...func(*core.Task)) 
 	t.Helper()
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(withCredentialActor(t.Context(), core.AuthenticatedCredential{ID: "pat-delivery", OwnerUserID: "usr-delivery", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}), "demo")
-	body := strings.Repeat("Deliver this task against the confirmed requirements and record the evidence the reviewer reads. ", 10)
+	// The body is filler outside the documented bound's inputs (a 12 KiB plan,
+	// 37 designs, and 103 long decisions). Nine sentences leave room for the
+	// contract's progress_report_interval_seconds field (component-work-orders
+	// invariant 67).
+	body := strings.Repeat("Deliver this task against the confirmed requirements and record the evidence the reviewer reads. ", 9)
 	task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", Title: "Work orders name governing documents", Body: body, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
 	for _, apply := range configure {
 		apply(&task)
@@ -684,5 +689,51 @@ func TestWorkOrderDeliveryFreshnessStillDetectsLiveChange(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("implement refresh does not list the new live version")
+	}
+}
+
+// get_work_order states the workspace's progress report interval at each
+// read: 600 for a workspace that never set it, 300 after a write of 5m, and an
+// explicit 0 when no interval applies (req-delegated-execution AC-6.1;
+// component-work-orders invariant 67).
+func TestWorkOrderDeliveryStatesProgressReportInterval(t *testing.T) {
+	t.Parallel()
+	f := newDeliveryFixture(t, "delivery-interval")
+	var mu sync.Mutex
+	interval := ""
+	fixtureConfig := f.server.WorkOrders.ConfigProvider
+	f.server.WorkOrders.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
+		cfg, err := fixtureConfig(ctx)
+		if err != nil {
+			return nil, err
+		}
+		next := *cfg
+		mu.Lock()
+		defer mu.Unlock()
+		next.Execution.ProgressReportIntervalText = interval
+		return &next, nil
+	}
+	order := f.order(t, core.StageImplement)
+	const session = "interval-session"
+	f.call(t, "claim_work_order", deliveryArgs(order, session, map[string]any{"client_token": "interval-token", "agent": "claude-code", "model": "claude-opus-5-5", "lease_seconds": 3600}))
+	for _, tc := range []struct {
+		text string
+		want string
+	}{
+		{"", "600"},
+		{"5m", "300"},
+		{"0", "0"},
+	} {
+		mu.Lock()
+		interval = tc.text
+		mu.Unlock()
+		_, text := f.call(t, "get_work_order", deliveryArgs(order, session, nil))
+		var contract map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(text), &contract); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(contract["progress_report_interval_seconds"]); got != tc.want {
+			t.Fatalf("interval %q: progress_report_interval_seconds = %q, want %s", tc.text, got, tc.want)
+		}
 	}
 }

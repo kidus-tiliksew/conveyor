@@ -732,6 +732,12 @@ function PolicyTab({
         </CardContent>
       </Card>
 
+      <ProgressReportCard
+        value={draft.execution.progress_report_interval ?? ''}
+        errors={errors.filter((error) => error.field === 'execution.progress_report_interval')}
+        onChange={(value) => update({ execution: { ...draft.execution, progress_report_interval: value } })}
+      />
+
       <RiskPolicyCard
         draft={draft}
         setDraft={setDraft}
@@ -741,6 +747,53 @@ function PolicyTab({
         warnings={riskChanged ? [] : warnings.filter((warning) => warning.field === 'risk_policy')}
       />
     </div>
+  )
+}
+
+// The progress report interval is live workspace policy: the next work order
+// read states it, and no task freezes it. The field shows the value the
+// configuration read serves and sends the text as typed. The server judges
+// it, and a refusal shows here (component-web-dashboard invariant 33;
+// req-delegated-execution AC-6.4).
+function ProgressReportCard({
+  value,
+  errors,
+  onChange,
+}: {
+  value: string
+  errors: Array<{ field: string; message: string }>
+  onChange: (value: string) => void
+}) {
+  const hintId = useId()
+  return (
+    <Card>
+      <CardHeader className="flex-wrap">
+        <CardTitle>Progress reports</CardTitle>
+        <span className="text-xs text-faint">A change applies at the next work order read. No task freezes it.</span>
+      </CardHeader>
+      <CardContent className="grid gap-3 md:grid-cols-3">
+        <div>
+          <Field label="Progress report interval">
+            <Input
+              aria-label="Progress report interval"
+              aria-describedby={hintId}
+              aria-invalid={errors.length > 0 || undefined}
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+            />
+          </Field>
+          <p id={hintId} className="mt-1 text-xs text-faint">
+            A session that holds a claim reports progress at least this often. Use a duration from 1m to 60m. Use 0 to
+            turn the interval off.
+          </p>
+          {errors.map((error) => (
+            <p key={error.field + error.message} role="alert" className="mt-1 text-xs text-failure">
+              {error.message}
+            </p>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 

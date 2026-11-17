@@ -605,6 +605,22 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"Claim with a `lease_seconds` that covers the longest expected step, up to the 3600-second maximum",
 		"Call `renew_work_order` with the same `lease_seconds` at each progress milestone and before any step expected to outlast one third of the remaining lease",
 		"a renewal without it renews for the five-minute default",
+		// AC-2.4: progress reports on the contract's interval
+		// (component-cli-onboarding invariant 34).
+		"### Report progress on an interval",
+		"This rule applies to every order that a session claims under this playbook",
+		"Read `progress_report_interval_seconds` from `get_work_order`.",
+		"Call `report_progress` at least once in each interval while the claim is live.",
+		"When the contract has no such field, use an interval of 10 minutes.",
+		"When the field is 0, no interval applies.",
+		"The four milestones above stay as written. A milestone report counts toward the interval.",
+		"In each report, state what the session did since its previous report and what it does next. Write it as [Readable timeline text](#readable-timeline-text) describes.",
+		"When no step finished, name what the session waits for and how far that has got. For example, state how many CI jobs have passed.",
+		"Before a step that can run longer than the interval, report first. Examples are a long test run and a wait for CI, a review bot, or another agent.",
+		"Run that step so that control returns within the interval. Run it in the background, or wait on it with a timeout that you repeat.",
+		"Report at each return.",
+		"The rule ends with the claim. A submitted or released order needs no report, as [Keep the lease alive](#keep-the-lease-alive) says for renewal.",
+		"Report timing gates nothing.",
 		// CLI environment for conveyor submit.
 		"`conveyor submit` refuses to run unless `CONVEYOR_WORK_ORDER_ID` and `CONVEYOR_SESSION_ID` are set",
 		"`conveyor submit` reads no client token",
@@ -861,6 +877,8 @@ func TestClaimingSkillsShipClaimIdentityAndUsageReporting(t *testing.T) {
 		}, claimIdentity...),
 		"conveyor-work/SKILL.md": {
 			"Every claim names the harness in `agent` and the runtime's concrete model ID in `model`, or the harness's reported value such as `auto` verbatim when the harness does not expose one; never guess a model ID",
+			// AC-2.4 restated beside the lease rule.
+			"While a claim is live, call `report_progress` at least once in each progress report interval. Read the interval from `progress_report_interval_seconds` in `get_work_order`. Use 10 minutes when the field is absent. When the field is 0, no interval applies.",
 		},
 		"conveyor-kit-verify/conveyor-kit-verify.md": append([]string{
 			"## Claim identity and usage",
@@ -870,6 +888,16 @@ func TestClaimingSkillsShipClaimIdentityAndUsageReporting(t *testing.T) {
 			"Missing usage never delays or blocks a verification submission",
 			// The verifier's usage source rule matches conveyor-work.
 			"Leave `source` unset or `self_reported`",
+			// AC-2.4: the report interval beside the lease cadence, during
+			// the grant wait, and during a kit run.
+			"Also call `report_progress` at least once in each progress report interval while the claim is live. This is the report rule `conveyor-work` states",
+			"Read the interval from `progress_report_interval_seconds` in `get_work_order`. Use 10 minutes when the field is absent. When the field is 0, no interval applies.",
+			"The milestone reports count toward the interval.",
+			"Each report states what the session did since its previous report and what it does next. When no step finished, it names what the session waits for and how far that has got.",
+			"During the grant wait, report at least once in each interval. Name the subjects that still have no grant and how many subjects have one.",
+			"Before a kit run that can run longer than the interval, report first. Run `conveyor kit verify` in the background, or wait on it with a timeout that you repeat. Report at each return with the exercises that finished.",
+			"The rule ends with the claim. A submitted or released order needs no report.",
+			"Report progress at least once in each progress report interval while you wait, as step 2 of [Establish the exact context](#establish-the-exact-context) describes.",
 		}, claimIdentity...),
 		"conveyor-kit-verify/SKILL.md": {
 			"A verifier's claim names the harness in `agent` and the runtime's concrete model ID in `model`, or the harness's reported value such as `auto` verbatim when the harness does not expose one; never guess a model ID",
