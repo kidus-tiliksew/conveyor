@@ -33,6 +33,10 @@ type boardDiffFeed struct {
 }
 
 func (c *client) readBoardDiffFeed(position time.Time) (boardDiffFeed, error) {
+	return c.readBoardDiffFeedMode(position, false)
+}
+
+func (c *client) readBoardDiffFeedMode(position time.Time, seed bool) (boardDiffFeed, error) {
 	var result boardDiffFeed
 	query := url.Values{"updated_from": {position.Add(-2 * time.Minute).UTC().Format(time.RFC3339Nano)}, "limit": {strconv.Itoa(boardDiffActivityLimit)}}
 	for offset := 0; ; {
@@ -52,7 +56,7 @@ func (c *client) readBoardDiffFeed(position time.Time) (boardDiffFeed, error) {
 		if err != nil || total < 0 {
 			return boardDiffFeed{}, fmt.Errorf("invalid activity X-Conveyor-Total %q", headers.Get("X-Conveyor-Total"))
 		}
-		if total > boardDiffMaxChanged {
+		if !seed && total > boardDiffMaxChanged {
 			result.ResetReason = "more than 1000 changed tasks"
 			return result, nil
 		}
@@ -62,7 +66,7 @@ func (c *client) readBoardDiffFeed(position time.Time) (boardDiffFeed, error) {
 		}
 		result.Items = append(result.Items, page...)
 		offset += len(page)
-		if offset >= total {
+		if seed || offset >= total {
 			return result, nil
 		}
 		if len(page) == 0 {

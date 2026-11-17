@@ -30,7 +30,7 @@ func TestBoardDiffHistoryRoundTripAndDedupe(t *testing.T) {
 	row.Task.State = "running"
 	row.LastEventAt = cutoff.Add(20 * time.Minute)
 	state := boardDiffState{Position: cutoff, Recent: map[string]time.Time{"a": cutoff}, Tasks: map[string]boardDiffTask{"a": {State: "running", Stage: "implement", EnteredAt: &start}}}
-	feed := boardDiffFeed{Items: []boardDiffActivity{row}, Position: cutoff.Add(time.Hour)}
+	feed := boardDiffFeed{Items: []boardDiffActivity{row}, Position: cutoff.Add(21 * time.Minute)}
 	changes, next, incomplete, err := c.diffBoardActivities(state, feed)
 	if err != nil || len(incomplete) != 0 || len(changes) != 1 {
 		t.Fatalf("changes %#v incomplete %v err %v", changes, incomplete, err)

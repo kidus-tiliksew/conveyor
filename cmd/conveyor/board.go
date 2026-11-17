@@ -32,6 +32,7 @@ func boardCmd() *cobra.Command {
 	cmd.Flags().IntVar(&options.limit, "limit", 0, "page size (server default when omitted)")
 	cmd.Flags().IntVar(&options.offset, "offset", 0, "page offset (requires --limit)")
 	cmd.Flags().BoolVar(&options.asJSON, "json", false, "print the server body verbatim")
+	cmd.AddCommand(boardDiffCmd())
 	return cmd
 }
 

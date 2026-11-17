@@ -19,8 +19,9 @@ type boardDiffTransition struct {
 	PreviousSeconds *int64    `json:"previous_seconds"`
 }
 type boardDiffDecision struct {
-	Action string `json:"action"`
-	Label  string `json:"label"`
+	Opened  bool   `json:"opened,omitempty"`
+	Cleared bool   `json:"cleared,omitempty"`
+	Label   string `json:"label"`
 }
 type boardDiffPullRequest struct {
 	Number int `json:"number"`
@@ -238,9 +239,9 @@ func reduceBoardDiff(row boardDiffActivity, previous boardDiffTask, exists bool,
 	}
 	if decision != previous.Decision {
 		if decision != "" {
-			change.Decision = &boardDiffDecision{Action: "opened", Label: decision}
+			change.Decision = &boardDiffDecision{Opened: true, Label: decision}
 		} else {
-			change.Decision = &boardDiffDecision{Action: "cleared", Label: previous.Decision}
+			change.Decision = &boardDiffDecision{Cleared: true, Label: previous.Decision}
 		}
 	}
 	next.Decision = decision
@@ -305,8 +306,11 @@ func (c *client) diffBoardActivities(state boardDiffState, feed boardDiffFeed) (
 			next.Tasks[id] = task
 		}
 	}
-	if len(incomplete) == 0 {
-		next.Position = feed.Position
+	for id, at := range next.Recent {
+		if at.Before(feed.Position.Add(-2 * time.Minute)) {
+			delete(next.Recent, id)
+		}
 	}
+	next.Position = feed.Position
 	return changes, next, incomplete, nil
 }

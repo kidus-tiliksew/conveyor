@@ -32,7 +32,7 @@ func TestBoardDiffHistoryExtraPagesAndMissing(t *testing.T) {
 		row.LastEventAt = now
 		state := boardDiffState{Position: now}
 		_, next, incomplete, err := (&client{base: srv.URL}).diffBoardActivities(state, boardDiffFeed{Items: []boardDiffActivity{row}, Position: now.Add(time.Minute)})
-		if err != nil || len(incomplete) != 1 || incomplete[0].Reason != "task no longer visible" || !next.Position.Equal(now) {
+		if err != nil || len(incomplete) != 1 || incomplete[0].Reason != "task no longer visible" || !next.Position.Equal(now.Add(time.Minute)) {
 			t.Fatalf("incomplete %#v position %s err %v", incomplete, next.Position, err)
 		}
 	})
