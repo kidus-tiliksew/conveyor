@@ -139,34 +139,23 @@ export function RiskTierValue({ risk }: { risk: TaskRisk }) {
   )
 }
 
-// One risk order's own rating on its timeline entry: the tier chip alone,
-// with the source, the reason, and the model the risk agent's session
-// reported behind it (DEC-127(1), (2); component-web-task-surfaces invariant
-// 66; req-risk-based-review AC-5.6). A rating without a reported model shows
-// none.
+// One risk order's own rating in its timeline card's header: the tier chip
+// alone, with the rating's source behind it. The rating's reason is the card
+// body and its reported model is in the card footer, so neither sits behind
+// the chip (component-web-task-surfaces invariants 66 and 73; DEC-138(1),
+// (5); req-risk-based-review AC-5.6).
 export function RiskOrderRating({ rating }: { rating: RiskRating }) {
   const source = riskSourceText(rating.source)
-  const model = rating.risk_model?.trim() ? `Reported model ${rating.risk_model.trim()}` : undefined
   return (
     <span className="inline-flex min-w-0" data-risk-order-rating={rating.tier}>
       <RiskTierDisclosure
         tier={rating.tier}
-        label={sentences([`Risk tier ${riskTierLabel(rating.tier)}`, source, rating.reason, model])}
+        label={sentences([`Risk tier ${riskTierLabel(rating.tier)}`, source])}
         content={
           <span className="flex min-w-0 flex-col gap-1" data-risk-order-rating-details>
             {source && (
               <span className="text-muted" data-risk-order-rating-source>
                 {source}
-              </span>
-            )}
-            {rating.reason && (
-              <span className="whitespace-normal break-words text-foreground/85" data-risk-order-rating-reason>
-                {rating.reason}
-              </span>
-            )}
-            {model && (
-              <span className="whitespace-normal break-words text-muted" data-risk-order-rating-model>
-                {model}
               </span>
             )}
           </span>

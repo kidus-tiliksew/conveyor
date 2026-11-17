@@ -3166,7 +3166,7 @@ test('the disposition card without a decision request shows no request box', asy
 // approval, and a review round that waits for a head's risk order takes the
 // queued and working rows with their risk-stage wording. The card prints the
 // statement as served, offers no approval the server would refuse, and the
-// timeline names the risk order with its subject. The plan card shows no
+// timeline names the risk order with its subject on a framed card. The plan card shows no
 // rating (DEC-134(2)).
 const riskWaitBase = '0f1e2d3c4b5a69788796a5b4c3d2e1f012345678'
 const riskWaitHead = '9a8b7c6d5e4f30211203f4e5d6c7b8a912345678'
@@ -3432,10 +3432,34 @@ for (const wait of riskWaits) {
         wait.wait === 'plan' ? 'Plan version 2' : `Head ${riskWaitHead.slice(0, 7)}`,
       )
       await expect(entry).toContainText(wait.state === 'claimed' ? 'In progress' : 'Queued')
-      // The earlier plan version's order shows its own rating as the chip alone.
+      // The waiting order is a framed card with its state badge. Its footer
+      // appears once its job starts, and until then the header holds the time.
+      const waiting = entry.locator('article[data-risk-order-card]')
+      await expect(waiting.locator('header')).toContainText('Risk rating')
+      await expect(waiting.locator('header')).toContainText(wait.state === 'claimed' ? 'In progress' : 'Queued')
+      if (wait.state === 'claimed') {
+        await expect(waiting.locator('footer[data-job-footer]')).toContainText('Running for')
+        await expect(waiting.locator('[data-risk-order-time]')).toHaveCount(0)
+      } else {
+        await expect(waiting.locator('[data-job-footer]')).toHaveCount(0)
+        await expect(waiting.locator('header [data-risk-order-time]')).toBeVisible()
+      }
+      // The earlier plan version's order is a card with its own tier chip,
+      // the reason as its body, and the model and run time in its footer.
       const rated = page.locator(`[data-order-id="${taskId}-risk-1"]`)
-      await expect(rated.locator('[data-risk-subject]')).toHaveText('Plan version 1')
-      await expect(rated.locator('[data-risk-order-rating="medium"] button')).toHaveText('Medium')
+      const card = rated.locator('article[data-risk-order-card]')
+      await expect(card.locator('header [data-risk-subject]')).toHaveText('Plan version 1')
+      await expect(card.locator('header [data-risk-order-rating="medium"] button')).toHaveText('Medium')
+      await expect(card.locator('header [data-risk-order-rating="medium"] button')).toHaveAccessibleName(
+        'Risk tier Medium. From a risk agent.',
+      )
+      await expect(card.locator('[data-risk-order-body="reason"]')).toHaveText(
+        'The plan changes how the merge gate counts approvals.',
+      )
+      await expect(card.locator('footer [data-job-model]')).toContainText('claude-opus-5-5')
+      await expect(card.locator('footer [data-job-duration]')).toHaveText('5m 00s')
+      const cardBox = await card.boundingBox()
+      expect((cardBox?.x ?? 0) + (cardBox?.width ?? 0)).toBeLessThanOrEqual(viewport.width)
       // The plan card shows no rating.
       const plan = page.getByRole('region', { name: 'Execution plan' })
       await expect(plan).toBeVisible()

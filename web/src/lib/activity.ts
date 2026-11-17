@@ -888,8 +888,8 @@ export type TimelineEntry =
       detail?: string
       tone: 'active' | 'alarm' | 'waiting' | 'done'
       order: WorkOrder
-      // A risk order's subject and its own rating (component-web-task-surfaces
-      // invariants 72 and 73).
+      // A risk order's subject, its own rating, and its job and footer model
+      // (component-web-task-surfaces invariants 72 and 73).
       risk?: RiskOrderFacts
     }
   | { type: 'intervention'; at: string; intervention: Intervention }
@@ -1606,8 +1606,9 @@ function orderEntry(
   order: WorkOrder,
   hasJobEntry: boolean,
   risk?: TaskRisk,
+  job?: Job,
 ): Extract<TimelineEntry, { type: 'order' }> | undefined {
-  if (order.stage === 'risk') return riskOrderEntry(order, risk)
+  if (order.stage === 'risk') return riskOrderEntry(order, risk, job)
   const stage = workOrderStageLabels[order.stage] ?? stageLabels[order.stage] ?? order.stage
   const base = { type: 'order' as const, at: order.queue_entered_at, key: `order-${order.id}`, order, title: stage }
   switch (order.state) {
@@ -1648,10 +1649,20 @@ function expiredOrderParts(order: WorkOrder) {
 
 // What one risk order rates and the rating it recorded, if any
 // (component-web-task-surfaces invariants 72 and 73; req-risk-based-review
-// AC-5.6).
+// AC-5.6). On a timeline entry it also carries the order's job, whose card
+// footer shows the model and run time once the job starts, and that footer's
+// model: the rating's reported model, else the model a job card shows.
 export interface RiskOrderFacts {
   subject?: RiskOrderSubject
   rating?: RiskRating
+  job?: Job
+  model?: string
+}
+
+// The model a job card's footer names. BYOA jobs carry a placeholder tier;
+// the work order knows the model the operator's agent actually ran.
+export function jobCardModel(job: Job, order: WorkOrder | undefined): string {
+  return job.model_tier === 'operator-owned' && order?.model ? order.model : job.model_tier
 }
 
 function knownSubject(subject: RiskOrderSubject | undefined): subject is RiskOrderSubject {
@@ -1711,10 +1722,18 @@ export function riskSubjectText(subject: RiskOrderSubject | undefined): string |
 // A risk order runs beside the task's serial stage and can wait while another
 // stage works, so each of its states is an entry: queued and in progress name
 // the order, a rated order shows its own tier chip, and a cancelled order
-// says so. Its job adds no entry of its own (component-web-task-surfaces
-// invariant 72; req-risk-based-review AC-1.6).
-function riskOrderEntry(order: WorkOrder, risk: TaskRisk | undefined): Extract<TimelineEntry, { type: 'order' }> {
-  const facts = riskOrderFacts(order, risk)
+// says so. The entry renders as a card with its job's footer, and the job
+// adds no entry of its own (component-web-task-surfaces invariants 72 and 73;
+// DEC-138(5); req-risk-based-review AC-1.6).
+function riskOrderEntry(
+  order: WorkOrder,
+  risk: TaskRisk | undefined,
+  job: Job | undefined,
+): Extract<TimelineEntry, { type: 'order' }> {
+  const own = riskOrderFacts(order, risk)
+  const facts: RiskOrderFacts = job
+    ? { ...own, job, model: own.rating?.risk_model?.trim() || jobCardModel(job, order) }
+    : own
   const base = {
     type: 'order' as const,
     at: order.queue_entered_at,
@@ -1867,6 +1886,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   const absorbed = planCycleAbsorption(item.summaries)
   entries.push(...planCycleEntries(item.summaries))
   const orderByJob = new Map((item.work_orders ?? []).map((order) => [order.job_id, order]))
+  const jobById = new Map(item.jobs.map((job) => [job.id, job]))
   const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
   const attempts = implementationAttempts(item)
   const deliveries = implementationDeliveries(item)
@@ -1875,7 +1895,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   for (const job of item.jobs) {
     if (!job.started_at || panels.jobIds.has(job.id)) continue
     const order = orderByJob.get(job.id)
-    // A risk order's own entry tells its story, rating included.
+    // A risk order's own card tells its story, rating and footer included.
     if (job.stage === 'risk' && order) continue
     const results = item.summaries?.job_results?.[job.id]
     const text = jobSummary(job, results)
@@ -1884,9 +1904,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
       summary = order.progress
       progressShown.add(order.id)
     }
-    // BYOA jobs carry a placeholder tier; the work order knows the model
-    // the operator's agent actually ran.
-    const model = job.model_tier === 'operator-owned' && order?.model ? order.model : job.model_tier
+    const model = jobCardModel(job, order)
     const tone = rejectedOutput(job, results) ? 'warning' : 'default'
     entries.push({
       type: 'job',
@@ -1906,7 +1924,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
     const activity = agentActivityNote(order, orders, progressShown)
     if (activity) entries.push(activity)
     if (panels.orderIds.has(order.id)) continue
-    const entry = orderEntry(order, startedJobs.has(order.job_id), item.risk)
+    const entry = orderEntry(order, startedJobs.has(order.job_id), item.risk, jobById.get(order.job_id))
     if (entry) entries.push(entry)
   }
   for (const event of item.events) {

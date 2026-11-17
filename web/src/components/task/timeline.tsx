@@ -6,7 +6,9 @@ import {
   deriveCurrentExecutionState,
   failedTriage,
   historyNoteEntries,
+  jobCardModel,
   type PanelSeat,
+  type RiskOrderFacts,
   riskSubjectText,
   type TimelineEntry,
   userRequestChangesReason,
@@ -826,7 +828,8 @@ function TimelineRow({
   }
   // A work-order entry carries no usage; per-order usage stays in TaskUsage
   // inside technical activity (component-web-task-surfaces, Work-order
-  // timeline entries).
+  // timeline entries). A risk order's card is the exception: its footer is
+  // its job's card footer, with that footer's model chip.
   if (entry.type === 'order') {
     const person = resolve(runClaimantUserId(entry.order.claimed_by))
     const claimed = entry.order.state === 'claimed'
@@ -839,18 +842,15 @@ function TimelineRow({
           },
         ]
       : []
-    // A risk order names what it rates, and a rated one shows its own tier
-    // chip in place of the state badge (component-web-task-surfaces
-    // invariants 72 and 73; DEC-127(2)).
-    const subject = entry.risk ? riskSubjectText(entry.risk.subject) : undefined
-    const subjectTitle = entry.risk?.subject?.head_sha
-      ? [
-          `Head ${entry.risk.subject.head_sha}`,
-          entry.risk.subject.base_sha ? `base ${entry.risk.subject.base_sha}` : undefined,
-        ]
-          .filter(Boolean)
-          .join(' on ')
-      : undefined
+    if (entry.risk)
+      return (
+        <RiskOrderEntry
+          entry={entry}
+          risk={entry.risk}
+          rail={rail(people, orderDots[entry.tone])}
+          usageAvailable={usageReportedOrderIDs.has(entry.order.id)}
+        />
+      )
     return (
       <li
         className="relative pl-7"
@@ -866,16 +866,6 @@ function TimelineRow({
             >
               {entry.title}
             </span>
-            {subject && (
-              <span
-                className="min-w-0 break-words text-xs text-muted"
-                title={subjectTitle}
-                data-risk-subject={entry.risk?.subject?.plan_version ? 'plan' : 'head'}
-              >
-                {subject}
-              </span>
-            )}
-            {entry.risk?.rating && <RiskOrderRating rating={entry.risk.rating} />}
             {entry.badge && <Badge variant={entry.badge.variant}>{entry.badge.label}</Badge>}
             <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
           </div>
@@ -1595,6 +1585,99 @@ function JobEntry({
           </div>
         )}
         <JobCardFooter job={job} model={model} order={order} usageAvailable={usageAvailable} />
+      </article>
+    </li>
+  )
+}
+
+// A risk order's timeline card, framed like a job card (component-web-task-
+// surfaces invariants 72 and 73; DEC-138(5)). The header holds the stage
+// title, what the order rates, and the order's own tier chip or its state
+// badge, with the entry time until the order's job starts. A rated order's
+// body is the risk agent's reason; an unrated order's body is its state
+// detail. Once the job starts, the footer is the job card's footer: the
+// model and the run time.
+function RiskOrderEntry({
+  entry,
+  risk,
+  rail,
+  usageAvailable,
+}: {
+  entry: Extract<TimelineEntry, { type: 'order' }>
+  risk: RiskOrderFacts
+  rail: ReactNode
+  usageAvailable: boolean
+}) {
+  const subject = riskSubjectText(risk.subject)
+  const subjectTitle = risk.subject?.head_sha
+    ? [`Head ${risk.subject.head_sha}`, risk.subject.base_sha ? `base ${risk.subject.base_sha}` : undefined]
+        .filter(Boolean)
+        .join(' on ')
+    : undefined
+  const job = risk.job?.started_at ? risk.job : undefined
+  const reason = risk.rating?.reason?.trim()
+  const hasBody = Boolean(reason || (!risk.rating && entry.detail))
+  return (
+    <li
+      className="relative pl-7"
+      data-order-entry={entry.order.state}
+      data-order-stage={entry.order.stage}
+      data-order-id={entry.order.id}
+    >
+      {rail}
+      <article className="rounded-lg bg-surface" data-risk-order-card>
+        <header
+          className={cn('flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3', !hasBody && !job && 'pb-3')}
+          data-job-header
+        >
+          <span className={cn('text-sm font-semibold', entry.tone === 'alarm' ? 'text-attention' : 'text-foreground')}>
+            {entry.title}
+          </span>
+          {subject && (
+            <span
+              className="min-w-0 break-words text-xs text-muted"
+              title={subjectTitle}
+              data-risk-subject={risk.subject?.plan_version ? 'plan' : 'head'}
+            >
+              {subject}
+            </span>
+          )}
+          {risk.rating && <RiskOrderRating rating={risk.rating} />}
+          {entry.badge && <Badge variant={entry.badge.variant}>{entry.badge.label}</Badge>}
+          {!job && (
+            <time className="ml-auto text-[11px] text-faint" dateTime={entry.at} data-risk-order-time>
+              {absoluteTime(entry.at)}
+            </time>
+          )}
+        </header>
+        {reason ? (
+          <div data-risk-order-body="reason">
+            <MarkdownProse
+              className="px-4 pt-1.5 pb-3 text-sm leading-6 text-foreground/85 [overflow-wrap:anywhere]"
+              components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}
+            >
+              {reason}
+            </MarkdownProse>
+          </div>
+        ) : (
+          !risk.rating &&
+          entry.detail && (
+            <p
+              className="px-4 pt-1.5 pb-3 text-sm leading-6 text-muted [overflow-wrap:anywhere]"
+              data-risk-order-body="detail"
+            >
+              {entry.detail}
+            </p>
+          )
+        )}
+        {job && (
+          <JobCardFooter
+            job={job}
+            model={risk.model ?? jobCardModel(job, entry.order)}
+            order={entry.order}
+            usageAvailable={usageAvailable}
+          />
+        )}
       </article>
     </li>
   )
