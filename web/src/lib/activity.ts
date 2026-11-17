@@ -1096,6 +1096,24 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
   return index
 }
 
+// The progress report a seat row prints: the order's report without harness
+// run-mode lines, trimmed.
+function reviewSeatProgress(progress?: string) {
+  return progress
+    ?.split('\n')
+    .filter((line) => !/^\s*conveyor run mode\s*:/i.test(line))
+    .join('\n')
+    .trim()
+}
+
+// A deliberating seat prints its order's progress report in its panel row.
+// The seat row and the timeline's agent-activity suppression both read this
+// one rule, so the report is printed exactly once (component-web-task-surfaces).
+export function deliberatingSeatProgress(seat: PanelSeat): string | undefined {
+  if (seat.status !== 'deliberating') return undefined
+  return reviewSeatProgress(seat.order.progress) || undefined
+}
+
 function seatStatus(order: WorkOrder, job: Job | undefined, review?: PanelSeatReview): PanelSeatStatus {
   if (review) return 'verdict'
   switch (order.state) {
@@ -1820,8 +1838,8 @@ function supersededOrder(order: WorkOrder, orders: WorkOrder[]): boolean {
 
 // Only a live order's own reports read as agent activity. A finished or
 // superseded order's job or order entry already tells its story, and a
-// progress report already printed as the order's job entry summary is not
-// repeated (component-web-task-surfaces).
+// progress report already printed as the order's job entry summary or in its
+// deliberating review seat's row is not repeated (component-web-task-surfaces).
 function agentActivityNote(
   order: WorkOrder,
   orders: WorkOrder[],
@@ -1890,8 +1908,14 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
   const attempts = implementationAttempts(item)
   const deliveries = implementationDeliveries(item)
-  // Orders whose progress report is printed as a job entry's summary.
+  // Orders whose progress report is printed as a job entry's summary or in a
+  // deliberating review seat's row.
   const progressShown = new Set<string>()
+  for (const panel of panels.panels) {
+    for (const seat of panel.seats) {
+      if (deliberatingSeatProgress(seat)) progressShown.add(seat.order.id)
+    }
+  }
   for (const job of item.jobs) {
     if (!job.started_at || panels.jobIds.has(job.id)) continue
     const order = orderByJob.get(job.id)
