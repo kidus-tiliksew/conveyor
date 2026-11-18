@@ -33,9 +33,12 @@ type TaskCreatedEvent struct {
 	PolicyContract struct {
 		VerifyStage bool `json:"verify_stage"`
 	} `json:"policy_contract"`
-	Assignee          *core.TaskAssignee `json:"assignee,omitempty"`
-	ParentTaskID      string             `json:"parent_task_id,omitempty"`
-	OriginSpecVersion int                `json:"origin_spec_version,omitempty"`
+	Assignee *core.TaskAssignee `json:"assignee,omitempty"`
+	// CrateID is the crate the creation request named, the immutable intake
+	// value an idempotent retry compares (component-crates invariants 7 and 8).
+	CrateID           string `json:"crate_id,omitempty"`
+	ParentTaskID      string `json:"parent_task_id,omitempty"`
+	OriginSpecVersion int    `json:"origin_spec_version,omitempty"`
 	Context           struct {
 		Requirements []taskCreatedReference `json:"requirements,omitempty"`
 		Designs      []taskCreatedReference `json:"designs,omitempty"`
@@ -65,6 +68,7 @@ func TaskCreatedPayload(ctx context.Context, task core.Task) json.RawMessage {
 	if task.Assignee != nil {
 		payload.Assignee = &core.TaskAssignee{UserID: task.Assignee.UserID}
 	}
+	payload.CrateID = task.TaskCrateID()
 	if len(task.Context.Requirements) > 0 {
 		payload.Context.Requirements = make([]taskCreatedReference, len(task.Context.Requirements))
 		for i, reference := range task.Context.Requirements {

@@ -33,6 +33,10 @@ type BoardItem struct {
 	CurrentOrder *BoardOrder        `json:"current_order,omitempty"`
 	PullRequest  int                `json:"pull_request,omitempty"`
 	NextAction   nextaction.Compact `json:"next_action"`
+	// Crate is the task's crate, which the board route names before it
+	// writes the row. No board order or next action reads it
+	// (component-crates invariant 1).
+	Crate *core.TaskCrate `json:"crate,omitempty"`
 }
 
 // MarshalJSON preserves the shared compact projection while omitting absent fields on the board.
@@ -143,7 +147,7 @@ func ReadBoard(ctx context.Context, st Store, opts BoardOptions) (Board, error) 
 			title = title[:80]
 		}
 		action := actions[task.ID]
-		item := BoardItem{ID: task.ID, Title: string(title), State: task.State, Stage: latest[task.ID].Stage, NextAction: nextaction.CompactFrom(action)}
+		item := BoardItem{ID: task.ID, Title: string(title), State: task.State, Stage: latest[task.ID].Stage, NextAction: nextaction.CompactFrom(action), Crate: task.Crate}
 		if action.CurrentOrder != nil {
 			item.CurrentOrder = &BoardOrder{ID: action.CurrentOrder.ID, Stage: action.CurrentOrder.Stage, State: action.CurrentOrder.State}
 		}
