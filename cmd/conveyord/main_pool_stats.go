@@ -110,3 +110,16 @@ func formatReadStats(kind string, interval dbmetrics.ReadInterval) string {
 	}
 	return line.String()
 }
+
+// logStoreCompression logs one SingleStore compression summary after the
+// backend opens: whether compression was requested, and whether the
+// handshakes negotiated it, from the opened store's own connections. Only
+// conveyord calls it, once per start; CLI opens log nothing, and a backend
+// without the capability logs nothing (component-runtime invariant 43).
+func logStoreCompression(stats backend.Stats, logf func(string, ...any)) {
+	if stats.Compression == nil {
+		return
+	}
+	requested, negotiation := stats.Compression()
+	logf("SingleStore protocol compression requested=%t negotiation=%s", requested, negotiation)
+}
