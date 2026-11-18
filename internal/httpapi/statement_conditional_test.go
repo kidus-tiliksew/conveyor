@@ -349,3 +349,37 @@ func TestRequestConfigurationIsKeyedByWorkspace(t *testing.T) {
 		}
 	}
 }
+
+// TestReadinessReadsDetectAReplacedAndRestoredValue proves a statement read
+// records the readiness revision with the value, so a value replaced and then
+// restored between the projection and the answer is not taken as unchanged.
+func TestReadinessReadsDetectAReplacedAndRestoredValue(t *testing.T) {
+	now := time.Now().UTC()
+	c := &mergeReadinessCache{clock: func() time.Time { return now }}
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	task := core.Task{ID: "gate", Workspace: "demo", State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval, ReviewedHeadSHA: "head"}
+	state := "MERGEABLE"
+	hook := func(context.Context, core.Task) (dispatch.MergeReadiness, error) {
+		return dispatch.MergeReadiness{State: state, HeadSHA: "head"}, nil
+	}
+	if _, err := c.read(ctx, task, hook); err != nil {
+		t.Fatal(err)
+	}
+	reads := &readinessReads{}
+	if got := c.lastKnown(context.WithValue(ctx, readinessReadsKey{}, reads), task); got == nil || got.State != "MERGEABLE" {
+		t.Fatalf("peek=%+v", got)
+	}
+	if !reads.unchanged(c) {
+		t.Fatal("a value held still reads as changed")
+	}
+	for _, next := range []string{"CONFLICTING", "MERGEABLE"} {
+		state = next
+		c.forget(ctx, task.ID)
+		if _, err := c.read(ctx, task, hook); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if reads.unchanged(c) {
+		t.Fatal("a value replaced and restored reads as unchanged")
+	}
+}
