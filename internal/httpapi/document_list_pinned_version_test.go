@@ -149,6 +149,19 @@ func TestRequirementListKeepsListedVersionWhenConfirmedBetweenReads(t *testing.T
 	if current == nil || current.Content != listed.Content {
 		t.Fatalf("summary of the listed current version = %+v, want its content %q", current, listed.Content)
 	}
+
+	// The next list read picks up the version confirmed between the reads.
+	if err := json.Unmarshal(pinnedVersionGet(t, hook, "/v1/requirements"), &summaries); err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || summaries[0].CurrentVersion == nil || summaries[0].CurrentVersion.Version != next.Version {
+		t.Fatalf("next requirement list = %+v, want current version v%d", summaries, next.Version)
+	}
+	for _, version := range hook.requirementSummaries[listed.RequirementID] {
+		if version.Version == next.Version && version.Content != next.Content {
+			t.Fatalf("next summary of v%d = %+v, want its content %q", next.Version, version, next.Content)
+		}
+	}
 }
 
 // A confirmation between the System Design list's row read and its summary
@@ -168,6 +181,14 @@ func TestSystemDesignListKeepsListedVersionWhenConfirmedBetweenReads(t *testing.
 	}
 	if len(views) != 1 || views[0].Document.CurrentVersion != listed.Version || views[0].CurrentVersion == nil || views[0].CurrentVersion.Version != listed.Version || !views[0].CurrentVersion.Confirmed {
 		t.Fatalf("System Design list = %+v, want current_version v%d", views, listed.Version)
+	}
+
+	// The next list read picks up the version confirmed between the reads.
+	if err := json.Unmarshal(pinnedVersionGet(t, hook, "/v1/system-designs"), &views); err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].CurrentVersion == nil || views[0].CurrentVersion.Version != next.Version {
+		t.Fatalf("next System Design list = %+v, want current_version v%d", views, next.Version)
 	}
 }
 
@@ -190,5 +211,13 @@ func TestRequirementInsightDocumentsKeepListedVersionWhenConfirmedBetweenReads(t
 	}
 	if len(result.Designs) != 1 || result.Designs[0].ID != listed.DocumentID || result.Designs[0].CurrentVersion != listed.Version || !result.Designs[0].NamesRequirement {
 		t.Fatalf("insight designs = %+v, want %s v%d naming the requirement from its listed content", result.Designs, listed.DocumentID, listed.Version)
+	}
+
+	// The next read picks up the version confirmed between the reads.
+	if err := json.Unmarshal(pinnedVersionGet(t, hook, "/v1/requirements/"+requirement.RequirementID+"/insights/documents"), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Designs) != 1 || result.Designs[0].CurrentVersion != next.Version {
+		t.Fatalf("next insight designs = %+v, want %s v%d", result.Designs, listed.DocumentID, next.Version)
 	}
 }

@@ -110,6 +110,18 @@ func runRequirementDeliveryEvents(t *testing.T, x Fixture) {
 	if none == nil || len(none) != 0 {
 		t.Fatalf("empty task selection = %#v, want an empty map", none)
 	}
+
+	// An omitted task enters the map on the read after its first delivery
+	// event, so the omission loses no delivery.
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: knownEmpty.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"url": "https://example.test/pull/2", "head_sha": "later", "body": "unrelated"})}))
+	later, err := st.ListRequirementDeliveryEventsForTasks(ctx, []string{knownEmpty.ID})
+	requireOK(t, err)
+	if events := later[knownEmpty.ID]; len(events) != 1 || events[0].Kind != "merge.confirmed" {
+		t.Fatalf("delivery events after the first merge = %#v, want the merge", later)
+	}
+	if got, want := normalizedDeliveryPayload(t, later[knownEmpty.ID][0].Payload), (map[string]any{"url": "https://example.test/pull/2", "head_sha": "later"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("later merge payload = %#v, want %#v", got, want)
+	}
 }
 
 // normalizedDeliveryPayload decodes a payload and drops JSON-null keys of the

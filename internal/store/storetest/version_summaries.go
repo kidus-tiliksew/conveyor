@@ -368,5 +368,28 @@ func runDocumentVersionSummaries(t *testing.T, x Fixture) {
 		if len(designs[raceDesign]) != 1 {
 			t.Fatalf("design summaries returned %d versions, want only the listed current version", len(designs[raceDesign]))
 		}
+
+		// The next list read picks up the version confirmed between the two
+		// reads, with its content.
+		requirementSelection = listedRequirements(t, raceRequirement)
+		designSelection = listedDesigns(t, raceDesign)
+		if requirementSelection[0].CurrentVersion != nextRequirement.Version || designSelection[0].CurrentVersion != nextDesign.Version {
+			t.Fatalf("next row reads listed %+v and %+v, want the later confirmed versions", requirementSelection, designSelection)
+		}
+		requirements, err = st.ListRequirementVersionSummaries(ctx, requirementSelection)
+		requireOK(t, err)
+		for _, version := range requirements[raceRequirement] {
+			if version.Version == first.Version && version.Content != "" {
+				t.Fatalf("historical requirement v%d kept content on the next read", version.Version)
+			}
+			if version.Version == nextRequirement.Version && (!version.Confirmed || version.Content != nextRequirement.Content) {
+				t.Fatalf("next read requirement v%d = %+v, want the confirmed version with its content", version.Version, version)
+			}
+		}
+		designs, err = st.ListSystemDesignVersionSummaries(ctx, designSelection)
+		requireOK(t, err)
+		if len(designs[raceDesign]) != 1 || designs[raceDesign][0].Version != nextDesign.Version || designs[raceDesign][0].Content != nextDesign.Content {
+			t.Fatalf("next read design summaries = %+v, want only v%d with its content", designs[raceDesign], nextDesign.Version)
+		}
 	})
 }
