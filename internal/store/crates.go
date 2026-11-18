@@ -173,6 +173,16 @@ func CrateRefusal(err error) bool {
 	return errors.As(err, &notFound) || errors.As(err, &closed) || errors.As(err, &field)
 }
 
+// NormalizeJoinCrateID trims the crate a membership act joins and refuses a
+// blank one, which would otherwise read as a removal.
+func NormalizeJoinCrateID(crateID string) (string, error) {
+	crateID = strings.TrimSpace(crateID)
+	if crateID == "" {
+		return "", &CrateFieldError{Field: "crate_id", Message: "crate_id is required"}
+	}
+	return crateID, nil
+}
+
 // NewCrateID mints crate-<yymmdd>-<6 hex> (feature-crates CR-1).
 func NewCrateID() string {
 	b := make([]byte, 3)
@@ -202,9 +212,11 @@ func NormalizeCrateTargetDate(value *string) (*string, error) {
 	if value == nil {
 		return nil, nil
 	}
+	// Years 1000 to 9999 fit every backend's date column: SingleStore's DATE
+	// starts at 1000, and PostgreSQL has no year 0.
 	parsed, err := time.Parse(crateDateLayout, *value)
-	if err != nil || parsed.Format(crateDateLayout) != *value {
-		return nil, &CrateFieldError{Field: "target_date", Message: "target_date must be a calendar date written YYYY-MM-DD, or null"}
+	if err != nil || parsed.Format(crateDateLayout) != *value || parsed.Year() < 1000 {
+		return nil, &CrateFieldError{Field: "target_date", Message: "target_date must be a calendar date from 1000-01-01 to 9999-12-31 written YYYY-MM-DD, or null"}
 	}
 	normalized := *value
 	return &normalized, nil

@@ -33,8 +33,12 @@ DO $$
 BEGIN
     -- pg_constraint spans every schema, so the check names this schema's tasks.
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tasks_crate_fk' AND conrelid = 'tasks'::regclass) THEN
+        -- NOT VALID skips a scan of tasks under this migration's lock. Every
+        -- existing row has a NULL crate_id, because this migration adds the
+        -- column, so no existing row can violate the key. New and updated
+        -- rows are checked.
         ALTER TABLE tasks ADD CONSTRAINT tasks_crate_fk
-            FOREIGN KEY (workspace_id, crate_id) REFERENCES crates(workspace_id, id);
+            FOREIGN KEY (workspace_id, crate_id) REFERENCES crates(workspace_id, id) NOT VALID;
     END IF;
 END $$;
 

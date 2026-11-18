@@ -161,7 +161,11 @@ func (m *memory) SetTaskCrate(ctx context.Context, taskID, crateID string) (core
 	if _, err := RequireActor(ctx); err != nil {
 		return core.Task{}, err
 	}
-	return m.moveTaskCrate(ctx, taskID, strings.TrimSpace(crateID))
+	crateID, err := NormalizeJoinCrateID(crateID)
+	if err != nil {
+		return core.Task{}, err
+	}
+	return m.moveTaskCrate(ctx, taskID, crateID)
 }
 
 // ClearTaskCrate implements CrateStore. A task in no crate stays in none and

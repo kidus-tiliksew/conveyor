@@ -33,18 +33,110 @@ import (
 var unnamedCrate = regexp.MustCompile(`"crate":\{"id":"[^"]*","name":""\}`)
 
 // TestCrateTaskResponsesNameEveryCrate type-checks this package and fails on
-// any JSON write of a value whose type can hold a task's crate, unless the
+// any JSON write of a value that can hold a task's crate, unless the
 // write is writeTaskJSON or the same function names the written value with
 // nameTaskCrates earlier in its body (component-crates, Public surfaces). A
 // new response that writes a task or a task row through a plain writer fails
 // here. Both accepted forms name the whole value: the walk reaches every
 // shape a response holds, and it returns an error, never an empty name, for
 // a reference it cannot name (TestCrateNamesReachNestedRows,
-// TestCrateNamesRefuseWhatTheyCannotName). A nameTaskCrates call whose error
-// is dropped fails here too. MarshalJSON methods are not writes: they encode
-// parts of a value its writer already named.
+// TestCrateNamesRefuseWhatTheyCannotName). A value can hold a crate by its
+// type, or because the function stored a task-bearing value in it, as in
+// body := map[string]any{"task": task} or body["task"] = task. A
+// nameTaskCrates call whose error is dropped, by a bare call or by an
+// assignment to the blank identifier, fails here too. MarshalJSON methods are
+// not writes: they encode parts of a value its writer already named.
 func TestCrateTaskResponsesNameEveryCrate(t *testing.T) {
 	pkg, info, fset, files := typeCheckHTTPAPI(t)
+	violations, checked := crateWriteViolations(info, fset, files)
+	if pkg.Name() != "httpapi" || checked == 0 {
+		t.Fatalf("checked %d task-bearing writes in package %q; the guard found nothing to check", checked, pkg.Name())
+	}
+	if len(violations) > 0 {
+		t.Fatalf("task responses that skip crate names:\n%s", strings.Join(violations, "\n"))
+	}
+}
+
+// TestCrateGuardFlagsUnnamedWrites type-checks a sample file in this package
+// and requires the guard to flag each write that can lose a crate's name,
+// and to pass each named write.
+func TestCrateGuardFlagsUnnamedWrites(t *testing.T) {
+	const sample = `package httpapi
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+)
+
+func guardSampleBareLiteral(w http.ResponseWriter, task core.Task) {
+	body := map[string]any{"task": task}
+	writeJSON(w, http.StatusOK, body)
+}
+
+func guardSampleIndexed(w http.ResponseWriter, task core.Task) {
+	body := map[string]any{}
+	body["task"] = task
+	copied := body
+	writeJSON(w, http.StatusOK, copied)
+}
+
+func guardSampleVar(w http.ResponseWriter, task core.Task) {
+	var body any = task
+	writeJSON(w, http.StatusOK, body)
+}
+
+func guardSampleBlank(ctx context.Context, s *Server, w http.ResponseWriter, task core.Task) {
+	body := map[string]any{"task": task}
+	_ = s.nameTaskCrates(ctx, &body)
+	writeJSON(w, http.StatusOK, body)
+}
+
+func guardSampleBare(ctx context.Context, s *Server, w http.ResponseWriter, task core.Task) {
+	s.nameTaskCrates(ctx, &task)
+	writeJSON(w, http.StatusOK, task)
+}
+
+func guardSampleNamed(ctx context.Context, s *Server, w http.ResponseWriter, task core.Task) {
+	body := map[string]any{"task": task}
+	if err := s.nameTaskCrates(ctx, &body); err != nil {
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+func guardSampleTaskJSON(s *Server, w http.ResponseWriter, r *http.Request, task core.Task) {
+	body := map[string]any{"task": task}
+	s.writeTaskJSON(w, r, http.StatusOK, body)
+}
+`
+	_, info, fset, files := typeCheckHTTPAPI(t, sample)
+	violations, checked := crateWriteViolations(info, fset, files[len(files)-1:])
+	joined := strings.Join(violations, "\n")
+	for _, want := range []string{
+		"guardSampleBareLiteral writes body without naming",
+		"guardSampleIndexed writes copied without naming",
+		"guardSampleVar writes body without naming",
+		"guardSampleBlank drops the error",
+		"guardSampleBare drops the error",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("guard missed %q; it reported:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "guardSampleNamed") || strings.Contains(joined, "guardSampleTaskJSON") {
+		t.Errorf("guard flagged a named write:\n%s", joined)
+	}
+	if checked != 6 {
+		t.Errorf("guard checked %d sample writes, want 6", checked)
+	}
+}
+
+// crateWriteViolations applies the crate-name guard to the functions of
+// files and returns its findings and the number of task-bearing writes it
+// checked.
+func crateWriteViolations(info *types.Info, fset *token.FileSet, files []*ast.File) ([]string, int) {
 	writers := map[string][]int{"writeJSON": {2}, "writeJSONWithETag": {2}, "writeConditionalJSON": {2, 3}, "renderMCPReadItem": {0}}
 	var violations []string
 	checked := 0
@@ -55,13 +147,10 @@ func TestCrateTaskResponsesNameEveryCrate(t *testing.T) {
 				continue
 			}
 			named := map[string]bool{}
+			holders := taskCrateHolders(info, fn.Body)
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				if statement, ok := n.(*ast.ExprStmt); ok {
-					if call, ok := statement.X.(*ast.CallExpr); ok {
-						if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "nameTaskCrates" {
-							violations = append(violations, fmt.Sprintf("%s: %s drops the error of nameTaskCrates", fset.Position(call.Pos()), fn.Name.Name))
-						}
-					}
+				if call := droppedNamingCall(n); call != nil {
+					violations = append(violations, fmt.Sprintf("%s: %s drops the error of nameTaskCrates", fset.Position(call.Pos()), fn.Name.Name))
 				}
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
@@ -90,7 +179,7 @@ func TestCrateTaskResponsesNameEveryCrate(t *testing.T) {
 						continue
 					}
 					arg := call.Args[position]
-					if !exprHoldsTaskCrate(info, arg) {
+					if !exprHoldsTaskCrate(info, arg, holders) {
 						continue
 					}
 					checked++
@@ -102,30 +191,98 @@ func TestCrateTaskResponsesNameEveryCrate(t *testing.T) {
 			})
 		}
 	}
-	if pkg.Name() != "httpapi" || checked == 0 {
-		t.Fatalf("checked %d task-bearing writes in package %q; the guard found nothing to check", checked, pkg.Name())
+	return violations, checked
+}
+
+// droppedNamingCall returns a nameTaskCrates call whose error the statement
+// drops: a bare call statement, or an assignment of the call to _.
+func droppedNamingCall(n ast.Node) *ast.CallExpr {
+	var expr ast.Expr
+	switch statement := n.(type) {
+	case *ast.ExprStmt:
+		expr = statement.X
+	case *ast.AssignStmt:
+		if len(statement.Rhs) != 1 {
+			return nil
+		}
+		for _, lhs := range statement.Lhs {
+			if ident, ok := lhs.(*ast.Ident); !ok || ident.Name != "_" {
+				return nil
+			}
+		}
+		expr = statement.Rhs[0]
+	default:
+		return nil
 	}
-	if len(violations) > 0 {
-		t.Fatalf("task responses that skip crate names:\n%s", strings.Join(violations, "\n"))
+	call, ok := ast.Unparen(expr).(*ast.CallExpr)
+	if !ok {
+		return nil
 	}
+	if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "nameTaskCrates" {
+		return call
+	}
+	return nil
+}
+
+// taskCrateHolders returns the local variables of a function body that hold
+// a task-bearing value by assignment, though their own type may not show it:
+// body := map[string]any{"task": task}, var body any = task, body["task"] =
+// task, or a copy of such a variable. It repeats until no new variable joins.
+func taskCrateHolders(info *types.Info, body *ast.BlockStmt) map[string]bool {
+	holders := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		mark := func(lhs, rhs ast.Expr) {
+			root := rootIdent(lhs)
+			if root == "" || root == "_" || holders[root] || !exprHoldsTaskCrate(info, rhs, holders) {
+				return
+			}
+			holders[root] = true
+			changed = true
+		}
+		ast.Inspect(body, func(n ast.Node) bool {
+			switch statement := n.(type) {
+			case *ast.AssignStmt:
+				for i, lhs := range statement.Lhs {
+					if len(statement.Rhs) == len(statement.Lhs) {
+						mark(lhs, statement.Rhs[i])
+					} else if len(statement.Rhs) == 1 {
+						mark(lhs, statement.Rhs[0])
+					}
+				}
+			case *ast.ValueSpec:
+				for i, name := range statement.Names {
+					if len(statement.Values) == len(statement.Names) {
+						mark(name, statement.Values[i])
+					}
+				}
+			}
+			return true
+		})
+	}
+	return holders
 }
 
 // exprHoldsTaskCrate reports whether an expression's type can hold a crate,
-// or, for a literal such as map[string]any{...}, whether any element can.
-func exprHoldsTaskCrate(info *types.Info, expr ast.Expr) bool {
+// whether it reads a variable in holders, or, for a literal such as
+// map[string]any{...}, whether any element can.
+func exprHoldsTaskCrate(info *types.Info, expr ast.Expr, holders map[string]bool) bool {
 	if holdsTaskCrate(info.TypeOf(expr), map[types.Type]bool{}) {
+		return true
+	}
+	if root := rootIdent(expr); root != "" && holders[root] {
 		return true
 	}
 	switch e := expr.(type) {
 	case *ast.UnaryExpr:
-		return exprHoldsTaskCrate(info, e.X)
+		return exprHoldsTaskCrate(info, e.X, holders)
 	case *ast.ParenExpr:
-		return exprHoldsTaskCrate(info, e.X)
+		return exprHoldsTaskCrate(info, e.X, holders)
 	case *ast.KeyValueExpr:
-		return exprHoldsTaskCrate(info, e.Value)
+		return exprHoldsTaskCrate(info, e.Value, holders)
 	case *ast.CompositeLit:
 		for _, element := range e.Elts {
-			if exprHoldsTaskCrate(info, element) {
+			if exprHoldsTaskCrate(info, element, holders) {
 				return true
 			}
 		}
@@ -192,9 +349,10 @@ func holdsTaskCrate(t types.Type, seen map[types.Type]bool) bool {
 	return false
 }
 
-// typeCheckHTTPAPI type-checks this package's non-test files against the
-// export data of its dependencies that `go list -export` reports.
-func typeCheckHTTPAPI(t *testing.T) (*types.Package, *types.Info, *token.FileSet, []*ast.File) {
+// typeCheckHTTPAPI type-checks this package's non-test files, plus any extra
+// sources given, against the export data of its dependencies that
+// `go list -export` reports. The extra files come last in the result.
+func typeCheckHTTPAPI(t *testing.T, extra ...string) (*types.Package, *types.Info, *token.FileSet, []*ast.File) {
 	t.Helper()
 	cmd := exec.Command("go", "list", "-export", "-deps", "-json", ".")
 	cmd.Stderr = os.Stderr
@@ -228,6 +386,13 @@ func typeCheckHTTPAPI(t *testing.T) (*types.Package, *types.Info, *token.FileSet
 	var files []*ast.File
 	for _, name := range self.GoFiles {
 		file, err := parser.ParseFile(fset, filepath.Join(self.Dir, name), nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, file)
+	}
+	for i, source := range extra {
+		file, err := parser.ParseFile(fset, fmt.Sprintf("guard_sample_%d.go", i), source, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatal(err)
 		}

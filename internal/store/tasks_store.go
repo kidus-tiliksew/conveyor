@@ -708,7 +708,11 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	// The named crate is validated under the store mutex that closing a crate
 	// also holds, so a closed crate never gains a task (component-crates
 	// invariants 6 and 7; req-crates AC-2.1).
-	if crateID := t.TaskCrateID(); crateID != "" {
+	// A crate reference with no ID is no crate, as the durable backends read
+	// a NULL column.
+	crateID := t.TaskCrateID()
+	t.Crate = nil
+	if crateID != "" {
 		if err := m.crateJoinableLocked(t.Workspace, crateID); err != nil {
 			return err
 		}

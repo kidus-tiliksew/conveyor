@@ -120,4 +120,15 @@ func TestCrateMigrationIntegration(t *testing.T) {
 	if _, err = pool.Exec(base, `UPDATE tasks SET crate_id='crate-000000-000000' WHERE id=$1`, legacyID); err == nil {
 		t.Fatal("tasks.crate_id accepted a crate that does not exist")
 	}
+	other := "crate-migration-other-" + core.NewTaskID()
+	if _, err = pool.Exec(base, `INSERT INTO workspaces(id, name) VALUES ($1, $1)`, other); err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := st.CreateCrate(store.WithWorkspace(base, other), store.CrateInput{Name: "Another workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(base, `UPDATE tasks SET crate_id=$1 WHERE id=$2`, foreign.ID, legacyID); err == nil {
+		t.Fatal("tasks.crate_id accepted an existing crate of another workspace")
+	}
 }

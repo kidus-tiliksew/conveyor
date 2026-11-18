@@ -44,16 +44,17 @@ func TestCrateMigrationIntegration(t *testing.T) {
 		t.Fatal("a fresh schema lacks tasks.crate_id or its ledger row")
 	}
 
-	// The previous ledger version: neither table nor column exists.
-	exec(`DELETE FROM conveyor_singlestore_migrations WHERE version=?`, crateMigrationVersion)
-	exec(`ALTER TABLE tasks DROP COLUMN crate_id`)
-	exec(`DROP TABLE IF EXISTS crate_requirements`)
-	exec(`DROP TABLE IF EXISTS crates`)
+	// The previous ledger version: neither table nor column exists. The
+	// cleanup is registered first, so a failed drop still restores the schema.
 	t.Cleanup(func() {
 		if err := st.migrate(store.WithActor(context.Background(), store.SystemActor())); err != nil {
 			t.Errorf("restore migration 0045: %v", err)
 		}
 	})
+	exec(`DELETE FROM conveyor_singlestore_migrations WHERE version=?`, crateMigrationVersion)
+	exec(`ALTER TABLE tasks DROP COLUMN crate_id`)
+	exec(`DROP TABLE IF EXISTS crate_requirements`)
+	exec(`DROP TABLE IF EXISTS crates`)
 	workspace := "crate-migration-" + core.NewTaskID()
 	exec(`INSERT INTO workspaces(id, name) VALUES(?, ?)`, workspace, workspace)
 	legacyID := core.NewTaskID()

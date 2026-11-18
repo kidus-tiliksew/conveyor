@@ -144,9 +144,10 @@ creation or by a membership act of a person with `create_tasks`:
   missing crate, or a crate of another workspace, answers 404 `crate_not_found`.
   A closed crate answers 409 `crate_closed`. Both name the crate and record no
   task. A crate attaches no requirement by itself: the task gets only the
-  `requirement_ids` that its request names. An idempotent retry compares
-  `crate_id` with the request that created the task. A different value is a
-  conflict, also after the task moves to another crate.
+  `requirement_ids` that its request names. An idempotent retry, a request
+  that repeats the multipart form's `idempotency_key`, compares `crate_id`
+  with the request that created the task. A different value is a conflict,
+  also after the task moves to another crate.
 - **Join.** `PUT /v1/tasks/{id}/crate` with `crate_id` moves the task into an
   open crate. The task leaves the crate it was in. A closed crate answers 409
   `crate_closed`.
@@ -162,7 +163,11 @@ Every response that holds a task or a task row carries `crate` as
 no `crate` when it is in none. This covers the task list, task detail, the
 activity, attention, reviews, board, task map, task operations, and inbox
 reads, the task acts such as close, merge, assignee, dependencies, and branch,
-and the MCP tools that return a task. The `crate` filter on
+and the MCP tools that return a task. Two places carry no `crate`: the task
+in a work order's context, because a crate reaches an order only through the
+order's own crate context, and a task reference inside another record, such as
+a dependency, a child, a requirement's serving task, or a row on the crate
+page. The `crate` filter on
 `GET /v1/tasks` and `GET /v1/activity` selects the members of one crate by
 its ID, and it works with the other filters before paging and totals.
 

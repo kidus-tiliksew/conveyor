@@ -121,7 +121,7 @@ func (f *crateFixture) task(t *testing.T, crateID string) core.Task {
 }
 
 // recorded is the durable state a refused request must leave unchanged: the
-// task list, every crate, and every event.
+// task list, every crate with its declared requirements, and every event.
 func (f *crateFixture) recorded(t *testing.T) string {
 	t.Helper()
 	tasks, err := f.store.ListTasks(f.ctx)
@@ -149,7 +149,11 @@ func (f *crateFixture) recorded(t *testing.T) string {
 		}
 		taskEvents += len(listed)
 	}
-	raw, _ := json.Marshal(map[string]any{"tasks": ids, "crates": crates, "workspace_events": len(events), "task_events": taskEvents})
+	declared := make(map[string][]string, len(crates))
+	for _, crate := range crates {
+		declared[crate.ID] = crate.RequirementIDs
+	}
+	raw, _ := json.Marshal(map[string]any{"tasks": ids, "crates": crates, "declared": declared, "workspace_events": len(events), "task_events": taskEvents})
 	return string(raw)
 }
 

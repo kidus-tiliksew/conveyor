@@ -329,7 +329,11 @@ LIMIT $6`, workspaceID, id, store.CrateActivityKinds, cursorAt, cursorID, limit+
 // SetTaskCrate implements store.CrateStore.
 func (s *Store) SetTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "SetTaskCrate")
-	return s.moveTaskCrate(ctx, taskID, strings.TrimSpace(crateID))
+	crateID, err := store.NormalizeJoinCrateID(crateID)
+	if err != nil {
+		return core.Task{}, err
+	}
+	return s.moveTaskCrate(ctx, taskID, crateID)
 }
 
 // ClearTaskCrate implements store.CrateStore.

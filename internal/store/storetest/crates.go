@@ -51,7 +51,8 @@ func crateRequirement(t *testing.T, x Fixture, confirm bool) string {
 
 func crateTask(t *testing.T, x Fixture, state core.TaskState, crateID string) core.Task {
 	t.Helper()
-	task := core.Task{ID: fixtureTaskID(), Workspace: x.Workspace, Repo: "conveyor", Title: "Crate member " + strings.ToUpper(string(state)), Body: "Crate member.", State: state, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	id := fixtureTaskID()
+	task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: "Crate member " + strings.ToUpper(string(state)) + " " + id, Body: "Crate member.", State: state, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
 	task.Branch = "conveyor/task-" + task.ID
 	if crateID != "" {
 		task.Crate = &core.TaskCrate{ID: crateID}
@@ -134,6 +135,7 @@ func runCrateRefusals(t *testing.T, x Fixture) {
 		{"long name", store.CrateInput{Name: strings.Repeat("n", 121)}, fieldRefusal("name")},
 		{"bad date", store.CrateInput{Name: "Dated", TargetDate: crateText("2027-02-30")}, fieldRefusal("target_date")},
 		{"date form", store.CrateInput{Name: "Dated", TargetDate: crateText("2027-3-1")}, fieldRefusal("target_date")},
+		{"date before year 1000", store.CrateInput{Name: "Dated", TargetDate: crateText("0999-12-31")}, fieldRefusal("target_date")},
 		{"missing requirement", store.CrateInput{Name: "Needs", RequirementIDs: []string{"req-crate-missing"}}, referenceRefusal("req-crate-missing")},
 		{"unconfirmed requirement", store.CrateInput{Name: "Needs", RequirementIDs: []string{unconfirmed}}, referenceRefusal(unconfirmed)},
 		{"archived requirement", store.CrateInput{Name: "Needs", RequirementIDs: []string{archived}}, referenceRefusal(archived)},
@@ -371,6 +373,9 @@ func runCrateMembership(t *testing.T, x Fixture) {
 	if _, err := x.Backend.SetTaskCrate(x.Context, task.ID, "crate-000000-000000"); !notFoundRefusal(err) {
 		t.Fatalf("join of a missing crate err = %v", err)
 	}
+	if _, err := x.Backend.SetTaskCrate(x.Context, task.ID, "   "); !fieldRefusal("crate_id")(err) {
+		t.Fatalf("join of a blank crate err = %v", err)
+	}
 	if events, err := x.Backend.ListEvents(x.Context, task.ID); err != nil || len(events) != eventsBefore {
 		t.Fatalf("refused join recorded events: %d, want %d (%v)", len(events), eventsBefore, err)
 	}
@@ -553,6 +558,9 @@ func runCrateCounts(t *testing.T, x Fixture) {
 		byID[row.ID] = row
 	}
 	assertCounts("listed", byID[crate.ID], 0, 1, 2, true)
+	if _, ok := byID[empty.ID]; !ok {
+		t.Fatalf("open crate list = %+v, want the empty crate %s", listed, empty.ID)
+	}
 	assertCounts("listed empty", byID[empty.ID], 0, 0, 0, false)
 	closedState := store.CrateClosed
 	closed, err := x.Backend.UpdateCrate(x.Context, crate.ID, store.CratePatch{State: &closedState})
@@ -590,8 +598,11 @@ func runCrateListOrder(t *testing.T, x Fixture) {
 	}
 	all, err := x.Backend.ListCrates(x.Context, store.CrateListQuery{})
 	requireOK(t, err)
-	if len(all) != 7 || all[0].ID != closed.ID {
-		t.Fatalf("all crates = %d, first %s, want 7 with the closed 2026 crate first", len(all), all[0].ID)
+	if len(all) != 7 {
+		t.Fatalf("all crates = %d, want 7", len(all))
+	}
+	if all[0].ID != closed.ID {
+		t.Fatalf("first crate = %s, want the closed 2026 crate %s", all[0].ID, closed.ID)
 	}
 }
 
@@ -624,8 +635,13 @@ func runCrateCoverage(t *testing.T, x Fixture) {
 		t.Fatalf("declared coverage = %+v", detail.Requirements)
 	}
 	for _, row := range detail.Requirements {
-		if row.TaskCount != wantDeclared[row.ID] || row.Title == "" {
-			t.Fatalf("declared coverage row = %+v, want count %d and a title", row, wantDeclared[row.ID])
+		count, ok := wantDeclared[row.ID]
+		if !ok {
+			t.Fatalf("declared coverage row %+v is not a declared requirement, or repeats one", row)
+		}
+		delete(wantDeclared, row.ID)
+		if row.TaskCount != count || row.Title == "" {
+			t.Fatalf("declared coverage row = %+v, want count %d and a title", row, count)
 		}
 	}
 	if len(detail.UndeclaredRequirements) != 1 || detail.UndeclaredRequirements[0].ID != undeclared || detail.UndeclaredRequirements[0].TaskCount != 1 {
@@ -659,14 +675,11 @@ func runCrateActivity(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	type item struct{ task, kind string }
 	got := make([]item, len(page.Entries))
+	titles := map[string]string{created.ID: created.Title, joined.ID: joined.Title}
 	for i, entry := range page.Entries {
 		got[i] = item{entry.Event.TaskID, entry.Event.Kind}
-		wantTitle := created.Title
-		if i > 0 && i < len(page.Entries)-1 && entry.Event.TaskID != created.ID {
-			wantTitle = joined.Title
-		}
-		if entry.TaskTitle != wantTitle && entry.TaskTitle != joined.Title {
-			t.Fatalf("entry %d title = %q", i, entry.TaskTitle)
+		if want, ok := titles[entry.Event.TaskID]; !ok || entry.TaskTitle != want {
+			t.Fatalf("entry %d of task %s has title %q, want %q", i, entry.Event.TaskID, entry.TaskTitle, want)
 		}
 		if i > 0 {
 			previous := page.Entries[i-1].Event
@@ -687,6 +700,7 @@ func runCrateActivity(t *testing.T, x Fixture) {
 	}
 	var paged []item
 	cursor := ""
+	ended := false
 	for range 10 {
 		next, err := x.Backend.ListCrateActivity(x.Context, crate.ID, store.CrateActivityQuery{Limit: 2, Cursor: cursor})
 		requireOK(t, err)
@@ -697,9 +711,13 @@ func runCrateActivity(t *testing.T, x Fixture) {
 			paged = append(paged, item{entry.Event.TaskID, entry.Event.Kind})
 		}
 		if next.NextCursor == "" {
+			ended = true
 			break
 		}
 		cursor = next.NextCursor
+	}
+	if !ended {
+		t.Fatal("activity pages never cleared their cursor")
 	}
 	if !slices.Equal(paged, want) {
 		t.Fatalf("paged activity = %+v, want %+v", paged, want)
@@ -748,8 +766,8 @@ func runCrateTaskFilter(t *testing.T, x Fixture) {
 	}
 	page, err := x.Backend.ListTaskPage(x.Context, store.TaskOperationsQuery{TaskFilter: store.TaskFilter{Crate: crate.ID}, Limit: 1})
 	requireOK(t, err)
-	if page.Total != 2 || len(page.Tasks) != 1 {
-		t.Fatalf("crate filter page total=%d rows=%d, want 2 and 1", page.Total, len(page.Tasks))
+	if page.Total != 2 || len(page.Tasks) != 1 || page.Tasks[0].TaskCrateID() != crate.ID || !slices.Contains(want, page.Tasks[0].ID) {
+		t.Fatalf("crate filter page total=%d rows=%+v, want 2 and one member of %s", page.Total, page.Tasks, crate.ID)
 	}
 	none, err := x.Backend.ListTasksFiltered(x.Context, store.TaskFilter{Crate: "crate-000000-000000"})
 	requireOK(t, err)
