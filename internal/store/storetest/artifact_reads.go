@@ -236,6 +236,18 @@ func runArtifactReadScoping(t *testing.T, x Fixture) {
 			t.Fatalf("listing observed an insert past the forward key boundary: %+v", artifact)
 		}
 	}
+	// The fence defers a later artifact to the next listing; it is not lost.
+	if inserted.ID != "" {
+		next, err := st.ListArtifacts(ctx)
+		requireOK(t, err)
+		found := false
+		for _, artifact := range next {
+			found = found || artifact.ID == inserted.ID
+		}
+		if !found {
+			t.Fatalf("the listing after the fence omitted artifact %s", inserted.ID)
+		}
+	}
 	seen := map[string]int{}
 	for _, artifact := range snapshot {
 		seen[artifactAssocKey(artifact)]++

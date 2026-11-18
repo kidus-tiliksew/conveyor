@@ -122,6 +122,82 @@ func TestHotReadPrepareScriptIntegration(t *testing.T) {
 	if creates != 9 {
 		t.Fatalf("script CREATE statements = %d, want 9", creates)
 	}
+	requirePGInvalidIndexRecovery(t, ctx, script)
+}
+
+// requirePGInvalidIndexRecovery follows the script's recovery for a failed
+// concurrent build. A build that times out waiting for an open writer leaves
+// an INVALID index, IF NOT EXISTS then skips the name, and the documented
+// DROP INDEX CONCURRENTLY and retry build a valid index in its place.
+func requirePGInvalidIndexRecovery(t *testing.T, ctx context.Context, script string) {
+	t.Helper()
+	pool, _ := isolatedPool(t, "hot_read_invalid", nil)
+	if err := migrateControlPlaneToVersion(ctx, pool, 170); err != nil {
+		t.Fatal(err)
+	}
+	var create string
+	for _, stmt := range splitSQLScript(script) {
+		if strings.Contains(stmt, " tasks_workspace_created_idx") {
+			create = stmt
+		}
+	}
+	if create == "" {
+		t.Fatal("script has no tasks_workspace_created_idx statement")
+	}
+	valid := func() (bool, bool) {
+		t.Helper()
+		var isValid bool
+		err := pool.QueryRow(ctx, `SELECT i.indisvalid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_index i ON i.indexrelid=c.oid WHERE n.nspname=current_schema() AND c.relname='tasks_workspace_created_idx'`).Scan(&isValid)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, false
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return true, isValid
+	}
+	writer, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = writer.Exec(ctx, `LOCK TABLE tasks IN ROW EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	builder, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = builder.Exec(ctx, `SET lock_timeout = '300ms'`); err != nil {
+		t.Fatal(err)
+	}
+	_, buildErr := builder.Exec(ctx, create)
+	if _, err = builder.Exec(ctx, `RESET lock_timeout`); err != nil {
+		t.Fatal(err)
+	}
+	builder.Release()
+	_ = writer.Rollback(ctx)
+	var pgErr *pgconn.PgError
+	if !errors.As(buildErr, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("concurrent build behind an open writer = %v, want a lock timeout", buildErr)
+	}
+	if present, isValid := valid(); !present || isValid {
+		t.Fatalf("failed build left present=%t valid=%t, want an INVALID index", present, isValid)
+	}
+	if _, err = pool.Exec(ctx, create); err != nil {
+		t.Fatal(err)
+	}
+	if _, isValid := valid(); isValid {
+		t.Fatal("IF NOT EXISTS repaired an INVALID index; the documented drop is not needed")
+	}
+	if _, err = pool.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS tasks_workspace_created_idx`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, create); err != nil {
+		t.Fatal(err)
+	}
+	if present, isValid := valid(); !present || !isValid {
+		t.Fatalf("retry after the documented drop left present=%t valid=%t", present, isValid)
+	}
 }
 
 // requirePGHotReadIndexesValid fails when any hot-read index is INVALID, as a
