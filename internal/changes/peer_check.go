@@ -20,10 +20,9 @@ import (
 type PeerMark struct {
 	// Log is the head position of the workspace's event log.
 	Log int64
-	// Events is a marker that changes with every committed task event.
+	// Events is a marker that changes with every committed task event once
+	// that event is visible to the reader.
 	Events int64
-	// LastEvent is an optional additional marker.
-	LastEvent int64
 }
 
 // PeerReader is the optional capability of a backend without change
@@ -91,7 +90,7 @@ func (p *PeerCheck) Check(ctx context.Context) error {
 			p.Hub.Publish(Notice{Workspace: workspace, Kind: Job})
 			published++
 		}
-		if !seen || mark.Events != previous.Events || mark.LastEvent != previous.LastEvent {
+		if !seen || mark.Events != previous.Events {
 			p.Hub.Publish(Notice{Workspace: workspace, Kind: Task})
 			published++
 		}
