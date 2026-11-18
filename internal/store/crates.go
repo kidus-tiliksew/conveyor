@@ -137,10 +137,25 @@ type CrateStore interface {
 	ListCrateActivity(ctx context.Context, id string, query CrateActivityQuery) (CrateActivityPage, error)
 	// CrateNames returns the name of each listed crate of the workspace.
 	CrateNames(ctx context.Context, ids []string) (map[string]string, error)
+	// ListCrateMembers returns the member tasks of each listed crate of the
+	// workspace with their ID, title, and state, ordered by creation time and
+	// then ID. A crate with no member, or not in the workspace, has no entry.
+	// It reads no next action and no task context, so the work-order crate
+	// field and the MCP crate list stay lean reads (component-crates
+	// invariants 14 and 20).
+	ListCrateMembers(ctx context.Context, ids []string) (map[string][]CrateMemberTask, error)
 	// SetTaskCrate makes the task a member of the open crate crateID only.
 	SetTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, error)
 	// ClearTaskCrate makes the task a member of no crate.
 	ClearTaskCrate(ctx context.Context, taskID string) (core.Task, error)
+}
+
+// CrateMemberTask is one member task of a crate as ListCrateMembers reads
+// it: the task's ID, title, and state.
+type CrateMemberTask struct {
+	ID    string         `json:"id"`
+	Title string         `json:"title"`
+	State core.TaskState `json:"state"`
 }
 
 // CrateNotFoundError names a crate that is missing or in another workspace.

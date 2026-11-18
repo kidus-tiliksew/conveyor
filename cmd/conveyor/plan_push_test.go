@@ -56,6 +56,12 @@ type planFakeFactory struct {
 	dropAnswer map[string]bool
 	// beforeDecisionPost runs before a decision POST is applied.
 	beforeDecisionPost func(id string)
+	// crates holds each crate's state by ID for GET /v1/crates/{id}, and
+	// crateReads counts those reads. crateFailure answers every crate read
+	// with that status when it is not 0.
+	crates       map[string]string
+	crateReads   int
+	crateFailure int
 }
 
 type planFakeRequirement struct {
@@ -94,6 +100,7 @@ func newPlanFakeFactory(t *testing.T) *planFakeFactory {
 		refuse:       map[string]planFakeRefusal{},
 		dropAnswer:   map[string]bool{},
 		seeded:       map[string]bool{},
+		crates:       map[string]string{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +126,7 @@ func newPlanFakeFactory(t *testing.T) *planFakeFactory {
 	mux.HandleFunc("GET /v1/decisions/{id}", f.getDecision)
 	mux.HandleFunc("POST /v1/tasks", f.createTask)
 	mux.HandleFunc("GET /v1/tasks/{id}", f.getTask)
+	mux.HandleFunc("GET /v1/crates/{id}", f.getCrate)
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Workspace-ID") != "demo" || r.Header.Get("Authorization") != "Bearer plan-token" {
 			t.Errorf("%s %s: workspace %q, authorization %q", r.Method, r.URL.Path, r.Header.Get("X-Workspace-ID"), r.Header.Get("Authorization"))
@@ -415,6 +423,22 @@ func (f *planFakeFactory) createTask(w http.ResponseWriter, r *http.Request) {
 	task := core.Task{ID: fmt.Sprintf("261020-t%03d", f.nextTask), Body: text("body"), Repo: text("repo"), State: "queued", Workspace: "demo"}
 	f.tasks[task.ID], f.taskKeys[key], f.taskRequests[task.ID] = task, task.ID, string(canonical)
 	f.answer(w, r, http.StatusCreated, task)
+}
+
+// getCrate answers the crate read with the crate's ID and state, or 404 for
+// a crate the fake does not hold.
+func (f *planFakeFactory) getCrate(w http.ResponseWriter, r *http.Request) {
+	f.crateReads++
+	if f.crateFailure != 0 {
+		http.Error(w, "crate read failed", f.crateFailure)
+		return
+	}
+	state, ok := f.crates[r.PathValue("id")]
+	if !ok {
+		planFakeJSON(w, http.StatusNotFound, map[string]string{"error": "crate_not_found"})
+		return
+	}
+	planFakeJSON(w, http.StatusOK, map[string]any{"id": r.PathValue("id"), "name": "Crate " + r.PathValue("id"), "state": state, "tasks": []any{}})
 }
 
 func (f *planFakeFactory) getTask(w http.ResponseWriter, r *http.Request) {

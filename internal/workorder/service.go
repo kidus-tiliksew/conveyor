@@ -112,6 +112,11 @@ type Context struct {
 	// every read and stored on no order (component-work-orders invariant 67;
 	// req-delegated-execution AC-6.1).
 	ProgressReportIntervalSeconds int64 `json:"progress_report_interval_seconds"`
+	// Crate names the crate of a member task and its other member tasks,
+	// read from the records on every assembly. It is untrusted background
+	// that is not authority, and an order of a task in no crate has no crate
+	// field (component-crates invariant 20; req-crates AC-4.3, AC-4.5).
+	Crate *CrateContext `json:"crate,omitempty"`
 }
 
 // PlanRevisionContext carries the durable request that caused a plan-stage
@@ -987,9 +992,15 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	}
 	// A crate reaches an order only through the labeled context field of
 	// component-crates invariant 20, never through the task row, so the
-	// order's task carries no crate (req-crates AC-4.3, AC-4.5).
+	// order's task carries no crate (req-crates AC-4.3, AC-4.5). The field
+	// changes no other context field, claim, or claim order: the claim path
+	// does not assemble this context (req-crates AC-4.2).
+	crate, err := crateContextForTask(ctx, s.Store, task)
+	if err != nil {
+		return Context{}, err
+	}
 	task.Crate = nil
-	result := Context{Order: order, Task: task, AuthoritySource: authoritySource, RolePrompt: role, ServedRequirements: servedRequirements, GovernanceSnapshot: governance, PlanRevision: planRevision}
+	result := Context{Order: order, Task: task, AuthoritySource: authoritySource, RolePrompt: role, ServedRequirements: servedRequirements, GovernanceSnapshot: governance, PlanRevision: planRevision, Crate: crate}
 	result.ProgressReportIntervalSeconds = config.ProgressReportIntervalSeconds(cfg)
 	if order.Stage == core.StageReview {
 		evidence, evidenceErr := s.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)
