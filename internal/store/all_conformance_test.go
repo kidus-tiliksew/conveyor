@@ -126,6 +126,12 @@ func TestMemoryConformance(t *testing.T) {
 				server.Credentials = nil
 				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
 				return server.Handler()
+			}, WorkOrderHTTP: func(*testing.T) http.Handler {
+				server := httpapi.NewServer(st)
+				server.Credentials = nil
+				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
+				server.WorkOrders = &workorder.Service{Store: st}
+				return server.Handler()
 			}, RedispatchHTTP: func(_ *testing.T, onDispatch func(context.Context, string)) http.Handler {
 				server := httpapi.NewServer(st)
 				server.Credentials = nil

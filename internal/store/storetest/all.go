@@ -119,6 +119,13 @@ type Fixture struct {
 	// which moves no task without a dispatcher. It requires this field and
 	// never skips (component-work-orders invariant 39).
 	RedispatchHTTP func(t *testing.T, onDispatch func(context.Context, string)) http.Handler
+	// WorkOrderHTTP returns the LineageHTTP handler with a work-order service
+	// over Backend, as conveyord configures it, so GET /v1/work-orders serves
+	// the service's claim projections. The task observation claimability
+	// case compares that list with GET /v1/tasks/{id}/observation. It
+	// requires this field and never skips (component-next-action invariant
+	// 57).
+	WorkOrderHTTP func(t *testing.T) http.Handler
 	// TaskIntakeHTTP returns the real httpapi handler over Backend, bound to
 	// Workspace and accepting LineageHTTPToken, with generate as its title
 	// generator. GitHubIssueIntake takes one ready issue in through the real
@@ -281,6 +288,7 @@ func RunAll(t *testing.T, factory Factory) {
 	run("RedispatchOfferParity", func(t *testing.T) { runRedispatchOfferParity(t, factory.fresh(t, nil)) })
 	run("RedispatchPlanRevisionGate", func(t *testing.T) { runRedispatchPlanRevisionGate(t, factory.fresh(t, nil), factory.PlanRevisionGate) })
 	run("InboxAttentionCount", func(t *testing.T) { runInboxAttentionCount(t, factory.fresh(t, nil)) })
+	run("TaskObservationClaimability", func(t *testing.T) { runTaskObservationClaimability(t, factory.fresh(t, nil)) })
 	run("InboxAttentionCountBodyFree", func(t *testing.T) {
 		x := factory.fresh(t, nil)
 		if factory.ProductionCapable && x.DrainReadBytes == nil {

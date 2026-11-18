@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -179,6 +180,30 @@ func (s *Service) Lookup(ctx context.Context, id string) (core.WorkOrder, error)
 		return core.WorkOrder{}, err
 	}
 	return projected[0], nil
+}
+
+// ProjectTaskOrders projects one task's live orders through the list's
+// dependency, recovery, and risk projections, so a task-scoped read reports
+// the claimability that GET /v1/work-orders reports for the same orders.
+// taskOrders is the task's complete order history from one task order read.
+// It serves as the recovery history, so the projection reads no workspace
+// listing and no other task's orders. taskOrders is left unchanged
+// (component-next-action invariant 57; component-work-orders, Listing).
+func (s *Service) ProjectTaskOrders(ctx context.Context, taskOrders []core.WorkOrder) ([]core.WorkOrder, error) {
+	history := slices.Clone(taskOrders)
+	orders, err := s.projectList(ctx, liveOrders(slices.Clone(taskOrders)), func(_ context.Context, taskIDs []string) ([]core.WorkOrder, error) {
+		out := make([]core.WorkOrder, 0, len(history))
+		for _, order := range history {
+			if slices.Contains(taskIDs, order.TaskID) {
+				out = append(out, order)
+			}
+		}
+		return out, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return orders, nil
 }
 
 // liveOrders keeps the states the list returns: queued, claimed, stale, and
