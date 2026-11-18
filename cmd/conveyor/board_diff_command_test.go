@@ -58,7 +58,7 @@ func TestBoardDiffCommandEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &first); err != nil || !first.FirstRun || first.Summary == nil || first.Summary.Open != 500 || len(first.Summary.Decisions) != 1 || boardCalls != 5 || activityCalls != 1 {
 		t.Fatalf("first %#v board %d activity %d err %v", first, boardCalls, activityCalls, err)
 	}
-	path, _ := boardDiffStatePath(srv.URL, "")
+	path, _ := boardDiffStatePath(srv.URL, "", "")
 	data, err := os.ReadFile(path)
 	if err != nil || bytes.Contains(data, []byte(c.token)) {
 		t.Fatalf("snapshot credential or error %v", err)
@@ -84,12 +84,12 @@ func TestBoardDiffCommandEndToEnd(t *testing.T) {
 		}
 		// Keep every task new to the overlap in the next case.
 		if n > 0 {
-			state, _, e := loadBoardDiffState(srv.URL, "", now)
+			state, _, e := loadBoardDiffState(srv.URL, "", "", now)
 			if e != nil {
 				t.Fatal(e)
 			}
 			state.Recent = map[string]time.Time{}
-			if e = saveBoardDiffState(srv.URL, "", state); e != nil {
+			if e = saveBoardDiffState(srv.URL, "", "", state); e != nil {
 				t.Fatal(e)
 			}
 		}
@@ -109,7 +109,7 @@ func TestBoardDiffCommandStatelessAndFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &client{base: srv.URL}
-	path, _ := boardDiffStatePath(srv.URL, "")
+	path, _ := boardDiffStatePath(srv.URL, "", "")
 	var out bytes.Buffer
 	if err := runBoardDiff(c, &out, boardDiffOptions{since: now.Format(time.RFC3339), asJSON: true}); err != nil {
 		t.Fatal(err)

@@ -24,13 +24,18 @@ acting. Pass the workspace explicitly on every MCP call and CLI command. Do not
 reuse task IDs, ports, credentials, versions, or paths from memory without
 checking them.
 
-At session start, after compaction, and at each check-in, run
-`conveyor board diff --json`. Read task detail only for changed tasks or tasks
-that need action.
+At session start and after compaction, read the whole board with `get_board`
+or with `conveyor board diff --reset --consumer <name> --json`. `<name>` is a
+consumer name that only this coordinating session uses. Keep the same name for
+the whole session. At each later check-in, run
+`conveyor board diff --consumer <name> --json` with that name. Each consumer
+name has its own snapshot, so two sessions that share a name take changes from
+each other. Read task detail only for changed tasks or tasks that need action
+(component-cli-onboarding invariant 44).
 
-Use `get_board` for an overview of open tasks. Continue from the offset plus
-the number of items until you reach the total, even when a page is short.
-Use `list_tasks` for filtered or terminal-task searches.
+Use `get_board` or `conveyor board` for an overview of open tasks. Continue
+from the offset plus the number of items until you reach the total, even when
+a page is short. Use `list_tasks` for filtered or terminal-task searches.
 
 Read the installed skill and playbook for each operation before running it:
 `conveyor-work` for a stage order and its human gates,
