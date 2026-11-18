@@ -1,11 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
@@ -93,3 +97,53 @@ func TestRenewWorkOrderReadsNoSnapshotThroughMCP(t *testing.T) {
 		})
 	}
 }
+
+// failingPinStore fails only the pinned reference read.
+type failingPinStore struct{ store.Store }
+
+func (failingPinStore) GetWorkOrderGovernancePin(context.Context, string) (*core.GovernanceSnapshot, error) {
+	return nil, errors.New("pin read failed")
+}
+
+// TestRenewWorkOrderReportsAFailedPinReadThroughMCP keeps the renewal's
+// failure rule: the renewal already succeeded, so a failed document-list read
+// answers the renewed order with governance_references_error instead of an
+// error (component-work-orders invariant 24).
+func TestRenewWorkOrderReportsAFailedPinReadThroughMCP(t *testing.T) {
+	t.Parallel()
+	f := newDeliveryFixture(t, "renewal-pin-failure", func(task *core.Task) {
+		task.SetupContract.VerifyStage = true
+		task.NextStage = core.StageVerify
+		task.ReviewedHeadSHA = strings.Repeat("b", 40)
+	})
+	order := f.order(t, core.StageVerify)
+	const session = "renewal-pin-failure-session"
+	f.call(t, "claim_work_order", deliveryArgs(order, session, map[string]any{"client_token": "renewal-pin-failure-token", "agent": "codex", "model": "gpt-6.1-sol", "lease_seconds": 600}))
+	f.server.WorkOrders.Store = failingPinStore{f.store}
+	_, renewText := f.call(t, "renew_work_order", deliveryArgs(order, session, map[string]any{"lease_seconds": 3600}))
+	var renewed struct {
+		State          core.WorkOrderState        `json:"state"`
+		SessionID      string                     `json:"session_id"`
+		LeaseExpiresAt string                     `json:"lease_expires_at"`
+		References     *core.GovernanceReferences `json:"governance_references"`
+		Error          string                     `json:"governance_references_error"`
+	}
+	if err := json.Unmarshal([]byte(renewText), &renewed); err != nil {
+		t.Fatal(err)
+	}
+	if renewed.State != core.WorkOrderClaimed || renewed.SessionID != session || renewed.References != nil || renewed.Error != governanceReferencesUnavailableForTest {
+		t.Fatalf("renewal after a failed pin read = state %s session %q list %v error %q", renewed.State, renewed.SessionID, renewed.References != nil, renewed.Error)
+	}
+	stored, err := f.store.GetWorkOrder(f.ctx, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The claim held a ten-minute lease; the renewal asked for an hour.
+	if !stored.LeaseExpiresAt.After(time.Now().Add(30 * time.Minute)) {
+		t.Fatalf("the renewal did not extend the ten-minute lease: %s", stored.LeaseExpiresAt)
+	}
+}
+
+// governanceReferencesUnavailableForTest is the message DeliverOrder answers
+// when the document list cannot be read.
+const governanceReferencesUnavailableForTest = "the document list could not be read; get_work_order delivers it"
