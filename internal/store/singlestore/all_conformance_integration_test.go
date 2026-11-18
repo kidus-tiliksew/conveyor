@@ -174,6 +174,11 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			service := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 			return service.SubmitPlan
 		},
+		StatementMemo: func(st store.Store, workspace string) http.Handler {
+			server := httpapi.NewServer(st)
+			server.Workspace, server.BearerToken = workspace, storetest.StatementMemoToken
+			return server.Handler()
+		},
 		ReviewSweep: func(ctx context.Context, st store.Store, cfg *config.Config, head string, now time.Time) (int, error) {
 			service := &workorder.Service{
 				Store:          st,
