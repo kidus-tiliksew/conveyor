@@ -1766,41 +1766,69 @@ for (const [state, copy] of Object.entries(mergeStatusCopy)) {
   })
 }
 
-// A merge-readiness change changes the statement's tag, so a refetch answers
-// the new statement and the card shows it (component-next-action invariant
-// 58; DEC-140(3)). The server tags each statement by the readiness it read.
-test('the next-action card updates after a merge-readiness change', async ({ page }) => {
-  let readiness = 'UNKNOWN'
-  await mockAPI(
+// A merge-readiness change is no task event: the task's history stays the
+// same. The server signals it on the task's notify stream with one
+// data-less activity frame and no stream read
+// (TestTaskNotifyStreamSignalsMergeReadinessChange in
+// internal/httpapi/task_event_stream_push_test.go), and a next-action read
+// after it answers the new statement with a new tag (component-next-action
+// invariant 58; DEC-140(3)). The stream here sends exactly that frame, and
+// the open card shows the new readiness.
+for (const viewport of [
+  { width: 375, height: 812 },
+  { width: 1440, height: 900 },
+]) {
+  test(`the next-action card updates when the server signals a merge-readiness change at ${viewport.width} px`, async ({
     page,
-    () => mergeGateActivity(readiness),
-    () => mergeApproval(readiness),
-  )
-  const tags: string[] = []
-  await page.route(`**/v1/tasks/${taskId}/next-action**`, (route) => {
-    const tag = `"a1.${readiness}"`
-    tags.push(tag)
-    return route.fulfill({ json: mergeApproval(readiness), headers: { ETag: tag } })
+  }, testInfo) => {
+    await page.setViewportSize(viewport)
+    let readiness = 'UNKNOWN'
+    const history = mergeGateActivity(readiness).events
+    await mockAPI(
+      page,
+      // The detail's task history is the same before and after the change.
+      () => ({ ...mergeGateActivity(readiness), events: history }),
+      () => mergeApproval(readiness),
+    )
+    const tags: string[] = []
+    await page.route(`**/v1/tasks/${taskId}/next-action**`, (route) => {
+      const tag = `"a1.${readiness}"`
+      tags.push(tag)
+      return route.fulfill({ json: mergeApproval(readiness), headers: { ETag: tag } })
+    })
+    // The task's notify stream: ready, then the readiness signal frame once
+    // the readiness changed, as the server writes them.
+    const changed = Promise.withResolvers<void>()
+    await page.route('**/events/stream**', async (route) => {
+      await changed.promise
+      return route.fulfill({
+        contentType: 'text/event-stream',
+        body: 'event: ready\ndata: {}\n\nevent: activity\ndata: {}\n\n',
+      })
+    })
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const gate = page.getByRole('region', { name: 'Human gate' })
+    await expect(gate.locator('[data-merge-status]')).toHaveAttribute('data-merge-status', 'UNKNOWN')
+    await expect(gate.locator('[data-merge-at-gate]')).toBeDisabled()
+    await captureGate(page, testInfo, `merge-readiness-before-${viewport.width}.png`)
+    const readsBefore = tags.length
+    readiness = 'MERGEABLE'
+    changed.resolve()
+    await expect(gate.locator('[data-merge-at-gate]')).toBeEnabled()
+    await expect(gate.locator('[data-merge-status]')).toHaveAttribute('data-merge-status', 'MERGEABLE')
+    expect(tags.length).toBeGreaterThan(readsBefore)
+    expect(tags.at(-1)).toBe('"a1.MERGEABLE"')
+    await captureGate(page, testInfo, `merge-readiness-after-${viewport.width}.png`)
   })
-  // Each task stream connection delivers an activity frame once the
-  // readiness has changed.
-  const changed = Promise.withResolvers<void>()
-  await page.route('**/events/stream**', async (route) => {
-    await changed.promise
-    return route.fulfill({ contentType: 'text/event-stream', body: 'event: activity\ndata: {}\n\n' })
-  })
-  await page.goto(`/w/demo/tasks/${taskId}/full`)
+}
+
+async function captureGate(page: Page, testInfo: TestInfo, name: string) {
   const gate = page.getByRole('region', { name: 'Human gate' })
-  await expect(gate.locator('[data-merge-status]')).toHaveAttribute('data-merge-status', 'UNKNOWN')
-  await expect(gate.locator('[data-merge-at-gate]')).toBeDisabled()
-  const readsBefore = tags.length
-  readiness = 'MERGEABLE'
-  changed.resolve()
-  await expect(gate.locator('[data-merge-at-gate]')).toBeEnabled()
-  await expect(gate.locator('[data-merge-status]')).toHaveAttribute('data-merge-status', 'MERGEABLE')
-  expect(tags.length).toBeGreaterThan(readsBefore)
-  expect(tags.at(-1)).toBe('"a1.MERGEABLE"')
-})
+  await gate.scrollIntoViewIfNeeded()
+  const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+  const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, animations: 'disabled' })
+  await testInfo.attach(name, { body: image, contentType: 'image/png' })
+}
 
 test('a merge refusal without a readiness read reads as not available yet', async ({ page }) => {
   await mockAPI(
