@@ -43,7 +43,8 @@ func (s *memoProbeStore) ReadActivityValidation(ctx context.Context, now time.Ti
 // notice when a requirement version, System Design version, or decision is
 // proposed, confirmed, or dismissed, and when a workspace role is granted,
 // changed, or revoked, an invitation included, and when an invitation is
-// redeemed at sign-up. Each notice reaches a workspace subscriber before the
+// redeemed at sign-up, and when a crate is created, renamed, closed, or
+// reopened. Each notice reaches a workspace subscriber before the
 // write returns, so the response memo is dropped within the next request:
 // with memo set, a warm GET /v1/next-actions builds again right after each
 // write. A refused write raises no notice (DEC-140(3); component-persistence
@@ -162,6 +163,28 @@ func RunWorkspaceNoticeConformance(t *testing.T, x Fixture, memo StatementMemoFu
 		requireOK(t, err)
 		expectNotice(t, "decision dismissal", func(t *testing.T) {
 			_, err := st.DismissDecision(ctx, dismissed.ID)
+			requireOK(t, err)
+		})
+	})
+	t.Run("Crate", func(t *testing.T) {
+		var crate store.Crate
+		expectNotice(t, "crate creation", func(t *testing.T) {
+			var err error
+			crate, err = st.CreateCrate(ctx, store.CrateInput{Name: "Notice crate"})
+			requireOK(t, err)
+		})
+		renamed := "Renamed notice crate"
+		expectNotice(t, "crate rename", func(t *testing.T) {
+			_, err := st.UpdateCrate(ctx, crate.ID, store.CratePatch{Name: &renamed})
+			requireOK(t, err)
+		})
+		closed, open := store.CrateClosed, store.CrateOpen
+		expectNotice(t, "crate close", func(t *testing.T) {
+			_, err := st.UpdateCrate(ctx, crate.ID, store.CratePatch{State: &closed})
+			requireOK(t, err)
+		})
+		expectNotice(t, "crate reopen", func(t *testing.T) {
+			_, err := st.UpdateCrate(ctx, crate.ID, store.CratePatch{State: &open})
 			requireOK(t, err)
 		})
 	})

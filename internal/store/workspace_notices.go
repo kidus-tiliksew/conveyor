@@ -3,8 +3,9 @@ package store
 // workspaceNoticeEventKinds are the task-less workspace events whose commit
 // changes what a statement read serves without a task event: a requirement
 // version, System Design version, or decision proposed, confirmed, or
-// dismissed, and a workspace role granted, changed, or revoked, including an
-// invitation redeemed at sign-up. Each raises one `workspace` notice for its
+// dismissed, a workspace role granted, changed, or revoked, including an
+// invitation redeemed at sign-up, and a crate created, renamed, closed, or
+// reopened. Each raises one `workspace` notice for its
 // workspace when it commits, so a response memo that holds the pending
 // proposals or the caller's capabilities is dropped at once (DEC-140(3);
 // component-persistence invariant 23; component-next-action invariant 58).
@@ -28,6 +29,11 @@ var workspaceNoticeEventKinds = map[string]bool{
 	"decision.supersession_sweep_dismissed": true,
 	"workspace.membership_granted":          true,
 	"workspace.membership_revoked":          true,
+	// A crate's name and state reach task rows and inbox items.
+	CrateCreatedEvent:  true,
+	CrateUpdatedEvent:  true,
+	CrateClosedEvent:   true,
+	CrateReopenedEvent: true,
 }
 
 // WorkspaceEventRaisesNotice reports whether a committed task-less event of
