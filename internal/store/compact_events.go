@@ -92,3 +92,29 @@ func (m *memory) ListTaskContextEvents(ctx context.Context, taskID string) ([]co
 	}
 	return contextEvents, nil
 }
+
+// ListTaskDesignContextEvents is the volatile backend's design provenance
+// read: the context read narrowed to the design attachment kinds. Another
+// workspace's task reads as a task without events, as the durable backends'
+// workspace predicate answers.
+func (m *memory) ListTaskDesignContextEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	if selected, present := WorkspaceFromContext(ctx); present && selected != "" {
+		m.mu.RLock()
+		foreign := m.tasks[taskID].Workspace != selected
+		m.mu.RUnlock()
+		if foreign {
+			return []core.Event{}, nil
+		}
+	}
+	events, err := m.ListTaskContextEvents(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	design := make([]core.Event, 0, len(events))
+	for _, event := range events {
+		if event.Kind == TaskContextDesignAdded || event.Kind == TaskContextDesignRemoved {
+			design = append(design, event)
+		}
+	}
+	return design, nil
+}

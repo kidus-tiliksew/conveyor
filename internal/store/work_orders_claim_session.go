@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -82,4 +83,30 @@ func (m *memory) OtherWorkOrderHoldsSession(ctx context.Context, workOrderID, se
 		}
 	}
 	return false, nil
+}
+
+// GetWorkOrderGovernancePin projects the order's stored pin through
+// core.GovernanceReferencePin, as the durable backends project it in SQL.
+func (m *memory) GetWorkOrderGovernancePin(ctx context.Context, id string) (*core.GovernanceSnapshot, error) {
+	order, err := m.GetWorkOrder(ctx, id)
+	if err != nil || order.GovernanceSnapshot == nil {
+		return nil, err
+	}
+	pin := core.GovernanceReferencePin(*order.GovernanceSnapshot)
+	return &pin, nil
+}
+
+// GetTaskRepository reads one task's repository in the selected workspace, as
+// the durable backends' single-column read does.
+func (m *memory) GetTaskRepository(ctx context.Context, id string) (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	task, ok := m.tasks[id]
+	if selected, present := WorkspaceFromContext(ctx); ok && present && selected != "" && task.Workspace != selected {
+		ok = false
+	}
+	if !ok {
+		return "", fmt.Errorf("%w: task %s", ErrNotFound, id)
+	}
+	return task.Repo, nil
 }

@@ -372,7 +372,12 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	}
 	started := time.Now().UTC()
 	if err = command.Start(); err != nil {
-		_ = v.rpc.call(ctx, "report_verification_outcome", workorder.VerificationOutcomeRequest{ContextID: vc.ID, RunID: runID, State: "blocked", Explanation: "exercise executable could not start"}, nil)
+		// Nothing was spooled; the outcome still follows a fixed-point
+		// renewal and reread, and a refused check reports nothing
+		// (component-verification-runner invariant 26).
+		if v.liveForced(ctx, grantID) == nil {
+			_ = v.rpc.call(ctx, "report_verification_outcome", workorder.VerificationOutcomeRequest{ContextID: vc.ID, RunID: runID, State: "blocked", Explanation: "exercise executable could not start"}, nil)
+		}
 		return fmt.Errorf("exercise executable could not start")
 	}
 	done := make(chan error, 1)
@@ -501,7 +506,9 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		return fmt.Errorf("evidence retained in %s; upload unavailable: %w", spoolDir, err)
 	}
 	stopMonitoring()
-	if err = v.liveFresh(ctx, grantID); err != nil {
+	// The spool is empty: renew and reread unconditionally before the
+	// outcome (component-verification-runner invariant 26).
+	if err = v.liveForced(ctx, grantID); err != nil {
 		return err
 	}
 	state, explanation := "succeeded", ""
@@ -573,7 +580,9 @@ func (v *kitVerifier) prelaunchBlocked(ctx context.Context, dir, runID, grantID,
 	if err := v.checkCheckout(ctx); err != nil {
 		return fmt.Errorf("%s; outcome not reported: %w", diagnostic, err)
 	}
-	if err := v.liveFresh(ctx, grantID); err != nil {
+	// A blocked outcome is reported only after a fixed-point renewal and
+	// reread (component-verification-runner invariant 26).
+	if err := v.liveForced(ctx, grantID); err != nil {
 		return fmt.Errorf("%s; outcome not reported: %w", diagnostic, err)
 	}
 	if err := ctx.Err(); err != nil {

@@ -43,3 +43,25 @@ func TestRenewalReadsAtScale(t *testing.T) {
 func renewThroughService(st store.Store) func(ctx context.Context, claim core.WorkOrderClaimIdentity, workOrderID string, lease time.Duration) (core.WorkOrder, error) {
 	return (&workorder.Service{Store: st}).RenewClaimWithLease
 }
+
+// TestRenewalDeliveryReadsAtScale renews pinned verify and review orders
+// through the renew_work_order service path, DeliverOrder included, over 200
+// snapshot-bearing orders on the volatile backend (component-work-orders
+// invariants 23 and 24).
+func TestRenewalDeliveryReadsAtScale(t *testing.T) {
+	storetest.RunRenewalDeliveryReads(t, claimSessionScaleFixture(t), storetest.ClaimSessionScale{}, renewAndDeliverThroughService)
+}
+
+// renewAndDeliverThroughService is MCP renew_work_order's service path:
+// renewal, then the response DeliverOrder builds.
+func renewAndDeliverThroughService(st store.Store) func(context.Context, core.WorkOrderClaimIdentity, string, time.Duration) (core.WorkOrder, *core.GovernanceReferences, string, error) {
+	service := &workorder.Service{Store: st}
+	return func(ctx context.Context, claim core.WorkOrderClaimIdentity, workOrderID string, lease time.Duration) (core.WorkOrder, *core.GovernanceReferences, string, error) {
+		order, err := service.RenewClaimWithLease(ctx, claim, workOrderID, lease)
+		if err != nil {
+			return order, nil, "", err
+		}
+		delivery := service.DeliverOrder(ctx, order)
+		return delivery.WorkOrder, delivery.GovernanceReferences, delivery.GovernanceReferencesError, nil
+	}
+}

@@ -69,6 +69,11 @@ type kitExecutionFixture struct {
 	contextCalls int
 	contextFails bool
 	onContext    func(int)
+	// rpcs lists every MCP call by tool name in arrival order, and
+	// refuseRenewAfter, when positive, refuses every renewal after that many,
+	// so a test can prove the fixed-point checks (kit_verify_fixed_point_test.go).
+	rpcs             []string
+	refuseRenewAfter int
 }
 
 func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecutionFixture {
@@ -131,6 +136,7 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 			w.WriteHeader(400)
 			return
 		}
+		f.rpcs = append(f.rpcs, request.Params.Name)
 		if f.offline {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -147,7 +153,7 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 				f.order.LeaseExpiresAt = time.Now().Add(f.renewExtends)
 			}
 			result = f.order
-			failed = f.loseClaim
+			failed = f.loseClaim || (f.refuseRenewAfter > 0 && f.renewCalls > f.refuseRenewAfter)
 		case "get_work_order":
 			result = map[string]any{"work_order": f.order, "task": core.Task{ID: "task", Repo: "repo"}}
 		case "prepare_verification":

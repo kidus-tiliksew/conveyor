@@ -101,6 +101,8 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	if len(orders) != 1 || orders[0].State != core.WorkOrderCancelled {
 		t.Fatal("cancelled order snapshot differs")
 	}
+	// It confirms designs and decisions in the workspace, so it runs last.
+	t.Run("GovernanceReferenceReads", func(t *testing.T) { runGovernanceReferenceReads(t, x) })
 }
 
 func runWorkOrderClocks(t *testing.T, x Fixture) {
