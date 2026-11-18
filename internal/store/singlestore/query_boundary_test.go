@@ -27,6 +27,7 @@ var translatingPaths = map[string]bool{
 	"store.go:Open":                           true,
 	"locks.go:sessionLock":                    true,
 	"locks.go:WithTaskSideEffectLock":         true,
+	"locks.go:withKeyTx":                      true,
 	"planning.go:WithPlanningSessionRun":      true,
 	"verification.go:RunVerificationDelivery": true,
 }

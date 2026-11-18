@@ -91,6 +91,10 @@ func TestMemoryConformance(t *testing.T) {
 				store.SeedSetupContractForTest(t, st, taskID, raw)
 			}, RestoreSupersededDeliveries: func(t *testing.T, _ context.Context, taskID string) {
 				store.RestoreSupersededDeliveriesForTest(t, st, taskID)
+			}, RestoreHistoricalDelivery: func(t *testing.T, _ context.Context, taskID string, generation int, state, errorClass string, next *time.Time) {
+				store.RestoreHistoricalDeliveryForTest(t, st, taskID, generation, state, errorClass, next)
+			}, SeedForeignVerificationOperation: func(t *testing.T, _ context.Context, taskID string) {
+				store.SeedForeignVerificationOperationForTest(t, st, taskID)
 			}, SeedStoredTaskHold: func(t *testing.T, _ context.Context, taskID string) {
 				store.SeedStoredTaskHoldForTest(t, st, taskID)
 			}, SeedStoredStaleWorkOrder: func(t *testing.T, _ context.Context, orderID string, exhausted bool, scheduledAt time.Time) {
