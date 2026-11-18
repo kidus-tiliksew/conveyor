@@ -54,7 +54,14 @@ VALIDATION_CHILD_ENV = env $(foreach name,$(VALIDATION_WORKER_ENV_VARS),-u $(nam
 RUN_WEB_LINT = cd web && $(VALIDATION_CHILD_ENV) npm run lint
 RUN_PLAYWRIGHT = cd web && CONVEYOR_VALIDATION_TASK=$(VALIDATION_TASK) PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e --
 RUN_WEB_TESTS = $(RUN_WEB_LINT) && CONVEYOR_VALIDATION_TASK=$(VALIDATION_TASK) PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
-RUN_GO_UNIT_TESTS = CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./...
+# The memory (go test ./...) and PostgreSQL ReviewSummary stress cases run
+# 500 rounds wherever they run; the SingleStore pull-request shards leave
+# CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS unset and run 50, and the nightly soak
+# workflow runs SingleStore at 500 (component-testing-strategy,
+# Configuration). go test ./... runs without -v, so the memory run echoes its
+# count instead of logging it.
+REVIEW_SUMMARY_STRESS_ROUNDS_FULL = 500
+RUN_GO_UNIT_TESTS = echo "CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS=$(REVIEW_SUMMARY_STRESS_ROUNDS_FULL): the memory ReviewSummary stress cases run $(REVIEW_SUMMARY_STRESS_ROUNDS_FULL) rounds" && CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS=$(REVIEW_SUMMARY_STRESS_ROUNDS_FULL) CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./...
 # Integration shards run go test through this wrapper, which fails a package
 # that selected no test (component-verification-strategy, "CI shards").
 # GO_INTEGRATION_FLAGS follows each shard's own flags, so a later -run wins.
@@ -247,7 +254,7 @@ test-integration-ci: _postgres-integration-shard-check _postgres-integration-url
 _test-integration-postgres:
 	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "PostgreSQL fixture was not prepared" >&2; exit 1)
 	@test -n "$$CONVEYOR_TEST_DATABASE_URL" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
-	$(GO_TEST_REQUIRE_TESTS) -v -p=1 $(POSTGRES_INTEGRATION_PACKAGES) -count=1 -timeout=10m $(GO_INTEGRATION_FLAGS)
+	CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS=$(REVIEW_SUMMARY_STRESS_ROUNDS_FULL) $(GO_TEST_REQUIRE_TESTS) -v -p=1 $(POSTGRES_INTEGRATION_PACKAGES) -count=1 -timeout=10m $(GO_INTEGRATION_FLAGS)
 
 # Keep the accepted work-order validation command explicit while sharing the
 # integration suite's isolated Postgres lifecycle.
@@ -301,28 +308,52 @@ dev: db-up
 
 .PHONY: test-integration-singlestore-ci test-singlestore-unit
 
-# The SingleStore gate is the union of its shards, each one go test command.
+# The SingleStore gate is the union of its shards, each one go test command
+# built from the shard's packages, -run and -skip patterns, and timeout.
 # The two conformance shards select complementary subtests of
-# TestSingleStoreConformanceIntegration through one shared pattern, and the
-# packages shard skips that test, so together they run exactly the three
-# packages. The proofs shard carries the heavy artifact-hot-read, hot-read and
-# activity proofs, and the packages shard skips exactly those top tests, so
-# every proof still runs once. The commands shard keeps the two command cases.
-# CI runs one shard per job through SINGLESTORE_INTEGRATION_SHARD; an empty
-# value runs every shard in order. Only the packages shard, which runs the
-# VK-10 browser scenario, builds the CLI and installs Chromium. RunAll
-# registers every suite in each conformance shard, so its registration audit
-# runs in both.
-SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages proofs commands
+# TestSingleStoreConformanceIntegration through one shared pattern. The
+# proofs shard runs the heavy artifact-hot-read, hot-read and activity proofs,
+# and the migrations shard the DDL-heavy migration and layout tests and the
+# VK-10 browser scenario, each by full test name; the packages shard skips the
+# conformance test and both lists, so together they run exactly the three
+# packages. The commands shard keeps the command and daemon cases. CI runs one
+# shard per job through SINGLESTORE_INTEGRATION_SHARD; an empty value runs
+# every shard in order. Only the migrations shard, which runs the VK-10
+# browser scenario, builds the CLI and installs Chromium. RunAll registers
+# every suite in each conformance shard, so its registration audit runs in
+# both. make singlestore-shard-union-check proves the union.
+SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages proofs migrations commands
 SINGLESTORE_CONFORMANCE_TEST = ^TestSingleStoreConformanceIntegration$$
-SINGLESTORE_CONFORMANCE_FIRST = ^(Verification|Requirements|NextAction|Lineage|AutomaticRecovery)$$
-SINGLESTORE_PROOF_TESTS = ^(TestArtifactHotRead|TestHotRead|TestActivityValidation)
-SINGLESTORE_INTEGRATION_ARGS_conformance-1 = ./internal/store/singlestore -run '$(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)' -timeout=20m
-SINGLESTORE_INTEGRATION_ARGS_conformance-2 = ./internal/store/singlestore -run '$(SINGLESTORE_CONFORMANCE_TEST)' -skip '$(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)' -timeout=20m
-SINGLESTORE_INTEGRATION_ARGS_packages = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -skip '$(SINGLESTORE_CONFORMANCE_TEST)|$(SINGLESTORE_PROOF_TESTS)' -timeout=20m
-SINGLESTORE_INTEGRATION_ARGS_proofs = ./internal/store/singlestore -run '$(SINGLESTORE_PROOF_TESTS)' -timeout=20m
-SINGLESTORE_INTEGRATION_ARGS_commands = ./cmd/conveyor ./cmd/conveyord -run 'TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration|TestConveyordIdleRuntimeIntegration' -timeout=10m
-SINGLESTORE_INTEGRATION_RUNTIME_packages = vk10-runtime
+SINGLESTORE_CONFORMANCE_FIRST = ^(Verification|Requirements|NextAction|Lineage|AutomaticRecovery|ListPages|ActivityMarkerBounds|SystemDesignDrift)$$
+SINGLESTORE_PROOF_TESTS = ^(TestActivityValidationSeesRowOnlyWritesAndLateCommitsIntegration|TestArtifactHotReadLayoutsIntegration|TestArtifactHotReadRowstoreLayoutsIntegration|TestHotReadActualMixedOriginAndInterruptedBootstrapIntegration|TestHotReadEgressMeasurementIntegration|TestHotReadEventLookupsIntegration|TestHotReadIndexKeyKindMatchesEngine|TestHotReadLayoutDatabaseIntegration|TestHotReadLayoutDiscovery|TestHotReadLayoutFreshDatabaseIntegration|TestHotReadLayoutIncompatibleDatabaseIntegration|TestHotReadLayoutMixedProvenanceIntegration|TestHotReadLayoutOldOperatorEventsIntegration|TestHotReadLookupNamesDigestOnlyWhenKeyIsReady|TestHotReadOperatorScriptEngineVariantsIntegration|TestHotReadPrepareScriptIntegration|TestHotReadResumeWrongExistingObjectFailsBeforeDDLIntegration|TestHotReadRowstoreArtifactLinksStoreReadinessIntegration|TestHotReadTaskLookupsIntegration)$$
+SINGLESTORE_MIGRATION_TESTS = ^(TestActivityValidationTransfersFixedSizeIntegration|TestExistingColumnstoreEventLogPreservedIntegration|TestHistoryMigrationLayoutsIntegration|TestFeatureRetirementPartialDDLRetryIntegration|TestVK10SingleStoreScenarioIntegration)$$
+SINGLESTORE_INTEGRATION_PACKAGES_conformance-1 = ./internal/store/singlestore
+SINGLESTORE_INTEGRATION_RUN_conformance-1 = $(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)
+SINGLESTORE_INTEGRATION_TIMEOUT_conformance-1 = 20m
+SINGLESTORE_INTEGRATION_PACKAGES_conformance-2 = ./internal/store/singlestore
+SINGLESTORE_INTEGRATION_RUN_conformance-2 = $(SINGLESTORE_CONFORMANCE_TEST)
+SINGLESTORE_INTEGRATION_SKIP_conformance-2 = $(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)
+SINGLESTORE_INTEGRATION_TIMEOUT_conformance-2 = 20m
+SINGLESTORE_INTEGRATION_PACKAGES_packages = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore
+SINGLESTORE_INTEGRATION_SKIP_packages = $(SINGLESTORE_CONFORMANCE_TEST)|$(SINGLESTORE_PROOF_TESTS)|$(SINGLESTORE_MIGRATION_TESTS)
+SINGLESTORE_INTEGRATION_TIMEOUT_packages = 20m
+SINGLESTORE_INTEGRATION_PACKAGES_proofs = ./internal/store/singlestore
+SINGLESTORE_INTEGRATION_RUN_proofs = $(SINGLESTORE_PROOF_TESTS)
+SINGLESTORE_INTEGRATION_TIMEOUT_proofs = 20m
+SINGLESTORE_INTEGRATION_PACKAGES_migrations = ./internal/store/singlestore
+SINGLESTORE_INTEGRATION_RUN_migrations = $(SINGLESTORE_MIGRATION_TESTS)
+SINGLESTORE_INTEGRATION_TIMEOUT_migrations = 20m
+SINGLESTORE_INTEGRATION_RUNTIME_migrations = vk10-runtime
+SINGLESTORE_INTEGRATION_PACKAGES_commands = ./cmd/conveyor ./cmd/conveyord
+SINGLESTORE_INTEGRATION_RUN_commands = TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration|TestConveyordIdleRuntimeIntegration
+SINGLESTORE_INTEGRATION_TIMEOUT_commands = 10m
+# The three packages the gate runs whole; the commands shard adds its cases
+# from the command packages.
+SINGLESTORE_INTEGRATION_WHOLE_PACKAGES = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore
+# The command cases the gate requires, as package:test; the union check fails
+# unless exactly one shard runs each.
+SINGLESTORE_INTEGRATION_REQUIRED_CASES = ./cmd/conveyor:TestSingleStoreInitAndUserIntegration ./cmd/conveyord:TestConveyordDurableStartupIntegration ./cmd/conveyord:TestConveyordIdleRuntimeIntegration
+singlestore_integration_args = $(SINGLESTORE_INTEGRATION_PACKAGES_$(1))$(if $(SINGLESTORE_INTEGRATION_RUN_$(1)), -run '$(SINGLESTORE_INTEGRATION_RUN_$(1))')$(if $(SINGLESTORE_INTEGRATION_SKIP_$(1)), -skip '$(SINGLESTORE_INTEGRATION_SKIP_$(1))') -timeout=$(SINGLESTORE_INTEGRATION_TIMEOUT_$(1))
 SINGLESTORE_INTEGRATION_SHARD ?=
 singlestore_integration_selected = $(or $(SINGLESTORE_INTEGRATION_SHARD),$(SINGLESTORE_INTEGRATION_SHARDS))
 SINGLESTORE_INTEGRATION_RUNTIME = $(sort $(foreach shard,$(singlestore_integration_selected),$(SINGLESTORE_INTEGRATION_RUNTIME_$(shard))))
@@ -348,8 +379,8 @@ _test-integration-singlestore:
 	@for shard in $(singlestore_integration_selected); do $(MAKE) --no-print-directory _test-singlestore-shard SINGLESTORE_INTEGRATION_SHARD=$$shard || exit 1; done
 
 _test-singlestore-shard:
-	@test -n "$(SINGLESTORE_INTEGRATION_ARGS_$(SINGLESTORE_INTEGRATION_SHARD))" || (echo "unknown SINGLESTORE_INTEGRATION_SHARD '$(SINGLESTORE_INTEGRATION_SHARD)'; expected one of: $(SINGLESTORE_INTEGRATION_SHARDS)" >&2; exit 1)
-	$(GO_TEST_REQUIRE_TESTS) -v -p=1 $(SINGLESTORE_INTEGRATION_ARGS_$(SINGLESTORE_INTEGRATION_SHARD)) -count=1 $(GO_INTEGRATION_FLAGS)
+	@test -n "$(SINGLESTORE_INTEGRATION_PACKAGES_$(SINGLESTORE_INTEGRATION_SHARD))" || (echo "unknown SINGLESTORE_INTEGRATION_SHARD '$(SINGLESTORE_INTEGRATION_SHARD)'; expected one of: $(SINGLESTORE_INTEGRATION_SHARDS)" >&2; exit 1)
+	$(GO_TEST_REQUIRE_TESTS) -v -p=1 $(call singlestore_integration_args,$(SINGLESTORE_INTEGRATION_SHARD)) -count=1 $(GO_INTEGRATION_FLAGS)
 
 # Prints the CI shard matrices as JSON for the workflow's plan job, so every
 # shard Make defines runs in its own CI job.
@@ -359,6 +390,117 @@ ci-shard-matrix:
 		echo "playwright=$$(json $(shell seq 1 $(PLAYWRIGHT_SHARD_COUNT)))"; \
 		echo "postgres=$$(json $(POSTGRES_INTEGRATION_SHARDS))"; \
 		echo "singlestore=$$(json $(SINGLESTORE_INTEGRATION_SHARDS))"
+
+# Proves that the SingleStore shards together run the unsharded gate: every
+# test of the whole packages, and each top-level conformance suite, runs in
+# exactly one shard, and no test runs in two. go test -list names each
+# package's top-level tests without a database, and the conformance suites
+# are the keys of storetest's suiteMethods, which RunAll registers each
+# exactly once (its registration audit fails otherwise); -list cannot see
+# subtests. The check applies each shard's -run and -skip to every name as go
+# test does: patterns split at top-level | into alternatives and at / into
+# levels, -run matches a name whose levels match, and -skip removes a name
+# whose levels match every skip level. Every name a pattern spells must exist,
+# so a misspelt name cannot silently move a test. The whole packages and the
+# required command cases' packages are always listed, so a package dropped
+# from every shard still fails as running in no shard, and each required
+# command case must run in exactly one shard. The Plan CI shards job runs it
+# on every CI run.
+define singlestore_shard_union_awk
+function split_top(s, sep, out,    n, i, c, cs, cp, cur) {
+	n = 0; cs = 0; cp = 0; cur = ""
+	for (i = 1; i <= length(s); i++) {
+		c = substr(s, i, 1)
+		if (c == "\\") { cur = cur c substr(s, i + 1, 1); i++; continue }
+		if (c == "[") cs++
+		else if (c == "]") { cs--; if (cs < 0) cs = 0 }
+		else if (c == "(" && cs == 0) cp++
+		else if (c == ")" && cs == 0) cp--
+		else if (c == sep && cs == 0 && cp == 0) { out[++n] = cur; cur = ""; continue }
+		cur = cur c
+	}
+	out[++n] = cur
+	return n
+}
+# 0: no match; 1: every pattern level matches; 2: a partial match, the name
+# has fewer levels than the pattern.
+function match_pattern(pattern, path,    alts, na, a, elems, ne, parts, np, i, ok) {
+	np = split(path, parts, "/")
+	na = split_top(pattern, "|", alts)
+	for (a = 1; a <= na; a++) {
+		ne = split_top(alts[a], "/", elems)
+		ok = 1
+		for (i = 1; i <= np && i <= ne; i++) if (parts[i] !~ elems[i]) { ok = 0; break }
+		if (ok) return np < ne ? 2 : 1
+	}
+	return 0
+}
+function selected(s, path) {
+	if (run[s] != "" && match_pattern(run[s], path) == 0) return 0
+	if (skip[s] != "" && match_pattern(skip[s], path) == 1) return 0
+	return 1
+}
+function add(pkg, name,    k) {
+	known[pkg, name] = 1
+	if (pkg == conf_pkg && match_pattern(conf_test, name) == 1) {
+		conformance++
+		for (k = 1; k <= nsuite; k++) { known[pkg, suite[k]] = 1; entries++; epkg[entries] = pkg; epath[entries] = name "/" suite[k] }
+		return
+	}
+	entries++; epkg[entries] = pkg; epath[entries] = name
+}
+function fail(message) { print "singlestore-shard-union-check: " message > "/dev/stderr"; failed = 1 }
+BEGIN { FS = "\t" }
+FILENAME == ARGV[1] { if ($1 != "") suite[++nsuite] = $1; next }
+FILENAME == ARGV[2] { shard[++nshard] = $1; pkgs[$1] = " " $2 " "; run[$1] = $3; skip[$1] = $4; next }
+/^(ok|FAIL|\?)[ \t]/ {
+	split($0, f, /[ \t]+/)
+	pkg = "./" substr(f[2], length(module) + 2)
+	for (i = 1; i <= npending; i++) add(pkg, pending[i])
+	npending = 0
+	next
+}
+/^(Test|Example|Fuzz)/ { pending[++npending] = $0 }
+END {
+	if (nsuite == 0) fail("found no conformance suite in storetest suiteMethods")
+	if (conformance != 1) fail("found the conformance test " conformance " times, want once")
+	for (e = 1; e <= entries; e++) {
+		for (s = 1; s <= nshard; s++) {
+			if (index(pkgs[shard[s]], " " epkg[e] " ") && selected(shard[s], epath[e])) { count[e]++; where[e] = where[e] " " shard[s]; per[shard[s]]++ }
+		}
+		if (count[e] > 1) fail(epkg[e] " " epath[e] " runs in" where[e])
+		else if (count[e] == 0 && (index(" " whole " ", " " epkg[e] " ") || index(" " required " ", " " epkg[e] ":" epath[e] " "))) fail(epkg[e] " " epath[e] " runs in no shard")
+		else if (count[e] == 1) total++
+	}
+	nreq = split(required, req, " ")
+	for (r = 1; r <= nreq; r++) {
+		split(req[r], rp, ":")
+		if (!((rp[1], rp[2]) in known)) fail("required command case " req[r] " is no test in its package")
+	}
+	for (s = 1; s <= nshard; s++) {
+		patterns = run[shard[s]] " " skip[shard[s]]
+		gsub(/[^A-Za-z0-9_]+/, " ", patterns)
+		n = split(patterns, words, " ")
+		for (w = 1; w <= n; w++) {
+			found = 0
+			for (key in known) { split(key, kp, SUBSEP); if (kp[2] == words[w] && index(pkgs[shard[s]], " " kp[1] " ")) { found = 1; break } }
+			if (!found) fail("shard " shard[s] " names " words[w] ", which is no test or suite in its packages")
+		}
+		printf "%s: %d tests and conformance suites\n", shard[s], per[shard[s]]
+	}
+	if (failed) exit 1
+	printf "singlestore-shard-union-check: %d tests and conformance suites each run in exactly one of %d shards\n", total, nshard
+}
+endef
+
+.PHONY: singlestore-shard-union-check
+singlestore-shard-union-check: export SINGLESTORE_SHARD_UNION_AWK = $(value singlestore_shard_union_awk)
+singlestore-shard-union-check:
+	@set -e; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+		sed -n '/^var suiteMethods = /,/^}/p' internal/store/storetest/coverage.go | grep -oE '^[[:space:]]+"[A-Za-z0-9]+":' | tr -d ' \t":' > "$$tmp/suites"; \
+		printf '%s\t%s\t%s\t%s\n' $(foreach shard,$(SINGLESTORE_INTEGRATION_SHARDS),'$(shard)' '$(SINGLESTORE_INTEGRATION_PACKAGES_$(shard))' '$(SINGLESTORE_INTEGRATION_RUN_$(shard))' '$(SINGLESTORE_INTEGRATION_SKIP_$(shard))') > "$$tmp/shards"; \
+		if ! $(VALIDATION_CHILD_ENV) go test -vet=off -list '.*' $(sort $(SINGLESTORE_INTEGRATION_WHOLE_PACKAGES) $(foreach case,$(SINGLESTORE_INTEGRATION_REQUIRED_CASES),$(firstword $(subst :, ,$(case)))) $(foreach shard,$(SINGLESTORE_INTEGRATION_SHARDS),$(SINGLESTORE_INTEGRATION_PACKAGES_$(shard)))) > "$$tmp/list" 2>&1; then cat "$$tmp/list" >&2; exit 1; fi; \
+		awk -v module="$$(go list -m)" -v conf_pkg='$(SINGLESTORE_INTEGRATION_PACKAGES_conformance-1)' -v conf_test='$(SINGLESTORE_CONFORMANCE_TEST)' -v whole='$(SINGLESTORE_INTEGRATION_WHOLE_PACKAGES)' -v required='$(SINGLESTORE_INTEGRATION_REQUIRED_CASES)' "$$SINGLESTORE_SHARD_UNION_AWK" "$$tmp/suites" "$$tmp/shards" "$$tmp/list"
 
 test-singlestore-unit:
 	CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./internal/eventlog/s2log ./internal/store/singlestore ./internal/store/backend ./internal/store/storetest ./internal/store ./internal/config ./cmd/conveyor ./cmd/conveyord
