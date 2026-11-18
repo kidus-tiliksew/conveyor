@@ -288,7 +288,7 @@ func (s *Store) ListRiskOrdersForTasks(ctx context.Context, workspaceID string, 
 	if len(taskIDs) == 0 {
 		return result, nil
 	}
-	rows, err := s.boundary.Query(ctx, `SELECT `+workOrderColumns+`, r.pv, r.hs, r.bs, r.paths, r.rules, r.created
+	rows, err := s.boundary.Query(ctx, `SELECT `+activityWorkOrderColumns+`, r.pv, r.hs, r.bs, r.paths, r.rules, r.created
 		FROM work_orders JOIN (SELECT workspace_id AS ws, task_id AS tid, work_order_id AS wid,
 		plan_version AS pv, head_sha AS hs, base_sha AS bs, changed_paths AS paths, matched_rules AS rules, created_at AS created
 		FROM risk_orders) r ON r.ws=work_orders.workspace_id AND r.tid=work_orders.task_id AND r.wid=work_orders.id

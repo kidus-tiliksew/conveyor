@@ -145,14 +145,22 @@ func PrepareVerificationDelivery(ws, task string, pr VerificationPR, rows []Veri
 		d.IdempotencyKey = d.ID
 		if source.ID == desired.ID && (current.ID == "" || source.Generation > current.SourceGeneration) {
 			d.State = "pending"
-			if current.ID != "" {
-				nextState, err := core.TransitionVerificationDelivery(current.State, "supersede")
+			// A newer source supersedes every older delivery that is not
+			// already superseded, whatever its last state: a published,
+			// failed or retrying older source must not keep retrying or
+			// stay current beside the new generation
+			// (component-verification-publication).
+			for _, prev := range prior {
+				if prev.State == "superseded" || prev.SourceGeneration >= source.Generation {
+					continue
+				}
+				nextState, err := core.TransitionVerificationDelivery(prev.State, "supersede")
 				if err != nil {
 					return nil, nil, err
 				}
-				current.State = nextState
-				current.UpdatedAt = now
-				updates = append(updates, current)
+				prev.State = nextState
+				prev.UpdatedAt = now
+				updates = append(updates, prev)
 			}
 		}
 		updates = append(updates, d)
@@ -309,6 +317,99 @@ func VerificationDeliveryLatest(ds []core.VerificationDelivery) (core.Verificati
 		}
 	}
 	return latest, latest.ID != ""
+}
+
+func VerificationDeliveryMaxGeneration(ds []core.VerificationDelivery) int {
+	max := 0
+	for _, d := range ds {
+		if d.Generation > max {
+			max = d.Generation
+		}
+	}
+	return max
+}
+
+// ConvergeVerificationDelivery moves one due row given the newest generation
+// for its pull-request key. Stale pending/retrying rows supersede; a terminal
+// head mismatch never schedules another automatic retry.
+func ConvergeVerificationDelivery(d core.VerificationDelivery, latestGeneration int, now time.Time) (core.VerificationDelivery, bool, error) {
+	if d.Generation < latestGeneration {
+		switch d.State {
+		case "pending", "retrying":
+			state, err := core.TransitionVerificationDelivery(d.State, "supersede")
+			if err != nil {
+				return d, false, err
+			}
+			d.State = state
+			d.UpdatedAt = now
+			return d, false, nil
+		case "failed":
+			if d.ErrorClass == "head_mismatch" && d.NextAttemptAt != nil {
+				d.NextAttemptAt = nil
+				d.UpdatedAt = now
+			}
+			return d, false, nil
+		}
+		return d, false, nil
+	}
+	switch d.State {
+	case "pending", "retrying":
+		return d, true, nil
+	case "failed":
+		if d.ErrorClass == "head_mismatch" {
+			if d.NextAttemptAt != nil {
+				d.NextAttemptAt = nil
+				d.UpdatedAt = now
+			}
+			return d, false, nil
+		}
+		if d.NextAttemptAt != nil && d.NextAttemptAt.After(now) {
+			return d, false, nil
+		}
+		updated, err := AdvanceVerificationDelivery(d, "retry", d, now)
+		if err != nil {
+			return d, false, err
+		}
+		return updated, true, nil
+	}
+	return d, false, nil
+}
+
+func VerificationDeliveryNeedsWrite(old, next core.VerificationDelivery) bool {
+	if old.State != next.State {
+		return true
+	}
+	if old.ErrorClass != next.ErrorClass || old.ErrorMessage != next.ErrorMessage {
+		return true
+	}
+	switch {
+	case old.NextAttemptAt == nil && next.NextAttemptAt == nil:
+		return false
+	case old.NextAttemptAt == nil || next.NextAttemptAt == nil:
+		return true
+	default:
+		return !old.NextAttemptAt.Equal(*next.NextAttemptAt)
+	}
+}
+
+// FailDiscardedVerificationDelivery records a terminal forge failure for a
+// delivery whose job was discarded, without copying the discard reason.
+func FailDiscardedVerificationDelivery(d core.VerificationDelivery, now time.Time) (core.VerificationDelivery, error) {
+	if d.State != "pending" && d.State != "retrying" {
+		return d, nil
+	}
+	current := d
+	if current.State == "pending" {
+		stepped, err := AdvanceVerificationDelivery(current, "attempt", current, now)
+		if err != nil {
+			return d, err
+		}
+		current = stepped
+	}
+	next := current
+	next.ErrorClass = "forge"
+	next.NextAttemptAt = nil
+	return AdvanceVerificationDelivery(current, "fail", next, now)
 }
 
 func VerificationDeliveryIdentityError() error {

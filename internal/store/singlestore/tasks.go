@@ -787,8 +787,32 @@ func (s *Store) SkipTaskRefresh(ctx context.Context, id, head, reason string) er
 	})
 }
 
+// taskStatePredicate keeps the original state comparison authoritative. The
+// negative form deliberately does not enumerate open states: legacy or future
+// nonterminal states must remain open just as they were before preparation.
+func (s *Store) taskStatePredicate(column string, states []string, exclude bool) (string, []any) {
+	operator := " IN "
+	if exclude {
+		operator = " NOT IN "
+	}
+	raw := column + operator + "(" + strings.TrimSuffix(strings.Repeat("?,", len(states)), ",") + ")"
+	args := make([]any, 0, 2*len(states))
+	if s.hotReadIndexReady("tasks_workspace_state_created_idx") {
+		prefix := strings.TrimSuffix(column, "state")
+		hash := prefix + "task_state_key" + operator + "(" + strings.TrimSuffix(strings.Repeat("SHA2(?,256),", len(states)), ",") + ")"
+		raw = hash + " AND " + raw
+		for _, state := range states {
+			args = append(args, state)
+		}
+	}
+	for _, state := range states {
+		args = append(args, state)
+	}
+	return raw, args
+}
+
 // Predicates execute before LIMIT/OFFSET. All values remain bound arguments.
-func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
+func (s *Store) taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 	q := "workspace_id=?"
 	args := []any{documentWorkspace(ctx)}
 	addIn := func(column string, values []string) {
@@ -804,7 +828,11 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 	for i, v := range f.States {
 		states[i] = string(v)
 	}
-	addIn("state", states)
+	if len(states) > 0 {
+		predicate, values := s.taskStatePredicate("state", states, false)
+		q += " AND " + predicate
+		args = append(args, values...)
+	}
 	addIn("repo_name", f.Repositories)
 	// plan_state applies before paging and totals like every other member,
 	// reading a NULL left by a pre-migration writer as needed, as taskColumns
@@ -817,7 +845,9 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 	// Open selects the inbox's candidates: no merged or closed task and no
 	// blueprint anchor (component-http-api, Activity and attention reads).
 	if f.Open {
-		q += " AND state NOT IN ('merged','closed') AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.workspace_id=tasks.workspace_id AND child.parent_task_id=tasks.id)"
+		predicate, values := s.taskStatePredicate("state", []string{string(core.TaskMerged), string(core.TaskClosed)}, true)
+		q += " AND " + predicate + " AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.workspace_id=tasks.workspace_id AND child.parent_task_id=tasks.id)"
+		args = append(args, values...)
 	}
 	// ExcludeBlueprintAnchors drops every task another task names as its
 	// parent before LIMIT/OFFSET and in the count, so the Board's page and
@@ -908,7 +938,7 @@ func (s *Store) listTaskRows(ctx context.Context, q store.TaskOperationsQuery) (
 	return s.listTaskRowsSelecting(ctx, taskListColumns, q)
 }
 func (s *Store) listTaskRowsSelecting(ctx context.Context, columns string, q store.TaskOperationsQuery) ([]core.Task, error) {
-	predicate, args := taskPredicate(ctx, q.TaskFilter)
+	predicate, args := s.taskPredicate(ctx, q.TaskFilter)
 	query := `SELECT ` + columns + ` FROM tasks WHERE ` + predicate + ` ORDER BY created_at DESC,id ASC`
 	if q.Limit > 0 {
 		query += ` LIMIT ? OFFSET ?`
@@ -942,7 +972,7 @@ func (s *Store) ListTaskPage(ctx context.Context, q store.TaskOperationsQuery) (
 	if err := q.Validate(); err != nil {
 		return store.TaskPage{}, err
 	}
-	predicate, args := taskPredicate(ctx, q.TaskFilter)
+	predicate, args := s.taskPredicate(ctx, q.TaskFilter)
 	var total int
 	if err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM tasks WHERE `+predicate, args...).Scan(&total); err != nil {
 		return store.TaskPage{}, err

@@ -337,29 +337,24 @@ func TestTaskListFiltersAndPages(t *testing.T) {
 // failure of the projection alone.
 type projectionFailingStore struct {
 	store.Store
-	failing string
-	err     error
+	failing     string
+	err         error
+	proposalIDs []string
 }
 
-func (s *projectionFailingStore) ListWorkOrdersForTasks(ctx context.Context, ids []string) ([]core.WorkOrder, error) {
-	if s.failing == "ListWorkOrdersForTasks" {
-		return nil, s.err
+func (s *projectionFailingStore) ReadActivityInputs(ctx context.Context, ids []string, now time.Time) (store.ActivityInputs, error) {
+	if s.failing == "ReadActivityInputs" {
+		return store.ActivityInputs{}, s.err
 	}
-	return s.Store.ListWorkOrdersForTasks(ctx, ids)
+	return s.Store.ReadActivityInputs(ctx, ids, now)
 }
 
-func (s *projectionFailingStore) ListActivityMarkersForTasks(ctx context.Context, ids []string) ([]store.ActivityMarker, error) {
-	if s.failing == "ListActivityMarkersForTasks" {
+func (s *projectionFailingStore) ListPendingProposalsForDocuments(ctx context.Context, ids []string) ([]core.PendingProposal, error) {
+	s.proposalIDs = slices.Clone(ids)
+	if s.failing == "ListPendingProposalsForDocuments" {
 		return nil, s.err
 	}
-	return s.Store.ListActivityMarkersForTasks(ctx, ids)
-}
-
-func (s *projectionFailingStore) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
-	if s.failing == "ListPendingProposals" {
-		return nil, s.err
-	}
-	return s.Store.ListPendingProposals(ctx)
+	return s.Store.ListPendingProposalsForDocuments(ctx, ids)
 }
 
 // A failed next-action projection fails the list read: the server logs the
@@ -372,14 +367,29 @@ func TestTaskListFailsWhenNextActionProjectionFails(t *testing.T) {
 		secret    = "hunter2hunter2hunter2hunter2"
 		requestID = "task-list-projection-failure"
 	)
-	for _, failing := range []string{"ListWorkOrdersForTasks", "ListActivityMarkersForTasks", "ListPendingProposals"} {
+	for _, failing := range []string{"ReadActivityInputs", "ListPendingProposalsForDocuments"} {
 		t.Run(failing, func(t *testing.T) {
 			counter, handler, openIDs := seedTaskListWorkspace(t, 0)
-			counter.Store = &projectionFailingStore{
+			var cited string
+			if failing == "ListPendingProposalsForDocuments" {
+				ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+				fixture := &batchHTTPFixture{st: counter.Store, ctx: ctx, now: time.Now().UTC().Truncate(time.Second)}
+				cited = fixture.requirement(t, "projection failure", true)
+				task, err := counter.Store.GetTask(ctx, "open-running")
+				if err != nil {
+					t.Fatal(err)
+				}
+				fixture.order(t, task, core.StageImplement, func(order *core.WorkOrder) {
+					order.LastAttemptOutcome = core.WorkOrderOutcomeReleased
+					order.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: "Confirm the cited requirement.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: cited, CitedVersion: 1}}}
+				})
+			}
+			failureStore := &projectionFailingStore{
 				Store:   counter.Store,
 				failing: failing,
 				err:     errors.New("driver refused " + failing + " password=" + secret),
 			}
+			counter.Store = failureStore
 			var captured bytes.Buffer
 			previous := log.Writer()
 			log.SetOutput(&captured)
@@ -393,6 +403,9 @@ func TestTaskListFailsWhenNextActionProjectionFails(t *testing.T) {
 
 			if response.Code != http.StatusInternalServerError {
 				t.Fatalf("status=%d body=%s, want 500", response.Code, response.Body.String())
+			}
+			if failing == "ListPendingProposalsForDocuments" && !slices.Equal(failureStore.proposalIDs, []string{cited}) {
+				t.Fatalf("proposal read IDs=%v, want [%s]", failureStore.proposalIDs, cited)
 			}
 			if got, want := response.Body.String(), "internal server error\n"; got != want {
 				t.Fatalf("body=%q, want %q", got, want)
@@ -410,7 +423,7 @@ func TestTaskListFailsWhenNextActionProjectionFails(t *testing.T) {
 
 			var line string
 			for candidate := range strings.Lines(captured.String()) {
-				if strings.Contains(candidate, "task list next action") {
+				if strings.Contains(candidate, "driver refused "+failing) {
 					line = candidate
 				}
 			}

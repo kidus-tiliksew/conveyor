@@ -555,37 +555,46 @@ func (s *Store) ListRequirementDeliveryLineage(ctx context.Context, requirementI
 	if strings.TrimSpace(requirementID) == "" || budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
 		return nil, fmt.Errorf("requirement delivery lineage requires a requirement id and bounded depth, nodes, and links")
 	}
-	links, err := s.ListLineageLinks(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return boundedRequirementDeliveryLinks(links, requirementID, budget), nil
+	selected, err := s.ListRequirementDeliveryLineageByRequirement(ctx, []string{requirementID}, budget)
+	return selected[requirementID], err
 }
 
 func (s *Store) ListRequirementDeliveryLineageByRequirement(ctx context.Context, requirementIDs []string, budget core.LineageTraversalBudget) (map[string][]core.LineageLink, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementDeliveryLineageByRequirement")
-	out := make(map[string][]core.LineageLink, len(requirementIDs))
-	if len(requirementIDs) == 0 {
-		return out, nil
-	}
-	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
-		return nil, fmt.Errorf("requirement delivery lineage requires bounded depth, nodes, and links")
-	}
-	links, err := s.ListLineageLinks(ctx)
-	if err != nil {
-		return nil, err
-	}
 	budget.Workspace = documentWorkspace(ctx)
-	for _, id := range requirementIDs {
-		if strings.TrimSpace(id) == "" {
-			return nil, fmt.Errorf("requirement id required")
+	return store.FetchRequirementDeliveryLineage(ctx, requirementIDs, budget, func(ctx context.Context, nodes []core.LineageNode, limit int) (map[core.LineageNode][]core.LineageLink, error) {
+		clauses := make([]string, 0, len(nodes))
+		args := []any{documentWorkspace(ctx)}
+		for _, node := range nodes {
+			clauses = append(clauses, "(src_type=? AND src_id=?)")
+			args = append(args, string(node.Type), node.ID)
 		}
-		selected := boundedRequirementDeliveryLinks(links, id, budget)
-		if len(selected) > 0 {
-			out[id] = selected
+		args = append(args, limit)
+		rows, err := documentRows(ctx, s.db, `SELECT workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy,created_at,event_id FROM (
+			SELECT workspace_id,src_type,src_id,dst_type,dst_id,kind,
+				COALESCE(legacy_created_by_event,'') AS legacy,created_at,COALESCE(created_by_event_id,0) AS event_id,
+				ROW_NUMBER() OVER (PARTITION BY src_type,src_id ORDER BY dst_type,dst_id,kind) AS rn
+			FROM links WHERE workspace_id=? AND (`+strings.Join(clauses, " OR ")+`) AND (
+				(kind='serves' AND src_type='requirement' AND dst_type IN ('task','blueprint')) OR
+				(kind='versions' AND src_type='blueprint' AND dst_type='blueprint_version') OR
+				(kind='materializes' AND src_type='blueprint_version' AND dst_type='task')
+			)
+		) selected WHERE rn<=? ORDER BY src_type,src_id,dst_type,dst_id,kind`, args...)
+		if err != nil {
+			return nil, err
 		}
-	}
-	return out, nil
+		defer rows.Close()
+		out := make(map[core.LineageNode][]core.LineageLink, len(nodes))
+		for rows.Next() {
+			var link core.LineageLink
+			if err := rows.Scan(&link.Workspace, &link.SrcType, &link.SrcID, &link.DstType, &link.DstID, &link.Kind, &link.LegacyCreatedByEvent, &link.CreatedAt, &link.CreatedByEventID); err != nil {
+				return nil, err
+			}
+			node := core.LineageNode{Type: link.SrcType, ID: link.SrcID}
+			out[node] = append(out[node], link)
+		}
+		return out, rows.Err()
+	})
 }
 
 func boundedRequirementDeliveryLinks(links []core.LineageLink, requirementID string, budget core.LineageTraversalBudget) []core.LineageLink {
@@ -961,16 +970,16 @@ func (s *Store) ListArtifactsForLineage(ctx context.Context, nodes []core.Lineag
 	args = append(args, ws, ws, ws, ws)
 	rows, err := documentRows(ctx, s.db, "WITH wanted AS ("+strings.Join(seeds, " UNION ALL ")+`), matched AS (
 	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
-	FROM wanted w JOIN artifact_links l ON w.node_type='task' AND l.workspace_id=? AND l.task_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
+	FROM wanted w JOIN artifact_links l ON w.node_type='task' AND l.workspace_id=? AND `+s.artifactLinkOwnerMatch("l", "task_id", "w.node_id", true)+` JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
 	UNION ALL
 	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
-	FROM wanted w JOIN artifact_links l ON w.node_type='requirement' AND l.workspace_id=? AND l.requirement_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
+	FROM wanted w JOIN artifact_links l ON w.node_type='requirement' AND l.workspace_id=? AND `+s.artifactLinkOwnerMatch("l", "requirement_id", "w.node_id", true)+` JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
 	UNION ALL
 	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
-	FROM wanted w JOIN artifact_links l ON w.node_type='planning_session' AND l.workspace_id=? AND l.planning_session_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
+	FROM wanted w JOIN artifact_links l ON w.node_type='planning_session' AND l.workspace_id=? AND `+s.artifactLinkOwnerMatch("l", "planning_session_id", "w.node_id", true)+` JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
 	UNION ALL
 	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
-	FROM wanted w JOIN artifacts a ON w.node_type='evidence' AND a.workspace_id=? AND a.id=w.node_id JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
+	FROM wanted w JOIN artifacts a ON w.node_type='evidence' AND a.workspace_id=? AND a.id=w.node_id JOIN artifact_links l ON l.workspace_id=a.workspace_id AND `+s.artifactLinkIDMatch("l", "a.id", true)+`
 		AND l.role='verification_evidence' AND l.task_id IS NOT NULL
 		AND ((a.content_type IN ('image/png','image/jpeg','image/webp') AND a.size_bytes BETWEEN 1 AND 10485760)
 			OR (a.content_type IN ('video/mp4','video/webm') AND a.size_bytes BETWEEN 1 AND 26214400))

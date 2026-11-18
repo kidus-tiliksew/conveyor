@@ -198,14 +198,8 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			drainQueries := func() map[string]uint64 {
-				result := map[string]uint64{}
-				for _, total := range st.ReadStats(1 << 16).Top {
-					result[total.Label] = total.Queries
-				}
-				return result
-			}
-			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), DrainReadQueries: drainQueries, DrainReadRows: conformanceReadRows(st), VerificationClaimReads: verificationClaimReads(ws), NestedTaskCommandsInterleave: true, DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
+			reads := newConformanceReadLedger(st)
+			return storetest.Fixture{DrainReadBytes: reads.drainBytes, DrainReadQueries: reads.drainQueries, DrainReadRows: reads.drainRows, VerificationClaimReads: verificationClaimReads(ws), NestedTaskCommandsInterleave: true, DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
 				t.Helper()
 				if _, err := st.db.ExecContext(ctx, `UPDATE users SET status='deactivated' WHERE id=?`, userID); err != nil {
 					t.Fatal(err)
@@ -452,26 +446,52 @@ func (r *verificationClaimReadRecorder) ids() []string {
 	return append([]string(nil), r.read...)
 }
 
-// conformanceReadBytes drains the store's read ledger into bytes per read
-// label for the conformance byte bounds.
-func conformanceReadBytes(st *Store) func() map[string]uint64 {
-	return func() map[string]uint64 {
-		bytes := map[string]uint64{}
-		for _, total := range st.ReadStats(1 << 16).Top {
-			bytes[total.Label] = total.Bytes
-		}
-		return bytes
+// conformanceReadLedger keeps the store's read ledger in three pending maps
+// (bytes, queries, rows per read label). Every ReadStats call drains the whole
+// ledger, so each drain collects a fresh interval into all three maps, then
+// returns and clears only the metric it was asked for. Reads collected while
+// another metric was drained stay pending for that metric's next drain.
+type conformanceReadLedger struct {
+	st      *Store
+	mu      sync.Mutex
+	bytes   map[string]uint64
+	queries map[string]uint64
+	rows    map[string]uint64
+}
+
+func newConformanceReadLedger(st *Store) *conformanceReadLedger {
+	return &conformanceReadLedger{
+		st:      st,
+		bytes:   map[string]uint64{},
+		queries: map[string]uint64{},
+		rows:    map[string]uint64{},
 	}
 }
 
-// conformanceReadRows drains the same ledger into rows per read label for the
-// conformance row bounds.
-func conformanceReadRows(st *Store) func() map[string]uint64 {
-	return func() map[string]uint64 {
-		rows := map[string]uint64{}
-		for _, total := range st.ReadStats(1 << 16).Top {
-			rows[total.Label] = total.Rows
-		}
-		return rows
+// drainBytes returns the bytes per read label since the previous bytes drain.
+func (l *conformanceReadLedger) drainBytes() map[string]uint64 {
+	return l.drain(&l.bytes)
+}
+
+// drainQueries returns the queries per read label since the previous queries drain.
+func (l *conformanceReadLedger) drainQueries() map[string]uint64 {
+	return l.drain(&l.queries)
+}
+
+// drainRows returns the rows per read label since the previous rows drain.
+func (l *conformanceReadLedger) drainRows() map[string]uint64 {
+	return l.drain(&l.rows)
+}
+
+func (l *conformanceReadLedger) drain(pending *map[string]uint64) map[string]uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, total := range l.st.ReadStats(1 << 16).Top {
+		l.bytes[total.Label] += total.Bytes
+		l.queries[total.Label] += total.Queries
+		l.rows[total.Label] += total.Rows
 	}
+	drained := *pending
+	*pending = map[string]uint64{}
+	return drained
 }

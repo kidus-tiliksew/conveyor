@@ -22,8 +22,9 @@ type exhaustedDispatch struct {
 
 // logDispatchQueue is the store's durable queue on the event log. Enqueues
 // run inside the caller's transaction by binding it to the log driver's
-// context, so a lifecycle command's rows and its job commit together. The reconciliation reads keep their SQL over tasks and
-// fold each candidate's job stream for the queue half of the answer.
+// context, so a lifecycle command's rows and its job commit together. The
+// reconciliation reads keep their SQL over tasks and the job index for the
+// queue half of the answer.
 type logDispatchQueue struct {
 	boundary boundaryDB
 	log      eventlog.Store
@@ -163,11 +164,11 @@ ORDER BY t.created_at, t.id`, workspace)
 				continue
 			}
 		}
-		job, err := logqueue.Load(logCtx, q.log, workspace, logqueue.StreamFor(kind, taskID))
+		unfinished, err := logqueue.StreamUnfinished(logCtx, q.log, workspace, logqueue.StreamFor(kind, taskID))
 		if err != nil {
 			return nil, err
 		}
-		if !job.Active() {
+		if !unfinished {
 			out = append(out, taskID)
 		}
 	}
@@ -203,11 +204,11 @@ ORDER BY t.created_at, t.id`, workspace)
 	kind := queue.DispatchTaskArgs{}.Kind()
 	var out []exhaustedDispatch
 	for _, r := range candidates {
-		job, err := logqueue.Load(ctx, q.log, workspace, logqueue.StreamFor(kind, r.id))
+		job, discarded, err := logqueue.LoadDiscarded(ctx, q.log, workspace, logqueue.StreamFor(kind, r.id))
 		if err != nil {
 			return nil, err
 		}
-		if job.State == logqueue.StateDiscarded && job.Attempt >= job.MaxAttempts {
+		if discarded {
 			out = append(out, exhaustedDispatch{taskID: r.id, stage: r.stage, attempt: job.Attempt, maxAttempts: job.MaxAttempts})
 		}
 	}

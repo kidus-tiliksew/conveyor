@@ -134,6 +134,10 @@ func (s *Store) migrateFiles(ctx context.Context, files []migration) error {
 	if err != nil {
 		return err
 	}
+	freshBootstrap, err := s.hotReadBootstrapOrigin(ctx, len(applied) == 0)
+	if err != nil {
+		return err
+	}
 	if err = s2log.EnsureSchema(ctx, s.db); err != nil {
 		return err
 	}
@@ -244,6 +248,11 @@ func (s *Store) migrateFiles(ctx context.Context, files []migration) error {
 		}
 		if file.version == stagePreferenceRiskMigrationVersion {
 			if err := s.addNullableColumns(ctx, stagePreferenceRiskColumn); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
+		if file.version == hotReadIndexesMigrationVersion && freshBootstrap {
+			if err := s.migrateHotReadIndexes(ctx); err != nil {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}

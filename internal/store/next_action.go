@@ -28,6 +28,9 @@ type NextActionOptions struct {
 	// OrdersLoaded skips a second order read when the caller already has them.
 	OrdersLoaded bool
 	Orders       []core.WorkOrder
+	// ProposalsLoaded distinguishes a loaded empty selection from an unread one.
+	ProposalsLoaded bool
+	Proposals       []core.PendingProposal
 	// MergeReadiness returns the last-known readiness peek of a
 	// merge_approval gate without a forge call, or nil when none is known
 	// (DEC-64(3); DEC-61).
@@ -112,10 +115,12 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 			return nil, err
 		}
 	}
-	proposals, err := st.ListPendingProposals(ctx)
-	if err != nil {
-		return nil, err
-	}
+	// The proposals a task reads are the pending revisions its citations
+	// name, whatever their origin, so an unloaded selection is read after
+	// assembly for the cited documents only; the inbox passes its global
+	// queue (req-operator-next-action AC-1.6; component-next-action
+	// invariant 1).
+	proposals := opts.Proposals
 	dependencies, err := readDependencyView(ctx, st, tasks, orders, opts)
 	if err != nil {
 		return nil, err
@@ -187,6 +192,11 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 			checkpointed = append(checkpointed, i)
 		}
 		inputs[i] = input
+	}
+	if !opts.ProposalsLoaded {
+		if err := readCitedProposals(ctx, st, inputs); err != nil {
+			return nil, err
+		}
 	}
 	if err := readCitedDocuments(ctx, st, tasks, inputs, checkpointed); err != nil {
 		return nil, err
@@ -473,6 +483,49 @@ func readCitedDocuments(ctx context.Context, st Store, tasks []core.Task, inputs
 			out[id] = cited
 		}
 		inputs[i].CitedDocuments = out
+	}
+	return nil
+}
+
+// readCitedProposals reads, in one ListPendingProposalsForDocuments call, the
+// pending revisions of every document a batch task's citations name, and
+// issues none when no task cites a document. Task-origin, decision, and
+// task-context proposals are never read: the projection selects only
+// nextaction.CitedProposals.
+func readCitedProposals(ctx context.Context, st Store, inputs []nextaction.Input) error {
+	perTask := make([][]string, len(inputs))
+	seen := map[string]bool{}
+	var documentIDs []string
+	for i := range inputs {
+		ids := nextaction.CitedDocumentIDs(slices.Concat(nextaction.PlanRiskCheckpointCitations(inputs[i]), inputs[i].Markers.Citations))
+		perTask[i] = ids
+		for _, id := range ids {
+			if !seen[id] {
+				seen[id] = true
+				documentIDs = append(documentIDs, id)
+			}
+		}
+	}
+	if len(documentIDs) == 0 {
+		return nil
+	}
+	sort.Strings(documentIDs)
+	proposals, err := st.ListPendingProposalsForDocuments(ctx, documentIDs)
+	if err != nil {
+		return err
+	}
+	for i, ids := range perTask {
+		own := map[string]bool{}
+		for _, id := range ids {
+			own[id] = true
+		}
+		var mine []core.PendingProposal
+		for _, proposal := range proposals {
+			if own[proposal.ID] {
+				mine = append(mine, proposal)
+			}
+		}
+		inputs[i].PendingProposals = pendingProposalRefs(mine)
 	}
 	return nil
 }
