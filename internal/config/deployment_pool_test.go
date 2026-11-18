@@ -93,30 +93,84 @@ func TestDeploymentDatabaseMaxConns(t *testing.T) {
 	}
 }
 
+// TestDeploymentSingleStoreCompression covers the daemon's compression
+// settings after backend inference: the file key wins, then the variable,
+// and an absent pair leaves the URL parameter and the default to the
+// SingleStore open. The variable must be a boolean for an effective
+// SingleStore backend, even when the file wins, and the refusal echoes no
+// value. PostgreSQL and memory ignore the variable (component-runtime
+// invariant 43).
 func TestDeploymentSingleStoreCompression(t *testing.T) {
+	const (
+		singlestoreURL = `url: "singlestore://conveyor:pa55word@db.invalid:3306/conveyor"`
+		mysqlDSN       = `url: "conveyor:pa55word@tcp(db.invalid:3306)/conveyor?compress=false"`
+		postgresURL    = `url: "postgres://conveyor:pa55word@db.invalid/conveyor"`
+		unset          = "\x00unset"
+		absent         = 0
+		on             = 1
+		off            = 2
+	)
 	for _, tc := range []struct {
 		name, database, env string
-		want                bool
+		want                int
+		wantBackend         string
 		wantErr             bool
 	}{
-		{"environment disables", `{backend: singlestore, url: "singlestore://db/test"}`, "false", false, false},
-		{"file overrides environment", `{backend: singlestore, url: "singlestore://db/test", singlestore_compress: true}`, "false", true, false},
-		{"invalid environment", `{backend: singlestore, url: "singlestore://db/test"}`, "invalid", false, true},
+		{name: "explicit singlestore default leaves the parameter and default", database: "{backend: singlestore, " + singlestoreURL + "}", env: unset, want: absent, wantBackend: "singlestore"},
+		{name: "inferred singlestore default", database: "{" + singlestoreURL + "}", env: unset, want: absent, wantBackend: "singlestore"},
+		{name: "environment disables explicit singlestore", database: "{backend: singlestore, " + singlestoreURL + "}", env: "false", want: off, wantBackend: "singlestore"},
+		{name: "environment disables inferred singlestore", database: "{" + singlestoreURL + "}", env: "false", want: off, wantBackend: "singlestore"},
+		{name: "environment enables inferred mysql dsn over its parameter", database: "{" + mysqlDSN + "}", env: " true ", want: on, wantBackend: "singlestore"},
+		{name: "environment accepts other boolean forms", database: "{" + singlestoreURL + "}", env: "0", want: off, wantBackend: "singlestore"},
+		{name: "file enables over environment", database: "{backend: singlestore, " + singlestoreURL + ", singlestore_compress: true}", env: "false", want: on, wantBackend: "singlestore"},
+		{name: "file disables over environment", database: "{" + singlestoreURL + ", singlestore_compress: false}", env: "true", want: off, wantBackend: "singlestore"},
+		{name: "file setting without environment", database: "{" + singlestoreURL + ", singlestore_compress: false}", env: unset, want: off, wantBackend: "singlestore"},
+		{name: "invalid environment stops explicit singlestore", database: "{backend: singlestore, " + singlestoreURL + "}", env: "maybe-secret", wantErr: true},
+		{name: "invalid environment stops inferred singlestore", database: "{" + singlestoreURL + "}", env: "maybe-secret", wantErr: true},
+		{name: "invalid environment stops singlestore when the file wins", database: "{" + singlestoreURL + ", singlestore_compress: true}", env: "maybe-secret", wantErr: true},
+		{name: "empty environment stops singlestore", database: "{" + singlestoreURL + "}", env: "", wantErr: true},
+		{name: "explicit postgres ignores invalid environment", database: "{backend: postgres, " + postgresURL + "}", env: "maybe-secret", want: absent, wantBackend: "postgres"},
+		{name: "inferred postgres ignores invalid environment", database: "{" + postgresURL + "}", env: "maybe-secret", want: absent, wantBackend: "postgres"},
+		{name: "postgres ignores valid environment", database: "{" + postgresURL + "}", env: "false", want: absent, wantBackend: "postgres"},
+		{name: "memory ignores invalid environment", database: "{backend: memory}", env: "maybe-secret", want: absent, wantBackend: "memory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("CONVEYOR_SINGLESTORE_COMPRESS", tc.env)
+			unsetEnv(t, "CONVEYOR_DATABASE_URL")
+			if tc.env == unset {
+				unsetEnv(t, "CONVEYOR_SINGLESTORE_COMPRESS")
+			} else {
+				t.Setenv("CONVEYOR_SINGLESTORE_COMPRESS", tc.env)
+			}
 			cfg, err := ParseDeployment(deploymentWithDatabase(tc.database), "compression.yaml", nil)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("invalid compression setting was accepted")
+				}
+				if err.Error() != "CONVEYOR_SINGLESTORE_COMPRESS must be a boolean" {
+					t.Fatalf("error = %v", err)
+				}
+				for _, leaked := range []string{"maybe-secret", "pa55word", "singlestore://", "db.invalid"} {
+					if strings.Contains(err.Error(), leaked) {
+						t.Fatalf("error leaks %q: %v", leaked, err)
+					}
 				}
 				return
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.Database.SingleStoreCompress == nil || *cfg.Database.SingleStoreCompress != tc.want {
-				t.Fatalf("compression setting = %v, want %t", cfg.Database.SingleStoreCompress, tc.want)
+			if cfg.Database.Backend != tc.wantBackend {
+				t.Fatalf("backend = %q, want %q", cfg.Database.Backend, tc.wantBackend)
+			}
+			got := absent
+			if cfg.Database.SingleStoreCompress != nil {
+				got = off
+				if *cfg.Database.SingleStoreCompress {
+					got = on
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("compression setting = %v, want %d (0 absent, 1 on, 2 off)", cfg.Database.SingleStoreCompress, tc.want)
 			}
 		})
 	}
