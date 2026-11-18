@@ -112,9 +112,9 @@ func (s *countingSystemDesignStore) ListSystemDesigns(ctx context.Context, inclu
 	s.lists++
 	return s.Store.ListSystemDesigns(ctx, includeArchived)
 }
-func (s *countingSystemDesignStore) ListSystemDesignVersionSummaries(ctx context.Context, documentIDs []string) (map[string][]core.SystemDesignVersion, error) {
+func (s *countingSystemDesignStore) ListSystemDesignVersionSummaries(ctx context.Context, selections []store.DocumentVersionSelection) (map[string][]core.SystemDesignVersion, error) {
 	s.versionBatches++
-	return s.Store.ListSystemDesignVersionSummaries(ctx, documentIDs)
+	return s.Store.ListSystemDesignVersionSummaries(ctx, selections)
 }
 func (s *countingSystemDesignStore) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
 	s.eventBatches++

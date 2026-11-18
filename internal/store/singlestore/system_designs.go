@@ -663,33 +663,36 @@ func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[str
 	return out, rows.Err()
 }
 
-// systemDesignVersionSummarySelect reads the current version and every
-// pending version of the requested designs in version order. A historical or
-// dismissed version is not selected.
-const systemDesignVersionSummarySelect = `SELECT v.workspace_id,v.document_id,v.version,v.content,v.governs,v.origin,coalesce(v.origin_session_id,''),coalesce(v.origin_task_id,''),v.confirmed,coalesce(v.confirmed_by,''),v.confirmed_at,v.dismissed,coalesce(v.dismissed_by,''),v.dismissed_at,v.created_at,COALESCE(v.dismissal_note,'')
+// systemDesignVersionSummaryQuery reads the listed current version and every
+// pending version of the requested designs in version order. The %[1]s list
+// pairs each requested ID with the current version its listed row named. Any
+// other version is not selected.
+const systemDesignVersionSummaryQuery = `SELECT v.workspace_id,v.document_id,v.version,v.content,v.governs,v.origin,coalesce(v.origin_session_id,''),coalesce(v.origin_task_id,''),v.confirmed,coalesce(v.confirmed_by,''),v.confirmed_at,v.dismissed,coalesce(v.dismissed_by,''),v.dismissed_at,v.created_at,COALESCE(v.dismissal_note,'')
 FROM system_design_versions v JOIN system_designs d
   ON d.workspace_id=v.workspace_id AND d.id=v.document_id
-WHERE v.workspace_id=?`
+WHERE v.workspace_id=? AND v.document_id IN (%[2]s)
+  AND ((v.document_id,v.version) IN (%[1]s) OR (NOT v.confirmed AND NOT v.dismissed))
+ORDER BY v.document_id,v.version`
 
-// ListSystemDesignVersionSummaries reads each requested design's current and
-// pending versions in one query per ID chunk, with their content. A historical
-// version is absent (component-persistence; component-document-corpus).
-func (s *Store) ListSystemDesignVersionSummaries(ctx context.Context, documentIDs []string) (map[string][]core.SystemDesignVersion, error) {
+// ListSystemDesignVersionSummaries reads each requested design's listed
+// current version and pending versions in one query per selection chunk, with
+// their content. The current version is the one each listed row named, so a
+// confirmation after the row read cannot drop the listed current version
+// (component-persistence; component-document-corpus).
+func (s *Store) ListSystemDesignVersionSummaries(ctx context.Context, selections []store.DocumentVersionSelection) (map[string][]core.SystemDesignVersion, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignVersionSummaries")
 	out := map[string][]core.SystemDesignVersion{}
-	ids := store.UniqueDocumentIDs(documentIDs)
-	if len(ids) == 0 {
+	selected := store.UniqueDocumentVersionSelections(selections)
+	if len(selected) == 0 {
 		return out, nil
 	}
 	ws, err := workspace(ctx)
 	if err != nil {
 		return nil, err
 	}
-	err = eachIDChunk(ids, func(marks string, chunkArgs []any) error {
-		rows, queryErr := documentRows(ctx, s.db, systemDesignVersionSummarySelect+
-			` AND v.document_id IN (`+marks+`)
-			AND (v.version=d.current_version OR (NOT v.confirmed AND NOT v.dismissed))
-			ORDER BY v.document_id,v.version`, append([]any{ws}, chunkArgs...)...)
+	err = eachDocumentVersionChunk(selected, func(pairMarks string, pairArgs []any, idMarks string, idArgs []any) error {
+		args := append(append([]any{ws}, idArgs...), pairArgs...)
+		rows, queryErr := documentRows(ctx, s.db, fmt.Sprintf(systemDesignVersionSummaryQuery, pairMarks, idMarks), args...)
 		if queryErr != nil {
 			return queryErr
 		}

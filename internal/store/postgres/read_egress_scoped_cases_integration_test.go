@@ -103,7 +103,7 @@ func buildScopedRequirementVersionSummaries(t testing.TB, ctx context.Context, s
 			return scopedRequirementOutcome(requirements, versions)
 		},
 		Candidate: func(ctx context.Context) (storetest.ReadEgressOutcome, error) {
-			versions, err := st.ListRequirementVersionSummaries(ctx, ids)
+			versions, err := st.ListRequirementVersionSummaries(ctx, storetest.ReadEgressRequirementSelections(requirements))
 			if err != nil {
 				return storetest.ReadEgressOutcome{}, err
 			}
@@ -154,7 +154,7 @@ func buildScopedSystemDesignVersionSummaries(t testing.TB, ctx context.Context, 
 			return scopedSystemDesignOutcome(items, versions)
 		},
 		Candidate: func(ctx context.Context) (storetest.ReadEgressOutcome, error) {
-			versions, err := st.ListSystemDesignVersionSummaries(ctx, ids)
+			versions, err := st.ListSystemDesignVersionSummaries(ctx, storetest.ReadEgressSystemDesignSelections(items))
 			if err != nil {
 				return storetest.ReadEgressOutcome{}, err
 			}
