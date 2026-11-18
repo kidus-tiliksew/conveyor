@@ -538,9 +538,9 @@ WHERE workspace_id=$1 AND id=ANY($2::text[])`, workspace(ctx), ids)
 	return out, rows.Err()
 }
 
-// ReadVerificationReviews reads every verification table once for all
-// requested tasks and the requested orders in one query, inside one
-// transaction, with ReadVerificationReview's per-pair result and errors.
+// ReadVerificationReviews reads ReadVerificationReview's verification tables
+// once for all requested tasks and the requested orders in one query, inside
+// one transaction, with ReadVerificationReview's per-pair result and errors.
 func (s *Store) ReadVerificationReviews(ctx context.Context, refs []store.VerificationReviewRef) (map[string]store.VerificationReviewState, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ReadVerificationReviews")
 	out := make(map[string]store.VerificationReviewState, len(refs))
@@ -558,25 +558,20 @@ func (s *Store) ReadVerificationReviews(ctx context.Context, refs []store.Verifi
 	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
 		ws := workspace(ctx)
 		byTask := map[string][]db.VerificationRecord{}
-		for _, table := range store.VerificationTables {
-			condition := "task_id=ANY($2::text[])"
-			if table == "verification_operations" {
-				condition = "(task_id=ANY($2::text[]) OR true)"
-			}
-			rows, err := tx.Query(ctx, "SELECT id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at FROM "+table+" WHERE workspace_id=$1 AND "+condition+" ORDER BY id", ws, taskIDs)
+		// The batch reads the table set and rows ReadVerificationReview reads
+		// for one task: each requested task's own rows, in ID order per table,
+		// and no row of another task (component-verification-service
+		// invariant 55).
+		for _, table := range store.VerificationSnapshotTables {
+			rows, err := tx.Query(ctx, "SELECT id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at FROM "+table+" WHERE workspace_id=$1 AND task_id=ANY($2::text[]) ORDER BY id", ws, taskIDs)
 			if err != nil {
 				return err
 			}
-			var shared []db.VerificationRecord
 			for rows.Next() {
 				v := db.VerificationRecord{Table: table, WorkspaceID: ws}
 				if err = rows.Scan(&v.ID, &v.TaskID, &v.ContextID, &v.RunID, &v.LogicalKey, &v.KeyHash, &v.State, &v.Body, &v.ExpiresAt); err != nil {
 					rows.Close()
 					return err
-				}
-				if table == "verification_operations" {
-					shared = append(shared, v)
-					continue
 				}
 				byTask[v.TaskID] = append(byTask[v.TaskID], v)
 			}
@@ -584,13 +579,6 @@ func (s *Store) ReadVerificationReviews(ctx context.Context, refs []store.Verifi
 			rows.Close()
 			if err != nil {
 				return err
-			}
-			// Operations are read for the whole workspace, as the
-			// per-task read does, so every task receives them in ID order.
-			if table == "verification_operations" {
-				for _, id := range taskIDs {
-					byTask[id] = append(byTask[id], shared...)
-				}
 			}
 		}
 		rows, err := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=ANY($2::text[])", ws, orderIDs)

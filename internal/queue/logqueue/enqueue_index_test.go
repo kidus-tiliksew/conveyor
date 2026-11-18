@@ -444,3 +444,70 @@ func TestEnqueueFiveStreamFixtureBoundsReturnedRows(t *testing.T) {
 		t.Fatalf("reads=%d returned=%d lookups=%d", counted.reads.Load(), returned, counted.indexLookups.Load())
 	}
 }
+
+// TestLoadDiscardedReportsTheCurrentDiscardTime proves LoadDiscarded returns
+// the recorded time of the current generation's job.discarded event, and the
+// same time from the job index, from a stream whose index row is missing, and
+// from a log without an index (component-verification-publication invariant
+// 26). An earlier generation's discard never stands in for the current one.
+func TestLoadDiscardedReportsTheCurrentDiscardTime(t *testing.T) {
+	ctx := context.Background()
+	firstAt := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	secondAt := firstAt.Add(time.Hour)
+	seed := func(t *testing.T) (*memlog.Store, eventlog.StreamID) {
+		t.Helper()
+		log := memlog.New()
+		stream := StreamFor("demo", "discard-at")
+		var version eventlog.Version
+		for _, at := range []time.Time{firstAt, secondAt} {
+			payload := mustJSON(enqueuedPayload{Kind: "demo", Key: "discard-at", Args: []byte(`{}`), MaxAttempts: 1})
+			next, err := log.Append(ctx, "ws", stream, version, []eventlog.NewEvent{
+				{Kind: KindEnqueued, Payload: payload, At: at.Add(-time.Minute)},
+				{Kind: KindClaimed, Payload: mustJSON(claimedPayload{Attempt: 1, Worker: "w", ClaimedAt: at}), At: at},
+				{Kind: KindDiscarded, Payload: mustJSON(outcomePayload{Attempt: 1, Error: "exhausted"}), At: at},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			version = next
+		}
+		return log, stream
+	}
+	check := func(t *testing.T, log eventlog.Store, stream eventlog.StreamID) {
+		t.Helper()
+		job, discarded, err := LoadDiscarded(ctx, log, "ws", stream)
+		if err != nil || !discarded {
+			t.Fatalf("discarded=%t err=%v", discarded, err)
+		}
+		if !job.DiscardedAt.Equal(secondAt) {
+			t.Fatalf("discarded at %s, want the current generation's %s", job.DiscardedAt, secondAt)
+		}
+	}
+	t.Run("index", func(t *testing.T) {
+		log, stream := seed(t)
+		check(t, log, stream)
+	})
+	t.Run("missingRow", func(t *testing.T) {
+		log, stream := seed(t)
+		log.DropJobIndexRow("ws", stream)
+		check(t, log, stream)
+	})
+	t.Run("unsupportedReader", func(t *testing.T) {
+		log, stream := seed(t)
+		check(t, storeOnly{log}, stream)
+	})
+	t.Run("reenqueuedClearsTheTime", func(t *testing.T) {
+		log, stream := seed(t)
+		if inserted, err := Enqueue(ctx, log, "ws", "demo", "discard-at", demoArgs{}, 1, secondAt.Add(time.Minute)); err != nil || !inserted {
+			t.Fatalf("inserted=%t err=%v", inserted, err)
+		}
+		job, discarded, err := LoadDiscarded(ctx, log, "ws", stream)
+		if err != nil || discarded || !job.DiscardedAt.IsZero() {
+			t.Fatalf("a new generation kept a discard: discarded=%t at=%s err=%v", discarded, job.DiscardedAt, err)
+		}
+		folded, err := Load(ctx, log, "ws", stream)
+		if err != nil || !folded.DiscardedAt.IsZero() {
+			t.Fatalf("fold of a new generation kept a discard time %s err=%v", folded.DiscardedAt, err)
+		}
+	})
+}

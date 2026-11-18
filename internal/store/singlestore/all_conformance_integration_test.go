@@ -3,6 +3,7 @@ package singlestore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -203,6 +204,33 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				t.Helper()
 				if _, err := st.db.ExecContext(ctx, `UPDATE users SET status='deactivated' WHERE id=?`, userID); err != nil {
 					t.Fatal(err)
+				}
+			}, DeliveryPassSkipsHeldKeys: true, RestoreHistoricalDelivery: func(t *testing.T, ctx context.Context, taskID string, generation int, state, errorClass string, next *time.Time) {
+				t.Helper()
+				var raw []byte
+				if err := st.db.QueryRowContext(ctx, `SELECT body FROM verification_publication_deliveries WHERE workspace_id=? AND task_id=? AND generation=? AND state='superseded'`, ws, taskID, generation).Scan(&raw); err != nil {
+					t.Fatalf("historical delivery generation %d: %v", generation, err)
+				}
+				var d core.VerificationDelivery
+				if err := json.Unmarshal(raw, &d); err != nil {
+					t.Fatal(err)
+				}
+				d.State, d.ErrorClass, d.NextAttemptAt = state, errorClass, next
+				body, err := json.Marshal(d)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := st.db.ExecContext(ctx, `UPDATE verification_publication_deliveries SET state=?, body=?, next_attempt_at=? WHERE workspace_id=? AND task_id=? AND generation=?`, state, body, next, ws, taskID, generation); err != nil {
+					t.Fatal(err)
+				}
+			}, SeedForeignVerificationOperation: func(t *testing.T, ctx context.Context, taskID string) {
+				t.Helper()
+				result, err := st.db.ExecContext(ctx, `INSERT INTO verification_operations(workspace_id,id,task_id,context_id,run_id,logical_key,key_hash,state,body) SELECT workspace_id,CONCAT(id,'-malformed'),task_id,context_id,run_id,CONCAT(logical_key,'-malformed'),CONCAT(MD5(id),MD5(id)),'completed','{"ID":7,"StepID":7}' FROM verification_operations WHERE workspace_id=? AND task_id=? LIMIT 1`, ws, taskID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n, err := result.RowsAffected(); err != nil || n != 1 {
+					t.Fatalf("seed malformed operation: %d rows, %v", n, err)
 				}
 			}, RestoreSupersededDeliveries: func(t *testing.T, ctx context.Context, taskID string) {
 				t.Helper()

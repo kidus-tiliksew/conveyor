@@ -572,22 +572,48 @@ func (m *volatileMemory) ReconcileVerificationDeliveries(ctx context.Context) er
 			ReportDriftRepair(ctx, DriftVerificationDeliveryDiscarded.For(taskID))
 		}
 	}()
-	now := time.Now().UTC()
-	var pending, failed []core.VerificationDelivery
+	now := VerificationDeliveryNow(ctx)
+	latest := map[string]int{}
 	for _, d := range m.verificationDeliveries {
 		if d.WorkspaceID != ws {
 			continue
 		}
-		switch d.State {
-		case "pending", "retrying":
-			pending = append(pending, d)
-		case "failed":
+		key := VerificationDeliveryKey(d.Repository, d.PullRequestNumber)
+		if d.Generation > latest[key] {
+			latest[key] = d.Generation
+		}
+	}
+	// The due window holds older generations still to settle, the newest
+	// pending or retrying rows with no unfinished job, and the newest failed
+	// rows whose retry time passed. A row an unfinished job serves takes no
+	// place, so rows past the first 100 are reached (component-verification-
+	// publication invariants 19 and 27).
+	var due []core.VerificationDelivery
+	for _, d := range m.verificationDeliveries {
+		if d.WorkspaceID != ws {
+			continue
+		}
+		key := VerificationDeliveryKey(d.Repository, d.PullRequestNumber)
+		switch {
+		case d.Generation < latest[key]:
+			if d.State == "pending" || d.State == "retrying" || d.State == "failed" {
+				due = append(due, d)
+			}
+		case d.State == "pending" || d.State == "retrying":
+			a := VerificationDeliveryArgs(d)
+			unfinished, err := logqueue.StreamUnfinished(ctx, m.log, ws, logqueue.StreamFor(a.Kind(), a.UniqueKey()))
+			if err != nil {
+				return err
+			}
+			if !unfinished {
+				due = append(due, d)
+			}
+		case d.State == "failed":
 			if d.NextAttemptAt != nil && !d.NextAttemptAt.After(now) {
-				failed = append(failed, d)
+				due = append(due, d)
 			}
 		}
 	}
-	due := append(append([]core.VerificationDelivery{}, pending...), failed...)
 	sort.Slice(due, func(i, j int) bool {
 		left, right := dueAt(due[i]), dueAt(due[j])
 		if !left.Equal(right) {
@@ -599,62 +625,27 @@ func (m *volatileMemory) ReconcileVerificationDeliveries(ctx context.Context) er
 		}
 		return due[i].Generation < due[j].Generation
 	})
-	noteVerificationReadTask(ctx, VerificationReadDue, "", len(due))
 	window := due
 	if len(window) > VerificationDeliveryReconcileWindow {
 		window = window[:VerificationDeliveryReconcileWindow]
 	}
+	noteVerificationReadTask(ctx, VerificationReadDue, "", len(window))
 	noteVerificationReadTask(ctx, VerificationReadBodies, "", len(window))
-	byKey := make(map[string][]core.VerificationDelivery)
-	var keys []string
+	put := func(d core.VerificationDelivery) error {
+		m.putDeliveriesLocked([]core.VerificationDelivery{d})
+		return nil
+	}
 	for _, d := range window {
 		key := VerificationDeliveryKey(d.Repository, d.PullRequestNumber)
-		if _, ok := byKey[key]; !ok {
-			keys = append(keys, key)
+		rowRepaired, rowDiscarded, err := ReconcileVerificationDeliveryRow(ctx, m.log, d, latest[key], now, put)
+		if err != nil {
+			return err
 		}
-		byKey[key] = append(byKey[key], d)
-	}
-	for _, key := range keys {
-		latest := 0
-		for _, d := range m.verificationDeliveries {
-			if d.WorkspaceID == ws && VerificationDeliveryKey(d.Repository, d.PullRequestNumber) == key && d.Generation > latest {
-				latest = d.Generation
-			}
+		if rowRepaired {
+			repaired = append(repaired, d.TaskID)
 		}
-		for _, d := range byKey[key] {
-			next, enqueue, err := ConvergeVerificationDelivery(d, latest, now)
-			if err != nil {
-				return err
-			}
-			if enqueue {
-				a := VerificationDeliveryArgs(next)
-				_, discardedJob, err := logqueue.LoadDiscarded(ctx, m.log, ws, logqueue.StreamFor(a.Kind(), a.UniqueKey()))
-				if err != nil {
-					return err
-				}
-				if discardedJob {
-					next, err = FailDiscardedVerificationDelivery(next, now)
-					if err != nil {
-						return err
-					}
-					enqueue = false
-					discarded = append(discarded, next.TaskID)
-				}
-			}
-			if VerificationDeliveryNeedsWrite(d, next) {
-				m.putDeliveriesLocked([]core.VerificationDelivery{next})
-			}
-			if !enqueue {
-				continue
-			}
-			a := VerificationDeliveryArgs(next)
-			inserted, err := logqueue.Enqueue(ctx, m.log, ws, a.Kind(), a.UniqueKey(), a, 5, now)
-			if err != nil {
-				return err
-			}
-			if inserted && d.State != "failed" {
-				repaired = append(repaired, next.TaskID)
-			}
+		if rowDiscarded {
+			discarded = append(discarded, d.TaskID)
 		}
 	}
 	return nil
