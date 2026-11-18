@@ -79,10 +79,11 @@ func (s *Service) DeliverOrder(ctx context.Context, order core.WorkOrder) OrderD
 }
 
 // DeliverFreshness builds the refresh response for the exact order the refresh
-// authorized.
+// authorized. The document list needs the order's stage and task only, so the
+// order is read without its snapshots.
 func (s *Service) DeliverFreshness(ctx context.Context, id string, freshness core.ContextFreshness) FreshnessDelivery {
 	delivery := FreshnessDelivery{ContextFreshness: core.OutboundContextFreshness(freshness)}
-	order, err := s.Store.GetWorkOrder(ctx, id)
+	order, err := s.Store.GetWorkOrderWithoutSnapshots(ctx, id)
 	if err == nil {
 		delivery.GovernanceReferences, err = s.orderGovernanceReferences(ctx, order)
 	}
@@ -95,37 +96,45 @@ func (s *Service) DeliverFreshness(ctx context.Context, id string, freshness cor
 
 // orderGovernanceReferences lists a review or verify order's pinned versions
 // and an implement order's live ones; other stages receive no governance
-// authority (req-design-delivery AC-1.4). Review and verify read the persisted
-// pin, never newly resolved versions. A renewal holds no snapshot, so it reads
-// the order once for it.
+// authority and read nothing (req-design-delivery AC-1.4). Review and verify
+// use the order's own snapshot when it carries one, as a claim response and a
+// same-claim acknowledgement do. Otherwise, as on a renewal or refresh, they
+// read only the persisted pin's reference fields, never newly resolved
+// versions and never a snapshot column. The list needs the task's repository
+// and its design attachment history, so the task body and the rest of the
+// timeline are not read (component-work-orders invariants 19, 20, 23, and 24).
 func (s *Service) orderGovernanceReferences(ctx context.Context, order core.WorkOrder) (*core.GovernanceReferences, error) {
-	task, err := s.Store.GetTask(ctx, order.TaskID)
-	if err != nil {
-		return nil, err
-	}
 	var snapshot core.GovernanceSnapshot
 	switch order.Stage {
 	case core.StageReview, core.StageVerify:
-		if order.GovernanceSnapshot == nil {
-			if order, err = s.Store.GetWorkOrder(ctx, order.ID); err != nil {
+		pin := order.GovernanceSnapshot
+		if pin == nil {
+			var err error
+			if pin, err = s.Store.GetWorkOrderGovernancePin(ctx, order.ID); err != nil {
 				return nil, err
 			}
 		}
-		if order.GovernanceSnapshot == nil {
+		if pin == nil {
 			return nil, nil
 		}
-		snapshot = *order.GovernanceSnapshot
+		snapshot = *pin
 	case core.StageImplement:
-		if snapshot, err = store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo); err != nil {
-			return nil, err
-		}
 	default:
 		return nil, nil
 	}
-	events, err := s.Store.ListCompactEvents(ctx, task.ID)
+	repository, err := s.Store.GetTaskRepository(ctx, order.TaskID)
 	if err != nil {
 		return nil, err
 	}
-	references := core.ProjectGovernanceReferences(snapshot, task.Repo, store.TaskDesignProvenance(events), nil)
+	if order.Stage == core.StageImplement {
+		if snapshot, err = store.GovernanceForTask(ctx, s.Store, order.TaskID, repository); err != nil {
+			return nil, err
+		}
+	}
+	events, err := s.Store.ListTaskDesignContextEvents(ctx, order.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	references := core.ProjectGovernanceReferences(snapshot, repository, store.TaskDesignProvenance(events), nil)
 	return &references, nil
 }

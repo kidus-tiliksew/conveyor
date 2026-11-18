@@ -215,8 +215,13 @@ func TestKitObservationPollingKeepsProgressAndCallsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	renew, contexts := p.calls()
-	if renew > 3 || contexts < 40 || contexts > 122 {
-		t.Fatalf("ten-minute observation: %d renewals, %d context reads", renew, contexts)
+	// The periodic schedule renews at most three times in ten minutes. The
+	// outcome adds exactly one fixed-point renewal and reread
+	// (component-verification-runner invariants 22 and 26).
+	rpcs := p.rpcLog()
+	requireRenewThenRereadBefore(t, rpcs, "report_verification_outcome", 0)
+	if periodic := renew - 1; periodic > 3 || contexts < 40 || contexts > 122 {
+		t.Fatalf("ten-minute observation: %d periodic renewals, %d context reads", periodic, contexts)
 	}
 	for i := 1; i < len(readTimes)-1; i++ {
 		if d := readTimes[i].Sub(readTimes[i-1]); d < 5*time.Second || d > 15*time.Second {

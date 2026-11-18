@@ -497,6 +497,9 @@ const (
 // ActiveTaskContextReferences folds.
 var TaskContextEventKinds = []string{TaskContextRequirementAdded, TaskContextRequirementRemoved, TaskContextDesignAdded, TaskContextDesignRemoved}
 
+// TaskDesignContextEventKinds are the kinds TaskDesignProvenance folds.
+var TaskDesignContextEventKinds = []string{TaskContextDesignAdded, TaskContextDesignRemoved}
+
 // TaskContextDesignPins folds rows in (at, id) order into each task's pins
 // of the requested documents. A task without one is absent.
 func TaskContextDesignPins(rows []core.Event, documentIDs []string) map[string]map[string]int {
