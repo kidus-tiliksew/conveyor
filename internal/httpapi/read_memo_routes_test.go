@@ -404,3 +404,46 @@ func TestMemoPublicMCPWorkspaceAndPermissionIsolation(t *testing.T) {
 		t.Fatal("warm inbox survived membership revocation")
 	}
 }
+
+// TestMemoMCPInboxMissMakesNoDiscardedRead proves an MCP list_operator_inbox
+// miss makes no validation read it would discard, and sends exactly the
+// statements the uncached inbox sends to the same caller (DEC-140(3)).
+func TestMemoMCPInboxMissMakesNoDiscardedRead(t *testing.T) {
+	s, ctx := newMCPReadFixture(t)
+	s.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
+		workspace, _ := store.WorkspaceFromContext(ctx)
+		return &config.Config{Workspace: workspace}, nil
+	}
+	for _, task := range []core.Task{
+		{ID: "inbox-queued", Workspace: "demo", Title: "Queued", State: core.TaskQueued, NextStage: core.StageImplement},
+		{ID: "inbox-gate", Workspace: "demo", Title: "Gate", State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval, MergeApproval: true, ReviewedHeadSHA: "head", NextStage: core.StageReview},
+	} {
+		if err := s.Store.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counted := &activityConditionalStore{Store: s.Store, calls: map[string]int{}}
+	s.Store = memoScopedTasks{Store: counted}
+	now := time.Now().UTC()
+	s.readMemo = &readMemo{clock: func() time.Time { return now }}
+	memoized, failure := mcpReadCall(t, s, "reader", "list_operator_inbox", map[string]any{"workspace_id": "demo"})
+	if failure != "" {
+		t.Fatal(failure)
+	}
+	if got := counted.calls["ReadActivityValidation"]; got != 0 {
+		t.Fatalf("the inbox miss made %d validation reads it discards", got)
+	}
+	if len(memoized.Items) == 0 {
+		t.Fatal("the inbox listed nothing")
+	}
+	s.readMemo = nil
+	uncached, failure := mcpReadCall(t, s, "reader", "list_operator_inbox", map[string]any{"workspace_id": "demo"})
+	if failure != "" {
+		t.Fatal(failure)
+	}
+	want, _ := json.Marshal(uncached.Items)
+	got, _ := json.Marshal(memoized.Items)
+	if string(got) != string(want) {
+		t.Fatalf("memo miss items=%s\nuncached items=%s", got, want)
+	}
+}

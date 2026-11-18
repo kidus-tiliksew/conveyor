@@ -145,19 +145,26 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 		// The entry is dropped by change notices and bounded by its
 		// horizon; it reads no validation state it would not use.
 		horizon := &readMemoHorizon{now: now, until: memoReadUntil(now)}
+		reads := &readinessReads{}
 		ctx = context.WithValue(ctx, readMemoHorizonKey{}, horizon)
+		ctx = context.WithValue(ctx, readinessReadsKey{}, reads)
 		opts.Now = now
 		items, err := s.readInboxUncached(ctx, opts, band, filter)
 		if err != nil {
 			return readMemoValue{}, err
 		}
 		body, err := json.Marshal(items)
-		return readMemoValue{body: body, validUntil: horizon.until}, err
+		return readMemoValue{body: body, validUntil: horizon.until, reads: reads.snapshot()}, err
 	})
 	if err != nil {
 		return nil, err
 	}
+	// The enclosing read is bounded by this entry's horizon and covers the
+	// readiness values it read, whether built here or held.
 	memoHorizon(ctx, value.validUntil)
+	if outer, ok := readinessReadsFrom(ctx); ok {
+		outer.addAll(value.reads)
+	}
 	var items []inboxItem
 	if err := json.Unmarshal(value.body, &items); err != nil {
 		return nil, err
@@ -183,6 +190,7 @@ func (s *Server) readInboxUncached(ctx context.Context, opts store.NextActionOpt
 		return nil, err
 	}
 	memoHorizon(ctx, inputs.ValidUntil)
+	orderHorizon(ctx, inputs.Orders)
 	opts.MarkersLoaded, opts.Markers = true, inputs.Markers
 	opts.OrdersLoaded, opts.Orders = true, inputs.Orders
 	proposals, err := s.Store.ListPendingProposals(ctx)

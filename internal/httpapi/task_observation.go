@@ -57,6 +57,7 @@ func (s *Server) getTaskObservation(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		memoHorizon(ctx, inputs.ValidUntil)
+		orderHorizon(ctx, orders)
 		opts.MarkersLoaded, opts.Markers = true, inputs.Markers
 		action, err := store.ReadNextActionForTask(ctx, s.Store, task, orders, opts)
 		if err != nil {

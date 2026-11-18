@@ -7,7 +7,9 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -245,7 +247,7 @@ func (c *mergeReadinessCache) lastKnown(ctx context.Context, task core.Task) *ne
 	if !expires.IsZero() {
 		memoHorizon(ctx, expires)
 	}
-	if reads, ok := ctx.Value(readinessReadsKey{}).(*readinessReads); ok {
+	if reads, ok := readinessReadsFrom(ctx); ok {
 		reads.add(id, key, value)
 	}
 	if value == nil {
@@ -296,6 +298,42 @@ func (r *readinessReads) add(id, key string, value *dispatch.MergeReadiness) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.reads = append(r.reads, readinessRead{id: id, key: key, value: value})
+}
+
+func (r *readinessReads) addAll(reads []readinessRead) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reads = append(r.reads, reads...)
+}
+
+func (r *readinessReads) snapshot() []readinessRead {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]readinessRead(nil), r.reads...)
+}
+
+// digest encodes every recorded peek, in a stable order, for a tag: a read
+// that peeked another value, or no value, gets another tag even when the
+// body it served is the same (component-next-action invariant 58).
+func (r *readinessReads) digest() []byte {
+	reads := r.snapshot()
+	lines := make([]string, 0, len(reads))
+	for _, read := range reads {
+		value := "none"
+		if read.value != nil {
+			value = read.value.State + "\x00" + read.value.HeadSHA + "\x00" + read.value.URL + "\x00" + strconv.Itoa(read.value.Number)
+		}
+		lines = append(lines, read.id+"\x00"+read.key+"\x00"+value)
+	}
+	slices.Sort(lines)
+	lines = slices.Compact(lines)
+	return []byte(strings.Join(lines, "\n"))
+}
+
+// readinessReadsFrom returns the recorder of the statement read ctx serves.
+func readinessReadsFrom(ctx context.Context) (*readinessReads, bool) {
+	reads, ok := ctx.Value(readinessReadsKey{}).(*readinessReads)
+	return reads, ok
 }
 
 // unchanged reports whether every recorded peek still returns its value.

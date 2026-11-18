@@ -123,7 +123,7 @@ func (s *Server) memoizedRead(w http.ResponseWriter, r *http.Request, kind strin
 			value.unstored = true
 			return value, nil
 		}
-		value.etag = statementConditional(now, opts, []byte(key), validation, value.body).etag(value.validUntil, "")
+		value.etag = statementConditional(now, opts, []byte(key), validation, value.body, reads).etag(value.validUntil, "")
 		return value, nil
 	})
 	if err != nil {

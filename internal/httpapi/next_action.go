@@ -77,6 +77,7 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, page store.T
 		return
 	}
 	memoHorizon(r.Context(), inputs.ValidUntil)
+	orderHorizon(r.Context(), inputs.Orders)
 	opts.MarkersLoaded, opts.Markers = true, inputs.Markers
 	opts.OrdersLoaded, opts.Orders = true, inputs.Orders
 	ctx, err := s.loadTaskRisksWith(r.Context(), tasks, store.RiskProjectionOptions{Orders: inputs.Orders, OrdersLoaded: true})
@@ -198,6 +199,7 @@ func (s *Server) getNextAction(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		memoHorizon(ctx, inputs.ValidUntil)
+		orderHorizon(ctx, inputs.Orders)
 		opts.MarkersLoaded, opts.Markers = true, inputs.Markers
 		opts.OrdersLoaded, opts.Orders = true, inputs.Orders
 		projected, err := store.ReadNextActions(ctx, s.Store, []core.Task{task}, opts)

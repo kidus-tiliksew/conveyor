@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -29,9 +31,36 @@ const statementReadAttempts = 3
 // statementConditional is the validator state of one statement response:
 // the activity validator over its scope and validation read, plus the digest
 // of the encoded body it answers.
-func statementConditional(now time.Time, opts store.NextActionOptions, scope []byte, validation store.ActivityValidation, body []byte) *activityConditional {
-	digest := sha256.Sum256(body)
-	return &activityConditional{now: now, opts: opts, scope: scope, validation: validation, covered: digest[:]}
+func statementConditional(now time.Time, opts store.NextActionOptions, scope []byte, validation store.ActivityValidation, body []byte, reads *readinessReads) *activityConditional {
+	hash := sha256.New()
+	hash.Write(body)
+	hash.Write([]byte{0})
+	hash.Write(reads.digest())
+	return &activityConditional{now: now, opts: opts, scope: scope, validation: validation, covered: hash.Sum(nil)}
+}
+
+var timeType = reflect.TypeFor[time.Time]()
+
+// orderHorizon bounds a statement read by every work-order time after the
+// read's instant. The validation read counts each work-order time once it
+// passes, and a passed time can change a statement, so a body read before
+// one is not reused past it (component-next-action invariant 58).
+func orderHorizon(ctx context.Context, orders []core.WorkOrder) {
+	for i := range orders {
+		value := reflect.ValueOf(orders[i])
+		for j := range value.NumField() {
+			field := value.Field(j)
+			if !field.CanInterface() {
+				continue
+			}
+			switch {
+			case field.Type() == timeType:
+				memoHorizon(ctx, field.Interface().(time.Time))
+			case field.Type() == reflect.PointerTo(timeType) && !field.IsNil():
+				memoHorizon(ctx, *field.Interface().(*time.Time))
+			}
+		}
+	}
 }
 
 // statementNotFound marks the task read's not-found, which answers 404.
@@ -96,7 +125,7 @@ func (s *Server) answerStatement(w http.ResponseWriter, r *http.Request, route, 
 			_, _ = w.Write(encoded.Bytes())
 			return
 		}
-		tag := statementConditional(now, opts, scope, validation, encoded.Bytes()).etag(horizon.until, "")
+		tag := statementConditional(now, opts, scope, validation, encoded.Bytes(), reads).etag(horizon.until, "")
 		w.Header().Set("ETag", tag)
 		if r.Header.Get("If-None-Match") == tag {
 			w.WriteHeader(http.StatusNotModified)

@@ -556,3 +556,49 @@ func TestGitHubFallbackStopsOnWebhookDelivery(t *testing.T) {
 	}
 	g.quiet()
 }
+
+// TestGitHubFallbackWorkspaceNoticesMakeNoForgeRead proves the workspace
+// notices that document proposals, membership changes, and the in-process
+// merge-readiness cache now raise wake the fallback's settings read only:
+// they make no GitHub read and never bring the armed timer forward
+// (DEC-140(3); task 261118-aeb309 item 3).
+func TestGitHubFallbackWorkspaceNoticesMakeNoForgeRead(t *testing.T) {
+	f := newFallbackFixture(t)
+	f.run()
+	f.createWaitingTask("waiting", core.TaskQueued)
+	armed := f.awaitTask(true)
+	if !armed.armed {
+		t.Fatalf("waiting task did not arm the timer: %+v", armed)
+	}
+	reads := f.reads.Load()
+	operator := store.WithActor(f.ctx, store.Actor{ID: "user:fallback-operator", Role: core.ActorHuman})
+	expectSettings := func(what string) {
+		t.Helper()
+		s := f.await("settings")
+		if !s.armed || !s.due.Equal(armed.due) {
+			t.Fatalf("%s moved the timer: %+v, want armed for %s", what, s, armed.due)
+		}
+		if got := f.reads.Load(); got != reads {
+			t.Fatalf("%s made %d GitHub reads", what, got-reads)
+		}
+	}
+	decision, err := f.st.ProposeDecision(operator, core.Decision{Statement: "Fallback notice decision.", Context: "Fallback fixture.", AlternativesRejected: "None.", Origin: core.DecisionOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectSettings("a decision proposal")
+	if _, err := f.st.ConfirmDecision(operator, decision.ID); err != nil {
+		t.Fatal(err)
+	}
+	expectSettings("a decision confirmation")
+	// The in-process notice a merge-readiness change or expiry publishes.
+	f.hub.Publish(changes.Notice{Workspace: "test", Kind: changes.Workspace})
+	expectSettings("a merge-readiness notice")
+	f.quiet()
+	if _, fired := f.advance(armed.due.Sub(f.clock.Now()) - time.Second); fired {
+		t.Fatal("the timer fired before its due time")
+	}
+	if s, fired := f.advance(time.Second); !fired || f.reads.Load() != reads+1 {
+		t.Fatalf("due fire=%+v fired=%t reads=%d, want one read at the unchanged due time", s, fired, f.reads.Load()-reads)
+	}
+}

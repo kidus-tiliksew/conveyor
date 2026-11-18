@@ -78,6 +78,9 @@ type readMemoValue struct {
 	// unstored marks a result whose inputs changed during its build: it
 	// answers its own caller once, carries no ETag, and is never stored.
 	unstored bool
+	// reads are the merge-readiness peeks the build made, handed to an
+	// enclosing statement read on every answer.
+	reads []readinessRead
 }
 
 // size is the encoded bytes an entry holds against readMemoByteBudget.
@@ -91,6 +94,7 @@ func (v readMemoValue) size() int {
 
 func (v readMemoValue) clone() readMemoValue {
 	v.body = append([]byte(nil), v.body...)
+	v.reads = append([]readinessRead(nil), v.reads...)
 	if v.header != nil {
 		h := make(map[string]string, len(v.header))
 		for k, value := range v.header {
