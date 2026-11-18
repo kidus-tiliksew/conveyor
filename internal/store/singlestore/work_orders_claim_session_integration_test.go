@@ -56,6 +56,33 @@ func TestRenewalReadsAtScaleSingleStoreIntegration(t *testing.T) {
 	})
 }
 
+// TestRenewalDeliveryReadsAtScaleSingleStoreIntegration renews pinned verify and review
+// orders through the renew_work_order service path, DeliverOrder included,
+// over the same 200-order fixture. The read ledger bounds the bytes the
+// whole renewal and its document list receive below one snapshot, although
+// the task body, its timeline, and the pinned design body each exceed it
+// (component-work-orders invariants 23 and 24).
+func TestRenewalDeliveryReadsAtScaleSingleStoreIntegration(t *testing.T) {
+	st := openOwnedStore(t, false)
+	workspace := "claim-session-scale-" + core.NewTaskID()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
+	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
+	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	storetest.RunRenewalDeliveryReads(t, storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg}, claimSessionScaleSingleStore(st, workspace), func(st store.Store) func(context.Context, core.WorkOrderClaimIdentity, string, time.Duration) (core.WorkOrder, *core.GovernanceReferences, string, error) {
+		service := &workorder.Service{Store: st}
+		return func(ctx context.Context, claim core.WorkOrderClaimIdentity, workOrderID string, lease time.Duration) (core.WorkOrder, *core.GovernanceReferences, string, error) {
+			order, err := service.RenewClaimWithLease(ctx, claim, workOrderID, lease)
+			if err != nil {
+				return order, nil, "", err
+			}
+			delivery := service.DeliverOrder(ctx, order)
+			return delivery.WorkOrder, delivery.GovernanceReferences, delivery.GovernanceReferencesError, nil
+		}
+	})
+}
+
 // claimSessionScaleSingleStore seeds with set-based SQL and drains the store's read
 // ledger.
 func claimSessionScaleSingleStore(st *Store, workspace string) storetest.ClaimSessionScale {

@@ -194,7 +194,9 @@ func (v *kitVerifier) observe(ctx context.Context, e verification.Exercise, runI
 	}
 	finishCtx, finishCancel := v.finishContext(ctx)
 	defer finishCancel()
-	if err := v.liveFresh(finishCtx, grantID); err != nil {
+	// The observation's outcome is a fixed point: renew and reread
+	// unconditionally before it (component-verification-runner invariant 26).
+	if err := v.liveForced(finishCtx, grantID); err != nil {
 		return err
 	}
 	if state != "succeeded" {

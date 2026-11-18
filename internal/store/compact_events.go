@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -91,4 +92,33 @@ func (m *memory) ListTaskContextEvents(ctx context.Context, taskID string) ([]co
 		}
 	}
 	return contextEvents, nil
+}
+
+// ListTaskDesignContextEvents is the volatile backend's design provenance
+// read. It selects the task's design attachment and removal events under the
+// read lock and sorts only those, as the durable backends' kind predicate
+// does, so it never copies, sorts, or compacts the rest of the timeline. The
+// two design kinds carry no snapshot body, so no payload needs compaction.
+// Another workspace's task reads as a task without events, as the durable
+// backends' workspace predicate answers.
+func (m *memory) ListTaskDesignContextEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	m.mu.RLock()
+	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && m.tasks[taskID].Workspace != selected {
+		m.mu.RUnlock()
+		return []core.Event{}, nil
+	}
+	design := []core.Event{}
+	for _, event := range m.events[taskID] {
+		if event.Kind == TaskContextDesignAdded || event.Kind == TaskContextDesignRemoved {
+			design = append(design, event)
+		}
+	}
+	m.mu.RUnlock()
+	sort.Slice(design, func(i, j int) bool {
+		if design[i].At.Equal(design[j].At) {
+			return design[i].ID < design[j].ID
+		}
+		return design[i].At.Before(design[j].At)
+	})
+	return design, nil
 }
