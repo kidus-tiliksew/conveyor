@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"sort"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -397,5 +397,283 @@ func TestSingleStoreTaskEventCommitStatementsIntegration(t *testing.T) {
 	}
 }
 
-var _ = sort.Slice
-var _ sync.Mutex
+// requireWitnessModel fails unless the workspace retains exactly want
+// witnesses, every retained position at or above the last prune position
+// still holds all its witnesses, and below it only the positions named in
+// kept keep theirs.
+func requireWitnessModel(t *testing.T, st *Store, ws string, want int, kept map[int64]bool, what string) map[int64][]int64 {
+	t.Helper()
+	counter, _ := taskEventPosition(t, st, ws)
+	rows := witnessRows(t, st, ws)
+	if got := countWitnesses(rows); got != want {
+		t.Fatalf("%s: position %d retains %d witnesses, want %d", what, counter, got, want)
+	}
+	floor := lastPrunePosition(counter)
+	if floor == 0 {
+		return rows
+	}
+	for position := range rows {
+		if position < floor && !kept[position] {
+			t.Fatalf("%s: position %d below the prune at %d kept witnesses %v", what, position, floor, rows[position])
+		}
+	}
+	for position := floor; position <= counter; position++ {
+		if len(rows[position]) == 0 {
+			t.Fatalf("%s: position %d at or above the prune at %d lost its witnesses", what, position, floor)
+		}
+	}
+	return rows
+}
+
+// TestSingleStoreTaskEventPruneCadenceIntegration: pruning runs only at
+// multiples of taskEventPruneCadence, never reads anything a peer wrote, and
+// keeps a workspace that commits one event per position at or below
+// taskEventPruneCadence witnesses with no peer reading. A rolled-back
+// commit at a prune position prunes nothing.
+func TestSingleStoreTaskEventPruneCadenceIntegration(t *testing.T) {
+	st := openOwnedStore(t)
+	ctx, ws, taskID := seedSingleStoreNoticeTask(t, st)
+	counter, retained := taskEventPosition(t, st, ws)
+	rollback := errors.New("rollback probe")
+	rolledBack := false
+	highest := 0
+	for counter < 4*taskEventPruneCadence+9 {
+		if counter == 2*taskEventPruneCadence-1 && !rolledBack {
+			// The next commit would prune. Roll it back: neither the
+			// counter nor any witness moves.
+			if err := st.withTx(ctx, func(tx *sql.Tx) error {
+				if err := taskEvent(ctx, tx, core.Event{TaskID: taskID, Kind: "peer.cadence.rollback"}); err != nil {
+					return err
+				}
+				return rollback
+			}); !errors.Is(err, rollback) {
+				t.Fatalf("rollback probe: %v", err)
+			}
+			if p, w := taskEventPosition(t, st, ws); p != counter || w != retained {
+				t.Fatalf("a rolled-back prune commit moved position %d->%d, witnesses %d->%d", counter, p, retained, w)
+			}
+			rolledBack = true
+		}
+		if err := st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: "peer.cadence"}); err != nil {
+			t.Fatal(err)
+		}
+		counter++
+		if isTaskEventPrunePosition(counter) {
+			// Every earlier event is visible: the prune removes them all.
+			retained = 0
+		}
+		retained++
+		requireWitnessModel(t, st, ws, retained, nil, fmt.Sprintf("commit at %d", counter))
+		if counter >= taskEventPruneCadence && retained > highest {
+			highest = retained
+		}
+		if counter >= taskEventPruneCadence && retained > taskEventPruneCadence {
+			t.Fatalf("position %d retains %d witnesses, above the bound %d", counter, retained, taskEventPruneCadence)
+		}
+	}
+	if !rolledBack || highest != taskEventPruneCadence {
+		t.Fatalf("rolled back=%v, highest retained=%d, want the bound %d reached", rolledBack, highest, taskEventPruneCadence)
+	}
+	t.Logf("%d positions committed; at most %d witnesses retained after the first prune", counter, highest)
+}
+
+// TestSingleStoreTaskEventPruneBacklogIntegration: the retained witnesses
+// follow W' = W - min(V, taskEventPositionPrune) + E at each prune position.
+// A prune keeps the witness of an event it cannot read however many prune
+// positions pass, removes at most taskEventPositionPrune visible witnesses
+// oldest first, and drains a larger visible backlog at the next prune
+// positions.
+func TestSingleStoreTaskEventPruneBacklogIntegration(t *testing.T) {
+	st := openOwnedStore(t)
+	ctx, ws, taskID := seedSingleStoreNoticeTask(t, st)
+
+	held := holdTaskEvent(t, st, ctx, taskID, "peer.backlog.held")
+	commitPositionFirst(t, held)
+	heldAt, _ := taskEventPosition(t, st, ws)
+	kept := map[int64]bool{heldAt: true}
+
+	// One transaction writes more events than one prune removes.
+	const batch = taskEventPositionPrune + 100
+	nextPositionNotPrune(t, st, ctx, ws, taskID)
+	if err := st.withTx(ctx, func(tx *sql.Tx) error {
+		for i := 0; i < batch; i++ {
+			if err := taskEvent(ctx, tx, core.Event{TaskID: taskID, Kind: "peer.backlog.batch"}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	batchAt := requireCounterWitnessed(t, st, ws, batch, "batch commit")
+
+	// The first prune position: every witness below it but the held one is
+	// visible. It removes the oldest taskEventPositionPrune of them.
+	prune := lastPrunePosition(batchAt) + taskEventPruneCadence
+	commitToPosition(t, st, ctx, ws, taskID, prune-1)
+	_, before := taskEventPosition(t, st, ws)
+	commitToPosition(t, st, ctx, ws, taskID, prune)
+	visible := before - 1
+	want := before - min(visible, taskEventPositionPrune) + 1
+	// Oldest first: the budget runs out inside the batch, so the batch's
+	// newest witnesses and every later position keep theirs.
+	for position := batchAt; position < prune; position++ {
+		kept[position] = true
+	}
+	rows := requireWitnessModel(t, st, ws, want, kept, "first prune")
+	if len(rows[heldAt]) != 1 || rows[heldAt][0] != held.id() {
+		t.Fatalf("the invisible event's witness at %d=%v, want it kept", heldAt, rows[heldAt])
+	}
+	for position := range rows {
+		if position != heldAt && position != prune && position < batchAt {
+			t.Fatalf("an older visible witness at %d survived while newer ones at %d were pruned", position, batchAt)
+		}
+	}
+	if left := len(rows[batchAt]); left == 0 || left == batch {
+		t.Fatalf("the batch at %d kept %d of %d witnesses, want a partial prune", batchAt, left, batch)
+	}
+	for position := batchAt + 1; position < prune; position++ {
+		if len(rows[position]) != 1 {
+			t.Fatalf("position %d after the batch has witnesses %v, want its one event kept", position, rows[position])
+		}
+	}
+	t.Logf("first prune at %d: %d -> %d witnesses (%d visible, budget %d)", prune, before, want, visible, taskEventPositionPrune)
+
+	// The next prune position drains the rest of the visible backlog.
+	commitToPosition(t, st, ctx, ws, taskID, prune+taskEventPruneCadence-1)
+	_, before = taskEventPosition(t, st, ws)
+	commitToPosition(t, st, ctx, ws, taskID, prune+taskEventPruneCadence)
+	visible = before - 1
+	if visible > taskEventPositionPrune {
+		t.Fatalf("second prune: %d visible witnesses, above one prune's budget", visible)
+	}
+	requireWitnessModel(t, st, ws, 2, map[int64]bool{heldAt: true}, "second prune")
+
+	// Released, the held event's witness goes at the next prune position.
+	held.release(t)
+	commitToPosition(t, st, ctx, ws, taskID, prune+2*taskEventPruneCadence)
+	requireWitnessModel(t, st, ws, 1, nil, "after release")
+
+	// A peer that never read during all this accepts the counter.
+	peer, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	counter, _ := taskEventPosition(t, st, ws)
+	if marks, err := peer.PeerMarks(context.Background()); err != nil || marks[ws].Events != counter {
+		t.Fatalf("a fresh peer: marks=%+v err=%v, want position %d", marks[ws], err, counter)
+	}
+}
+
+// TestSingleStoreTaskEventConcurrentWritersIntegration: concurrent writers
+// in one workspace advance the counter once per transaction, every retained
+// position keeps its complete witness set, every pruned witness's event is
+// visible, an earlier held event keeps every later visible position from
+// being accepted, and once it is visible a peer reaches the last position.
+func TestSingleStoreTaskEventConcurrentWritersIntegration(t *testing.T) {
+	st := openOwnedStore(t)
+	ctx, ws, firstTask := seedSingleStoreNoticeTask(t, st)
+	const writers, commits = 6, 40
+	tasks := []string{firstTask}
+	for len(tasks) < writers {
+		id := core.NewTaskID()
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: ws, Repo: "repo", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		tasks = append(tasks, id)
+	}
+	peer, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+
+	held := holdTaskEvent(t, st, ctx, firstTask, "peer.concurrent.held")
+	commitPositionFirst(t, held)
+	heldAt, _ := taskEventPosition(t, st, ws)
+
+	var mu sync.Mutex
+	advances := 0
+	observe := func(workspaces []string) {
+		n := 0
+		for _, w := range workspaces {
+			if w == ws {
+				n++
+			}
+		}
+		mu.Lock()
+		advances += n
+		mu.Unlock()
+	}
+	observeTaskEventPreparation.Store(&observe)
+	t.Cleanup(func() { observeTaskEventPreparation.Store(nil) })
+
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for _, taskID := range tasks {
+		wg.Add(1)
+		go func(taskID string) {
+			defer wg.Done()
+			for i := 0; i < commits; i++ {
+				if err := st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: "peer.concurrent"}); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(taskID)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	observeTaskEventPreparation.Store(nil)
+
+	counter, _ := taskEventPosition(t, st, ws)
+	if counter != heldAt+writers*commits || advances != writers*commits {
+		t.Fatalf("counter %d after %d commits from %d, %d advances: want one advance per transaction", counter, writers*commits, heldAt, advances)
+	}
+	if lastPrunePosition(counter) <= heldAt {
+		t.Fatalf("the writers crossed no prune position above the held event at %d (counter %d)", heldAt, counter)
+	}
+	// Every position from the last prune keeps its one witness; below it
+	// only the held event's witness stays.
+	rows := requireWitnessModel(t, st, ws, int(counter-lastPrunePosition(counter))+2, map[int64]bool{heldAt: true}, "after the writers")
+	if len(rows[heldAt]) != 1 || rows[heldAt][0] != held.id() {
+		t.Fatalf("the held event's witness at %d=%v, want it kept", heldAt, rows[heldAt])
+	}
+	ids := map[int64]bool{}
+	for position, witnessed := range rows {
+		if len(witnessed) != 1 {
+			t.Fatalf("position %d has witnesses %v, want its one event", position, witnessed)
+		}
+		if ids[witnessed[0]] {
+			t.Fatalf("event %d is witnessed twice", witnessed[0])
+		}
+		ids[witnessed[0]] = true
+	}
+	// Every pruned witness's event is visible: all the writers' events are,
+	// and the retained ones but the held event join a visible row.
+	var written, joined int
+	if err := st.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND kind='peer.concurrent'`, ws).Scan(&written); err != nil || written != writers*commits {
+		t.Fatalf("visible writer events=%d err=%v, want %d", written, err, writers*commits)
+	}
+	if err := st.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM task_event_witnesses w JOIN events_columnstore e ON e.event_shard_key=w.event_shard_key AND e.workspace_id=w.workspace_id AND e.id=w.event_id WHERE w.workspace_id=?`, ws).Scan(&joined); err != nil || joined != len(ids)-1 {
+		t.Fatalf("retained witnesses joining a visible event=%d err=%v, want all %d but the held one", joined, err, len(ids))
+	}
+
+	// The held earlier event keeps the peer below it, however many later
+	// positions are visible.
+	marks, err := peer.PeerMarks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marks[ws].Events >= heldAt {
+		t.Fatalf("the peer accepted position %d past the invisible event at %d", marks[ws].Events, heldAt)
+	}
+	held.release(t)
+	if marks, err = peer.PeerMarks(context.Background()); err != nil || marks[ws].Events != counter {
+		t.Fatalf("after the held event became visible: marks=%+v err=%v, want the last position %d", marks[ws], err, counter)
+	}
+}
