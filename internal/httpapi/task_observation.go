@@ -70,7 +70,7 @@ func (s *Server) getTaskObservation(w http.ResponseWriter, r *http.Request) {
 		writeStoreFailure(w, r, err)
 		return
 	}
-	claimable, err := s.projectTaskClaimability(r.Context(), orders)
+	claimable, err := s.projectTaskClaimability(r.Context(), task, orders)
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return
@@ -122,16 +122,21 @@ type taskObservationOrder struct {
 // that GET /v1/work-orders applies for the same caller: the work-order
 // service's dependency, recovery, and risk projections, then the assignee
 // projection. Without a configured service the list route serves the stored
-// orders, and so does this read. A projection failure fails the read, so an
-// order never reads as claimable because a projection input was unreadable
+// orders, and so does this read. The task order read does not carry the
+// assignee on every backend, so the assignee comes from the task read the
+// route already made. A projection failure fails the read, so an order never
+// reads as claimable because a projection input was unreadable
 // (component-next-action invariant 57; component-work-orders, Listing).
-func (s *Server) projectTaskClaimability(ctx context.Context, orders []core.WorkOrder) ([]core.WorkOrder, error) {
+func (s *Server) projectTaskClaimability(ctx context.Context, task core.Task, orders []core.WorkOrder) ([]core.WorkOrder, error) {
 	projected := slices.Clone(orders)
 	if s.WorkOrders != nil {
 		var err error
 		if projected, err = s.WorkOrders.ProjectTaskOrders(ctx, orders); err != nil {
 			return nil, err
 		}
+	}
+	for i := range projected {
+		projected[i].Assignee = task.Assignee
 	}
 	return projectAssigneeClaimability(ctx, projected), nil
 }

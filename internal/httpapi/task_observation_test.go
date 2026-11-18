@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -268,4 +272,88 @@ type failingBlockerStore struct {
 
 func (s *failingBlockerStore) ListDependencyBlockers(context.Context, []string) (map[string]store.DependencyBlockers, error) {
 	return nil, store.ErrBackendOperation
+}
+
+// assigneeFreeOrderStore answers the task order read without the task
+// assignee, as the PostgreSQL and SingleStore task order reads do.
+type assigneeFreeOrderStore struct {
+	store.Backend
+}
+
+func (s assigneeFreeOrderStore) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	orders, err := s.Backend.ListTaskWorkOrders(ctx, taskID)
+	for i := range orders {
+		orders[i].Assignee = nil
+	}
+	return orders, err
+}
+
+// TestTaskObservationTakesTheAssigneeFromTheTaskRead proves an order of a
+// task assigned to another workspace member is not claimable for the caller,
+// even when the task order read carries no assignee, and is claimable again
+// once the assignment is cleared (component-next-action invariant 57).
+func TestTaskObservationTakesTheAssigneeFromTheTaskRead(t *testing.T) {
+	backend := store.NewVolatileBackend()
+	t.Cleanup(backend.Close)
+	ctx := store.WithActor(store.WithWorkspace(t.Context(), "demo"), store.SystemActor())
+	if _, err := backend.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Observation", Email: "owner@example.test", DisplayName: "Owner"}, "observation-bootstrap"); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := backend.VerifyPersonalAccessToken(ctx, "observation-bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerCtx := store.WithActor(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "bootstrap", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}), store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	if _, err = backend.GrantWorkspaceRole(ownerCtx, owner.Email, "demo", core.WorkspaceRoleOperator); err != nil {
+		t.Fatal(err)
+	}
+	other, err := backend.ProvisionIdentityUser(ownerCtx, "other@example.test", "Other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = backend.GrantWorkspaceRole(ownerCtx, other.Email, "demo", core.WorkspaceRoleExecutor); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err = backend.CreateTask(ctx, core.Task{ID: "task-assigned", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/task-assigned", Title: "Assigned", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err = backend.CreateJob(ctx, core.Job{ID: "task-assigned-implement-1", TaskID: "task-assigned", Stage: core.StageImplement, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(backend).CreateWorkOrder(ctx, core.WorkOrder{ID: "task-assigned-implement-1", JobID: "task-assigned-implement-1", TaskID: "task-assigned", Stage: core.StageImplement, CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(assigneeFreeOrderStore{backend})
+	server.Credentials = nil
+	server.Workspace, server.BearerToken = "demo", "observation-token"
+	server.WorkOrders = &workorder.Service{Store: backend}
+	handler := server.Handler()
+	read := func() string {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/v1/tasks/task-assigned/observation", nil)
+		request.Header.Set("Authorization", "Bearer observation-token")
+		request.Header.Set("X-Workspace-ID", "demo")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("observation status=%d body=%s", response.Code, response.Body.String())
+		}
+		return response.Body.String()
+	}
+	if _, err = taskops.New(backend).SetAssignee(ownerCtx, "task-assigned", other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if body := read(); !strings.Contains(body, `"claimable_orders":[]`) {
+		t.Fatalf("observation of a task assigned to another user=%s, want no claimable order", body)
+	}
+	if _, err = taskops.New(backend).SetAssignee(ownerCtx, "task-assigned", ""); err != nil {
+		t.Fatal(err)
+	}
+	if body := read(); !strings.Contains(body, `"id":"task-assigned-implement-1"`) {
+		t.Fatalf("observation of an unassigned task=%s lacks the order", body)
+	}
 }
