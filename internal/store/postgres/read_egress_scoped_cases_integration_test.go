@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
@@ -12,7 +13,10 @@ import (
 // read — the whole-workspace listing plus the consumer's existing
 // projection — with the scoped public read of the checked-out tree. The
 // baseline methods are the original code and are never reimplemented here,
-// so a candidate gain cannot come from a hand-tuned baseline.
+// so a candidate gain cannot come from a hand-tuned baseline. The two version
+// summary baselines are the exception: their workspace-wide store methods had
+// no production caller and were removed, so each baseline repeats that
+// method's statement verbatim from scopedVersionBaselineRevision.
 
 func init() {
 	readEgressCases.Register("artifact-owner-associations", buildScopedArtifactOwnerAssociations)
@@ -45,7 +49,7 @@ func buildScopedArtifactOwnerAssociations(t testing.TB, ctx context.Context, st 
 	}
 	owners, fixture := storetest.SeedReadEgressScopedArtifacts(t, ctx, st, noise, nameBytes)
 	return storetest.ReadEgressCase{Name: "artifact-owner-associations", Fixture: fixture,
-		BaselineRevision: "candidate-revision:retained-full-api+consumer-fold",
+		BaselineRevision: scopedVersionBaselineRevision,
 		Baseline: func(ctx context.Context) (storetest.ReadEgressOutcome, error) {
 			listed, err := st.ListArtifacts(ctx)
 			if err != nil {
@@ -94,16 +98,16 @@ func buildScopedRequirementVersionSummaries(t testing.TB, ctx context.Context, s
 		requirements = append(requirements, requirement)
 	}
 	return storetest.ReadEgressCase{Name: "requirement-version-summaries", Fixture: fixture,
-		BaselineRevision: "candidate-revision:retained-full-api+consumer-fold",
+		BaselineRevision: scopedVersionBaselineRevision,
 		Baseline: func(ctx context.Context) (storetest.ReadEgressOutcome, error) {
-			versions, err := st.ListRequirementVersionsByRequirement(ctx)
+			versions, err := legacyRequirementVersionsByRequirement(ctx, st)
 			if err != nil {
 				return storetest.ReadEgressOutcome{}, err
 			}
 			return scopedRequirementOutcome(requirements, versions)
 		},
 		Candidate: func(ctx context.Context) (storetest.ReadEgressOutcome, error) {
-			versions, err := st.ListRequirementVersionSummaries(ctx, ids)
+			versions, err := st.ListRequirementVersionSummaries(ctx, storetest.ReadEgressRequirementSelections(requirements))
 			if err != nil {
 				return storetest.ReadEgressOutcome{}, err
 			}
@@ -145,16 +149,16 @@ func buildScopedSystemDesignVersionSummaries(t testing.TB, ctx context.Context, 
 		items = append(items, item)
 	}
 	return storetest.ReadEgressCase{Name: "system-design-version-summaries", Fixture: fixture,
-		BaselineRevision: "candidate-revision:retained-full-api+consumer-fold",
+		BaselineRevision: scopedVersionBaselineRevision,
 		Baseline: func(ctx context.Context) (storetest.ReadEgressOutcome, error) {
-			versions, err := st.ListSystemDesignVersionsByDocument(ctx)
+			versions, err := legacySystemDesignVersionsByDocument(ctx, st)
 			if err != nil {
 				return storetest.ReadEgressOutcome{}, err
 			}
 			return scopedSystemDesignOutcome(items, versions)
 		},
 		Candidate: func(ctx context.Context) (storetest.ReadEgressOutcome, error) {
-			versions, err := st.ListSystemDesignVersionSummaries(ctx, ids)
+			versions, err := st.ListSystemDesignVersionSummaries(ctx, storetest.ReadEgressSystemDesignSelections(items))
 			if err != nil {
 				return storetest.ReadEgressOutcome{}, err
 			}
@@ -187,7 +191,7 @@ func buildScopedReconciliationTasks(t testing.TB, ctx context.Context, st *Store
 	}
 	fixture := storetest.SeedReadEgressScopedReconciliationTasks(t, ctx, st, noise, bodyBytes)
 	return storetest.ReadEgressCase{Name: "review-policy-reconciliation-tasks", Fixture: fixture,
-		BaselineRevision: "candidate-revision:retained-full-api+consumer-fold",
+		BaselineRevision: scopedVersionBaselineRevision,
 		Baseline: func(ctx context.Context) (storetest.ReadEgressOutcome, error) {
 			tasks, err := st.ListTasks(ctx)
 			if err != nil {
@@ -222,4 +226,50 @@ func scopedReconciliationOutcome(tasks []core.Task) (storetest.ReadEgressOutcome
 	selected := storetest.ReduceReadEgressScopedReconciliationTasks(tasks)
 	digest, err := storetest.ReadEgressDigest(selected)
 	return storetest.ReadEgressOutcome{Digest: digest, Successes: len(selected)}, err
+}
+
+// scopedVersionBaselineRevision names the commit whose workspace-wide version
+// reads the scoped version baselines below repeat inline. Those store methods
+// had no production caller and were removed (component-document-corpus).
+const scopedVersionBaselineRevision = "inline-queries@34e959bd02afc71f096cc0f8c973fbaa9cb74c0f"
+
+// legacyRequirementVersionsByRequirement repeats the removed workspace-wide
+// requirement version read: every version of every requirement, content
+// included, grouped by requirement in Go.
+func legacyRequirementVersionsByRequirement(ctx context.Context, st *Store) (map[string][]core.RequirementVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "LegacyRequirementVersionsByRequirement")
+	rows, err := st.boundary.Query(ctx, requirementVersionSelect+` WHERE workspace_id=$1 ORDER BY requirement_id,version`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]core.RequirementVersion{}
+	for rows.Next() {
+		version, err := scanRequirementVersionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[version.RequirementID] = append(out[version.RequirementID], version)
+	}
+	return out, rows.Err()
+}
+
+// legacySystemDesignVersionsByDocument repeats the removed workspace-wide
+// System Design version read, grouped by document in Go.
+func legacySystemDesignVersionsByDocument(ctx context.Context, st *Store) (map[string][]core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "LegacySystemDesignVersionsByDocument")
+	rows, err := st.boundary.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 ORDER BY document_id,version`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]core.SystemDesignVersion{}
+	for rows.Next() {
+		item, err := scanSystemDesignVersion(rows, "", 0)
+		if err != nil {
+			return nil, err
+		}
+		out[item.DocumentID] = append(out[item.DocumentID], item)
+	}
+	return out, rows.Err()
 }

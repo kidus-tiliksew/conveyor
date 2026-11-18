@@ -109,14 +109,48 @@ func runDocumentVersionSummaries(t *testing.T, x Fixture) {
 	missingRequirement := "missing-" + core.NewTaskID()
 	missingDesign := "missing-" + core.NewTaskID()
 
+	// listedRequirements and listedDesigns pair each ID with the current
+	// version the workspace's row read names, as the list routes do. An ID
+	// the row read does not list pairs with version 0.
+	listedRequirements := func(t *testing.T, ids ...string) []store.DocumentVersionSelection {
+		t.Helper()
+		rows, err := st.ListRequirements(ctx, true)
+		requireOK(t, err)
+		current := map[string]int{}
+		for _, row := range rows {
+			current[row.ID] = row.CurrentVersion
+		}
+		out := make([]store.DocumentVersionSelection, 0, len(ids))
+		for _, id := range ids {
+			out = append(out, store.DocumentVersionSelection{ID: id, CurrentVersion: current[id]})
+		}
+		return out
+	}
+	listedDesigns := func(t *testing.T, ids ...string) []store.DocumentVersionSelection {
+		t.Helper()
+		rows, err := st.ListSystemDesigns(ctx, true)
+		requireOK(t, err)
+		current := map[string]int{}
+		for _, row := range rows {
+			current[row.ID] = row.CurrentVersion
+		}
+		out := make([]store.DocumentVersionSelection, 0, len(ids))
+		for _, id := range ids {
+			out = append(out, store.DocumentVersionSelection{ID: id, CurrentVersion: current[id]})
+		}
+		return out
+	}
+
 	t.Run("ReadsAreBounded", func(t *testing.T) {
 		if x.DrainReadBytes == nil || x.DrainReadQueries == nil || x.DrainReadRows == nil {
 			return
 		}
+		requirementSelection := listedRequirements(t, requirementID)
+		designSelection := listedDesigns(t, designID)
 		x.DrainReadBytes()
 		x.DrainReadQueries()
 		x.DrainReadRows()
-		_, err := st.ListRequirementVersionSummaries(ctx, []string{requirementID})
+		_, err := st.ListRequirementVersionSummaries(ctx, requirementSelection)
 		requireOK(t, err)
 		fullRequirements, err := st.ListRequirementVersions(ctx, requirementID)
 		requireOK(t, err)
@@ -137,7 +171,7 @@ func runDocumentVersionSummaries(t *testing.T, x Fixture) {
 		x.DrainReadBytes()
 		x.DrainReadQueries()
 		x.DrainReadRows()
-		_, err = st.ListSystemDesignVersionSummaries(ctx, []string{designID})
+		_, err = st.ListSystemDesignVersionSummaries(ctx, designSelection)
 		requireOK(t, err)
 		fullDesigns, err := st.ListSystemDesignVersions(ctx, designID)
 		requireOK(t, err)
@@ -157,7 +191,7 @@ func runDocumentVersionSummaries(t *testing.T, x Fixture) {
 	})
 
 	t.Run("RequirementsEqualFullVersionReads", func(t *testing.T) {
-		requested := []string{requirementID, missingRequirement, otherRequirementID, requirementID}
+		requested := listedRequirements(t, requirementID, missingRequirement, otherRequirementID, requirementID)
 		got, err := st.ListRequirementVersionSummaries(ctx, requested)
 		requireOK(t, err)
 		if _, ok := got[otherRequirementID]; ok {
@@ -209,7 +243,7 @@ func runDocumentVersionSummaries(t *testing.T, x Fixture) {
 	})
 
 	t.Run("SystemDesignsEqualCurrentAndPendingReads", func(t *testing.T) {
-		requested := []string{designID, missingDesign, otherDesignID, designID}
+		requested := listedDesigns(t, designID, missingDesign, otherDesignID, designID)
 		got, err := st.ListSystemDesignVersionSummaries(ctx, requested)
 		requireOK(t, err)
 		if _, ok := got[otherDesignID]; ok {
@@ -247,7 +281,7 @@ func runDocumentVersionSummaries(t *testing.T, x Fixture) {
 	})
 
 	t.Run("EmptySelectionsReturnEmptyMaps", func(t *testing.T) {
-		for _, ids := range [][]string{nil, {}} {
+		for _, ids := range [][]store.DocumentVersionSelection{nil, {}} {
 			requirements, err := st.ListRequirementVersionSummaries(ctx, ids)
 			if err != nil || requirements == nil || len(requirements) != 0 {
 				t.Fatalf("requirement summaries for %v = %+v, %v; want an empty map", ids, requirements, err)
@@ -262,11 +296,100 @@ func runDocumentVersionSummaries(t *testing.T, x Fixture) {
 	t.Run("DoneContextReturnsError", func(t *testing.T) {
 		done, cancel := context.WithCancel(ctx)
 		cancel()
-		if requirements, err := st.ListRequirementVersionSummaries(done, []string{requirementID}); err == nil || requirements != nil {
+		if requirements, err := st.ListRequirementVersionSummaries(done, []store.DocumentVersionSelection{{ID: requirementID, CurrentVersion: 1}}); err == nil || requirements != nil {
 			t.Fatalf("requirement summaries with a done context = %+v, %v; want no result and an error", requirements, err)
 		}
-		if designs, err := st.ListSystemDesignVersionSummaries(done, []string{designID}); err == nil || designs != nil {
+		if designs, err := st.ListSystemDesignVersionSummaries(done, []store.DocumentVersionSelection{{ID: designID, CurrentVersion: 1}}); err == nil || designs != nil {
 			t.Fatalf("design summaries with a done context = %+v, %v; want no result and an error", designs, err)
+		}
+	})
+
+	// A confirmation that lands between the list's row read and its summary
+	// read must not move the listed current version: the summary keeps the
+	// content of the version the row named (component-document-corpus).
+	t.Run("ConfirmationBetweenRowAndSummaryReadsKeepsListedVersion", func(t *testing.T) {
+		raceRequirement := "req-versions-race-" + core.NewTaskID()
+		raceDesign := "design-versions-race-" + core.NewTaskID()
+		_, first, err := st.CreateRequirement(ctx, core.Requirement{ID: raceRequirement, Title: raceRequirement}, requirementVersion(raceRequirement, 1))
+		requireOK(t, err)
+		_, _, err = st.ConfirmRequirementVersion(ctx, raceRequirement, first.Version)
+		requireOK(t, err)
+		nextRequirement, err := st.ProposeRequirementVersion(ctx, requirementVersion(raceRequirement, 2))
+		requireOK(t, err)
+		_, firstDesign, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: raceDesign, Title: raceDesign, Category: "Component design"}, designVersion(raceDesign, 1))
+		requireOK(t, err)
+		_, _, err = st.ConfirmSystemDesignVersion(ctx, raceDesign, firstDesign.Version)
+		requireOK(t, err)
+		nextDesign, err := st.ProposeSystemDesignVersion(ctx, designVersion(raceDesign, 2))
+		requireOK(t, err)
+		listedRequirement, err := st.GetRequirementVersion(ctx, raceRequirement, first.Version)
+		requireOK(t, err)
+		listedDesign, err := st.GetSystemDesignVersion(ctx, raceDesign, firstDesign.Version)
+		requireOK(t, err)
+
+		requirementSelection := listedRequirements(t, raceRequirement)
+		designSelection := listedDesigns(t, raceDesign)
+		if requirementSelection[0].CurrentVersion != first.Version || designSelection[0].CurrentVersion != firstDesign.Version {
+			t.Fatalf("row reads listed %+v and %+v, want the first confirmed versions", requirementSelection, designSelection)
+		}
+		// The hook: the next versions are confirmed after the row read and
+		// before the summary read.
+		_, _, err = st.ConfirmRequirementVersion(ctx, raceRequirement, nextRequirement.Version)
+		requireOK(t, err)
+		_, _, err = st.ConfirmSystemDesignVersion(ctx, raceDesign, nextDesign.Version)
+		requireOK(t, err)
+
+		requirements, err := st.ListRequirementVersionSummaries(ctx, requirementSelection)
+		requireOK(t, err)
+		var gotRequirement *core.RequirementVersion
+		for i := range requirements[raceRequirement] {
+			if requirements[raceRequirement][i].Version == first.Version {
+				gotRequirement = &requirements[raceRequirement][i]
+			}
+		}
+		if gotRequirement == nil || !gotRequirement.Confirmed || gotRequirement.Content == "" || gotRequirement.Content != listedRequirement.Content {
+			t.Fatalf("listed requirement version after a later confirmation = %+v, want v%d with its content", gotRequirement, first.Version)
+		}
+		if len(requirements[raceRequirement]) != 2 {
+			t.Fatalf("requirement summaries returned %d versions, want 2", len(requirements[raceRequirement]))
+		}
+
+		designs, err := st.ListSystemDesignVersionSummaries(ctx, designSelection)
+		requireOK(t, err)
+		var gotDesign *core.SystemDesignVersion
+		for i := range designs[raceDesign] {
+			if designs[raceDesign][i].Version == firstDesign.Version {
+				gotDesign = &designs[raceDesign][i]
+			}
+		}
+		if gotDesign == nil || !gotDesign.Confirmed || gotDesign.Content == "" || gotDesign.Content != listedDesign.Content {
+			t.Fatalf("listed design version after a later confirmation = %+v, want v%d with its content", gotDesign, firstDesign.Version)
+		}
+		if len(designs[raceDesign]) != 1 {
+			t.Fatalf("design summaries returned %d versions, want only the listed current version", len(designs[raceDesign]))
+		}
+
+		// The next list read picks up the version confirmed between the two
+		// reads, with its content.
+		requirementSelection = listedRequirements(t, raceRequirement)
+		designSelection = listedDesigns(t, raceDesign)
+		if requirementSelection[0].CurrentVersion != nextRequirement.Version || designSelection[0].CurrentVersion != nextDesign.Version {
+			t.Fatalf("next row reads listed %+v and %+v, want the later confirmed versions", requirementSelection, designSelection)
+		}
+		requirements, err = st.ListRequirementVersionSummaries(ctx, requirementSelection)
+		requireOK(t, err)
+		for _, version := range requirements[raceRequirement] {
+			if version.Version == first.Version && version.Content != "" {
+				t.Fatalf("historical requirement v%d kept content on the next read", version.Version)
+			}
+			if version.Version == nextRequirement.Version && (!version.Confirmed || version.Content != nextRequirement.Content) {
+				t.Fatalf("next read requirement v%d = %+v, want the confirmed version with its content", version.Version, version)
+			}
+		}
+		designs, err = st.ListSystemDesignVersionSummaries(ctx, designSelection)
+		requireOK(t, err)
+		if len(designs[raceDesign]) != 1 || designs[raceDesign][0].Version != nextDesign.Version || designs[raceDesign][0].Content != nextDesign.Content {
+			t.Fatalf("next read design summaries = %+v, want only v%d with its content", designs[raceDesign], nextDesign.Version)
 		}
 	})
 }

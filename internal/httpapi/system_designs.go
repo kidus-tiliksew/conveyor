@@ -100,11 +100,14 @@ func (s *Server) listSystemDesigns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	views := make([]systemDesignSummary, 0, len(items))
-	designIDs := make([]string, 0, len(items))
+	// Each summary keeps the current version its listed row named, so a
+	// confirmation after the row read cannot drop current_version
+	// (component-document-corpus).
+	selections := make([]store.DocumentVersionSelection, 0, len(items))
 	for _, item := range items {
-		designIDs = append(designIDs, item.ID)
+		selections = append(selections, store.DocumentVersionSelection{ID: item.ID, CurrentVersion: item.CurrentVersion})
 	}
-	versions, err := s.Store.ListSystemDesignVersionSummaries(r.Context(), designIDs)
+	versions, err := s.Store.ListSystemDesignVersionSummaries(r.Context(), selections)
 	if err != nil {
 		log.Printf("handle system design request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

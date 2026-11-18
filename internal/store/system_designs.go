@@ -381,19 +381,6 @@ func (m *memory) ListGovernanceDesigns(ctx context.Context, repository string) (
 	return out, nil
 }
 
-func (m *memory) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	workspace := workspaceOrDefault(ctx, "")
-	out := map[string][]core.SystemDesignVersion{}
-	for key, versions := range m.systemDesignVersions {
-		if key.workspace == workspace {
-			out[key.id] = append([]core.SystemDesignVersion(nil), versions...)
-		}
-	}
-	return out, nil
-}
-
 func (m *memory) ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -404,23 +391,6 @@ func (m *memory) ListSystemDesignEvents(ctx context.Context, documentID string) 
 		if strings.HasPrefix(event.Kind, "system_design.") && json.Unmarshal(event.Payload, &payload) == nil &&
 			payload["workspace_id"] == workspace && payload["document_id"] == documentID {
 			out = append(out, event)
-		}
-	}
-	return out, nil
-}
-
-func (m *memory) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	out := map[string][]core.Event{}
-	workspace := workspaceOrDefault(ctx, "")
-	for _, event := range m.events[""] {
-		var payload map[string]any
-		if !strings.HasPrefix(event.Kind, "system_design.") || json.Unmarshal(event.Payload, &payload) != nil || payload["workspace_id"] != workspace {
-			continue
-		}
-		if documentID, _ := payload["document_id"].(string); documentID != "" {
-			out[documentID] = append(out[documentID], event)
 		}
 	}
 	return out, nil

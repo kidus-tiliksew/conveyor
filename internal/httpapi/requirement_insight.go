@@ -350,11 +350,13 @@ func (s *Server) getRequirementInsightDocuments(w http.ResponseWriter, r *http.R
 		writeRequirementInsightReadError(w, "design read", err)
 		return
 	}
-	designIDs := make([]string, 0, len(designs))
+	// The summaries keep the current version each listed row named
+	// (component-document-corpus).
+	selections := make([]store.DocumentVersionSelection, 0, len(designs))
 	for _, design := range designs {
-		designIDs = append(designIDs, design.ID)
+		selections = append(selections, store.DocumentVersionSelection{ID: design.ID, CurrentVersion: design.CurrentVersion})
 	}
-	versions, err := s.Store.ListSystemDesignVersionSummaries(ctx, designIDs)
+	versions, err := s.Store.ListSystemDesignVersionSummaries(ctx, selections)
 	if err != nil {
 		writeRequirementInsightReadError(w, "design version read", err)
 		return

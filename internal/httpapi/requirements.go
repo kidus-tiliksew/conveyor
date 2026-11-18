@@ -665,10 +665,15 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	requirementEventsByRequirement := map[string][]core.Event{}
 	if !includeDetail {
 		requirementIDs := make([]string, 0, len(requirements))
+		// Each summary keeps the current version its listed row named, so a
+		// confirmation after the row read cannot empty the listed current
+		// content (component-document-corpus).
+		selections := make([]store.DocumentVersionSelection, 0, len(requirements))
 		for _, requirement := range requirements {
 			requirementIDs = append(requirementIDs, requirement.ID)
+			selections = append(selections, store.DocumentVersionSelection{ID: requirement.ID, CurrentVersion: requirement.CurrentVersion})
 		}
-		versionsByRequirement, err = s.Store.ListRequirementVersionSummaries(r.Context(), requirementIDs)
+		versionsByRequirement, err = s.Store.ListRequirementVersionSummaries(r.Context(), selections)
 		if err != nil {
 			return nil, err
 		}

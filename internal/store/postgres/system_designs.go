@@ -605,45 +605,34 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 	return out, rows.Err()
 }
 
-func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignVersionsByDocument")
-	rows, err := s.boundary.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 ORDER BY document_id,version`, workspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string][]core.SystemDesignVersion{}
-	for rows.Next() {
-		item, scanErr := scanSystemDesignVersion(rows, "", 0)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		out[item.DocumentID] = append(out[item.DocumentID], item)
-	}
-	return out, rows.Err()
-}
-
-// systemDesignVersionSummarySelect reads the current version and every
-// pending version of the requested designs in version order. A historical or
-// dismissed version is not selected.
+// systemDesignVersionSummarySelect reads the listed current version and every
+// pending version of the requested designs in version order. q pairs each
+// requested ID with the current version its listed row named. Any other
+// version is not selected.
 const systemDesignVersionSummarySelect = `SELECT v.workspace_id,v.document_id,v.version,v.content,v.governs,v.origin,coalesce(v.origin_session_id,''),coalesce(v.origin_task_id,''),v.confirmed,coalesce(v.confirmed_by,''),v.confirmed_at,v.dismissed,coalesce(v.dismissed_by,''),v.dismissed_at,v.created_at,COALESCE(v.dismissal_note,'')
-FROM system_design_versions v JOIN system_designs d
-  ON d.workspace_id=v.workspace_id AND d.id=v.document_id`
+FROM unnest($2::text[],$3::integer[]) AS q(id,current_version)
+JOIN system_designs d ON d.workspace_id=$1 AND d.id=q.id
+JOIN system_design_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id`
 
-// ListSystemDesignVersionSummaries reads each requested design's current and
-// pending versions in one set query, with their content. A historical version
-// is absent (component-persistence; component-document-corpus).
-func (s *Store) ListSystemDesignVersionSummaries(ctx context.Context, documentIDs []string) (map[string][]core.SystemDesignVersion, error) {
+// ListSystemDesignVersionSummaries reads each requested design's listed
+// current version and pending versions in one set query, with their content.
+// The current version is the one each listed row named, so a confirmation
+// after the row read cannot drop the listed current version
+// (component-persistence; component-document-corpus).
+func (s *Store) ListSystemDesignVersionSummaries(ctx context.Context, selections []store.DocumentVersionSelection) (map[string][]core.SystemDesignVersion, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignVersionSummaries")
 	out := map[string][]core.SystemDesignVersion{}
-	ids := store.UniqueDocumentIDs(documentIDs)
-	if len(ids) == 0 {
+	selected := store.UniqueDocumentVersionSelections(selections)
+	if len(selected) == 0 {
 		return out, nil
 	}
+	ids, versions := make([]string, len(selected)), make([]int32, len(selected))
+	for i, selection := range selected {
+		ids[i], versions[i] = selection.ID, int32(selection.CurrentVersion)
+	}
 	rows, err := s.boundary.Query(ctx, systemDesignVersionSummarySelect+
-		` WHERE v.workspace_id=$1 AND v.document_id=ANY($2::text[])
-		AND (v.version=d.current_version OR (NOT v.confirmed AND NOT v.dismissed))
-		ORDER BY v.document_id,v.version`, workspace(ctx), ids)
+		` WHERE v.version=q.current_version OR (NOT v.confirmed AND NOT v.dismissed)
+		ORDER BY v.document_id,v.version`, workspace(ctx), ids, versions)
 	if err != nil {
 		return nil, err
 	}
@@ -674,30 +663,6 @@ func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.E
 			return nil, err
 		}
 		out = append(out, eventFromDB(row))
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignEventsByDocument")
-	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' ORDER BY at,id`, workspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string][]core.Event{}
-	for rows.Next() {
-		var row db.Event
-		if err = rows.Scan(&row.ID, &row.TaskID, &row.JobID, &row.Kind, &row.ActorID, &row.ActorRole, &row.PayloadJson, &row.At, &row.WorkspaceID); err != nil {
-			return nil, err
-		}
-		var payload map[string]any
-		if json.Unmarshal(row.PayloadJson, &payload) != nil {
-			continue
-		}
-		if documentID, _ := payload["document_id"].(string); documentID != "" {
-			out[documentID] = append(out[documentID], eventFromDB(row))
-		}
 	}
 	return out, rows.Err()
 }

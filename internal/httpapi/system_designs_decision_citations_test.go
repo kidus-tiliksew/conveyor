@@ -62,11 +62,6 @@ func (r *citationReadRecorder) ListRequirementVersions(ctx context.Context, id s
 	return r.Store.ListRequirementVersions(ctx, id)
 }
 
-func (r *citationReadRecorder) ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error) {
-	r.otherReads = append(r.otherReads, "ListRequirementVersionsByRequirement")
-	return r.Store.ListRequirementVersionsByRequirement(ctx)
-}
-
 func (r *citationReadRecorder) ListSystemDesigns(ctx context.Context, includeArchived bool) ([]core.SystemDesign, error) {
 	r.otherReads = append(r.otherReads, "ListSystemDesigns")
 	return r.Store.ListSystemDesigns(ctx, includeArchived)
@@ -85,11 +80,6 @@ func (r *citationReadRecorder) GetSystemDesignVersion(ctx context.Context, id st
 func (r *citationReadRecorder) ListSystemDesignVersions(ctx context.Context, id string) ([]core.SystemDesignVersion, error) {
 	r.otherReads = append(r.otherReads, "ListSystemDesignVersions")
 	return r.Store.ListSystemDesignVersions(ctx, id)
-}
-
-func (r *citationReadRecorder) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
-	r.otherReads = append(r.otherReads, "ListSystemDesignVersionsByDocument")
-	return r.Store.ListSystemDesignVersionsByDocument(ctx)
 }
 
 // seedDecisionCitations writes two confirmed decisions, two requirements, and

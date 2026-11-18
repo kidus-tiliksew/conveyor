@@ -412,7 +412,11 @@ type WorkOrderStore interface {
 type DocumentStore interface {
 	// ListRequirementDeliveryEventsForTasks batches only the ordered task
 	// context, aggregate review-round, and merge events used by
-	// requirement-delivery classification.
+	// requirement-delivery classification. Each payload holds only the keys
+	// that ProjectRequirementDeliveryPayload keeps; a durable backend may
+	// return a key that the stored payload lacks as JSON null. A requested
+	// task that is unknown, outside the workspace, or without such events is
+	// absent from the map (component-lineage; component-task-lifecycle).
 	ListRequirementDeliveryEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
 	// ListMonitorPullRequestEventsForTasks returns only pull_request.opened events
 	// in the current workspace, ordered by time and ID per task. Empty IDs
@@ -427,7 +431,6 @@ type DocumentStore interface {
 	MonitorOriginsForTasks(ctx context.Context, taskIDs []string) (map[string]monitor.ObservationRecord, error)
 	ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, query DocumentEventQuery) (DocumentEventPage, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
-	ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error)
 	AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error)
 	// Requirements are living intent documents: versioned and confirmed, never
 	// gated. CreateRequirement commits the document and its
@@ -438,7 +441,6 @@ type DocumentStore interface {
 	ListRequirements(ctx context.Context, includeArchived bool) ([]core.Requirement, error)
 	ArchiveRequirement(ctx context.Context, id, actor string, supersededBy []string) error
 	RestoreRequirement(ctx context.Context, id, actor string) error
-	ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error)
 	ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error)
 	ConfirmRequirementVersion(ctx context.Context, requirementID string, version int, expectedCurrentVersion ...int) (core.Requirement, core.RequirementVersion, error)
 	DismissRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error)
@@ -469,8 +471,6 @@ type DocumentStore interface {
 	ListSystemDesignVersions(ctx context.Context, documentID string) ([]core.SystemDesignVersion, error)
 	ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error)
 	ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error)
-	ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error)
-	ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error)
 	// ListActiveSystemDesignDriftCounts is the metadata-only projection used by
 	// the System Design collection; it must not materialize monitor history.
 	ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error)

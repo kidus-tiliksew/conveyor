@@ -150,32 +150,6 @@ func (m *memory) ListRequirementEvents(ctx context.Context, requirementID string
 	return events, nil
 }
 
-func (m *memory) ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	workspace := workspaceOrDefault(ctx, "")
-	out := map[string][]core.Event{}
-	for _, event := range m.events[""] {
-		var payload struct {
-			WorkspaceID   string `json:"workspace_id"`
-			RequirementID string `json:"requirement_id"`
-		}
-		if json.Unmarshal(event.Payload, &payload) != nil || payload.WorkspaceID != workspace || payload.RequirementID == "" {
-			continue
-		}
-		out[payload.RequirementID] = append(out[payload.RequirementID], event)
-	}
-	for requirementID := range out {
-		sort.Slice(out[requirementID], func(i, j int) bool {
-			if out[requirementID][i].At.Equal(out[requirementID][j].At) {
-				return out[requirementID][i].ID < out[requirementID][j].ID
-			}
-			return out[requirementID][i].At.Before(out[requirementID][j].At)
-		})
-	}
-	return out, nil
-}
-
 func (m *memory) ListRequirementEventsForRequirements(ctx context.Context, ids []string) (map[string][]core.Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

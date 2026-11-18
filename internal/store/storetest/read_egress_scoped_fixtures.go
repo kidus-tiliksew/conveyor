@@ -438,3 +438,25 @@ func ReduceReadEgressScopedReconciliationTasks(tasks []core.Task) []core.Task {
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
+
+// ReadEgressRequirementSelections pairs each listed requirement with the
+// current version its row named, as the requirement list passes it to the
+// summary read.
+func ReadEgressRequirementSelections(requirements []core.Requirement) []store.DocumentVersionSelection {
+	out := make([]store.DocumentVersionSelection, 0, len(requirements))
+	for _, requirement := range requirements {
+		out = append(out, store.DocumentVersionSelection{ID: requirement.ID, CurrentVersion: requirement.CurrentVersion})
+	}
+	return out
+}
+
+// ReadEgressSystemDesignSelections pairs each listed System Design with the
+// current version its row named, as the System Design list passes it to the
+// summary read.
+func ReadEgressSystemDesignSelections(items []core.SystemDesign) []store.DocumentVersionSelection {
+	out := make([]store.DocumentVersionSelection, 0, len(items))
+	for _, item := range items {
+		out = append(out, store.DocumentVersionSelection{ID: item.ID, CurrentVersion: item.CurrentVersion})
+	}
+	return out
+}

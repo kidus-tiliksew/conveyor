@@ -3,6 +3,7 @@ package singlestore
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -94,34 +95,62 @@ JOIN task_specs s ON s.workspace_id=? AND s.task_id=latest.task_id AND s.version
 	return out, nil
 }
 
-// requirementVersionSummarySelect reads every version of the requested
-// requirements in version order. A historical row projects an empty content,
-// so only the current and pending rows transfer one.
-const requirementVersionSummarySelect = `SELECT v.workspace_id,v.requirement_id,v.version,
-CASE WHEN v.version=r.current_version OR (NOT v.confirmed AND NOT v.retired) THEN v.content ELSE '' END,
+// requirementVersionSummaryQuery reads every version of the requested
+// requirements in version order. The %[1]s predicate pairs each requested ID
+// with the current version its listed row named; SingleStore does not accept
+// a parametrized multi-column IN in the select list. A historical row
+// projects an empty content, so only that listed current row and the pending
+// rows transfer one.
+const requirementVersionSummaryQuery = `SELECT v.workspace_id,v.requirement_id,v.version,
+CASE WHEN %[1]s OR (NOT v.confirmed AND NOT v.retired) THEN v.content ELSE '' END,
 v.statements_json,v.origin,v.origin_session_id,v.origin_task_id,v.origin_drift_id,v.confirmed,v.confirmed_by,v.confirmed_at,v.retired,v.retired_by,v.retired_at,v.retired_by_version,v.created_at,v.derived_from,COALESCE(v.dismissal_note,'')
 FROM requirement_versions v JOIN requirements r
-  ON r.workspace_id=v.workspace_id AND r.id=v.requirement_id`
+  ON r.workspace_id=v.workspace_id AND r.id=v.requirement_id
+WHERE v.workspace_id=? AND v.requirement_id IN (%[2]s)
+ORDER BY v.requirement_id,v.version`
+
+// eachDocumentVersionChunk calls fn with each chunk's (id,version) pair
+// marks and arguments, and its ID marks and arguments. Each pair mark is
+// "(?,?)" and binds the ID, then the version.
+func eachDocumentVersionChunk(selections []store.DocumentVersionSelection, fn func(pairMarks string, pairArgs []any, idMarks string, idArgs []any) error) error {
+	for start := 0; start < len(selections); start += hydrationChunk {
+		chunk := selections[start:min(start+hydrationChunk, len(selections))]
+		pairArgs, idArgs := make([]any, 0, 2*len(chunk)), make([]any, 0, len(chunk))
+		for _, selection := range chunk {
+			pairArgs = append(pairArgs, selection.ID, selection.CurrentVersion)
+			idArgs = append(idArgs, selection.ID)
+		}
+		pairMarks := strings.TrimSuffix(strings.Repeat("(?,?),", len(chunk)), ",")
+		idMarks := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		if err := fn(pairMarks, pairArgs, idMarks, idArgs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // ListRequirementVersionSummaries reads the requested requirements' versions
-// in one query per ID chunk. Current and pending rows keep their content and
-// statements; a historical row keeps its metadata and statements, and its
-// content is empty (component-persistence; component-document-corpus).
-func (s *Store) ListRequirementVersionSummaries(ctx context.Context, requirementIDs []string) (map[string][]core.RequirementVersion, error) {
+// in one query per selection chunk. The selected current version and pending
+// rows keep their content and statements; a historical row keeps its
+// metadata and statements, and its content is empty. The current version is
+// the one each listed row named, so a confirmation after the row read cannot
+// empty the listed content (component-persistence; component-document-corpus).
+func (s *Store) ListRequirementVersionSummaries(ctx context.Context, selections []store.DocumentVersionSelection) (map[string][]core.RequirementVersion, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementVersionSummaries")
 	out := map[string][]core.RequirementVersion{}
-	ids := store.UniqueDocumentIDs(requirementIDs)
-	if len(ids) == 0 {
+	selected := store.UniqueDocumentVersionSelections(selections)
+	if len(selected) == 0 {
 		return out, nil
 	}
 	ws, err := workspace(ctx)
 	if err != nil {
 		return nil, err
 	}
-	err = eachIDChunk(ids, func(marks string, chunkArgs []any) error {
-		rows, queryErr := documentRows(ctx, s.db, requirementVersionSummarySelect+
-			` WHERE v.workspace_id=? AND v.requirement_id IN (`+marks+`)
-			ORDER BY v.requirement_id,v.version`, append([]any{ws}, chunkArgs...)...)
+	err = eachDocumentVersionChunk(selected, func(_ string, pairArgs []any, idMarks string, idArgs []any) error {
+		args := append(append(append([]any{}, pairArgs...), ws), idArgs...)
+		listed := strings.Repeat("(v.requirement_id=? AND v.version=?) OR ", len(idArgs))
+		listed = "(" + strings.TrimSuffix(listed, " OR ") + ")"
+		rows, queryErr := documentRows(ctx, s.db, fmt.Sprintf(requirementVersionSummaryQuery, listed, idMarks), args...)
 		if queryErr != nil {
 			return queryErr
 		}

@@ -509,8 +509,14 @@ func (m *memory) ListRequirementDeliveryEventsForTasks(ctx context.Context, task
 		for _, event := range m.events[taskID] {
 			switch event.Kind {
 			case "merge.confirmed", "merge.reconciled", "review.round_completed", TaskContextRequirementAdded, TaskContextRequirementActive, TaskContextRequirementRemoved:
+				event.Payload = ProjectRequirementDeliveryPayload(event.Kind, event.Payload)
 				events = append(events, event)
 			}
+		}
+		// A known task with no delivery events is omitted, as on the
+		// durable backends.
+		if len(events) == 0 {
+			continue
 		}
 		sort.Slice(events, func(i, j int) bool {
 			if events[i].At.Equal(events[j].At) {

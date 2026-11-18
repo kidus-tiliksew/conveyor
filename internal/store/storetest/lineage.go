@@ -37,6 +37,10 @@ type LineageFixture struct {
 	// history recorded before a projector case existed; see
 	// Fixture.SeedEvents. The decision-citation case requires it.
 	SeedEvents func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event
+	// DrainReadQueries and DrainReadRows drain the backend's read ledger per
+	// read label; see Fixture. The volatile backend leaves them nil.
+	DrainReadQueries func() map[string]uint64
+	DrainReadRows    func() map[string]uint64
 }
 
 // LineageHTTPToken is the shared operator bearer each entry point configures
@@ -144,6 +148,9 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	})
 	t.Run("requirement versions, plan joins, and start-over successors are reachable and rebuild", func(t *testing.T) {
 		assertVersionPlanAndSuccessorLineage(t, fixture)
+	})
+	t.Run("batched delivery walks over shared blueprints match single-root and full-link walks", func(t *testing.T) {
+		assertSharedBlueprintDeliveryWalks(t, fixture)
 	})
 	t.Run("a hub requirement serving 40 other tasks keeps the root's own outcomes", func(t *testing.T) {
 		assertHubFanoutKeepsRootOutcomes(t, fixture)

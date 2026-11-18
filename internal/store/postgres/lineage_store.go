@@ -553,13 +553,35 @@ func (s *Store) queryLineageOrderRecords(ctx context.Context, nodes map[string][
 	return rows.Err()
 }
 
+// requirementDeliveryPayloadSelect projects a delivery event's payload to
+// the keys store.ProjectRequirementDeliveryPayload keeps, so no other payload
+// key crosses the connection (component-lineage; component-task-lifecycle).
+// jsonb_each keeps each kept key's stored value and leaves an absent key
+// absent. An object element of an array-valued reviews key keeps verdict and
+// reviewed_commit_sha in array order; other elements, a non-array reviews
+// value, and a payload that is not an object stay as stored.
+const requirementDeliveryPayloadSelect = `CASE WHEN jsonb_typeof(e.payload_json)='object' THEN (
+	SELECT COALESCE(jsonb_object_agg(f.key, CASE WHEN f.key='reviews' AND jsonb_typeof(f.value)='array' THEN (
+		SELECT COALESCE(jsonb_agg(CASE WHEN jsonb_typeof(r.value)='object' THEN (
+			SELECT COALESCE(jsonb_object_agg(rf.key, rf.value), '{}'::jsonb)
+			FROM jsonb_each(r.value) AS rf WHERE rf.key IN ('verdict','reviewed_commit_sha')
+		) ELSE r.value END ORDER BY r.ord), '[]'::jsonb)
+		FROM jsonb_array_elements(f.value) WITH ORDINALITY AS r(value,ord)
+	) ELSE f.value END), '{}'::jsonb)
+	FROM jsonb_each(e.payload_json) AS f
+	WHERE f.key = ANY(CASE
+		WHEN e.kind IN ('merge.confirmed','merge.reconciled') THEN ARRAY['url','title','task_title','head_sha','reviewed_head_sha','approved_head_sha','factory_review_validated']
+		WHEN e.kind='review.round_completed' THEN ARRAY['verdict','approved_head_sha','reviews']
+		ELSE ARRAY['id','version','unconfirmed'] END)
+) ELSE e.payload_json END`
+
 func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementDeliveryEventsForTasks")
 	result := make(map[string][]core.Event, len(taskIDs))
 	if len(taskIDs) == 0 {
 		return result, nil
 	}
-	rows, err := s.boundary.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,e.payload_json,e.at,e.workspace_id
+	rows, err := s.boundary.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,`+requirementDeliveryPayloadSelect+`,e.at,e.workspace_id
 		FROM events e JOIN tasks t ON t.id=e.task_id
 		WHERE t.workspace_id=$1 AND e.task_id=ANY($2::text[]) AND e.kind IN (
 			'merge.confirmed','merge.reconciled','review.round_completed',

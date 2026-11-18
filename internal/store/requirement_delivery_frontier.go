@@ -11,6 +11,9 @@ import (
 
 // FetchRequirementDeliveryLineage shares source adjacency, not traversal budgets,
 // between roots. MaxNodes remains validation-only, as in the original walk.
+// Only requirement, blueprint, and blueprint-version nodes start a delivery
+// link, so a reached task stays in the result as a destination and is never
+// fetched as a source (component-lineage).
 func FetchRequirementDeliveryLineage(ctx context.Context, ids []string, budget core.LineageTraversalBudget, fetch func(context.Context, []core.LineageNode, int) (map[core.LineageNode][]core.LineageLink, error)) (map[string][]core.LineageLink, error) {
 	out := make(map[string][]core.LineageLink, len(ids))
 	if len(ids) == 0 {
@@ -47,6 +50,9 @@ func FetchRequirementDeliveryLineage(ctx context.Context, ids []string, budget c
 				continue
 			}
 			for _, node := range w.frontier {
+				if !requirementDeliverySource(node) {
+					continue
+				}
 				if _, ok := adjacency[node]; !ok && !requested[node] {
 					requested[node] = true
 					needed = append(needed, node)
@@ -107,4 +113,10 @@ func FetchRequirementDeliveryLineage(ctx context.Context, ids []string, budget c
 		}
 	}
 	return out, nil
+}
+
+// requirementDeliverySource reports whether node can start a delivery link
+// (requirementDeliveryLink): a task is only ever a destination.
+func requirementDeliverySource(node core.LineageNode) bool {
+	return node.Type == core.LineageRequirement || node.Type == core.LineageBlueprint || node.Type == core.LineageBlueprintVersion
 }

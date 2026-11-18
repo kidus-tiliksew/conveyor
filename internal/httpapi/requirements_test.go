@@ -582,24 +582,20 @@ func (st *requirementsScopedStore) ListDocumentEventPage(ctx context.Context, ki
 	return st.Store.ListDocumentEventPage(ctx, kind, id, query)
 }
 
-func (st *requirementsScopedStore) ListRequirementVersionSummaries(ctx context.Context, ids []string) (map[string][]core.RequirementVersion, error) {
+func (st *requirementsScopedStore) ListRequirementVersionSummaries(ctx context.Context, selections []store.DocumentVersionSelection) (map[string][]core.RequirementVersion, error) {
 	st.batchVersions++
-	st.versionIDs = append(st.versionIDs, slices.Clone(ids))
-	return st.Store.ListRequirementVersionSummaries(ctx, ids)
+	ids := make([]string, 0, len(selections))
+	for _, selection := range selections {
+		ids = append(ids, selection.ID)
+	}
+	st.versionIDs = append(st.versionIDs, ids)
+	return st.Store.ListRequirementVersionSummaries(ctx, selections)
 }
 
 func (st *requirementsScopedStore) ListRequirementEventsForRequirements(ctx context.Context, ids []string) (map[string][]core.Event, error) {
 	st.batchEvents++
 	st.eventIDs = append(st.eventIDs, slices.Clone(ids))
 	return st.Store.ListRequirementEventsForRequirements(ctx, ids)
-}
-
-func (st *requirementsScopedStore) ListRequirementVersionsByRequirement(context.Context) (map[string][]core.RequirementVersion, error) {
-	return nil, fmt.Errorf("whole-workspace version scan forbidden")
-}
-
-func (st *requirementsScopedStore) ListRequirementEventsByRequirement(context.Context) (map[string][]core.Event, error) {
-	return nil, fmt.Errorf("whole-workspace event scan forbidden")
 }
 
 func (st *requirementsScopedStore) ListRequirementVersions(ctx context.Context, requirementID string) ([]core.RequirementVersion, error) {

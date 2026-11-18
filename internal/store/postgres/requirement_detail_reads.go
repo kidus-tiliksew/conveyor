@@ -83,28 +83,35 @@ JOIN task_specs s ON s.task_id = latest.task_id AND s.version = latest.version`,
 }
 
 // requirementVersionSummarySelect reads every version of the requested
-// requirements in version order. A historical row projects an empty content,
-// so only the current and pending rows transfer one.
+// requirements in version order. q pairs each requested ID with the current
+// version its listed row named. A historical row projects an empty content,
+// so only that listed current row and the pending rows transfer one.
 const requirementVersionSummarySelect = `SELECT v.workspace_id,v.requirement_id,v.version,
-CASE WHEN v.version=r.current_version OR (NOT v.confirmed AND NOT v.retired) THEN v.content ELSE '' END,
+CASE WHEN v.version=q.current_version OR (NOT v.confirmed AND NOT v.retired) THEN v.content ELSE '' END,
 v.statements_json,v.origin,v.origin_session_id,v.origin_task_id,v.origin_drift_id,v.confirmed,v.confirmed_by,v.confirmed_at,v.retired,v.retired_by,v.retired_at,v.retired_by_version,v.created_at,v.derived_from,COALESCE(v.dismissal_note,'')
-FROM requirement_versions v JOIN requirements r
-  ON r.workspace_id=v.workspace_id AND r.id=v.requirement_id`
+FROM unnest($2::text[],$3::integer[]) AS q(id,current_version)
+JOIN requirements r ON r.workspace_id=$1 AND r.id=q.id
+JOIN requirement_versions v ON v.workspace_id=r.workspace_id AND v.requirement_id=r.id`
 
 // ListRequirementVersionSummaries reads the requested requirements' versions
-// in one set query. Current and pending rows keep their content and
-// statements; a historical row keeps its metadata and statements, and its
-// content is empty (component-persistence; component-document-corpus).
-func (s *Store) ListRequirementVersionSummaries(ctx context.Context, requirementIDs []string) (map[string][]core.RequirementVersion, error) {
+// in one set query. The selected current version and pending rows keep their
+// content and statements; a historical row keeps its metadata and
+// statements, and its content is empty. The current version is the one each
+// listed row named, so a confirmation after the row read cannot empty the
+// listed content (component-persistence; component-document-corpus).
+func (s *Store) ListRequirementVersionSummaries(ctx context.Context, selections []store.DocumentVersionSelection) (map[string][]core.RequirementVersion, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementVersionSummaries")
 	out := map[string][]core.RequirementVersion{}
-	ids := store.UniqueDocumentIDs(requirementIDs)
-	if len(ids) == 0 {
+	selected := store.UniqueDocumentVersionSelections(selections)
+	if len(selected) == 0 {
 		return out, nil
 	}
+	ids, versions := make([]string, len(selected)), make([]int32, len(selected))
+	for i, selection := range selected {
+		ids[i], versions[i] = selection.ID, int32(selection.CurrentVersion)
+	}
 	rows, err := s.boundary.Query(ctx, requirementVersionSummarySelect+
-		` WHERE v.workspace_id=$1 AND v.requirement_id=ANY($2::text[])
-		ORDER BY v.requirement_id,v.version`, workspace(ctx), ids)
+		` ORDER BY v.requirement_id,v.version`, workspace(ctx), ids, versions)
 	if err != nil {
 		return nil, err
 	}
