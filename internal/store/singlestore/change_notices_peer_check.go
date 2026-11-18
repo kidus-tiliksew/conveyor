@@ -2,6 +2,7 @@ package singlestore
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -17,28 +18,33 @@ import (
 // this one statement once per peer check interval.
 //
 // The statement returns each workspace's log position, its task-event
-// position, and, for every task-event witness above the position this store
-// last accepted for the workspace, whether the witnessed event row is
-// visible to this read. While no workspace changed, the witness branch
-// selects no row, so the read looks up no event.
+// position, every task-event witness above the position this store last
+// accepted for the workspace, and, again, each of those witnesses whose
+// event row is visible to this read. The visible branch is an inner join
+// driven by the witness rows: SingleStore builds its hash table on the few
+// witness rows and seeks events_columnstore through the unique hash key
+// events_task_event_idx. While no workspace changed, the witness filter
+// selects no row, so the read looks up no event. (A left join would build
+// the hash table on the event table and scan it on every read.)
 const (
-	peerMarksPositionsSQL = `SELECT workspace_id, 0 AS source, position AS n, 1 AS visible FROM event_log_positions
+	peerMarksPositionsSQL = `SELECT workspace_id, 0 AS source, position AS n FROM event_log_positions
 UNION ALL
-SELECT workspace_id, 1 AS source, position AS n, 1 AS visible FROM task_event_positions
+SELECT workspace_id, 1 AS source, position AS n FROM task_event_positions
 UNION ALL
-`
-	peerMarksWitnessSQL = `SELECT w.workspace_id, 2 AS source, w.position AS n, CASE WHEN e.id IS NULL THEN 0 ELSE 1 END AS visible
-FROM task_event_witnesses w
-LEFT JOIN events_columnstore e ON e.event_shard_key = w.event_shard_key AND e.workspace_id = w.workspace_id AND e.id = w.event_id
-WHERE w.position > `
+SELECT w.workspace_id, 2 AS source, w.position AS n FROM task_event_witnesses w WHERE w.position > %[1]s
+UNION ALL
+SELECT w.workspace_id, 3 AS source, w.position AS n FROM task_event_witnesses w
+JOIN events_columnstore e ON e.event_shard_key = w.event_shard_key AND e.workspace_id = w.workspace_id AND e.id = w.event_id
+WHERE w.position > %[1]s`
 )
 
 // peerMarksStatement builds the one statement for the accepted positions.
 // Each accepted workspace bounds its witnesses from below; any other
-// workspace reads all of its witnesses, which writers keep few.
+// workspace reads all of its witnesses, which writers keep few. Both
+// witness branches take the same bound.
 func peerMarksStatement(accepted map[string]int64) (string, []any) {
 	if len(accepted) == 0 {
-		return peerMarksPositionsSQL + peerMarksWitnessSQL + "0", nil
+		return fmt.Sprintf(peerMarksPositionsSQL, "0"), nil
 	}
 	workspaces := make([]string, 0, len(accepted))
 	for ws := range accepted {
@@ -46,18 +52,19 @@ func peerMarksStatement(accepted map[string]int64) (string, []any) {
 	}
 	sort.Strings(workspaces)
 	var floor strings.Builder
-	args := make([]any, 0, 2*len(workspaces))
+	bound := make([]any, 0, 2*len(workspaces))
 	floor.WriteString("CASE w.workspace_id")
 	for _, ws := range workspaces {
 		floor.WriteString(" WHEN ? THEN ?")
-		args = append(args, ws, accepted[ws])
+		bound = append(bound, ws, accepted[ws])
 	}
 	floor.WriteString(" ELSE 0 END")
-	return peerMarksPositionsSQL + peerMarksWitnessSQL + floor.String(), args
+	return fmt.Sprintf(peerMarksPositionsSQL, floor.String()), append(bound, bound...)
 }
 
 // observePeerWitnessRows, when set by a fixture, receives the number of
-// witness rows each successful PeerMarks statement returned.
+// rows both witness branches of each successful PeerMarks statement
+// returned.
 var observePeerWitnessRows atomic.Pointer[func(rows int)]
 
 var _ changes.PeerReader = (*Store)(nil)
@@ -80,13 +87,16 @@ func (s *Store) PeerMarks(ctx context.Context) (map[string]changes.PeerMark, err
 	defer rows.Close()
 	marks := map[string]changes.PeerMark{}
 	counters := map[string]int64{}
-	witnesses := map[string]map[int64]bool{}
+	// witnessed[workspace][position] counts the position's witnesses and,
+	// separately, those whose event row this read saw.
+	type tally struct{ witnesses, visible int }
+	witnessed := map[string]map[int64]*tally{}
 	witnessRows := 0
 	for rows.Next() {
 		var workspace string
-		var source, visible int
+		var source int
 		var n int64
-		if err = rows.Scan(&workspace, &source, &n, &visible); err != nil {
+		if err = rows.Scan(&workspace, &source, &n); err != nil {
 			return nil, translateBackendConflict(err)
 		}
 		switch source {
@@ -101,13 +111,21 @@ func (s *Store) PeerMarks(ctx context.Context) (map[string]changes.PeerMark, err
 			}
 		default:
 			witnessRows++
-			positions := witnesses[workspace]
+			positions := witnessed[workspace]
 			if positions == nil {
-				positions = map[int64]bool{}
-				witnesses[workspace] = positions
+				positions = map[int64]*tally{}
+				witnessed[workspace] = positions
 			}
-			seen, ok := positions[n]
-			positions[n] = (seen || !ok) && visible == 1
+			t := positions[n]
+			if t == nil {
+				t = &tally{}
+				positions[n] = t
+			}
+			if source == 2 {
+				t.witnesses++
+			} else {
+				t.visible++
+			}
 		}
 	}
 	if err = rows.Err(); err != nil {
@@ -115,7 +133,13 @@ func (s *Store) PeerMarks(ctx context.Context) (map[string]changes.PeerMark, err
 	}
 	accepted := make(map[string]int64, len(counters))
 	for workspace, counter := range counters {
-		position := acceptTaskEventPosition(s.peerAccepted[workspace], counter, witnesses[workspace])
+		visible := map[int64]bool{}
+		for position, t := range witnessed[workspace] {
+			// A position whose witness rows this read did not return at
+			// all is unknown, never visible.
+			visible[position] = t.witnesses > 0 && t.visible >= t.witnesses
+		}
+		position := acceptTaskEventPosition(s.peerAccepted[workspace], counter, visible)
 		accepted[workspace] = position
 		mark := marks[workspace]
 		mark.Events = position

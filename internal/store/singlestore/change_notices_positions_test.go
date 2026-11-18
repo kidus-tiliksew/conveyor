@@ -183,17 +183,19 @@ func TestAcceptTaskEventPosition(t *testing.T) {
 }
 
 // TestPeerMarksStatementBoundsWitnesses: the one statement bounds each
-// accepted workspace's witnesses by its accepted position.
+// accepted workspace's witnesses by its accepted position in both witness
+// branches, and reaches events_columnstore only through an inner join on the
+// witness rows.
 func TestPeerMarksStatementBoundsWitnesses(t *testing.T) {
 	query, args := peerMarksStatement(nil)
-	if len(args) != 0 || !strings.HasSuffix(query, "WHERE w.position > 0") || strings.Count(query, "SELECT") != 3 {
+	if len(args) != 0 || strings.Count(query, "WHERE w.position > 0") != 2 || strings.Count(query, "SELECT") != 4 {
 		t.Fatalf("fresh statement=%q args=%v", query, args)
 	}
 	query, args = peerMarksStatement(map[string]int64{"b": 4, "a": 9})
-	if !strings.HasSuffix(query, "WHERE w.position > CASE w.workspace_id WHEN ? THEN ? WHEN ? THEN ? ELSE 0 END") || fmt.Sprint(args) != "[a 9 b 4]" {
+	if strings.Count(query, "WHERE w.position > CASE w.workspace_id WHEN ? THEN ? WHEN ? THEN ? ELSE 0 END") != 2 || fmt.Sprint(args) != "[a 9 b 4 a 9 b 4]" {
 		t.Fatalf("accepted statement=%q args=%v", query, args)
 	}
-	if strings.Contains(query, ";") {
-		t.Fatalf("the peer read is more than one statement: %q", query)
+	if strings.Contains(query, ";") || strings.Contains(strings.ToUpper(query), "LEFT JOIN") || strings.Count(query, "events_columnstore") != 1 {
+		t.Fatalf("the peer read must be one statement that reaches events through one inner join: %q", query)
 	}
 }
