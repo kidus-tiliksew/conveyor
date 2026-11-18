@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -20,74 +21,69 @@ import (
 // wait loop polls, holding only the task state, its plan state, its frozen
 // merge approval, the compact next action, and the task's own claimable
 // orders. It composes no task context, no event fold, and no plan text, and
-// reads no workspace-wide order listing. A poll costs one task read, one task
-// order read, the next-action projection, and the work-order list's claim
-// projections over this task's orders: the dependency blocker read for a
-// queued implementation or verification order, the recovery task and gate
-// reads for an order that recovery can refuse, and the risk subject read for
-// a risk order (component-next-action invariant 57; req-agent-skills REQ-4,
-// AC-4.1 through AC-4.3).
+// reads no workspace-wide order listing. A poll costs two validation reads,
+// one task read, one task order read, one marker read, the next-action
+// projection, and the work-order list's claim projections over this task's
+// orders: the dependency blocker read for a queued implementation or
+// verification order, the recovery task and gate reads for an order that
+// recovery can refuse, and the risk subject read for a risk order
+// (component-next-action invariant 57; req-agent-skills REQ-4, AC-4.1
+// through AC-4.3).
 //
-// An unchanged poll answers 304 from the validation read alone, before the
-// task read or the projection, exactly as the Board activity read does
-// (component-http-api, Activity conditional admission).
+// The route answers under the conditional statement read: it projects
+// first and answers 304 only when the tag of the body projected now matches
+// and its inputs held still (component-next-action invariant 58). The tag
+// covers every input above, the claimability projections included, through
+// the validation read and the encoded body. One read of the task's markers
+// states the review lease horizon.
 func (s *Server) getTaskObservation(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
-	now := activityClock().UTC().Truncate(time.Microsecond)
-	opts, err := s.nextActionOptions(r)
-	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	opts.Now = now
-	validation, err := s.Store.ReadActivityValidation(r.Context(), now)
-	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	conditional := &activityConditional{now: now, opts: opts, scope: taskObservationValidatorScope(r.Context(), "observation", taskID, opts.Capabilities), validation: validation}
-	if tag, admitted := conditional.admits(r.Header.Get("If-None-Match")); admitted {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("ETag", tag.raw)
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	task, err := s.Store.GetTask(r.Context(), taskID)
-	if err != nil {
-		writeClassifiedStoreError(w, r, err, refuseSentinel(store.ErrNotFound, http.StatusNotFound, "task not found"))
-		return
-	}
-	// One bounded read of this task's orders serves both the next action and
-	// the claimable list, so the route never reads the workspace listing
-	// (component-persistence, Board activity validation reads).
-	orders, err := s.Store.ListTaskWorkOrders(r.Context(), taskID)
-	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	action, err := store.ReadNextActionForTask(r.Context(), s.Store, task, orders, opts)
-	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	claimable, err := s.projectTaskClaimability(r.Context(), task, orders)
-	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	observation := taskObservation{
-		TaskID:          task.ID,
-		State:           task.State,
-		PlanState:       task.PlanState,
-		MergeApproval:   task.MergeApproval,
-		NextAction:      taskObservationAction{Compact: nextaction.CompactFrom(action)},
-		ClaimableOrders: taskObservationClaimableOrders(claimable),
-	}
-	if action.CurrentOrder != nil {
-		observation.NextAction.CurrentOrder = &taskObservationOrder{ID: action.CurrentOrder.ID, Stage: core.Stage(action.CurrentOrder.Stage)}
-	}
-	w.Header().Set("ETag", conditional.etag(taskObservationValidUntil(now, action), ""))
-	writeJSON(w, http.StatusOK, observation)
+	s.answerStatement(w, r, "observation", taskID, func(ctx context.Context, opts store.NextActionOptions) (any, error) {
+		task, err := s.Store.GetTask(ctx, taskID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, statementNotFound{err}
+			}
+			return nil, err
+		}
+		// One bounded read of this task's orders serves both the next action
+		// and the claimable list, so the route never reads the workspace
+		// listing (component-persistence, Board activity validation reads).
+		orders, err := s.Store.ListTaskWorkOrders(ctx, taskID)
+		if err != nil {
+			return nil, err
+		}
+		inputs, err := s.Store.ReadActivityInputs(ctx, []string{task.ID}, opts.Now)
+		if err != nil {
+			return nil, err
+		}
+		memoHorizon(ctx, inputs.ValidUntil)
+		orderHorizon(ctx, orders)
+		opts.MarkersLoaded, opts.Markers = true, inputs.Markers
+		action, err := store.ReadNextActionForTask(ctx, s.Store, task, orders, opts)
+		if err != nil {
+			return nil, err
+		}
+		if action.Deadline != nil {
+			memoHorizon(ctx, *action.Deadline)
+		}
+		claimable, err := s.projectTaskClaimability(ctx, task, orders)
+		if err != nil {
+			return nil, err
+		}
+		observation := taskObservation{
+			TaskID:          task.ID,
+			State:           task.State,
+			PlanState:       task.PlanState,
+			MergeApproval:   task.MergeApproval,
+			NextAction:      taskObservationAction{Compact: nextaction.CompactFrom(action)},
+			ClaimableOrders: taskObservationClaimableOrders(claimable),
+		}
+		if action.CurrentOrder != nil {
+			observation.NextAction.CurrentOrder = &taskObservationOrder{ID: action.CurrentOrder.ID, Stage: core.Stage(action.CurrentOrder.Stage)}
+		}
+		return observation, nil
+	})
 }
 
 // taskObservation is the narrow wait observation of one task. It carries only
@@ -170,17 +166,6 @@ func taskObservationClaimableOrders(orders []core.WorkOrder) []taskObservationOr
 		return strings.Compare(a.ID, b.ID)
 	})
 	return claimable
-}
-
-// taskObservationValidUntil is the next UTC minute boundary, pulled earlier to
-// a next-action deadline inside it, because a crossed deadline changes the
-// stated summary (component-http-api, Activity conditional admission).
-func taskObservationValidUntil(now time.Time, action nextaction.NextAction) time.Time {
-	until := now.Truncate(time.Minute).Add(time.Minute)
-	if deadline := action.Deadline; deadline != nil && deadline.After(now) && deadline.Before(until) {
-		until = *deadline
-	}
-	return until
 }
 
 // taskObservationValidatorScope binds a tag to its route, workspace, caller,

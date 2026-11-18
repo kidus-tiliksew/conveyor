@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -19,26 +18,36 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
-// attentionPollComposition names the reads a poll composes its body from. A
-// 304 must perform none of them (component-http-api, Activity conditional
-// admission).
-func assertNoComposition(t *testing.T, before, after map[string]int) {
+// assertRevalidated proves a 304 poll projected the statement between two
+// validation reads, so the 304 answers for the state at answer time, not
+// only for the state at a pre-read check (component-next-action invariant
+// 58). sequence is the poll's own reads, in call order.
+func assertRevalidated(t *testing.T, sequence []string) {
 	t.Helper()
-	for name, count := range after {
-		// The validation read is the tag's own input, so every poll makes it.
-		if name == "ReadActivityValidation" {
-			continue
+	validations, projected := 0, false
+	for _, name := range sequence {
+		switch name {
+		case "ReadActivityValidation":
+			validations++
+			if validations == 2 && !projected {
+				t.Fatalf("a 304 poll read validation twice before projecting: %v", sequence)
+			}
+		case "ReadActivityInputs":
+			if validations != 1 {
+				t.Fatalf("a 304 poll projected after %d validation reads: %v", validations, sequence)
+			}
+			projected = true
 		}
-		if count != before[name] {
-			t.Fatalf("a 304 poll performed %s (%d -> %d)", name, before[name], count)
-		}
+	}
+	if validations != 2 || !projected {
+		t.Fatalf("a 304 poll made %d validation reads, projected=%t: %v", validations, projected, sequence)
 	}
 }
 
 // TestTaskObservationPollAnswersUnchangedWith304 proves the narrow wait poll
-// answers an unchanged task with 304 before any composition, and a changed task
-// with 200 and a new tag (req-agent-skills AC-4.3; component-http-api, Activity
-// conditional admission).
+// answers an unchanged task with 304 after it projected and revalidated, and a
+// changed task with 200 and a new tag (req-agent-skills AC-4.3;
+// component-next-action invariant 58).
 func TestTaskObservationPollAnswersUnchangedWith304(t *testing.T) {
 	f := newActivityConditionalFixture(t)
 	f.task("task-obs", core.TaskAwaiting)
@@ -61,7 +70,7 @@ func TestTaskObservationPollAnswersUnchangedWith304(t *testing.T) {
 		t.Fatalf("the observation poll read a workspace order listing: %v", f.counted.calls)
 	}
 
-	before := maps.Clone(f.counted.calls)
+	before := len(f.counted.sequence)
 	warm := f.read(path, etag)
 	if warm.Code != http.StatusNotModified {
 		t.Fatalf("unchanged poll status=%d body=%s, want 304", warm.Code, warm.Body.String())
@@ -69,7 +78,7 @@ func TestTaskObservationPollAnswersUnchangedWith304(t *testing.T) {
 	if warm.Body.Len() != 0 {
 		t.Fatalf("304 body=%q, want empty", warm.Body.String())
 	}
-	assertNoComposition(t, before, f.counted.calls)
+	assertRevalidated(t, f.counted.sequence[before:])
 
 	// A new claimable order changes the observation, so the next poll answers
 	// 200 with a tag that no longer admits the old one.
@@ -103,9 +112,10 @@ func TestTaskObservationAndNextActionValidatorsAreRouteScoped(t *testing.T) {
 	}
 }
 
-// TestNextActionPollAnswersUnchangedWith304 proves the next-action read keeps
-// its body while an unchanged poll costs no projection, and a changed task
-// answers 200 with a new tag (req-agent-skills AC-4.3).
+// TestNextActionPollAnswersUnchangedWith304 proves the next-action read
+// answers an unchanged poll with 304 after it projected and revalidated, and a
+// changed task answers 200 with a new tag (req-agent-skills AC-4.3;
+// component-next-action invariant 58).
 func TestNextActionPollAnswersUnchangedWith304(t *testing.T) {
 	f := newActivityConditionalFixture(t)
 	f.task("task-next", core.TaskRunning)
@@ -123,12 +133,12 @@ func TestNextActionPollAnswersUnchangedWith304(t *testing.T) {
 		t.Fatalf("next action body=%s", cold.Body.String())
 	}
 
-	before := maps.Clone(f.counted.calls)
+	before := len(f.counted.sequence)
 	warm := f.read(path, etag)
 	if warm.Code != http.StatusNotModified {
 		t.Fatalf("unchanged read status=%d body=%s, want 304", warm.Code, warm.Body.String())
 	}
-	assertNoComposition(t, before, f.counted.calls)
+	assertRevalidated(t, f.counted.sequence[before:])
 
 	f.order(core.WorkOrder{ID: "task-next-implement-1", TaskID: "task-next", JobID: "job-next", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true})
 	changed := f.read(path, etag)
