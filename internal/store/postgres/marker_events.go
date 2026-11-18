@@ -107,7 +107,11 @@ func markerLower(text string) string { return "lower(" + text + ")" }
 func markerStripped(text, literal string) string {
 	return "octet_length(replace(" + text + "," + literal + ",''))"
 }
-func markerASCII(text string) string { return "(octet_length(" + text + ")=char_length(" + text + "))" }
+
+// markerASCII reports whether text holds only ASCII characters, tested by
+// character range so a single-byte server encoding, where octet and
+// character lengths always agree, cannot pass a non-ASCII character.
+func markerASCII(text string) string { return "(" + text + ` ~ '^[\x01-\x7f]*$')` }
 
 // markerBinder collects the bound arguments of one statement. Bind
 // returns a token; finish numbers the tokens in the statement's text order,
@@ -167,7 +171,9 @@ func markerQuotedSQL(kinds []string) string {
 // value, as Go keeps the last value.
 func markerKeyUnambiguous(key string) string {
 	quoted := `'"` + key + `"'`
-	return fmt.Sprintf("(k_text IS NOT NULL AND %s AND %s=%s)", markerASCII("k_text"), markerStripped("k_text", quoted), markerStripped("k_lower", quoted))
+	// Both the key list and its lowered form must be ASCII: lower() under a
+	// single-byte encoding and locale can map an ASCII letter outside ASCII.
+	return fmt.Sprintf("(k_text IS NOT NULL AND %s AND %s AND %s=%s)", markerASCII("k_text"), markerASCII("k_lower"), markerStripped("k_text", quoted), markerStripped("k_lower", quoted))
 }
 
 // mayEqual is false only when Go cannot decode the string value at key as

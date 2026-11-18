@@ -164,7 +164,7 @@ func (s *Store) markerFoldRows(ctx context.Context, in store.MarkerFoldInput) ([
 			}
 			return kept
 		}
-		part := store.MarkerFoldInput{Workspace: in.Workspace, Page: chunk, ReviewTasks: within(in.ReviewTasks), LiveReviewTasks: within(in.LiveReviewTasks), Now: in.Now}
+		part := store.MarkerFoldInput{Workspace: in.Workspace, Page: chunk, ReviewTasks: within(in.ReviewTasks), LiveReviewTasks: within(in.LiveReviewTasks), Now: in.Now, KeepAllClaims: in.KeepAllClaims}
 		for _, order := range in.OpenReviewOrders {
 			if chunkSet[order.TaskID] {
 				part.OpenReviewOrders = append(part.OpenReviewOrders, order)
