@@ -169,7 +169,7 @@ test.describe('touch disclosures', () => {
       await page.keyboard.press('Escape')
       await expect(content).toBeHidden()
       await trigger.tap()
-      await page.getByRole('heading', { name: surface.route === '/' ? 'Board' : task.title, exact: true }).tap()
+      await page.getByRole('heading', { name: surface.route === '/' ? 'Tasks' : task.title, exact: true }).tap()
       await expect(content).toBeHidden()
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
     })

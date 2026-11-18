@@ -149,14 +149,33 @@ test('every sidebar entry and Board card link names the page workspace (AC-1.1, 
     '/w/bravo/monitor',
     '/w/bravo/settings',
   ])
-  await expect(nav.getByRole('link', { name: 'Board' })).toHaveAttribute('aria-current', 'page')
+  await expect(nav.getByRole('link', { name: 'Tasks', exact: true })).toHaveAttribute('aria-current', 'page')
   await expect(page.getByRole('link', { name: /Bravo only change/ })).toHaveAttribute('href', '/w/bravo/tasks/bravo-1')
 
   // Every page keeps its own path below the prefix.
   await nav.getByRole('link', { name: 'Settings' }).click()
   await expect(page).toHaveURL(/\/w\/bravo\/settings$/)
   await expect(nav.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
-  await expect(nav.getByRole('link', { name: 'Board' })).not.toHaveAttribute('aria-current', 'page')
+  await expect(nav.getByRole('link', { name: 'Tasks', exact: true })).not.toHaveAttribute('aria-current', 'page')
+})
+
+// The page that lists tasks is named Tasks: primary navigation lists it first,
+// its entry keeps the workspace's root address, and no entry is named Board
+// (req-operator-next-action AC-6.4; req-workspace-addresses AC-1.2).
+test('primary navigation lists Tasks first at the workspace root and lists no Board entry', async ({ page }) => {
+  await open(page, 'alpha')
+  await page.goto('/w/bravo/settings')
+  const nav = page.getByRole('navigation', { name: 'Primary' })
+  const first = nav.getByRole('link').first()
+  await expect(first).toHaveText('Tasks')
+  await expect(first).toHaveAttribute('href', '/w/bravo/')
+  await expect(nav.getByRole('link', { name: /Board/i })).toHaveCount(0)
+
+  await first.click()
+  await expect(page).toHaveURL(/\/w\/bravo\/$/)
+  await expect(page.getByRole('heading', { name: 'Tasks', exact: true, level: 1 })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /Board/i })).toHaveCount(0)
+  await expect(first).toHaveAttribute('aria-current', 'page')
 })
 
 test("an address opens its workspace's task whatever the browser stored, then stores it (AC-1.3)", async ({ page }) => {
@@ -195,6 +214,7 @@ test("the switcher opens the chosen workspace's Board and Back returns (AC-1.5)"
 
   await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Bravo' }).click()
   await expect(page).toHaveURL(/\/w\/bravo\/$/)
+  await expect(page.getByRole('heading', { name: 'Tasks', exact: true, level: 1 })).toBeVisible()
   await expect(page.getByText('Bravo only change', { exact: true })).toBeVisible()
   await expect.poll(() => stored(page)).toBe('bravo')
 

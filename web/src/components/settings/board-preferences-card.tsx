@@ -12,7 +12,7 @@ export function BoardPreferencesCard() {
     <BrowserRow
       icon={Columns3}
       title="Show stage progress on cards"
-      description="Draw each task's path through its stages and approvals on its Board card."
+      description="Draw each task's path through its stages and approvals on its task card."
       control={
         <Switch aria-label="Show stage progress on cards" checked={showStageProgress} onChange={setShowStageProgress} />
       }

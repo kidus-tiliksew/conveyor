@@ -275,11 +275,11 @@ test('the board excludes the blueprint anchor from cards and column counts', asy
   })
 
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
 
-  // The rail's Board badge counts what the board shows — so with only an
+  // The rail's Tasks badge counts what the Tasks page shows — so with only an
   // anchor needing attention, there is no badge at all.
-  const boardNav = page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: /Board/ })
+  const boardNav = page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: /Tasks/ })
   await expect(boardNav).toBeVisible()
   await expect(boardNav.getByText('1')).toHaveCount(0)
   await expect(page.getByText(childTitles['child-sub-2'])).toBeVisible()
@@ -336,7 +336,7 @@ test('the blueprints surface is parked out of navigation and reads as history', 
   await page.goto('/w/demo/blueprints')
   await expect(page).toHaveURL(/\/blueprints$/)
   await expect(page.getByText('Read-only records of legacy blueprints')).toBeVisible()
-  await page.getByRole('main').getByRole('link', { name: 'the Board', exact: true }).click()
+  await page.getByRole('main').getByRole('link', { name: 'the Tasks page', exact: true }).click()
   await expect(page).toHaveURL(/\/$/)
 })
 

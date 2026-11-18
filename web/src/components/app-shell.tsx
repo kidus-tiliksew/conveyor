@@ -712,7 +712,7 @@ function NavSidebar({ className }: { className?: string }) {
         <p className="truncate text-sm font-semibold tracking-tight">{currentName}</p>
       </div>
       <div className="flex-1 space-y-px overflow-y-auto px-2">
-        <NavItem to="/w/$workspaceId/" icon={Kanban} label="Board" />
+        <NavItem to="/w/$workspaceId/" icon={Kanban} label="Tasks" />
         <NavItem to="/w/$workspaceId/inbox" icon={Inbox} label="Inbox">
           {operatorDecisions > 0 && <Badge variant="attention">{operatorDecisions}</Badge>}
         </NavItem>
