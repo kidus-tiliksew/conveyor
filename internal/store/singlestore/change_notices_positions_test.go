@@ -196,7 +196,7 @@ func TestPeerMarksStatementBoundsWitnesses(t *testing.T) {
 	if strings.Count(query, "WHERE w.position > CASE w.workspace_id WHEN ? THEN ? WHEN ? THEN ? ELSE 0 END") != 2 || fmt.Sprint(args) != "[a 9 b 4 a 9 b 4]" {
 		t.Fatalf("accepted statement=%q args=%v", query, args)
 	}
-	if strings.Contains(query, ";") || strings.Contains(strings.ToUpper(query), "LEFT JOIN") || strings.Count(query, "events_columnstore") != 1 {
+	if strings.Contains(query, ";") || strings.Contains(strings.ToUpper(query), "LEFT JOIN") || strings.Count(query, "events_columnstore e FORCE INDEX (events_task_event_idx)") != 1 {
 		t.Fatalf("the peer read must be one statement that reaches events through one inner join: %q", query)
 	}
 }

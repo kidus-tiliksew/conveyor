@@ -109,7 +109,7 @@ func advanceTaskEventPosition(ctx context.Context, tx *sql.Tx, ws string, witnes
 // later read, so no peer needs its witness again.
 func pruneTaskEventWitnesses(ctx context.Context, tx *sql.Tx, ws string, position int64) error {
 	rows, err := tx.QueryContext(ctx, `SELECT w.position,w.event_shard_key,w.event_id FROM task_event_witnesses w
-JOIN events_columnstore e ON e.event_shard_key=w.event_shard_key AND e.workspace_id=w.workspace_id AND e.id=w.event_id
+JOIN events_columnstore e FORCE INDEX (events_task_event_idx) ON e.event_shard_key=w.event_shard_key AND e.workspace_id=w.workspace_id AND e.id=w.event_id
 WHERE w.workspace_id=? AND w.position<? LIMIT ?`, ws, position, taskEventPositionPrune)
 	if err != nil {
 		return err

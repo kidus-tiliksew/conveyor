@@ -22,10 +22,13 @@ import (
 // accepted for the workspace, and, again, each of those witnesses whose
 // event row is visible to this read. The visible branch is an inner join
 // driven by the witness rows: SingleStore builds its hash table on the few
-// witness rows and seeks events_columnstore through the unique hash key
-// events_task_event_idx. While no workspace changed, the witness filter
-// selects no row, so the read looks up no event. (A left join would build
-// the hash table on the event table and scan it on every read.)
+// witness rows and probes events_columnstore through the unique hash key
+// events_task_event_idx (a "join index" filter), which FORCE INDEX keeps the
+// planner from replacing with a repartition of the event table. While no
+// workspace changed, the witness filter selects no row, so the probe skips
+// every on-disk segment. SingleStore still reads the table's unflushed
+// in-memory segment for the probe. (A left join builds the hash table on the
+// whole event table instead.)
 const (
 	peerMarksPositionsSQL = `SELECT workspace_id, 0 AS source, position AS n FROM event_log_positions
 UNION ALL
@@ -34,7 +37,7 @@ UNION ALL
 SELECT w.workspace_id, 2 AS source, w.position AS n FROM task_event_witnesses w WHERE w.position > %[1]s
 UNION ALL
 SELECT w.workspace_id, 3 AS source, w.position AS n FROM task_event_witnesses w
-JOIN events_columnstore e ON e.event_shard_key = w.event_shard_key AND e.workspace_id = w.workspace_id AND e.id = w.event_id
+JOIN events_columnstore e FORCE INDEX (events_task_event_idx) ON e.event_shard_key = w.event_shard_key AND e.workspace_id = w.workspace_id AND e.id = w.event_id
 WHERE w.position > %[1]s`
 )
 
