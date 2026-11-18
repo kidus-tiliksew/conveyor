@@ -71,6 +71,12 @@ type Job struct {
 	ClaimedAt   time.Time
 	ClaimedBy   string
 	LastError   string
+	// DiscardedAt is the recorded time of the current generation's
+	// job.discarded event, zero until the generation is discarded. An owner
+	// compares it with its own record's last change to tell a discard that
+	// stopped the record from one that came before it
+	// (component-verification-publication invariant 26).
+	DiscardedAt time.Time
 	// Head is the stream version the fold reflects; a claim names it.
 	Head eventlog.Version
 	// EnqueuedAt orders claimable jobs: earliest enqueue first.
@@ -168,6 +174,7 @@ func (j *Job) Apply(event eventlog.Event) error {
 			j.State = StateScheduled
 		}
 		j.ClaimedAt, j.ClaimedBy, j.LastError = time.Time{}, "", ""
+		j.DiscardedAt = time.Time{}
 		j.EnqueuedAt = event.Position
 		j.Generation++
 	case KindClaimed:
@@ -212,6 +219,7 @@ func (j *Job) Apply(event eventlog.Event) error {
 		}
 		j.State = StateDiscarded
 		j.ClaimedBy = ""
+		j.DiscardedAt = event.At.UTC()
 	}
 	return nil
 }

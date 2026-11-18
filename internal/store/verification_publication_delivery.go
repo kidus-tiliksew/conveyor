@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -15,7 +16,9 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 )
 
 // VerificationDeliveryStore owns PR delivery (component-verification-publication) independently of verification
@@ -330,24 +333,21 @@ func VerificationDeliveryMaxGeneration(ds []core.VerificationDelivery) int {
 }
 
 // ConvergeVerificationDelivery moves one due row given the newest generation
-// for its pull-request key. Stale pending/retrying rows supersede; a terminal
+// for its pull-request key. Older pending, retrying and failed rows supersede
+// and drop any scheduled retry, so they leave the due window for good
+// (component-verification-publication invariants 5, 19 and 27); a terminal
 // head mismatch never schedules another automatic retry.
 func ConvergeVerificationDelivery(d core.VerificationDelivery, latestGeneration int, now time.Time) (core.VerificationDelivery, bool, error) {
 	if d.Generation < latestGeneration {
 		switch d.State {
-		case "pending", "retrying":
+		case "pending", "retrying", "failed":
 			state, err := core.TransitionVerificationDelivery(d.State, "supersede")
 			if err != nil {
 				return d, false, err
 			}
 			d.State = state
+			d.NextAttemptAt = nil
 			d.UpdatedAt = now
-			return d, false, nil
-		case "failed":
-			if d.ErrorClass == "head_mismatch" && d.NextAttemptAt != nil {
-				d.NextAttemptAt = nil
-				d.UpdatedAt = now
-			}
 			return d, false, nil
 		}
 		return d, false, nil
@@ -363,7 +363,7 @@ func ConvergeVerificationDelivery(d core.VerificationDelivery, latestGeneration 
 			}
 			return d, false, nil
 		}
-		if d.NextAttemptAt != nil && d.NextAttemptAt.After(now) {
+		if d.NextAttemptAt == nil || d.NextAttemptAt.After(now) {
 			return d, false, nil
 		}
 		updated, err := AdvanceVerificationDelivery(d, "retry", d, now)
@@ -373,6 +373,114 @@ func ConvergeVerificationDelivery(d core.VerificationDelivery, latestGeneration 
 		return updated, true, nil
 	}
 	return d, false, nil
+}
+
+// VerificationDeliveryDiscardStops reports whether a delivery job discarded
+// after its final attempt stopped the row the reconcile pass read under its
+// pull-request lock. Only a row read as pending or retrying qualifies, and
+// only when the discard came after the row's last change: a row the last
+// attempt saved as failed keeps its scheduled retry, and a discard older than
+// the row's current state belongs to an earlier cycle (component-verification-
+// publication invariant 26; req-bounded-automatic-recovery AC-4.1). Both times
+// compare at microsecond precision, the precision both SQL logs keep, so a
+// discard recorded before the change never reads as after it.
+func VerificationDeliveryDiscardStops(read core.VerificationDelivery, job logqueue.Job, discarded bool) bool {
+	if !discarded || job.DiscardedAt.IsZero() || read.State != "pending" && read.State != "retrying" {
+		return false
+	}
+	return job.DiscardedAt.Truncate(time.Microsecond).After(read.UpdatedAt.Truncate(time.Microsecond))
+}
+
+// ReconcileVerificationDeliveryRow converges one delivery row that a reconcile
+// pass read again under its pull-request lock, given the newest generation of
+// that key. put saves a changed row. Every log call uses ctx, so a SQL backend
+// passes its transaction-bound context and the row write, the enqueue and the
+// queue reads commit together. repaired reports a pending or retrying row that
+// had no unfinished job and got one; discarded reports a row a discarded job
+// stopped. Both are reported after the commit
+// (component-verification-publication invariants 19, 26 and 27).
+func ReconcileVerificationDeliveryRow(ctx context.Context, log eventlog.Store, read core.VerificationDelivery, latestGeneration int, now time.Time, put func(core.VerificationDelivery) error) (repaired, discarded bool, err error) {
+	next, enqueue, err := ConvergeVerificationDelivery(read, latestGeneration, now)
+	if err != nil {
+		return false, false, err
+	}
+	a := VerificationDeliveryArgs(next)
+	stream := logqueue.StreamFor(a.Kind(), a.UniqueKey())
+	if enqueue && read.State != "failed" {
+		job, ended, loadErr := logqueue.LoadDiscarded(ctx, log, read.WorkspaceID, stream)
+		if loadErr != nil {
+			return false, false, loadErr
+		}
+		if VerificationDeliveryDiscardStops(read, job, ended) {
+			next, err = FailDiscardedVerificationDelivery(next, now)
+			if err != nil {
+				return false, false, err
+			}
+			enqueue = false
+			discarded = true
+		}
+	}
+	if VerificationDeliveryNeedsWrite(read, next) {
+		if err = put(next); err != nil {
+			return false, false, err
+		}
+	}
+	if !enqueue {
+		return false, discarded, nil
+	}
+	// Enqueue reads the stream again and adds no job while one is unfinished,
+	// so a row whose job became active after the due read gets no second job.
+	inserted, err := logqueue.Enqueue(ctx, log, read.WorkspaceID, a.Kind(), a.UniqueKey(), a, 5, now)
+	if err != nil {
+		return false, false, err
+	}
+	return inserted && read.State != "failed", discarded, nil
+}
+
+// ErrVerificationDeliveryBusy reports a reconcile pass that skipped at least
+// one pull-request key because another transaction held its lock, such as a
+// delivery handler waiting on GitHub. The pass finished every other key. The
+// caller retries the pass: the order clock job returns the error so the queue
+// runs it again, and the start-up check retries a failed pass in the
+// background (component-verification-publication invariant 12).
+var ErrVerificationDeliveryBusy = errors.New("verification delivery: a pull request's delivery lock is held; the pass will run again")
+
+type verificationDeliveryClockKey struct{}
+
+// WithVerificationDeliveryClock binds the clock a reconcile pass reads to
+// decide which failed rows are due. Tests use it to move past a scheduled
+// next_attempt_at; production leaves it unset and the pass reads time.Now.
+func WithVerificationDeliveryClock(ctx context.Context, now func() time.Time) context.Context {
+	return context.WithValue(ctx, verificationDeliveryClockKey{}, now)
+}
+
+// VerificationDeliveryNow is the reconcile pass's current time in UTC.
+func VerificationDeliveryNow(ctx context.Context) time.Time {
+	if now, ok := ctx.Value(verificationDeliveryClockKey{}).(func() time.Time); ok && now != nil {
+		return now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// VerificationDeliveryStreamKey is the pull-request key of a delivery job
+// stream, or false for another stream. The SQL backends read the unfinished
+// delivery streams from the job index and leave those keys' newest rows out
+// of the due window, because the unfinished job serves them.
+func VerificationDeliveryStreamKey(stream string) (string, bool) {
+	prefix := string(logqueue.StreamFor(queue.VerificationPublicationArgs{}.Kind(), ""))
+	rest, ok := strings.CutPrefix(stream, prefix)
+	if !ok {
+		return "", false
+	}
+	cut := strings.LastIndex(rest, "#")
+	if cut <= 0 {
+		return "", false
+	}
+	number, err := strconv.Atoi(rest[cut+1:])
+	if err != nil || number <= 0 {
+		return "", false
+	}
+	return VerificationDeliveryKey(rest[:cut], number), true
 }
 
 func VerificationDeliveryNeedsWrite(old, next core.VerificationDelivery) bool {

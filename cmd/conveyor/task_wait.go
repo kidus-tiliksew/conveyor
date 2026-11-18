@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 
@@ -482,12 +481,6 @@ const (
 	taskWaitGateCheckHold      = "check_hold"
 )
 
-// taskWaitStageOrder ranks claimable stages the way a session works them. A
-// risk order ranks last: ordinary work beside it is reported first, and a lone
-// claimable risk order is reported, so its creation ends a wait
-// (component-cli-onboarding invariant 22).
-var taskWaitStageOrder = map[core.Stage]int{core.StageSpec: 0, core.StageImplement: 1, core.StageVerify: 2, core.StageReview: 3, core.StageRisk: 4}
-
 // taskWaitAwaitingGate maps the next action of an awaiting_human task to the
 // reported gate kind; any other kind is a human recovery gate.
 func taskWaitAwaitingGate(kind string) string {
@@ -581,6 +574,8 @@ func (r *taskWaitReader) observe(ctx context.Context, taskID string, now func() 
 		if observation.ClaimableOrders == nil {
 			observation.ClaimableOrders = []taskWaitOrder{}
 		}
+		// The server ranks the list, so its first entry is the next order
+		// (component-cli-onboarding invariant 22).
 		if len(observation.ClaimableOrders) > 0 {
 			first := observation.ClaimableOrders[0]
 			observation.NextOrder = &first
@@ -604,45 +599,6 @@ func (r *taskWaitReader) observe(ctx context.Context, taskID string, now func() 
 	}
 	r.last = observation
 	return observation, nil
-}
-
-// taskWaitNextOrder selects the first of the task's claimable orders, or nil
-// when there is none.
-func taskWaitNextOrder(orders []core.WorkOrder, taskID string) *taskWaitOrder {
-	claimable := taskWaitClaimableOrders(orders, taskID)
-	if len(claimable) == 0 {
-		return nil
-	}
-	return &claimable[0]
-}
-
-// taskWaitClaimableOrders lists the task's queued, claimable orders of a known
-// stage: spec, implement, verify, review, then risk, then the oldest queue
-// entry, then the order ID. The list is never nil, so an observation with no
-// claimable order reports an empty list (component-cli-onboarding invariant
-// 22).
-func taskWaitClaimableOrders(orders []core.WorkOrder, taskID string) []taskWaitOrder {
-	var eligible []core.WorkOrder
-	for _, order := range orders {
-		if order.TaskID == taskID && order.State == core.WorkOrderQueued && order.Claimable && core.ValidWorkOrderStage(order.Stage) {
-			eligible = append(eligible, order)
-		}
-	}
-	sort.Slice(eligible, func(i, j int) bool {
-		a, b := eligible[i], eligible[j]
-		if a.Stage != b.Stage {
-			return taskWaitStageOrder[a.Stage] < taskWaitStageOrder[b.Stage]
-		}
-		if !a.QueueEnteredAt.Equal(b.QueueEnteredAt) {
-			return a.QueueEnteredAt.Before(b.QueueEnteredAt)
-		}
-		return a.ID < b.ID
-	})
-	claimable := make([]taskWaitOrder, 0, len(eligible))
-	for _, order := range eligible {
-		claimable = append(claimable, taskWaitOrder{ID: order.ID, Stage: order.Stage})
-	}
-	return claimable
 }
 
 // taskWaitGate derives the pending gate of a task with no claimable order.
