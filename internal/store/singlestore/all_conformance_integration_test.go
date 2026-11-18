@@ -199,7 +199,7 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			reads := newConformanceReadLedger(st)
-			return storetest.Fixture{DrainReadBytes: reads.drainBytes, DrainReadQueries: reads.drainQueries, DrainReadRows: reads.drainRows, VerificationClaimReads: verificationClaimReads(ws), NestedTaskCommandsInterleave: true, DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
+			return storetest.Fixture{ArtifactListStatements: storetest.ArtifactListStatementsExactlyTwo, DrainReadBytes: reads.drainBytes, DrainReadQueries: reads.drainQueries, DrainReadRows: reads.drainRows, VerificationClaimReads: verificationClaimReads(ws), NestedTaskCommandsInterleave: true, DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
 				t.Helper()
 				if _, err := st.db.ExecContext(ctx, `UPDATE users SET status='deactivated' WHERE id=?`, userID); err != nil {
 					t.Fatal(err)

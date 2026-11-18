@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"maps"
 	"os"
 	"regexp"
 	"runtime/debug"
@@ -2325,7 +2326,7 @@ func requireArtifactFullListConstantStatements(t *testing.T, st *Store) {
 func exerciseArtifactHotReadLayouts(t *testing.T, st *Store, dsn string, rowstore bool) {
 	t.Helper()
 	t.Run("exact bytewise join", func(t *testing.T) {
-		requireArtifactSingleBinaryJoinEquivalence(t, st)
+		requireArtifactSingleBinaryJoinEquivalence(t, st, rowstore)
 	})
 	for _, name := range artifactLookupIndexes {
 		if !st.hotReadIndexReady(name) {
@@ -2893,7 +2894,7 @@ func artifactTestKey(a core.Artifact) string {
 	return a.ID + "\x00" + string(a.Role) + "\x00" + a.TaskID + "\x00" + a.RequirementID + "\x00" + a.PlanningSessionID
 }
 
-func requireArtifactSingleBinaryJoinEquivalence(t *testing.T, st *Store) {
+func requireArtifactSingleBinaryJoinEquivalence(t *testing.T, st *Store, rowstore bool) {
 	t.Helper()
 	values := []any{nil, "", "id", "ID", "id ", "id\x00", "é", "e", "e\u0301", "中"}
 	for _, left := range values {
@@ -2914,5 +2915,85 @@ func requireArtifactSingleBinaryJoinEquivalence(t *testing.T, st *Store) {
 				t.Fatalf("LEFT JOIN changed exact or unmatched row for %q/%q: old=%v new=%v", left, right, oldLink, newLink)
 			}
 		}
+	}
+	for _, idType := range []string{"LONGTEXT", "VARCHAR(255)"} {
+		t.Run(idType, func(t *testing.T) {
+			requireArtifactColumnJoinEquivalence(t, rowstore, idType)
+		})
+	}
+}
+
+func requireArtifactColumnJoinEquivalence(t *testing.T, rowstore bool, idType string) {
+	t.Helper()
+
+	db, _ := hotReadIntegrationDatabaseWithEvents(t, false, false)
+	ctx := t.Context()
+	if _, err := db.ExecContext(ctx, `CREATE ROWSTORE TABLE proof_artifacts (
+		seq INT NOT NULL, id `+idType+`, SHARD KEY(seq)
+	) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin`); err != nil {
+		t.Fatal(err)
+	}
+	engine := ""
+	if rowstore {
+		engine = "ROWSTORE "
+	}
+	if _, err := db.ExecContext(ctx, `CREATE `+engine+`TABLE proof_links (
+		seq INT NOT NULL, artifact_id LONGTEXT, SHARD KEY(seq)
+	) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin`); err != nil {
+		t.Fatal(err)
+	}
+	artifacts := []any{"id", "ID", "id ", "id\x00", "é", "e\u0301", "unmatched", nil}
+	links := []any{"id", "id", "ID", "id ", "id\x00", "é", "e\u0301", "other", nil}
+	for i, id := range artifacts {
+		if _, err := db.ExecContext(ctx, `INSERT INTO proof_artifacts (seq,id) VALUES (?,?)`, i, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, id := range links {
+		if _, err := db.ExecContext(ctx, `INSERT INTO proof_links (seq,artifact_id) VALUES (?,?)`, i, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type joinedRow struct {
+		artifact int
+		link     sql.NullString
+	}
+	want := make(map[joinedRow]int)
+	for i, artifact := range artifacts {
+		matched := false
+		for _, link := range links {
+			if artifact != nil && link != nil && artifact == link {
+				want[joinedRow{i, sql.NullString{String: link.(string), Valid: true}}]++
+				matched = true
+			}
+		}
+		if !matched {
+			want[joinedRow{artifact: i}]++
+		}
+	}
+	readRows := func(predicate string) map[joinedRow]int {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, `SELECT a.seq,l.artifact_id FROM proof_artifacts a LEFT JOIN proof_links l ON `+predicate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		got := make(map[joinedRow]int)
+		for rows.Next() {
+			var row joinedRow
+			if err := rows.Scan(&row.artifact, &row.link); err != nil {
+				t.Fatal(err)
+			}
+			got[row]++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	oldRows := readRows(`l.artifact_id = a.id AND BINARY l.artifact_id = BINARY a.id`)
+	newRows := readRows(`l.artifact_id = a.id AND l.artifact_id = BINARY a.id`)
+	if !maps.Equal(oldRows, want) || !maps.Equal(newRows, want) {
+		t.Fatalf("%s LEFT JOIN multisets differ: old=%v new=%v want=%v", idType, oldRows, newRows, want)
 	}
 }

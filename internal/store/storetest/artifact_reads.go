@@ -85,8 +85,17 @@ func runArtifactReadScoping(t *testing.T, x Fixture) {
 	}
 	if x.DrainReadQueries != nil {
 		queries := measureListing(x.DrainReadQueries, "ListArtifacts")
-		if len(listed) > store.ArtifactMetadataPageSize && queries < 5 {
-			t.Fatalf("ListArtifacts statements = %d, want snapshot plus paged hydrations", queries)
+		switch x.ArtifactListStatements {
+		case ArtifactListStatementsPaged:
+			if len(listed) > store.ArtifactMetadataPageSize && queries < 5 {
+				t.Fatalf("ListArtifacts statements = %d, want at least 5 for snapshot plus paged hydrations", queries)
+			}
+		case ArtifactListStatementsExactlyTwo:
+			if queries != 2 {
+				t.Fatalf("ListArtifacts statements = %d, want exactly 2", queries)
+			}
+		default:
+			t.Fatalf("ListArtifacts statement contract not specified: %d", x.ArtifactListStatements)
 		}
 	}
 	again, err := st.ListArtifacts(ctx)
