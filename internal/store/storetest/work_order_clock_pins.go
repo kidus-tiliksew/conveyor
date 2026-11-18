@@ -88,6 +88,76 @@ func runWorkOrderClockPins(t *testing.T, x Fixture) {
 		}
 	})
 
+	// The task detail reads the snapshot-free orders and which pins each
+	// holds; neither read moves a pin body, and the pins equal what the
+	// snapshot read carries (component-web-task-surfaces invariant 22).
+	t.Run("AuditPinsReadNoPinBody", func(t *testing.T) {
+		order, _ := pinned("audit", time.Hour, time.Hour)
+		governanceOnly := core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}, PendingDesignProposals: []core.PendingSystemDesignProposal{}}
+		siblings := map[string]core.WorkOrderClaim{
+			"served":     {Requirements: served},
+			"governance": {Governance: &governanceOnly},
+			"empty":      {Requirements: []core.ServedRequirementContext{}},
+		}
+		siblingIDs := map[string]string{}
+		for name, claim := range siblings {
+			sibling := newAggregateOrder(t, x, core.StageVerify)
+			claim.ClaimantID, claim.SessionID, claim.ClientToken = core.TaskRunClaimantID("worker"), "audit-"+name, "audit-"+name
+			claim.Lease, claim.ExecutionTimeout = time.Hour, time.Hour
+			_, err := ClaimWorkOrder(ctx, st, sibling.ID, claim)
+			requireOK(t, err)
+			siblingIDs[name] = sibling.ID
+		}
+		unclaimed := newAggregateOrder(t, x, core.StageVerify)
+		if x.DrainReadBytes != nil {
+			x.DrainReadBytes()
+		}
+		pins, err := st.ListTaskWorkOrderAuditPins(ctx, order.TaskID)
+		requireOK(t, err)
+		_, err = st.ListTaskWorkOrders(ctx, order.TaskID)
+		requireOK(t, err)
+		if x.DrainReadBytes != nil {
+			received := x.DrainReadBytes()
+			if got := received["ListTaskWorkOrderAuditPins"] + received["ListTaskWorkOrders"]; got >= foldGovernanceBytes {
+				t.Fatalf("detail order reads received %d bytes, want fewer than one %d-byte governance body", got, foldGovernanceBytes)
+			}
+		}
+		if want := (store.WorkOrderAuditPins{ServedRequirements: true, Governance: true}); len(pins) != 1 || pins[order.ID] != want {
+			t.Fatalf("audit pins = %+v, want only %s with %+v", pins, order.ID, want)
+		}
+		// Each order's pins equal what its snapshot read carries, including
+		// a served pin alone, a governance pin alone, an empty served list,
+		// and an order with no claim.
+		for _, taskOrder := range append(slicesOfIDs(siblingIDs), unclaimed.ID) {
+			stored, err := st.GetWorkOrder(ctx, taskOrder)
+			requireOK(t, err)
+			full, err := st.ListTaskWorkOrdersSnapshot(ctx, stored.TaskID)
+			requireOK(t, err)
+			got, err := st.ListTaskWorkOrderAuditPins(ctx, stored.TaskID)
+			requireOK(t, err)
+			for _, snapshot := range full {
+				want := store.WorkOrderAuditPins{ServedRequirements: len(snapshot.ServedRequirementSnapshot) > 0, Governance: snapshot.GovernanceSnapshot != nil}
+				if got[snapshot.ID] != want || want.Any() != hasPins(got, snapshot.ID) {
+					t.Fatalf("audit pins of %s = %+v, snapshot read holds %+v", snapshot.ID, got[snapshot.ID], want)
+				}
+			}
+		}
+		for name, want := range map[string]store.WorkOrderAuditPins{"served": {ServedRequirements: true}, "governance": {Governance: true}, "empty": {}} {
+			stored, err := st.GetWorkOrder(ctx, siblingIDs[name])
+			requireOK(t, err)
+			got, err := st.ListTaskWorkOrderAuditPins(ctx, stored.TaskID)
+			requireOK(t, err)
+			if got[stored.ID] != want {
+				t.Fatalf("%s order audit pins = %+v, want %+v", name, got[stored.ID], want)
+			}
+		}
+		other, err := st.ListTaskWorkOrderAuditPins(store.WithWorkspace(ctx, "clock-other-workspace"), order.TaskID)
+		requireOK(t, err)
+		if len(other) != 0 {
+			t.Fatal("audit pin read crossed the workspace boundary")
+		}
+	})
+
 	t.Run("NoOpClockReadsNoPinBody", func(t *testing.T) {
 		order, want := pinned("noop", time.Hour, time.Hour)
 		if x.DrainReadBytes != nil {
@@ -194,4 +264,17 @@ func runWorkOrderClockPins(t *testing.T, x Fixture) {
 			}
 		}
 	})
+}
+
+func slicesOfIDs(ids map[string]string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id)
+	}
+	return out
+}
+
+func hasPins(pins map[string]store.WorkOrderAuditPins, id string) bool {
+	_, ok := pins[id]
+	return ok
 }

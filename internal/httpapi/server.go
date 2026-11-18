@@ -2702,11 +2702,18 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		spec.MaterializedChildren = materializedChildrenForSpec(task.Children, spec.Version)
 		specPointer = &spec
 	}
-	// The response embeds the whole order, including the authority and
-	// governance snapshots it served before, so this read keeps them: the
-	// activity-column read would narrow the served body
-	// (component-http-api, Task detail; component-work-orders invariant 65).
-	workOrders, err := s.Store.ListTaskWorkOrdersSnapshot(store.WithWorkspace(r.Context(), task.Workspace), id)
+	// Both views strip the served-requirement and governance snapshots and
+	// mark an order that held one audit_available, so the detail reads the
+	// orders without either body and, in one more set read, only which pins
+	// each order holds (component-web-task-surfaces invariant 22;
+	// component-work-orders, Snapshot-free fold reads).
+	scoped := store.WithWorkspace(r.Context(), task.Workspace)
+	workOrders, err := s.Store.ListTaskWorkOrders(scoped, id)
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	auditPins, err := s.Store.ListTaskWorkOrderAuditPins(scoped, id)
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return
@@ -2778,6 +2785,9 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return
+	}
+	for index := range workOrderViews {
+		workOrderViews[index].auditAvailable = auditPins[workOrderViews[index].ID].Any()
 	}
 	opts, err := s.detailNextActionOptions(r.Context())
 	if err != nil {

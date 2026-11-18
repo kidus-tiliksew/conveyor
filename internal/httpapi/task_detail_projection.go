@@ -41,7 +41,8 @@ func (detail taskDetailProjection) MarshalJSON() ([]byte, error) {
 }
 
 // projectWorkOrderViews strips audit snapshots from work-order JSON for the
-// complete and bounded detail views alike.
+// complete and bounded detail views alike. An order read without its pin
+// bodies carries auditAvailable instead and gets the same mark.
 func projectWorkOrderViews(workOrders []workOrderActivityView) ([]json.RawMessage, error) {
 	orders := make([]json.RawMessage, 0, len(workOrders))
 	for _, order := range workOrders {
@@ -53,7 +54,7 @@ func projectWorkOrderViews(workOrders []workOrderActivityView) ([]json.RawMessag
 		if err != nil {
 			return nil, err
 		}
-		if omitted {
+		if omitted || order.auditAvailable {
 			var fields map[string]json.RawMessage
 			if err := json.Unmarshal(projected, &fields); err != nil {
 				return nil, err

@@ -1183,6 +1183,32 @@ func (s *Store) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]
 	return orders, rows.Err()
 }
 
+// ListTaskWorkOrderAuditPins reports which pin bodies the task's orders hold
+// in one statement that returns no body: an array length and a join to the
+// governance_snapshots row whose content the snapshot read selects; the
+// (workspace_id, digest) key admits at most one such row
+// (component-web-task-surfaces invariant 22).
+func (s *Store) ListTaskWorkOrderAuditPins(ctx context.Context, taskID string) (map[string]store.WorkOrderAuditPins, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrderAuditPins")
+	rows, err := s.boundary.Query(ctx, `SELECT w.id, COALESCE(jsonb_array_length(w.served_requirement_snapshot),0)>0, gs.digest IS NOT NULL
+		FROM work_orders w LEFT JOIN governance_snapshots gs ON gs.workspace_id=w.workspace_id AND gs.digest=w.governance_snapshot_digest
+		WHERE w.workspace_id=$1 AND w.task_id=$2 AND (COALESCE(jsonb_array_length(w.served_requirement_snapshot),0)>0 OR gs.digest IS NOT NULL)`, workspace(ctx), taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]store.WorkOrderAuditPins{}
+	for rows.Next() {
+		var id string
+		var pins store.WorkOrderAuditPins
+		if err := rows.Scan(&id, &pins.ServedRequirements, &pins.Governance); err != nil {
+			return nil, err
+		}
+		out[id] = pins
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrdersSnapshot")
 	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)

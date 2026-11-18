@@ -351,6 +351,12 @@ type WorkOrderStore interface {
 	// snapshots for responses that expose those pinned bodies. Elapsed clocks
 	// are projected without persisting lifecycle transitions.
 	ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error)
+	// ListTaskWorkOrderAuditPins reports, by order ID, which pin bodies the
+	// named task's orders hold, without reading either body. An order that
+	// holds neither pin is absent. The task detail marks such an order
+	// audit_available and serves no pin body (component-web-task-surfaces
+	// invariant 22; component-work-orders, Snapshot-free fold reads).
+	ListTaskWorkOrderAuditPins(ctx context.Context, taskID string) (map[string]WorkOrderAuditPins, error)
 	ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error)
 	ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error)
 	ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
