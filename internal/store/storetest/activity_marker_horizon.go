@@ -216,6 +216,40 @@ func horizonCases() []horizonCase {
 			lease := strings.Replace(h.at(time.Minute), "T", `\u0054`, 1)
 			return []core.Event{h.claim(0, 1, h.at(time.Hour)), h.renew(0, 2, lease)}
 		}},
+		// The claim reduction keeps one claim per order only where the folds
+		// read nothing from the older claims.
+		{name: "an older claim holds the earliest future lease", orders: oneOpen, horizon: offset(10 * time.Minute), events: func(h *horizonSeed) []core.Event {
+			return []core.Event{h.claim(0, 1, h.at(10*time.Minute)), h.claim(0, 2, h.at(time.Hour))}
+		}},
+		{name: "a newest claim that does not decode keeps the older lease", orders: oneQueued, horizon: zeroHorizon, events: func(h *horizonSeed) []core.Event {
+			return []core.Event{h.claim(0, 1, h.at(-10*time.Minute)), h.event(0, "work_order.claimed", 2, `"id":5`, `"lease_expires_at":`+h.at(-5*time.Minute))}
+		}},
+		{name: "an older claim of one order names another open order", orders: []horizonOrder{{state: core.WorkOrderClaimed}, {state: core.WorkOrderQueued}}, horizon: offset(time.Hour), events: func(h *horizonSeed) []core.Event {
+			return []core.Event{
+				h.event(0, "work_order.claimed", 1, fmt.Sprintf(`"review_work_order_id":%q`, h.orders[1].ID), `"stage":"review"`, `"lease_expires_at":`+h.at(-10*time.Minute)),
+				h.claim(0, 2, h.at(time.Hour)),
+			}
+		}},
+		{name: "claims at one instant order by id", orders: oneQueued, horizon: zeroHorizon, events: func(h *horizonSeed) []core.Event {
+			return []core.Event{h.claim(0, 1, h.at(-20*time.Minute)), h.claim(0, 1, h.at(-10*time.Minute))}
+		}},
+		{name: "a renewal between older claims and a newest claim without a lease", orders: oneQueued, horizon: zeroHorizon, events: func(h *horizonSeed) []core.Event {
+			return []core.Event{h.claim(0, 1, h.at(-40*time.Minute)), h.claim(0, 2, h.at(-30*time.Minute)), h.renew(0, 3, h.at(-20*time.Minute)), h.claim(0, 4, "")}
+		}},
+		// A projected claim keeps only the keys the folds read, so a field the
+		// folds never read must still decode for the claim's lease to count.
+		{name: "a claim with an invalid unread time does not decode", orders: oneOpen, horizon: offset(time.Hour), events: func(h *horizonSeed) []core.Event {
+			return []core.Event{h.claim(0, 1, h.at(time.Hour)),
+				h.event(0, "work_order.claimed", 2, fmt.Sprintf(`"id":%q`, h.orders[0].ID), `"stage":"review"`, `"created_at":"2027-02-29T00:00:00Z"`, `"lease_expires_at":`+h.at(time.Minute))}
+		}},
+		{name: "a claim with a leap day unread time decodes", orders: oneOpen, horizon: offset(time.Minute), events: func(h *horizonSeed) []core.Event {
+			return []core.Event{h.claim(0, 1, h.at(time.Hour)),
+				h.event(0, "work_order.claimed", 2, fmt.Sprintf(`"id":%q`, h.orders[0].ID), `"stage":"review"`, `"created_at":"2028-02-29T23:59:59.5+05:30"`, `"tokens_in":7`, `"claimable":true`, `"lease_expires_at":`+h.at(time.Minute))}
+		}},
+		{name: "a claim with a fractional count does not decode", orders: oneOpen, horizon: offset(time.Hour), events: func(h *horizonSeed) []core.Event {
+			return []core.Event{h.claim(0, 1, h.at(time.Hour)),
+				h.event(0, "work_order.claimed", 2, fmt.Sprintf(`"id":%q`, h.orders[0].ID), `"tokens_in":7.5`, `"lease_expires_at":`+h.at(time.Minute))}
+		}},
 	}
 	// Malformed and unusual lease values never become the horizon: the claim's
 	// lease is the only one Go decodes, so the horizon stays at the claim's.

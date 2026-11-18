@@ -69,6 +69,10 @@ func RunActivityMarkerBoundsConformance(t *testing.T, x Fixture) {
 		t.Fatalf("review diagnostic lease = %s, want the newest renewal's %s", got, want)
 	}
 
+	// The restored selection, the claim reduction, and the payload projection
+	// keep every marker and the review lease horizon of a mixed page.
+	t.Run("predicates", func(t *testing.T) { runActivityMarkerPredicates(t, x, ctx, now) })
+
 	if x.DrainReadRows == nil {
 		t.Log("factory reports no read rows; the bounded-row assertion is skipped")
 		return

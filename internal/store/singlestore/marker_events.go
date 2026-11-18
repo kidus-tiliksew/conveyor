@@ -28,9 +28,6 @@ func markerTaskBatches(taskIDs []string) [][]string {
 	return out
 }
 
-// Snapshot bodies are not marker inputs and must not cross the connection.
-const markerEventPayloadColumn = compactEventPayloadColumn
-
 type markerRow struct {
 	taskID      string
 	state       core.TaskState
@@ -140,133 +137,91 @@ func (s *Store) markerLatestTuples(ctx context.Context, byTask map[string]*marke
 	return rows.Err()
 }
 
-func markerKindLiterals(kinds []string) string {
-	quoted := make([]string, len(kinds))
-	for i, kind := range kinds {
-		quoted[i] = "'" + strings.ReplaceAll(kind, "'", "''") + "'"
-	}
-	return strings.Join(quoted, ",")
-}
-
-// markerForgePageKinds are the forge failure kinds read for the page's
-// tasks. work_order.updated is read separately, only for an implement
-// order's submission, exactly as store.LatestForgeFailure reads it.
-func markerForgePageKinds() []string {
-	kinds := make([]string, 0, len(activityMarkerForgeKinds))
-	for _, kind := range activityMarkerForgeKinds {
-		if kind != "work_order.updated" {
-			kinds = append(kinds, kind)
+// markerSQL is the SingleStore spelling of the shared activity-marker fold
+// read (store.MarkerFoldSQL). Snapshot bodies are not marker inputs and never
+// cross the connection.
+var markerSQL = store.MarkerSQLDialect{
+	Lease:       store.SingleStoreLeaseSQL,
+	Placeholder: func(int) string { return "?" },
+	Scope: func(b *store.MarkerSQLBinder, ws string, page []string) string {
+		marks := make([]string, len(page))
+		workspace := b.Bind(ws)
+		for i, id := range page {
+			marks[i] = b.Bind(id)
 		}
-	}
-	return kinds
+		return `FROM events_columnstore e
+		WHERE e.workspace_id=` + workspace + ` AND e.task_id IS NOT NULL AND e.task_id IN (` + strings.Join(marks, ",") + `)`
+	},
+	Compact: compactEventPayloadColumn,
+	InList: func(b *store.MarkerSQLBinder, col string, values []string) string {
+		marks := make([]string, len(values))
+		for i, value := range values {
+			marks[i] = b.Bind(value)
+		}
+		return col + " IN (" + strings.Join(marks, ",") + ")"
+	},
+	Int:       func(placeholder string) string { return "CAST(" + placeholder + " AS SIGNED)" },
+	Text:      func(json string) string { return json },
+	Keys:      func(json string) string { return "JSON_KEYS(" + json + ")" },
+	Field:     func(json, key string) string { return "JSON_EXTRACT_JSON(" + json + ",'" + key + "')" },
+	FieldText: func(json, key string) string { return "JSON_EXTRACT_STRING(" + json + ",'" + key + "')" },
+	IsString:  func(value string) string { return "(COALESCE(JSON_GET_TYPE(" + value + "),'')='string')" },
+	Object:    func(pairs []string) string { return "JSON_BUILD_OBJECT(" + strings.Join(pairs, ",") + ")" },
+	Contains:  func(text, literal string) string { return "(INSTR(" + text + "," + literal + ")>0)" },
+	Lower:     func(text string) string { return "LOWER(" + text + ")" },
+	// The binary cast keeps the replacement case-sensitive under any
+	// collation.
+	Stripped: func(text, literal string) string {
+		return "LENGTH(REPLACE(CAST(" + text + " AS BINARY)," + literal + ",''))"
+	},
+	ASCII:    func(text string) string { return "(LENGTH(" + text + ")=CHAR_LENGTH(" + text + "))" },
+	TypeOf:   func(value string) string { return "JSON_GET_TYPE(" + value + ")" },
+	KeyCount: func(keys string) string { return "JSON_LENGTH(" + keys + ")" },
+	// A binary operand keeps the match case-sensitive under any collation.
+	Regex: func(text, pattern string) string { return "(CAST(" + text + " AS BINARY) REGEXP '" + pattern + "')" },
 }
 
-// markerLifecycleKinds are the event kinds the review lease folds read: the
-// claim that opens a review lease and the renewals that extend it.
-const markerLifecycleKinds = `'work_order.claimed','work_order.lease_renewed'`
-
-// markerFoldQuery retains the last valid renewal for diagnostics and the
-// earliest future renewal for the validator's lease horizon. Only the simple
-// renewal payload written by the store is eligible: other JSON shapes retain
-// their complete history for the Go decoder (including duplicate/escaped keys,
-// payload identities, malformed leases, and whole-payload decoding errors).
-func markerFoldQuery(ws string, pageTaskIDs, reviewTaskIDs, liveReviewTaskIDs []string, now time.Time) (string, []any) {
-	args := []any{ws}
-	args = append(args, taskMapArgs(pageTaskIDs)...)
-	reviewBranch := ""
-	if len(reviewTaskIDs) > 0 {
-		reviewBranch = ` OR (e.kind IN ('work_order.released','review.completed','review.accepted','task.setup.changed') AND e.task_id IN (` + taskMapMarks(len(reviewTaskIDs)) + `))`
-		args = append(args, taskMapArgs(reviewTaskIDs)...)
-	}
-	liveBranch := ""
-	if len(liveReviewTaskIDs) > 0 {
-		liveBranch = ` OR (e.kind IN ('work_order.claimed','work_order.lease_renewed') AND e.task_id IN (` + taskMapMarks(len(liveReviewTaskIDs)) + `))`
-		args = append(args, taskMapArgs(liveReviewTaskIDs)...)
-	}
-	query := `SELECT e.id,e.task_id,COALESCE(e.job_id,'') AS job_id,e.kind,` + markerEventPayloadColumn + ` AS event_payload,e.at AS event_at
-		FROM events_columnstore e
-		WHERE e.workspace_id=? AND e.task_id IS NOT NULL AND e.task_id IN (` + taskMapMarks(len(pageTaskIDs)) + `)
-		AND (
-			e.kind IN ('pipeline.bounced','work_order.claimed','work_order.updated') OR
-			(e.kind IN (` + markerKindLiterals(markerForgePageKinds()) + `))` + reviewBranch + liveBranch + `
-		)
-		ORDER BY event_at,id`
-	if len(liveReviewTaskIDs) == 0 {
-		return query, args
-	}
-	// This restricted shape has no payload identity and no typed field other
-	// than the lease. Matching by job and decoding the lease therefore have
-	// the same meaning as the Go lifecycle folds. Do not broaden it to arbitrary
-	// objects merely because JSON_EXTRACT_STRING can read their lease field.
-	const attemptField = `"attempt_id"[[:space:]]*:[[:space:]]*"[^"]*"`
-	const leaseField = `"lease_expires_at"[[:space:]]*:[[:space:]]*"[0-9T:Z+.,-]+"`
-	const comma = `[[:space:]]*,[[:space:]]*`
-	const renewalShape = `^[[:space:]]*[{][[:space:]]*(` + attemptField + comma + leaseField + `|` + leaseField + `(` + comma + attemptField + `){0,1})[[:space:]]*[}][[:space:]]*$`
-	const carry = "id,task_id,job_id,event_payload,event_at"
-	instants := store.SingleStoreLeaseSQL.LeaseInstantSQL(`SELECT `+carry+`,
-		JSON_EXTRACT_STRING(event_payload,'lease_expires_at') AS lease_text,
-		CASE WHEN event_payload REGEXP '`+renewalShape+`'
-			AND JSON_GET_TYPE(JSON_EXTRACT_JSON(event_payload,'lease_expires_at'))='string'
-			THEN 1 ELSE 0 END AS lease_string
-		FROM marker_rows WHERE kind='work_order.lease_renewed'`, carry)
-	const future = `(lease_sec>now_sec OR (lease_sec=now_sec AND lease_nanos>now_nanos))`
-	query = `WITH marker_rows AS (` + query + `),
-		marker_clock AS (SELECT CAST(? AS SIGNED) AS now_sec,CAST(? AS SIGNED) AS now_nanos),
-		renewal_instants AS (` + instants + `),
-		ranked_renewals AS (
-			SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,now_sec,now_nanos,
-				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY lease_ok DESC,event_at DESC,id DESC) AS latest_rank,
-				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY
-					CASE WHEN lease_ok=1 AND ` + future + ` THEN 0 ELSE 1 END,
-					lease_sec,lease_nanos,event_at,id) AS horizon_rank
-			FROM renewal_instants CROSS JOIN marker_clock
-		)
-		SELECT id,task_id,job_id,kind,event_payload,event_at FROM marker_rows WHERE kind<>'work_order.lease_renewed'
-		UNION ALL
-		SELECT id,task_id,job_id,'work_order.lease_renewed',event_payload,event_at FROM ranked_renewals
-		WHERE lease_ok=0 OR latest_rank=1 OR (horizon_rank=1 AND ` + future + `)
-		ORDER BY event_at,id`
-	return query, append(args, now.Unix(), now.Nanosecond())
-}
-
-// markerFoldRows reads the fold inputs for the page's tasks in chunks.
-func (s *Store) markerFoldRows(ctx context.Context, pageTaskIDs, reviewTaskIDs, liveReviewTaskIDs []string, now time.Time) ([]core.Event, error) {
+// markerFoldRows reads the fold inputs for the page's tasks in chunks, and
+// reads back the claim histories whose newest claim does not supersede the
+// claims the reduction left out (store.MarkerClaimBackfill).
+func (s *Store) markerFoldRows(ctx context.Context, in store.MarkerFoldInput) ([]core.Event, error) {
 	out := []core.Event{}
-	for _, chunk := range markerTaskBatches(pageTaskIDs) {
+	for _, chunk := range markerTaskBatches(in.Page) {
 		chunkSet := make(map[string]bool, len(chunk))
 		for _, id := range chunk {
 			chunkSet[id] = true
 		}
-		review := make([]string, 0, len(reviewTaskIDs))
-		for _, id := range reviewTaskIDs {
-			if chunkSet[id] {
-				review = append(review, id)
+		within := func(ids []string) []string {
+			kept := make([]string, 0, len(ids))
+			for _, id := range ids {
+				if chunkSet[id] {
+					kept = append(kept, id)
+				}
+			}
+			return kept
+		}
+		part := store.MarkerFoldInput{Workspace: in.Workspace, Page: chunk, ReviewTasks: within(in.ReviewTasks), LiveReviewTasks: within(in.LiveReviewTasks), Now: in.Now}
+		for _, order := range in.OpenReviewOrders {
+			if chunkSet[order.TaskID] {
+				part.OpenReviewOrders = append(part.OpenReviewOrders, order)
 			}
 		}
-		live := make([]string, 0, len(liveReviewTaskIDs))
-		for _, id := range liveReviewTaskIDs {
-			if chunkSet[id] {
-				live = append(live, id)
-			}
-		}
-		query, args := markerFoldQuery(documentWorkspace(ctx), chunk, review, live, now)
-		rows, err := documentRows(ctx, s.db, query, args...)
+		query, args := store.MarkerFoldSQL(markerSQL, part)
+		rows, err := s.markerFoldScan(ctx, query, args)
 		if err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var event core.Event
-			if err = rows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.Payload, &event.At); err != nil {
-				rows.Close()
+		if partitions := store.MarkerClaimBackfill(rows, part.OpenReviewOrders); len(partitions) > 0 {
+			query, args = store.MarkerClaimHistorySQL(markerSQL, part, partitions)
+			history, err := s.markerFoldScan(ctx, query, args)
+			if err != nil {
 				return nil, err
 			}
-			out = append(out, event)
+			rows = store.MergeMarkerFoldRows(rows, history)
 		}
-		if err = rows.Err(); err != nil {
-			rows.Close()
-			return nil, err
+		for i := range rows {
+			out = append(out, rows[i].Event)
 		}
-		rows.Close()
 	}
 	// UNION branches and distributed execution may arrive in physical order;
 	// the lifecycle folds require the ledger's (at,id) order.
@@ -277,4 +232,21 @@ func (s *Store) markerFoldRows(ctx context.Context, pageTaskIDs, reviewTaskIDs, 
 		return out[i].At.Before(out[j].At)
 	})
 	return out, nil
+}
+
+func (s *Store) markerFoldScan(ctx context.Context, query string, args []any) ([]store.MarkerFoldRow, error) {
+	rows, err := documentRows(ctx, s.db, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []store.MarkerFoldRow{}
+	for rows.Next() {
+		var row store.MarkerFoldRow
+		if err = rows.Scan(&row.Event.ID, &row.Event.TaskID, &row.Event.JobID, &row.Event.Kind, &row.Event.Payload, &row.Event.At, &row.Dropped, &row.DroppedImplement); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
