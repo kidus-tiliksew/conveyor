@@ -39,7 +39,11 @@ func responsePacket(flags uint32) []byte {
 // observer reports.
 func handshake(t *testing.T, greeting, response []byte, chunk int) (bool, string) {
 	t.Helper()
-	observer := &compressionObserver{requested: true}
+	return handshakeWith(t, &compressionObserver{requested: true}, greeting, response, chunk)
+}
+
+func handshakeWith(t *testing.T, observer *compressionObserver, greeting, response []byte, chunk int) (bool, string) {
+	t.Helper()
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
@@ -86,6 +90,19 @@ func TestCompressionObserverReadsTheHandshake(t *testing.T) {
 				}
 			})
 		}
+	}
+	// A connection whose handshake could not be read records nothing, so
+	// the store's next connection still reports the state; a later
+	// handshake never replaces a recorded one.
+	observer := &compressionObserver{requested: true}
+	if _, got := handshakeWith(t, observer, append([]byte{9, 0, 0, 0}, "\xff\x10\x04Too many"...), responsePacket(0x000aa20f), 4096); got != CompressionUnknown {
+		t.Fatalf("an unread handshake reported %s", got)
+	}
+	if _, got := handshakeWith(t, observer, greetingPacket(0xf7ff), responsePacket(0x000aa20f|clientCompress), 4096); got != CompressionNegotiated {
+		t.Fatalf("the next connection's handshake reported %s, want %s", got, CompressionNegotiated)
+	}
+	if _, got := handshakeWith(t, observer, greetingPacket(0xf7df), responsePacket(0x000aa20f), 4096); got != CompressionNegotiated {
+		t.Fatalf("a later handshake replaced the recorded state with %s", got)
 	}
 	if requested, got := (&compressionObserver{}).state(); requested || got != CompressionUnknown {
 		t.Fatalf("an unobserved store reported %t %s", requested, got)
