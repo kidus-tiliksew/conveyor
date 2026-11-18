@@ -853,6 +853,7 @@ func TestCreateTaskRequestPolicyFieldsAreClassified(t *testing.T) {
 		"DependsOn":                "ordering",
 		"RequirementIDs":           "context",
 		"SystemDesignIDs":          "context",
+		"CrateID":                  "crate membership, not policy: the creating transaction validates it (component-crates invariant 7)",
 	}
 	fields := reflect.TypeFor[createTaskReq]()
 	seen := map[string]bool{}
