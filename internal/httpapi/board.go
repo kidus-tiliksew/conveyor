@@ -29,6 +29,9 @@ func (s *Server) readBoardPage(ctx context.Context, limit, offset int) (boardRes
 		return boardResponse{}, nil, err
 	}
 	page := boardResponse{Items: board.Items, Total: board.Total, Limit: limit, Offset: offset}
+	if err := s.nameTaskCrates(ctx, &page); err != nil {
+		return boardResponse{}, nil, err
+	}
 	for {
 		body, err := json.Marshal(page)
 		if err != nil {

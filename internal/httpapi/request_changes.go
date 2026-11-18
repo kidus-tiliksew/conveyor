@@ -92,5 +92,5 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	if !s.Store.IsDurable() && s.OnCreate != nil {
 		s.OnCreate(r.Context(), taskID)
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"task": updated, "feedback": request.Feedback})
+	s.writeTaskJSON(w, r, http.StatusAccepted, map[string]any{"task": updated, "feedback": request.Feedback})
 }

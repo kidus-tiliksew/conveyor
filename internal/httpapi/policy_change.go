@@ -75,5 +75,5 @@ func (s *Server) changeTaskPolicy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	s.writeTaskJSON(w, r, http.StatusOK, result)
 }

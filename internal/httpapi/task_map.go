@@ -35,6 +35,7 @@ type taskMapItem struct {
 	BlockingTaskIDs      []string                `json:"blocking_task_ids"`
 	UnsatisfiableTaskIDs []string                `json:"unsatisfiable_task_ids"`
 	Requirements         []taskMapRequirementRef `json:"requirements"`
+	Crate                *core.TaskCrate         `json:"crate,omitempty"`
 }
 
 type taskMapRequirementRef struct {
@@ -100,7 +101,7 @@ func (s *Server) getTaskMap(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if len(taskMap.Tasks) == 0 {
-		writeJSON(w, http.StatusOK, response)
+		s.writeTaskJSON(w, r, http.StatusOK, response)
 		return
 	}
 	tasks := make([]core.Task, len(taskMap.Tasks))
@@ -160,6 +161,7 @@ func (s *Server) getTaskMap(w http.ResponseWriter, r *http.Request) {
 			BlockingTaskIDs:      append([]string{}, blockers[task.ID].BlockingTaskIDs...),
 			UnsatisfiableTaskIDs: append([]string{}, blockers[task.ID].UnsatisfiableTaskIDs...),
 			Requirements:         refs,
+			Crate:                task.Crate,
 		})
 	}
 	// Newest activity first, the Board's last-event order; IDs break ties.
@@ -169,5 +171,5 @@ func (s *Server) getTaskMap(w http.ResponseWriter, r *http.Request) {
 		}
 		return response.Tasks[i].ID < response.Tasks[j].ID
 	})
-	writeJSON(w, http.StatusOK, response)
+	s.writeTaskJSON(w, r, http.StatusOK, response)
 }

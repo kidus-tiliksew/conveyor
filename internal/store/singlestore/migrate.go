@@ -256,6 +256,11 @@ func (s *Store) migrateFiles(ctx context.Context, files []migration) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == crateMigrationVersion {
+			if err := s.addNullableColumns(ctx, crateTaskColumn); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		if _, err = s.db.ExecContext(ctx, `INSERT INTO conveyor_singlestore_migrations(version,name,checksum) VALUES (?,?,?)`, file.version, file.name, file.checksum); err != nil {
 			return err
 		}
