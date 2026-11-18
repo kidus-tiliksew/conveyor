@@ -25,7 +25,7 @@ A running Store keeps the snapshot from Open until you close and reopen it, or r
 
 On SingleStore, `SHOW CREATE TABLE` is the definition check for each `PERSISTED VARCHAR(64)` column. `information_schema.statistics` is the key check. `COLUMNSTORE HASH` is a valid actual `index_type` for `USING HASH` keys. `HASH` is also valid. Rowstore keys report `BTREE`. `SKIPLIST` is also valid for those keys. `non_unique` must be 1. Key columns must match the approved order.
 
-On PostgreSQL, compare `pg_get_indexdef` to the `CREATE INDEX` text. PostgreSQL does not use the SingleStore generated names.
+On PostgreSQL, compare `pg_get_indexdef` to the `CREATE INDEX` text, and check that `valid` is true. PostgreSQL does not use the SingleStore generated names.
 
 If a metadata statement fails, stop. That failure is not evidence that the object is missing.
 
@@ -36,13 +36,15 @@ If a name exists with a different expression, type, uniqueness, or column order,
 1. Apply a statement only when its column or index name is absent.
 2. Skip a statement whose present definition already matches.
 3. Do not repeat ADD on SingleStore for a name that already exists. Those `ADD COLUMN` and `ADD KEY` statements do not take `IF NOT EXISTS`.
-4. On PostgreSQL, `CREATE INDEX IF NOT EXISTS` is rerunnable when the name is absent or already present. It does not compare definitions. Do not use it to overwrite a mismatch.
-5. After a partial run, inspect again. SingleStore commits each ALTER. Do not undo with DROP.
+4. On PostgreSQL, `CREATE INDEX CONCURRENTLY IF NOT EXISTS` builds the index while writes to the table continue. Run each statement by itself, outside a transaction. Do not use `BEGIN`, `psql --single-transaction`, or `psql -1`. PostgreSQL refuses a concurrent build inside a transaction block.
+5. On PostgreSQL, the statement is rerunnable when the name is absent or already present. It does not compare definitions. Do not use it to overwrite a mismatch.
+6. On PostgreSQL, a concurrent build that fails or is cancelled leaves an INVALID index with that name. `IF NOT EXISTS` then skips the name, and the INVALID index serves no read. Before you retry, run the preflight query again. For each index that shows `valid = false` and whose definition matches the approved statement, run `DROP INDEX CONCURRENTLY IF EXISTS <index_name>;` by itself, outside a transaction. Then run that index's `CREATE INDEX CONCURRENTLY` statement again. Drop only an INVALID index that the script names. Do not drop a valid index.
+7. After a partial run, inspect again. SingleStore commits each ALTER. Do not undo a valid change with DROP.
 
 ## Confirm generated names, original equality, and EXPLAIN
 
 1. Re-run the postflight `SHOW CREATE` or `pg_get_indexdef` queries.
-2. Confirm every intended object now matches.
+2. Confirm every intended object now matches. On PostgreSQL, every index must also show `valid = true`.
 3. Replace the quoted `WORKSPACE_ID` and entity literals in the EXPLAIN statements with values from your fixture. Do not paste credentials.
 4. On SingleStore, EXPLAIN must name the generated column on a prepared lookup. The statement must still include the original-value equality.
 5. On PostgreSQL, EXPLAIN must be able to use the 171 index for that original-value predicate.

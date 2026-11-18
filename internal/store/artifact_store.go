@@ -22,7 +22,7 @@ type memoryArtifactKey struct {
 	id        string
 }
 
-// ArtifactMetadataPageSize is the keyset page used by unfiltered listings.
+// ArtifactMetadataPageSize bounds one chunk of a chunked artifact metadata read.
 const ArtifactMetadataPageSize = 100
 
 // ArtifactOwners names the task, requirement, and planning-session IDs a
@@ -39,8 +39,9 @@ type ArtifactOwnerReader interface {
 	ListArtifactsForOwners(context.Context, ArtifactOwners) ([]core.Artifact, error)
 }
 
-// ArtifactListPageHook, when set by tests, runs after the listing snapshot and
-// after each metadata page so a concurrent insert can prove the bound.
+// ArtifactListPageHook, when set by tests, runs after the listing's
+// high-water read and before its listing statement, so a concurrent insert
+// can prove the bound.
 var ArtifactListPageHook func()
 
 // ArtifactOwnerIDs returns unique non-empty owner IDs in first-seen order.

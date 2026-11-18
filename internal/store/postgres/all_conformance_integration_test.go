@@ -216,7 +216,7 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			reads := newConformanceReadLedger(st)
-			return storetest.Fixture{ArtifactListStatements: storetest.ArtifactListStatementsPaged, DrainReadBytes: reads.drainBytes, DrainReadQueries: reads.drainQueries, DrainReadRows: reads.drainRows, VerificationClaimReads: verificationClaimReads(workspace), AwaitTaskOperationWaiter: func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{}) {
+			return storetest.Fixture{ArtifactListStatements: storetest.ArtifactListStatementsExactlyTwo, DrainReadBytes: reads.drainBytes, DrainReadQueries: reads.drainQueries, DrainReadRows: reads.drainRows, VerificationClaimReads: verificationClaimReads(workspace), AwaitTaskOperationWaiter: func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{}) {
 				t.Helper()
 				awaitTaskOperationWaiter(t, ctx, st, workspace, taskID, done)
 			}, RestoreSupersededDeliveries: func(t *testing.T, ctx context.Context, taskID string) {

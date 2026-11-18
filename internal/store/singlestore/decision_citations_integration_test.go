@@ -136,3 +136,48 @@ func TestDecisionCitationsBoundedStatementsIntegration(t *testing.T) {
 		t.Fatalf("ListDecisionCitations returned %d bytes, want less than the %d noise body bytes", total.Bytes, noiseDocuments*noiseBodyBytes)
 	}
 }
+
+// TestDecisionCitationsBindQuoteAndBackslashIDsIntegration proves decision
+// IDs reach the citation statement as bound arguments: IDs that hold ' and \
+// neither break the statement nor change in transit. A literal \- would read
+// as -, so the stored ID DEC\-4 must not take DEC-4's citations
+// (component-document-corpus, Decision citations).
+func TestDecisionCitationsBindQuoteAndBackslashIDsIntegration(t *testing.T) {
+	st := integrationStore(t)
+	workspace := "decision-citations-bind-" + core.NewTaskID()
+	ctx := documentPlanWorkspace(t, st, workspace)
+	if _, err := st.ProposeDecision(ctx, core.Decision{ID: "DEC-4", Statement: "Fixture DEC-4.", Context: "Citation fixture.", AlternativesRejected: "None.", Origin: core.DecisionOriginOperator}); err != nil {
+		t.Fatal(err)
+	}
+	_, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-bind", Title: "Bound IDs"}, core.RequirementVersion{Content: "# Bound IDs\n\nCites DEC-4, O'Brien, and a path C:\\DEC-4\\.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Cite decisions."}}, Origin: core.RequirementOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, "req-bind", version.Version); err != nil {
+		t.Fatal(err)
+	}
+	// ValidateDecision admits only DEC-n, so no command stores these IDs;
+	// they are inserted directly, as rows an older writer could have left.
+	odd := []string{`DEC-4'`, `O'Brien`, `DEC\-4`, `DEC-4\`, `\'DEC-4`, `DEC-4\\`}
+	for _, id := range odd {
+		if _, err = st.db.ExecContext(ctx, `INSERT INTO decisions(workspace_id,id,statement,context,alternatives_rejected,status,origin,created_at) VALUES(?,?,'Fixture.','Citation fixture.','None.','proposed','operator',UTC_TIMESTAMP(6))`, workspace, id); err != nil {
+			t.Fatalf("insert decision %q: %v", id, err)
+		}
+	}
+	st.ReadStats(1000)
+	got, err := st.ListDecisionCitations(ctx)
+	if err != nil {
+		t.Fatalf("citations with quote and backslash IDs: %v", err)
+	}
+	want := []core.DecisionCitation{{DecisionID: "DEC-4", Tier: core.DecisionSweepTierRequirement, DocumentID: "req-bind", Title: "Bound IDs", Version: 1}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("citations = %+v\nwant %+v", got, want)
+	}
+	reference := core.DeriveDecisionCitations(append([]string{"DEC-4"}, odd...), []core.DecisionCitationSource{{Tier: core.DecisionSweepTierRequirement, DocumentID: "req-bind", Title: "Bound IDs", Version: 1, Content: "# Bound IDs\n\nCites DEC-4, O'Brien, and a path C:\\DEC-4\\."}})
+	if !reflect.DeepEqual(got, reference) {
+		t.Fatalf("citations = %+v, reference derivation %+v", got, reference)
+	}
+	if queries := readAccountingTotals(st.ReadStats(1000))["ListDecisionCitations"].Queries; queries != 2 {
+		t.Fatalf("ListDecisionCitations queries = %d, want the decision list and one batch", queries)
+	}
+}

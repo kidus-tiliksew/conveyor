@@ -105,6 +105,40 @@ func runRequirementDetailReads(t *testing.T, x Fixture) {
 		}
 	})
 
+	// A duplicate intake key cannot come from a command: PostgreSQL's unique
+	// index refuses it, and the memory and SingleStore commands check it. A
+	// SingleStore row has no unique key, so an older writer could leave one.
+	// Every backend that can hold a duplicate keeps the smallest task ID in
+	// byte order, so a requirement's follow-up is the same task everywhere
+	// (component-lineage invariant 30).
+	t.Run("FollowUpDuplicateIntakeKeyKeepsSmallestID", func(t *testing.T) {
+		if x.SeedTaskIntakeKey == nil {
+			t.Skip("backend refuses a duplicate intake key in its schema")
+		}
+		key := "requirement-follow-up-duplicate-" + core.NewTaskID()
+		suffix := core.NewTaskID()
+		create := func(id, intakeKey string) core.Task {
+			t.Helper()
+			task := core.Task{ID: id, Workspace: ws, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, Title: "Duplicate " + id, State: core.TaskQueued, NextStage: core.StageImplement, IntakeKey: intakeKey, CreatedAt: time.Now().UTC()}
+			requireOK(t, st.CreateTask(ctx, task))
+			return task
+		}
+		// The largest ID holds the key first and the smallest is seeded in
+		// between, so neither the first row, the last row, nor the largest
+		// ID is the smallest.
+		largest := create("zz-"+suffix, key)
+		smallest := create("aa-"+suffix, "")
+		middle := create("mm-"+suffix, "")
+		x.SeedTaskIntakeKey(t, ctx, smallest.ID, key)
+		x.SeedTaskIntakeKey(t, ctx, middle.ID, key)
+		got, err := st.ListRequirementFollowUps(ctx, []string{key, "missing-follow-up"})
+		requireOK(t, err)
+		want := map[string]store.RequirementDetailTask{key: {ID: smallest.ID, Title: smallest.Title, State: smallest.State}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("duplicate-key follow-up = %+v, want the smallest ID %s, not %s or %s", got, smallest.ID, middle.ID, largest.ID)
+		}
+	})
+
 	t.Run("TasksEqualSingleTaskReads", func(t *testing.T) {
 		got, err := st.ListRequirementDetailTasks(ctx, requested)
 		requireOK(t, err)

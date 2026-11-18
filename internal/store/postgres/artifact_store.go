@@ -134,6 +134,14 @@ func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID
 	return artifact, content, nil
 }
 
+// ListArtifacts is two statements for a nonempty workspace, however many
+// artifacts or associations exist, as on SingleStore. The first fixes
+// (created_at,id) of the newest artifact as a high-water key; the second is
+// one complete metadata and association listing bounded by that inclusive
+// key. No transaction spans the two statements: artifacts created after the
+// fence carry a later key and are excluded even if they commit before the
+// listing, and association rows are as of the single listing statement.
+// Production writers stamp created_at from the server clock.
 func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListArtifacts")
 	ws := workspace(ctx)
@@ -147,55 +155,7 @@ func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 		return nil, err
 	}
 	store.RunArtifactListPageHook()
-	var result []core.Artifact
-	cursorAt := time.Time{}
-	cursorID := ""
-	for {
-		rows, err := s.boundary.Query(ctx, `SELECT id,workspace_id,name,content_type,size_bytes,created_at FROM artifacts WHERE workspace_id=$1 AND (created_at>$2 OR (created_at=$2 AND id>$3)) AND (created_at<$4 OR (created_at=$4 AND id<=$5)) ORDER BY created_at,id LIMIT $6`, ws, cursorAt, cursorID, snapAt, snapID, store.ArtifactMetadataPageSize)
-		if err != nil {
-			return nil, err
-		}
-		var page []core.Artifact
-		for rows.Next() {
-			var artifact core.Artifact
-			if err := rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			page = append(page, artifact)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
-		if len(page) == 0 {
-			break
-		}
-		ids := make([]string, len(page))
-		for i, artifact := range page {
-			ids[i] = artifact.ID
-		}
-		store.RunArtifactListPageHook()
-		hydrated, err := s.hydrateArtifactAssociations(ctx, ids)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, hydrated...)
-		cursorAt = page[len(page)-1].CreatedAt
-		cursorID = page[len(page)-1].ID
-		if len(page) < store.ArtifactMetadataPageSize {
-			break
-		}
-	}
-	return result, nil
-}
-
-func (s *Store) hydrateArtifactAssociations(ctx context.Context, ids []string) ([]core.Artifact, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	rows, err := s.boundary.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=ANY($2::text[]) ORDER BY a.created_at,a.id,l.role`, workspace(ctx), ids)
+	rows, err := s.boundary.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND (a.created_at<$2 OR (a.created_at=$2 AND a.id<=$3)) ORDER BY a.created_at,a.id,l.role`, ws, snapAt, snapID)
 	if err != nil {
 		return nil, err
 	}

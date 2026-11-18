@@ -25,7 +25,12 @@ func (s *Store) ListRequirementFollowUps(ctx context.Context, keys []string) (ma
 				return nil, err
 			}
 			task.State = core.TaskState(state)
-			out[key] = task
+			// The smallest task ID in byte order wins for a key, as on every
+			// backend, whatever the column collation orders first
+			// (component-lineage invariant 30).
+			if kept, ok := out[key]; !ok || task.ID < kept.ID {
+				out[key] = task
+			}
 		}
 		err = rows.Err()
 		rows.Close()
