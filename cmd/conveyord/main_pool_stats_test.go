@@ -235,3 +235,33 @@ func TestPoolStatsLoggerLogsReadsWithoutPool(t *testing.T) {
 	default:
 	}
 }
+
+// TestLogStoreCompression checks the daemon's one compression summary: a
+// SingleStore backend logs its request and handshake state once, and a
+// backend without the capability logs nothing (component-runtime
+// invariant 43).
+func TestLogStoreCompression(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stats backend.Stats
+		want  []string
+	}{
+		{name: "postgres", stats: backend.Stats{}},
+		{name: "negotiated", stats: backend.Stats{Compression: func() (bool, string) { return true, "negotiated" }},
+			want: []string{"SingleStore protocol compression requested=true negotiation=negotiated"}},
+		{name: "not negotiated", stats: backend.Stats{Compression: func() (bool, string) { return true, "not_negotiated" }},
+			want: []string{"SingleStore protocol compression requested=true negotiation=not_negotiated"}},
+		{name: "disabled", stats: backend.Stats{Compression: func() (bool, string) { return false, "not_negotiated" }},
+			want: []string{"SingleStore protocol compression requested=false negotiation=not_negotiated"}},
+		{name: "unknown", stats: backend.Stats{Compression: func() (bool, string) { return true, "unknown" }},
+			want: []string{"SingleStore protocol compression requested=true negotiation=unknown"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var lines []string
+			logStoreCompression(tc.stats, func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
+			if strings.Join(lines, "\n") != strings.Join(tc.want, "\n") {
+				t.Fatalf("lines = %q, want %q", lines, tc.want)
+			}
+		})
+	}
+}

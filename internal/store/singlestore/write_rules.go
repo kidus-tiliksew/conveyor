@@ -144,6 +144,14 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (result sql.Result, e
 					raiseTx(tx, changes.Notice{Workspace: workspaceID, Kind: changes.Task, TaskID: taskID})
 				}
 			}()
+		} else if kind, _ := w.values["kind"].(string); taskID == "" && w.operation == "INSERT" && store.WorkspaceEventRaisesNotice(kind) {
+			// A document proposal or membership event raises its workspace
+			// notice at commit (DEC-140(3); component-persistence invariant 23).
+			defer func() {
+				if err == nil {
+					raiseTx(tx, changes.Notice{Workspace: workspaceID, Kind: changes.Workspace})
+				}
+			}()
 		}
 	}
 	if !validIdentifier(w.table) {

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -317,5 +319,87 @@ func TestTaskEventStreamWakesOnWorkspaceTaskNotice(t *testing.T) {
 				t.Fatalf("reads=%d, want one read for the peer notice", got-reads)
 			}
 		})
+	}
+}
+
+// TestTaskNotifyStreamSignalsMergeReadinessChange proves an open notify
+// stream writes one activity frame when the task's merge readiness changes or
+// expires in this daemon's cache, with no task event and no stream read, so
+// an open task view reads its next action again. The change comes from the
+// production path: the task detail read that calls the forge hook. A
+// readiness change of another task and an unchanged re-read write nothing
+// (component-http-api invariants 26, 29; component-next-action invariant 58).
+func TestTaskNotifyStreamSignalsMergeReadinessChange(t *testing.T) {
+	h := newPushHarness(t, "readiness-history")
+	for _, id := range []string{"readiness-gate", "readiness-other"} {
+		if err := h.base.CreateTask(h.ctx, core.Task{ID: id, Workspace: historyWorkspace, Title: "Gate " + id, State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval, MergeApproval: true, ReviewedHeadSHA: "reviewed-head", CreatedAt: historyEpoch}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	h.srv.mergeReadiness.clock = func() time.Time { return now }
+	forgeReads := 0
+	h.srv.OnMergeReadiness = func(context.Context, core.Task) (dispatch.MergeReadiness, error) {
+		forgeReads++
+		return dispatch.MergeReadiness{State: "MERGEABLE", HeadSHA: "reviewed-head", Number: 7}, nil
+	}
+	h.handler = h.srv.Handler()
+	connection := openNotifyStream(h.historyHarness, "readiness-gate", streamQuery(true))
+	defer connection.close()
+	if frame := <-connection.recorder.flushes; frame != readyFrame {
+		t.Fatalf("first frame=%q", frame)
+	}
+	events, err := h.base.ListEvents(h.ctx, "readiness-gate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectQuiet := func(what string) {
+		t.Helper()
+		h.keepalive <- time.Time{}
+		if frame := <-connection.recorder.flushes; frame != keepaliveComment {
+			t.Fatalf("%s wrote %q", what, frame)
+		}
+	}
+	detail := func(taskID string) {
+		t.Helper()
+		if response := h.get(historyTokenA, "/v1/tasks/"+taskID+"/activity"); response.Code != http.StatusOK {
+			t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+
+	// Another task's readiness changes: this stream stays quiet.
+	detail("readiness-other")
+	expectQuiet("another task's readiness")
+	// The task's readiness changes from none to MERGEABLE. The stream
+	// answers the signal with a frame and no read of its own.
+	detail("readiness-gate")
+	readsAfterDetail := h.reads.readCount()
+	if frame := <-connection.recorder.flushes; frame != activityFrame {
+		t.Fatalf("readiness change frame=%q", frame)
+	}
+	if forgeReads != 2 {
+		t.Fatalf("forge reads=%d", forgeReads)
+	}
+	expectQuiet("the readiness frame's wake")
+	if got := h.reads.readCount(); got != readsAfterDetail {
+		t.Fatalf("the readiness frame made %d stream reads", got-readsAfterDetail)
+	}
+	// The cached value read again changes nothing.
+	detail("readiness-gate")
+	expectQuiet("an unchanged readiness value")
+	// The value expires; the next statement read finds it expired.
+	now = now.Add(mergeReadinessReuse)
+	if response := h.get(historyTokenA, "/v1/tasks/readiness-gate/next-action"); response.Code != http.StatusOK {
+		t.Fatalf("next-action status=%d", response.Code)
+	}
+	if frame := <-connection.recorder.flushes; frame != activityFrame {
+		t.Fatalf("readiness expiry frame=%q", frame)
+	}
+	after, err := h.base.ListEvents(h.ctx, "readiness-gate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(events) {
+		t.Fatalf("a readiness change appended %d task events", len(after)-len(events))
 	}
 }

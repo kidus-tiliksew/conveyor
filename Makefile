@@ -454,6 +454,31 @@ _hot-read-egress-run:
 	fi && \
 	grep -v '^READ_EGRESS_MEASUREMENT ' "$$out" >&2 && grep '^READ_EGRESS_MEASUREMENT ' "$$out"
 
+# SingleStore protocol compression measurement: every registered hot-read
+# egress case and the claim session, renewal, and verification read-volume
+# labels, with compression requested and disabled on one service. Standard
+# output carries only the COMPRESSION_MEASUREMENT lines; the test log, with
+# the comparison table, goes to standard error. A missing URL, fixture
+# failure, skipped test, or missing measurement fails the target. CI runs it
+# in the SingleStore proofs shard, so the job log keeps the numbers.
+.PHONY: measure-singlestore-compression _measure-singlestore-compression
+measure-singlestore-compression: _singlestore-integration-url-check
+	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) --no-print-directory _measure-singlestore-compression; else \
+		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/singlestore-compression-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
+		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend singlestore --url-env CONVEYOR_TEST_SINGLESTORE_URL --prepared-url-env CONVEYOR_TEST_SINGLESTORE_URL --state "$$state" -- $(MAKE) --no-print-directory _measure-singlestore-compression; \
+	fi
+
+_measure-singlestore-compression:
+	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "SingleStore fixture was not prepared" >&2; exit 1)
+	@out=$$(mktemp "$${TMPDIR:-/tmp}/singlestore-compression.XXXXXX") && trap 'rm -f "$$out"' EXIT && \
+	if ! CONVEYOR_COMPRESSION_MEASUREMENT=1 $(GO_TEST_REQUIRE_TESTS) -v ./internal/store/singlestore -run '^TestHotReadCompressionMeasurementIntegration$$' -count=1 -timeout=45m >"$$out" 2>&1; then \
+		cat "$$out" >&2; echo "SingleStore compression measurement test failed" >&2; exit 1; \
+	fi && \
+	if ! grep -q '^COMPRESSION_MEASUREMENT ' "$$out" || grep -q -- '--- SKIP: TestHotReadCompressionMeasurementIntegration ' "$$out"; then \
+		cat "$$out" >&2; echo "no SingleStore compression measurement was recorded (test skipped or unselected)" >&2; exit 1; \
+	fi && \
+	grep -v '^COMPRESSION_MEASUREMENT ' "$$out" >&2 && grep '^COMPRESSION_MEASUREMENT ' "$$out"
+
 # Focused context-entry and corpus regressions; full validation remains make test.
 .PHONY: test-context-eligibility
 test-context-eligibility:

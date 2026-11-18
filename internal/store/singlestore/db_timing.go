@@ -82,8 +82,9 @@ type readConnSlot struct{ conn *dbmetrics.ReadConn }
 
 // countingDialFunc dials as the MySQL driver does for a connection it dials
 // itself, keep-alive included, and wraps the connection before TLS so the
-// bytes it receives are counted into reads.
-func countingDialFunc(reads *dbmetrics.ReadLedger) func(context.Context, string, string) (net.Conn, error) {
+// bytes it receives are counted into reads. A non-nil observe wraps the raw
+// connection first, below the counting wrapper.
+func countingDialFunc(reads *dbmetrics.ReadLedger, observe func(net.Conn) net.Conn) func(context.Context, string, string) (net.Conn, error) {
 	var dialer net.Dialer
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		conn, err := dialer.DialContext(ctx, network, address)
@@ -92,6 +93,9 @@ func countingDialFunc(reads *dbmetrics.ReadLedger) func(context.Context, string,
 		}
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetKeepAlive(true)
+		}
+		if observe != nil {
+			conn = observe(conn)
 		}
 		wrapped := reads.WrapConn(conn)
 		if slot, ok := ctx.Value(readConnSlotKey{}).(*readConnSlot); ok {
