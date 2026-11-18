@@ -202,3 +202,32 @@ func TestPeerMarksStatementBoundsWitnesses(t *testing.T) {
 		t.Fatalf("the peer read must be one statement that reaches events through one inner join: %q", query)
 	}
 }
+
+// TestTaskEventPruneDeleteShape: the prune is one delete whose text does not
+// depend on the number of witnesses it removes. It selects through the
+// visible-event inner join on the exact key, oldest first, under a bound,
+// and deletes only the selected keys of its workspace.
+func TestTaskEventPruneDeleteShape(t *testing.T) {
+	query := strings.Join(strings.Fields(taskEventPruneSQL), " ")
+	for _, want := range []string{
+		"DELETE w FROM task_event_witnesses w JOIN (SELECT",
+		"JOIN events_columnstore e FORCE INDEX (events_task_event_idx) ON e.event_shard_key=x.event_shard_key AND e.workspace_id=x.workspace_id AND e.id=x.event_id",
+		"WHERE x.workspace_id=? AND x.position<? ORDER BY x.position,x.event_shard_key,x.event_id LIMIT ?) c",
+		"ON w.workspace_id=c.workspace_id AND w.position=c.position AND w.event_shard_key=c.event_shard_key AND w.event_id=c.event_id WHERE w.workspace_id=?",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("prune statement %q lacks %q", query, want)
+		}
+	}
+	if strings.Count(query, "?") != 4 || strings.Contains(query, " OR ") || strings.Contains(query, " IN (") || strings.Contains(strings.ToUpper(query), "LEFT JOIN") {
+		t.Fatalf("prune statement %q is not one fixed-shape exact-key delete", query)
+	}
+	for _, tc := range []struct {
+		position int64
+		want     bool
+	}{{1, false}, {63, false}, {64, true}, {65, false}, {128, true}} {
+		if got := isTaskEventPrunePosition(tc.position); got != tc.want {
+			t.Fatalf("isTaskEventPrunePosition(%d)=%v, want %v", tc.position, got, tc.want)
+		}
+	}
+}

@@ -1,0 +1,75 @@
+name: Soak
+
+# Nightly and on-demand SingleStore soak (component-testing-strategy,
+# Configuration). Pull-request CI runs the SingleStore ReviewSummary stress
+# cases at 50 rounds and the peer-check tests on an injected ticker; this job
+# runs the conformance-2 shard, which holds the ReviewSummary suite, at 500
+# rounds and the peer-check tests on the real 30-second interval, so a rarer
+# regression shows up here first.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION_FILE: go.mod
+
+jobs:
+  singlestore-soak:
+    name: SingleStore soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      singlestore:
+        image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
+        env:
+          ROOT_PASSWORD: ${{ secrets.SINGLESTORE_ROOT_PASSWORD }}
+        ports:
+          - 3306:3306
+        options: >-
+          --cpus=4 --memory=4g
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 60
+    env:
+      CONVEYOR_TEST_SINGLESTORE_URL: root:${{ secrets.SINGLESTORE_ROOT_PASSWORD }}@tcp(127.0.0.1:3306)/conveyor_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache-dependency-path: go.sum
+      - name: Require test credentials
+        env:
+          SINGLESTORE_ROOT_PASSWORD: ${{ secrets.SINGLESTORE_ROOT_PASSWORD }}
+        run: test -n "$SINGLESTORE_ROOT_PASSWORD" || { echo 'SINGLESTORE_ROOT_PASSWORD repository secret is required' >&2; exit 1; }
+      - name: ReviewSummary stress at 500 rounds (conformance-2)
+        run: make test-integration-singlestore-ci SINGLESTORE_INTEGRATION_SHARD=conformance-2
+        env:
+          CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS: "500"
+          CONVEYOR_FIXTURE_STATE: ${{ runner.temp }}/soak-stress-fixture
+      # conformance-2 runs one package, so its -run can be replaced by the
+      # peer-check tests alone; its -skip names only conformance suites. It
+      # runs even when the stress step fails, so one night reports both.
+      - name: Peer-check tests on the real interval
+        if: ${{ !cancelled() }}
+        run: make test-integration-singlestore-ci SINGLESTORE_INTEGRATION_SHARD=conformance-2 GO_INTEGRATION_FLAGS=-run=^TestSingleStorePeerCheck
+        env:
+          CONVEYOR_PEER_CHECK_REAL_TIME: "1"
+          CONVEYOR_FIXTURE_STATE: ${{ runner.temp }}/soak-peer-check-fixture
+      - name: Upload the SingleStore fixture phase logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: singlestore-soak-fixture-phases
+          path: |
+            ${{ runner.temp }}/soak-stress-fixture/phases.jsonl
+            ${{ runner.temp }}/soak-peer-check-fixture/phases.jsonl
+          if-no-files-found: warn

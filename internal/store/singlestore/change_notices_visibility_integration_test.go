@@ -368,9 +368,10 @@ func TestSingleStorePeerMarksVisibilityIntegration(t *testing.T) {
 
 // TestSingleStoreTaskEventWritePathIntegration: every task-event commit
 // advances its workspace's position once and records one witness per event;
-// a later commit removes witnesses whose events it can read; a task event in
-// a transaction without notice state is refused before it is written; and
-// verification delivery commits through the same preparation.
+// a later commit at a prune position removes the witnesses whose events it
+// can read and keeps the others; a task event in a transaction without
+// notice state is refused before it is written; and verification delivery
+// commits through the same preparation.
 func TestSingleStoreTaskEventWritePathIntegration(t *testing.T) {
 	writer := openOwnedStore(t)
 	ctxA, wsA, taskA := seedSingleStoreNoticeTask(t, writer)
@@ -392,22 +393,25 @@ func TestSingleStoreTaskEventWritePathIntegration(t *testing.T) {
 		return out
 	}
 
-	// An ordinary event: one position, one witness, earlier ones removed.
-	startA, _ := taskEventPosition(t, writer, wsA)
+	// An ordinary event: one position, one witness. Below the first prune
+	// position every earlier witness stays.
+	startA, witnessesA := taskEventPosition(t, writer, wsA)
 	takePrepared()
 	if err := writer.AppendEvent(ctxA, core.Event{TaskID: taskA, Kind: "peer.ordinary"}); err != nil {
 		t.Fatal(err)
 	}
-	if p, w := taskEventPosition(t, writer, wsA); p != startA+1 || w != 1 {
-		t.Fatalf("ordinary event: position %d->%d with %d witnesses, want +1 with 1", startA, p, w)
+	if p, w := taskEventPosition(t, writer, wsA); p != startA+1 || w != witnessesA+1 || isTaskEventPrunePosition(p) {
+		t.Fatalf("ordinary event: position %d->%d with %d->%d witnesses, want +1 with one more", startA, p, witnessesA, w)
 	}
+	requireCounterWitnessed(t, writer, wsA, 1, "ordinary event")
 	if got := takePrepared(); len(got) != 1 || len(got[0]) != 1 || got[0][0] != wsA {
 		t.Fatalf("ordinary event preparations=%v", got)
 	}
 
 	// One transaction with two events in one workspace and one in another:
 	// each workspace advances once, with one witness per event.
-	startB, _ := taskEventPosition(t, writer, wsB)
+	startB, witnessesB := taskEventPosition(t, writer, wsB)
+	_, witnessesA = taskEventPosition(t, writer, wsA)
 	if err := writer.withTx(ctxA, func(tx *sql.Tx) error {
 		for _, kind := range []string{"peer.multi.one", "peer.multi.two"} {
 			if err := taskEvent(ctxA, tx, core.Event{TaskID: taskA, Kind: kind}); err != nil {
@@ -418,33 +422,36 @@ func TestSingleStoreTaskEventWritePathIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if p, w := taskEventPosition(t, writer, wsA); p != startA+2 || w != 2 {
-		t.Fatalf("multi-event commit in %s: position %d with %d witnesses, want %d with 2", wsA, p, w, startA+2)
+	if p, w := taskEventPosition(t, writer, wsA); p != startA+2 || w != witnessesA+2 {
+		t.Fatalf("multi-event commit in %s: position %d with %d witnesses, want %d with %d", wsA, p, w, startA+2, witnessesA+2)
 	}
-	if p, w := taskEventPosition(t, writer, wsB); p != startB+1 || w != 1 {
-		t.Fatalf("multi-event commit in %s: position %d with %d witnesses, want %d with 1", wsB, p, w, startB+1)
+	if p, w := taskEventPosition(t, writer, wsB); p != startB+1 || w != witnessesB+1 {
+		t.Fatalf("multi-event commit in %s: position %d with %d witnesses, want %d with %d", wsB, p, w, startB+1, witnessesB+1)
 	}
+	requireCounterWitnessed(t, writer, wsA, 2, "multi-event commit")
+	requireCounterWitnessed(t, writer, wsB, 1, "multi-event commit")
 	if got := takePrepared(); len(got) != 1 || len(got[0]) != 2 {
 		t.Fatalf("multi-event preparations=%v, want one with both workspaces", got)
 	}
 
-	// A held event's witness survives later commits until its event is
-	// visible to them.
+	// A held event's witness survives a later prune until its event is
+	// visible to it; the prune removes every other earlier witness.
 	held := holdTaskEvent(t, writer, ctxA, taskA, "peer.pending")
 	commitPositionFirst(t, held)
-	if err := writer.AppendEvent(ctxA, core.Event{TaskID: taskA, Kind: "peer.after"}); err != nil {
-		t.Fatal(err)
+	heldAt, _ := taskEventPosition(t, writer, wsA)
+	prune := lastPrunePosition(heldAt) + taskEventPruneCadence
+	commitToPosition(t, writer, ctxA, wsA, taskA, prune)
+	kept := witnessRows(t, writer, wsA)
+	if len(kept[heldAt]) != 1 || kept[heldAt][0] != held.id() {
+		t.Fatalf("the invisible event's witnesses at %d=%v, want it kept", heldAt, kept[heldAt])
 	}
-	var kept int
-	if err := writer.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM task_event_witnesses WHERE workspace_id=? AND event_id=?`, wsA, held.id()).Scan(&kept); err != nil || kept != 1 {
-		t.Fatalf("the invisible event's witness count=%d err=%v, want it kept", kept, err)
+	if len(kept) != 2 || len(kept[prune]) != 1 {
+		t.Fatalf("witnesses after the prune at %d=%v, want only the held event's and the newest", prune, kept)
 	}
 	held.release(t)
-	if err := writer.AppendEvent(ctxA, core.Event{TaskID: taskA, Kind: "peer.later"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, w := taskEventPosition(t, writer, wsA); w != 1 {
-		t.Fatalf("witnesses after the held event became visible=%d, want only the newest", w)
+	commitToPosition(t, writer, ctxA, wsA, taskA, prune+taskEventPruneCadence)
+	if rows := witnessRows(t, writer, wsA); len(rows) != 1 || len(rows[prune+taskEventPruneCadence]) != 1 {
+		t.Fatalf("witnesses after the held event became visible and the next prune=%v, want only the newest", rows)
 	}
 	takePrepared()
 
@@ -499,8 +506,8 @@ func TestSingleStoreTaskEventWritePathIntegration(t *testing.T) {
 	if err != nil || !keyHeld {
 		t.Fatalf("per-key transaction held=%v err=%v", keyHeld, err)
 	}
-	if p, w := taskEventPosition(t, writer, wsA); p != position+1 || w != 1 {
-		t.Fatalf("a task event in a per-key transaction: position %d -> %d with %d witnesses, want +1 with 1", position, p, w)
+	if p := requireCounterWitnessed(t, writer, wsA, 1, "a task event in a per-key transaction"); p != position+1 {
+		t.Fatalf("a task event in a per-key transaction: position %d -> %d, want +1", position, p)
 	}
 	if got := takePrepared(); len(got) != 1 || len(got[0]) != 1 || got[0][0] != wsA {
 		t.Fatalf("per-key transaction preparations=%v", got)
