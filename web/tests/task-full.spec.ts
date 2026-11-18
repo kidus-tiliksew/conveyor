@@ -7979,8 +7979,7 @@ async function pauseClock(page: Page) {
 }
 
 // The full route names its task once, in the reading column's heading; the
-// route header is a breadcrumb (component-web-task-surfaces, Task detail
-// composition).
+// route header is a breadcrumb (component-web-task-surfaces invariant 32).
 function fullTaskHeader(page: Page) {
   return page.getByRole('region', { name: 'Task content' }).getByRole('heading', { level: 1 })
 }
@@ -8496,8 +8495,7 @@ test('verify order timeline labels follow stage', async ({ page }) => {
 
 // The full route arranges the shared sections into a reading column and a
 // sticky inspector from lg up, and one column in DOM order below lg; the sheet
-// keeps its stacked composition (component-web-task-surfaces, Task detail
-// composition).
+// keeps its stacked composition (component-web-task-surfaces invariant 32).
 const inspectorTaskID = 'work-on-this-inspector'
 
 async function routeInspectorTask(page: Page) {

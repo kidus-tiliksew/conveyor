@@ -54,8 +54,8 @@ import { RiskTierValue } from './risk-tier'
 // the whole page.
 //
 // The header's sections, each usable on its own: the sheet stacks them, and the
-// full route places them in its reading column and inspector (component-web-task-surfaces, Task detail
-// composition).
+// full route places them in its reading column and inspector
+// (component-web-task-surfaces invariant 32).
 function useTaskHeaderState(item: ActivityItem, variant: 'sheet' | 'full') {
   const members = useWorkspaceMembers()
   const creator = taskCreator(item.summaries?.creator, members.data)

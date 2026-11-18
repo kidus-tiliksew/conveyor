@@ -631,8 +631,8 @@ const agentActivity = (entries: TimelineEntry[]) =>
   entries.filter((entry) => entry.type === 'note' && entry.title.startsWith('Agent activity'))
 
 // The plan section and the approval intervention tell a plan stage, so its
-// "Plan vN drafted" note stays technical (component-web-task-surfaces, Task
-// detail composition; task 261028-5c2ae2).
+// "Plan vN drafted" note stays technical (component-web-task-surfaces
+// invariant 24; task 261028-5c2ae2).
 test('a completed plan entry sits at its end and its plan version note stays out of the story', () => {
   for (const drafted of [planEnd, '2026-10-15T06:34:17.900Z']) {
     const titles = timelineOf(planStage({ draftedAt: drafted })).map(titleOf)

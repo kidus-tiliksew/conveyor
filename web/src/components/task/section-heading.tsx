@@ -2,9 +2,9 @@ import type { ReactNode } from 'react'
 import { cn } from '../../lib/utils'
 
 // The one heading voice on task detail (component-web-task-surfaces, Task
-// detail composition): sentence case at one size and weight, followed by a
-// count where a list follows. Scoped to task detail so other surfaces keep
-// their own CardTitle.
+// detail): sentence case at one size and weight, followed by a count where a
+// list follows. Scoped to task detail so other surfaces keep their own
+// CardTitle.
 export function SectionHeading({
   children,
   count,
