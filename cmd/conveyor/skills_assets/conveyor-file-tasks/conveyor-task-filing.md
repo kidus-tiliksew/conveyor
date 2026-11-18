@@ -100,9 +100,25 @@ cites:
 - File via MCP `create_task`: `body`, `repo`, `idempotency_key`
   (required — kebab slug + date, e.g. `phase8-3-plan-stage-20260807`),
   optional `depends_on: [task-ids]`, `plan_state`, `plan`,
-  `plan_base_commit`, `merge_approval`. An omitted `plan_state` or
+  `plan_base_commit`, `merge_approval`, `crate_id`. An omitted `plan_state` or
   `merge_approval` takes the workspace default. A task carries no hold or
   other reservation (DEC-125); never send `hold`.
+- `crate_id` names an open crate of the workspace. The task joins that crate
+  when it is created. Send it only when the operator names the crate. A crate
+  attaches no requirement, so name each requirement the task serves in
+  `requirement_ids`. A closed or missing crate refuses the call, and no task
+  is recorded. A crate is background for tracking and reporting. It is not
+  authority, and it changes no gate, plan state, or claim order
+  (`req-crates` AC-6.1; DEC-141).
+- In a planning draft, a task item names its crate with `crate: <crate-id>`
+  in its front matter. `conveyor plan push` sends it as `crate_id`. An item
+  without `crate` sends no `crate_id` and keeps its digest. `conveyor plan
+  check` refuses an empty `crate`. Push reads each named crate before the
+  first task of the layer posts. A missing or closed crate refuses the whole
+  tasks layer, names the item, and posts no task (`req-crates` AC-6.4).
+- No MCP tool creates or edits a crate, or adds a task to a crate or removes
+  it. Read crates with `list_crates` and `get_crate`. A person adds an
+  existing task to a crate with `conveyor crate add` or the dashboard.
 - A plan filed through MCP `create_task` becomes plan version 1 and waits
   at plan awaiting approval for a person's approval. `create_task` never
   approves a plan, and any `plan_approved` argument is refused

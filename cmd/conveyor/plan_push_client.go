@@ -189,6 +189,21 @@ func (a *planAPI) requirement(ctx context.Context, id string) (core.Requirement,
 	return view.Requirement, found, err
 }
 
+// planCrate is the part of the crate read that the push pre-check uses.
+type planCrate struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+}
+
+// crate reads one crate through GET /v1/crates/{id}. found is false when the
+// server answers 404, which it also answers for a crate of another
+// workspace.
+func (a *planAPI) crate(ctx context.Context, id string) (planCrate, bool, error) {
+	var crate planCrate
+	found, err := planFound(a.get(ctx, "/v1/crates/"+planEscape(id), &crate))
+	return crate, found, err
+}
+
 func (a *planAPI) requirementVersions(ctx context.Context, id string) ([]core.RequirementVersion, error) {
 	var versions []core.RequirementVersion
 	err := a.get(ctx, "/v1/requirements/"+planEscape(id)+"/versions", &versions)

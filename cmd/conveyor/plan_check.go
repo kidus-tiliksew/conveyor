@@ -391,8 +391,15 @@ func (c *planChecker) checkTask(item PlanItem) {
 			c.fail(item.ID, planRuleLayout, "depends_on entry %q is not a draft-local task ID (draft:task/<name>)", dependency)
 		}
 	}
+	if item.Task.Crate != nil && *item.Task.Crate == "" {
+		c.fail(item.ID, planRuleCrate, "crate must name one crate ID. Remove the field to create the task in no crate")
+	}
 	c.checkTaskPlan(item)
 }
+
+// planRuleCrate labels the task item crate rules (component-crates
+// invariant 16).
+const planRuleCrate = "req-crates AC-6.4"
 
 // Rule labels for a task item's plan state and plan file
 // (component-cli-onboarding invariant 27).
