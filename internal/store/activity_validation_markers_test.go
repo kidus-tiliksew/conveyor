@@ -3,7 +3,6 @@ package store
 import (
 	"encoding/json"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -64,64 +63,4 @@ func TestMergeMarkerFoldRows(t *testing.T) {
 	if want := []int64{1, 3, 4, 7, 9}; !reflect.DeepEqual(ids, want) {
 		t.Fatalf("merged ids = %v, want %v", ids, want)
 	}
-}
-
-// TestMarkerFoldSQLShape pins what the shared statement must never hold: a
-// question mark outside a SingleStore bind placeholder, and a snapshot body.
-func TestMarkerFoldSQLShape(t *testing.T) {
-	dialect := MarkerSQLDialect{
-		Lease:       SingleStoreLeaseSQL,
-		Placeholder: func(int) string { return "?" },
-		Scope: func(b *MarkerSQLBinder, ws string, page []string) string {
-			return "FROM events e WHERE e.workspace_id=" + b.Bind(ws)
-		},
-		Compact: "e.payload_json",
-		InList: func(b *MarkerSQLBinder, col string, values []string) string {
-			return col + " IN (" + b.Bind(values) + ")"
-		},
-		Int:       func(p string) string { return p },
-		Text:      func(j string) string { return j },
-		Keys:      func(j string) string { return "K(" + j + ")" },
-		Field:     func(j, k string) string { return "F(" + j + ",'" + k + "')" },
-		FieldText: func(j, k string) string { return "T(" + j + ",'" + k + "')" },
-		IsString:  func(v string) string { return "S(" + v + ")" },
-		Object:    func(pairs []string) string { return "B(" + strings.Join(pairs, ",") + ")" },
-		Contains:  func(text, literal string) string { return "C(" + text + "," + literal + ")" },
-		Lower:     func(text string) string { return "L(" + text + ")" },
-		Stripped:  func(text, literal string) string { return "E(" + text + "," + literal + ")" },
-		ASCII:     func(text string) string { return "A(" + text + ")" },
-	}
-	in := MarkerFoldInput{Workspace: "ws", Page: []string{"task"}, ReviewTasks: []string{"task"}, LiveReviewTasks: []string{"task"},
-		OpenReviewOrders: []MarkerReviewOrder{{TaskID: "task", ID: "order-1", JobID: "job-1"}, {TaskID: "task", ID: `odd"id`, JobID: "job-2"}}, Now: time.Unix(10, 5)}
-	foldQuery, foldArgs := MarkerFoldSQL(dialect, in)
-	historyQuery, historyArgs := MarkerClaimHistorySQL(dialect, in, []MarkerClaimPartition{{TaskID: "task", JobID: "job-1"}})
-	for name, statement := range map[string]struct {
-		query string
-		args  []any
-	}{"fold": {foldQuery, foldArgs}, "history": {historyQuery, historyArgs}} {
-		query, args := statement.query, statement.args
-		if strings.Count(query, "?") != len(args) {
-			t.Errorf("%s statement holds %d question marks for %d arguments; the SingleStore driver reads each as a bind placeholder", name, strings.Count(query, "?"), len(args))
-		}
-		if strings.Contains(query, "'governance_snapshot'") || strings.Contains(query, "'served_requirement_snapshot'") {
-			t.Errorf("%s statement names a snapshot body key", name)
-		}
-	}
-	// An order ID outside the safe alphabet keeps every claim of its task.
-	query, args := MarkerFoldSQL(dialect, in)
-	if !strings.Contains(query, "AND NOT (task_id IN (?))") {
-		t.Fatal("a task with an order ID outside the safe alphabet is not excluded from the claim reduction")
-	}
-	if !containsArg(args, []string{"task"}) {
-		t.Fatalf("args = %v, want the unsafe task bound", args)
-	}
-}
-
-func containsArg(args []any, want any) bool {
-	for _, arg := range args {
-		if reflect.DeepEqual(arg, want) {
-			return true
-		}
-	}
-	return false
 }

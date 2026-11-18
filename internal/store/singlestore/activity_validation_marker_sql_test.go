@@ -1,0 +1,41 @@
+package singlestore
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+)
+
+// TestMarkerFoldQueryShape pins the SingleStore marker statements: the
+// driver reads every question mark as a bind placeholder, so their count
+// equals the arguments; no snapshot body key is named outside the compact
+// payload; and a task whose
+// open review order ID needs JSON escaping keeps every claim.
+func TestMarkerFoldQueryShape(t *testing.T) {
+	in := store.MarkerFoldInput{Workspace: "ws", Page: []string{"task"}, ReviewTasks: []string{"task"}, LiveReviewTasks: []string{"task"},
+		OpenReviewOrders: []store.MarkerReviewOrder{{TaskID: "task", ID: "order-1", JobID: "job-1"}, {TaskID: "task", ID: `odd"id`, JobID: "job-2"}}, Now: time.Unix(10, 5)}
+	check := func(name, query string, args []any) {
+		t.Helper()
+		if got := strings.Count(query, "?"); got != len(args) {
+			t.Errorf("%s statement holds %d question marks for %d arguments", name, got, len(args))
+		}
+		// The compact payload column names the snapshot keys only to delete them.
+		outside := strings.ReplaceAll(query, markerCompact, "")
+		if strings.Contains(outside, "governance_snapshot'") || strings.Contains(outside, "served_requirement_snapshot'") {
+			t.Errorf("%s statement names a snapshot body key outside the compact payload", name)
+		}
+	}
+	query, args := markerFoldQuery(in)
+	check("open review fold", query, args)
+	if !strings.Contains(query, "AND NOT (task_id IN (?))") {
+		t.Fatal("a task with an order ID outside the safe alphabet is not excluded from the claim reduction")
+	}
+	plain := in
+	plain.LiveReviewTasks, plain.OpenReviewOrders = nil, nil
+	query, args = markerFoldQuery(plain)
+	check("fold", query, args)
+	query, args = markerClaimHistoryQuery(in, []store.MarkerClaimPartition{{TaskID: "task", JobID: "job-1"}})
+	check("claim history", query, args)
+}

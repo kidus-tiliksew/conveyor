@@ -175,7 +175,7 @@ func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []strin
 
 // The event kinds each activity-marker fold reads. listActivityMarkers
 // selects only these kinds, and of them only the rows a fold can act on
-// (store.MarkerFoldSQL): a bounce from user-request-changes, an implement
+// (markerFoldQuery): a bounce from user-request-changes, an implement
 // claim or a claim of a task with an open review order, and the review
 // lifecycle kinds of review tasks.
 var (
