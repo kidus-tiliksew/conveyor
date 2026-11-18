@@ -150,11 +150,11 @@ export function useTaskOrder(taskId: string) {
     const index = order.indexOf(taskId)
     const edges: string[] = []
     if (activity && index < 0) {
-      edges.push('This task is outside the loaded Board window.')
+      edges.push('This task is outside the loaded page of tasks.')
     } else if (activity) {
-      if (index === 0 && activity.offset > 0) edges.push('The previous task is on an earlier Board page.')
+      if (index === 0 && activity.offset > 0) edges.push('The previous task is on an earlier page of tasks.')
       if (index === order.length - 1 && activity.offset + activity.items.length < activity.total) {
-        edges.push('The next task is on a later Board page.')
+        edges.push('The next task is on a later page of tasks.')
       }
     }
     return {

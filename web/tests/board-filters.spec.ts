@@ -242,11 +242,11 @@ async function openBoard(page: Page, seen: string[], workspace = 'demo') {
   }, workspace)
   await routeBoard(page, seen)
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
 }
 
 function cards(page: Page) {
-  return page.getByRole('region', { name: 'Task board' }).getByRole('link')
+  return page.getByRole('region', { name: 'Task columns' }).getByRole('link')
 }
 
 test('board orders each stage by creation time rather than latest activity', async ({ page }) => {
@@ -356,7 +356,7 @@ test('board pages beyond the 200th activity item and walks back without blanking
   await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled()
   // The pager is one group: the range, then icon buttons that keep their names
   // (component-web-task-surfaces).
-  const pager = page.getByRole('navigation', { name: 'Board pages' })
+  const pager = page.getByRole('navigation', { name: 'Task pages' })
   for (const name of ['Previous', 'Next']) {
     const button = pager.getByRole('button', { name, exact: true })
     await expect(button).toHaveAttribute('title', name)
@@ -437,7 +437,7 @@ test('a failed first load says so in place of lanes that would read as empty', a
   })
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await page.goto('/')
-  const failure = page.getByRole('alert').filter({ hasText: 'Could not load the board' })
+  const failure = page.getByRole('alert').filter({ hasText: 'Could not load tasks' })
   await expect(failure).toBeVisible({ timeout: 15_000 })
   await expect(failure).toContainText('Something went wrong (boom).')
   await expect(page.getByText('{"error"', { exact: false })).toHaveCount(0)
@@ -449,7 +449,7 @@ test('a failed first load says so in place of lanes that would read as empty', a
   const toolbar = page.getByTestId('board-toolbar')
   await expect(toolbar.getByRole('searchbox', { name: 'Search tasks' })).toBeEditable()
   await expect(toolbar.getByRole('button', { name: 'Filters', exact: true })).toBeEnabled()
-  await expect(toolbar.getByRole('group', { name: 'Board view' }).getByRole('button')).toHaveCount(2)
+  await expect(toolbar.getByRole('group', { name: 'Tasks view' }).getByRole('button')).toHaveCount(2)
   await toolbar.getByRole('button', { name: 'Filters', exact: true }).click()
   await expect(page.locator('[data-filter-panel]')).toBeVisible()
   await page.keyboard.press('Escape')
@@ -460,7 +460,7 @@ test('a failed first load says so in place of lanes that would read as empty', a
   // The lanes that mount after the retry drive the edge fades too.
   await expect(page.locator('[data-lane-fade="start"]')).toHaveCSS('opacity', '0')
   await expect(page.locator('[data-lane-fade="end"]')).toHaveCSS('opacity', '1')
-  await page.getByRole('region', { name: 'Task board' }).evaluate((scroller) => {
+  await page.getByRole('region', { name: 'Task columns' }).evaluate((scroller) => {
     scroller.scrollLeft = scroller.scrollWidth
   })
   await expect(page.locator('[data-lane-fade="start"]')).toHaveCSS('opacity', '1')
@@ -484,7 +484,7 @@ test('the Kanban pager is hidden while everything fits on one page', async ({ pa
   const seen: string[] = []
   await openBoard(page, seen)
   await expect(cards(page)).toHaveCount(3)
-  await expect(page.getByRole('navigation', { name: 'Board pages' })).toHaveCount(0)
+  await expect(page.getByRole('navigation', { name: 'Task pages' })).toHaveCount(0)
   await expect(page.getByText(/Showing/)).toHaveCount(0)
 })
 
@@ -522,7 +522,7 @@ test('the Kanban Filters icon counts narrowed categories', async ({ page }) => {
   await page.getByRole('option', { name: 'Any time' }).click()
   await expect(badge).toHaveText('3')
 
-  await page.getByRole('heading', { name: 'Board', exact: true }).click()
+  await page.getByRole('heading', { name: 'Tasks', exact: true }).click()
   await page.getByRole('button', { name: 'Reset filters' }).click()
   await expect(badge).toHaveCount(0)
   await expect(trigger).toHaveAccessibleName('Filters')
@@ -737,7 +737,7 @@ test('change-driven activity passes are serialized, pause while hidden, and cold
   })
 
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
   await expect(page.getByText(/Activity feed unavailable:/)).toHaveCount(0)
   await expect.poll(() => requests).toBe(1)
   // The connect refresh is a cold pass, and the frames that follow while a
@@ -866,7 +866,7 @@ test('board opens and closes task creation without leaving the board', async ({ 
   await page.getByRole('button', { name: 'New task' }).click()
   await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
   expect(new URL(page.url()).pathname).toBe('/w/demo/')
-  await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'Close', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(0)
@@ -882,7 +882,7 @@ test('board creation opens the new task in the board detail route', async ({ pag
   await page.getByRole('button', { name: 'Create task' }).click()
 
   await expect(page).toHaveURL(/\/tasks\/task-created-on-board$/)
-  await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
   await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(0)
   const detail = page.getByRole('dialog', { name: 'Task detail' })
   await expect(detail).toBeVisible()
@@ -1173,7 +1173,7 @@ async function expectLaneFades(page: Page, start: '0' | '1', end: '0' | '1') {
 }
 
 async function scrollLanes(page: Page, at: 'start' | 'middle' | 'end') {
-  await page.getByRole('region', { name: 'Task board' }).evaluate((scroller, position) => {
+  await page.getByRole('region', { name: 'Task columns' }).evaluate((scroller, position) => {
     const range = scroller.scrollWidth - scroller.clientWidth
     scroller.scrollLeft = position === 'start' ? 0 : position === 'middle' ? Math.round(range / 2) : range
   }, at)
@@ -1201,7 +1201,7 @@ for (const width of [375, 768, 1408, 1440]) {
 
     // Seven lanes overflow the scroller at this width, so the fades track
     // which edges hide lanes as the operator scrolls.
-    const scroller = page.getByRole('region', { name: 'Task board' })
+    const scroller = page.getByRole('region', { name: 'Task columns' })
     expect(await scroller.evaluate((element) => element.scrollWidth > element.clientWidth + 1)).toBe(true)
     await expectLaneFades(page, '0', '1')
     await scrollLanes(page, 'middle')

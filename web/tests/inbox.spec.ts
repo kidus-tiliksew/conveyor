@@ -2141,7 +2141,7 @@ test('navigation is exactly the accepted surfaces and the Inbox badge is the ope
     .locator('a')
     .evaluateAll((links) => links.map((link) => link.textContent?.replace(/\d+$/, '').trim()))
   expect(labels).toEqual([
-    'Board',
+    'Tasks',
     'Inbox',
     'Workspace',
     'Requirements',
@@ -2173,7 +2173,7 @@ test('Inbox is the only primary navigation entry with a badge while requirement 
   const inbox = primary.getByRole('link', { name: /Inbox/ })
   await expect(inbox.getByText('2', { exact: true })).toBeVisible()
   await expect(inbox).toHaveText('Inbox2')
-  for (const label of ['Board', 'Workspace', 'Requirements', 'System Design', 'Decisions', 'Monitor', 'Settings']) {
+  for (const label of ['Tasks', 'Workspace', 'Requirements', 'System Design', 'Decisions', 'Monitor', 'Settings']) {
     const link = primary.getByRole('link', { name: label, exact: true })
     await expect(link).toHaveText(label)
     // The label is the entry's only span; a badge would add a second.

@@ -2138,8 +2138,8 @@ test('task detail headers show the task name while routes and API lookup keep us
   await fullActivity
   // The full route's header is a breadcrumb naming the task ID; the title
   // reads once, in the reading column.
-  const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
-  await expect(fullHeader.getByRole('navigation', { name: 'Breadcrumb' })).toHaveText(`Board/${fullTaskID}`)
+  const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to Tasks' }) })
+  await expect(fullHeader.getByRole('navigation', { name: 'Breadcrumb' })).toHaveText(`Tasks/${fullTaskID}`)
   await expect(fullHeader).not.toContainText('Short task')
   await expect(page.getByRole('heading', { name: 'Short task', level: 1 })).toHaveCount(1)
   // Relationships live in the explorer panel now, not in a card on the page;
@@ -2160,10 +2160,30 @@ test('task detail headers show the task name while routes and API lookup keep us
   expect(new URL(page.url()).pathname).toBe(`/w/demo/tasks/${sheetTaskID}`)
 })
 
+// The full task page names the Tasks page in its return link and breadcrumb.
+// The link still opens the task's sheet address, so no route changes
+// (req-operator-next-action AC-6.10; req-workspace-addresses AC-1.2).
+test('the full task page links back to the Tasks page at the unchanged sheet address', async ({ page }) => {
+  const taskID = 'full-return-id'
+  const activity = page.waitForRequest((request) => new URL(request.url()).pathname === `/v1/tasks/${taskID}/activity`)
+  await page.goto(`/w/demo/tasks/${taskID}/full`)
+  await activity
+  const back = page.getByRole('link', { name: 'Back to Tasks', exact: true })
+  await expect(back).toHaveAttribute('href', `/w/demo/tasks/${taskID}`)
+  const header = page.locator('header').filter({ has: back })
+  await expect(header.getByRole('navigation', { name: 'Breadcrumb' })).toHaveText(`Tasks/${taskID}`)
+  await expect(header).not.toContainText(/board/i)
+  await expect(page.getByRole('link', { name: /board/i })).toHaveCount(0)
+
+  await back.click()
+  await expect(page).toHaveURL(new RegExp(`/w/demo/tasks/${taskID}$`))
+  await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
+})
+
 // With no task loaded, because the read answered 404 or failed another way,
 // neither detail surface offers its Knowledge explorer or Board neighbours,
 // and no placeholder reserves their space;
-// Close on the sheet and the Board link on the full page stay
+// Close on the sheet and the Tasks link on the full page stay
 // (component-web-task-surfaces).
 async function expectNoTaskControls(scope: Page | Locator) {
   await expect(scope.getByRole('button', { name: 'Knowledge explorer' })).toHaveCount(0)
@@ -2193,8 +2213,8 @@ for (const failure of [
     await page.goto(`/w/demo/tasks/${failure.taskId}/full`)
     await expect(page.getByRole('heading', { name: failure.heading })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Try again' })).toHaveCount(failure.retry ? 1 : 0)
-    const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
-    await expect(fullHeader.getByRole('link', { name: 'Back to board' })).toBeVisible()
+    const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to Tasks' }) })
+    await expect(fullHeader.getByRole('link', { name: 'Back to Tasks' })).toBeVisible()
     await expectNoTaskControls(page)
     await expect(page.locator('[data-task-controls-placeholder]')).toHaveCount(0)
 
@@ -2213,7 +2233,7 @@ for (const failure of [
 // space, and the controls replace it in the same place once the task loads
 // (component-web-task-surfaces).
 for (const surface of [
-  { name: 'full page', taskId: 'held-full', path: '/w/demo/tasks/held-full/full', exit: 'Back to board' },
+  { name: 'full page', taskId: 'held-full', path: '/w/demo/tasks/held-full/full', exit: 'Back to Tasks' },
   { name: 'Board sheet', taskId: 'held-sheet', path: '/w/demo/tasks/held-sheet', exit: 'Close panel' },
 ]) {
   test(`on the ${surface.name} the controls stay absent until the held task read loads`, async ({ page }) => {
@@ -8516,8 +8536,8 @@ test('the full route places the reading column and the inspector side by side fr
   await expect(title).toBeVisible()
 
   // The breadcrumb names the task ID; the title reads once, in the page.
-  const header = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
-  await expect(header.getByRole('navigation', { name: 'Breadcrumb' })).toHaveText(`Board/${inspectorTaskID}`)
+  const header = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to Tasks' }) })
+  await expect(header.getByRole('navigation', { name: 'Breadcrumb' })).toHaveText(`Tasks/${inspectorTaskID}`)
   await expect(content.getByRole('heading', { level: 1 })).toHaveCount(1)
 
   const inspector = content.getByRole('region', { name: 'Task inspector' })

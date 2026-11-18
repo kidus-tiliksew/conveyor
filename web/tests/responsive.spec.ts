@@ -421,7 +421,7 @@ test.describe('phone', () => {
     await mockShell(page)
     await page.goto('/')
 
-    await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
     await expect(page.getByRole('navigation', { name: 'Workspaces' })).toBeHidden()
     await expect(page.getByRole('navigation', { name: 'Primary' })).toBeHidden()
     await expect(page.getByRole('link', { name: '1 decisions waiting in the Inbox' })).toBeVisible()
@@ -497,7 +497,7 @@ test.describe('phone', () => {
     await expect(title).toBeVisible()
     await waitForSheetSettled(sheet)
     const note = header.getByRole('note')
-    await expect(note).toHaveText('This task is outside the loaded Board window.')
+    await expect(note).toHaveText('This task is outside the loaded page of tasks.')
     await expectHeaderControlsClear(header, title)
     const titleBox = await title.boundingBox()
     const noteBox = await note.boundingBox()
@@ -513,7 +513,7 @@ test.describe('phone', () => {
     await mockRecordDetail(page)
 
     await page.goto('/w/demo/tasks/task-layout-draft/full')
-    const header = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
+    const header = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to Tasks' }) })
     // The full route's header is a breadcrumb; the title reads in the page.
     const title = header.getByRole('navigation', { name: 'Breadcrumb' })
     await expect(title).toBeVisible()
@@ -582,7 +582,7 @@ test.describe('tablet', () => {
       const title = header.getByText(layoutTitle, { exact: true })
       await expect(title).toBeVisible()
       await waitForSheetSettled(sheet)
-      await expect(header.getByRole('note')).toHaveText('This task is outside the loaded Board window.')
+      await expect(header.getByRole('note')).toHaveText('This task is outside the loaded page of tasks.')
       await expectHeaderControlsClear(header, title)
       await expectPlanHeaderUnbroken(page)
       await expectNoHorizontalOverflow(page)
@@ -717,7 +717,7 @@ test.describe('desktop', () => {
     await page.screenshot({ path: 'test-results/shots/responsive-desktop-task-panel.png', animations: 'disabled' })
 
     await page.goto('/w/demo/tasks/task-layout/full')
-    const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
+    const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to Tasks' }) })
     await expect(
       fullHeader.getByRole('button', { name: 'Knowledge explorer' }).getByText('Knowledge explorer'),
     ).toBeVisible()

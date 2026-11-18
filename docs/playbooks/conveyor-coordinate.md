@@ -558,7 +558,7 @@ the failed ones. Never relabel a failed, skipped, or blocked run as passed.
 ## Readable timeline text
 
 Progress messages, decision reasons, and review summaries appear on the task
-timeline, where a person scanning the board reads them
+timeline, where a person scanning the Tasks page reads them
 (req-agent-coordination REQ-3). The coordinator and every thread it starts
 follow this rule:
 

@@ -244,15 +244,15 @@ for (const [role, allowed] of [
     const count = allowed ? 1 : 0
 
     await page.goto('/w/demo/tasks')
-    await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
     await expect(page.getByRole('link', { name: 'New task' })).toHaveCount(count)
 
     await page.goto('/w/demo/tasks?create=true')
-    await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
     await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(count)
 
     await page.goto('/')
-    await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'New task' })).toHaveCount(count)
     if (allowed) {
       await page.getByRole('button', { name: 'New task' }).click()

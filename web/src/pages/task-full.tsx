@@ -49,7 +49,7 @@ export function TaskFullPage() {
         <Link
           to="/w/$workspaceId/tasks/$taskId"
           params={{ workspaceId: workspace, taskId }}
-          aria-label="Back to board"
+          aria-label="Back to Tasks"
           className="shrink-0"
         >
           <Button variant="ghost" size="icon" tabIndex={-1}>
@@ -60,7 +60,7 @@ export function TaskFullPage() {
             reading column's heading is scrolled away. A phone has room for one
             name, and the title is the one that says what is being asked about. */}
         <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 basis-0 items-center gap-1.5 text-sm text-muted">
-          <span className={cn('shrink-0', barTitle && 'max-sm:hidden')}>Board</span>
+          <span className={cn('shrink-0', barTitle && 'max-sm:hidden')}>Tasks</span>
           <span aria-hidden className={cn('shrink-0 text-edge', barTitle && 'max-sm:hidden')}>
             /
           </span>

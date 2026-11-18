@@ -137,7 +137,7 @@ test('turning the switch on updates the open Board in the same page', async ({ p
   await mockAPI(page)
   await page.goto('/w/demo/settings')
   await toggle(page).click()
-  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Board' }).click()
+  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Tasks', exact: true }).click()
   await expect(page.getByRole('link', { name: /^Card in demo/ }).locator('[data-stage]')).toHaveCount(6)
 })
 
