@@ -116,8 +116,17 @@ func TestDocumentDismissalArchivalMigrationIntegration(t *testing.T) {
 	if _, err := st.db.ExecContext(ctx, "ALTER TABLE requirements DROP COLUMN archive_note"); err != nil {
 		t.Fatal(err)
 	}
+	// The repair commits through the task-event commit preparation
+	// (component-persistence invariant 42).
+	preparations := 0
+	observe := func([]string) { preparations++ }
+	observeTaskEventPreparation.Store(&observe)
 	if err := st.migrate(ctx); err != nil {
 		t.Fatal(err)
+	}
+	observeTaskEventPreparation.Store(nil)
+	if preparations != 1 {
+		t.Fatalf("the dismissal archive repair ran %d task-event commit preparations, want 1", preparations)
 	}
 	// Simulate a crash after repair committed, before its ledger write.
 	if _, err := st.db.ExecContext(ctx, "DELETE FROM conveyor_singlestore_migrations WHERE version=16"); err != nil {
