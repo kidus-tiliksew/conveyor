@@ -392,3 +392,41 @@ func (p *planPusher) checkIntakeKey(item PlanItem, key string) {
 		p.refuse(item.ID, "LP-5", "intake key %q is %d characters; the factory accepts at most %d, so shorten the task file name", key, len(key), planIntakeKeyLimit)
 	}
 }
+
+// planCrateRead is one crate read the pre-check made.
+type planCrateRead struct {
+	crate planCrate
+	found bool
+}
+
+// checkCrate refuses the tasks layer when a task item that will post names a
+// crate that is missing or closed. Every item is checked before the layer's
+// first post, so a refusal posts no task of the layer. A read that fails for
+// another reason stops the push. The server checks the crate again in the
+// transaction that creates the task (component-crates invariants 7 and 16;
+// req-crates AC-6.4).
+func (p *planPusher) checkCrate(ctx context.Context, item PlanItem) error {
+	if item.Task.Crate == nil || *item.Task.Crate == "" {
+		return nil
+	}
+	id := *item.Task.Crate
+	read, ok := p.crates[id]
+	if !ok {
+		crate, found, err := p.api.crate(ctx, id)
+		if err != nil {
+			return fmt.Errorf("read crate %s: %w", id, err)
+		}
+		read = planCrateRead{crate: crate, found: found}
+		if p.crates == nil {
+			p.crates = map[string]planCrateRead{}
+		}
+		p.crates[id] = read
+	}
+	switch {
+	case !read.found:
+		p.refuse(item.ID, planRuleCrate, "names crate %s, which the server does not hold in this workspace", id)
+	case read.crate.State != "open":
+		p.refuse(item.ID, planRuleCrate, "names crate %s, which is %s. A task can join only an open crate", id, read.crate.State)
+	}
+	return nil
+}
