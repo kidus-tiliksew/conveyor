@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -224,6 +225,30 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				if err != nil || tag.RowsAffected() == 0 {
 					t.Fatalf("restore superseded delivery: %v, rows %d", err, tag.RowsAffected())
 				}
+			}, DeliveryPassSkipsHeldKeys: true, RestoreHistoricalDelivery: func(t *testing.T, ctx context.Context, taskID string, generation int, state, errorClass string, next *time.Time) {
+				t.Helper()
+				var raw []byte
+				if err := st.pool.QueryRow(ctx, `SELECT body FROM verification_publication_deliveries WHERE workspace_id=$1 AND task_id=$2 AND generation=$3 AND state='superseded'`, workspace, taskID, generation).Scan(&raw); err != nil {
+					t.Fatalf("historical delivery generation %d: %v", generation, err)
+				}
+				var d core.VerificationDelivery
+				if err := json.Unmarshal(raw, &d); err != nil {
+					t.Fatal(err)
+				}
+				d.State, d.ErrorClass, d.NextAttemptAt = state, errorClass, next
+				body, err := json.Marshal(d)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := st.pool.Exec(ctx, `UPDATE verification_publication_deliveries SET state=$4, body=$5, next_attempt_at=$6 WHERE workspace_id=$1 AND task_id=$2 AND generation=$3`, workspace, taskID, generation, state, body, next); err != nil {
+					t.Fatal(err)
+				}
+			}, SeedForeignVerificationOperation: func(t *testing.T, ctx context.Context, taskID string) {
+				t.Helper()
+				tag, err := st.pool.Exec(ctx, `INSERT INTO verification_operations(workspace_id,id,task_id,context_id,run_id,logical_key,key_hash,state,body) SELECT workspace_id,id||'-malformed',task_id,context_id,run_id,logical_key||'-malformed',md5(id)||md5(id),'completed','{"ID":7,"StepID":7}'::jsonb FROM verification_operations WHERE workspace_id=$1 AND task_id=$2 LIMIT 1`, workspace, taskID)
+				if err != nil || tag.RowsAffected() != 1 {
+					t.Fatalf("seed malformed operation: %v, rows %d", err, tag.RowsAffected())
+				}
 			}, ReopenVerification: func(t *testing.T) store.Backend {
 				pool, err := pgxpool.NewWithConfig(t.Context(), st.pool.Config())
 				if err != nil {
@@ -400,6 +425,12 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				server := httpapi.NewServer(st)
 				server.Credentials = nil
 				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
+				return server.Handler()
+			}, WorkOrderHTTP: func(*testing.T) http.Handler {
+				server := httpapi.NewServer(st)
+				server.Credentials = nil
+				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
+				server.WorkOrders = &workorder.Service{Store: st}
 				return server.Handler()
 			}, RedispatchHTTP: func(_ *testing.T, onDispatch func(context.Context, string)) http.Handler {
 				server := httpapi.NewServer(st)

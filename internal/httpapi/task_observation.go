@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -17,9 +20,13 @@ import (
 // wait loop polls, holding only the task state, its plan state, its frozen
 // merge approval, the compact next action, and the task's own claimable
 // orders. It composes no task context, no event fold, and no plan text, and
-// reads no workspace-wide order listing, so a poll costs one task read, one
-// task order read, and the next-action projection
-// (component-next-action; req-agent-skills REQ-4, AC-4.1 through AC-4.3).
+// reads no workspace-wide order listing. A poll costs one task read, one task
+// order read, the next-action projection, and the work-order list's claim
+// projections over this task's orders: the dependency blocker read for a
+// queued implementation or verification order, the recovery task and gate
+// reads for an order that recovery can refuse, and the risk subject read for
+// a risk order (component-next-action invariant 57; req-agent-skills REQ-4,
+// AC-4.1 through AC-4.3).
 //
 // An unchanged poll answers 304 from the validation read alone, before the
 // task read or the projection, exactly as the Board activity read does
@@ -63,13 +70,18 @@ func (s *Server) getTaskObservation(w http.ResponseWriter, r *http.Request) {
 		writeStoreFailure(w, r, err)
 		return
 	}
+	claimable, err := s.projectTaskClaimability(r.Context(), task, orders)
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
 	observation := taskObservation{
 		TaskID:          task.ID,
 		State:           task.State,
 		PlanState:       task.PlanState,
 		MergeApproval:   task.MergeApproval,
 		NextAction:      taskObservationAction{Compact: nextaction.CompactFrom(action)},
-		ClaimableOrders: taskObservationClaimableOrders(orders),
+		ClaimableOrders: taskObservationClaimableOrders(claimable),
 	}
 	if action.CurrentOrder != nil {
 		observation.NextAction.CurrentOrder = &taskObservationOrder{ID: action.CurrentOrder.ID, Stage: core.Stage(action.CurrentOrder.Stage)}
@@ -106,9 +118,40 @@ type taskObservationOrder struct {
 	QueueEnteredAt time.Time  `json:"queue_entered_at,omitzero"`
 }
 
-// taskObservationClaimableOrders lists the task's queued, claimable orders of
-// a known stage. The list is never null: an observation with no claimable
-// order reports an empty list (component-cli-onboarding invariant 22).
+// projectTaskClaimability applies to one task's orders the claim projections
+// that GET /v1/work-orders applies for the same caller: the work-order
+// service's dependency, recovery, and risk projections, then the assignee
+// projection. Without a configured service the list route serves the stored
+// orders, and so does this read. The task order read does not carry the
+// assignee on every backend, so the assignee comes from the task read the
+// route already made. A projection failure fails the read, so an order never
+// reads as claimable because a projection input was unreadable
+// (component-next-action invariant 57; component-work-orders, Listing).
+func (s *Server) projectTaskClaimability(ctx context.Context, task core.Task, orders []core.WorkOrder) ([]core.WorkOrder, error) {
+	projected := slices.Clone(orders)
+	if s.WorkOrders != nil {
+		var err error
+		if projected, err = s.WorkOrders.ProjectTaskOrders(ctx, orders); err != nil {
+			return nil, err
+		}
+	}
+	for i := range projected {
+		projected[i].Assignee = task.Assignee
+	}
+	return projectAssigneeClaimability(ctx, projected), nil
+}
+
+// taskObservationStageRank orders claimable stages the way a session works
+// them. A risk order ranks last, so ordinary work beside it comes first and a
+// lone risk order is still reported (component-cli-onboarding invariant 22).
+var taskObservationStageRank = map[core.Stage]int{core.StageSpec: 0, core.StageImplement: 1, core.StageVerify: 2, core.StageReview: 3, core.StageRisk: 4}
+
+// taskObservationClaimableOrders lists the queued, claimable orders of a known
+// stage among projected orders, ranked spec, implement, verify, review, then
+// risk, then by the oldest queue entry, then by order ID. A wait takes the
+// first entry as its next order. The list is never null: an observation with
+// no claimable order reports an empty list (component-cli-onboarding
+// invariant 22).
 func taskObservationClaimableOrders(orders []core.WorkOrder) []taskObservationOrder {
 	claimable := make([]taskObservationOrder, 0, len(orders))
 	for _, order := range orders {
@@ -117,6 +160,15 @@ func taskObservationClaimableOrders(orders []core.WorkOrder) []taskObservationOr
 		}
 		claimable = append(claimable, taskObservationOrder{ID: order.ID, Stage: order.Stage, QueueEnteredAt: order.QueueEnteredAt})
 	}
+	slices.SortFunc(claimable, func(a, b taskObservationOrder) int {
+		if rank := cmp.Compare(taskObservationStageRank[a.Stage], taskObservationStageRank[b.Stage]); rank != 0 {
+			return rank
+		}
+		if entered := a.QueueEnteredAt.Compare(b.QueueEnteredAt); entered != 0 {
+			return entered
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
 	return claimable
 }
 

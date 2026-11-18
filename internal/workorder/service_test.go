@@ -681,6 +681,111 @@ func TestListAndLookupKeepProjectionsForMixedFixture(t *testing.T) {
 	}
 }
 
+// TestProjectTaskOrdersMatchesListForEachTask holds the task-scoped projection
+// to the workspace list: each task's live orders carry the dependency,
+// recovery, and claimability projection that List gives them. The task's own
+// order history serves the recovery fold, so no history read runs, and the
+// caller's orders stay unchanged (component-next-action invariant 57).
+func TestProjectTaskOrdersMatchesListForEachTask(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := &recoveryReadStore{Store: store.NewMemory()}
+	service := &Service{Store: st}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	at := func(index int) time.Time { return now.Add(time.Duration(index) * time.Second) }
+	awaiting := func(task *core.Task) { task.State = core.TaskAwaiting }
+
+	seedRecoveryTask(t, ctx, st, "dep-open", nil)
+	seedRecoveryTask(t, ctx, st, "clean", nil)
+	seedRecoveryTask(t, ctx, st, "blocked", nil, "dep-open")
+	seedRecoveryTask(t, ctx, st, "superseded", nil)
+	seedRecoveryTask(t, ctx, st, "pending", awaiting)
+	for _, event := range []core.Event{
+		{Kind: "work_order.plan_revision_requested", At: now, Payload: core.JSONPayload(map[string]any{"work_order_id": "prior-order", "attempt_id": "attempt", "rationale": "the API moved", "plan_version": 1})},
+		{Kind: "task.state_changed", At: now.Add(time.Second), Payload: core.JSONPayload(map[string]any{"command": core.TaskGatePlanRevision})},
+	} {
+		event.TaskID = "pending"
+		if err := st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The successor is written first, because creating an order retires its
+	// open predecessors.
+	seedListedOrder(t, ctx, st, "superseded", core.StageImplement, 2, core.WorkOrderSubmitted, at(20))
+	seedListedOrder(t, ctx, st, "superseded", core.StageImplement, 1, core.WorkOrderQueued, at(5))
+	seedListedOrder(t, ctx, st, "clean", core.StageImplement, 1, core.WorkOrderQueued, at(1))
+	seedListedOrder(t, ctx, st, "blocked", core.StageImplement, 1, core.WorkOrderQueued, at(2))
+	seedListedOrder(t, ctx, st, "pending", core.StageImplement, 1, core.WorkOrderQueued, at(7))
+
+	listed, err := service.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byTask := map[string][]core.WorkOrder{}
+	for _, order := range listed {
+		byTask[order.TaskID] = append(byTask[order.TaskID], order)
+	}
+	for _, taskID := range []string{"clean", "blocked", "superseded", "pending"} {
+		raw, err := st.Store.ListTaskWorkOrders(ctx, taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := slices.Clone(raw)
+		st.reset()
+		projected, err := service.ProjectTaskOrders(ctx, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.historyReads != 0 {
+			t.Fatalf("%s: the task projection read order history %d times", taskID, st.historyReads)
+		}
+		if !reflect.DeepEqual(raw, before) {
+			t.Fatalf("%s: the task projection changed its input", taskID)
+		}
+		want := byTask[taskID]
+		if len(projected) != len(want) {
+			t.Fatalf("%s: projected %d orders, list has %d", taskID, len(projected), len(want))
+		}
+		for i := range want {
+			if projected[i].ID != want[i].ID || projectionOf(projected[i]) != projectionOf(want[i]) {
+				t.Fatalf("%s: projected %s %+v, list %s %+v", taskID, projected[i].ID, projectionOf(projected[i]), want[i].ID, projectionOf(want[i]))
+			}
+		}
+	}
+	// The projection must change claimability for these cases, or the
+	// comparison above proves nothing.
+	for id, claimable := range map[string]bool{"clean-implement-1": true, "blocked-implement-1": false, "superseded-implement-1": false, "pending-implement-1": false} {
+		raw, err := st.Store.GetWorkOrder(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got *core.WorkOrder
+		for i := range listed {
+			if listed[i].ID == id {
+				got = &listed[i]
+			}
+		}
+		if got == nil || got.Claimable != claimable {
+			t.Fatalf("listed %s=%+v, want claimable=%v", id, got, claimable)
+		}
+		if id == "superseded-implement-1" && !raw.Claimable {
+			t.Fatalf("stored %s is already unclaimable, so the recovery projection is untested", id)
+		}
+	}
+
+	t.Run("a failed projection read surfaces", func(t *testing.T) {
+		raw, err := st.Store.ListTaskWorkOrders(ctx, "pending")
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.batchErr = store.ErrBackendOperation
+		defer func() { st.batchErr = nil }()
+		projected, err := service.ProjectTaskOrders(ctx, raw)
+		if projected != nil || !errors.Is(err, store.ErrBackendOperation) {
+			t.Fatalf("projected=%+v err=%v", projected, err)
+		}
+	})
+}
+
 // TestListFailsClosedOnUnreadableRecoveryTask covers every way a task can fail
 // to arrive. None may pass as an order with no refusal.
 func TestListFailsClosedOnUnreadableRecoveryTask(t *testing.T) {

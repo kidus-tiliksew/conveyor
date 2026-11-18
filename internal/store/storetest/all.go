@@ -36,8 +36,19 @@ type Fixture struct {
 	SeedLegacy         func(*testing.T, string) (int, func(*testing.T))
 
 	RestoreSupersededDeliveries func(*testing.T, context.Context, string)
-	DrainReadQueries            func() map[string]uint64
-	ArtifactListStatements      ArtifactListStatementContract
+	// RestoreHistoricalDelivery sets one superseded delivery generation of a
+	// task back to state, error class and retry time, as releases before the
+	// supersede rule left older generations; no command writes such a row.
+	RestoreHistoricalDelivery func(t *testing.T, ctx context.Context, taskID string, generation int, state, errorClass string, nextAttemptAt *time.Time)
+	// DeliveryPassSkipsHeldKeys is set by a backend whose delivery commands
+	// hold per-pull-request locks a reconcile pass can skip.
+	DeliveryPassSkipsHeldKeys bool
+	// SeedForeignVerificationOperation stores one more operation row for a
+	// task whose payload does not decode, so a read that decoded another
+	// task's operations fails.
+	SeedForeignVerificationOperation func(t *testing.T, ctx context.Context, taskID string)
+	DrainReadQueries                 func() map[string]uint64
+	ArtifactListStatements           ArtifactListStatementContract
 
 	// SeedHistoricalLink inserts one retained, non-projector-owned link row
 	// exactly as historical migrations left it, such as migration 046's
@@ -119,6 +130,13 @@ type Fixture struct {
 	// which moves no task without a dispatcher. It requires this field and
 	// never skips (component-work-orders invariant 39).
 	RedispatchHTTP func(t *testing.T, onDispatch func(context.Context, string)) http.Handler
+	// WorkOrderHTTP returns the LineageHTTP handler with a work-order service
+	// over Backend, as conveyord configures it, so GET /v1/work-orders serves
+	// the service's claim projections. The task observation claimability
+	// case compares that list with GET /v1/tasks/{id}/observation. It
+	// requires this field and never skips (component-next-action invariant
+	// 57).
+	WorkOrderHTTP func(t *testing.T) http.Handler
 	// TaskIntakeHTTP returns the real httpapi handler over Backend, bound to
 	// Workspace and accepting LineageHTTPToken, with generate as its title
 	// generator. GitHubIssueIntake takes one ready issue in through the real
@@ -281,6 +299,7 @@ func RunAll(t *testing.T, factory Factory) {
 	run("RedispatchOfferParity", func(t *testing.T) { runRedispatchOfferParity(t, factory.fresh(t, nil)) })
 	run("RedispatchPlanRevisionGate", func(t *testing.T) { runRedispatchPlanRevisionGate(t, factory.fresh(t, nil), factory.PlanRevisionGate) })
 	run("InboxAttentionCount", func(t *testing.T) { runInboxAttentionCount(t, factory.fresh(t, nil)) })
+	run("TaskObservationClaimability", func(t *testing.T) { runTaskObservationClaimability(t, factory.fresh(t, nil)) })
 	run("InboxAttentionCountBodyFree", func(t *testing.T) {
 		x := factory.fresh(t, nil)
 		if factory.ProductionCapable && x.DrainReadBytes == nil {

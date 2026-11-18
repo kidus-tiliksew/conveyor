@@ -201,6 +201,17 @@ func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	if err = fn(tx); err != nil {
 		return translateBackendConflict(err)
 	}
+	if err = commitTx(ctx, tx); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+// commitTx advances the task event positions the transaction's notices name
+// and commits it. withTx and the per-key transactions of a verification
+// delivery pass commit through it.
+func commitTx(ctx context.Context, tx *sql.Tx) error {
 	if value, ok := txBatches.Load(tx); ok {
 		state := value.(*txNoticeState)
 		workspaces := make([]string, 0, len(state.taskWorkspaces))
@@ -209,16 +220,12 @@ func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 		}
 		sort.Strings(workspaces)
 		for _, ws := range workspaces {
-			if _, err = tx.ExecContext(ctx, `INSERT INTO task_event_positions(workspace_id,position) VALUES(?,1) ON DUPLICATE KEY UPDATE position=position+1`, ws); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO task_event_positions(workspace_id,position) VALUES(?,1) ON DUPLICATE KEY UPDATE position=position+1`, ws); err != nil {
 				return translateBackendConflict(err)
 			}
 		}
 	}
-	if err = tx.Commit(); err != nil {
-		return translateBackendConflict(err)
-	}
-	committed = true
-	return nil
+	return translateBackendConflict(tx.Commit())
 }
 func workspace(ctx context.Context) (string, error) {
 	id, ok := store.WorkspaceFromContext(ctx)

@@ -5,12 +5,15 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -375,4 +378,76 @@ func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn fu
 	owner.active.Store(true)
 	defer owner.active.Store(false)
 	return translateBackendConflict(fn(context.WithValue(ctx, taskLockOwnerKey{}, owner)))
+}
+
+// keyLockWait bounds how long a pass that must not wait tries one key's lock.
+// SingleStore has no NOWAIT row lock, so the acquisition runs on its own
+// connection under this deadline, and the driver discards that connection and
+// its transaction when the deadline cancels the statement, as
+// WithPlanningSessionRun does. Tests shorten or lengthen it.
+var keyLockWait = 250 * time.Millisecond
+
+// withKeyTx runs fn in a transaction on its own connection that holds key's
+// lock, or reports held false with no error when another transaction keeps
+// the lock past keyLockWait (component-verification-publication invariant
+// 12). Mutual exclusion is the same lock row lockKey takes. When the row
+// exists, only the row lock is tried: the insert that creates a missing row
+// runs only for a key no transaction has locked yet.
+func (s *Store) withKeyTx(ctx context.Context, key string, fn func(*sql.Tx) error) (held bool, err error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return false, translateBackendConflict(err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, translateBackendConflict(err)
+	}
+	s.beginNotices(tx)
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+		finishNotices(tx, committed)
+	}()
+	acquireCtx, cancel := context.WithTimeout(ctx, keyLockWait)
+	err = tryLockKey(acquireCtx, tx, key)
+	timedOut := errors.Is(acquireCtx.Err(), context.DeadlineExceeded)
+	cancel()
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		var driverErr *mysql.MySQLError
+		if timedOut || errors.As(err, &driverErr) && driverErr.Number == 1205 {
+			return false, nil
+		}
+		return false, translateBackendConflict(err)
+	}
+	if err = fn(tx); err != nil {
+		return true, translateBackendConflict(err)
+	}
+	if err = commitTx(ctx, tx); err != nil {
+		return true, err
+	}
+	committed = true
+	return true, nil
+}
+
+// tryLockKey takes key's lock row like lockKey. It reads the row first
+// without a lock and creates it only when it is missing, so a held row is met
+// by the row lock alone.
+func tryLockKey(ctx context.Context, tx *sql.Tx, key string) error {
+	defer noteLockReturn(ctx)
+	key = lockRowKey(key)
+	var held string
+	err := tx.QueryRowContext(ctx, "SELECT `key` FROM conveyor_locks WHERE `key`=?", key).Scan(&held)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = upsertLockRow(ctx, tx, key)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.QueryRowContext(ctx, "SELECT `key` FROM conveyor_locks WHERE `key`=? FOR UPDATE", key).Scan(&held)
 }
