@@ -139,7 +139,7 @@ func (s *Server) memoizedRead(w http.ResponseWriter, r *http.Request, kind strin
 	}
 	if value.etag != "" {
 		w.Header().Set("ETag", value.etag)
-		if r.Header.Get("If-None-Match") == value.etag {
+		if ifNoneMatchAdmits(r.Header.Values("If-None-Match"), value.etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}

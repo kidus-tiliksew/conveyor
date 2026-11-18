@@ -33,7 +33,8 @@ const mergeReadinessReuse = 10 * time.Second
 // across the hook (component-http-api, Request-scoped detail reads).
 //
 // A change of the value a next-action read can peek, and the expiry of one,
-// raises an in-process workspace notice through notify: a stored value that
+// raises an in-process workspace notice through notify, under the mutex, and
+// signals the task's open streams (watch): a stored value that
 // differs from the live one, forget dropping a live value, and an expired
 // value found or swept. A response memo and a conditional statement read
 // that peeked the old value are dropped or answer a new tag (DEC-140(3);
@@ -45,8 +46,13 @@ type mergeReadinessCache struct {
 	entries map[string]map[string]mergeReadinessEntry
 	flights map[string][]*mergeReadinessFlight
 	clock   func() time.Time
-	// notify publishes a workspace notice after the mutex is released.
+	// notify publishes a workspace notice. It runs under the mutex, so a
+	// reader that sees a new value also finds its notice delivered; Publish
+	// never blocks.
 	notify func(workspace string)
+	// watchers are the open task streams of each task, signalled under the
+	// mutex when the task's readiness changes or expires.
+	watchers map[string]map[chan struct{}]struct{}
 	// revision advances each time a stored value differs from the live one,
 	// so a read can tell a value replaced and restored from one held still.
 	revision uint64
@@ -63,14 +69,44 @@ type mergeReadinessEntry struct {
 // expires is the instant the entry stops being served.
 func (e mergeReadinessEntry) expires() time.Time { return e.readAt.Add(mergeReadinessReuse) }
 
-// publish sends one in-process workspace notice per named workspace. The
-// caller has released the mutex.
-func (c *mergeReadinessCache) publish(workspaces map[string]struct{}) {
-	if c.notify == nil {
-		return
-	}
-	for workspace := range workspaces {
+// announceLocked publishes the in-process workspace notice of one task's
+// readiness change and signals that task's open streams. The caller holds
+// the mutex, so the change and its announcement become visible together.
+func (c *mergeReadinessCache) announceLocked(id, workspace string) {
+	if c.notify != nil {
 		c.notify(workspace)
+	}
+	for watcher := range c.watchers[id] {
+		select {
+		case watcher <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// watch returns a channel signalled each time the readiness a next-action
+// read can peek for the task changes or expires, and a stop function. A
+// signal coalesces, as a hub notice does (component-http-api invariant 26:
+// the stream answers it without a database read).
+func (c *mergeReadinessCache) watch(workspace, taskID string) (<-chan struct{}, func()) {
+	id := workspace + "\x00" + taskID
+	watcher := make(chan struct{}, 1)
+	c.mu.Lock()
+	if c.watchers == nil {
+		c.watchers = map[string]map[chan struct{}]struct{}{}
+	}
+	if c.watchers[id] == nil {
+		c.watchers[id] = map[chan struct{}]struct{}{}
+	}
+	c.watchers[id][watcher] = struct{}{}
+	c.mu.Unlock()
+	return watcher, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		delete(c.watchers[id], watcher)
+		if len(c.watchers[id]) == 0 {
+			delete(c.watchers, id)
+		}
 	}
 }
 
@@ -146,8 +182,6 @@ func (c *mergeReadinessCache) readObserved(ctx context.Context, task core.Task, 
 }
 
 func (c *mergeReadinessCache) finish(id, workspaceID string, flight *mergeReadinessFlight, readiness dispatch.MergeReadiness, err error) {
-	changed := map[string]struct{}{}
-	defer c.publish(changed)
 	c.mu.Lock()
 	defer close(flight.done)
 	defer c.mu.Unlock()
@@ -176,7 +210,7 @@ func (c *mergeReadinessCache) finish(id, workspaceID string, flight *mergeReadin
 		for cachedKey, entry := range keys {
 			if now.Sub(entry.readAt) >= mergeReadinessReuse {
 				delete(keys, cachedKey)
-				changed[entry.workspace] = struct{}{}
+				c.announceLocked(cachedID, entry.workspace)
 			}
 		}
 		if len(keys) == 0 {
@@ -190,27 +224,32 @@ func (c *mergeReadinessCache) finish(id, workspaceID string, flight *mergeReadin
 	// a read peeks is the same, and its later expiry only moves a horizon
 	// outward.
 	revision := previous.revision
-	if !hadLive || previous.readiness != readiness {
+	changed := !hadLive || previous.readiness != readiness
+	if changed {
 		c.revision++
 		revision = c.revision
-		changed[workspaceID] = struct{}{}
 	}
 	c.entries[id][flight.key] = mergeReadinessEntry{key: flight.key, workspace: workspaceID, readiness: readiness, readAt: now, revision: revision}
+	if changed {
+		c.announceLocked(id, workspaceID)
+	}
 }
 
 // forget drops every key's entry for the task and advances its generation:
 // every flight already running for it is superseded, so none can store its
 // result afterward, and later readers start a new call.
 func (c *mergeReadinessCache) forget(ctx context.Context, taskID string) {
-	changed := map[string]struct{}{}
-	defer c.publish(changed)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	id := mergeReadinessID(ctx, taskID)
+	// A dropped live value changes what a read peeks; a dropped expired
+	// value expired unseen and is announced here.
+	announced := map[string]bool{}
 	for _, entry := range c.entries[id] {
-		// A dropped live value changes what a read peeks; a dropped expired
-		// value expired unseen and is announced here.
-		changed[entry.workspace] = struct{}{}
+		if !announced[entry.workspace] {
+			announced[entry.workspace] = true
+			c.announceLocked(id, entry.workspace)
+		}
 	}
 	delete(c.entries, id)
 	for _, flight := range c.flights[id] {
@@ -268,8 +307,6 @@ func (c *mergeReadinessCache) lastKnown(ctx context.Context, task core.Task) *ne
 // revision, all read under one hold of the mutex, or nil, a zero time, and
 // revision 0. It drops and announces an expired value.
 func (c *mergeReadinessCache) peek(id, key string) (*dispatch.MergeReadiness, time.Time, uint64) {
-	changed := map[string]struct{}{}
-	defer c.publish(changed)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[id][key]
@@ -281,7 +318,7 @@ func (c *mergeReadinessCache) peek(id, key string) (*dispatch.MergeReadiness, ti
 		if len(c.entries[id]) == 0 {
 			delete(c.entries, id)
 		}
-		changed[entry.workspace] = struct{}{}
+		c.announceLocked(id, entry.workspace)
 		return nil, time.Time{}, 0
 	}
 	readiness := entry.readiness

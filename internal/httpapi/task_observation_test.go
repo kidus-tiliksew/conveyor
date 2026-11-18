@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -19,17 +18,29 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
-// assertRevalidated proves a 304 poll projected the statement first and
-// read the validation state on both sides of the projection, so the 304
-// answers for the state at answer time, not only for the state at a
-// pre-read check (component-next-action invariant 58).
-func assertRevalidated(t *testing.T, before, after map[string]int) {
+// assertRevalidated proves a 304 poll projected the statement between two
+// validation reads, so the 304 answers for the state at answer time, not
+// only for the state at a pre-read check (component-next-action invariant
+// 58). sequence is the poll's own reads, in call order.
+func assertRevalidated(t *testing.T, sequence []string) {
 	t.Helper()
-	if got := after["ReadActivityValidation"] - before["ReadActivityValidation"]; got != 2 {
-		t.Fatalf("a 304 poll made %d validation reads, want 2: %v", got, after)
+	validations, projected := 0, false
+	for _, name := range sequence {
+		switch name {
+		case "ReadActivityValidation":
+			validations++
+			if validations == 2 && !projected {
+				t.Fatalf("a 304 poll read validation twice before projecting: %v", sequence)
+			}
+		case "ReadActivityInputs":
+			if validations != 1 {
+				t.Fatalf("a 304 poll projected after %d validation reads: %v", validations, sequence)
+			}
+			projected = true
+		}
 	}
-	if after["ReadActivityInputs"] == before["ReadActivityInputs"] {
-		t.Fatalf("a 304 poll answered before projecting: %v", after)
+	if validations != 2 || !projected {
+		t.Fatalf("a 304 poll made %d validation reads, projected=%t: %v", validations, projected, sequence)
 	}
 }
 
@@ -59,7 +70,7 @@ func TestTaskObservationPollAnswersUnchangedWith304(t *testing.T) {
 		t.Fatalf("the observation poll read a workspace order listing: %v", f.counted.calls)
 	}
 
-	before := maps.Clone(f.counted.calls)
+	before := len(f.counted.sequence)
 	warm := f.read(path, etag)
 	if warm.Code != http.StatusNotModified {
 		t.Fatalf("unchanged poll status=%d body=%s, want 304", warm.Code, warm.Body.String())
@@ -67,7 +78,7 @@ func TestTaskObservationPollAnswersUnchangedWith304(t *testing.T) {
 	if warm.Body.Len() != 0 {
 		t.Fatalf("304 body=%q, want empty", warm.Body.String())
 	}
-	assertRevalidated(t, before, f.counted.calls)
+	assertRevalidated(t, f.counted.sequence[before:])
 
 	// A new claimable order changes the observation, so the next poll answers
 	// 200 with a tag that no longer admits the old one.
@@ -122,12 +133,12 @@ func TestNextActionPollAnswersUnchangedWith304(t *testing.T) {
 		t.Fatalf("next action body=%s", cold.Body.String())
 	}
 
-	before := maps.Clone(f.counted.calls)
+	before := len(f.counted.sequence)
 	warm := f.read(path, etag)
 	if warm.Code != http.StatusNotModified {
 		t.Fatalf("unchanged read status=%d body=%s, want 304", warm.Code, warm.Body.String())
 	}
-	assertRevalidated(t, before, f.counted.calls)
+	assertRevalidated(t, f.counted.sequence[before:])
 
 	f.order(core.WorkOrder{ID: "task-next-implement-1", TaskID: "task-next", JobID: "job-next", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true})
 	changed := f.read(path, etag)

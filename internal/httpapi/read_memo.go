@@ -129,7 +129,16 @@ type readMemo struct {
 	clock   func() time.Time
 	// budget overrides readMemoByteBudget in tests.
 	budget int
+	// waiting, when set, runs as a caller starts waiting on another
+	// caller's flight; tests use it as a barrier.
+	waiting func()
 }
+
+// readMemoRebuilds bounds how many times one caller builds again because a
+// notice arrived during its build. Notices are process-wide, so a stream of
+// unrelated notices could otherwise discard every build of a busy daemon;
+// the last build answers its caller once, untagged and unstored.
+const readMemoRebuilds = 3
 
 func (m *readMemo) byteBudget() int {
 	if m.budget > 0 {
@@ -215,6 +224,7 @@ func (m *readMemo) drainLocked() {
 // already authorized scope; errors and results invalidated during a build are
 // never stored. The returned bytes and headers are private to the caller.
 func (m *readMemo) get(ctx context.Context, key string, build func(context.Context, time.Time) (readMemoValue, error)) (readMemoValue, error) {
+	builds := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return readMemoValue{}, err
@@ -233,6 +243,9 @@ func (m *readMemo) get(ctx context.Context, key string, build func(context.Conte
 		if flight := m.flights[key]; flight != nil {
 			done := flight.done
 			m.mu.Unlock()
+			if m.waiting != nil {
+				m.waiting()
+			}
 			select {
 			case <-done:
 				// A leader's failure, its cancellation included, belongs
@@ -252,6 +265,7 @@ func (m *readMemo) get(ctx context.Context, key string, build func(context.Conte
 		m.mu.Unlock()
 
 		value, err := build(ctx, now)
+		builds++
 		m.mu.Lock()
 		m.drainLocked()
 		delete(m.flights, key)
@@ -271,6 +285,10 @@ func (m *readMemo) get(ctx context.Context, key string, build func(context.Conte
 		}
 		if value.unstored {
 			// The build saw its inputs move and answers once, untagged.
+			return value.clone(), nil
+		}
+		if changed && builds >= readMemoRebuilds {
+			value.etag, value.unstored = "", true
 			return value.clone(), nil
 		}
 		if changed || expired {

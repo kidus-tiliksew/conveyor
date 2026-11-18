@@ -2889,9 +2889,14 @@ type activityConditionalStore struct {
 	// stored ones: the state a reader sees after a row commit and before the
 	// separately appended event becomes visible.
 	eventMask *store.ActivityValidation
+	// sequence records every counted read in call order.
+	sequence []string
 }
 
-func (s *activityConditionalStore) count(name string) { s.calls[name]++ }
+func (s *activityConditionalStore) count(name string) {
+	s.calls[name]++
+	s.sequence = append(s.sequence, name)
+}
 
 func (s *activityConditionalStore) reset() map[string]int {
 	calls := s.calls

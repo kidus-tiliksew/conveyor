@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -71,10 +72,12 @@ func (e statementNotFound) Unwrap() error { return e.err }
 
 // answerStatement serves one per-task statement read. It projects first,
 // then decides: a 304 answers only when the request's tag equals the tag of
-// the body projected now, and only when the validation read and every
-// merge-readiness value the projection peeked are unchanged at answer time.
-// A read whose inputs moved projects again; after statementReadAttempts it
-// answers 200 with no ETag (component-next-action invariant 58).
+// the body projected now, only when the validation read and every
+// merge-readiness value the projection peeked are unchanged at answer time,
+// and only when the answer instant is still before the tag's expiry. A
+// read whose inputs moved, or whose expiry passed during the projection,
+// projects again at a fresh instant; after statementReadAttempts it answers
+// 200 with no ETag (component-next-action invariant 58).
 func (s *Server) answerStatement(w http.ResponseWriter, r *http.Request, route, taskID string, project func(context.Context, store.NextActionOptions) (any, error)) {
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
@@ -115,19 +118,24 @@ func (s *Server) answerStatement(w http.ResponseWriter, r *http.Request, route, 
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if after != validation || !reads.unchanged(&s.mergeReadiness) {
+		// A review lease, a deadline, a readiness expiry, or the minute
+		// boundary that passed while the read ran ends the tag's validity:
+		// both validation reads used the instant captured before the
+		// projection, so only the answer clock can see it.
+		expired := !activityClock().UTC().Before(horizon.until)
+		if expired || after != validation || !reads.unchanged(&s.mergeReadiness) {
 			if attempt < statementReadAttempts {
 				continue
 			}
-			// The inputs kept moving: this body is answered once, uncovered,
-			// and no tag certifies it.
+			// The inputs kept moving or the horizon kept passing: this body
+			// is answered once, uncovered, and no tag certifies it.
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(encoded.Bytes())
 			return
 		}
 		tag := statementConditional(now, opts, scope, validation, encoded.Bytes(), reads).etag(horizon.until, "")
 		w.Header().Set("ETag", tag)
-		if r.Header.Get("If-None-Match") == tag {
+		if ifNoneMatchAdmits(r.Header.Values("If-None-Match"), tag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
@@ -135,4 +143,48 @@ func (s *Server) answerStatement(w http.ResponseWriter, r *http.Request, route, 
 		_, _ = w.Write(encoded.Bytes())
 		return
 	}
+}
+
+// ifNoneMatchAdmits reports whether an If-None-Match field admits a 304 for
+// the current tag: a `*`, or any listed entity tag that weakly matches it
+// (RFC 9110, section 13.1.2). Commas inside a quoted tag do not split it.
+func ifNoneMatchAdmits(fields []string, tag string) bool {
+	if tag == "" {
+		return false
+	}
+	current := strings.TrimPrefix(tag, "W/")
+	for _, field := range fields {
+		for _, candidate := range splitEntityTags(field) {
+			if candidate == "*" || strings.TrimPrefix(candidate, "W/") == current {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// splitEntityTags splits an If-None-Match field value into its members,
+// splitting only on commas outside quotes.
+func splitEntityTags(field string) []string {
+	var members []string
+	quoted, start := false, 0
+	for i := 0; i < len(field); i++ {
+		switch field[i] {
+		case '"':
+			quoted = !quoted
+		case ',':
+			if !quoted {
+				members = append(members, strings.TrimSpace(field[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	members = append(members, strings.TrimSpace(field[start:]))
+	out := members[:0]
+	for _, member := range members {
+		if member != "" {
+			out = append(out, member)
+		}
+	}
+	return out
 }

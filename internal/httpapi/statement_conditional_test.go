@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -218,8 +219,33 @@ func TestPerTaskStatementReadsRevalidateAfterProjection(t *testing.T) {
 			if got := response.Header().Get("ETag"); got == "" || got == tag {
 				t.Fatalf("raced read tag=%q, want a new tag", got)
 			}
-			if !strings.Contains(response.Body.String(), `"queued"`) && !strings.Contains(response.Body.String(), "race-task-implement-1") {
-				t.Fatalf("raced read body=%s lacks the new order", response.Body.String())
+			// The answer names the order the write added: the observation
+			// lists it as claimable, and the next action works it.
+			var body struct {
+				CurrentOrder *struct {
+					ID string `json:"id"`
+				} `json:"current_order"`
+				ClaimableOrders []struct {
+					ID string `json:"id"`
+				} `json:"claimable_orders"`
+				NextAction struct {
+					CurrentOrder *struct {
+						ID string `json:"id"`
+					} `json:"current_order"`
+				} `json:"next_action"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(path, "/observation") {
+				if len(body.ClaimableOrders) != 1 || body.ClaimableOrders[0].ID != "race-task-implement-1" {
+					t.Fatalf("raced observation claimable_orders=%+v, want the new order: %s", body.ClaimableOrders, response.Body.String())
+				}
+				if body.NextAction.CurrentOrder == nil || body.NextAction.CurrentOrder.ID != "race-task-implement-1" {
+					t.Fatalf("raced observation next action=%s", response.Body.String())
+				}
+			} else if body.CurrentOrder == nil || body.CurrentOrder.ID != "race-task-implement-1" {
+				t.Fatalf("raced next action=%s, want it to work the new order", response.Body.String())
 			}
 			if again := f.read(path, response.Header().Get("ETag")); again.Code != http.StatusNotModified {
 				t.Fatalf("settled read status=%d, want 304", again.Code)
@@ -282,31 +308,59 @@ func TestReadinessNoticesDropTheMemoLocally(t *testing.T) {
 	}
 	stored := validation()
 
+	// Every drop case holds the clock still, so the memo entry can only
+	// miss because the notice dropped it, never because it expired.
 	warm("first value")
 	f.detail("gate-notice")
 	expectNotice("a new readiness value")
 	rebuilt("a new readiness value")
 
-	// The same live value read again announces nothing.
+	warm("forget")
 	f.server.mergeReadiness.forget(store.WithWorkspace(f.ctx, "demo"), "gate-notice")
 	expectNotice("forget of a live value")
+	rebuilt("forget of a live value")
+
+	// The same live value read again announces nothing and keeps the memo.
 	f.detail("gate-notice")
 	expectNotice("the value read again after forget")
-	f.now = f.now.Add(time.Second)
+	warm("an unchanged live value")
 	f.detail("gate-notice")
 	expectQuietHub("an unchanged live value")
+	f.counted.reset()
+	f.read("/v1/next-actions", "")
+	if f.counted.calls["ReadActivityValidation"] != 0 {
+		t.Fatalf("an unchanged live value dropped the memo: %v", f.counted.calls)
+	}
 
-	warm("changed value")
+	// A changed value: the merge drops the old one, and the next forge read
+	// stores CONFLICTING.
 	state.Store("CONFLICTING")
-	f.now = f.now.Add(mergeReadinessReuse)
+	f.server.mergeReadiness.forget(store.WithWorkspace(f.ctx, "demo"), "gate-notice")
+	expectNotice("forget before the changed value")
+	warm("changed value")
 	f.detail("gate-notice")
 	expectNotice("a changed readiness value")
 	rebuilt("a changed readiness value")
+	if got := f.read("/v1/tasks/gate-notice/next-action?workspace_id=demo", ""); !strings.Contains(got.Body.String(), "CONFLICTING") {
+		t.Fatalf("next action after the changed value=%s", got.Body.String())
+	}
 
+	// Expiry: the memo entry that read the value never outlives it, and the
+	// first read after it finds the value expired, drops it, and announces
+	// it with no forge read.
 	warm("expiry")
-	f.now = f.now.Add(mergeReadinessReuse)
-	// No forge read follows: the next statement read finds the value
-	// expired, drops it, and announces it.
+	_, expires, _ := f.server.mergeReadiness.peek(mergeReadinessID(store.WithWorkspace(f.ctx, "demo"), "gate-notice"), mergeReadinessKey(mustTask(t, f, "gate-notice")))
+	f.server.readMemo.mu.Lock()
+	if len(f.server.readMemo.entries) == 0 {
+		t.Fatal("no warm memo entry before the expiry")
+	}
+	for key, entry := range f.server.readMemo.entries {
+		if entry.value.validUntil.After(expires) {
+			t.Fatalf("memo entry %s valid until %s outlives the readiness value it read (%s)", key, entry.value.validUntil, expires)
+		}
+	}
+	f.server.readMemo.mu.Unlock()
+	f.now = expires
 	f.read("/v1/next-actions", "")
 	expectNotice("an expired readiness value")
 
@@ -382,4 +436,130 @@ func TestReadinessReadsDetectAReplacedAndRestoredValue(t *testing.T) {
 	if reads.unchanged(c) {
 		t.Fatal("a value replaced and restored reads as unchanged")
 	}
+}
+
+// TestPerTaskStatementReadsRefuseATagThatExpiresDuringProjection proves
+// both per-task routes never answer 304 with a tag whose expiry passed while
+// the read ran. A poll starts before a review lease, a work-order deadline,
+// or the UTC minute boundary, and the clock crosses it inside the
+// projection without any store write. The read projects again at a fresh
+// instant and answers 200 with a new tag. The same poll without the
+// crossing answers 304, so each case discriminates. A read whose horizon
+// passes on every attempt answers 200 with no ETag (component-next-action
+// invariant 58).
+func TestPerTaskStatementReadsRefuseATagThatExpiresDuringProjection(t *testing.T) {
+	type horizonCase struct {
+		state   core.TaskState
+		arrange func(f *activityConditionalFixture, taskID string)
+		// start is when the poll begins, and cross where the clock is when
+		// the projection reads, relative to the fixture's first instant.
+		start, cross time.Duration
+	}
+	cases := map[string]horizonCase{
+		"review lease": {state: core.TaskRunning, start: 2 * time.Second, cross: 4 * time.Second, arrange: func(f *activityConditionalFixture, taskID string) {
+			order := core.WorkOrder{ID: taskID + "-review", TaskID: taskID, JobID: taskID + "-review", Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, QueueEnteredAt: f.now.Add(-time.Hour), QueueDeadline: f.now.Add(time.Hour), ExecutionStartedAt: f.now.Add(-time.Minute)}
+			f.order(order)
+			if err := f.base.AppendEvent(f.ctx, core.Event{TaskID: taskID, JobID: order.JobID, Kind: "work_order.claimed", At: f.now.Add(-time.Minute), Payload: core.JSONPayload(map[string]any{"id": order.ID, "lease_expires_at": f.now.Add(3 * time.Second)})}); err != nil {
+				f.t.Fatal(err)
+			}
+		}},
+		"deadline": {state: core.TaskQueued, start: 2 * time.Second, cross: 4 * time.Second, arrange: func(f *activityConditionalFixture, taskID string) {
+			f.order(core.WorkOrder{ID: taskID + "-implement", TaskID: taskID, JobID: taskID + "-implement", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: f.now.Add(-time.Hour), QueueDeadline: f.now.Add(time.Hour), ExecutionStartedAt: f.now.Add(-time.Hour), ExecutionDeadline: f.now.Add(3 * time.Second)})
+		}},
+		// The fixture starts five seconds into a minute.
+		"minute boundary": {state: core.TaskQueued, start: 54 * time.Second, cross: 56 * time.Second, arrange: func(*activityConditionalFixture, string) {}},
+	}
+	for name, tc := range cases {
+		for _, path := range statementRoutes("expiry-task")[:2] {
+			t.Run(name+" "+path, func(t *testing.T) {
+				for _, crossing := range []bool{false, true} {
+					f := newMemoRouteFixture(t)
+					f.task("expiry-task", tc.state)
+					tc.arrange(f, "expiry-task")
+					first := f.now
+					tag := expectStatus(t, "cold read", f.read(path, ""), http.StatusOK)
+					f.now = first.Add(tc.start)
+					crossed := 0
+					f.server.Store = &movingStore{Store: f.counted, during: func() {
+						if crossing && crossed == 0 {
+							f.now = first.Add(tc.cross)
+						}
+						crossed++
+					}}
+					response := f.read(path, tag)
+					if !crossing {
+						if response.Code != http.StatusNotModified {
+							t.Fatalf("a poll before the %s answered %d, want 304", name, response.Code)
+						}
+						continue
+					}
+					if response.Code != http.StatusOK {
+						t.Fatalf("a poll that crossed the %s during projection answered %d, want 200", name, response.Code)
+					}
+					if got := response.Header().Get("ETag"); got == "" || got == tag {
+						t.Fatalf("crossed poll tag=%q, want a new tag", got)
+					}
+					if crossed != 2 {
+						t.Fatalf("projections=%d, want the crossed one and one at a fresh instant", crossed)
+					}
+				}
+			})
+		}
+	}
+	t.Run("horizon passes on every attempt", func(t *testing.T) {
+		for _, path := range statementRoutes("expiry-task")[:2] {
+			f := newMemoRouteFixture(t)
+			f.task("expiry-task", core.TaskQueued)
+			f.server.Store = &movingStore{Store: f.counted, during: func() { f.now = f.now.Add(time.Minute) }}
+			response := f.read(path, "")
+			if response.Code != http.StatusOK || response.Body.Len() == 0 {
+				t.Fatalf("%s: status=%d", path, response.Code)
+			}
+			if got := response.Header().Get("ETag"); got != "" {
+				t.Fatalf("%s: a body whose horizon kept passing carries ETag %q", path, got)
+			}
+		}
+	})
+}
+
+// TestIfNoneMatchAdmitsEveryListedTag proves a statement read answers 304
+// for any listed tag that weakly matches, for `*`, and for a tag inside a
+// list split on commas outside quotes (RFC 9110, section 13.1.2).
+func TestIfNoneMatchAdmitsEveryListedTag(t *testing.T) {
+	const tag = `"a1.123.abc"`
+	for header, want := range map[string]bool{
+		tag:                           true,
+		`W/` + tag:                    true,
+		`"other", W/` + tag:           true,
+		`"other,tag", ` + tag:         true,
+		`*`:                           true,
+		`"other"`:                     false,
+		`"other,` + tag[1:]:           false,
+		``:                            false,
+		`"a1.123.abc", "x"` + "\t, ,": true,
+	} {
+		if got := ifNoneMatchAdmits([]string{header}, tag); got != want {
+			t.Errorf("If-None-Match %q admits=%t, want %t", header, got, want)
+		}
+	}
+	if ifNoneMatchAdmits([]string{"*"}, "") {
+		t.Error("an untagged answer admitted a 304")
+	}
+	for _, path := range statementRoutes("list-task") {
+		f := newMemoRouteFixture(t)
+		f.task("list-task", core.TaskQueued)
+		current := expectStatus(t, "cold read", f.read(path, ""), http.StatusOK)
+		if got := f.read(path, `"stale", W/`+current); got.Code != http.StatusNotModified {
+			t.Fatalf("%s: a list holding the current tag answered %d", path, got.Code)
+		}
+	}
+}
+
+func mustTask(t *testing.T, f *activityConditionalFixture, id string) core.Task {
+	t.Helper()
+	task, err := f.base.GetTask(f.ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task
 }

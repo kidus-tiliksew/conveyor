@@ -123,7 +123,9 @@ func TestReadMemoWaitersRetryAfterTheLeaderFails(t *testing.T) {
 	for _, leaderFailure := range []string{"cancelled", "failed"} {
 		t.Run(leaderFailure, func(t *testing.T) {
 			now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-			m := &readMemo{clock: func() time.Time { return now }}
+			const waiters = 4
+			joined := make(chan struct{}, waiters)
+			m := &readMemo{clock: func() time.Time { return now }, waiting: func() { joined <- struct{}{} }}
 			leaderCtx, cancelLeader := context.WithCancel(context.Background())
 			defer cancelLeader()
 			entered := make(chan struct{})
@@ -150,7 +152,6 @@ func TestReadMemoWaitersRetryAfterTheLeaderFails(t *testing.T) {
 				leaderErr <- err
 			}()
 			<-entered
-			const waiters = 4
 			results := make(chan error, waiters)
 			bodies := make(chan string, waiters)
 			for range waiters {
@@ -160,18 +161,10 @@ func TestReadMemoWaitersRetryAfterTheLeaderFails(t *testing.T) {
 					results <- err
 				}()
 			}
-			// Let every waiter join the leader's flight before it fails.
-			deadline := time.Now().Add(2 * time.Second)
-			for {
-				m.mu.Lock()
-				flight := m.flights["key"]
-				m.mu.Unlock()
-				if flight != nil || time.Now().After(deadline) {
-					break
-				}
-				time.Sleep(time.Millisecond)
+			// Every waiter joins the leader's flight before the leader fails.
+			for range waiters {
+				<-joined
 			}
-			time.Sleep(20 * time.Millisecond)
 			close(release)
 			if err := <-leaderErr; err == nil {
 				t.Fatal("the leader's own failure was not returned to it")
@@ -184,7 +177,8 @@ func TestReadMemoWaitersRetryAfterTheLeaderFails(t *testing.T) {
 					t.Fatalf("waiter body=%q", body)
 				}
 			}
-			// One waiter rebuilt; the others read its stored entry.
+			// One waiter rebuilt; the others waited on its flight and read
+			// its stored entry.
 			if got := builds.Load(); got != 2 {
 				t.Fatalf("builds=%d, want the leader's and one waiter's", got)
 			}
@@ -281,5 +275,32 @@ func TestReadMemoByteBudget(t *testing.T) {
 	}
 	if readMemoByteBudget != 8<<20 || readMemoCapacity != 128 || readMemoLifetime != 5*time.Second {
 		t.Fatal("memo bounds changed")
+	}
+}
+
+// TestReadMemoBoundsRebuildsAfterUnrelatedNotices proves a build that a
+// notice discards is retried at most readMemoRebuilds times: a steady stream
+// of notices cannot keep a caller rebuilding until its context ends. The
+// last build answers its caller once, untagged and unstored.
+func TestReadMemoBoundsRebuildsAfterUnrelatedNotices(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	m := &readMemo{clock: func() time.Time { return now }}
+	hub := changes.NewHub()
+	m.subscribe(hub)
+	builds := 0
+	build := func(_ context.Context, at time.Time) (readMemoValue, error) {
+		builds++
+		hub.Publish(changes.Notice{Kind: changes.Workspace, Workspace: "another-workspace"})
+		return readMemoValue{body: []byte("body"), etag: `"tag"`, validUntil: at.Add(time.Second)}, nil
+	}
+	value, err := m.get(context.Background(), "key", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != readMemoRebuilds || string(value.body) != "body" || value.etag != "" {
+		t.Fatalf("builds=%d body=%q etag=%q", builds, value.body, value.etag)
+	}
+	if len(m.entries) != 0 {
+		t.Fatal("a build a notice discarded was stored")
 	}
 }
