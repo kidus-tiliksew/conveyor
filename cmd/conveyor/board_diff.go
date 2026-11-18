@@ -18,6 +18,10 @@ import (
 type boardDiffOptions struct {
 	asJSON, reset bool
 	since         string
+	// consumer names the snapshot owner. consumerSet tells an explicit empty
+	// --consumer, a usage error, from an omitted flag.
+	consumer    string
+	consumerSet bool
 }
 type boardDiffSummary struct {
 	Open      int                        `json:"open"`
@@ -42,11 +46,13 @@ type boardDiffOutput struct {
 func boardDiffCmd() *cobra.Command {
 	var options boardDiffOptions
 	cmd := &cobra.Command{Use: "diff", Short: "Show board changes since the last check", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		options.consumerSet = cmd.Flags().Changed("consumer")
 		return runBoardDiff(newClient(), cmd.OutOrStdout(), options)
 	}}
 	cmd.Flags().BoolVar(&options.asJSON, "json", false, "print changes as JSON")
 	cmd.Flags().StringVar(&options.since, "since", "", "read changes since a position without saving")
 	cmd.Flags().BoolVar(&options.reset, "reset", false, "replace the saved snapshot")
+	cmd.Flags().StringVar(&options.consumer, "consumer", "", "use the snapshot of this consumer name")
 	cmd.MarkFlagsMutuallyExclusive("since", "reset")
 	return cmd
 }
@@ -55,11 +61,28 @@ func runBoardDiff(c *client, w io.Writer, options boardDiffOptions) error {
 	if options.reset && options.since != "" {
 		return fmt.Errorf("--since and --reset cannot be used together")
 	}
+	// Check the consumer name before any request or snapshot access.
+	if options.consumerSet && options.consumer == "" {
+		return fmt.Errorf("--consumer must not be empty")
+	}
+	if _, err := boardDiffSnapshotName(options.consumer); err != nil {
+		return err
+	}
+	stateless := options.since != ""
+	if !stateless {
+		// One run per snapshot: hold the lock from before the read until after
+		// the write, a reset included. A --since run takes no lock
+		// (component-next-action State and failure).
+		unlock, err := lockBoardDiffState(c.base, c.workspace, options.consumer)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
 	now := time.Now().UTC()
 	state := boardDiffState{}
 	reason := ""
 	first := false
-	stateless := options.since != ""
 	if stateless {
 		p, err := time.Parse(time.RFC3339, options.since)
 		if err != nil || strings.ContainsAny(options.since, ".,") {
@@ -71,7 +94,7 @@ func runBoardDiff(c *client, w io.Writer, options boardDiffOptions) error {
 		reason = "reset requested"
 	} else {
 		var err error
-		state, reason, err = loadBoardDiffState(c.base, c.workspace, now)
+		state, reason, err = loadBoardDiffState(c.base, c.workspace, options.consumer, now)
 		if err != nil {
 			return err
 		}
@@ -128,7 +151,7 @@ func runBoardDiff(c *client, w io.Writer, options boardDiffOptions) error {
 	}
 	if !stateless {
 		state.SavedAt = now
-		if err = saveBoardDiffState(c.base, c.workspace, state); err != nil {
+		if err = saveBoardDiffState(c.base, c.workspace, options.consumer, state); err != nil {
 			return err
 		}
 	}
