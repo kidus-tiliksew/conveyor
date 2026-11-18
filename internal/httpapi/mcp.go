@@ -275,18 +275,40 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			}
 			return nil, err
 		}
+		// A tool result that holds a task names its crate as a REST task row
+		// does (component-crates, Public surfaces).
+		if err := s.nameTaskCrates(ctx, &result.Task); err != nil {
+			return nil, err
+		}
 		return map[string]any{"task": result.Task, "created": result.Created}, nil
 	case "add_task_dependency":
-		return s.Store.AddTaskDependency(ctx, store.DependencyAdditionRequest{
+		added, err := s.Store.AddTaskDependency(ctx, store.DependencyAdditionRequest{
 			TaskID: stringArg("task_id"), DependsOnTaskID: stringArg("depends_on_task_id"),
 			Reason: stringArg("reason"), RequestID: stringArg("request_id"),
 		})
+		if err != nil {
+			return added, err
+		}
+		if err := s.nameTaskCrates(ctx, &added); err != nil {
+			return nil, err
+		}
+		return added, nil
 	case "set_assignee":
-		return taskops.New(s.Store).SetAssignee(ctx, stringArg("task_id"), stringArg("assignee_user_id"))
+		task, err := taskops.New(s.Store).SetAssignee(ctx, stringArg("task_id"), stringArg("assignee_user_id"))
+		if err != nil {
+			return task, err
+		}
+		if err := s.nameTaskCrates(ctx, &task); err != nil {
+			return nil, err
+		}
+		return task, nil
 	case "attach_task_branch":
 		task, err := s.Store.AttachTaskBranch(ctx, stringArg("task_id"), stringArg("branch"))
 		if err != nil {
 			return nil, taskBranchAttachMCPError(err)
+		}
+		if err := s.nameTaskCrates(ctx, &task); err != nil {
+			return nil, err
 		}
 		return task, nil
 	}

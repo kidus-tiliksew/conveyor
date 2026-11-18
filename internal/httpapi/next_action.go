@@ -30,12 +30,6 @@ func (s *Server) taskResponse(w http.ResponseWriter, r *http.Request, task core.
 		writeStoreFailure(w, r, err)
 		return nil, false
 	}
-	named := []core.Task{task}
-	if err := s.hydrateTaskCrates(r.Context(), named); err != nil {
-		writeStoreFailure(w, r, err)
-		return nil, false
-	}
-	task = named[0]
 	// One order read serves the next action and plan_acts, so plan_acts
 	// makes no store call of its own (component-plan-state invariant 6).
 	orders, err := s.Store.ListWorkOrdersForTasks(r.Context(), []string{task.ID})
@@ -53,12 +47,17 @@ func (s *Server) taskResponse(w http.ResponseWriter, r *http.Request, task core.
 		writeStoreFailure(w, r, err)
 		return nil, false
 	}
-	return struct {
+	response := struct {
 		core.Task
 		NextAction nextaction.NextAction `json:"next_action"`
 		PlanActs   store.PlanActs        `json:"plan_acts"`
 		Risk       *core.TaskRisk        `json:"risk,omitempty"`
-	}{Task: task, NextAction: action, PlanActs: store.PlanActsFor(task, orders), Risk: risk}, true
+	}{Task: task, NextAction: action, PlanActs: store.PlanActsFor(task, orders), Risk: risk}
+	if err := s.nameTaskCrates(r.Context(), &response); err != nil {
+		writeStoreFailure(w, r, err)
+		return nil, false
+	}
+	return response, true
 }
 
 func planActsPointer(acts store.PlanActs) *store.PlanActs { return &acts }
@@ -69,10 +68,6 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, page store.T
 	tasks := page.Tasks
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	if err := s.hydrateTaskCrates(r.Context(), tasks); err != nil {
 		writeStoreFailure(w, r, err)
 		return
 	}
@@ -131,7 +126,7 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, page store.T
 	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
 	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(limit))
 	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(offset))
-	writeJSON(w, http.StatusOK, rows)
+	s.writeTaskJSON(w, r, http.StatusOK, rows)
 }
 
 func (s *Server) nextActionOptions(r *http.Request) (store.NextActionOptions, error) {

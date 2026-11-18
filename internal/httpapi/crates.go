@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -326,42 +325,7 @@ func (s *Server) clearTaskCrate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeCrateTask(w http.ResponseWriter, r *http.Request, task core.Task) {
-	tasks := []core.Task{task}
-	if err := s.hydrateTaskCrates(r.Context(), tasks); err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, tasks[0])
-}
-
-// hydrateTaskCrates adds each member task's crate name, so every task row
-// carries crate as {id, name} (component-crates, Public surfaces).
-func (s *Server) hydrateTaskCrates(ctx context.Context, tasks []core.Task) error {
-	backend, ok := s.Store.(store.CrateStore)
-	if !ok {
-		return nil
-	}
-	seen := map[string]bool{}
-	var ids []string
-	for _, task := range tasks {
-		if id := task.TaskCrateID(); id != "" && !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
-		}
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	names, err := backend.CrateNames(ctx, ids)
-	if err != nil {
-		return err
-	}
-	for i := range tasks {
-		if tasks[i].Crate != nil {
-			tasks[i].Crate = &core.TaskCrate{ID: tasks[i].Crate.ID, Name: names[tasks[i].Crate.ID]}
-		}
-	}
-	return nil
+	s.writeTaskJSON(w, r, http.StatusOK, task)
 }
 
 func cratePullRequestFrom(payload json.RawMessage) *cratePullRequest {

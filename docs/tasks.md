@@ -157,8 +157,12 @@ Each membership change records one task event, `task.crate_set` or
 `task.crate_cleared`. The event names the actor, the crate the task joined,
 and the crate it left. Creation records the crate in the `task.created` event.
 
-Every task row of `GET /v1/tasks` and `GET /v1/tasks/{id}` carries `crate` as
-`{id, name}` when the task is in a crate. The `crate` filter on
+Every response that holds a task or a task row carries `crate` as
+`{id, name}`, with the crate's current name, when the task is in a crate, and
+no `crate` when it is in none. This covers the task list, task detail, the
+activity, attention, reviews, board, task map, task operations, and inbox
+reads, the task acts such as close, merge, assignee, dependencies, and branch,
+and the MCP tools that return a task. The `crate` filter on
 `GET /v1/tasks` and `GET /v1/activity` selects the members of one crate by
 its ID, and it works with the other filters before paging and totals.
 

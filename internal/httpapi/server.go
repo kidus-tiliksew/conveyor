@@ -517,7 +517,7 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 	if s.OnCreate != nil {
 		s.OnCreate(r.Context(), id)
 	}
-	writeJSON(w, http.StatusAccepted, t)
+	s.writeTaskJSON(w, r, http.StatusAccepted, t)
 }
 
 // refuseRedispatchAtPlanRevisionGate answers the redispatch route before any
@@ -566,7 +566,7 @@ func (s *Server) setTaskAssignee(w http.ResponseWriter, r *http.Request) {
 			refuseSentinel(store.ErrAssigneeLacksCapability, http.StatusBadRequest, "assignee role lacks the claim_work capability"))
 		return
 	}
-	writeJSON(w, http.StatusOK, task)
+	s.writeTaskJSON(w, r, http.StatusOK, task)
 }
 
 func (s *Server) requireMutationCapability(capability core.Capability) func(http.Handler) http.Handler {
@@ -896,7 +896,7 @@ func (s *Server) addTaskDependency(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	s.writeTaskJSON(w, r, http.StatusOK, result)
 }
 
 func (s *Server) removeTaskDependency(w http.ResponseWriter, r *http.Request) {
@@ -917,7 +917,7 @@ func (s *Server) removeTaskDependency(w http.ResponseWriter, r *http.Request) {
 			refuseSentinel(store.ErrNotFound, http.StatusBadRequest, "task not found"))
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	s.writeTaskJSON(w, r, http.StatusOK, result)
 }
 
 func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
@@ -985,7 +985,7 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 	}
 	// The cancel committed before this read, so the answer is 200 and not 202
 	// (req-task-lifecycle-and-queue REQ-8; component-task-lifecycle invariant 31).
-	writeJSON(w, http.StatusOK, updated)
+	s.writeTaskJSON(w, r, http.StatusOK, updated)
 }
 
 func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
@@ -1157,7 +1157,7 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		writeStoreFailure(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{
+	s.writeTaskJSON(w, r, http.StatusAccepted, map[string]any{
 		"task":               updated,
 		"checkout_command":   checkoutCommand,
 		"checkout_available": checkoutAvailable,
@@ -1231,7 +1231,7 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	s.writeTaskJSON(w, r, http.StatusOK, updated)
 }
 
 // mergeTaskAtGate is the one-act operator merge at the merge_approval gate
@@ -1272,7 +1272,7 @@ func (s *Server) mergeTaskAtGate(w http.ResponseWriter, r *http.Request, task co
 		return
 	}
 	s.mergeReadiness.forget(r.Context(), task.ID)
-	writeJSON(w, http.StatusOK, updated)
+	s.writeTaskJSON(w, r, http.StatusOK, updated)
 }
 
 func (s *Server) fixMergeConflict(w http.ResponseWriter, r *http.Request) {
@@ -1374,12 +1374,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeTaskCreateError(w, r, err)
 		return
 	}
-	created := []core.Task{result.Task}
-	if err := s.hydrateTaskCrates(r.Context(), created); err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, created[0])
+	s.writeTaskJSON(w, r, http.StatusCreated, result.Task)
 }
 
 func (s *Server) createTaskWithAttachments(w http.ResponseWriter, r *http.Request) {
@@ -1444,12 +1439,7 @@ func (s *Server) createTaskWithAttachments(w http.ResponseWriter, r *http.Reques
 	if !result.Created {
 		status = http.StatusOK
 	}
-	created := []core.Task{result.Task}
-	if err := s.hydrateTaskCrates(r.Context(), created); err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	writeJSON(w, status, created[0])
+	s.writeTaskJSON(w, r, status, result.Task)
 }
 
 func readTaskAttachment(header *multipart.FileHeader) (store.ArtifactUpload, error) {
@@ -1722,6 +1712,7 @@ type activityTask struct {
 	NextStage       core.Stage          `json:"next_stage,omitempty"`
 	PlanState       core.PlanState      `json:"plan_state"` // component-plan-state invariant 1
 	Assignee        *core.TaskAssignee  `json:"assignee,omitempty"`
+	Crate           *core.TaskCrate     `json:"crate,omitempty"` // named where the row is written (component-crates)
 	ReviewedHeadSHA string              `json:"reviewed_head_sha,omitempty"`
 	Dependencies    []core.TaskRelation `json:"dependencies,omitempty"`
 	BlockingTaskIDs []string            `json:"blocking_task_ids,omitempty"`
@@ -1734,7 +1725,7 @@ func summarizeActivityTask(task core.Task) activityTask {
 	return activityTask{
 		Supersedes: task.Supersedes, SupersededBy: task.SupersededBy,
 		ID: task.ID, Title: task.Title, Repo: task.Repo, State: task.State,
-		NextStage: task.NextStage, PlanState: task.PlanState, Assignee: task.Assignee,
+		NextStage: task.NextStage, PlanState: task.PlanState, Assignee: task.Assignee, Crate: task.Crate,
 		ReviewedHeadSHA: task.ReviewedHeadSHA, Dependencies: task.Dependencies,
 		BlockingTaskIDs: task.BlockingTaskIDs, Children: task.Children,
 		Context: task.Context, CreatedAt: task.CreatedAt,
@@ -1962,6 +1953,14 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 	// The frontier is the page's maximum (at, id) tuple, so a later event with
 	// a lower ID still enters the next delta (component-http-api;
 	// component-persistence).
+	// Each row carries its crate's current name. A rename appends a
+	// workspace event, which the validation read counts, so a 304 never
+	// keeps an old name (component-crates, Public surfaces).
+	if err := s.nameTaskCrates(r.Context(), &items, &fullItems); err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	cursor := encodeActivityCursor(store.ActivityFrontier(markers))
 	w.Header().Set("X-Conveyor-Cursor", cursor)
 	if conditional == nil {
@@ -2352,7 +2351,7 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 		writeStoreFailure(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, items)
+	s.writeTaskJSON(w, r, http.StatusOK, items)
 }
 
 // taskOperationsItems assembles task-operations rows. A row carries no pull
@@ -2823,7 +2822,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 			writeStoreFailure(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, taskDetailProjection{item})
+		s.writeTaskJSON(w, r, http.StatusOK, taskDetailProjection{item})
 		return
 	}
 	// Every derivation above ran on the complete ledger; the bounded view
@@ -2848,7 +2847,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	item.Events = nil
 	w.Header().Set("X-Conveyor-Detail-View", "bounded")
-	writeJSON(w, http.StatusOK, boundedTaskDetailProjection{reviewItem: item, events: pageEvents, eventPage: eventPage, summaries: summaries})
+	s.writeTaskJSON(w, r, http.StatusOK, boundedTaskDetailProjection{reviewItem: item, events: pageEvents, eventPage: eventPage, summaries: summaries})
 }
 
 func decorateWorkOrderAgentActivity(orders []core.WorkOrder, events []core.Event) {

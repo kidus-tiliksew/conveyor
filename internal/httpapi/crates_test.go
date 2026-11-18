@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -466,30 +467,16 @@ func TestCrateTaskFilter(t *testing.T) {
 		if status != http.StatusOK {
 			t.Fatalf("%s status=%d body=%s", path, status, raw)
 		}
-		var rows []struct {
-			ID    string          `json:"id"`
-			Crate *core.TaskCrate `json:"crate"`
-			Task  *struct {
-				ID string `json:"id"`
-			} `json:"task"`
-		}
-		if err := json.Unmarshal(raw, &rows); err != nil {
-			t.Fatal(err)
-		}
-		var got []string
-		for _, row := range rows {
-			if row.Task != nil {
-				got = append(got, row.Task.ID)
-				continue
-			}
-			got = append(got, row.ID)
-			if row.Crate == nil || row.Crate.ID != crate.ID || row.Crate.Name != "Filtered" {
-				t.Fatalf("%s row crate = %+v", path, row.Crate)
+		got := map[string]*core.TaskCrate{}
+		for id, rowCrate := range crateRows(t, raw) {
+			got[id] = rowCrate
+			if rowCrate == nil || rowCrate.ID != crate.ID || rowCrate.Name != "Filtered" {
+				t.Fatalf("%s row %s crate = %+v, want {%s Filtered}", path, id, rowCrate, crate.ID)
 			}
 		}
-		slices.Sort(got)
-		if !slices.Equal(got, members) {
-			t.Fatalf("%s rows = %v, want %v", path, got, members)
+		ids := slices.Sorted(maps.Keys(got))
+		if !slices.Equal(ids, members) {
+			t.Fatalf("%s rows = %v, want %v", path, ids, members)
 		}
 	}
 	status, raw := f.do(t, f.viewer, http.MethodGet, "/v1/tasks?crate="+crate.ID+"&limit=1", nil)
@@ -530,6 +517,28 @@ func TestCrateTaskFilter(t *testing.T) {
 		if row.Branch == "" || string(row.PullRequest) != "null" || byID[row.ID] == "" || string(row.NextAction) != byID[row.ID] {
 			t.Fatalf("crate member row %+v, want the task list next action %s", row, byID[row.ID])
 		}
+	}
+	// An activity row carries the current name after a rename, and no crate
+	// after its task leaves the crate (component-crates, Public surfaces).
+	if status, raw := f.do(t, f.editor, http.MethodPatch, "/v1/crates/"+crate.ID, `{"name":"Renamed"}`); status != http.StatusOK {
+		t.Fatalf("rename status=%d body=%s", status, raw)
+	}
+	if status, raw := f.do(t, f.editor, http.MethodDelete, "/v1/tasks/"+members[0]+"/crate", nil); status != http.StatusOK {
+		t.Fatalf("leave status=%d body=%s", status, raw)
+	}
+	status, raw = f.do(t, f.viewer, http.MethodGet, "/v1/activity", nil)
+	if status != http.StatusOK {
+		t.Fatalf("activity status=%d body=%s", status, raw)
+	}
+	rows := crateRows(t, raw)
+	if rowCrate, ok := rows[members[0]]; !ok || rowCrate != nil {
+		t.Fatalf("activity row of the task that left = %+v (present %v), want no crate", rowCrate, ok)
+	}
+	if rowCrate := rows[members[1]]; rowCrate == nil || rowCrate.ID != crate.ID || rowCrate.Name != "Renamed" {
+		t.Fatalf("activity row after the rename = %+v, want {%s Renamed}", rowCrate, crate.ID)
+	}
+	if status, raw := f.do(t, f.viewer, http.MethodGet, "/v1/activity?crate="+crate.ID, nil); status != http.StatusOK || len(crateRows(t, raw)) != 1 {
+		t.Fatalf("crate filter after the task left status=%d body=%s", status, raw)
 	}
 }
 
@@ -691,4 +700,30 @@ func TestCrateWorkOrderTaskCarriesNoCrate(t *testing.T) {
 	if stored, err := f.store.GetTask(f.ctx, member.ID); err != nil || stored.TaskCrateID() != crate.ID {
 		t.Fatalf("the order read changed membership: %+v %v", stored.Crate, err)
 	}
+}
+
+// crateRows reads a task list or an activity page and returns each row's
+// crate by task ID. An activity row nests its task under "task".
+func crateRows(t *testing.T, raw []byte) map[string]*core.TaskCrate {
+	t.Helper()
+	var rows []struct {
+		ID    string          `json:"id"`
+		Crate *core.TaskCrate `json:"crate"`
+		Task  *struct {
+			ID    string          `json:"id"`
+			Crate *core.TaskCrate `json:"crate"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatalf("rows %s: %v", raw, err)
+	}
+	out := map[string]*core.TaskCrate{}
+	for _, row := range rows {
+		if row.Task != nil {
+			out[row.Task.ID] = row.Task.Crate
+			continue
+		}
+		out[row.ID] = row.Crate
+	}
+	return out
 }

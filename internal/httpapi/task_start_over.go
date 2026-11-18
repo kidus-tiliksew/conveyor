@@ -59,7 +59,7 @@ func (s *Server) restartTask(w http.ResponseWriter, r *http.Request) {
 	if result.Created {
 		status = http.StatusCreated
 	}
-	writeJSON(w, status, result)
+	s.writeTaskJSON(w, r, status, result)
 }
 
 func writeRestartError(w http.ResponseWriter, r *http.Request, err error) {
