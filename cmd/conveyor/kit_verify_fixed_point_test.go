@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -234,4 +235,55 @@ func TestKitRunnerFixedPointRefusalStopsStartAndOutcome(t *testing.T) {
 			t.Fatalf("a refused check still retained the blocked diagnostic: %v", statErr)
 		}
 	})
+}
+
+// TestKitRunnerReplayRenewsAndRereadsBeforeRetainedUpload proves the
+// retained-evidence replay passes the run-start fixed point: a first run
+// whose evidence upload stays unavailable keeps its spool and reports no
+// outcome; a rerun with the same start key, under a long lease with a recent
+// renewal, renews and rereads before it uploads the retained evidence, and it
+// neither relaunches nor reports (component-verification-runner invariants 17
+// and 26).
+func TestKitRunnerReplayRenewsAndRereadsBeforeRetainedUpload(t *testing.T) {
+	backoff := kitUploadBackoff
+	kitUploadBackoff = 10 * time.Millisecond
+	t.Cleanup(func() { kitUploadBackoff = backoff })
+	p, subject := newFixedPointFixture(t, "exit 0")
+	root := t.TempDir()
+	p.evidenceUnavailable = true
+	if err := p.v.run(t.Context(), subject, root); err == nil || !strings.Contains(err.Error(), "retained") {
+		t.Fatalf("first run did not retain its evidence: %v", err)
+	}
+	if p.starts != 1 || p.outcome != "" {
+		t.Fatalf("first run: starts %d outcome %q, want one start and no outcome", p.starts, p.outcome)
+	}
+	spooled := filepath.Join(root, "run", "spool", "execution.json")
+	if _, err := os.Stat(spooled); err != nil {
+		t.Fatalf("first run left no retained execution report: %v", err)
+	}
+	// The rerun reads the context the server now holds, as a rerun's
+	// preparation does, so it finds the attempt that owns the start key.
+	p.kitExecutionFixture.mu.Lock()
+	p.evidenceUnavailable = false
+	p.v.snapshot.Attempts = slices.Clone(p.snapshot.Attempts)
+	p.kitExecutionFixture.mu.Unlock()
+	p.resetRPCs()
+	err := p.v.run(t.Context(), subject, root)
+	if err == nil || !strings.Contains(err.Error(), "retained evidence retried without relaunch") {
+		t.Fatalf("replay: %v", err)
+	}
+	rpcs := p.rpcLog()
+	upload := slices.Index(rpcs, "submit_verification_evidence")
+	if upload < 2 || rpcs[0] != "renew_work_order" || rpcs[1] != "get_verification_context" {
+		t.Fatalf("replay did not renew and reread before its upload: %v", rpcs)
+	}
+	if slices.Contains(rpcs, "start_verification_attempt") || slices.Contains(rpcs, "report_verification_outcome") || p.starts != 1 || p.outcome != "" {
+		t.Fatalf("replay relaunched or reported: starts %d outcome %q rpcs %v", p.starts, p.outcome, rpcs)
+	}
+	if count(rpcs, "renew_work_order") != 1 {
+		t.Fatalf("replay renewed %d times, want only the run-start fixed point: %v", count(rpcs, "renew_work_order"), rpcs)
+	}
+	if _, err := os.Stat(spooled); !os.IsNotExist(err) {
+		t.Fatal("the acknowledged retained report stayed in the spool")
+	}
 }
