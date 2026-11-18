@@ -39,10 +39,7 @@ var markerSQL = store.MarkerSQLDialect{
 	Stripped: func(text, literal string) string {
 		return "octet_length(replace(" + text + "," + literal + ",''))"
 	},
-	ASCII:    func(text string) string { return "(octet_length(" + text + ")=char_length(" + text + "))" },
-	TypeOf:   func(value string) string { return "jsonb_typeof(" + value + ")" },
-	KeyCount: func(keys string) string { return "jsonb_array_length((" + keys + ")::jsonb)" },
-	Regex:    func(text, pattern string) string { return "(" + text + " ~ '" + pattern + "')" },
+	ASCII: func(text string) string { return "(octet_length(" + text + ")=char_length(" + text + "))" },
 }
 
 // markerFoldRows reads the fold inputs of one page and reads back the claim
@@ -78,7 +75,7 @@ func (s *Store) markerFoldScan(ctx context.Context, query string, args []any) ([
 	out := []store.MarkerFoldRow{}
 	for rows.Next() {
 		var row store.MarkerFoldRow
-		if err = rows.Scan(&row.Event.ID, &row.Event.TaskID, &row.Event.JobID, &row.Event.Kind, &row.Event.Payload, &row.Event.At, &row.Dropped, &row.DroppedImplement); err != nil {
+		if err = rows.Scan(&row.Event.ID, &row.Event.TaskID, &row.Event.JobID, &row.Event.Kind, &row.Event.Payload, &row.Event.At, &row.Dropped, &row.DroppedImplement, &row.FutureDropped); err != nil {
 			return nil, err
 		}
 		out = append(out, row)

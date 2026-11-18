@@ -2,10 +2,7 @@ package store
 
 import (
 	"encoding/json"
-	"fmt"
-	"math/rand/v2"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +34,8 @@ func TestMarkerClaimBackfill(t *testing.T) {
 		{"a claim that does not decode supersedes nothing", row("job", json.RawMessage(`{"stage":"implement","attempt_id":5}`), 2, 2), true},
 		{"an open review order's newest claim needs a lease", row("review-job", claim(core.StageReview, time.Time{}), 2, 0), true},
 		{"an open review order's newest claim with a lease", row("review-job", claim(core.StageReview, lease), 2, 0), false},
+		{"an earliest future claim that decodes", MarkerFoldRow{Event: core.Event{TaskID: "task", JobID: "review-job", Kind: "work_order.claimed", Payload: claim(core.StageReview, lease)}, FutureDropped: 3}, false},
+		{"an earliest future claim that does not decode", MarkerFoldRow{Event: core.Event{TaskID: "task", JobID: "review-job", Kind: "work_order.claimed", Payload: json.RawMessage(`{"id":5}`)}, FutureDropped: 3}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := MarkerClaimBackfill([]MarkerFoldRow{c.row}, open)
@@ -90,9 +89,6 @@ func TestMarkerFoldSQLShape(t *testing.T) {
 		Contains:  func(text, literal string) string { return "C(" + text + "," + literal + ")" },
 		Lower:     func(text string) string { return "L(" + text + ")" },
 		Stripped:  func(text, literal string) string { return "E(" + text + "," + literal + ")" },
-		TypeOf:    func(value string) string { return "Y(" + value + ")" },
-		KeyCount:  func(keys string) string { return "N(" + keys + ")" },
-		Regex:     func(text, pattern string) string { return "R(" + text + ",'" + pattern + "')" },
 		ASCII:     func(text string) string { return "A(" + text + ")" },
 	}
 	in := MarkerFoldInput{Workspace: "ws", Page: []string{"task"}, ReviewTasks: []string{"task"}, LiveReviewTasks: []string{"task"},
@@ -128,38 +124,4 @@ func containsArg(args []any, want any) bool {
 		}
 	}
 	return false
-}
-
-// TestMarkerTimeShapeDecodes proves every instant markerTimeShape accepts is
-// one Go's JSON time decoder accepts, so a projected claim never drops a time
-// field whose decoding would fail.
-func TestMarkerTimeShapeDecodes(t *testing.T) {
-	shape := regexp.MustCompile(markerTimeShape)
-	rng := rand.New(rand.NewPCG(7, 11))
-	accepted := 0
-	for range 200000 {
-		text := fmt.Sprintf("%04d-%02d-%02dT%02d:%02d:%02d", rng.IntN(10000), rng.IntN(14), rng.IntN(33), rng.IntN(25), rng.IntN(61), rng.IntN(61))
-		if rng.IntN(2) == 0 {
-			text += "." + strings.Repeat("7", 1+rng.IntN(10))
-		}
-		switch rng.IntN(3) {
-		case 0:
-			text += "Z"
-		case 1:
-			text += fmt.Sprintf("+%02d:%02d", rng.IntN(26), rng.IntN(62))
-		default:
-			text += fmt.Sprintf("-%02d:%02d", rng.IntN(26), rng.IntN(62))
-		}
-		if !shape.MatchString(text) {
-			continue
-		}
-		accepted++
-		var decoded time.Time
-		if err := json.Unmarshal([]byte(`"`+text+`"`), &decoded); err != nil {
-			t.Fatalf("markerTimeShape accepts %q, which Go does not decode: %v", text, err)
-		}
-	}
-	if accepted < 1000 {
-		t.Fatalf("only %d samples matched the shape; the test exercises too little", accepted)
-	}
 }

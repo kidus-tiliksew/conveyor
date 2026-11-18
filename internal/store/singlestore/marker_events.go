@@ -174,11 +174,7 @@ var markerSQL = store.MarkerSQLDialect{
 	Stripped: func(text, literal string) string {
 		return "LENGTH(REPLACE(CAST(" + text + " AS BINARY)," + literal + ",''))"
 	},
-	ASCII:    func(text string) string { return "(LENGTH(" + text + ")=CHAR_LENGTH(" + text + "))" },
-	TypeOf:   func(value string) string { return "JSON_GET_TYPE(" + value + ")" },
-	KeyCount: func(keys string) string { return "JSON_LENGTH(" + keys + ")" },
-	// A binary operand keeps the match case-sensitive under any collation.
-	Regex: func(text, pattern string) string { return "(CAST(" + text + " AS BINARY) REGEXP '" + pattern + "')" },
+	ASCII: func(text string) string { return "(LENGTH(" + text + ")=CHAR_LENGTH(" + text + "))" },
 }
 
 // markerFoldRows reads the fold inputs for the page's tasks in chunks, and
@@ -243,7 +239,7 @@ func (s *Store) markerFoldScan(ctx context.Context, query string, args []any) ([
 	out := []store.MarkerFoldRow{}
 	for rows.Next() {
 		var row store.MarkerFoldRow
-		if err = rows.Scan(&row.Event.ID, &row.Event.TaskID, &row.Event.JobID, &row.Event.Kind, &row.Event.Payload, &row.Event.At, &row.Dropped, &row.DroppedImplement); err != nil {
+		if err = rows.Scan(&row.Event.ID, &row.Event.TaskID, &row.Event.JobID, &row.Event.Kind, &row.Event.Payload, &row.Event.At, &row.Dropped, &row.DroppedImplement, &row.FutureDropped); err != nil {
 			return nil, err
 		}
 		out = append(out, row)

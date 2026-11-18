@@ -3,7 +3,6 @@ package store
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -57,13 +56,6 @@ type MarkerSQLDialect struct {
 	Stripped func(text, literal string) string
 	// ASCII reports whether text holds only ASCII bytes.
 	ASCII func(text string) string
-	// TypeOf names a JSON value's type: string, boolean, null, object,
-	// array, or a number type.
-	TypeOf func(value string) string
-	// KeyCount counts the keys of a Keys array text.
-	KeyCount func(keys string) string
-	// Regex is a case-sensitive POSIX regular expression match.
-	Regex func(text, pattern string) string
 }
 
 // MarkerSQLBinder collects the bound arguments of one statement. Bind
@@ -144,8 +136,10 @@ var markerForgeKeys = []string{"review_work_order_id", "work_order_id", "forge_e
 // the review folds' reviewLifecycleEventMatches, ReviewVerdictDiagnostics,
 // ActivityReviewLeaseHorizon, completedReviewWorkOrderIDs, and
 // SupersededReviewWorkOrders (review lifecycle kinds). A claim decodes as a
-// whole work order, so it is projected to markerClaimReadKeys only when
-// claimCertain proves every field it leaves out decodes.
+// whole work order: the database would have to prove every typed field of
+// the work order decodes before leaving one out, and that proof made the
+// SingleStore statement too costly to compile, so a claim keeps its compact
+// payload.
 var markerProjections = func() []struct {
 	kinds []string
 	keys  []string
@@ -217,128 +211,7 @@ func (d MarkerSQLDialect) projectedPayload() string {
 		}
 		branches = append(branches, fmt.Sprintf("WHEN kind IN (%s) AND %s THEN %s", quotedSQL(projection.kinds), strings.Join(checks, " AND "), d.Object(pairs)))
 	}
-	pairs := make([]string, 0, 2*len(markerClaimReadKeys))
-	for _, key := range markerClaimReadKeys {
-		pairs = append(pairs, "'"+key+"'", d.Field("event_payload", key))
-	}
-	branches = append(branches, "WHEN kind='work_order.claimed' AND certain=1 THEN "+d.Object(pairs))
 	return "CASE " + strings.Join(branches, " ") + " ELSE event_payload END"
-}
-
-type markerFieldKind int
-
-const (
-	markerFieldOther markerFieldKind = iota
-	markerFieldString
-	markerFieldBool
-	markerFieldInt
-	markerFieldFloat
-	markerFieldTime
-)
-
-// markerClaimFields maps each JSON field of core.WorkOrder to the Go type it
-// decodes into. A claim's whole payload decodes as a work order.
-var markerClaimFields = func() map[string]markerFieldKind {
-	out := map[string]markerFieldKind{}
-	timeType := reflect.TypeOf(time.Time{})
-	order := reflect.TypeOf(core.WorkOrder{})
-	for i := range order.NumField() {
-		field := order.Field(i)
-		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-		if !field.IsExported() || field.Anonymous || name == "-" {
-			continue
-		}
-		if name == "" {
-			name = field.Name
-		}
-		kind, elem := markerFieldOther, field.Type
-		if elem.Kind() == reflect.Pointer && elem.Elem().Kind() != reflect.Struct {
-			elem = elem.Elem()
-		}
-		switch {
-		case elem == timeType:
-			kind = markerFieldTime
-		case elem.Kind() == reflect.String:
-			kind = markerFieldString
-		case elem.Kind() == reflect.Bool:
-			kind = markerFieldBool
-		case elem.Kind() >= reflect.Int && elem.Kind() <= reflect.Int64:
-			kind = markerFieldInt
-		case elem.Kind() == reflect.Float64:
-			kind = markerFieldFloat
-		}
-		out[name] = kind
-	}
-	return out
-}()
-
-// markerClaimReadKeys are the claim keys the folds read: the work order's
-// stage (store.UserRequestChangesPending), its lease
-// (ReviewVerdictDiagnostics, ActivityReviewLeaseHorizon), and the identity
-// reviewLifecycleEventMatches decodes. A projected claim carries them as
-// stored, so they decode, or fail to, as in the full payload.
-var markerClaimReadKeys = []string{"id", "stage", "lease_expires_at", "review_work_order_id"}
-
-// markerClaimIgnoredKeys are claim keys that name no work-order field under
-// Go's case-insensitive matching, so dropping them changes no decode.
-var markerClaimIgnoredKeys = []string{"governance_references", "review_work_order_id"}
-
-// markerTimeShape accepts only RFC 3339 instants that Go's time decoder
-// parses: a calendar-valid date in years 0001-9999, hours 00-23, an optional
-// fraction of up to nine digits, and Z or a zone under 24 hours.
-const markerTimeShape = `^(` +
-	`([0-9]{3}[1-9]|[0-9]{2}[1-9][0-9]|[0-9][1-9][0-9]{2}|[1-9][0-9]{3})-((0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])|(0[13-9]|1[0-2])-(29|30)|(0[13578]|1[02])-31)` +
-	`|([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[48]|[2468][048]|[13579][26])00)-02-29` +
-	`)T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]{1,9}){0,1}(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$`
-
-// claimCertain is true for a claim payload whose every key is a work-order
-// field or an ignored key spelled exactly, and whose every field outside
-// markerClaimReadKeys holds a value its Go type decodes. Only then does the
-// projection to markerClaimReadKeys decode, or fail to decode, as the whole
-// payload does.
-func (d MarkerSQLDialect) claimCertain() string {
-	names := make([]string, 0, len(markerClaimFields)+len(markerClaimIgnoredKeys))
-	for name := range markerClaimFields {
-		// The compact payload has no snapshot body; one that still holds
-		// such a key counts as an unknown key and keeps the whole payload.
-		if name != "governance_snapshot" && name != "served_requirement_snapshot" {
-			names = append(names, name)
-		}
-	}
-	for _, name := range markerClaimIgnoredKeys {
-		if _, ok := markerClaimFields[name]; !ok {
-			names = append(names, name)
-		}
-	}
-	slices.Sort(names)
-	present := make([]string, len(names))
-	var checks []string
-	for i, name := range names {
-		value := d.Field("event_payload", name)
-		present[i] = "CASE WHEN " + value + " IS NULL THEN 0 ELSE 1 END"
-		kind, field := markerClaimFields[name]
-		if !field || slices.Contains(markerClaimReadKeys, name) {
-			continue
-		}
-		valueType := d.TypeOf(value)
-		var certain string
-		switch kind {
-		case markerFieldString:
-			certain = valueType + " IN ('string','null')"
-		case markerFieldBool:
-			certain = valueType + " IN ('boolean','null')"
-		case markerFieldInt:
-			certain = valueType + "='null' OR " + d.Regex(d.Text(value), `^-{0,1}[0-9]{1,15}$`)
-		case markerFieldFloat:
-			certain = valueType + "='null' OR " + d.Regex(d.Text(value), `^-{0,1}[0-9]{1,15}([.][0-9]{1,15}){0,1}$`)
-		case markerFieldTime:
-			certain = valueType + "='null' OR (" + valueType + "='string' AND " + d.Regex(d.FieldText("event_payload", name), markerTimeShape) + ")"
-		default:
-			certain = valueType + "='null'"
-		}
-		checks = append(checks, "("+value+" IS NULL OR "+certain+")")
-	}
-	return "(k_text IS NOT NULL AND " + d.KeyCount("k_text") + "=(" + strings.Join(present, "+") + ") AND " + strings.Join(checks, " AND ") + ")"
 }
 
 // markerRowsSQL is the marker_rows common table expression: the compact
@@ -385,48 +258,33 @@ func markerRowsSQL(d MarkerSQLDialect, b *MarkerSQLBinder, in MarkerFoldInput) s
 // renewal for the horizon; only the simple renewal payload the store writes
 // is eligible, and other shapes keep their complete history.
 //
-// Claims: an older claim of the same task and job is left out when its
-// payload names no other open review order of the task and it cannot lower
-// the review lease horizon: its lease is absent, invalid, or not after now,
-// or it decodes for certain (claimCertain) and a claim of the job that
-// decodes for certain holds an earlier future lease. So a job keeps its
-// newest claim and its earliest future claim. The newest claim of that job carries dropped, the number left out,
-// and dropped_implement, how many of those may name the implement stage. The
-// caller decodes the newest claim and reads the left-out claims back with
-// MarkerClaimHistorySQL when the newest one does not supersede them
-// (MarkerClaimBackfill).
+// Claims: an older claim of the same task and job is left out when no fold
+// can read it. Without an open review order, the newest claim of the job
+// supersedes it when that claim decodes. With one, the claim must also name
+// no other open review order of the task, have an unambiguous lease key, and
+// either hold no lease after now or not be the job's earliest claim with a
+// lease after now. The newest claim carries dropped, the number left out,
+// and dropped_implement, how many of those may name the implement stage; the
+// earliest future claim carries future_dropped, how many claims with a
+// later future lease were left out. The caller decodes those claims and
+// reads the left-out claims back with MarkerClaimHistorySQL when they do not
+// supersede them (MarkerClaimBackfill).
 //
 // The result columns are id, task_id, job_id, kind, event_payload, event_at,
-// dropped, and dropped_implement, ordered by event_at and id.
+// dropped, dropped_implement, and future_dropped, ordered by event_at and id.
 func MarkerFoldSQL(d MarkerSQLDialect, in MarkerFoldInput) (string, []any) {
 	b := &MarkerSQLBinder{dialect: d}
-	const attemptField = `"attempt_id"[[:space:]]*:[[:space:]]*"[^"]*"`
-	const leaseField = `"lease_expires_at"[[:space:]]*:[[:space:]]*"[0-9T:Z+.,-]+"`
-	const comma = `[[:space:]]*,[[:space:]]*`
-	const renewalShape = `^[[:space:]]*[{][[:space:]]*(` + attemptField + comma + leaseField + `|` + leaseField + `(` + comma + attemptField + `){0,1})[[:space:]]*[}][[:space:]]*$`
-	const carry = "id,task_id,job_id,event_payload,event_at,k_text,k_lower"
-	renewals := d.Lease.LeaseInstantSQL(`SELECT `+carry+`,
-		`+d.FieldText("event_payload", "lease_expires_at")+` AS lease_text,
-		CASE WHEN `+d.Text("event_payload")+` `+d.Lease.RegexOp+` '`+renewalShape+`'
-			AND `+d.IsString(d.Field("event_payload", "lease_expires_at"))+`
-			THEN 1 ELSE 0 END AS lease_string
-		FROM marker_rows WHERE kind='work_order.lease_renewed'`, carry)
-	// Go decodes a claim's lease only when the whole work order decodes, so
-	// an invalid lease, a missing one, or the zero time never raises the
-	// horizon; lease_ok=1 is exactly Go's non-zero decode.
-	claims := d.Lease.LeaseInstantSQL(`SELECT `+carry+`,
-		`+d.FieldText("event_payload", "lease_expires_at")+` AS lease_text,
-		CASE WHEN `+d.IsString(d.Field("event_payload", "lease_expires_at"))+` THEN 1 ELSE 0 END AS lease_string
-		FROM marker_rows WHERE kind='work_order.claimed'`, carry)
-	const future = `(lease_sec>now_sec OR (lease_sec=now_sec AND lease_nanos>now_nanos))`
+	const carry = "id,task_id,job_id,kind,event_payload,event_at,k_text,k_lower"
 	const counted = `counted_claims AS (
-			SELECT ` + carry + `,claim_rank,reducible,certain,
+			SELECT ` + carry + `,claim_rank,reducible,horizon_claim,
 				SUM(CASE WHEN claim_rank>1 AND reducible=1 THEN 1 ELSE 0 END) OVER (PARTITION BY task_id,job_id) AS dropped,
-				SUM(CASE WHEN claim_rank>1 AND reducible=1 AND maybe_implement=1 THEN 1 ELSE 0 END) OVER (PARTITION BY task_id,job_id) AS dropped_implement
+				SUM(CASE WHEN claim_rank>1 AND reducible=1 AND maybe_implement=1 THEN 1 ELSE 0 END) OVER (PARTITION BY task_id,job_id) AS dropped_implement,
+				SUM(CASE WHEN claim_rank>1 AND reducible=1 AND future_lease=1 THEN 1 ELSE 0 END) OVER (PARTITION BY task_id,job_id) AS future_dropped
 			FROM ranked_claims
 		)`
-	const keptClaims = `SELECT id,task_id,job_id,'work_order.claimed',event_payload,event_at,k_text,k_lower,
-				CASE WHEN claim_rank=1 THEN dropped ELSE 0 END,CASE WHEN claim_rank=1 THEN dropped_implement ELSE 0 END,certain
+	const keptClaims = `SELECT ` + carry + `,
+				CASE WHEN claim_rank=1 THEN dropped ELSE 0 END,CASE WHEN claim_rank=1 THEN dropped_implement ELSE 0 END,
+				CASE WHEN horizon_claim=1 THEN future_dropped ELSE 0 END
 			FROM counted_claims WHERE claim_rank=1 OR reducible=0`
 	var query string
 	if len(in.LiveReviewTasks) == 0 {
@@ -438,65 +296,83 @@ func MarkerFoldSQL(d MarkerSQLDialect, in MarkerFoldInput) (string, []any) {
 			SELECT ` + carry + `,
 				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY event_at DESC,id DESC) AS claim_rank,
 				CASE WHEN job_id<>'' THEN 1 ELSE 0 END AS reducible,
-				1 AS maybe_implement,
-				CASE WHEN ` + d.claimCertain() + ` THEN 1 ELSE 0 END AS certain
+				1 AS maybe_implement,0 AS future_lease,0 AS horizon_claim
 			FROM marker_rows WHERE kind='work_order.claimed'
 		),
 		` + counted + `,
 		kept AS (
-			SELECT id,task_id,job_id,kind,event_payload,event_at,k_text,k_lower,0 AS dropped,0 AS dropped_implement,0 AS certain FROM marker_rows
+			SELECT ` + carry + `,0 AS dropped,0 AS dropped_implement,0 AS future_dropped FROM marker_rows
 			WHERE kind<>'work_order.claimed'
 			UNION ALL
 			` + keptClaims + `
 		)
 `
 	} else {
+		// One lease decoder serves renewals and claims. Only the simple
+		// renewal payload the store writes is eligible for the renewal
+		// reduction; other renewal shapes keep their complete history. Go
+		// decodes a claim's lease only when the whole work order decodes, so
+		// an invalid lease, a missing one, or the zero time never lowers the
+		// horizon, and lease_ok=1 is exactly Go's non-zero decode.
+		const attemptField = `"attempt_id"[[:space:]]*:[[:space:]]*"[^"]*"`
+		const leaseField = `"lease_expires_at"[[:space:]]*:[[:space:]]*"[0-9T:Z+.,-]+"`
+		const comma = `[[:space:]]*,[[:space:]]*`
+		const renewalShape = `^[[:space:]]*[{][[:space:]]*(` + attemptField + comma + leaseField + `|` + leaseField + `(` + comma + attemptField + `){0,1})[[:space:]]*[}][[:space:]]*$`
+		leaseString := d.IsString(d.Field("event_payload", "lease_expires_at"))
+		instants := d.Lease.LeaseInstantSQL(`SELECT `+carry+`,
+			`+d.FieldText("event_payload", "lease_expires_at")+` AS lease_text,
+			CASE WHEN kind='work_order.claimed' AND `+leaseString+` THEN 1
+				WHEN kind='work_order.lease_renewed' AND `+d.Text("event_payload")+` `+d.Lease.RegexOp+` '`+renewalShape+`' AND `+leaseString+` THEN 1
+				ELSE 0 END AS lease_string
+			FROM marker_rows WHERE kind IN ('work_order.lease_renewed','work_order.claimed')`, carry)
+		const future = `(lease_sec>now_sec OR (lease_sec=now_sec AND lease_nanos>now_nanos))`
 		query = `WITH ` + markerRowsSQL(d, b, in) + `,
 		marker_clock AS (SELECT ` + d.Int(b.Bind(in.Now.Unix())) + ` AS now_sec,` + d.Int(b.Bind(int64(in.Now.Nanosecond()))) + ` AS now_nanos),
-		renewal_instants AS (` + renewals + `),
+		lease_instants AS (SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,now_sec,now_nanos FROM (` + instants + `) decoded CROSS JOIN marker_clock),
 		ranked_renewals AS (
 			SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,now_sec,now_nanos,
 				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY lease_ok DESC,event_at DESC,id DESC) AS latest_rank,
 				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY
 					CASE WHEN lease_ok=1 AND ` + future + ` THEN 0 ELSE 1 END,
 					lease_sec,lease_nanos,event_at,id) AS horizon_rank
-			FROM renewal_instants CROSS JOIN marker_clock
+			FROM lease_instants WHERE kind='work_order.lease_renewed'
 		),
-		claim_instants AS (` + claims + `),
 		claim_facts AS (
-			SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,now_sec,now_nanos,
-				CASE WHEN ` + d.claimCertain() + ` THEN 1 ELSE 0 END AS certain
-			FROM claim_instants CROSS JOIN marker_clock
+			SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,
+				CASE WHEN lease_ok=1 AND ` + future + ` THEN 1 ELSE 0 END AS future_lease,
+				CASE WHEN COALESCE(` + d.keyUnambiguous("lease_expires_at") + `,1=0) THEN 1 ELSE 0 END AS lease_key
+			FROM lease_instants WHERE kind='work_order.claimed'
 		),
 		ordered_claims AS (
-			SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,now_sec,now_nanos,certain,
+			SELECT ` + carry + `,lease_ok,future_lease,lease_key,
 				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY event_at DESC,id DESC) AS claim_rank,
 				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY
-					CASE WHEN certain=1 AND lease_ok=1 AND ` + future + ` THEN 0 ELSE 1 END,
+					CASE WHEN future_lease=1 AND lease_key=1 THEN 0 ELSE 1 END,
 					lease_sec,lease_nanos,event_at,id) AS claim_horizon_rank
 			FROM claim_facts
 		),
 		ranked_claims AS (
-			SELECT ` + carry + `,certain,claim_rank,
-				CASE WHEN job_id<>'' AND (NOT (` + b.in("task_id", in.LiveReviewTasks) + `) OR (` + markerIdentitySafe(d, b, in) + ` AND COALESCE(` + d.keyUnambiguous("lease_expires_at") + `,1=0)
-					AND (lease_ok=0 OR NOT ` + future + ` OR (certain=1 AND claim_horizon_rank>1))))
+			SELECT ` + carry + `,claim_rank,future_lease,
+				CASE WHEN job_id<>'' AND (NOT (` + b.in("task_id", in.LiveReviewTasks) + `) OR (` + markerIdentitySafe(d, b, in) + ` AND lease_key=1
+					AND (future_lease=0 OR claim_horizon_rank>1)))
 					THEN 1 ELSE 0 END AS reducible,
-				CASE WHEN ` + d.mayEqual("stage", string(core.StageImplement)) + ` THEN 1 ELSE 0 END AS maybe_implement
+				CASE WHEN ` + d.mayEqual("stage", string(core.StageImplement)) + ` THEN 1 ELSE 0 END AS maybe_implement,
+				CASE WHEN claim_horizon_rank=1 AND future_lease=1 AND lease_key=1 THEN 1 ELSE 0 END AS horizon_claim
 			FROM ordered_claims
 		),
 		` + counted + `,
 		kept AS (
-			SELECT id,task_id,job_id,kind,event_payload,event_at,k_text,k_lower,0 AS dropped,0 AS dropped_implement,0 AS certain FROM marker_rows
+			SELECT ` + carry + `,0 AS dropped,0 AS dropped_implement,0 AS future_dropped FROM marker_rows
 			WHERE kind NOT IN ('work_order.lease_renewed','work_order.claimed')
 			UNION ALL
-			SELECT id,task_id,job_id,'work_order.lease_renewed',event_payload,event_at,k_text,k_lower,0,0,0 FROM ranked_renewals
+			SELECT ` + carry + `,0,0,0 FROM ranked_renewals
 			WHERE lease_ok=0 OR latest_rank=1 OR (horizon_rank=1 AND ` + future + `)
 			UNION ALL
 			` + keptClaims + `
 		)
 `
 	}
-	query += `		SELECT id,task_id,job_id,kind,` + d.projectedPayload() + ` AS event_payload,event_at,dropped,dropped_implement
+	query += `		SELECT id,task_id,job_id,kind,` + d.projectedPayload() + ` AS event_payload,event_at,dropped,dropped_implement,future_dropped
 		FROM kept ORDER BY event_at,id`
 	return b.finish(query)
 }
@@ -540,36 +416,50 @@ type MarkerFoldRow struct {
 	Event            core.Event
 	Dropped          int64
 	DroppedImplement int64
+	FutureDropped    int64
 }
 
 // MarkerClaimBackfill returns the task and job claim histories whose left-out
-// claims the folds may still read: the newest claim that MarkerFoldSQL kept
+// claims the folds may still read. The newest claim that MarkerFoldSQL kept
 // must decode as a work order, name the implement stage when a left-out
 // claim may, and carry a non-zero lease when an open review order runs on
-// its job. Otherwise an earlier claim can still clear the user's change
-// request, or give an open review order its lease, so the caller reads the
-// whole history back (MarkerClaimHistorySQL).
+// its job; otherwise an earlier claim can still clear the user's change
+// request, or give an open review order its lease. The earliest future
+// claim must decode; otherwise a left-out claim's lease can be the review
+// lease horizon. The caller reads such a history back whole
+// (MarkerClaimHistorySQL).
 func MarkerClaimBackfill(rows []MarkerFoldRow, openReviewOrders []MarkerReviewOrder) []MarkerClaimPartition {
 	openJobs := map[MarkerClaimPartition]bool{}
 	for _, order := range openReviewOrders {
 		openJobs[MarkerClaimPartition{TaskID: order.TaskID, JobID: order.JobID}] = true
 	}
 	var out []MarkerClaimPartition
+	seen := map[MarkerClaimPartition]bool{}
 	for _, row := range rows {
-		if row.Event.Kind != "work_order.claimed" || row.Dropped == 0 {
+		if row.Event.Kind != "work_order.claimed" || (row.Dropped == 0 && row.FutureDropped == 0) {
 			continue
 		}
 		key := MarkerClaimPartition{TaskID: row.Event.TaskID, JobID: row.Event.JobID}
 		var claimed core.WorkOrder
 		decoded := json.Unmarshal(row.Event.Payload, &claimed) == nil
+		// The earliest future claim stands for the later future claims left
+		// out: it must decode for its lease to count.
 		supersedes := decoded
+		if row.Dropped == 0 {
+			if !supersedes && !seen[key] {
+				seen[key] = true
+				out = append(out, key)
+			}
+			continue
+		}
 		if row.DroppedImplement > 0 && claimed.Stage != core.StageImplement {
 			supersedes = false
 		}
 		if openJobs[key] && claimed.LeaseExpiresAt.IsZero() {
 			supersedes = false
 		}
-		if !supersedes {
+		if !supersedes && !seen[key] {
+			seen[key] = true
 			out = append(out, key)
 		}
 	}
@@ -587,7 +477,7 @@ func MarkerClaimHistorySQL(d MarkerSQLDialect, in MarkerFoldInput, partitions []
 		terms[i] = fmt.Sprintf("(task_id=%s AND job_id=%s)", b.Bind(partition.TaskID), b.Bind(partition.JobID))
 	}
 	return b.finish(`WITH ` + rows + `
-		SELECT id,task_id,job_id,kind,event_payload,event_at,0 AS dropped,0 AS dropped_implement FROM marker_rows
+		SELECT id,task_id,job_id,kind,event_payload,event_at,0 AS dropped,0 AS dropped_implement,0 AS future_dropped FROM marker_rows
 		WHERE kind='work_order.claimed' AND (` + strings.Join(terms, " OR ") + `)
 		ORDER BY event_at,id`)
 }
