@@ -13,25 +13,27 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
-// ListArtifacts bounds the listing by a forward high-water key, not by a
-// database snapshot. SingleStore offers READ COMMITTED only, so each page is
-// its own statement. The first statement fixes (created_at,id) of the newest
-// artifact; every artifact that existed then is returned exactly once, in key
-// order, with no gap or duplicate, because the keyset cursor only moves
-// forward over an immutable key (a content-addressed artifact keeps its
-// created_at). Artifacts created later carry a later key and are excluded; a
-// row committed with a key between the cursor and the fence may appear, one
-// below the cursor is not seen. Production writers stamp created_at from the
-// server clock, never from client input. Association rows (role and owners)
-// are read per page at read time, so they reflect the moment of each page,
-// not one snapshot: a link added or removed between pages changes only that
-// artifact's association rows, never whether the artifact itself is listed.
+// artifactHighWaterSQL reads the newest artifact key that fences a listing.
+const artifactHighWaterSQL = `SELECT created_at,id FROM artifacts WHERE workspace_id=? ORDER BY created_at DESC,id DESC LIMIT 1`
+
+// ListArtifacts is two statements for a nonempty workspace, however many
+// artifacts or associations exist. The first fixes (created_at,id) of the
+// newest artifact as a high-water key; the second is one complete
+// metadata/association listing bounded by that inclusive key. This is not a
+// database snapshot: SingleStore offers READ COMMITTED only and no
+// transaction spans the two statements. Artifacts created after the fence
+// carry a later key and are excluded even if they commit before the listing.
+// A row below the fence that commits before the listing statement reads can
+// appear. Association rows (role and owners) are as of that single listing
+// statement, so a link change is never partially incorporated across
+// artificial pages. Production writers stamp created_at from the server
+// clock, never from client input.
 func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListArtifacts")
 	ws := documentWorkspace(ctx)
 	var snapAt time.Time
 	var snapID string
-	err := documentRow(ctx, s.db, `SELECT created_at,id FROM artifacts WHERE workspace_id=? ORDER BY created_at DESC,id DESC LIMIT 1`, ws).Scan(&snapAt, &snapID)
+	err := documentRow(ctx, s.db, artifactHighWaterSQL, ws).Scan(&snapAt, &snapID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -39,55 +41,35 @@ func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 		return nil, err
 	}
 	store.RunArtifactListPageHook()
-	var result []core.Artifact
-	cursorAt := time.Time{}
-	cursorID := ""
-	for {
-		var rows *documentResultSet
-		var err error
-		if cursorID == "" {
-			// First page has no lower bound: a Go zero time is not a valid SingleStore DATETIME.
-			rows, err = documentRows(ctx, s.db, `SELECT id,workspace_id,name,content_type,size_bytes,created_at FROM artifacts WHERE workspace_id=? AND (created_at<? OR (created_at=? AND id<=?)) ORDER BY created_at,id LIMIT ?`, ws, snapAt, snapAt, snapID, store.ArtifactMetadataPageSize)
-		} else {
-			rows, err = documentRows(ctx, s.db, `SELECT id,workspace_id,name,content_type,size_bytes,created_at FROM artifacts WHERE workspace_id=? AND (created_at>? OR (created_at=? AND id>?)) AND (created_at<? OR (created_at=? AND id<=?)) ORDER BY created_at,id LIMIT ?`, ws, cursorAt, cursorAt, cursorID, snapAt, snapAt, snapID, store.ArtifactMetadataPageSize)
-		}
-		if err != nil {
-			return nil, err
-		}
-		var page []core.Artifact
-		for rows.Next() {
-			var artifact core.Artifact
-			if err := rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			page = append(page, artifact)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
-		if len(page) == 0 {
-			break
-		}
-		ids := make([]string, len(page))
-		for i, artifact := range page {
-			ids[i] = artifact.ID
-		}
-		store.RunArtifactListPageHook()
-		hydrated, err := s.hydrateArtifactAssociations(ctx, ids)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, hydrated...)
-		cursorAt = page[len(page)-1].CreatedAt
-		cursorID = page[len(page)-1].ID
-		if len(page) < store.ArtifactMetadataPageSize {
-			break
-		}
+	query, args := s.artifactFullListQuery(ws, snapAt, snapID)
+	rows, err := documentRows(ctx, s.db, query, args...)
+	if err != nil {
+		return nil, err
 	}
-	return result, nil
+	return scanArtifactListRows(rows)
+}
+
+// artifactFullListQuery builds the single complete listing: ten metadata and
+// association columns, every physical link as a row, artifacts bounded by the
+// inclusive (created_at,id) fence. Args follow placeholder order: artifact
+// workspace, fence time twice, fence ID.
+//
+// The link join uses the ordinary equality l.artifact_id=a.id and the exact
+// BINARY equality, and deliberately omits the generated digest equality H
+// (artifact_lookup_key=SHA2(a.id,256)) that bounded reads add. H cannot change
+// this result. Let P be the exact-ID predicate l.artifact_id=BINARY a.id.
+// One binary operand makes both sides bytewise. When P is true the two IDs are
+// byte-identical, so H is true: the generated column is a deterministic SHA2
+// of the same bytes, and a ready
+// layout verifies that expression. When P is false H is irrelevant, because
+// P already rejects the pair, so a hash collision between different IDs still
+// fails P. A NULL generated key makes H not true, but P is then also not true
+// for that pair, so the LEFT JOIN gives the same default row and the same
+// multiplicity. A legacy layout has no generated column and H would not be
+// valid there, so it is omitted in every layout. The result is therefore
+// identical to P alone and no SHA256 collision fixture is needed.
+func (s *Store) artifactFullListQuery(workspace string, snapAt time.Time, snapID string) (string, []any) {
+	return `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id AND l.artifact_id=BINARY a.id WHERE a.workspace_id=? AND (a.created_at<? OR (a.created_at=? AND a.id<=?)) ORDER BY a.created_at,a.id,l.role`, []any{workspace, snapAt, snapAt, snapID}
 }
 
 func (s *Store) hydrateArtifactAssociations(ctx context.Context, ids []string) ([]core.Artifact, error) {

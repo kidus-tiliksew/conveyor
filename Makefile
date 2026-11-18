@@ -305,17 +305,22 @@ dev: db-up
 # The two conformance shards select complementary subtests of
 # TestSingleStoreConformanceIntegration through one shared pattern, and the
 # packages shard skips that test, so together they run exactly the three
-# packages. The commands shard keeps the two command cases. CI runs one shard
-# per job through SINGLESTORE_INTEGRATION_SHARD; an empty value runs every
-# shard in order. Only the packages shard, which runs the VK-10 browser
-# scenario, builds the CLI and installs Chromium. RunAll registers every suite
-# in each conformance shard, so its registration audit runs in both.
-SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages commands
+# packages. The proofs shard carries the heavy artifact-hot-read, hot-read and
+# activity proofs, and the packages shard skips exactly those top tests, so
+# every proof still runs once. The commands shard keeps the two command cases.
+# CI runs one shard per job through SINGLESTORE_INTEGRATION_SHARD; an empty
+# value runs every shard in order. Only the packages shard, which runs the
+# VK-10 browser scenario, builds the CLI and installs Chromium. RunAll
+# registers every suite in each conformance shard, so its registration audit
+# runs in both.
+SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages proofs commands
 SINGLESTORE_CONFORMANCE_TEST = ^TestSingleStoreConformanceIntegration$$
 SINGLESTORE_CONFORMANCE_FIRST = ^(Verification|Requirements|NextAction|Lineage|AutomaticRecovery)$$
+SINGLESTORE_PROOF_TESTS = ^(TestArtifactHotRead|TestHotRead|TestActivityValidation)
 SINGLESTORE_INTEGRATION_ARGS_conformance-1 = ./internal/store/singlestore -run '$(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)' -timeout=20m
 SINGLESTORE_INTEGRATION_ARGS_conformance-2 = ./internal/store/singlestore -run '$(SINGLESTORE_CONFORMANCE_TEST)' -skip '$(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)' -timeout=20m
-SINGLESTORE_INTEGRATION_ARGS_packages = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -skip '$(SINGLESTORE_CONFORMANCE_TEST)' -timeout=20m
+SINGLESTORE_INTEGRATION_ARGS_packages = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -skip '$(SINGLESTORE_CONFORMANCE_TEST)|$(SINGLESTORE_PROOF_TESTS)' -timeout=20m
+SINGLESTORE_INTEGRATION_ARGS_proofs = ./internal/store/singlestore -run '$(SINGLESTORE_PROOF_TESTS)' -timeout=20m
 SINGLESTORE_INTEGRATION_ARGS_commands = ./cmd/conveyor ./cmd/conveyord -run 'TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration|TestConveyordIdleRuntimeIntegration' -timeout=10m
 SINGLESTORE_INTEGRATION_RUNTIME_packages = vk10-runtime
 SINGLESTORE_INTEGRATION_SHARD ?=

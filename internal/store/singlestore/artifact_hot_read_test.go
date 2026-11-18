@@ -1362,14 +1362,15 @@ type artifactProfileOp struct {
 }
 
 type artifactProfile struct {
-	text         string
-	baseInput    uint64
-	scanRows     uint64
-	filterInput  uint64
-	filterOutput uint64
-	joinRows     uint64
-	networkKB    float64
-	ops          []artifactProfileOp
+	text          string
+	baseInput     uint64
+	artifactInput uint64
+	scanRows      uint64
+	filterInput   uint64
+	filterOutput  uint64
+	joinRows      uint64
+	networkKB     float64
+	ops           []artifactProfileOp
 }
 
 var (
@@ -1442,12 +1443,15 @@ func parseArtifactProfile(text string) artifactProfile {
 	}
 	flush()
 
-	var pendingFilterInput uint64
+	var pendingFilterInput, pendingArtifactsFilter uint64
 	for _, op := range p.ops {
 		switch op.name {
 		case "ColumnStoreFilter", "Filter":
 			if op.hasTotalRowsIn {
 				p.filterInput += op.totalRowsIn
+				if strings.Contains(op.block, "artifacts") && !strings.Contains(op.block, "artifact_links") && op.totalRowsIn > pendingArtifactsFilter {
+					pendingArtifactsFilter = op.totalRowsIn
+				}
 				if artifactProfileFilterTable.MatchString(op.block) && op.totalRowsIn > pendingFilterInput {
 					pendingFilterInput = op.totalRowsIn
 				}
@@ -1455,6 +1459,14 @@ func parseArtifactProfile(text string) artifactProfile {
 			p.filterOutput += op.actualRows
 		case "ColumnStoreScan", "RowStoreScan", "TableScan", "IndexRangeScan":
 			if !strings.Contains(op.block, "artifact_links") {
+				if strings.Contains(op.block, "artifacts") {
+					input := op.actualRows
+					if pendingArtifactsFilter > 0 {
+						input = pendingArtifactsFilter
+						pendingArtifactsFilter = 0
+					}
+					p.artifactInput += input
+				}
 				continue
 			}
 			input := op.actualRows
@@ -1551,6 +1563,129 @@ func calibrateArtifactFullScan(t *testing.T, st *Store, ctx context.Context) uin
 		t.Fatalf("full-scan calibration F=%d does not match immutable fixture count(*)=%d", F, tableRows)
 	}
 	return F
+}
+
+// calibrateArtifactTableScan measures FA, the executed artifacts input rows
+// for one stored-value full scan, by the same actual-profile method as F.
+func calibrateArtifactTableScan(t *testing.T, st *Store, ctx context.Context) uint64 {
+	t.Helper()
+	profile := profileArtifactStatement(t, st, ctx, `SELECT SUM(CRC32(id)) FROM artifacts`, nil)
+	FA := profile.artifactInput
+	if FA == 0 {
+		t.Fatalf("artifacts full-scan calibration found no executed artifacts input rows:\n%s", profile.text)
+	}
+	var tableRows int64
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts`).Scan(&tableRows); err != nil {
+		t.Fatalf("artifacts full-scan calibration count: %v", err)
+	}
+	t.Logf("artifacts full-scan calibration F_artifacts=%d rows; table cardinality count(*)=%d", FA, tableRows)
+	if FA != uint64(tableRows) {
+		t.Fatalf("artifacts calibration F_artifacts=%d does not match fixture count(*)=%d", FA, tableRows)
+	}
+	return FA
+}
+
+// requireArtifactFullListWholeCall proves the real unbounded ListArtifacts call
+// is exactly two statements returning the independent oracle's complete rows,
+// and that the fence plus the listing together stay within 2*F_links
+// artifact_links and 3*F_artifacts artifacts executed input rows. The profiled
+// statements are the production fence and the production listing builder.
+func requireArtifactFullListWholeCall(t *testing.T, st *Store, seed artifactSeed, oracle artifactOracle, FLinks uint64) {
+	t.Helper()
+	ctx := seed.ctx
+	ids := make([]string, 0, len(seed.artifacts))
+	for id := range seed.artifacts {
+		ids = append(ids, id)
+	}
+	expected := oracle.hydrationRows(ids)
+	if len(expected) == 0 {
+		t.Fatal("full-list oracle is empty")
+	}
+	st.ReadStats(1000)
+	listed, err := st.ListArtifacts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interval := st.ReadStats(1000)
+	if interval.Queries != 2 {
+		t.Fatalf("full list issued %d statements, want 2", interval.Queries)
+	}
+	requireArtifactRows(t, "full list production", listed, expected, artifactLogicalBytes(expected))
+
+	var fenceAt time.Time
+	var fenceID string
+	if err := st.db.QueryRowContext(ctx, artifactHighWaterSQL, seed.ws).Scan(&fenceAt, &fenceID); err != nil {
+		t.Fatal(err)
+	}
+	listQuery, listArgs := st.artifactFullListQuery(seed.ws, fenceAt, fenceID)
+	FA := calibrateArtifactTableScan(t, st, ctx)
+	limitLinks, limitArtifacts := 2*FLinks, 3*FA
+	t.Logf("full list whole-call limits recorded before profiling: artifact_links<=%d (2*F_links=%d) artifacts<=%d (3*F_artifacts=%d)", limitLinks, FLinks, limitArtifacts, FA)
+	fence := profileArtifactStatement(t, st, ctx, artifactHighWaterSQL, []any{seed.ws})
+	listing := profileArtifactStatement(t, st, ctx, listQuery, listArgs)
+	links := fence.baseInput + listing.baseInput
+	artifacts := fence.artifactInput + listing.artifactInput
+	if listing.baseInput == 0 || listing.artifactInput == 0 {
+		t.Fatalf("full list listing profile lacks executed input counters:\n%s", listing.text)
+	}
+	if links > limitLinks {
+		t.Fatalf("full list whole-call artifact_links input %d exceeds 2*F_links=%d:\n%s", links, limitLinks, listing.text)
+	}
+	if artifacts > limitArtifacts {
+		t.Fatalf("full list whole-call artifacts input %d exceeds 3*F_artifacts=%d (fence=%d listing=%d):\n%s", artifacts, limitArtifacts, fence.artifactInput, listing.artifactInput, listing.text)
+	}
+	t.Logf("full list whole call: artifact_links input %d <= %d, artifacts input %d <= %d, joins=%d network_kb=%.3f", links, limitLinks, artifacts, limitArtifacts, listing.joinRows, listing.networkKB)
+}
+
+// requireArtifactFullListV4 adds exact listing result cells, separately
+// reported fence overhead and same-fixture latency to the whole-call gates.
+// Timed paths contain only the two production reads and the historical base
+// read; the oracle, observer and profile work run outside them.
+func requireArtifactFullListV4(t *testing.T, st *Store, seed artifactSeed, oracle artifactOracle, FLinks uint64, rowstore bool, base, candidate storetest.ReadEgressWork) {
+	t.Helper()
+	ctx := seed.ctx
+	requireArtifactFullListWholeCall(t, st, seed, oracle, FLinks)
+
+	var fenceAt time.Time
+	var fenceID string
+	if err := st.db.QueryRowContext(ctx, artifactHighWaterSQL, seed.ws).Scan(&fenceAt, &fenceID); err != nil {
+		t.Fatal(err)
+	}
+	listQuery, listArgs := st.artifactFullListQuery(seed.ws, fenceAt, fenceID)
+	_, listed := queryArtifactObserved(t, st, ctx, listQuery, listArgs)
+	_, baseline := queryArtifactObserved(t, st, ctx, legacyArtifactListSQL, []any{seed.ws})
+	if listed.Rows == 0 || listed.Rows != baseline.Rows || listed.CellBytes != baseline.CellBytes {
+		t.Fatalf("full listing rows/logical cell bytes %d/%d, historical base %d/%d", listed.Rows, listed.CellBytes, baseline.Rows, baseline.CellBytes)
+	}
+	fenceBytes := uint64(len(fenceID) + len(fenceAt.UTC().Format(time.RFC3339Nano)))
+	t.Logf("full list B_base=%d R_base=%d B_fence=%d R_fence=1 whole call rows=%d logical bytes=%d", baseline.CellBytes, baseline.Rows, fenceBytes, baseline.Rows+1, baseline.CellBytes+fenceBytes)
+
+	var baseDurations, candidateDurations []time.Duration
+	report := measureArtifactRead(t, st, ctx, "artifact-hydration-full-list-v4",
+		timedArtifactWork(base, &baseDurations), timedArtifactWork(candidate, &candidateDurations))
+	b, c := report.Summary["baseline"], report.Summary["candidate"]
+	if report.Successes == 0 || b.Statements.Median != 1 || c.Statements.Median != 2 {
+		t.Fatalf("full list statements base/candidate=%d/%d successes=%d, want 1/2 with work served", b.Statements.Median, c.Statements.Median, report.Successes)
+	}
+	if c.Rows.Median != b.Rows.Median+1 {
+		t.Fatalf("full list driver rows candidate=%d base=%d, want base+1 fence row", c.Rows.Median, b.Rows.Median)
+	}
+	if len(baseDurations) < 1+storetest.ReadEgressTrials || len(candidateDurations) < 1+storetest.ReadEgressTrials {
+		t.Fatalf("full list latency trials base=%d candidate=%d", len(baseDurations), len(candidateDurations))
+	}
+	_, baseMedian, _ := artifactDurationSpread(baseDurations[1:])
+	_, candidateMedian, _ := artifactDurationSpread(candidateDurations[1:])
+	if baseMedian <= 0 {
+		t.Fatal("full list baseline has no positive measured duration")
+	}
+	if rowstore {
+		t.Logf("full list rowstore latency evidence: candidate median %s base median %s ratio %.6f cap 1.25x within_cap=%v; base=%v candidate=%v (recorded evidence, not a CI assertion)", candidateMedian, baseMedian, float64(candidateMedian)/float64(baseMedian), candidateMedian*100 <= baseMedian*125, baseDurations[1:], candidateDurations[1:])
+	} else {
+		if candidateMedian*100 > baseMedian*110 {
+			t.Fatalf("full list candidate median %s exceeds 1.10x base median %s (base=%v candidate=%v)", candidateMedian, baseMedian, baseDurations[1:], candidateDurations[1:])
+		}
+		t.Logf("full list latency candidate median %s <= 1.10x base median %s", candidateMedian, baseMedian)
+	}
 }
 
 // requireArtifactScanBudget applies the approved v3 fallback: for the two
@@ -2004,8 +2139,8 @@ func addArtifactNoiseLinks(t *testing.T, st *Store, ctx context.Context, count i
 	return ws
 }
 
-// assertArtifactPageAndChunkStatements proves one hydration per nonempty
-// metadata page and one owner statement per chunk, not one query per ID.
+// assertArtifactPageAndChunkStatements proves the unbounded listing is the
+// fence plus one complete listing statement, and one owner statement per chunk.
 func assertArtifactPageAndChunkStatements(t *testing.T, st *Store, seed artifactSeed, taskOwners []string) {
 	t.Helper()
 	st.ReadStats(1000)
@@ -2018,18 +2153,17 @@ func assertArtifactPageAndChunkStatements(t *testing.T, st *Store, seed artifact
 		t.Fatal(err)
 	}
 	interval := st.ReadStats(1000)
-	pages := calls - 1 // one call after the fence, one after each page's key read
-	if pages <= 0 {
-		t.Fatalf("listing observed %d page hook calls", calls)
+	if calls != 1 {
+		t.Fatalf("listing observed %d fence/listing boundaries, want 1", calls)
 	}
-	if got := interval.Queries; got != uint64(1+2*pages) {
-		t.Fatalf("listing issued %d statements, want 1 fence + %d pages + %d hydrations = %d (rows=%d bytes=%d)",
-			got, pages, pages, 1+2*pages, interval.Rows, interval.Bytes)
+	if got := interval.Queries; got != 2 {
+		t.Fatalf("listing issued %d statements, want 2 (fence + complete listing) (rows=%d bytes=%d)",
+			got, interval.Rows, interval.Bytes)
 	}
 	if len(listed) == 0 || interval.Rows == 0 {
 		t.Fatalf("listing served no work: rows=%d stats_rows=%d", len(listed), interval.Rows)
 	}
-	t.Logf("listing pages=%d hydration statements=%d total=%d", pages, pages, interval.Queries)
+	t.Logf("listing statements=%d rows=%d", interval.Queries, len(listed))
 
 	owners := store.ArtifactOwners{TaskIDs: append([]string(nil), taskOwners[:250]...)}
 	st.ReadStats(1000)
@@ -2067,7 +2201,7 @@ func assertArtifactPageAndChunkStatements(t *testing.T, st *Store, seed artifact
 // checks the plans take the prepared lookup only when it is prepared.
 func TestArtifactHotReadLayoutsIntegration(t *testing.T) {
 	st := integrationStore(t)
-	exerciseArtifactHotReadLayouts(t, st, sharedDatabase.cfg.FormatDSN())
+	exerciseArtifactHotReadLayouts(t, st, sharedDatabase.cfg.FormatDSN(), false)
 }
 
 func TestArtifactHotReadRowstoreLayoutsIntegration(t *testing.T) {
@@ -2100,11 +2234,99 @@ func TestArtifactHotReadRowstoreLayoutsIntegration(t *testing.T) {
 	if columnstore, err := st.hotReadTableColumnstore(ctx, "artifact_links"); err != nil || columnstore {
 		t.Fatalf("artifact_links engine changed: columnstore=%v err=%v", columnstore, err)
 	}
-	exerciseArtifactHotReadLayouts(t, st, dsn)
+	exerciseArtifactHotReadLayouts(t, st, dsn, true)
 }
 
-func exerciseArtifactHotReadLayouts(t *testing.T, st *Store, dsn string) {
+// requireArtifactFullListConstantStatements calls the real ListArtifacts on
+// fixtures spanning the former page boundaries, with duplicate physical links
+// and an unrelated workspace, under every layout. A nonempty workspace costs
+// exactly two statements however large; an empty one costs one. The expected
+// rows come from the creation manifest, not the listing SQL.
+func requireArtifactFullListConstantStatements(t *testing.T, st *Store) {
 	t.Helper()
+	layouts := []struct {
+		name  string
+		ready []string
+	}{
+		{"prepared", artifactLookupIndexes},
+		{"legacy", nil},
+		{"artifact only", []string{"artifact_links_artifact_lookup_idx"}},
+		{"task only", []string{"artifact_links_task_lookup_idx"}},
+		{"requirement and session", []string{"artifact_links_requirement_lookup_idx", "artifact_links_session_lookup_idx"}},
+	}
+	defer setArtifactLayout(t, st, artifactLookupIndexes...)
+	check := func(name string, ctx context.Context, wantStatements uint64, wantIDs map[string]bool, wantRows int) {
+		t.Helper()
+		for _, layout := range layouts {
+			setArtifactLayout(t, st, layout.ready...)
+			st.ReadStats(1000)
+			listed, err := st.ListArtifacts(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			interval := st.ReadStats(1000)
+			if interval.Queries != wantStatements {
+				t.Fatalf("%s/%s: full list issued %d statements, want %d", name, layout.name, interval.Queries, wantStatements)
+			}
+			if len(listed) != wantRows {
+				t.Fatalf("%s/%s: full list returned %d rows, want %d", name, layout.name, len(listed), wantRows)
+			}
+			got := map[string]bool{}
+			for _, artifact := range listed {
+				got[artifact.ID] = true
+			}
+			if len(got) != len(wantIDs) {
+				t.Fatalf("%s/%s: full list has %d distinct artifacts, want %d", name, layout.name, len(got), len(wantIDs))
+			}
+			for id := range wantIDs {
+				if !got[id] {
+					t.Fatalf("%s/%s: artifact %s missing from full list", name, layout.name, id)
+				}
+			}
+		}
+	}
+
+	noiseWS := "artifact-count-noise-" + core.NewTaskID()
+	noiseCtx := documentPlanWorkspace(t, st, noiseWS)
+	noiseTask := seedArtifactTasks(t, st, noiseCtx, "count-noise-"+core.NewTaskID())
+	for i := range 3 {
+		if _, err := st.CreateArtifact(noiseCtx, core.Artifact{Name: "noise.txt", ContentType: "text/plain", TaskID: noiseTask}, []byte(fmt.Sprintf("noise-%s-%d", noiseWS, i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, size := range []int{0, 1, 99, 100, 101, 1001} {
+		ws := fmt.Sprintf("artifact-count-%d-%s", size, core.NewTaskID())
+		ctx := documentPlanWorkspace(t, st, ws)
+		if size == 0 {
+			check("empty", ctx, 1, map[string]bool{}, 0)
+			continue
+		}
+		task := seedArtifactTasks(t, st, ctx, "count-"+core.NewTaskID())
+		ids := map[string]bool{}
+		extra := 0
+		for i := range size {
+			created, err := st.CreateArtifact(ctx, core.Artifact{Name: "count.txt", ContentType: "text/plain", TaskID: task}, []byte(fmt.Sprintf("count-%s-%d", ws, i)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids[created.ID] = true
+			if i%2 == 0 {
+				// A second physical association: duplicates stay result rows.
+				if _, err := st.db.ExecContext(ctx, `INSERT INTO artifact_links(workspace_id,artifact_id,task_id,role) VALUES(?,?,?,?)`, ws, created.ID, task, core.ArtifactRoleTaskContext); err != nil {
+					t.Fatal(err)
+				}
+				extra++
+			}
+		}
+		check(fmt.Sprintf("size %d", size), ctx, 2, ids, size+extra)
+	}
+}
+
+func exerciseArtifactHotReadLayouts(t *testing.T, st *Store, dsn string, rowstore bool) {
+	t.Helper()
+	t.Run("exact bytewise join", func(t *testing.T) {
+		requireArtifactSingleBinaryJoinEquivalence(t, st)
+	})
 	for _, name := range artifactLookupIndexes {
 		if !st.hotReadIndexReady(name) {
 			t.Fatalf("%s is not prepared", name)
@@ -2153,6 +2375,17 @@ func exerciseArtifactHotReadLayouts(t *testing.T, st *Store, dsn string) {
 			if !slices.Equal(got[name], want) {
 				t.Errorf("%s differs after reopen:\n got %v\nwant %v", name, got[name], want)
 			}
+		}
+		reopened.ReadStats(1000)
+		listed, err := reopened.ListArtifacts(seed.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if interval := reopened.ReadStats(1000); interval.Queries != 2 {
+			t.Fatalf("reopened full list issued %d statements, want 2", interval.Queries)
+		}
+		if len(listed) == 0 || len(listed) != len(prepared["list"]) {
+			t.Fatalf("reopened full list returned %d rows, want %d", len(listed), len(prepared["list"]))
 		}
 	})
 
@@ -2389,7 +2622,7 @@ func exerciseArtifactHotReadLayouts(t *testing.T, st *Store, dsn string) {
 			}
 			return artifactReadOutcome(t, rows), nil
 		}
-		measureArtifactRead(t, st, planSeed.ctx, "artifact-hydration-full-list-diagnostic", broadHydration, currentHydration)
+		requireArtifactFullListV4(t, st, planSeed, oracle, F, rowstore, broadHydration, currentHydration)
 
 		observedBroadPage := []artifactRawMeasurement{}
 		observedBroadPageWork := artifactObservedWork(t, st, planSeed.ctx, func(*Store) (string, []any) {
@@ -2479,6 +2712,7 @@ func exerciseArtifactHotReadLayouts(t *testing.T, st *Store, dsn string) {
 		}
 		requireArtifactRawOracle(t, "page after enlarged noise raw", newArtifactCellOracle(pageExpected, 1), pageNoiseRaw)
 		requireArtifactScanBudget(t, st, planSeed.ctx, "hydration page after enlarged noise", pageNoiseQuery, pageNoiseArgs, FNoise)
+		requireArtifactFullListWholeCall(t, st, planSeed, oracle, FNoise)
 		observedSparse := []artifactRawMeasurement{}
 		observedSparseWork := artifactObservedWork(t, st, planSeed.ctx, func(*Store) (string, []any) {
 			return st.artifactHydrationQuery(planSeed.ws, []string{planSeed.shared})
@@ -2538,9 +2772,10 @@ func exerciseArtifactHotReadLayouts(t *testing.T, st *Store, dsn string) {
 		}
 	})
 
-	// Associations are read per page, so a link added or removed between
-	// pages may change that artifact's association rows. It never repeats an
-	// artifact or drops one that existed at the high-water read.
+	// Associations are read by the single listing statement, so a link change
+	// committed after the high-water read and before that statement is seen
+	// completely. It never repeats an artifact or drops one that existed at the
+	// high-water read.
 	t.Run("link changes between pages", func(t *testing.T) {
 		for _, layout := range append([]struct {
 			name  string
@@ -2561,11 +2796,10 @@ func exerciseArtifactHotReadLayouts(t *testing.T, st *Store, dsn string) {
 			}
 			calls := 0
 			store.ArtifactListPageHook = func() {
-				// Calls: the high-water read, then once after each page's key
-				// read. The fixture lists more than one page, so the third call
-				// lands after page 1 was hydrated and before page 2 is.
+				// The hook runs once, after the high-water read and before the
+				// complete listing statement, so the change precedes the listing.
 				calls++
-				if calls != 3 {
+				if calls != 1 {
 					return
 				}
 				// Add an owner to the orphan and remove the session link.
@@ -2606,8 +2840,32 @@ func exerciseArtifactHotReadLayouts(t *testing.T, st *Store, dsn string) {
 					t.Errorf("%s: artifact %s appeared that did not exist at the high-water read", layout.name, id)
 				}
 			}
+			// The link change committed before the listing statement is seen
+			// completely: the orphan gains exactly its new owner row and the
+			// unlinked session artifact keeps one default row.
+			wantChanged := map[string][]string{
+				seed.orphan:     {seed.orphan + "\x00" + string(core.ArtifactRoleTaskContext) + "\x00" + seed.noise + "\x00\x00"},
+				seed.sessionArt: {seed.sessionArt + "\x00" + string(core.ArtifactRoleTaskContext) + "\x00\x00\x00"},
+			}
+			for _, artifact := range after {
+				if want, ok := wantChanged[artifact.ID]; ok {
+					wantChanged[artifact.ID] = nil
+					if got := artifactTestKey(artifact); got != want[0] {
+						t.Errorf("%s: changed artifact %s row %q want %q", layout.name, artifact.ID, got, want[0])
+					}
+				}
+			}
+			for id := range wantChanged {
+				if !present[id] {
+					t.Errorf("%s: changed artifact %s missing", layout.name, id)
+				}
+			}
 			for id, want := range unchanged {
-				if !slices.Equal(got[id], want) {
+				// Rows tied on (created_at,id,role) have no defined order.
+				gotSorted, wantSorted := slices.Clone(got[id]), slices.Clone(want)
+				slices.Sort(gotSorted)
+				slices.Sort(wantSorted)
+				if !slices.Equal(gotSorted, wantSorted) {
 					t.Errorf("%s: unrelated artifact %s association rows changed: %v want %v", layout.name, id, got[id], want)
 				}
 			}
@@ -2625,8 +2883,36 @@ func exerciseArtifactHotReadLayouts(t *testing.T, st *Store, dsn string) {
 			}
 		}
 	})
+
+	// Growth fixtures run last so they cannot change the representative
+	// fixture's F values, oracle or trials.
+	requireArtifactFullListConstantStatements(t, st)
 }
 
 func artifactTestKey(a core.Artifact) string {
 	return a.ID + "\x00" + string(a.Role) + "\x00" + a.TaskID + "\x00" + a.RequirementID + "\x00" + a.PlanningSessionID
+}
+
+func requireArtifactSingleBinaryJoinEquivalence(t *testing.T, st *Store) {
+	t.Helper()
+	values := []any{nil, "", "id", "ID", "id ", "id\x00", "é", "e", "e\u0301", "中"}
+	for _, left := range values {
+		for _, right := range values {
+			var both, onlyRight sql.NullBool
+			if err := st.db.QueryRowContext(t.Context(), `SELECT BINARY ?=BINARY ?, ?=BINARY ?`, left, right, left, right).Scan(&both, &onlyRight); err != nil {
+				t.Fatal(err)
+			}
+			expected := left != nil && right != nil && left.(string) == right.(string)
+			if both != onlyRight || onlyRight.Valid != (left != nil && right != nil) || onlyRight.Valid && onlyRight.Bool != expected {
+				t.Fatalf("comparison is not exact for %q/%q: both=%v right=%v", left, right, both, onlyRight)
+			}
+			var oldLink, newLink sql.NullString
+			if err := st.db.QueryRowContext(t.Context(), `SELECT old_l.id,new_l.id FROM (SELECT ? AS id) a LEFT JOIN (SELECT ? AS id) old_l ON old_l.id=a.id AND BINARY old_l.id=BINARY a.id LEFT JOIN (SELECT ? AS id) new_l ON new_l.id=a.id AND new_l.id=BINARY a.id`, right, left, left).Scan(&oldLink, &newLink); err != nil {
+				t.Fatal(err)
+			}
+			if oldLink != newLink || newLink.Valid != expected || expected && newLink.String != left.(string) {
+				t.Fatalf("LEFT JOIN changed exact or unmatched row for %q/%q: old=%v new=%v", left, right, oldLink, newLink)
+			}
+		}
+	}
 }
