@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // Task-event visibility on the peer check (component-persistence invariant
@@ -272,6 +274,30 @@ func TestSingleStorePeerMarksVisibilityIntegration(t *testing.T) {
 	if witnessRows != 0 {
 		t.Fatalf("a read after acceptance returned %d witness rows", witnessRows)
 	}
+
+	// A workspace that appears after the peer accepted the others is read
+	// through the ranges between and around them, and its first witnessed
+	// position is accepted.
+	for _, prefix := range []string{"a-first-", "zz-last-"} {
+		ws := prefix + core.NewTaskID()
+		wsCtx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), ws)
+		if _, err := writer.BootstrapWorkspaceConfig(wsCtx, &config.Config{Workspace: ws, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}); err != nil {
+			t.Fatal(err)
+		}
+		id := core.NewTaskID()
+		if err := writer.CreateTask(wsCtx, core.Task{ID: id, Workspace: ws, Repo: "repo", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		counter, _ := taskEventPosition(t, writer, ws)
+		marks, err := daemon.PeerMarks(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if counter == 0 || marks[ws].Events != counter {
+			t.Fatalf("new workspace %s: accepted %d, counter %d", ws, marks[ws].Events, counter)
+		}
+	}
+	peer.expect("other workspaces appeared")
 
 	// Several pending transactions in two workspaces. Commit order differs
 	// from event-ID order: the higher ID takes the earlier position.

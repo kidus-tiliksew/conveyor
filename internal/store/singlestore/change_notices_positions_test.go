@@ -183,17 +183,19 @@ func TestAcceptTaskEventPosition(t *testing.T) {
 	}
 }
 
-// TestPeerMarksStatementBoundsWitnesses: the one statement bounds each
-// accepted workspace's witnesses by its accepted position in both witness
-// branches, and reaches events_columnstore only through an inner join on the
-// witness rows.
+// TestPeerMarksStatementBoundsWitnesses: the one statement bounds the
+// witnesses of both branches by primary-key ranges, one per accepted
+// workspace above its accepted position and one for every gap between
+// them, and reaches events_columnstore only through one inner join on its
+// hash key.
 func TestPeerMarksStatementBoundsWitnesses(t *testing.T) {
 	query, args := peerMarksStatement(nil)
 	if len(args) != 0 || strings.Count(query, "WHERE w.position > 0") != 2 || strings.Count(query, "SELECT") != 4 {
 		t.Fatalf("fresh statement=%q args=%v", query, args)
 	}
 	query, args = peerMarksStatement(map[string]int64{"b": 4, "a": 9})
-	if strings.Count(query, "WHERE w.position > CASE w.workspace_id WHEN ? THEN ? WHEN ? THEN ? ELSE 0 END") != 2 || fmt.Sprint(args) != "[a 9 b 4 a 9 b 4]" {
+	filter := "WHERE (w.workspace_id < ? OR (w.workspace_id = ? AND w.position > ?) OR (w.workspace_id > ? AND w.workspace_id < ?) OR (w.workspace_id = ? AND w.position > ?) OR w.workspace_id > ?)"
+	if strings.Count(query, filter) != 2 || fmt.Sprint(args) != "[a a 9 a b b 4 b a a 9 a b b 4 b]" {
 		t.Fatalf("accepted statement=%q args=%v", query, args)
 	}
 	if strings.Contains(query, ";") || strings.Contains(strings.ToUpper(query), "LEFT JOIN") || strings.Count(query, "events_columnstore e FORCE INDEX (events_task_event_idx)") != 1 {

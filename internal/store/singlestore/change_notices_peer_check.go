@@ -25,44 +25,54 @@ import (
 // witness rows and probes events_columnstore through the unique hash key
 // events_task_event_idx (a "join index" filter), which FORCE INDEX keeps the
 // planner from replacing with a repartition of the event table. While no
-// workspace changed, the witness filter selects no row, so the probe skips
-// every on-disk segment. SingleStore still reads the table's unflushed
-// in-memory segment for the probe. (A left join builds the hash table on the
-// whole event table instead.)
+// workspace changed, the witness filter, a set of primary-key ranges, seeks
+// no witness row, so the probe skips every on-disk segment. SingleStore
+// still reads the table's unflushed in-memory segment for the probe, which
+// plan version 2 of task 261118-a22ffc allows. (A left join builds the hash
+// table on the whole event table instead.)
 const (
 	peerMarksPositionsSQL = `SELECT workspace_id, 0 AS source, position AS n FROM event_log_positions
 UNION ALL
 SELECT workspace_id, 1 AS source, position AS n FROM task_event_positions
 UNION ALL
-SELECT w.workspace_id, 2 AS source, w.position AS n FROM task_event_witnesses w WHERE w.position > %[1]s
+SELECT w.workspace_id, 2 AS source, w.position AS n FROM task_event_witnesses w WHERE %[1]s
 UNION ALL
 SELECT w.workspace_id, 3 AS source, w.position AS n FROM task_event_witnesses w
 JOIN events_columnstore e FORCE INDEX (events_task_event_idx) ON e.event_shard_key = w.event_shard_key AND e.workspace_id = w.workspace_id AND e.id = w.event_id
-WHERE w.position > %[1]s`
+WHERE %[1]s`
 )
 
 // peerMarksStatement builds the one statement for the accepted positions.
-// Each accepted workspace bounds its witnesses from below; any other
-// workspace reads all of its witnesses, which writers keep few. Both
-// witness branches take the same bound.
+// The witness filter is a union of ranges on the primary key (workspace_id,
+// position, ...): each accepted workspace above its accepted position, and
+// every workspace between, before, or after the accepted ones from its first
+// position. An idle read's ranges are all empty, so it seeks and reads no
+// witness row. Both witness branches take the same filter.
 func peerMarksStatement(accepted map[string]int64) (string, []any) {
 	if len(accepted) == 0 {
-		return fmt.Sprintf(peerMarksPositionsSQL, "0"), nil
+		return fmt.Sprintf(peerMarksPositionsSQL, "w.position > 0"), nil
 	}
 	workspaces := make([]string, 0, len(accepted))
 	for ws := range accepted {
 		workspaces = append(workspaces, ws)
 	}
 	sort.Strings(workspaces)
-	var floor strings.Builder
-	bound := make([]any, 0, 2*len(workspaces))
-	floor.WriteString("CASE w.workspace_id")
-	for _, ws := range workspaces {
-		floor.WriteString(" WHEN ? THEN ?")
+	ranges := make([]string, 0, 2*len(workspaces)+1)
+	bound := make([]any, 0, 4*len(workspaces))
+	ranges = append(ranges, "w.workspace_id < ?")
+	bound = append(bound, workspaces[0])
+	for i, ws := range workspaces {
+		ranges = append(ranges, "(w.workspace_id = ? AND w.position > ?)")
 		bound = append(bound, ws, accepted[ws])
+		if i+1 < len(workspaces) {
+			ranges = append(ranges, "(w.workspace_id > ? AND w.workspace_id < ?)")
+			bound = append(bound, ws, workspaces[i+1])
+		}
 	}
-	floor.WriteString(" ELSE 0 END")
-	return fmt.Sprintf(peerMarksPositionsSQL, floor.String()), append(bound, bound...)
+	ranges = append(ranges, "w.workspace_id > ?")
+	bound = append(bound, workspaces[len(workspaces)-1])
+	filter := "(" + strings.Join(ranges, " OR ") + ")"
+	return fmt.Sprintf(peerMarksPositionsSQL, filter), append(bound, bound...)
 }
 
 // observePeerWitnessRows, when set by a fixture, receives the number of

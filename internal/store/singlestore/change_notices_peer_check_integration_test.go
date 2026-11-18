@@ -269,20 +269,7 @@ func TestSingleStorePeerMarksIntegration(t *testing.T) {
 	daemon.peerMu.Lock()
 	idleQuery, idleArgs := peerMarksStatement(daemon.peerAccepted)
 	daemon.peerMu.Unlock()
-	// The idle read probes events_columnstore only through its hash key:
-	// no on-disk segment is scanned and no event row joins. The profile
-	// walk finds the event operator in a read that does look up witnesses.
-	allQuery, _ := peerMarksStatement(nil)
-	if operators, _, profile := profileEventTableWork(t, writer, allQuery, nil); len(operators) == 0 {
-		t.Fatalf("a read of every witness showed no event-table operator:\n%s", profile)
-	}
-	operators, work, profile := profileEventTableWork(t, writer, idleQuery, idleArgs)
-	for _, w := range work {
-		if strings.Contains(w, "segments_scanned") {
-			t.Fatalf("the idle peer read scanned event segments: %v\n%s", work, profile)
-		}
-	}
-	t.Logf("idle peer read: event-table operators %v; in-memory segment rows read %v", operators, work)
+	requireIdlePeerReadProfile(t, writer, idleQuery, idleArgs)
 	if _, err := logqueue.Enqueue(ctxA, writer.Log(), wsA, "peer_probe", "one", struct{}{}, 1, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
@@ -613,9 +600,24 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 	stopDaemon()
 }
 
-// profileEventTableWork profiles query and returns the operators on
-// events_columnstore and those that produced a row or scanned a segment.
-func profileEventTableWork(t *testing.T, st *Store, query string, args []any) (operators, work []string, profile string) {
+// peerReadProfile is what PROFILE reports for one peer read.
+type peerReadProfile struct {
+	// eventOperators names each operator on events_columnstore.
+	eventOperators []string
+	// eventRows and eventSegments sum the rows read and the on-disk
+	// segments scanned by those operators.
+	eventRows, eventSegments float64
+	// witnessRows sums the rows the task_event_witnesses operators read.
+	witnessRows float64
+	// repartitions names each event-table operator that sits below a
+	// repartition or broadcast, or reads a repartitioned result table.
+	repartitions []string
+	json         string
+}
+
+// profilePeerRead profiles query on its own connection and walks the JSON
+// profile.
+func profilePeerRead(t *testing.T, st *Store, query string, args []any) peerReadProfile {
 	t.Helper()
 	conn, err := st.db.Conn(t.Context())
 	if err != nil {
@@ -632,37 +634,47 @@ func profileEventTableWork(t *testing.T, st *Store, query string, args []any) (o
 		t.Fatal(err)
 	}
 	rows.Close()
-	if err = conn.QueryRowContext(t.Context(), "SHOW PROFILE JSON").Scan(&profile); err != nil {
+	var out peerReadProfile
+	if err = conn.QueryRowContext(t.Context(), "SHOW PROFILE JSON").Scan(&out.json); err != nil {
 		t.Fatal(err)
 	}
 	var tree any
-	if err = json.Unmarshal([]byte(profile), &tree); err != nil {
-		t.Fatalf("profile JSON: %v\n%s", err, profile)
+	if err = json.Unmarshal([]byte(out.json), &tree); err != nil {
+		t.Fatalf("profile JSON: %v\n%s", err, out.json)
 	}
-	var walk func(any)
-	walk = func(node any) {
+	var walk func(node any, shuffled bool)
+	walk = func(node any, shuffled bool) {
 		switch v := node.(type) {
 		case map[string]any:
-			if table, _ := v["table"].(string); table == "events_columnstore" {
-				executor, _ := v["executor"].(string)
-				operators = append(operators, executor)
-				for _, counter := range []string{"actual_row_count", "segments_scanned"} {
-					if value := profileCounter(v[counter]); value > 0 {
-						work = append(work, fmt.Sprintf("%s %s=%v", executor, counter, value))
-					}
+			executor, _ := v["executor"].(string)
+			query, _ := v["query"].(string)
+			upper := strings.ToUpper(executor + " " + query)
+			if strings.Contains(upper, "REPARTITION") || strings.Contains(upper, "BROADCAST") || strings.Contains(upper, "CREATE RESULT TABLE") {
+				shuffled = true
+			}
+			switch table, _ := v["table"].(string); table {
+			case "events_columnstore":
+				alias, _ := v["alias"].(string)
+				out.eventOperators = append(out.eventOperators, executor)
+				out.eventRows += profileCounter(v["actual_row_count"])
+				out.eventSegments += profileCounter(v["segments_scanned"])
+				if shuffled || strings.HasPrefix(alias, "remote_") {
+					out.repartitions = append(out.repartitions, executor+" AS "+alias)
 				}
+			case "task_event_witnesses":
+				out.witnessRows += profileCounter(v["actual_row_count"])
 			}
 			for _, child := range v {
-				walk(child)
+				walk(child, shuffled)
 			}
 		case []any:
 			for _, child := range v {
-				walk(child)
+				walk(child, shuffled)
 			}
 		}
 	}
-	walk(tree)
-	return operators, work, profile
+	walk(tree, false)
+	return out
 }
 
 // profileCounter reads a SHOW PROFILE JSON counter, a number or an object
@@ -676,4 +688,52 @@ func profileCounter(raw any) float64 {
 		return value
 	}
 	return 0
+}
+
+// requireIdlePeerReadProfile proves, from PROFILE, that an idle peer read
+// reads no witness row, scans no on-disk segment of events_columnstore, and
+// never repartitions it (plan version 2 of task 261118-a22ffc). It profiles
+// the statement twice: with the events in the unflushed in-memory segment,
+// whose probe is allowed and logged, and after a flush moves them to on-disk
+// segments. A join on the event ID alone, which repartitions the event
+// table, shows the repartition check finds one.
+func requireIdlePeerReadProfile(t *testing.T, st *Store, query string, args []any) {
+	t.Helper()
+	control := profilePeerRead(t, st, `SELECT COUNT(*) FROM task_event_witnesses w JOIN events_columnstore e ON e.id = w.event_id`, nil)
+	if len(control.eventOperators) == 0 || len(control.repartitions) == 0 {
+		t.Fatalf("the repartition check found no repartitioned event read in a join on the ID alone: operators %v\n%s", control.eventOperators, control.json)
+	}
+	check := func(stage string) peerReadProfile {
+		t.Helper()
+		p := profilePeerRead(t, st, query, args)
+		if len(p.eventOperators) == 0 {
+			t.Fatalf("%s: the idle peer read has no event-table operator to check:\n%s", stage, p.json)
+		}
+		if p.witnessRows != 0 {
+			t.Fatalf("%s: the idle peer read read %v witness rows, want none:\n%s", stage, p.witnessRows, p.json)
+		}
+		if p.eventSegments != 0 {
+			t.Fatalf("%s: the idle peer read scanned %v on-disk event segments, want none:\n%s", stage, p.eventSegments, p.json)
+		}
+		if len(p.repartitions) != 0 {
+			t.Fatalf("%s: the idle peer read repartitioned the event table (%v); the FORCE INDEX hint no longer holds:\n%s", stage, p.repartitions, p.json)
+		}
+		return p
+	}
+	unflushed := check("unflushed")
+	t.Logf("idle peer read, events unflushed: event-table operators %v, in-memory event rows probed %v, on-disk segments scanned %v, witness rows read %v",
+		unflushed.eventOperators, unflushed.eventRows, unflushed.eventSegments, unflushed.witnessRows)
+	if _, err := st.db.ExecContext(t.Context(), "OPTIMIZE TABLE events_columnstore FLUSH"); err != nil {
+		t.Fatal(err)
+	}
+	var segments int
+	if err := st.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM information_schema.columnar_segments WHERE database_name=DATABASE() AND table_name='events_columnstore' AND column_name='id'`).Scan(&segments); err != nil {
+		t.Fatal(err)
+	}
+	if segments == 0 {
+		t.Fatal("the flush left no on-disk event segment to prove the idle read skips")
+	}
+	flushed := check("flushed")
+	t.Logf("idle peer read, events flushed to %d on-disk segments: in-memory event rows probed %v, on-disk segments scanned %v, witness rows read %v",
+		segments, flushed.eventRows, flushed.eventSegments, flushed.witnessRows)
 }
