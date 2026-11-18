@@ -108,12 +108,12 @@ func runRequirementDetailReads(t *testing.T, x Fixture) {
 	// A duplicate intake key cannot come from a command: PostgreSQL's unique
 	// index refuses it, and the memory and SingleStore commands check it. A
 	// SingleStore row has no unique key, so an older writer could leave one.
-	// Every backend that can hold a duplicate keeps the smallest task ID in
-	// byte order, so a requirement's follow-up is the same task everywhere
+	// Every backend that holds a duplicate keeps the smallest task ID in byte
+	// order, so a requirement's follow-up is the same task everywhere
 	// (component-lineage invariant 30).
 	t.Run("FollowUpDuplicateIntakeKeyKeepsSmallestID", func(t *testing.T) {
 		if x.SeedTaskIntakeKey == nil {
-			t.Skip("backend refuses a duplicate intake key in its schema")
+			t.Fatal("fixture has no SeedTaskIntakeKey hook")
 		}
 		key := "requirement-follow-up-duplicate-" + core.NewTaskID()
 		suffix := core.NewTaskID()
@@ -123,19 +123,27 @@ func runRequirementDetailReads(t *testing.T, x Fixture) {
 			requireOK(t, st.CreateTask(ctx, task))
 			return task
 		}
-		// The largest ID holds the key first and the smallest is seeded in
+		// The largest ID holds the key first and the smallest is written in
 		// between, so neither the first row, the last row, nor the largest
 		// ID is the smallest.
 		largest := create("zz-"+suffix, key)
 		smallest := create("aa-"+suffix, "")
 		middle := create("mm-"+suffix, "")
-		x.SeedTaskIntakeKey(t, ctx, smallest.ID, key)
-		x.SeedTaskIntakeKey(t, ctx, middle.ID, key)
+		storedSmallest := x.SeedTaskIntakeKey(t, ctx, smallest.ID, key)
+		storedMiddle := x.SeedTaskIntakeKey(t, ctx, middle.ID, key)
+		if storedSmallest != storedMiddle {
+			t.Fatalf("duplicate intake key stored for %s=%t and %s=%t", smallest.ID, storedSmallest, middle.ID, storedMiddle)
+		}
+		// A backend that refuses the duplicate keeps one holder, the task
+		// that created the key.
+		want := largest
+		if storedSmallest {
+			want = smallest
+		}
 		got, err := st.ListRequirementFollowUps(ctx, []string{key, "missing-follow-up"})
 		requireOK(t, err)
-		want := map[string]store.RequirementDetailTask{key: {ID: smallest.ID, Title: smallest.Title, State: smallest.State}}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("duplicate-key follow-up = %+v, want the smallest ID %s, not %s or %s", got, smallest.ID, middle.ID, largest.ID)
+		if expected := map[string]store.RequirementDetailTask{key: {ID: want.ID, Title: want.Title, State: want.State}}; !reflect.DeepEqual(got, expected) {
+			t.Fatalf("duplicate-key follow-up = %+v, want %s (duplicate stored: %t)", got, want.ID, storedSmallest)
 		}
 	})
 
