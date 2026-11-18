@@ -420,7 +420,7 @@ test('automatic retries, bounces, parking, and closing read as timeline entries 
 // A task-context decision shows as the document under Attached context, so the
 // human timeline renders no note for it, with or without target fields and
 // with an omitted payload; technical activity keeps the recorded events
-// (component-web-task-surfaces, Task detail composition).
+// (component-web-task-surfaces invariant 24).
 test('task-context decisions render no timeline note', async ({ page }) => {
   const item = activity({
     events: [

@@ -57,7 +57,7 @@ type Server struct {
 	attention *attentionCountCache
 	// readMemo caches the encoded bytes of repeated list reads for at most
 	// readMemoLifetime, on one generation invalidated by every hub notice
-	// (read_memo.go; component-http-api, Conditional REST reads).
+	// (read_memo.go; DEC-140(3); component-next-action invariant 58).
 	readMemo    *readMemo
 	Store       store.Store
 	Credentials CredentialVerifier
@@ -1824,9 +1824,9 @@ func (s *Server) readTaskPage(ctx context.Context, query store.TaskOperationsQue
 }
 
 // listActivityPage answers an unchanged Board page with 304 before it reads
-// any marker, order, proposal, or next action (component-http-api, Activity
-// conditional admission). The validation read precedes the page read, so a
-// published tag never certifies a page read from an earlier state.
+// any marker, order, proposal, or next action (component-web-task-surfaces
+// invariant 17). The validation read precedes the page read, so a published tag
+// never certifies a page read from an earlier state.
 func (s *Server) listActivityPage(w http.ResponseWriter, r *http.Request, query store.TaskOperationsQuery) {
 	since, err := decodeActivityCursor(r.URL.Query().Get("since"))
 	if err != nil {
@@ -1882,7 +1882,7 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 // writeActivityItems projects the activity rows from one marker and order
 // read. A Board read passes its conditional state, whose instant, cursor, and
 // options it reuses; Reviews and Attention pass nil and keep the full-page
-// ETag (component-http-api, Activity conditional admission).
+// ETag (component-web-task-surfaces invariant 17).
 func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, tasks []core.Task, reviewsOnly bool, conditional *activityConditional) {
 	taskIDs := make([]string, 0, len(tasks))
 	for _, task := range tasks {
@@ -1905,7 +1905,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		}
 	}
 	// One order selection feeds the markers and the next action
-	// (component-persistence, Board activity validation reads).
+	// (component-web-task-surfaces invariant 19).
 	inputs, err := s.Store.ReadActivityInputs(r.Context(), taskIDs, opts.Now)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
@@ -2099,8 +2099,8 @@ func (c *activityConditional) admits(header string) (activityTag, bool) {
 // body the tag certifies while the state is unchanged: a full read (an empty
 // since, a zero v2 frontier, or a legacy v1 cursor), or a delta from exactly
 // the frontier the tag's response returned. Any other valid frontier, older,
-// newer, or in the future, takes the ordinary 200 path (component-http-api,
-// Activity conditional admission).
+// newer, or in the future, takes the ordinary 200 path
+// (component-web-task-surfaces invariant 17).
 func (c *activityConditional) cursorCompatible(tagCursor string) bool {
 	return !c.since.delta || encodeActivityCursor(c.since.frontier) == tagCursor
 }
@@ -2209,8 +2209,8 @@ func writeConditionalJSON(w http.ResponseWriter, r *http.Request, v, etagValue a
 
 // writeJSONWithETag writes v with a precomputed strong ETag and negotiates
 // gzip. It never answers 304: the Board's conditional admission is its only
-// 304, so a refused tag always receives the body (component-http-api,
-// Activity conditional admission).
+// 304, so a refused tag always receives the body (component-web-task-surfaces
+// invariant 17).
 func writeJSONWithETag(w http.ResponseWriter, r *http.Request, v any, etag string) {
 	body, err := json.Marshal(v)
 	if err != nil {
@@ -2504,16 +2504,8 @@ func parseTaskOperationsQuery(r *http.Request) (store.TaskOperationsQuery, bool,
 		return query, false, err
 	}
 	query.Limit, query.Offset = page.Limit, page.Offset
-	// Plan text is opt-in: `plan_text=true` asks the page to carry each latest
-	// plan's text, and every other request states metadata only
-	// (component-persistence, Database read accounting).
-	if raw := strings.TrimSpace(values.Get("plan_text")); raw != "" {
-		include, parseErr := strconv.ParseBool(raw)
-		if parseErr != nil {
-			return store.TaskOperationsQuery{}, false, fmt.Errorf("plan_text must be a boolean: %w", parseErr)
-		}
-		query.IncludePlanText = include
-	}
+	// No route reads plan text: a page states each latest plan's metadata
+	// only, and a plan_text parameter is ignored like any other unknown one.
 	return query, page.Paged, nil
 }
 
@@ -2719,7 +2711,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	// mark an order that held one audit_available, so the detail reads the
 	// orders without either body and, in one more set read, only which pins
 	// each order holds (component-web-task-surfaces invariant 22;
-	// component-work-orders, Snapshot-free fold reads).
+	// component-work-orders invariant 23).
 	scoped := store.WithWorkspace(r.Context(), task.Workspace)
 	workOrders, err := s.Store.ListTaskWorkOrders(scoped, id)
 	if err != nil {

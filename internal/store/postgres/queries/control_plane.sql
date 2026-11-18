@@ -588,7 +588,7 @@ ORDER BY e.at, e.id;
 
 -- name: ListCompactEvents :many
 -- ListEvents with the snapshot bodies left out of work_order.* object
--- payloads in the database (component-persistence, Compact task event reads).
+-- payloads in the database (component-task-lifecycle invariants 51 and 52).
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role,
   CASE WHEN left(e.kind, 11) = 'work_order.' AND jsonb_typeof(e.payload_json) = 'object'
     THEN e.payload_json - 'governance_snapshot' - 'served_requirement_snapshot'

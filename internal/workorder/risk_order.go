@@ -107,8 +107,7 @@ func (s *Service) riskMaterialForOrder(ctx context.Context, order core.WorkOrder
 // session.
 func (s *Service) SubmitRiskRating(ctx context.Context, claim core.WorkOrderClaimIdentity, id, tier, reason string) (map[string]any, error) {
 	// Admission reads only stage, state, claim identity and the lease, so it
-	// selects the snapshot-free order (component-work-orders, Snapshot-free
-	// fold reads).
+	// selects the snapshot-free order (component-work-orders invariant 23).
 	order, err := s.Store.GetWorkOrderWithoutSnapshots(ctx, id)
 	if err != nil {
 		return nil, err

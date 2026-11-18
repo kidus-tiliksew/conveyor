@@ -20,7 +20,7 @@ const readAccountingFraming = 4096
 // TestReadAccountingIntegration runs two labeled reads of known size through
 // the production connector and requires each label to report its payload within
 // the framing bound, then proves the store-boundary label through GetTask
-// (component-persistence, Database read accounting).
+// (component-persistence, Metrics and database read accounting).
 func TestReadAccountingIntegration(t *testing.T) {
 	st := openOwnedStore(t, false)
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "read-accounting")

@@ -22,8 +22,9 @@ import (
 // position moves, the task reaches a terminal state, or the timeout elapses
 // (req-agent-skills REQ-4, AC-4.1 through AC-4.3; DEC-84;
 // component-cli-onboarding). It reads only routes a self-claimed session's
-// credential holds: the task, the workspace work-order listing, and, at a gate,
-// the latest plan or the task activity. It reads no run-order or worker route
+// credential holds: the task observation and, at a gate, the latest plan or
+// the task activity, never the workspace work-order listing
+// (component-next-action invariant 57). It reads no run-order or worker route
 // (DEC-97(1)) and never mutates the task. A pending document proposal is no task
 // gate, so it never enters an observation (req-260810-23b69f REQ-3).
 
@@ -432,7 +433,7 @@ func taskWaitDeadline(ctx context.Context, latest taskWaitObservation, lastErr e
 	return result, nil
 }
 
-// taskWaitPoller spaces the reads of one wait: jittered delays from 250 ms
+// taskWaitPoller spaces the reads of one wait: jittered delays from 2 s
 // doubling to a 15 s ceiling, so a real transition is observed within that
 // ceiling and concurrent waits do not synchronize (component-cli-onboarding).
 type taskWaitPoller struct {
@@ -446,7 +447,7 @@ const (
 	taskWaitPollInterval = 2 * time.Second
 	// taskWaitPollCeiling bounds the delay while nothing changes, so a quiet
 	// wait costs one poll every fifteen seconds instead of one every two
-	// (req-agent-skills AC-4.2, AC-4.3; component-cli-onboarding).
+	// (req-agent-skills AC-4.1; component-cli-onboarding).
 	taskWaitPollCeiling = 15 * time.Second
 )
 
@@ -502,7 +503,8 @@ func taskWaitAwaitingGate(kind string) string {
 // (GET /v1/tasks/{id}/observation): the state and frozen merge approval that
 // select the pending gate, the compact next action, and the task's own
 // claimable orders. It carries no task context, event ledger, or plan text
-// (req-agent-skills AC-4.1 through AC-4.3; component-cli-onboarding).
+// (req-agent-skills AC-4.1; component-next-action invariant 57;
+// component-cli-onboarding).
 type taskWaitObservationView struct {
 	TaskID          string          `json:"task_id"`
 	State           core.TaskState  `json:"state"`
@@ -514,7 +516,7 @@ type taskWaitObservationView struct {
 // taskWaitReader polls one task's observation for the length of one wait. It
 // holds the last tag and observation, so a poll the server certifies unchanged
 // transfers no body and reports the observation the caller already has
-// (req-agent-skills AC-4.3).
+// (req-agent-skills AC-4.1; component-next-action invariant 58).
 type taskWaitReader struct {
 	client        *client
 	tag           string
@@ -543,7 +545,7 @@ func (r *taskWaitReader) observe(ctx context.Context, taskID string, now func() 
 		// UTC minute. It does not cover the gate's plan version or the live
 		// merge readiness, so the gate is read again and the observation is
 		// restamped with this poll's instant even though the body is unchanged
-		// (req-agent-skills AC-4.1, AC-4.3; component-cli-onboarding).
+		// (req-agent-skills AC-4.1; component-cli-onboarding).
 		observation = r.last
 		observation.ObservedAt = now().UTC()
 		observation.PendingGate = nil

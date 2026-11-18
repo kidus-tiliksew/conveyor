@@ -32,8 +32,8 @@ func clockPinsOf(t *testing.T, order core.WorkOrder) clockPinSnapshot {
 // order clock owns. After each, the stored pin bodies and digest equal the
 // seeded bytes, so no lifecycle write cleared or rewrote them. A clock that
 // changes nothing reads no pin body, and the per-task projected read returns
-// only the named task's rows and no pin body (component-work-orders,
-// Snapshot-free fold reads, Three clocks).
+// only the named task's rows and no pin body (component-work-orders invariants
+// 8 and 23).
 func runWorkOrderClockPins(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	governance := core.GovernanceSnapshot{

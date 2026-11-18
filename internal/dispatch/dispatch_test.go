@@ -3010,7 +3010,7 @@ func TestSourceTaskExistsReadsOnlyMatchingTasks(t *testing.T) {
 
 // fullLedgerStore serves the complete ledger through ListCompactEvents: the
 // read every switched dispatch fold made before the compact read existed
-// (component-persistence, Compact task event reads).
+// (component-task-lifecycle invariant 53).
 type fullLedgerStore struct{ store.Store }
 
 func (s fullLedgerStore) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
@@ -3288,7 +3288,7 @@ func (r *workOrderReadRecorder) GetWorkOrder(ctx context.Context, id string) (co
 // task's own rows, no snapshot byte, and no workspace-wide read. wantRefusal
 // selects the readiness answer: a refused dispatch must fail with the
 // readiness error, an admitted one must create the review round
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 func requireReviewDispatchReadsOnlyTaskOrders(t *testing.T, ctx context.Context, st store.Store, cfg *config.Config, taskID string, wantRefusal bool) {
 	t.Helper()
 	recorder := newWorkOrderReadRecorder(st, taskID)
@@ -3343,8 +3343,8 @@ func requireReviewDispatchReadsOnlyTaskOrders(t *testing.T, ctx context.Context,
 // and the task's own verify order each pin a 64 KiB governance snapshot. The
 // readiness read used to return every one of them (about 13 MB); the
 // dispatch must read only the task's orders and decode no snapshot byte, for
-// the refused and the admitted readiness answer (component-work-orders,
-// Snapshot-free fold reads).
+// the refused and the admitted readiness answer (component-work-orders
+// invariant 23).
 func TestReviewDispatchReadsOnlyTaskOrdersWithoutSnapshots(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewVolatileBackend()

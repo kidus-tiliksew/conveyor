@@ -44,8 +44,8 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskL
 	// its authority snapshots. A successful renewal writes only the lease and
 	// update times and returns the snapshot-free order it read; the row keeps
 	// both snapshots because the update never touches them. A completed-order
-	// acknowledgement returns the full row (component-work-orders,
-	// Snapshot-free fold reads; req-delegated-execution AC-1.1).
+	// acknowledgement returns the full row (component-work-orders invariant 23;
+	// req-delegated-execution AC-1.1).
 	err := s.orderTxColumns(ctx, id, activityWorkOrderColumns, func(tx *sql.Tx, o core.WorkOrder) error {
 		if !lease.ValidForCommand(o.TaskID, string(core.WorkOrderCmdRenew)) {
 			return fmt.Errorf("work-order renewal requires a valid taskops lease")

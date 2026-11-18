@@ -275,7 +275,7 @@ func (m *volatileMemory) ReadVerification(ctx context.Context, a VerificationAcc
 	if len(snapshot.Publications) > 0 {
 		// One batched metadata pass over the task's deliveries, so the read's
 		// statement count does not grow with one lookup per publication
-		// (component-persistence, Database read accounting).
+		// (component-persistence, Metrics and database read accounting).
 		attached := 0
 		for i := range snapshot.Publications {
 			if snapshot.Publications[i].Delivery != nil {

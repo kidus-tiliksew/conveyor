@@ -8,8 +8,8 @@ import (
 // VerificationReadOperation names one verification read a conformance case can
 // measure. Each name is one statement or one row-source read, so a case asserts
 // that a read's volume grows with the rows a command uses and never with rows
-// it never looks at (component-persistence, Database read accounting;
-// component-verification-service).
+// it never looks at (component-persistence, Metrics and database read
+// accounting; component-verification-service).
 const (
 	// VerificationReadRows is the verification rows a command, a snapshot read,
 	// or a reconciliation sweep decoded.

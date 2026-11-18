@@ -435,7 +435,7 @@ func dispatchRaceConfig(workspace string) *config.Config {
 // workspace, the task's own verify order included, with one set-based UPDATE.
 // The review dispatch must read only the task's rows and decode no snapshot
 // byte, for the refused and the admitted readiness answer
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 func TestReviewDispatchReadsOnlyTaskOrdersWithoutSnapshotsPostgresIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
 	root := store.WithActor(t.Context(), store.SystemActor())

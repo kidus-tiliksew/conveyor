@@ -11,7 +11,7 @@ import (
 
 // UnlabeledRead is the label of bytes received outside any operation, such as
 // connection setup and pool pings, and of operations whose context carries no
-// read label (component-persistence, Database read accounting).
+// read label (component-persistence, Metrics and database read accounting).
 const UnlabeledRead = "unlabeled"
 
 type readLabelKey struct{}

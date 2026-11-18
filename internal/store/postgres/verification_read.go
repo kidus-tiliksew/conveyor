@@ -204,7 +204,8 @@ const deliveryMetadataColumns = `jsonb_build_object('WorkspaceID',left(body->>'W
 
 // deliveryMetadataBatchTx reads the delivery metadata of many publications in
 // one statement, so a snapshot's statement count does not grow with one query
-// per publication (component-persistence, Database read accounting).
+// per publication (component-persistence, Metrics and database read
+// accounting).
 func deliveryMetadataBatchTx(ctx context.Context, tx pgx.Tx, task string, sources []string) (map[string]core.VerificationDelivery, error) {
 	out := map[string]core.VerificationDelivery{}
 	for start := 0; start < len(sources); start += verificationMetadataChunk {

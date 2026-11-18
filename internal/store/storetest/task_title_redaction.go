@@ -316,7 +316,7 @@ func runGitHubTitleRedaction(t *testing.T, x Fixture) {
 		requireOK(t, titleViolation(ctx, f.st, stored.ID, titleFixtureCount))
 		// The body is read through the single-task detail read: list reads
 		// state no body, so the list row above cannot prove it
-		// (component-persistence, Database read accounting).
+		// (component-web-task-surfaces invariant 15).
 		detail, err := f.st.GetTask(ctx, stored.ID)
 		requireOK(t, err)
 		if detail.Body != body {

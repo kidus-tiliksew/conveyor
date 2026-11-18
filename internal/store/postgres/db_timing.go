@@ -48,7 +48,7 @@ func (t *requestTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, dat
 		ctx = t.next.TraceQueryStart(ctx, conn, data)
 	}
 	// Read accounting runs with or without a request collector
-	// (component-persistence, Database read accounting).
+	// (component-persistence, Metrics and database read accounting).
 	readConnOf(conn).Begin(dbmetrics.ReadLabel(ctx))
 	if dbmetrics.FromContext(ctx) == nil {
 		return ctx
@@ -111,7 +111,7 @@ func readConnOf(conn *pgx.Conn) *dbmetrics.ReadConn {
 }
 
 // ReadStats drains the store's read ledger for the daemon's read statistics
-// line (component-persistence, Database read accounting).
+// line (component-persistence, Metrics and database read accounting).
 func (s *Store) ReadStats(top int) dbmetrics.ReadInterval {
 	return s.reads.Drain(top)
 }

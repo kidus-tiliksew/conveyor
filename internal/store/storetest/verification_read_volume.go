@@ -21,7 +21,8 @@ import (
 // verificationReadProbe collects the verification reads a conformance case
 // measures. Every backend reports the same operation names through the shared
 // probe, so a case asserts a read's volume in one place for memory, PostgreSQL
-// and SingleStore (component-persistence, Database read accounting).
+// and SingleStore (component-persistence, Metrics and database read
+// accounting).
 type verificationReadProbe struct {
 	mu      sync.Mutex
 	samples []store.VerificationReadSample
@@ -163,7 +164,8 @@ func runVerificationOperationKeyScope(t *testing.T, x Fixture) {
 
 // runVerificationReadVolume proves the read volume of verification work grows
 // with the rows a command uses and never with rows it never looks at
-// (component-persistence, Database read accounting; req-verification-evidence).
+// (component-persistence, Metrics and database read accounting;
+// req-verification-evidence).
 func runVerificationReadVolume(t *testing.T, x Fixture) {
 	t.Run("SnapshotStatementsFixed", func(t *testing.T) { runVerificationSnapshotStatements(t, x) })
 	t.Run("PublicationCreateSummary", func(t *testing.T) { runVerificationPublicationCreateSummary(t, x) })
@@ -175,8 +177,8 @@ func runVerificationReadVolume(t *testing.T, x Fixture) {
 
 // runVerificationSnapshotStatements proves a snapshot read issues the same
 // number of statements for one publication as for six, and that the metadata
-// read is one statement over every publication (component-persistence,
-// Database read accounting).
+// read is one statement over every publication (component-persistence, Metrics
+// and database read accounting).
 func runVerificationSnapshotStatements(t *testing.T, x Fixture) {
 	v := newVerificationFixture(t, x)
 	probe, stop := probeVerificationReads(t)
@@ -266,7 +268,7 @@ func runVerificationPublicationCreateSummary(t *testing.T, x Fixture) {
 
 // runVerificationDeliveryGeneration proves a delivery run decodes only the
 // newest generation of its pull-request key (component-verification-publication;
-// component-persistence, Database read accounting).
+// component-persistence, Metrics and database read accounting).
 func runVerificationDeliveryGeneration(t *testing.T, x Fixture) {
 	v := newVerificationFixture(t, x)
 	const number = 4477
@@ -313,8 +315,8 @@ func runVerificationDeliveryGeneration(t *testing.T, x Fixture) {
 // window without a retained body and decodes a body only for a row it acts on,
 // so a superseded generation's body stays on the server, and that of two
 // pending generations of one pull request the older is superseded and only the
-// newest keeps a job (component-persistence, Database read accounting;
-// component-verification-publication invariants 5 and 19).
+// newest keeps a job (component-persistence, Metrics and database read
+// accounting; component-verification-publication invariants 5 and 19).
 func runVerificationReconcilerReads(t *testing.T, x Fixture) {
 	v := newVerificationFixture(t, x)
 	probe, stop := probeVerificationReads(t)
@@ -461,7 +463,8 @@ func reviewRowSet(rows []store.VerificationRow) string {
 // runVerificationTaskIndependence proves reading, registering, applying and
 // completing verification for one task reads only that task's rows, and that
 // the volume does not grow with the workspace's other tasks
-// (req-verification-evidence; component-persistence, Database read accounting).
+// (req-verification-evidence; component-persistence, Metrics and database read
+// accounting).
 func runVerificationTaskIndependence(t *testing.T, x Fixture) {
 	const otherTasks = 198
 	flow := func(v *verificationFixture, key string) {

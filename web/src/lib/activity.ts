@@ -387,7 +387,7 @@ type NoteEventKind = (typeof noteEventKinds)[number]
 // Kinds `noteFor` never renders: the review cards, panels, the plan section,
 // the approval intervention, and Attached context already tell their story,
 // and the remaining publication bookkeeping reads as noise. Technical activity
-// keeps them all (component-web-task-surfaces, Task detail composition; task
+// keeps them all (component-web-task-surfaces invariant 24; task
 // 261028-5c2ae2). A merge request and its GitHub confirmation only repeat the
 // finished state. A dependency addition or removal reads from the
 // Dependencies section, the Board card's dependency mark, and the flowchart's
@@ -1396,7 +1396,7 @@ function noteContent(
       return undefined
     // A task-context decision shows as the document under Attached context;
     // the recorded event stays in technical activity and the audit reads
-    // (component-web-task-surfaces, Task detail composition).
+    // (component-web-task-surfaces invariant 24).
     case 'task.context_proposal_confirmed':
     case 'task.context_proposal_dismissed':
       return undefined

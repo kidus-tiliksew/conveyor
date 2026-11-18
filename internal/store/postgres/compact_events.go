@@ -17,7 +17,7 @@ const compactEventPayloadColumn = `CASE WHEN left(e.kind, 11) = 'work_order.' AN
 // ListCompactEvents returns the ListEvents rows and order. The query removes
 // the governance and served-requirement snapshot bodies from work_order.*
 // object payloads in the database, so they never cross the connection
-// (component-persistence, Compact task event reads).
+// (component-task-lifecycle invariants 51 and 52).
 func (s *Store) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListCompactEvents")
 	rows, err := s.queries.ListCompactEvents(ctx, db.ListCompactEventsParams{TaskID: nullableText(taskID), WorkspaceID: workspace(ctx)})
@@ -33,7 +33,7 @@ func (s *Store) ListCompactEvents(ctx context.Context, taskID string) ([]core.Ev
 
 // ListTaskContextEvents reads only the kinds the task context fold uses, so a
 // single-task context read never transfers the task's whole timeline
-// (component-persistence, Compact task event reads).
+// (component-task-lifecycle invariant 53).
 func (s *Store) ListTaskContextEvents(ctx context.Context, taskID string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskContextEvents")
 	rows, err := s.boundary.Query(ctx, `SELECT e.id,COALESCE(e.task_id,''),COALESCE(e.job_id,''),e.kind,COALESCE(e.actor_id,''),COALESCE(e.actor_role,''),`+compactEventPayloadColumn+` AS payload_json,e.at

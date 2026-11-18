@@ -46,7 +46,7 @@ func assertRevalidated(t *testing.T, sequence []string) {
 
 // TestTaskObservationPollAnswersUnchangedWith304 proves the narrow wait poll
 // answers an unchanged task with 304 after it projected and revalidated, and a
-// changed task with 200 and a new tag (req-agent-skills AC-4.3;
+// changed task with 200 and a new tag (req-agent-skills AC-4.1;
 // component-next-action invariant 58).
 func TestTaskObservationPollAnswersUnchangedWith304(t *testing.T) {
 	f := newActivityConditionalFixture(t)
@@ -114,7 +114,7 @@ func TestTaskObservationAndNextActionValidatorsAreRouteScoped(t *testing.T) {
 
 // TestNextActionPollAnswersUnchangedWith304 proves the next-action read
 // answers an unchanged poll with 304 after it projected and revalidated, and a
-// changed task answers 200 with a new tag (req-agent-skills AC-4.3;
+// changed task answers 200 with a new tag (req-agent-skills AC-4.1;
 // component-next-action invariant 58).
 func TestNextActionPollAnswersUnchangedWith304(t *testing.T) {
 	f := newActivityConditionalFixture(t)
@@ -222,7 +222,7 @@ func TestTaskObservationClaimableOrdersRankAndExclusions(t *testing.T) {
 // serves the observation through a configured work-order service. A recovery
 // refused order and a dependency blocked order drop out, the claimable orders
 // come in server rank, and no poll reads a workspace order listing
-// (component-next-action invariant 57; req-agent-skills AC-4.3).
+// (component-next-action invariant 57; req-agent-skills AC-4.1).
 func TestTaskObservationAppliesWorkOrderProjectionsWithoutWorkspaceListing(t *testing.T) {
 	f := newActivityConditionalFixture(t)
 	f.server.WorkOrders = &workorder.Service{Store: f.counted}

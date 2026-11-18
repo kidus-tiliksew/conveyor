@@ -23,8 +23,8 @@ var taskMapColumns = strings.Replace(taskColumns, ",body,", ",'' AS body,", 1)
 // snapshot stays: the next-action projection over these rows reads
 // SetupContract.Risk (record-mode risk waits, plan-risk orders, risk approvals),
 // so a list view that dropped it would name a different next action than the
-// task detail (req-operator-next-action AC-1.7, AC-2.7; DEC-61;
-// component-persistence, Database read accounting).
+// task detail (req-operator-next-action AC-1.7; DEC-61;
+// component-web-task-surfaces invariant 15).
 var taskListColumns = strings.Replace(taskColumns, ",body,", ",'' AS body,", 1)
 
 func taskMapMarks(n int) string {

@@ -169,7 +169,7 @@ func (v *kitVerifier) observe(ctx context.Context, e verification.Exercise, runI
 		}
 		// The liveness check reads the context on its own schedule; the
 		// observation reuses that value instead of asking a second time per
-		// tick (component-verification-runner, Polling cadence).
+		// tick (component-verification-runner invariant 22).
 		snapshot, ok := v.freshContext()
 		if !ok {
 			return fmt.Errorf("verification context unavailable")

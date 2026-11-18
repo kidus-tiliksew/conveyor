@@ -30,7 +30,7 @@ type openOptions struct {
 	// acquisition start; no exported option sets it.
 	acquireStarted func(context.Context)
 	// reads counts the bytes each dialed connection receives; openWithOptions
-	// creates it (component-persistence, Database read accounting).
+	// creates it (component-persistence, Metrics and database read accounting).
 	reads *dbmetrics.ReadLedger
 }
 

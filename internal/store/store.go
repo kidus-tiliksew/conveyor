@@ -322,8 +322,7 @@ type WorkOrderStore interface {
 	// GetWorkOrderWithoutSnapshots is GetWorkOrder without the
 	// served-requirement and governance snapshots and without assignee
 	// hydration: one order of the selected workspace, projected at read time,
-	// with the same not-found answer (component-work-orders, Snapshot-free
-	// fold reads).
+	// with the same not-found answer (component-work-orders invariant 23).
 	GetWorkOrderWithoutSnapshots(ctx context.Context, id string) (core.WorkOrder, error)
 	// GetWorkOrderGovernancePin returns one order's persisted governance pin
 	// as core.GovernanceReferencePin projects it, or nil when the order holds
@@ -339,8 +338,7 @@ type WorkOrderStore interface {
 	// workOrderID, in the selected workspace, holds the non-empty sessionID
 	// after read-time clock projection. An empty sessionID answers false
 	// without a read. Every backend evaluates the predicate in its own read
-	// and returns no order body (component-work-orders, Snapshot-free fold
-	// reads).
+	// and returns no order body (component-work-orders invariant 23).
 	OtherWorkOrderHoldsSession(ctx context.Context, workOrderID, sessionID string) (bool, error)
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
 	// ListLiveWorkOrders returns the workspace's orders whose stored state is
@@ -351,7 +349,7 @@ type WorkOrderStore interface {
 	ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
 	// ListWorkOrdersForTasks returns the requested tasks' orders of the
 	// selected workspace, projected at read time, without the served-requirement
-	// and governance snapshots (component-work-orders, Snapshot-free fold reads).
+	// and governance snapshots (component-work-orders invariant 23).
 	ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error)
 	// ListTaskWorkOrders projects the named task's lifecycle at read time and
 	// omits authority snapshot bodies, as ListWorkOrdersForTasks does.
@@ -360,7 +358,7 @@ type WorkOrderStore interface {
 	// read-time clock projection. Dispatch stage holds use it so a dead claim
 	// remains a hold until the order clock persists its expiry
 	// (component-work-orders "Stages and order minting"; DEC-62). It returns no
-	// authority snapshot (component-work-orders, Snapshot-free fold reads).
+	// authority snapshot (component-work-orders invariant 23).
 	ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	// ListTaskWorkOrdersSnapshot includes served-requirement and governance
 	// snapshots for responses that expose those pinned bodies. Elapsed clocks
@@ -370,7 +368,7 @@ type WorkOrderStore interface {
 	// named task's orders hold, without reading either body. An order that
 	// holds neither pin is absent. The task detail marks such an order
 	// audit_available and serves no pin body (component-web-task-surfaces
-	// invariant 22; component-work-orders, Snapshot-free fold reads).
+	// invariant 22; component-work-orders invariant 23).
 	ListTaskWorkOrderAuditPins(ctx context.Context, taskID string) (map[string]WorkOrderAuditPins, error)
 	ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error)
 	ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error)
@@ -593,13 +591,12 @@ type ActivityStore interface {
 	// governance and served-requirement snapshot bodies left out of every
 	// work_order.* object payload before the rows leave the database. It is
 	// the ledger read for consumers that decode no snapshot body
-	// (component-persistence, Compact task event reads).
+	// (component-task-lifecycle invariants 51 and 53).
 	ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	// ListTaskContextEvents returns the task context fold's event kinds — the
 	// four attachment kinds — in ListEvents order with the compact payload
 	// projection, so a single-task context read never transfers the task's
-	// unrelated history (component-persistence, Compact task event reads;
-	// req-operator-next-action AC-2.7).
+	// unrelated history (component-task-lifecycle invariant 53).
 	ListTaskContextEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	// ListTaskDesignContextEvents returns only the design attachment and
 	// removal kinds, TaskDesignContextEventKinds, in ListEvents order with
@@ -934,8 +931,8 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 
 // activityMarkersAt folds every task's marker from one order projection at
 // now and returns that projection, so the Board's input read and the marker
-// read share one order selection and one instant (component-persistence,
-// Board activity validation reads).
+// read share one order selection and one instant (component-web-task-surfaces
+// invariant 19).
 func (m *memory) activityMarkersAt(ctx context.Context, now time.Time) ([]ActivityMarker, []core.WorkOrder, error) {
 	orders := m.workOrdersAt(now)
 	var implementTaskIDs []string

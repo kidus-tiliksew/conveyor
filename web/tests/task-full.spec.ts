@@ -3052,7 +3052,7 @@ const sevenCitationDocuments = [
     title: 'Web task surfaces',
     cited: 7,
     proposal: 8,
-    sections: ['Task detail composition', 'History pages', 'Audit disclosures'],
+    sections: ['Task detail', 'History pages', 'Audit disclosures'],
   },
   { id: 'component-web-dashboard', title: 'Web dashboard', cited: 25, proposal: 26, sections: ['Route tree'] },
   { id: 'component-mcp-investigation-reads', title: 'MCP investigation reads', cited: 3, proposal: 4, sections: [''] },
@@ -5042,8 +5042,8 @@ test('a short side-view spec stays unbounded and the full route previews a long 
   await expect(page.locator('[data-spec-overflow-shadow]')).toHaveCount(0)
 
   // The full route's reading column shows the same six-line preview as the
-  // sheet; opening it reveals the whole plan (component-web-task-surfaces,
-  // Task detail composition).
+  // sheet; opening it reveals the whole plan (component-web-task-surfaces
+  // invariant 32).
   await page.goto('/w/demo/tasks/long-spec/full')
   const toggle = page.getByRole('button', { name: 'Show full plan' })
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
@@ -7431,7 +7431,7 @@ for (const surface of ['full', 'board sheet']) {
       await page.goto(`/w/demo/tasks/creator${surface === 'full' ? '/full' : ''}`)
       const sheet = page.getByRole('dialog', { name: 'Task detail' })
       // The creator reads "by <creator>" after the Created time
-      // (component-web-task-surfaces, Task detail composition).
+      // (component-web-task-surfaces, Task detail).
       const label = page.locator('dt').filter({ hasText: /^Created$/ })
       const value = label.locator('xpath=following-sibling::dd[1]')
       const creatorName = value.locator('[data-task-creator] > span').first()

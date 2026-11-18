@@ -15,7 +15,7 @@ import (
 // bounded window of a task's marker events into the markers the task's full
 // event history produces, and that the rows it transfers do not grow with that
 // history (component-task-lifecycle, Compact event reads;
-// component-persistence, Database read accounting).
+// component-persistence, Metrics and database read accounting).
 //
 // One task holds a short renewal history and one holds five thousand
 // renewals; every other marker kind is seeded identically on both. Each
@@ -235,7 +235,8 @@ func requireSameJSON(t *testing.T, label string, got, want any) {
 // claim reduction, and payload projection change no marker and no review
 // lease horizon (component-web-task-surfaces invariant 19), and that rows
 // the folds cannot act on, and repeated claims of one order, do not grow the
-// rows the read transfers (component-persistence, Database read accounting).
+// rows the read transfers (component-persistence, Metrics and database read
+// accounting).
 //
 // Every task is read in one mixed page, with and without review orders, and
 // with a closed task, and each marker is compared with the folds over the

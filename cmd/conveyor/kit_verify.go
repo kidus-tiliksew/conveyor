@@ -98,8 +98,7 @@ type kitVerifier struct {
 	observationWait func(context.Context) error
 	// lastRenew and renewInterval schedule the claim renewal, and
 	// nextContext, contextInterval, contextDigest and lastContext schedule the
-	// verification-context read (component-verification-runner, Polling
-	// cadence).
+	// verification-context read (component-verification-runner invariant 22).
 	lastRenew       time.Time
 	renewInterval   time.Duration
 	nextContext     time.Time
@@ -335,7 +334,7 @@ func normalizeKitRemote(s string) string {
 // kitContextPollStart and kitContextPollMax bound how often the verifier reads
 // the verification context while nothing changes: a start interval that doubles
 // up to the maximum, and a change that resets it to the start
-// (component-verification-runner, Polling cadence).
+// (component-verification-runner invariant 22).
 const (
 	kitContextPollStart = 5 * time.Second
 	kitContextPollMax   = 15 * time.Second
@@ -371,7 +370,7 @@ const (
 // live is the periodic liveness check. It renews the claim at most once per
 // lease share and re-reads the verification context on its own backoff, so a
 // long-running observation no longer asks the server once per second
-// (component-verification-runner, Polling cadence).
+// (component-verification-runner invariant 22).
 func (v *kitVerifier) live(ctx context.Context, grantID string) error {
 	return v.checkLive(ctx, grantID, kitLivePeriodic)
 }

@@ -48,7 +48,7 @@ func (s *Server) getTaskObservation(w http.ResponseWriter, r *http.Request) {
 		}
 		// One bounded read of this task's orders serves both the next action
 		// and the claimable list, so the route never reads the workspace
-		// listing (component-persistence, Board activity validation reads).
+		// listing (component-next-action invariant 57).
 		orders, err := s.Store.ListTaskWorkOrders(ctx, taskID)
 		if err != nil {
 			return nil, err
@@ -122,7 +122,7 @@ type taskObservationOrder struct {
 // assignee on every backend, so the assignee comes from the task read the
 // route already made. A projection failure fails the read, so an order never
 // reads as claimable because a projection input was unreadable
-// (component-next-action invariant 57; component-work-orders, Listing).
+// (component-next-action invariant 57; component-work-orders invariant 59).
 func (s *Server) projectTaskClaimability(ctx context.Context, task core.Task, orders []core.WorkOrder) ([]core.WorkOrder, error) {
 	projected := slices.Clone(orders)
 	if s.WorkOrders != nil {
@@ -169,7 +169,7 @@ func taskObservationClaimableOrders(orders []core.WorkOrder) []taskObservationOr
 }
 
 // taskObservationValidatorScope binds a tag to its route, workspace, caller,
-// capabilities, and task (component-http-api, Activity conditional admission).
+// capabilities, and task (component-next-action invariant 58).
 func taskObservationValidatorScope(ctx context.Context, route, taskID string, capabilities map[core.Capability]bool) []byte {
 	workspaceID, _ := store.WorkspaceFromContext(ctx)
 	credential, _ := store.CredentialFromContext(ctx)

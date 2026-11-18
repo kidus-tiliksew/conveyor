@@ -27,14 +27,14 @@ func claimSessionScaleFixture(t *testing.T) storetest.Fixture {
 // TestClaimSessionAndActivityReadsAtScale runs the claim session and
 // whole-workspace activity reads over 200 snapshot-bearing orders on the
 // volatile backend, seeded through the public store API
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 func TestClaimSessionAndActivityReadsAtScale(t *testing.T) {
 	storetest.RunClaimSessionAndActivityReadsAtScale(t, claimSessionScaleFixture(t), storetest.ClaimSessionScale{})
 }
 
 // TestRenewalReadsAtScale renews through workorder.Service.RenewClaimWithLease
 // over 200 snapshot-bearing orders on the volatile backend
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 func TestRenewalReadsAtScale(t *testing.T) {
 	storetest.RunRenewalReads(t, claimSessionScaleFixture(t), storetest.ClaimSessionScale{}, renewThroughService)
 }

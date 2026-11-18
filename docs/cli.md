@@ -224,10 +224,17 @@ conveyor task wait <task-id> [--timeout 5m] [--json]
 `task wait` lets an agent session or script wait for an operator decision
 without polling turn by turn. It never claims, approves, or changes the task.
 
-The command reads `GET /v1/tasks/{id}` and the workspace work-order listing
-`GET /v1/work-orders` with the ordinary server, workspace, and credential
-resolution. A pending document proposal is no task gate, so the wait neither
-reads nor compares proposals. Each observation holds these fields:
+Each poll reads `GET /v1/tasks/{id}/observation`, which carries only the
+task state, the frozen merge approval, the compact next action, and the task's
+own claimable orders. At a plan or plan-revision gate the wait also reads
+`GET /v1/tasks/{id}/spec` for the plan version, and at a `merge_execution`
+gate it reads `GET /v1/tasks/{id}/activity?view=bounded` for the merge
+readiness. It never reads the workspace work-order listing. Every read uses the
+ordinary server, workspace, and credential resolution. A poll sends the last
+`ETag` in `If-None-Match`, so a poll the server certifies unchanged answers
+`304` and transfers no body. A pending document proposal is no task gate, so
+the wait neither reads nor compares proposals. Each observation holds these
+fields:
 
 | Field | Meaning |
 |---|---|
@@ -239,8 +246,9 @@ reads nor compares proposals. Each observation holds these fields:
 | `observed_at` | The time of the observation. It is not compared. |
 
 The first successful observation is the baseline. The command re-reads with
-a jittered backoff, from 250ms to a 2s ceiling, and
-returns when any compared field differs from the baseline. A readiness change
+a jittered backoff that starts at 2s and doubles to a 15s ceiling while
+nothing changes, and a change resets it to 2s. It returns when any compared
+field differs from the baseline. A readiness change
 on a `merge_execution` gate counts. Titles, labels, summaries, capability
 flags, and progress text are not compared. A merged, closed, or
 parked task returns at once, whether it is terminal at start or becomes

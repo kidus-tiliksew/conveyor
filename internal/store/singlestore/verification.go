@@ -22,8 +22,8 @@ import (
 
 // verificationRowsTx reads one task's rows of the tables the command decodes.
 // The predicate is task-scoped for every table, so a read's bytes never grow
-// with another task's verification rows (component-persistence, Database read
-// accounting).
+// with another task's verification rows (component-persistence, Metrics and
+// database read accounting).
 func verificationRowsTx(ctx context.Context, tx *sql.Tx, ws, task string, tables store.VerificationTableSet) ([]store.VerificationRow, error) {
 	var out []store.VerificationRow
 	for _, table := range tables {
@@ -409,8 +409,8 @@ func (s *Store) ReconcileVerificationClaims(ctx context.Context) (int, error) {
 
 // deliveryLatestRowTx reads only the newest generation of one pull-request key:
 // a run acts on the latest generation and never decodes the superseded ones
-// (component-verification-publication; component-persistence, Database read
-// accounting).
+// (component-verification-publication; component-persistence, Metrics and
+// database read accounting).
 func deliveryLatestRowTx(ctx context.Context, tx *sql.Tx, ws, key string) (core.VerificationDelivery, bool, error) {
 	var raw []byte
 	err := tx.QueryRowContext(ctx, `SELECT body FROM verification_publication_deliveries WHERE workspace_id=? AND pr_key=? AND state<>'superseded' ORDER BY generation DESC LIMIT 1`, ws, key).Scan(&raw)

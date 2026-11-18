@@ -319,10 +319,10 @@ type ReviewRoundSeatReader interface {
 
 // LoadReviewRoundSeatInputs reads the resolution inputs for round through the
 // public store surface. The builder reads no authority snapshot, so the order
-// read omits them (feature-review-seat-minimum; component-work-orders,
-// Snapshot-free fold reads). An enforcing task's ratings give the tier's
-// agent reviews; the round-building command revalidates them in its
-// transaction (component-review invariants 1 and 3).
+// read omits them (feature-review-seat-minimum; component-work-orders invariant
+// 23). An enforcing task's ratings give the tier's agent reviews; the
+// round-building command revalidates them in its transaction (component-review
+// invariants 1 and 3).
 func LoadReviewRoundSeatInputs(ctx context.Context, reader ReviewRoundSeatReader, task core.Task, minimum, round int) (ReviewRoundSeatInputs, error) {
 	taskID := task.ID
 	orders, err := reader.ListWorkOrdersForTasks(ctx, []string{taskID})

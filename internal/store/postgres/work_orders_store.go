@@ -970,7 +970,7 @@ func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, er
 
 // GetWorkOrderWithoutSnapshots is GetWorkOrder over activityWorkOrderColumns
 // without assignee hydration, so neither authority snapshot leaves the
-// database (component-work-orders, Snapshot-free fold reads).
+// database (component-work-orders invariant 23).
 func (s *Store) GetWorkOrderWithoutSnapshots(ctx context.Context, id string) (core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkOrderWithoutSnapshots")
 	order, err := scanWorkOrder(s.boundary.QueryRow(ctx, "SELECT "+activityWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", workspace(ctx), id))
@@ -983,8 +983,7 @@ func (s *Store) GetWorkOrderWithoutSnapshots(ctx context.Context, id string) (co
 // OtherWorkOrderHoldsSession evaluates the claim session check's predicate in
 // one statement that returns one boolean. A claimed order whose lease or
 // execution deadline has passed holds no session, because
-// store.ProjectWorkOrderAt clears it (component-work-orders, Snapshot-free
-// fold reads).
+// store.ProjectWorkOrderAt clears it (component-work-orders invariant 23).
 func (s *Store) OtherWorkOrderHoldsSession(ctx context.Context, workOrderID, sessionID string) (bool, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "OtherWorkOrderHoldsSession")
 	if sessionID == "" {
@@ -1007,7 +1006,7 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 // given column list, projects it at now, and hydrates assignees. ListWorkOrders
 // passes workOrderColumns; the whole-workspace activity read passes
 // activityWorkOrderColumns, so it returns the same orders without either
-// snapshot (component-persistence, Board activity validation reads).
+// snapshot (component-web-task-surfaces invariant 19).
 func (s *Store) listWorkspaceWorkOrders(ctx context.Context, columns string, now time.Time) ([]core.WorkOrder, error) {
 	rows, err := s.boundary.Query(ctx, "SELECT "+columns+" FROM work_orders WHERE workspace_id=$1 ORDER BY created_at,id", workspace(ctx))
 	if err != nil {
@@ -1118,8 +1117,8 @@ func (s *Store) ListCheckpointContextCandidates(ctx context.Context, requirement
 // listWorkOrdersForTasks reads the orders of an explicit task set, or the whole
 // workspace when the set is empty, over activityWorkOrderColumns either way. It
 // backs the activity-marker projection so a page-scoped caller pays for its
-// page only and no caller reads a snapshot body (component-work-orders,
-// Snapshot-free fold reads).
+// page only and no caller reads a snapshot body (component-work-orders
+// invariant 23).
 func (s *Store) listWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
 	if len(taskIDs) == 0 {
 		return s.listWorkspaceWorkOrders(ctx, activityWorkOrderColumns, time.Now().UTC())
@@ -1143,7 +1142,7 @@ func (s *Store) listWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([
 // ListTaskWorkOrders is the projected per-task read of detail and next-action
 // folds. It selects clockWorkOrderColumns, so neither pin body leaves the
 // database; readers that render or recheck a pin use
-// ListTaskWorkOrdersSnapshot (component-work-orders, Snapshot-free fold reads).
+// ListTaskWorkOrdersSnapshot (component-work-orders invariant 23).
 func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrders")
 	rows, err := s.boundary.Query(ctx, "SELECT "+clockWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
@@ -1164,7 +1163,7 @@ func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.W
 
 // ListTaskWorkOrdersStored backs the dispatcher's stage-hold fold, which reads
 // no authority snapshot, so it selects activityWorkOrderColumns
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 func (s *Store) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrdersStored")
 	rows, err := s.boundary.Query(ctx, "SELECT "+activityWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)

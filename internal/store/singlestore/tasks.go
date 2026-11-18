@@ -927,14 +927,15 @@ func (s *Store) taskPredicate(ctx context.Context, f store.TaskFilter) (string, 
 // callers that state a whole task: the planner's approved-spec listing, the
 // blueprint and requirement detail projections, and the review-policy drift
 // pass, which decides enforcement from the frozen policy
-// (component-persistence, Database read accounting).
+// (component-persistence, Metrics and database read accounting).
 func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasks")
 	return s.listTaskRowsSelecting(ctx, taskColumns, store.TaskOperationsQuery{TaskFilter: store.TaskFilter{}})
 }
 
 // ListTasksFiltered reads taskListColumns without bodies but retains frozen
-// policy for next-action projections (req-operator-next-action AC-2.7).
+// policy for next-action projections (component-web-task-surfaces
+// invariant 15).
 func (s *Store) ListTasksFiltered(ctx context.Context, f store.TaskFilter) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFiltered")
 	if err := f.Validate(); err != nil {
@@ -1024,7 +1025,7 @@ var taskOperationsEventKinds = []string{
 // taskOperationsDetails reads the page's operations events, latest plan
 // metadata, and legacy gate markers in three statements, and plan text only
 // when the caller asked for it, so the statement count does not grow with the
-// page (component-persistence, Database read accounting).
+// page (component-persistence, Metrics and database read accounting).
 func (s *Store) taskOperationsDetails(ctx context.Context, q store.TaskOperationsQuery, page *store.TaskOperationsPage) error {
 	if len(page.Tasks) == 0 {
 		return nil

@@ -28,8 +28,8 @@ type activityValidationSchema struct {
 }
 
 // ReadActivityValidation reads the Board validation state in one UNION ALL
-// statement, so every row comes from one snapshot (component-persistence,
-// Board activity validation reads).
+// statement, so every row comes from one snapshot (component-web-task-surfaces
+// invariant 18).
 func (s *Store) ReadActivityValidation(ctx context.Context, now time.Time) (store.ActivityValidation, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ReadActivityValidation")
 	schema, err := s.activityValidationSchema(ctx)
@@ -166,7 +166,7 @@ func (s *Store) ReadActivityInputs(ctx context.Context, taskIDs []string, now ti
 // activityWorkOrdersAt is listWorkOrdersForTasks projected at now. A whole
 // workspace read selects the same activityWorkOrderColumns and hydrates
 // assignees as ListWorkOrders does, so no activity read decodes a snapshot
-// body (component-persistence, Board activity validation reads).
+// body (component-web-task-surfaces invariant 19).
 func (s *Store) activityWorkOrdersAt(ctx context.Context, taskIDs []string, now time.Time) ([]core.WorkOrder, error) {
 	if len(taskIDs) == 0 {
 		return s.listWorkspaceWorkOrders(ctx, activityWorkOrderColumns, now)

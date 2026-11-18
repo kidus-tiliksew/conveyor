@@ -18,7 +18,7 @@ import (
 // markerTaskChunk bounds one per-task marker statement. Each chunk statement
 // carries one top-one arm per task, so the arms stay below the statement
 // limit and the read stays proportional to the requested tasks
-// (activity-marker-bounds).
+// (component-web-task-surfaces, Activity and list reads).
 var markerTaskChunk = 100
 
 func markerTaskBatches(taskIDs []string) [][]string {
@@ -52,7 +52,8 @@ func markerTaskRowsQuery(ws string, taskIDs []string) (string, []any) {
 // markerTaskRows is the one state/ID selection: every listed task's state
 // and creation order, or the requested tasks' states. The last-event and
 // last-stage summaries are separate bounded reads, so a task whose history
-// is large still costs one row (activity-marker-bounds).
+// is large still costs one row (component-web-task-surfaces, Activity and
+// list reads).
 func (s *Store) markerTaskRows(ctx context.Context, taskIDs []string) ([]markerRow, error) {
 	if taskIDs != nil {
 		taskIDs = store.UniqueTaskIDs(taskIDs)

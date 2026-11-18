@@ -163,7 +163,7 @@ func (s *Service) config(ctx context.Context) (*config.Config, error) {
 func (s *Service) List(ctx context.Context) ([]core.WorkOrder, error) {
 	// The store selects live states in its own read, so completed, cancelled,
 	// and submitted history never reaches this projection
-	// (component-work-orders, Listing).
+	// (component-work-orders invariant 59).
 	orders, err := s.Store.ListLiveWorkOrders(ctx)
 	if err != nil {
 		return nil, err
@@ -174,7 +174,8 @@ func (s *Service) List(ctx context.Context) ([]core.WorkOrder, error) {
 
 // Lookup reads one order of the workspace by ID, in any state, through the
 // list's projection. GET /v1/work-orders/{id} serves it so a client resolves a
-// terminal order without widening the list (component-work-orders, Listing).
+// terminal order without widening the list (component-work-orders invariant
+// 59).
 func (s *Service) Lookup(ctx context.Context, id string) (core.WorkOrder, error) {
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
@@ -193,7 +194,7 @@ func (s *Service) Lookup(ctx context.Context, id string) (core.WorkOrder, error)
 // taskOrders is the task's complete order history from one task order read.
 // It serves as the recovery history, so the projection reads no workspace
 // listing and no other task's orders. taskOrders is left unchanged
-// (component-next-action invariant 57; component-work-orders, Listing).
+// (component-next-action invariant 57; component-work-orders invariant 59).
 func (s *Service) ProjectTaskOrders(ctx context.Context, taskOrders []core.WorkOrder) ([]core.WorkOrder, error) {
 	history := slices.Clone(taskOrders)
 	orders, err := s.projectList(ctx, liveOrders(slices.Clone(taskOrders)), func(_ context.Context, taskIDs []string) ([]core.WorkOrder, error) {
@@ -1245,8 +1246,7 @@ func (s *Service) planRevisionContextForOrder(ctx context.Context, order core.Wo
 		contract += "\n# Operator direction\n\n" + direction + "\n"
 	}
 	// The historical contract needs only progress and the last attempt, so it
-	// reads the snapshot-free order (component-work-orders, Snapshot-free fold
-	// reads).
+	// reads the snapshot-free order (component-work-orders invariant 23).
 	prior, getErr := s.Store.GetWorkOrderWithoutSnapshots(ctx, request.WorkOrderID)
 	if getErr != nil {
 		return nil, "", getErr
@@ -1972,7 +1972,7 @@ func (s *Service) reviewRoundResult(ctx context.Context, taskID string, round in
 func (s *Service) enforce(ctx context.Context, order core.WorkOrder) error {
 	// The re-check reads only the stored state, so it selects the snapshot-free
 	// order and no authority snapshot leaves the database
-	// (component-work-orders, Snapshot-free fold reads).
+	// (component-work-orders invariant 23).
 	current, err := s.Store.GetWorkOrderWithoutSnapshots(ctx, order.ID)
 	if err != nil {
 		return err

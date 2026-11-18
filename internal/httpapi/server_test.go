@@ -2734,8 +2734,7 @@ func TestActivityIndexAvoidsPerTaskHistoryQueries(t *testing.T) {
 			observed.listActivityMarkersCalls, observed.listJobsCalls, observed.listEventsCalls, observed.listInterventionsCalls)
 	}
 	// The marker read returns its one order selection, so the page's orders
-	// are never read a second time (component-http-api, Activity conditional
-	// admission).
+	// are never read a second time (component-web-task-surfaces invariant 17).
 	if observed.listScopedOrdersCalls != 0 || len(observed.activityInputTaskIDs) != 3 {
 		t.Fatalf("activity order scope calls=%d input task_ids=%v", observed.listScopedOrdersCalls, observed.activityInputTaskIDs)
 	}
@@ -2743,7 +2742,7 @@ func TestActivityIndexAvoidsPerTaskHistoryQueries(t *testing.T) {
 
 // TestInboxReadsActivityMarkersOnce pins GET /v1/next-actions to one marker
 // read: the projection reuses the rows the inbox already read for LastEventAt
-// (activity-marker-bounds).
+// (component-web-task-surfaces invariant 19).
 func TestInboxReadsActivityMarkersOnce(t *testing.T) {
 	base := store.NewMemory()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
@@ -3151,7 +3150,7 @@ func TestActivityConditionalAnswersBeforeProjection(t *testing.T) {
 // TestActivityConditionalCursorCompatibility sends one Board tag with each
 // kind of cursor. A full read and the tag's own returned frontier ask for a
 // body the tag certifies; any other valid frontier gets the ordinary 200
-// (component-http-api, Activity conditional admission).
+// (component-web-task-surfaces invariant 17).
 func TestActivityConditionalCursorCompatibility(t *testing.T) {
 	f := newActivityConditionalFixture(t)
 	f.task("cursor-a", core.TaskQueued)
@@ -4377,6 +4376,126 @@ func TestTaskOperationsDerivesEveryPlanStatusFromDurableAuthority(t *testing.T) 
 	} {
 		if got := items[taskOperationsRow(t, items, taskID)].Plan; got != want {
 			t.Fatalf("task %s plan = %+v, want %+v", taskID, got, want)
+		}
+	}
+}
+
+// TestTaskListRoutesIgnorePlanTextParameter proves that GET /v1/task-operations
+// and GET /v1/tasks no longer read a plan_text parameter. An absent, true,
+// false, empty, or malformed value gets the same status, paging headers, and
+// body, including each row's plan metadata, and never a boolean-validation
+// error. Ordinary filter and paging validation still answers 400, and a tag
+// that GET /v1/tasks served without the parameter still answers 304 for a
+// request that sends it, because the parsed query is the same.
+func TestTaskListRoutesIgnorePlanTextParameter(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	for index, task := range []core.Task{
+		{ID: "approved", Workspace: "demo", Title: "approved", Repo: "web", State: core.TaskRunning},
+		{ID: "unplanned", Workspace: "demo", Title: "unplanned", Repo: "web", State: core.TaskRunning},
+		{ID: "elsewhere", Workspace: "demo", Title: "elsewhere", Repo: "conveyor", State: core.TaskQueued},
+	} {
+		task.CreatedAt = time.Date(2026, 11, 18, 10, index, 0, 0, time.UTC)
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: "approved", Content: "## Approach\n\nA plan body no list states.\n\n## Done criteria\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApproveSpecVersion(ctx, "approved", plan.Version); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	get := func(path string, header http.Header) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		for key, values := range header {
+			request.Header[key] = values
+		}
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, request))
+		return response
+	}
+	variants := []string{"", "&plan_text=true", "&plan_text=false", "&plan_text=", "&plan_text=maybe", "&plan_text=1&plan_text=nope"}
+	for _, route := range []string{"/v1/task-operations", "/v1/tasks"} {
+		// Page two of the filtered rows: the filter keeps the two web tasks and
+		// the page holds the older one.
+		base := route + "?workspace_id=demo&state=running&repository=web&limit=1&offset=1"
+		want := get(base, nil)
+		if want.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", base, want.Code, want.Body.String())
+		}
+		if want.Header().Get("X-Conveyor-Total") != "2" || want.Header().Get("X-Conveyor-Limit") != "1" || want.Header().Get("X-Conveyor-Offset") != "1" {
+			t.Fatalf("%s paging headers = %+v", base, want.Header())
+		}
+		for _, variant := range variants[1:] {
+			got := get(base+variant, nil)
+			if got.Code != http.StatusOK {
+				t.Fatalf("%s%s status=%d body=%s", base, variant, got.Code, got.Body.String())
+			}
+			for _, name := range []string{"X-Conveyor-Total", "X-Conveyor-Limit", "X-Conveyor-Offset"} {
+				if got.Header().Get(name) != want.Header().Get(name) {
+					t.Fatalf("%s%s %s = %q, want %q", base, variant, name, got.Header().Get(name), want.Header().Get(name))
+				}
+			}
+			if !bytes.Equal(got.Body.Bytes(), want.Body.Bytes()) {
+				t.Fatalf("%s%s body changed:\n got %s\nwant %s", base, variant, got.Body.String(), want.Body.String())
+			}
+		}
+		// The parameter never excuses another input: an unknown state and a
+		// malformed limit still answer 400.
+		for _, invalid := range []string{"&state=unknown", "&limit=none"} {
+			for _, variant := range variants {
+				path := route + "?workspace_id=demo" + invalid + variant
+				if got := get(path, nil); got.Code != http.StatusBadRequest || strings.Contains(got.Body.String(), "plan_text") {
+					t.Fatalf("%s status=%d body=%s", path, got.Code, got.Body.String())
+				}
+			}
+		}
+	}
+
+	// Every variant states the approved row's plan as metadata and no plan
+	// body, exactly as a request without the parameter does.
+	for _, variant := range variants {
+		path := "/v1/task-operations?workspace_id=demo" + variant
+		response := get(path, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		if strings.Contains(response.Body.String(), "A plan body no list states.") {
+			t.Fatalf("%s carried plan text: %s", path, response.Body.String())
+		}
+		var items taskOperationsResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 3 {
+			t.Fatalf("%s rows = %d, want 3", path, len(items))
+		}
+		if got := items[taskOperationsRow(t, items, "approved")].Plan; got != (taskPlanStatus{State: taskPlanApproved, Version: plan.Version}) {
+			t.Fatalf("%s approved plan = %+v", path, got)
+		}
+		if got := items[taskOperationsRow(t, items, "unplanned")].Plan; got != (taskPlanStatus{State: taskPlanNone}) {
+			t.Fatalf("%s unplanned plan = %+v", path, got)
+		}
+	}
+
+	// A conditional task list read binds the parsed query, which no longer
+	// holds a plan-text choice, so the tag served without the parameter
+	// admits a request that sends any value of it.
+	first := get("/v1/tasks?workspace_id=demo", nil)
+	tag := first.Header().Get("ETag")
+	if first.Code != http.StatusOK || tag == "" {
+		t.Fatalf("task list status=%d etag=%q body=%s", first.Code, tag, first.Body.String())
+	}
+	for _, variant := range variants[1:] {
+		path := "/v1/tasks?workspace_id=demo" + variant
+		if got := get(path, http.Header{"If-None-Match": {tag}}); got.Code != http.StatusNotModified || got.Body.Len() != 0 {
+			t.Fatalf("%s with the unparameterized tag: status=%d body=%s", path, got.Code, got.Body.String())
 		}
 	}
 }

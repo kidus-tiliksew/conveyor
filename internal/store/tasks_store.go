@@ -106,7 +106,7 @@ func (f TaskFilter) Validate() error {
 // the selected page. IncludePlanText is the explicit opt-in for the latest
 // plans' text: the projection renders plan status from version and approval
 // alone, so a page states metadata and transfers no plan text unless asked
-// (component-persistence, Database read accounting).
+// (component-persistence, Metrics and database read accounting).
 type TaskOperationsQuery struct {
 	TaskFilter
 	Limit           int
@@ -1052,8 +1052,7 @@ func (m *memory) ListTasks(_ context.Context) ([]core.Task, error) {
 }
 
 // ListTasksFiltered omits task bodies but retains frozen policy, matching the
-// SQL list column sets (req-operator-next-action AC-2.7;
-// component-persistence, Database read accounting).
+// SQL list column sets (component-web-task-surfaces invariant 15).
 func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error) {
 	if err := filter.Validate(); err != nil {
 		return nil, err
@@ -1247,7 +1246,7 @@ func (m *memory) ListTaskOperations(ctx context.Context, query TaskOperationsQue
 // taskOperationsDetailsLocked fills the operations events and latest plans of
 // the page's tasks for ListTaskOperations. The plan entry states metadata
 // unless the caller asked for plan text, so every backend answers a list read
-// alike (component-persistence, Database read accounting).
+// alike (component-persistence, Metrics and database read accounting).
 func (m *memory) taskOperationsDetailsLocked(query TaskOperationsQuery, page *TaskOperationsPage) {
 	for _, task := range page.Tasks {
 		for _, event := range m.events[task.ID] {

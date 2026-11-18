@@ -647,7 +647,7 @@ func (c *readingConn) BeginTx(ctx context.Context, opts driver.TxOptions) (drive
 
 // TestMeteredConnCountsReadOperations covers read accounting through the
 // metered connection with and without a request collector
-// (component-persistence, Database read accounting).
+// (component-persistence, Metrics and database read accounting).
 func TestMeteredConnCountsReadOperations(t *testing.T) {
 	reads := dbmetrics.NewReadLedger()
 	db, _ := openFixture(t, readingConnector{driver: &fullDriver{log: &fixtureLog{}}, reads: reads})

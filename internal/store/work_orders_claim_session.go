@@ -11,7 +11,7 @@ import (
 
 // ClaimSessionReader is the read surface of the claim session check. Neither
 // read selects an authority snapshot or another order's row
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 type ClaimSessionReader interface {
 	GetWorkOrderWithoutSnapshots(ctx context.Context, id string) (core.WorkOrder, error)
 	OtherWorkOrderHoldsSession(ctx context.Context, workOrderID, sessionID string) (bool, error)
@@ -24,7 +24,7 @@ type ClaimSessionReader interface {
 // session and ErrWorkOrderClaimLost when none does or the session is empty;
 // an empty session answers without a read. These are the answers the former
 // scan of ListWorkOrders gave (component-mcp-protocol, Claim-bound
-// authorization; component-work-orders, Snapshot-free fold reads).
+// authorization; component-work-orders invariant 23).
 func ResolveClaimSession(ctx context.Context, st ClaimSessionReader, workOrderID, sessionID string) (core.WorkOrder, error) {
 	if sessionID == "" {
 		return core.WorkOrder{}, ErrWorkOrderClaimLost

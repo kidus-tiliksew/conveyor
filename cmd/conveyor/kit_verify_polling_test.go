@@ -13,7 +13,7 @@ import (
 
 // pollingFixture drives a kit verifier's polling schedule on a virtual clock,
 // so a ten-minute observation proves its server call rate without waiting
-// (component-verification-runner, Polling cadence).
+// (component-verification-runner invariant 22).
 type pollingFixture struct {
 	*kitExecutionFixture
 	mu    sync.Mutex
@@ -56,8 +56,8 @@ func (p *pollingFixture) calls() (renew, context int) {
 
 // TestKitLivePollingKeepsServerCallRateBounded proves a ten-minute observation
 // issues one renewal per capped lease share and one context read per 5-15 s
-// band instead of two calls per second (component-verification-runner, Polling
-// cadence).
+// band instead of two calls per second (component-verification-runner invariant
+// 22).
 func TestKitLivePollingKeepsServerCallRateBounded(t *testing.T) {
 	p := newPollingFixture(t)
 	ctx := t.Context()
@@ -121,8 +121,8 @@ func TestKitLiveContextBackoffResetsOnChange(t *testing.T) {
 
 // TestKitLiveNoticesLostClaimWithinOneContextInterval proves a claim the server
 // no longer holds stops the run inside one context interval, even though the
-// next renewal is a whole lease share away (component-verification-runner,
-// Polling cadence).
+// next renewal is a whole lease share away (component-verification-runner
+// invariant 22).
 func TestKitLiveNoticesLostClaimWithinOneContextInterval(t *testing.T) {
 	p := newPollingFixture(t)
 	ctx := t.Context()

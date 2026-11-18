@@ -25,7 +25,7 @@ var compactEventOmittedKeys = [...]string{"governance_snapshot", "served_require
 // governance_snapshot and served_requirement_snapshot keys. It returns the
 // stored bytes unchanged for another kind, a payload that is not an object,
 // a malformed payload, or an object holding neither key. Nested keys stay
-// (component-persistence, Compact task event reads).
+// (component-task-lifecycle invariant 51).
 func CompactEventPayload(kind string, payload json.RawMessage) json.RawMessage {
 	if !strings.HasPrefix(kind, compactEventKindPrefix) {
 		return payload

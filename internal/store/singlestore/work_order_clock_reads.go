@@ -14,8 +14,7 @@ import (
 // clockWorkOrderColumns is workOrderColumns without the served-requirement
 // and governance snapshot bodies. It keeps governance_snapshot_digest, the
 // small content address that lifecycle events and projections carry, so a
-// lifecycle read never moves a pin body (component-work-orders, Snapshot-free
-// fold reads).
+// lifecycle read never moves a pin body (component-work-orders invariant 23).
 var clockWorkOrderColumns = strings.Replace(workOrderColumns, "served_requirement_snapshot, governance_snapshot_digest, "+governanceSnapshotContentSQL+" AS governance_snapshot", "NULL, governance_snapshot_digest, NULL", 1)
 
 // listTaskOrdersInStatesTx reads one task's orders in the given states with
