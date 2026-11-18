@@ -157,28 +157,45 @@ func openProxiedStore(t *testing.T) (*Store, *statementProxy) {
 	return st, proxy
 }
 
-func TestSingleStoreCompressionStartupLogIntegration(t *testing.T) {
+// TestSingleStoreCompressionOpenIntegration checks that Open reports
+// compression from its own connections' handshakes and does nothing else for
+// it: no log line and no statement of its own. conveyord logs the one
+// summary at startup (component-runtime invariant 43; component-persistence
+// invariant 28).
+func TestSingleStoreCompressionOpenIntegration(t *testing.T) {
 	resetSharedDatabase(t)
 	var logs bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	st, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN())
+	proxy := startStatementProxy(t, sharedDatabase.cfg.Addr)
+	proxied := sharedDatabase.cfg.Clone()
+	proxied.Addr = proxy.addr()
+	proxied.TLSConfig = "false"
+	st, err := Open(t.Context(), proxied.FormatDSN())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if got := strings.Count(logs.String(), "SingleStore connection compression"); got != 1 {
-		t.Fatalf("compression log count = %d, want 1", got)
+	if strings.Contains(strings.ToLower(logs.String()), "compression") {
+		t.Fatalf("Open logged compression: %s", logs.String())
 	}
-	if !strings.Contains(logs.String(), "requested=true") || !strings.Contains(logs.String(), "status=") {
-		t.Fatalf("compression log lacks status: %s", logs.String())
+	for _, command := range proxy.since(0) {
+		if strings.Contains(strings.ToUpper(command.text), "SHOW SESSION STATUS") {
+			t.Fatalf("Open sent a compression status statement: %s", command.text)
+		}
+	}
+	requested, negotiation := st.Compression()
+	if !requested || (negotiation != CompressionNegotiated && negotiation != CompressionNotNegotiated) {
+		t.Fatalf("Compression() = %t %s, want the default request and a handshake-derived state", requested, negotiation)
 	}
 }
 
-func TestSingleStoreCompressionWireIntegration(t *testing.T) {
-	on := openOwnedStore(t)
-	conn, err := net.DialTimeout("tcp", sharedDatabase.cfg.Addr, 5*time.Second)
+// serverGreeting reads the protocol 10 greeting of a fresh connection to
+// addr and returns its version string and capability flags.
+func serverGreeting(t *testing.T, addr string) (string, uint32) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,21 +212,56 @@ func TestSingleStoreCompressionWireIntegration(t *testing.T) {
 	if _, err := io.ReadFull(conn, packet); err != nil {
 		t.Fatal(err)
 	}
-	if len(packet) == 0 {
-		t.Fatal("empty server handshake")
+	if len(packet) == 0 || packet[0] != 10 {
+		t.Fatalf("the server sent no protocol 10 greeting: % x", packet)
 	}
 	versionEnd := bytes.IndexByte(packet[1:], 0)
-	if versionEnd < 0 || 1+versionEnd+1+4+8+1+2 > len(packet) {
+	lower := 1 + versionEnd + 1 + 4 + 8 + 1
+	if versionEnd < 0 || lower+2+1+2+2 > len(packet) {
 		t.Fatal("invalid server handshake")
 	}
-	capOffset := 1 + versionEnd + 1 + 4 + 8 + 1
-	advertised := binary.LittleEndian.Uint16(packet[capOffset:])&0x20 != 0
-	t.Logf("server advertises CLIENT_COMPRESS: %t", advertised)
+	flags := uint32(binary.LittleEndian.Uint16(packet[lower:])) | uint32(binary.LittleEndian.Uint16(packet[lower+2+1+2:]))<<16
+	return string(packet[1 : 1+versionEnd]), flags
+}
+
+// TestSingleStoreCompressionWireIntegration requires a store that requests
+// compression to negotiate it whenever the server offers CLIENT_COMPRESS,
+// read from the tested store's own handshake, and then to receive
+// compressed frames: a 256 KiB repetitive result arrives in far fewer wire
+// bytes than on the disabled control store. When the server does not offer
+// compression, the requested store must still connect uncompressed with no
+// error (component-runtime invariant 43), and the test skips with the
+// server's version and flags rather than passing. A connection failure, a
+// malformed greeting, or a handshake the store did not observe fails.
+func TestSingleStoreCompressionWireIntegration(t *testing.T) {
+	on := openOwnedStore(t)
+	version, flags := serverGreeting(t, sharedDatabase.cfg.Addr)
+	advertised := flags&clientCompress != 0
+	var memsqlVersion string
+	if err := on.db.QueryRowContext(t.Context(), "SELECT @@memsql_version").Scan(&memsqlVersion); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("server %s (memsql_version %s) capability flags 0x%08x; CLIENT_COMPRESS offered: %t", version, memsqlVersion, flags, advertised)
 	off, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer off.Close()
+	if requested, negotiation := off.Compression(); requested || negotiation != CompressionNotNegotiated {
+		t.Fatalf("disabled control store reports %t %s, want false %s", requested, negotiation, CompressionNotNegotiated)
+	}
+	requested, negotiation := on.Compression()
+	t.Logf("requested store: requested=%t negotiation=%s", requested, negotiation)
+	switch {
+	case !requested:
+		t.Fatal("the default store did not request compression")
+	case negotiation == CompressionUnknown:
+		t.Fatal("the requested store's handshake was not observed")
+	case advertised && negotiation != CompressionNegotiated:
+		t.Fatalf("the server offers CLIENT_COMPRESS, but the requested store reports %s", negotiation)
+	case !advertised && negotiation != CompressionNotNegotiated:
+		t.Fatalf("the server does not offer CLIENT_COMPRESS, but the requested store reports %s", negotiation)
+	}
 	wire := map[string]uint64{}
 	for _, tc := range []struct {
 		name string
@@ -226,8 +278,17 @@ func TestSingleStoreCompressionWireIntegration(t *testing.T) {
 		wire[tc.name] = tc.st.ReadStats(0).Bytes
 		t.Logf("%s received %d wire bytes for %d decoded bytes", tc.name, wire[tc.name], len(payload))
 	}
-	if advertised && wire["requested"] >= wire["disabled"] {
-		t.Fatalf("server advertised compression, but requested read used %d bytes versus %d disabled", wire["requested"], wire["disabled"])
+	if wire["disabled"] < 262144 {
+		t.Fatalf("the disabled control received %d wire bytes for 262144 decoded bytes", wire["disabled"])
+	}
+	if !advertised {
+		if wire["requested"] < 262144 {
+			t.Fatalf("an unnegotiated requested store received %d wire bytes for 262144 decoded bytes", wire["requested"])
+		}
+		t.Skipf("SingleStore %s (memsql_version %s) does not offer CLIENT_COMPRESS in its greeting (capability flags 0x%08x), so protocol compression cannot be negotiated on this server; the requested store connected uncompressed without error", version, memsqlVersion, flags)
+	}
+	if wire["requested"]*4 > wire["disabled"] {
+		t.Fatalf("compression was negotiated, but the requested read used %d wire bytes versus %d disabled", wire["requested"], wire["disabled"])
 	}
 }
 

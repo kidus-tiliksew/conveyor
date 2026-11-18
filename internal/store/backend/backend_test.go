@@ -111,8 +111,19 @@ func TestOpenWithStatsReturnsNoStatsForVolatile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if stats.Pool != nil || stats.Reads != nil {
-		t.Fatal("the volatile backend reports no pool or read statistics")
+	if stats.Pool != nil || stats.Reads != nil || stats.Compression != nil {
+		t.Fatal("the volatile backend reports no pool, read, or compression statistics")
+	}
+	// A compression setting on another backend changes nothing
+	// (component-runtime invariant 43).
+	disabled := false
+	st, stats, err = backend.OpenWithStats(store.WithActor(t.Context(), store.SystemActor()), config.Database{Backend: "memory", SingleStoreCompress: &disabled}, backend.AllowVolatile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if stats.Compression != nil {
+		t.Fatal("a non-SingleStore backend reported compression")
 	}
 }
 

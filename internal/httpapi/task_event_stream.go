@@ -249,14 +249,29 @@ type streamWake struct {
 	subscription *changes.Subscription
 	ticks        <-chan time.Time
 	keepalive    <-chan time.Time
-	stops        []func()
+	// readiness signals a change or expiry of the task's merge readiness in
+	// this daemon's cache (mergeReadinessCache.watch).
+	readiness <-chan struct{}
+	stops     []func()
 }
 
-// openTaskWake subscribes to the task's notices. ticks selects the notify
-// mode's test hook as an extra notice source.
-func (s *Server) openTaskWake(workspace, taskID string, ticks bool) *streamWake {
+// readinessWake is the notice wait returns for a readiness signal. It is
+// never published on a hub.
+const readinessWake changes.Kind = "merge_readiness"
+
+// openTaskWake subscribes to the task's notices. notify selects the notify
+// mode's test hook as an extra notice source, and the task's merge-readiness
+// signal: a readiness change alters the task's next action without a task
+// event, so the open task view must refresh (component-next-action
+// invariant 58; DEC-140(3)).
+func (s *Server) openTaskWake(workspace, taskID string, notify bool) *streamWake {
 	wake := s.openWake(s.Changes.SubscribeTask(workspace, taskID))
-	if ticks && s.taskEventStreamTicks != nil {
+	if notify {
+		readiness, stop := s.mergeReadiness.watch(workspace, taskID)
+		wake.readiness = readiness
+		wake.stops = append(wake.stops, stop)
+	}
+	if notify && s.taskEventStreamTicks != nil {
 		c, stop := s.taskEventStreamTicks()
 		wake.ticks = c
 		wake.stops = append(wake.stops, stop)
@@ -301,6 +316,8 @@ func (w *streamWake) wait(ctx context.Context, out io.Writer, flusher http.Flush
 			return changes.Notice{}, false
 		case notice := <-w.subscription.C():
 			return notice, true
+		case <-w.readiness:
+			return changes.Notice{Kind: readinessWake}, true
 		case <-w.ticks:
 			return changes.Notice{}, true
 		case <-w.keepalive:
@@ -323,7 +340,8 @@ func taskStreamWorkspace(ctx context.Context, task core.Task) string {
 }
 
 // streamTaskEventNotifications serves mode=notify: ready after the first
-// fingerprint, then one activity frame per changed fingerprint per wake. A
+// fingerprint, then one activity frame per changed fingerprint per wake, and
+// one per merge-readiness signal of the task. A
 // read failure writes an error frame and ends the stream; a write failure
 // ends it silently.
 func (s *Server) streamTaskEventNotifications(w http.ResponseWriter, flusher http.Flusher, r *http.Request, taskID string, wake *streamWake) {
@@ -341,8 +359,19 @@ func (s *Server) streamTaskEventNotifications(w http.ResponseWriter, flusher htt
 	}
 	flusher.Flush()
 	for {
-		if _, ok := wake.wait(ctx, w, flusher); !ok {
+		notice, ok := wake.wait(ctx, w, flusher)
+		if !ok {
 			return
+		}
+		if notice.Kind == readinessWake {
+			// The readiness change is not an event: the stream writes one
+			// activity frame and reads nothing, so the dashboard reads the
+			// task again (component-http-api invariants 26, 29).
+			if _, err := io.WriteString(w, "event: activity\ndata: {}\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+			continue
 		}
 		if err := stream.poll(ctx, w); err != nil {
 			fail(err)

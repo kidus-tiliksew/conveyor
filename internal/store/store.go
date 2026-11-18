@@ -1070,6 +1070,10 @@ func (m *memory) appendEventLocked(ctx context.Context, event core.Event) {
 		// Published while the mutation holds the mutex, so a subscriber's
 		// read waits for the mutation to finish.
 		m.raiseLocked(changes.Notice{Workspace: workspace, Kind: changes.Task, TaskID: event.TaskID})
+	} else if WorkspaceEventRaisesNotice(event.Kind) {
+		// A document proposal or membership event raises its workspace
+		// notice under the same mutex (DEC-140(3)).
+		m.raiseLocked(changes.Notice{Workspace: workspace, Kind: changes.Workspace})
 	}
 	m.raiseEventDeadlineLocked(workspace, event)
 	projection := projectLineageEvent(workspace, event)

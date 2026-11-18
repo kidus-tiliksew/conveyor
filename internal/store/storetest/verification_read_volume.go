@@ -518,3 +518,13 @@ func runVerificationTaskIndependence(t *testing.T, x Fixture) {
 		t.Fatalf("one task's database reads grew with %d other tasks: %d then %d rows", otherTasks, aloneDatabaseRows, crowdedDatabaseRows)
 	}
 }
+
+// RunVerificationMeasuredReads runs the two verification read-volume cases
+// that measure database reads under their own read labels,
+// verification-snapshot and verification-task-flow, so a backend can repeat
+// them under another connection setting, such as SingleStore protocol
+// compression on and off.
+func RunVerificationMeasuredReads(t *testing.T, x Fixture) {
+	t.Run("SnapshotStatementsFixed", func(t *testing.T) { runVerificationSnapshotStatements(t, x) })
+	t.Run("OneTaskIndependentOfOthers", func(t *testing.T) { runVerificationTaskIndependence(t, x) })
+}
