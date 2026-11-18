@@ -21,13 +21,14 @@ import (
 // wait loop polls, holding only the task state, its plan state, its frozen
 // merge approval, the compact next action, and the task's own claimable
 // orders. It composes no task context, no event fold, and no plan text, and
-// reads no workspace-wide order listing. A poll costs one task read, one task
-// order read, the next-action projection, and the work-order list's claim
-// projections over this task's orders: the dependency blocker read for a
-// queued implementation or verification order, the recovery task and gate
-// reads for an order that recovery can refuse, and the risk subject read for
-// a risk order (component-next-action invariant 57; req-agent-skills REQ-4,
-// AC-4.1 through AC-4.3).
+// reads no workspace-wide order listing. A poll costs two validation reads,
+// one task read, one task order read, one marker read, the next-action
+// projection, and the work-order list's claim projections over this task's
+// orders: the dependency blocker read for a queued implementation or
+// verification order, the recovery task and gate reads for an order that
+// recovery can refuse, and the risk subject read for a risk order
+// (component-next-action invariant 57; req-agent-skills REQ-4, AC-4.1
+// through AC-4.3).
 //
 // The route answers under the conditional statement read: it projects
 // first and answers 304 only when the tag of the body projected now matches
