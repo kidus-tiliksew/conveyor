@@ -22,7 +22,7 @@ import { cn } from '../lib/utils'
 // The full task page keeps its route header fixed while the task content uses
 // one native scroll region. From lg up the content is a reading column beside
 // an inspector; below lg it is one column in DOM order
-// (component-web-task-surfaces, Task detail composition).
+// (component-web-task-surfaces invariant 32).
 export function TaskFullPage() {
   const { workspace } = useWorkspaceSelection()
   const { taskId } = useParams({ from: '/w/$workspaceId/tasks/$taskId/full' })

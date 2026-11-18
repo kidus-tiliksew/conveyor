@@ -701,7 +701,8 @@ func transientWorkerError(err error) bool {
 // workerObserveContext issues one conditional GET: it sends ifNoneMatch, and
 // reports the response's tag and whether the server certified the body the
 // caller already holds with 304 Not Modified. An unchanged poll therefore
-// transfers no body (req-agent-skills AC-4.3; component-cli-onboarding).
+// transfers no body (req-agent-skills AC-4.1; component-next-action invariant
+// 58; component-cli-onboarding).
 func (c *client) workerObserveContext(ctx context.Context, path, ifNoneMatch string, out any, credential string) (string, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 	if err != nil {

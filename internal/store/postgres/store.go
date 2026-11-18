@@ -47,8 +47,8 @@ type Store struct {
 	knownTables            sync.Map // table name -> true once seen to exist
 	gitHubAppEncryptionKey []byte
 	// reads attributes received bytes to store-method labels; nil for a
-	// store assembled without openWithOptions (component-persistence,
-	// Database read accounting).
+	// store assembled without openWithOptions (component-persistence, Metrics and
+	// database read accounting).
 	reads *dbmetrics.ReadLedger
 }
 
@@ -792,8 +792,7 @@ func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []strin
 
 // listActivityMarkers folds the markers from one order selection projected
 // at now and returns that selection and the review lease horizon of the
-// lifecycle events it read (component-persistence, Board activity validation
-// reads).
+// lifecycle events it read (component-web-task-surfaces invariant 19).
 func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now time.Time) ([]store.ActivityMarker, []core.WorkOrder, time.Time, error) {
 	type markerRow struct {
 		taskID      string

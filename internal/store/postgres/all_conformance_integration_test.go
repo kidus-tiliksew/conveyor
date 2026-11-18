@@ -85,8 +85,8 @@ func openConformanceSchema(databaseURL string) error {
 	}
 	poolConfig.ConnConfig.RuntimeParams["search_path"] = name
 	// The production tracer and counting dialer feed the read ledger the
-	// conformance byte bounds drain (component-persistence, Database read
-	// accounting).
+	// conformance byte bounds drain (component-persistence, Metrics and database
+	// read accounting).
 	reads := dbmetrics.NewReadLedger()
 	poolConfig.ConnConfig.Tracer = newRequestTracer(poolConfig.ConnConfig.Tracer, time.Now, nil)
 	poolConfig.ConnConfig.DialFunc = countingDialFunc(poolConfig.ConnConfig.DialFunc, reads)

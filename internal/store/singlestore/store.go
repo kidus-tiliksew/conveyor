@@ -29,8 +29,8 @@ type Store struct {
 	changes       *changes.Hub
 	hotReadLayout map[string]bool
 	// reads attributes received bytes to store-method labels; nil for a
-	// store assembled without Open (component-persistence, Database read
-	// accounting).
+	// store assembled without Open (component-persistence, Metrics and database
+	// read accounting).
 	reads *dbmetrics.ReadLedger
 	// compression reads protocol compression from the handshakes of this
 	// store's connections; nil for a store assembled without Open.
@@ -144,7 +144,7 @@ func Open(ctx context.Context, raw string, compress ...bool) (*Store, error) {
 		return nil, err
 	}
 	// The counting dial attributes received bytes to store-method labels
-	// (component-persistence, Database read accounting).
+	// (component-persistence, Metrics and database read accounting).
 	reads := dbmetrics.NewReadLedger()
 	// The handshake observer reports compression without a statement of its
 	// own (component-runtime invariant 43; component-persistence

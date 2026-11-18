@@ -19,8 +19,8 @@ import (
 // 64 KiB governance snapshot. One set-based INSERT copies a queued template
 // order 200 times and one set-based UPDATE pins both snapshots on every order
 // of the workspace. The store's read ledger bounds the bytes each read
-// receives (component-work-orders, Snapshot-free fold reads;
-// component-persistence, Database read accounting).
+// receives (component-work-orders invariant 23;
+// component-persistence, Metrics and database read accounting).
 func TestClaimSessionAndActivityReadsAtScalePostgresIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	root := store.WithActor(t.Context(), store.SystemActor())
@@ -44,7 +44,7 @@ func TestClaimSessionAndActivityReadsAtScalePostgresIntegration(t *testing.T) {
 // decode zero snapshot bytes, and the read ledger bounds the bytes the
 // service and RenewWorkerClaimCommand receive below one snapshot; a
 // successful renewal keeps the fixed deadline and both snapshots
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 func TestRenewalReadsAtScalePostgresIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	root := store.WithActor(t.Context(), store.SystemActor())

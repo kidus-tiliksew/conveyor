@@ -603,6 +603,16 @@ with checkpoints and transcripts, interventions, review diagnostics, merge
 readiness, and attention state.
 
 `GET /v1/tasks/{id}/next-action` returns the full next action, including `label`.
+`GET /v1/board` returns one line per open task, blueprint anchors left out,
+newest first: `id`, `title` (cut to 80 characters), `state`, `stage`,
+`current_order`, `pull_request`, the task's `crate` when it has one, and the
+compact `next_action`. A line omits an empty field. It takes the shared
+`limit` and `offset` page parameters, with a default and a maximum of 100
+lines. The page also ends before the line that would make its JSON body
+32,768 bytes or more, so continue at `offset` plus the lines served while that
+sum is less than `total`. Each 200 response sends an `ETag`, the hash of the
+body, and a matching `If-None-Match` answers `304` with no body. The MCP
+`get_board` tool and `conveyor board --json` serve the same page.
 `GET /v1/next-actions` returns the inbox: `decisions`, `blocked`, and `automatic`
 bands, paging headers, `document_proposal` items, and an `acts` log. Each
 `document_proposal` item carries `proposal.age_seconds`, the whole seconds since

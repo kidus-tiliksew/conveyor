@@ -28,6 +28,7 @@ work_order_queue_timeout: 24h    # unclaimed orders go stale after this
 database:
   backend: postgres              # the URL comes from CONVEYOR_DATABASE_URL
   # max_conns: 32                # PostgreSQL pool size; see Database selection
+  # singlestore_compress: true   # SingleStore wire compression; see Database selection
 
 execution_settings:
   control_plane:                 # in-process stages; the server configuring itself
@@ -119,6 +120,19 @@ connection strings retain PostgreSQL selection. `conveyor init` and
 `conveyor user issue-link` apply the same inference to `CONVEYOR_DATABASE_URL`.
 See [SingleStore operations](singlestore.md) before creating its database.
 
+A SingleStore connection requests protocol compression by default. For
+`conveyord` the setting resolves in this order: `database.singlestore_compress`
+in the deployment file, then `CONVEYOR_SINGLESTORE_COMPRESS`, then the
+connection string's `compress` parameter, then `true`. `conveyor init` and
+`conveyor user` read only the `compress` parameter, then `true`. The variable
+must be a boolean even when the file setting wins, and an invalid `compress`
+parameter stops the open. Neither refusal echoes the value. When the server
+does not negotiate compression, the connection runs uncompressed with no error.
+`conveyord` logs one line after the store opens:
+`SingleStore protocol compression requested=<true|false> negotiation=<state>`,
+where the state is `negotiated`, `not_negotiated`, or `unknown` when no
+connection handshake was observed yet. PostgreSQL ignores both settings.
+
 `conveyor init` writes `database.backend` and no URL, because a URL can hold a
 password. `conveyord` then needs `CONVEYOR_DATABASE_URL`. The installed service
 reads it from the owner-only `.env` beside the config or the file `--env-file`
@@ -160,8 +174,19 @@ runtime:
   peer check every 30 seconds: a single statement that reads every
   workspace's job log head and task-event position, however many workspaces,
   open dashboard streams, and pending `await_review` calls the daemon serves.
-  Work another daemon commits starts within 30 seconds, and an open stream or
-  `await_review` sees another daemon's change within 30 seconds.
+  A successful check publishes a job notice for each workspace whose job log
+  head moved and a task notice for each workspace whose task-event position
+  moved since the last successful check. A position moves only when the check
+  can read every task event it counts, so a task event that is not yet visible
+  to the check moves no position and publishes no notice until a later
+  successful check reads it. Work another daemon commits starts, and an open
+  stream or `await_review` sees another daemon's change, after a successful
+  check that observes the moved position. A failed check publishes nothing and
+  keeps the previous positions, so a later successful check still finds every
+  change.
+
+With `runtime.peers` off, the default, no peer check runs on any backend, so a
+daemon does not see work that another daemon commits.
 
 The daemon logs its peer mode at startup: `runtime peers: off`,
 `runtime peers: PostgreSQL change notification`, or

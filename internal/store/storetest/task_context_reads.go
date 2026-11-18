@@ -10,8 +10,7 @@ import (
 
 // runTaskContextReads proves the single-task context read states only the
 // attachment kinds its fold uses, so its rows do not grow with a task's
-// unrelated history (component-persistence, Compact task event reads;
-// req-operator-next-action AC-2.7).
+// unrelated history (component-task-lifecycle invariant 53).
 func runTaskContextReads(t *testing.T, x Fixture) {
 	ctx := x.Context
 	repo := x.Config.Repos[0]

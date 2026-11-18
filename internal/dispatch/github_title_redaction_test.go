@@ -59,7 +59,7 @@ func TestTakeInReadyIssueRedactsTitleAndRecordsCounts(t *testing.T) {
 		t.Fatal("the stored title was not redacted")
 	}
 	// The body is read through the single-task detail read: list reads state
-	// no body (component-persistence, Database read accounting).
+	// no body (component-web-task-surfaces invariant 15).
 	detail, err := st.GetTask(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)

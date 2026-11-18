@@ -94,7 +94,7 @@ func formatPoolStats(kind string, stats dbmetrics.PoolStats) string {
 
 // formatReadStats renders one drained interval: its totals, the number of
 // labels that received bytes, and the top labels by bytes received
-// (component-persistence, Database read accounting).
+// (component-persistence, Metrics and database read accounting).
 func formatReadStats(kind string, interval dbmetrics.ReadInterval) string {
 	var line strings.Builder
 	fmt.Fprintf(&line, "database read stats (%s): bytes=%d rows=%d queries=%d labels=%d top=",

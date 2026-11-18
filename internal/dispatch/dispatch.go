@@ -358,7 +358,7 @@ func (d *Dispatcher) dispatchSnapshot(ctx context.Context, task core.Task, check
 	}
 	if task.NextStage == core.StageReview && task.SetupContract.VerifyStage {
 		// Readiness folds only this task's orders, read without authority
-		// snapshots (component-work-orders, Snapshot-free fold reads).
+		// snapshots (component-work-orders invariant 23).
 		orders, err := d.taskOrders(ctx, task.ID)
 		if err != nil {
 			return err
@@ -471,8 +471,8 @@ func isBlueprintAnchor(task core.Task) bool {
 // taskOrders reads one task's orders with elapsed clocks projected and without
 // the served-requirement and governance snapshots. Every dispatch and merge
 // fold that reads no snapshot body uses it, so a fold never decodes authority
-// bodies or another task's rows (component-work-orders, Snapshot-free fold
-// reads). Readers that need the pins read the stored order instead.
+// bodies or another task's rows (component-work-orders invariant 23). Readers
+// that need the pins read the stored order instead.
 func (d *Dispatcher) taskOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
 	return d.Store.ListWorkOrdersForTasks(ctx, []string{taskID})
 }

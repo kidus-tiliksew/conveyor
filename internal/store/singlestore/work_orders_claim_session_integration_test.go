@@ -23,8 +23,8 @@ const claimSessionDigits = `(SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2
 // 64 KiB governance snapshot. One set-based INSERT copies a queued template
 // order 200 times and one set-based UPDATE pins both snapshots on every order
 // of the workspace. The private pool's read ledger bounds the bytes each read
-// receives (component-work-orders, Snapshot-free fold reads;
-// component-persistence, Database read accounting).
+// receives (component-work-orders invariant 23;
+// component-persistence, Metrics and database read accounting).
 func TestClaimSessionAndActivityReadsAtScaleSingleStoreIntegration(t *testing.T) {
 	st := openOwnedStore(t, false)
 	workspace := "claim-session-scale-" + core.NewTaskID()
@@ -42,7 +42,7 @@ func TestClaimSessionAndActivityReadsAtScaleSingleStoreIntegration(t *testing.T)
 // decode zero snapshot bytes, and the read ledger bounds the bytes the
 // service and RenewWorkerClaimCommand receive below one snapshot; a
 // successful renewal keeps the fixed deadline and both snapshots
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 func TestRenewalReadsAtScaleSingleStoreIntegration(t *testing.T) {
 	st := openOwnedStore(t, false)
 	workspace := "claim-session-scale-" + core.NewTaskID()

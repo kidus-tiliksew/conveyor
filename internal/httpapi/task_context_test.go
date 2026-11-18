@@ -204,7 +204,7 @@ func TestTaskContextProposalRESTAndTaskProjection(t *testing.T) {
 	// Both decisions leave the human timeline: the bounded view and the human
 	// history page omit them, and technical history still carries each with
 	// its target (component-http-api, Bounded detail view;
-	// component-web-task-surfaces, Task detail composition).
+	// component-web-task-surfaces invariant 24).
 	type decisionEvent struct {
 		Kind    string `json:"kind"`
 		Payload struct {

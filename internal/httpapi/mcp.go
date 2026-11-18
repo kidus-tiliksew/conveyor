@@ -670,7 +670,7 @@ func (s *Server) mcpTaskStatus(ctx context.Context, taskID string) (nextaction.N
 // store.ResolveClaimSession reads the named order and, for a mismatched or
 // missing order, asks whether another order of the workspace holds the
 // session; neither read selects a snapshot or the workspace's orders
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 func (s *Server) authorizeClaimantSession(ctx context.Context, workOrderID, sessionID string) (core.WorkOrderClaimIdentity, error) {
 	order, err := s.claimantSessionOrder(ctx, workOrderID, sessionID)
 	if err != nil {

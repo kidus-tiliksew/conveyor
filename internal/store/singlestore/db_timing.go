@@ -64,7 +64,7 @@ var (
 
 // Connect passes a slot through the connect context so the counting dial
 // binds the connection's read counter to the returned meteredConn
-// (component-persistence, Database read accounting).
+// (component-persistence, Metrics and database read accounting).
 func (c *meteredConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	slot := &readConnSlot{}
 	conn, err := c.base.Connect(context.WithValue(ctx, readConnSlotKey{}, slot))
@@ -548,7 +548,7 @@ func (r *meteredRows) ColumnTypePrecisionScale(index int) (int64, int64, bool) {
 }
 
 // ReadStats drains the store's read ledger for the daemon's read statistics
-// line (component-persistence, Database read accounting).
+// line (component-persistence, Metrics and database read accounting).
 func (s *Store) ReadStats(top int) dbmetrics.ReadInterval {
 	return s.reads.Drain(top)
 }

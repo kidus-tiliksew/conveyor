@@ -326,7 +326,7 @@ async function expectHeaderControlsClear(header: Locator, title: Locator) {
 
 // Each context row keeps one line at every width: the title, then its pinned
 // version at the end of the line. The document ID travels in the link's
-// accessible name (component-web-task-surfaces, Task detail composition).
+// accessible name (component-web-task-surfaces invariant 32).
 async function expectContextRows(page: Page, _stacked: boolean) {
   const card = page.getByRole('region', { name: 'Attached context' })
   for (const [title, id, version] of [

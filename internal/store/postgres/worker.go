@@ -47,8 +47,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	// authority snapshots: the single update writes only the lease and update
 	// times, so the stored snapshots stay in place while no snapshot leaves the
 	// database. Only a completed-order acknowledgement returns the full order
-	// (component-work-orders, Snapshot-free fold reads; req-delegated-execution
-	// AC-1.1).
+	// (component-work-orders invariant 23; req-delegated-execution AC-1.1).
 	current, err := s.GetWorkOrderWithoutSnapshots(ctx, workOrderID)
 	if err != nil {
 		return core.WorkOrder{}, err

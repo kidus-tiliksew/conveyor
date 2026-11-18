@@ -183,7 +183,7 @@ type Fixture struct {
 	// DrainReadBytes drains the backend's read ledger and returns the bytes
 	// received per read label. Production-capable backends must provide it;
 	// the volatile backend transfers no bytes and leaves it nil
-	// (component-persistence, Database read accounting).
+	// (component-persistence, Metrics and database read accounting).
 	DrainReadBytes func() map[string]uint64
 	// DrainReadRows drains the same read ledger and returns the rows received
 	// per read label, so a suite can bound the rows one read transfers. A

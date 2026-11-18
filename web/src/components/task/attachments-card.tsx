@@ -81,9 +81,8 @@ function useRowCapacity(signature: string) {
 
 // The attachments section: operator-supplied task files previewed as small
 // tiles directly below the spec, each expandable in-place. The card opens on
-// one row; "+N more" reveals the rest in place (component-web-task-surfaces,
-// Task detail composition). Omitted entirely when the task carries no
-// attachments.
+// one row; "+N more" reveals the rest in place (component-web-task-surfaces
+// invariant 32). Omitted entirely when the task carries no attachments.
 export function AttachmentsCard({ attachments, title = 'Attachments' }: { attachments: Artifact[]; title?: string }) {
   const { urls, failed } = useMediaPreviews(attachments)
   const signature = attachments.map((attachment) => attachment.id).join(',')

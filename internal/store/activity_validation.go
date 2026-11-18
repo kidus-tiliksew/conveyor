@@ -13,8 +13,8 @@ import (
 )
 
 // ActivityValidation is the fixed-size state the Board's conditional activity
-// read compares before it projects a page (component-persistence, Board
-// activity validation reads). It carries no row, payload, or content.
+// read compares before it projects a page (component-web-task-surfaces
+// invariant 18). It carries no row, payload, or content.
 type ActivityValidation struct {
 	// EventCount and EventMaxID are the count and maximum ID of the
 	// workspace's events. Events are append-only, so the count rises when any
@@ -75,8 +75,7 @@ type ActivityValidationTable struct {
 }
 
 // ActivityValidationTables is the fixed, ordered table list every durable
-// backend fingerprints (component-persistence, Board activity validation
-// reads).
+// backend fingerprints (component-web-task-surfaces invariant 18).
 var ActivityValidationTables = []ActivityValidationTable{
 	{Name: "tasks", Scope: ActivityScopeWorkspace, Exclude: []string{"body"}},
 	{Name: "task_dependencies", Scope: ActivityScopeWorkspace},
@@ -203,7 +202,7 @@ func (m *memory) ReadActivityInputs(ctx context.Context, taskIDs []string, now t
 // workOrdersAt is ListWorkOrders projected at one instant, with both
 // authority snapshots cleared as the durable backends' activityWorkOrderColumns
 // read leaves them, so no activity read returns a snapshot body
-// (component-persistence, Board activity validation reads).
+// (component-web-task-surfaces invariant 19).
 func (m *memory) workOrdersAt(now time.Time) []core.WorkOrder {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

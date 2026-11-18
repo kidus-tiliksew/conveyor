@@ -1184,7 +1184,7 @@ type ListCompactEventsParams struct {
 
 // ListCompactEvents is ListEvents with the governance and served-requirement
 // snapshot bodies removed from work_order.* object payloads by the database
-// (component-persistence, Compact task event reads).
+// (component-task-lifecycle invariants 51 and 52).
 func (q *Queries) ListCompactEvents(ctx context.Context, arg ListCompactEventsParams) ([]Event, error) {
 	rows, err := q.db.Query(ctx, listCompactEvents, arg.TaskID, arg.WorkspaceID)
 	if err != nil {
@@ -1688,8 +1688,7 @@ type ListTaskOperationsTasksRow struct {
 
 // listTaskOperationsTasksForList omits the body while retaining frozen policy
 // for next-action projections. Its predicate and order cannot drift from the
-// whole-row read (req-operator-next-action AC-2.7; component-persistence,
-// Database read accounting).
+// whole-row read (component-web-task-surfaces invariant 15).
 var listTaskOperationsTasksForList = strings.Replace(listTaskOperationsTasks, "t.title, t.body, t.class", "t.title, ''::text AS body, t.class", 1)
 
 func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error) {
@@ -2598,8 +2597,8 @@ func verificationTable(table string) bool {
 
 // ListVerificationRecords reads one task's rows of the named tables. The
 // predicate is task-scoped for every table, so a read's bytes never grow with
-// another task's verification rows (component-persistence, Database read
-// accounting).
+// another task's verification rows (component-persistence, Metrics and database
+// read accounting).
 func (q *Queries) ListVerificationRecords(ctx context.Context, workspaceID, taskID string, tables []string) ([]VerificationRecord, error) {
 	var out []VerificationRecord
 	for _, table := range tables {
@@ -2666,7 +2665,8 @@ func (q *Queries) ListVerificationPublicationDeliveries(ctx context.Context, ws,
 
 // LatestVerificationPublicationDelivery reads the newest generation of one
 // pull-request key: the row a delivery command advances, without the whole
-// generation history (component-persistence, Database read accounting).
+// generation history (component-persistence, Metrics and database read
+// accounting).
 func (q *Queries) LatestVerificationPublicationDelivery(ctx context.Context, workspaceID, prKey string) (VerificationPublicationDeliveryRecord, bool, error) {
 	var r VerificationPublicationDeliveryRecord
 	err := q.db.QueryRow(ctx, `SELECT workspace_id,id,task_id,context_id,source_publication_id,pr_key,generation,state,body FROM verification_publication_deliveries WHERE workspace_id=$1 AND pr_key=$2 AND state<>'superseded' ORDER BY generation DESC LIMIT 1`, workspaceID, prKey).Scan(&r.WorkspaceID, &r.ID, &r.TaskID, &r.ContextID, &r.SourcePublicationID, &r.PRKey, &r.Generation, &r.State, &r.Body)

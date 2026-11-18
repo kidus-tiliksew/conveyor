@@ -11,7 +11,7 @@ import (
 // readCountingStore counts the work-order reads one service path makes and
 // reports whether a snapshot-free read answered with an authority snapshot, so
 // a test can prove an internal state check selects the lean read
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 type readCountingStore struct {
 	store.Store
 	full, lean        int
@@ -36,7 +36,7 @@ func (s *readCountingStore) GetWorkOrderWithoutSnapshots(ctx context.Context, id
 // its admission check and proves the re-check reads the snapshot-free order
 // while the same-session admission keeps the full read, because a verify
 // order's pinned authority is read from it
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 func TestStateCheckReadsWithoutAuthoritySnapshots(t *testing.T) {
 	t.Parallel()
 	ctx, st, service, order := newLifecycleService(t, "snapshot-free")

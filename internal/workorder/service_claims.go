@@ -35,7 +35,7 @@ func (s *Service) RenewClaimWithLease(ctx context.Context, claim core.WorkOrderC
 	}
 	// The task lookup reads no authority snapshot, so a refused renewal
 	// decodes none; a missing order answers not found as GetWorkOrder did
-	// (component-work-orders, Snapshot-free fold reads).
+	// (component-work-orders invariant 23).
 	order, err := s.Store.GetWorkOrderWithoutSnapshots(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err

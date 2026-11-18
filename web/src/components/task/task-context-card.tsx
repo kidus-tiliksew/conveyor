@@ -26,8 +26,7 @@ export function TaskContextCard({
   taskState: TaskState
   context?: TaskContext
   // The full route's inspector: rows drop their kind label and the Remove
-  // control shows only its icon (component-web-task-surfaces, Task detail
-  // composition).
+  // control shows only its icon (component-web-task-surfaces, Task detail).
   compact?: boolean
 }) {
   const canOperate = useWorkspaceCapability('operate_gates')

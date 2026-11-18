@@ -15,7 +15,7 @@ import (
 // method whose first parameter is a named context.Context begins with
 // WithReadLabel on that parameter and its own name, and a method taking a
 // callback that receives a context sets no label (component-persistence,
-// Database read accounting).
+// Metrics and database read accounting).
 func TestStoreMethodsSetReadLabel(t *testing.T) {
 	packages := []struct{ dir, prefix string }{
 		{"../postgres", ""},

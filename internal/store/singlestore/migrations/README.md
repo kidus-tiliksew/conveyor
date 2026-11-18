@@ -1,7 +1,9 @@
 # SingleStore migration rules
 
 These numbers belong to this backend; version one is a fresh schema, not a replay of PostgreSQL migrations.
-Published SQL and recorded checksums are immutable, with one exception: migrations 0001, 0009, 0023, 0024, 0029, 0037 and 0040 were edited to create selected history tables as columnstore on new databases. `publishedChecksums` accepts their original checksums without rewriting ledger rows or existing tables.
+Published SQL and recorded checksums are immutable, with one exception: migrations 0001, 0009, 0023, 0024, 0029, 0037 and 0040 were edited to create selected history tables as columnstore on new databases. `publishedChecksums` accepts their original checksums without rewriting ledger rows or existing tables. Any later correction to a published file is a new numbered migration (DEC-139(1)).
+A new table is columnstore only when it has at most one unique key and no reader locks its rows with `FOR UPDATE`. `task_context_proposals` is the one exception, because each of its `FOR UPDATE` reads first locks the owning `tasks` or `planning_sessions` row (DEC-139(2)).
+`task_event_positions` (migration 0043) is a rowstore support table: each workspace row is the task-event position the peer check reads.
 DDL commits implicitly, so new migrations must tolerate an interrupted startup.
 Normal startup applies pending numbered migrations under the backend migration lock.
 Migration 0027 keeps its original ledger identity but its retired automatic event conversion is not executed.

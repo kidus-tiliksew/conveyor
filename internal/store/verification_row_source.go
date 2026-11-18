@@ -5,7 +5,7 @@ import "context"
 // VerificationTableSet names the verification tables one command decodes, so a
 // backend reads only those tables for that command: a read's bytes grow with
 // the rows the command uses and never with rows it never looks at
-// (component-persistence, Database read accounting;
+// (component-persistence, Metrics and database read accounting;
 // component-verification-service).
 type VerificationTableSet []string
 
@@ -94,8 +94,8 @@ const VerificationDeliveryReconcileWindow = 100
 // VerificationOperationScope reads the operation rows a registration must
 // consider outside the task's own rows, inside the command's transaction. It
 // replaces the workspace-wide operation read a store no longer performs
-// (component-verification-service; component-persistence, Database read
-// accounting).
+// (component-verification-service; component-persistence, Metrics and database
+// read accounting).
 type VerificationOperationScope interface {
 	// VerificationOperationByKey returns at most the operation that owns a
 	// logical key anywhere in the workspace.

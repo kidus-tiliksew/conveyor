@@ -190,8 +190,7 @@ var (
 
 // listActivityMarkers folds the markers from one order selection projected
 // at now and returns that selection and the review lease horizon of the
-// lifecycle events it read (component-persistence, Board activity validation
-// reads).
+// lifecycle events it read (component-web-task-surfaces invariant 19).
 func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now time.Time) ([]store.ActivityMarker, []core.WorkOrder, time.Time, error) {
 	rows, err := s.markerTaskRows(ctx, taskIDs)
 	if err != nil {

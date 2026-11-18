@@ -2840,7 +2840,7 @@ func newClaimSessionFixture(t *testing.T) claimSessionFixture {
 // decode zero snapshot bytes. renew_work_order does not use the session check;
 // a mismatched, missing-order, or foreign renewal must return its former error,
 // make no ListWorkOrders call, and decode zero snapshot bytes
-// (component-work-orders, Snapshot-free fold reads; component-mcp-protocol,
+// (component-work-orders invariant 23; component-mcp-protocol,
 // Claim-bound authorization).
 func TestClaimSessionCheckReadsNoWorkspaceOrders(t *testing.T) {
 	inputs := []struct {

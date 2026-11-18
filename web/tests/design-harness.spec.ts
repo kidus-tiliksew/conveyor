@@ -721,8 +721,7 @@ const runningDetail = {
 
 // The merged shape task 261016-6ea120 measures: an approved plan, seven
 // context documents, nine attachments, and a review that sent the work back
-// once before approving (component-web-task-surfaces, Task detail
-// composition).
+// once before approving (component-web-task-surfaces, Task detail).
 const mergedID = 'task-260731-merged01'
 const retarget = <T extends { task_id?: string }>(record: T): T => ({ ...record, task_id: mergedID })
 const reviewSeat = (id: string, job: string, round: number, seat: number, model: string) => ({

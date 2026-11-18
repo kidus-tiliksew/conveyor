@@ -16,8 +16,8 @@ import (
 // the same number of statements for 10 and 100 rows: the operations events,
 // the latest plan metadata, and the legacy gate markers are read for the page
 // in one statement each, so the read count does not grow with the page
-// (component-persistence, Database read accounting; req-operator-next-action
-// AC-2.7).
+// (component-persistence, Metrics and database read accounting;
+// component-web-task-surfaces invariant 15).
 func TestTaskOperationsStatementBoundIntegration(t *testing.T) {
 	st := integrationStore(t)
 	connector, err := mysql.NewConnector(sharedDatabase.cfg)

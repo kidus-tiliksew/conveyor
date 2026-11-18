@@ -13,10 +13,10 @@ import (
 )
 
 // RunActivityValidationConformance proves the Board validation read and the
-// one-selection input read on every backend (component-persistence, Board
-// activity validation reads): a stable result for unchanged state, a changed
-// result after each change kind, isolation from another workspace, and
-// inputs equal to the separate marker and order reads.
+// one-selection input read on every backend (component-web-task-surfaces
+// invariant 19): a stable result for unchanged state, a changed result after
+// each change kind, isolation from another workspace, and inputs equal to the
+// separate marker and order reads.
 func RunActivityValidationConformance(t *testing.T, x Fixture) {
 	st, ws := x.Backend, x.Workspace
 	ctx := store.WithActor(x.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorHuman})
@@ -258,8 +258,8 @@ func RunActivityValidationConformance(t *testing.T, x Fixture) {
 	// that pin a served-requirement and a 64 KiB governance snapshot, a nil
 	// task list decodes zero snapshot bytes, returns the orders of
 	// ListWorkOrders with both snapshots cleared, and returns the markers of
-	// the task-scoped read at the same instant (component-persistence, Board
-	// activity validation reads).
+	// the task-scoped read at the same instant (component-web-task-surfaces
+	// invariant 19).
 	pinned := Fixture{Backend: st, Context: ctx, Workspace: ws, Config: x.Config}
 	pinnedSuffix := core.NewTaskID()
 	claimSessionOrder(t, pinned, "activity-first-"+pinnedSuffix, time.Hour)

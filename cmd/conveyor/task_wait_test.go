@@ -200,7 +200,7 @@ func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 		// the server's validator covers (the database validation read plus the
 		// route scope). It covers neither the gate's plan version nor the live
 		// merge readiness, so a readiness change answers 304 and the wait must
-		// re-read the gate to observe it (req-agent-skills AC-4.1, AC-4.3).
+		// re-read the gate to observe it (req-agent-skills AC-4.1).
 		tagged := fmt.Sprintf("%s|%s|%s", body, "observation", time.Now().UTC().Format("2006-01-02T15:04"))
 		tag := fmt.Sprintf("%q", fmt.Sprintf("obs-%x", sha256.Sum256([]byte(tagged))))
 		w.Header().Set("ETag", tag)
@@ -608,7 +608,8 @@ func TestTaskWaitHumanOutputMatchesJSONFields(t *testing.T) {
 }
 
 // The wait polls the narrow observation route and sends the tag it holds, so
-// an unchanged poll transfers no body (req-agent-skills AC-4.2, AC-4.3).
+// an unchanged poll transfers no body (req-agent-skills AC-4.1;
+// component-next-action invariant 58).
 func TestTaskWaitPollsObservationWithIfNoneMatch(t *testing.T) {
 	f := newTaskWaitFixture(t,
 		taskWaitStep{state: core.TaskRunning},
@@ -641,7 +642,7 @@ func TestTaskWaitPollsObservationWithIfNoneMatch(t *testing.T) {
 
 // The cadence starts at two seconds, doubles to a fifteen-second ceiling while
 // nothing changes, and returns to two seconds after a change
-// (req-agent-skills AC-4.2).
+// (req-agent-skills AC-4.1).
 func TestTaskWaitPollerDoublesToTheCeiling(t *testing.T) {
 	poller := &taskWaitPoller{base: taskWaitPollInterval, maximum: taskWaitPollCeiling, current: taskWaitPollInterval, jitter: func(delay, _ time.Duration) time.Duration { return delay }}
 	delays := make([]time.Duration, 0, 5)

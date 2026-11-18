@@ -32,7 +32,7 @@ const (
 
 // runCompactEventReads pins ListCompactEvents against ListEvents over a
 // ledger that holds compact work-order events beside historical ones that
-// embed snapshot bodies (component-persistence, Compact task event reads).
+// embed snapshot bodies (component-task-lifecycle invariant 51).
 // The payload column is the only column that can carry a body, and each
 // driver returns exactly the bytes it receives for it, so the payload bytes
 // the compact read returns bound what it transferred.
@@ -361,7 +361,7 @@ func roleMarkers(t *testing.T, label string, roles activityMarkerRoles, markers 
 // bytes the database sends under the read label stay below
 // compactReadPayloadBound, so a return to the raw payload column fails
 // (component-task-lifecycle, Compact event reads; component-persistence,
-// Database read accounting).
+// Metrics and database read accounting).
 func runActivityMarkerCompactReads(t *testing.T, x Fixture) {
 	if x.SeedEvents == nil {
 		t.Fatal("factory must provide SeedEvents for activity marker conformance")

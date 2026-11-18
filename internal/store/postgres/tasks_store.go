@@ -500,7 +500,7 @@ func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOpera
 
 // taskOperationsPlanMetadata reads the page's latest plan versions without
 // their text: the Tasks projection renders plan status from version and
-// approval alone (component-persistence, Database read accounting).
+// approval alone (component-persistence, Metrics and database read accounting).
 func (s *Store) taskOperationsPlanMetadata(ctx context.Context, page *store.TaskOperationsPage, workspaceID string, taskIDs []string) error {
 	rows, err := s.boundary.Query(ctx, `SELECT DISTINCT ON (s.task_id) s.task_id,s.version,s.approved,s.created_at,s.approved_at
 		FROM task_specs s

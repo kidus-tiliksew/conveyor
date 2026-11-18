@@ -614,8 +614,8 @@ func requireSameOrders(t *testing.T, label string, got, want []core.WorkOrder) {
 // dispatcher and the live list use decode no snapshot byte, return only the
 // requested task's rows, and otherwise equal the full read. Review readiness
 // gives the same answer over the task-scoped read as over the workspace read,
-// for a pending and a sealed verify order (component-work-orders,
-// Snapshot-free fold reads and Listing).
+// for a pending and a sealed verify order (component-work-orders invariants 23
+// and 59).
 func runSnapshotFreeFoldReads(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	governance := core.GovernanceSnapshot{

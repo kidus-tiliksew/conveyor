@@ -436,7 +436,7 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": expires})})
 	// The renewal answers with the order the durable backends' snapshot-free
 	// renewal read returns; the stored order keeps both snapshots
-	// (component-work-orders, Snapshot-free fold reads).
+	// (component-work-orders invariant 23).
 	return withoutAuthoritySnapshots(order), nil
 }
 
@@ -1650,7 +1650,7 @@ func (m *memory) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, erro
 // withoutAuthoritySnapshots clears the served-requirement and governance
 // snapshots on a copy, as the durable backends' activityWorkOrderColumns
 // leave them NULL, so a fold read returns the same order on every backend
-// (component-work-orders, Snapshot-free fold reads).
+// (component-work-orders invariant 23).
 func withoutAuthoritySnapshots(order core.WorkOrder) core.WorkOrder {
 	order.ServedRequirementSnapshot = nil
 	order.GovernanceSnapshot = nil

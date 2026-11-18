@@ -383,9 +383,7 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 
 	// List reads omit bodies but retain frozen policy. Both spellings agree for
 	// the count's filter, an inactive filter, and a narrowing filter; ListTasks
-	// remains a whole-row read (req-operator-next-action AC-2.7;
-	// component-persistence, Database read
-	// accounting).
+	// remains a whole-row read (component-web-task-surfaces invariant 15).
 	openFilter := store.TaskFilter{States: attentionOpenStates}
 	listRows := func(name string, filter store.TaskFilter) (lean []core.Task) {
 		t.Helper()

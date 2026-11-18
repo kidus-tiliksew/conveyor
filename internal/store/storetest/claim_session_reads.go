@@ -277,7 +277,7 @@ func sameClaimSessionAnswer(got, want error) bool {
 
 // runClaimSessionReads proves the two snapshot-free reads of the claim
 // session check and the answers ResolveClaimSession derives from them on
-// every backend (component-work-orders, Snapshot-free fold reads).
+// every backend (component-work-orders invariant 23).
 func runClaimSessionReads(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	suffix := core.NewTaskID()
@@ -438,9 +438,8 @@ func seedClaimSessionScale(t *testing.T, x Fixture, scale ClaimSessionScale, tem
 // the whole-workspace activity reads to make no ListWorkOrders call, decode
 // zero snapshot bytes, and answer as before over the same rows. With
 // DrainReadBytes it also bounds the bytes each read receives from the
-// database, measured under a test read label (component-work-orders,
-// Snapshot-free fold reads; component-persistence, Board activity validation
-// reads).
+// database, measured under a test read label (component-work-orders invariant
+// 23; component-web-task-surfaces invariant 19).
 func RunClaimSessionAndActivityReadsAtScale(t *testing.T, x Fixture, scale ClaimSessionScale) {
 	ctx := x.Context
 	suffix := core.NewTaskID()
@@ -585,8 +584,8 @@ func (r *WorkOrderReadRecorder) RenewWorkerClaimCommand(ctx context.Context, lea
 // passing the fixed execution deadline, keep the attempt, persist the lease,
 // and keep both snapshots in the stored row while answering with the
 // snapshot-free order; a renewal of the same claim's completed order returns
-// that order with its snapshots (component-work-orders, Snapshot-free fold
-// reads; req-delegated-execution AC-1.1).
+// that order with its snapshots (component-work-orders invariant 23;
+// req-delegated-execution AC-1.1).
 func RunRenewalReads(t *testing.T, x Fixture, scale ClaimSessionScale, renew RenewFunc) {
 	st, ctx := x.Backend, x.Context
 	suffix := core.NewTaskID()
