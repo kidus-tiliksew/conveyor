@@ -804,15 +804,15 @@ INSERT INTO tasks (
     setup_name, setup_contract, reviewed_head_sha, approved_head_sha, approval_stale,
     refresh_baseline_sha, refresh_head_sha, refresh_review_scope,
     repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id,
-    origin_spec_version, origin_sub_id, intake_key, created_at, crate_id
+    origin_spec_version, origin_sub_id, intake_key, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
     $13, $14, $15, $16, $17, $18, $19, $20,
     $21, $22, $23, $24, $25, $26, $27,
     $28, $29,
-    $30, $31, $32
+    $30, $31
 )
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, crate_id
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id
 `
 
 type InsertTaskParams struct {
@@ -847,7 +847,6 @@ type InsertTaskParams struct {
 	OriginSubID        string             `json:"origin_sub_id"`
 	IntakeKey          pgtype.Text        `json:"intake_key"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	CrateID            pgtype.Text        `json:"crate_id"`
 }
 
 func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, error) {
@@ -883,7 +882,6 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		arg.OriginSubID,
 		arg.IntakeKey,
 		arg.CreatedAt,
-		arg.CrateID,
 	)
 	var i Task
 	err := row.Scan(
@@ -919,7 +917,6 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		&i.RefreshReviewScope,
 		&i.OriginSpecVersion,
 		&i.OriginSubID,
-		&i.CrateID,
 	)
 	return i, err
 }

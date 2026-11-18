@@ -119,6 +119,14 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 	if err := writeTaskPlanState(ctx, tx, task); err != nil {
 		return err
 	}
+	// The crate is written beside the insert in the creating transaction, as
+	// the plan state is, so the insert names no column newer than the oldest
+	// schema a fixture creates a task in (component-crates invariant 7).
+	if crateID := task.TaskCrateID(); crateID != "" {
+		if _, err := tx.Exec(ctx, `UPDATE tasks SET crate_id=$3 WHERE workspace_id=$1 AND id=$2`, task.Workspace, task.ID, crateID); err != nil {
+			return err
+		}
+	}
 	if task.Supersedes != "" || task.SupersededBy != "" || task.IntakeOperatorDirection != "" {
 		if _, err := tx.Exec(ctx, `UPDATE tasks SET supersedes=NULLIF($3,''),superseded_by=NULLIF($4,''),intake_operator_direction=$5 WHERE workspace_id=$1 AND id=$2`, task.Workspace, task.ID, task.Supersedes, task.SupersededBy, task.IntakeOperatorDirection); err != nil {
 			return err
@@ -1862,7 +1870,6 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage),
 		ParentTaskID: nullableText(task.ParentTaskID), OriginSpecVersion: int32(task.OriginSpecVersion), OriginSubID: task.OriginSubID,
 		IntakeKey: nullableText(task.IntakeKey), CreatedAt: timestamp(task.CreatedAt),
-		CrateID: nullableText(task.TaskCrateID()),
 	}
 }
 
