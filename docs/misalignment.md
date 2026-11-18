@@ -106,7 +106,7 @@ The third machine is the simplest: authority the operator still owes the
 factory. Every unconfirmed proposal across the four tiers (requirement
 versions, System Design versions, decisions, and suggested task context)
 is projected onto one Pending proposals page with its origin and age, and
-rolled into the sidebar and Tasks page attention counts.
+rolled into the Inbox attention count in the sidebar.
 
 Proposals never gate work, and a task no longer authors them (DEC-102). A
 version a task authored earlier holds nothing either: verify and review claims
