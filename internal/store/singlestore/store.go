@@ -9,9 +9,9 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -33,6 +33,10 @@ type Store struct {
 	// store assembled without Open (component-persistence, Database read
 	// accounting).
 	reads *dbmetrics.ReadLedger
+	// peerAccepted holds the task-event position each workspace's last
+	// successful PeerMarks read accepted; peerMu serializes those reads.
+	peerMu       sync.Mutex
+	peerAccepted map[string]int64
 }
 
 var _ store.Backend = (*Store)(nil)
@@ -201,20 +205,7 @@ func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	if err = fn(tx); err != nil {
 		return translateBackendConflict(err)
 	}
-	if value, ok := txBatches.Load(tx); ok {
-		state := value.(*txNoticeState)
-		workspaces := make([]string, 0, len(state.taskWorkspaces))
-		for ws := range state.taskWorkspaces {
-			workspaces = append(workspaces, ws)
-		}
-		sort.Strings(workspaces)
-		for _, ws := range workspaces {
-			if _, err = tx.ExecContext(ctx, `INSERT INTO task_event_positions(workspace_id,position) VALUES(?,1) ON DUPLICATE KEY UPDATE position=position+1`, ws); err != nil {
-				return translateBackendConflict(err)
-			}
-		}
-	}
-	if err = tx.Commit(); err != nil {
+	if err = commitTx(ctx, tx); err != nil {
 		return translateBackendConflict(err)
 	}
 	committed = true

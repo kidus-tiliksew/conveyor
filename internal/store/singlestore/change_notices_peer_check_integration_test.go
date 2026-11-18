@@ -231,11 +231,13 @@ func TestSingleStoreCompressionWireIntegration(t *testing.T) {
 }
 
 // TestSingleStorePeerMarksIntegration checks both kinds of cross-connection
-// changes without scanning the event table.
+// changes. A read while no workspace changed returns no witness row, so its
+// one statement looks up no event row.
 func TestSingleStorePeerMarksIntegration(t *testing.T) {
-	if strings.Contains(strings.ToLower(peerMarksSQL), "events_columnstore") {
-		t.Fatal("peer mark statement scans the events table")
-	}
+	witnessRows := -1
+	observe := func(rows int) { witnessRows = rows }
+	observePeerWitnessRows.Store(&observe)
+	t.Cleanup(func() { observePeerWitnessRows.Store(nil) })
 	writer := openOwnedStore(t)
 	ctxA, wsA, taskA := seedSingleStoreNoticeTask(t, writer)
 	_, wsB, _ := seedSingleStoreNoticeTask(t, writer)
@@ -254,14 +256,20 @@ func TestSingleStorePeerMarksIntegration(t *testing.T) {
 	}
 	read("warm-up") // a fresh pool connection is in place before counting
 	before := read("before")
+	if witnessRows != 0 {
+		t.Fatalf("a read after an accepted read returned %d witness rows, want none", witnessRows)
+	}
 	if again := read("again"); again[wsA] != before[wsA] || again[wsB] != before[wsB] {
 		t.Fatalf("a read without a change moved the marks: %v then %v", before, again)
+	}
+	if witnessRows != 0 {
+		t.Fatalf("an idle read returned %d witness rows, want none", witnessRows)
 	}
 	if _, err := logqueue.Enqueue(ctxA, writer.Log(), wsA, "peer_probe", "one", struct{}{}, 1, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	afterJob := read("after enqueue")
-	if afterJob[wsA].Log <= before[wsA].Log || afterJob[wsA].Events != before[wsA].Events || afterJob[wsA].LastEvent != before[wsA].LastEvent {
+	if afterJob[wsA].Log <= before[wsA].Log || afterJob[wsA].Events != before[wsA].Events {
 		t.Fatalf("enqueue: %+v -> %+v", before[wsA], afterJob[wsA])
 	}
 	if afterJob[wsB] != before[wsB] {
