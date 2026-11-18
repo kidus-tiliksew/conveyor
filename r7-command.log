@@ -1,0 +1,11 @@
+=== RUN   TestHotReadEgressMeasurementIntegration
+2026/11/18 15:20:26 singlestore: database operation failed: operation=unknown error=1857 sqlstate=HY000 message="The open transaction was aborted due to being idle during a concurrent DDL operation."
+    read_egress_measurement_integration_test.go:37: SingleStore migration 0040_risk_orders.sql: context deadline exceeded
+--- FAIL: TestHotReadEgressMeasurementIntegration (120.00s)
+FAIL
+FAIL	github.com/kidus-tiliksew/conveyor/internal/store/singlestore	124.259s
+FAIL
+hot-read egress measurement test failed
+make[2]: *** [Makefile:448: _hot-read-egress-run] Error 1
+make[1]: *** [Makefile:427: _measure-hot-read-egress-singlestore] Error 2
+make: *** [Makefile:420: measure-hot-read-egress-singlestore] Error 2
