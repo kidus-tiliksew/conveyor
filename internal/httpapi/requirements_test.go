@@ -598,14 +598,6 @@ func (st *requirementsScopedStore) ListRequirementEventsForRequirements(ctx cont
 	return st.Store.ListRequirementEventsForRequirements(ctx, ids)
 }
 
-func (st *requirementsScopedStore) ListRequirementVersionsByRequirement(context.Context) (map[string][]core.RequirementVersion, error) {
-	return nil, fmt.Errorf("whole-workspace version scan forbidden")
-}
-
-func (st *requirementsScopedStore) ListRequirementEventsByRequirement(context.Context) (map[string][]core.Event, error) {
-	return nil, fmt.Errorf("whole-workspace event scan forbidden")
-}
-
 func (st *requirementsScopedStore) ListRequirementVersions(ctx context.Context, requirementID string) ([]core.RequirementVersion, error) {
 	st.singleVersions++
 	return st.Store.ListRequirementVersions(ctx, requirementID)

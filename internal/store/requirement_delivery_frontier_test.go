@@ -32,6 +32,11 @@ func TestRequirementDeliveryFrontierMatchesFullWalk(t *testing.T) {
 			got, err := FetchRequirementDeliveryLineage(context.Background(), []string{"a", "b", "a", "missing"}, budget, func(_ context.Context, nodes []core.LineageNode, limit int) (map[core.LineageNode][]core.LineageLink, error) {
 				out := map[core.LineageNode][]core.LineageLink{}
 				for _, node := range nodes {
+					// A task starts no delivery link, so it is never a fetch
+					// source; reached tasks still appear as destinations.
+					if node.Type == core.LineageTask {
+						t.Fatalf("depth %d budget %d: task %s scheduled for fetch", depth, maxLinks, node.ID)
+					}
 					fetched[node]++
 					for _, edge := range links {
 						if edge.SrcType == node.Type && edge.SrcID == node.ID && requirementDeliveryLink(edge) {

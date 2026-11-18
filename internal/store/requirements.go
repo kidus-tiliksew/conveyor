@@ -531,19 +531,6 @@ func (m *memory) ListRequirementVersions(ctx context.Context, requirementID stri
 	return out, nil
 }
 
-func (m *memory) ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	workspace := workspaceOrDefault(ctx, "")
-	out := map[string][]core.RequirementVersion{}
-	for key, versions := range m.requirementVersions {
-		if key.workspace == workspace {
-			out[key.id] = append([]core.RequirementVersion(nil), versions...)
-		}
-	}
-	return out, nil
-}
-
 func (m *memory) AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return core.RequirementStalenessAcknowledgment{}, err

@@ -605,24 +605,6 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 	return out, rows.Err()
 }
 
-func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignVersionsByDocument")
-	rows, err := s.boundary.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 ORDER BY document_id,version`, workspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string][]core.SystemDesignVersion{}
-	for rows.Next() {
-		item, scanErr := scanSystemDesignVersion(rows, "", 0)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		out[item.DocumentID] = append(out[item.DocumentID], item)
-	}
-	return out, rows.Err()
-}
-
 // systemDesignVersionSummarySelect reads the listed current version and every
 // pending version of the requested designs in version order. q pairs each
 // requested ID with the current version its listed row named. Any other
@@ -681,30 +663,6 @@ func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.E
 			return nil, err
 		}
 		out = append(out, eventFromDB(row))
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignEventsByDocument")
-	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' ORDER BY at,id`, workspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string][]core.Event{}
-	for rows.Next() {
-		var row db.Event
-		if err = rows.Scan(&row.ID, &row.TaskID, &row.JobID, &row.Kind, &row.ActorID, &row.ActorRole, &row.PayloadJson, &row.At, &row.WorkspaceID); err != nil {
-			return nil, err
-		}
-		var payload map[string]any
-		if json.Unmarshal(row.PayloadJson, &payload) != nil {
-			continue
-		}
-		if documentID, _ := payload["document_id"].(string); documentID != "" {
-			out[documentID] = append(out[documentID], eventFromDB(row))
-		}
 	}
 	return out, rows.Err()
 }

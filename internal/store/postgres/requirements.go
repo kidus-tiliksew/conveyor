@@ -593,25 +593,6 @@ func (s *Store) ListRequirementVersions(ctx context.Context, requirementID strin
 	return out, rows.Err()
 }
 
-func (s *Store) ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementVersionsByRequirement")
-	rows, err := s.boundary.Query(ctx, requirementVersionSelect+
-		` WHERE workspace_id=$1 ORDER BY requirement_id,version`, workspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string][]core.RequirementVersion{}
-	for rows.Next() {
-		version, err := scanRequirementVersionRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		out[version.RequirementID] = append(out[version.RequirementID], version)
-	}
-	return out, rows.Err()
-}
-
 func (s *Store) ProposeRequirementServes(ctx context.Context, blueprintTaskID, requirementID string, source core.RequirementServesSource, confirm bool) (core.RequirementServesLink, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ProposeRequirementServes")
 	proposal, _, err := s.proposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: blueprintTaskID, TargetKind: core.TaskContextProposalRequirement,

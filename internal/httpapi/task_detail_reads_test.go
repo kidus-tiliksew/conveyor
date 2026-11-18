@@ -749,11 +749,6 @@ func (c *taskDetailCountingStore) ListRequirementEvents(a0 context.Context, a1 s
 	return c.Store.ListRequirementEvents(a0, a1)
 }
 
-func (c *taskDetailCountingStore) ListRequirementEventsByRequirement(a0 context.Context) (map[string][]core.Event, error) {
-	c.count("ListRequirementEventsByRequirement")
-	return c.Store.ListRequirementEventsByRequirement(a0)
-}
-
 func (c *taskDetailCountingStore) ListRequirementServes(a0 context.Context) ([]core.RequirementServesLink, error) {
 	c.count("ListRequirementServes")
 	return c.Store.ListRequirementServes(a0)
@@ -762,11 +757,6 @@ func (c *taskDetailCountingStore) ListRequirementServes(a0 context.Context) ([]c
 func (c *taskDetailCountingStore) ListRequirementVersions(a0 context.Context, a1 string) ([]core.RequirementVersion, error) {
 	c.count("ListRequirementVersions")
 	return c.Store.ListRequirementVersions(a0, a1)
-}
-
-func (c *taskDetailCountingStore) ListRequirementVersionsByRequirement(a0 context.Context) (map[string][]core.RequirementVersion, error) {
-	c.count("ListRequirementVersionsByRequirement")
-	return c.Store.ListRequirementVersionsByRequirement(a0)
 }
 
 func (c *taskDetailCountingStore) ListRequirements(a0 context.Context, a1 bool) ([]core.Requirement, error) {
@@ -784,19 +774,9 @@ func (c *taskDetailCountingStore) ListSystemDesignEvents(a0 context.Context, a1 
 	return c.Store.ListSystemDesignEvents(a0, a1)
 }
 
-func (c *taskDetailCountingStore) ListSystemDesignEventsByDocument(a0 context.Context) (map[string][]core.Event, error) {
-	c.count("ListSystemDesignEventsByDocument")
-	return c.Store.ListSystemDesignEventsByDocument(a0)
-}
-
 func (c *taskDetailCountingStore) ListSystemDesignVersions(a0 context.Context, a1 string) ([]core.SystemDesignVersion, error) {
 	c.count("ListSystemDesignVersions")
 	return c.Store.ListSystemDesignVersions(a0, a1)
-}
-
-func (c *taskDetailCountingStore) ListSystemDesignVersionsByDocument(a0 context.Context) (map[string][]core.SystemDesignVersion, error) {
-	c.count("ListSystemDesignVersionsByDocument")
-	return c.Store.ListSystemDesignVersionsByDocument(a0)
 }
 
 func (c *taskDetailCountingStore) ListSystemDesigns(a0 context.Context, a1 bool) ([]core.SystemDesign, error) {

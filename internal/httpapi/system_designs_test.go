@@ -105,7 +105,7 @@ func TestSystemDesignArchiveRESTLifecycle(t *testing.T) {
 
 type countingSystemDesignStore struct {
 	store.Store
-	lists, versionBatches, eventBatches, driftCounts, singularVersions, singularEvents int
+	lists, versionBatches, driftCounts, singularVersions, singularEvents int
 }
 
 func (s *countingSystemDesignStore) ListSystemDesigns(ctx context.Context, includeArchived bool) ([]core.SystemDesign, error) {
@@ -115,10 +115,6 @@ func (s *countingSystemDesignStore) ListSystemDesigns(ctx context.Context, inclu
 func (s *countingSystemDesignStore) ListSystemDesignVersionSummaries(ctx context.Context, selections []store.DocumentVersionSelection) (map[string][]core.SystemDesignVersion, error) {
 	s.versionBatches++
 	return s.Store.ListSystemDesignVersionSummaries(ctx, selections)
-}
-func (s *countingSystemDesignStore) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
-	s.eventBatches++
-	return s.Store.ListSystemDesignEventsByDocument(ctx)
 }
 func (s *countingSystemDesignStore) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error) {
 	s.driftCounts++
@@ -156,8 +152,8 @@ func TestListSystemDesignsUsesBoundedStoreRounds(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if counting.lists != 1 || counting.versionBatches != 1 || counting.eventBatches != 0 || counting.driftCounts != 1 || counting.singularVersions != 0 || counting.singularEvents != 0 {
-		t.Fatalf("store rounds lists=%d version_batches=%d event_batches=%d drift_counts=%d singular_versions=%d singular_events=%d", counting.lists, counting.versionBatches, counting.eventBatches, counting.driftCounts, counting.singularVersions, counting.singularEvents)
+	if counting.lists != 1 || counting.versionBatches != 1 || counting.driftCounts != 1 || counting.singularVersions != 0 || counting.singularEvents != 0 {
+		t.Fatalf("store rounds lists=%d version_batches=%d drift_counts=%d singular_versions=%d singular_events=%d", counting.lists, counting.versionBatches, counting.driftCounts, counting.singularVersions, counting.singularEvents)
 	}
 }
 

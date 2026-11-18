@@ -68,6 +68,16 @@ func TestHotReadEventLookupsIntegration(t *testing.T) {
 		for _, id := range []string{"sess-A", "SESS-A", "missing-" + core.NewTaskID()} {
 			compareHotLookup(t, "session "+id, func() ([]core.Event, error) { return legacy.ListPlanningSessionEvents(ctx, id) }, func() ([]core.Event, error) { return st.ListPlanningSessionEvents(ctx, id) })
 		}
+		// Both layouts compare the session ID byte for byte: the case-distinct
+		// session and the other workspace's same ID stay out.
+		for name, reader := range map[string]*Store{"prepared": st, "legacy": legacy} {
+			for _, id := range []string{"sess-A", "SESS-A"} {
+				got, err := reader.ListPlanningSessionEvents(ctx, id)
+				if err != nil || len(got) != 1 || !strings.Contains(string(got[0].Payload), `"`+id+`"`) {
+					t.Fatalf("%s session %s events = %+v err=%v, want only its own workspace event", name, id, got, err)
+				}
+			}
+		}
 	})
 
 	t.Run("requirement follow-up intake batch", func(t *testing.T) {
@@ -80,7 +90,7 @@ func TestHotReadEventLookupsIntegration(t *testing.T) {
 	t.Run("explain names the ready digest", func(t *testing.T) {
 		docFilter, docArgs := st.hotReadLookup("events_document_key_idx", "event_document_key", "BINARY JSON_EXTRACT_STRING(payload_json,'document_id')=BINARY ?", "doc-A")
 		hotReadExplainContains(t, st, "events_columnstore document", "event_document_key", "SELECT id FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'system_design.%' AND "+docFilter+" ORDER BY at,id", append([]any{ws}, docArgs...)...)
-		sessionFilter, sessionArgs := st.hotReadLookup("events_session_key_idx", "event_session_key", "JSON_EXTRACT_STRING(payload_json,'session_id')=?", "sess-A")
+		sessionFilter, sessionArgs := st.hotReadLookup("events_session_key_idx", "event_session_key", "BINARY JSON_EXTRACT_STRING(payload_json,'session_id')=BINARY ?", "sess-A")
 		hotReadExplainContains(t, st, "events_columnstore session", "event_session_key", "SELECT id FROM events_columnstore WHERE workspace_id=? AND "+sessionFilter+" ORDER BY at,id", append([]any{ws}, sessionArgs...)...)
 		intakeFilter, intakeArgs := st.hotReadLookup("tasks_workspace_intake_lookup_idx", "task_intake_key", "BINARY intake_key=BINARY ?", "REQ-1")
 		hotReadExplainContains(t, st, "tasks intake", "task_intake_key", "SELECT intake_key,id,title,state FROM tasks WHERE workspace_id=? AND ("+intakeFilter+")", append([]any{ws}, intakeArgs...)...)
@@ -111,6 +121,19 @@ func TestScopedRequirementEventLookupsIntegration(t *testing.T) {
 	got, err := st.ListRequirementEventsForRequirements(ctx, ids)
 	if err != nil || len(got) != 2 || len(got["req-A"]) != 2 || got["missing"] == nil {
 		t.Fatalf("scoped requirement events = %#v, %v", got, err)
+	}
+	// The single-requirement read runs the same scoped predicate in both
+	// layouts and returns only the requested requirement's workspace events.
+	for _, id := range []string{"req-A", "REQ-A", "missing"} {
+		compareHotLookup(t, "requirement "+id, func() ([]core.Event, error) { return legacy.ListRequirementEvents(ctx, id) }, func() ([]core.Event, error) { return st.ListRequirementEvents(ctx, id) })
+	}
+	for name, reader := range map[string]*Store{"prepared": st, "legacy": legacy} {
+		for id, want := range map[string]int{"req-A": 2, "REQ-A": 1, "missing": 0} {
+			events, err := reader.ListRequirementEvents(ctx, id)
+			if err != nil || events == nil || len(events) != want {
+				t.Fatalf("%s requirement %s events = %+v err=%v, want %d", name, id, events, err, want)
+			}
+		}
 	}
 }
 

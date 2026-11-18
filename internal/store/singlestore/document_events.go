@@ -488,31 +488,28 @@ func (s *Store) CountEventsSinceHumanIntervention(ctx context.Context, id, kind 
 		WHERE e.workspace_id=? AND e.event_shard_key=? AND e.task_id=e.event_shard_key AND e.kind=? AND (i.last_at IS NULL OR e.at>i.last_at)`, documentWorkspace(ctx), id, documentWorkspace(ctx), id, kind).Scan(&n)
 	return n, err
 }
+
+// ListRequirementEvents reads one requirement's taskless events with the
+// predicate and hot-read lookup of ListRequirementEventsForRequirements, so
+// the read never scans the rest of the workspace (component-document-corpus).
 func (s *Store) ListRequirementEvents(ctx context.Context, id string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementEvents")
-	all, err := s.ListRequirementEventsByRequirement(ctx)
-	return append([]core.Event{}, all[id]...), err
-}
-func (s *Store) ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementEventsByRequirement")
-	rows, err := documentRows(ctx, s.db, `SELECT id,kind,actor_id,actor_role,payload_json,at,JSON_EXTRACT_STRING(payload_json,'requirement_id') FROM events_columnstore WHERE workspace_id=? AND task_id IS NULL AND JSON_EXTRACT_STRING(payload_json,'requirement_id') IS NOT NULL ORDER BY at,id`, documentWorkspace(ctx))
+	selected, err := s.requirementEventsForIDs(ctx, []string{id})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[string][]core.Event{}
-	for rows.Next() {
-		var e core.Event
-		var id string
-		if err = rows.Scan(&e.ID, &e.Kind, &e.ActorID, &e.ActorRole, &e.Payload, &e.At, &id); err != nil {
-			return nil, err
-		}
-		out[id] = append(out[id], e)
-	}
-	return out, rows.Err()
+	return append([]core.Event{}, selected[id]...), nil
 }
 func (s *Store) ListRequirementEventsForRequirements(ctx context.Context, ids []string) (map[string][]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementEventsForRequirements")
+	return s.requirementEventsForIDs(ctx, ids)
+}
+
+// requirementEventsForIDs selects the taskless events of exactly the
+// requested requirements. With the prepared requirement key it narrows on the
+// key and then compares the ID byte for byte; without it the byte-exact
+// comparison alone selects the rows.
+func (s *Store) requirementEventsForIDs(ctx context.Context, ids []string) (map[string][]core.Event, error) {
 	out := make(map[string][]core.Event, len(ids))
 	predicates := make([]string, 0, len(ids))
 	args := []any{documentWorkspace(ctx)}
@@ -554,13 +551,48 @@ func (s *Store) ListRequirementEventsForRequirements(ctx context.Context, ids []
 	}
 	return out, rows.Err()
 }
+
+// requirementDeliveryEventsQuery projects each delivery event's payload to
+// the keys store.ProjectRequirementDeliveryPayload keeps, so no other payload
+// key crosses the connection (component-lineage; component-task-lifecycle).
+// JSON_BUILD_OBJECT returns a key the stored payload lacks as JSON null. The
+// review aggregate unnests only an array-valued reviews key, keeps verdict and
+// reviewed_commit_sha of each object element, keeps every other element as
+// stored, and orders the elements by their stored position. A non-array
+// reviews value and a payload that is not an object stay as stored. The two
+// %s marks take the same task IDs.
+const requirementDeliveryEventsQuery = `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.actor_id,e.actor_role,CASE WHEN JSON_GET_TYPE(e.payload_json)='object' THEN CASE
+	WHEN e.kind IN ('merge.confirmed','merge.reconciled') THEN JSON_BUILD_OBJECT('url',JSON_EXTRACT_JSON(e.payload_json,'url'),'title',JSON_EXTRACT_JSON(e.payload_json,'title'),'task_title',JSON_EXTRACT_JSON(e.payload_json,'task_title'),'head_sha',JSON_EXTRACT_JSON(e.payload_json,'head_sha'),'reviewed_head_sha',JSON_EXTRACT_JSON(e.payload_json,'reviewed_head_sha'),'approved_head_sha',JSON_EXTRACT_JSON(e.payload_json,'approved_head_sha'),'factory_review_validated',JSON_EXTRACT_JSON(e.payload_json,'factory_review_validated'))
+	WHEN e.kind='review.round_completed' THEN JSON_BUILD_OBJECT('verdict',JSON_EXTRACT_JSON(e.payload_json,'verdict'),'approved_head_sha',JSON_EXTRACT_JSON(e.payload_json,'approved_head_sha'),'reviews',(CASE WHEN JSON_GET_TYPE(JSON_EXTRACT_JSON(e.payload_json,'reviews'))='array' THEN COALESCE(rv.reviews,'[]') ELSE JSON_EXTRACT_JSON(e.payload_json,'reviews') END):>JSON)
+	ELSE JSON_BUILD_OBJECT('id',JSON_EXTRACT_JSON(e.payload_json,'id'),'version',JSON_EXTRACT_JSON(e.payload_json,'version'),'unconfirmed',JSON_EXTRACT_JSON(e.payload_json,'unconfirmed'))
+	END ELSE e.payload_json END,e.at
+FROM events_columnstore e LEFT JOIN (
+	SELECT x.id,x.task_id,JSON_AGG((CASE WHEN JSON_GET_TYPE(r.table_col)='object' THEN JSON_BUILD_OBJECT('verdict',JSON_EXTRACT_JSON(r.table_col,'verdict'),'reviewed_commit_sha',JSON_EXTRACT_JSON(r.table_col,'reviewed_commit_sha')) ELSE r.table_col END):>JSON ORDER BY r.table_ord) AS reviews
+	FROM events_columnstore x JOIN TABLE(JSON_TO_ARRAY(CASE WHEN JSON_GET_TYPE(JSON_EXTRACT_JSON(x.payload_json,'reviews'))='array' THEN JSON_EXTRACT_JSON(x.payload_json,'reviews') ELSE '[]' END)) WITH ORDINALITY AS r
+	WHERE x.workspace_id=? AND x.task_id IN (%s) AND x.kind='review.round_completed'
+	GROUP BY x.id,x.task_id
+) rv ON rv.id=e.id AND rv.task_id=e.task_id
+WHERE e.workspace_id=? AND e.task_id IN (%s) AND e.kind IN ('merge.confirmed','merge.reconciled','review.round_completed','task.context_requirement_added','task.context_requirement_activated','task.context_requirement_removed')
+ORDER BY e.task_id,e.at,e.id`
+
 func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, ids []string) (map[string][]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementDeliveryEventsForTasks")
 	out := map[string][]core.Event{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := documentBatchRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND task_id IN (%s) AND kind IN ('merge.confirmed','merge.reconciled','review.round_completed','task.context_requirement_added','task.context_requirement_activated','task.context_requirement_removed') ORDER BY task_id,at,id`, documentWorkspace(ctx), ids)
+	ws := documentWorkspace(ctx)
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, 2*len(ids)+2)
+	args = append(args, ws)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	args = append(args, ws)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := documentRows(ctx, s.db, fmt.Sprintf(requirementDeliveryEventsQuery, marks, marks), args...)
 	if err != nil {
 		return nil, err
 	}

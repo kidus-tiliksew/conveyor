@@ -88,8 +88,9 @@ func buildSystemDesignEvents(t testing.TB, ctx context.Context, st *Store) store
 }
 
 // buildSystemDesignEventsByDocument compares the whole-family scan grouped in
-// Go with the public by-document read, and serves the selected document's
-// events from each map. Unselected documents' events are the egress noise.
+// Go, which the removed by-document read ran, with the scoped
+// ListSystemDesignEvents read that replaced it. Unselected documents' events
+// are the egress noise (component-document-corpus).
 func buildSystemDesignEventsByDocument(t testing.TB, ctx context.Context, st *Store) storetest.ReadEgressCase {
 	t.Helper()
 	noise, pad, err := storetest.ReadEgressSizes()
@@ -113,11 +114,11 @@ func buildSystemDesignEventsByDocument(t testing.TB, ctx context.Context, st *St
 			return readEgressOutcome(grouped)
 		},
 		Candidate: func(ctx context.Context) (storetest.ReadEgressOutcome, error) {
-			byDocument, err := st.ListSystemDesignEventsByDocument(ctx)
+			events, err := st.ListSystemDesignEvents(ctx, selected)
 			if err != nil {
 				return storetest.ReadEgressOutcome{}, err
 			}
-			return readEgressOutcome(byDocument[selected])
+			return readEgressOutcome(events)
 		}}
 }
 

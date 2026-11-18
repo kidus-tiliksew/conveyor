@@ -355,7 +355,8 @@ func RunAll(t *testing.T, factory Factory) {
 			if _, err := x.Backend.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: foreign, Repos: repos}); err != nil {
 				t.Fatal(err)
 			}
-			return LineageFixture{Store: x.Backend, Context: x.Context, ForeignContext: ctx, Workspace: x.Workspace, SeedLegacy: x.SeedLegacy, SeedHistoricalLink: x.SeedHistoricalLink, HTTP: x.LineageHTTP, SeedEvents: x.SeedEvents}
+			return LineageFixture{Store: x.Backend, Context: x.Context, ForeignContext: ctx, Workspace: x.Workspace, SeedLegacy: x.SeedLegacy, SeedHistoricalLink: x.SeedHistoricalLink, HTTP: x.LineageHTTP, SeedEvents: x.SeedEvents,
+				DrainReadQueries: x.DrainReadQueries, DrainReadRows: x.DrainReadRows}
 		})
 	})
 	for _, suite := range []struct {
@@ -471,6 +472,8 @@ func RunAll(t *testing.T, factory Factory) {
 		{"RequirementDetailReads", true, runRequirementDetailReads},
 		{"DocumentVersionSummaries", true, runDocumentVersionSummaries},
 		{"RequirementEventReads", true, RunRequirementEventReads},
+		{"RequirementDeliveryEvents", true, runRequirementDeliveryEvents},
+		{"ScopedDocumentEventReads", true, runScopedDocumentEventReads},
 		{"TaskLifecycle", true, runTaskLifecycle},
 		{"TaskBranchUniqueness", true, runTaskBranchUniqueness},
 		{"TaskBranchConcurrentClaims", true, runTaskBranchConcurrentClaims},

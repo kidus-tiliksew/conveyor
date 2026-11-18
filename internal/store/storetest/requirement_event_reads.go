@@ -31,9 +31,9 @@ func RunRequirementEventReads(t *testing.T, x Fixture) {
 	if empty == nil || len(empty) != 0 {
 		t.Fatalf("empty requirement selection = %#v", empty)
 	}
-	// Missing tasks stay out of the batch (legacy store semantics preserved):
-	// unknown or out-of-workspace IDs are omitted, while a known task with no
-	// delivery events is returned with an explicit empty slice.
+	// Unknown or out-of-workspace task IDs, and known tasks with no delivery
+	// events, are absent from the batch on every backend
+	// (runRequirementDeliveryEvents covers the known and foreign tasks).
 	delivery, err := st.ListRequirementDeliveryEventsForTasks(ctx, []string{"missing", "MISSING", "missing"})
 	requireOK(t, err)
 	if len(delivery) != 0 {

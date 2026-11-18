@@ -645,24 +645,6 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 	return out, nil
 }
 
-func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignVersionsByDocument")
-	rows, err := documentRows(ctx, s.db, systemDesignVersionSelect+` WHERE workspace_id=? ORDER BY document_id,version`, documentWorkspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string][]core.SystemDesignVersion{}
-	for rows.Next() {
-		item, scanErr := scanSystemDesignVersion(rows, "", 0)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		out[item.DocumentID] = append(out[item.DocumentID], item)
-	}
-	return out, rows.Err()
-}
-
 // systemDesignVersionSummaryQuery reads the listed current version and every
 // pending version of the requested designs in version order. The %[1]s list
 // pairs each requested ID with the current version its listed row named. Any
@@ -739,31 +721,6 @@ func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.E
 			return nil, err
 		}
 		out = append(out, row)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignEventsByDocument")
-	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'system_design.%' ORDER BY at,id`, documentWorkspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string][]core.Event{}
-	for rows.Next() {
-		var row core.Event
-		var eventWorkspace string
-		if err = rows.Scan(&row.ID, &row.TaskID, &row.JobID, &row.Kind, &row.ActorID, &row.ActorRole, &row.Payload, &row.At, &eventWorkspace); err != nil {
-			return nil, err
-		}
-		var payload map[string]any
-		if json.Unmarshal(row.Payload, &payload) != nil {
-			continue
-		}
-		if documentID, _ := payload["document_id"].(string); documentID != "" {
-			out[documentID] = append(out[documentID], row)
-		}
 	}
 	return out, rows.Err()
 }

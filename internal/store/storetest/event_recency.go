@@ -809,8 +809,15 @@ func runEventListPositionOrder(t *testing.T, x Fixture) {
 	want := seedPair("", "system_design.title_changed", map[string]any{"workspace_id": x.Workspace, "document_id": design})
 	events, err := st.ListSystemDesignEvents(ctx, design)
 	requireOrder("ListSystemDesignEvents", events, err, want)
-	byDocument, err := st.ListSystemDesignEventsByDocument(ctx)
-	requireOrder("ListSystemDesignEventsByDocument", byDocument[design], err, want)
+
+	// The scoped requirement reads replaced the workspace-wide aggregate and
+	// keep its (at, id) order (component-document-corpus).
+	requirement := "requirement-" + core.NewTaskID()
+	want = seedPair("", "requirement.title_changed", map[string]any{"workspace_id": x.Workspace, "requirement_id": requirement})
+	events, err = st.ListRequirementEvents(ctx, requirement)
+	requireOrder("ListRequirementEvents", events, err, want)
+	byRequirement, err := st.ListRequirementEventsForRequirements(ctx, []string{requirement})
+	requireOrder("ListRequirementEventsForRequirements", byRequirement[requirement], err, want)
 
 	reference := "ref-" + core.NewTaskID()
 	want = seedPair("", "reference_document.deleted", map[string]any{"workspace_id": x.Workspace, "document_id": reference})
