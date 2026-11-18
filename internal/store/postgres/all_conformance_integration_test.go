@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -222,7 +224,7 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			reads := newConformanceReadLedger(st)
-			return storetest.Fixture{ArtifactListStatements: storetest.ArtifactListStatementsPaged, DrainReadBytes: reads.drainBytes, DrainReadQueries: reads.drainQueries, DrainReadRows: reads.drainRows, VerificationClaimReads: verificationClaimReads(workspace), AwaitTaskOperationWaiter: func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{}) {
+			return storetest.Fixture{ArtifactListStatements: storetest.ArtifactListStatementsExactlyTwo, DrainReadBytes: reads.drainBytes, DrainReadQueries: reads.drainQueries, DrainReadRows: reads.drainRows, VerificationClaimReads: verificationClaimReads(workspace), AwaitTaskOperationWaiter: func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{}) {
 				t.Helper()
 				awaitTaskOperationWaiter(t, ctx, st, workspace, taskID, done)
 			}, RestoreSupersededDeliveries: func(t *testing.T, ctx context.Context, taskID string) {
@@ -320,6 +322,15 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 					t.Fatal(err)
 				}
 				return raw
+			}, SeedTaskIntakeKey: func(t *testing.T, ctx context.Context, taskID, key string) bool {
+				// tasks_workspace_intake_key_idx refuses a duplicate key, so
+				// PostgreSQL never holds one; the write proves the refusal.
+				_, err := st.pool.Exec(ctx, `UPDATE tasks SET intake_key=$1 WHERE workspace_id=$2 AND id=$3`, key, workspace, taskID)
+				var pgErr *pgconn.PgError
+				if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+					t.Fatalf("duplicate intake key write = %v, want a unique violation", err)
+				}
+				return false
 			}, SeedSetupContract: func(t *testing.T, ctx context.Context, taskID, raw string) {
 				if _, err := st.pool.Exec(ctx, `UPDATE tasks SET setup_contract=$1::jsonb WHERE workspace_id=$2 AND id=$3`, raw, workspace, taskID); err != nil {
 					t.Fatal(err)

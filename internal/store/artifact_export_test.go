@@ -238,6 +238,23 @@ func SeedSetupContractForTest(t *testing.T, st Backend, taskID, raw string) {
 	m.tasks[taskID] = task
 }
 
+// SeedTaskIntakeKeyForTest stores key as one task's intake key without the
+// CreateTask uniqueness check, so a conformance case can hold the duplicate
+// key a SingleStore row can carry.
+func SeedTaskIntakeKeyForTest(t *testing.T, st Backend, taskID, key string) bool {
+	t.Helper()
+	m := st.(*volatileMemory).memory
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[taskID]
+	if !ok {
+		t.Fatal("seed requires an existing task")
+	}
+	task.IntakeKey = key
+	m.tasks[taskID] = task
+	return true
+}
+
 // SeedVerificationAttemptAuthorizationForTest sets one stored attempt's
 // ReplayAuthorizationID, as an ungated start wrote it before ungated starts
 // stopped recording the caller's ID; no public writer can

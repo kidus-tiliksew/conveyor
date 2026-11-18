@@ -1824,6 +1824,36 @@ func (m *memory) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([
 	return out, nil
 }
 
+// WorkOrderAuditPins says which pin bodies one stored order holds: a
+// served-requirement snapshot with at least one requirement, and a governance
+// snapshot. These are the cases where the snapshot read's JSON carries the
+// served_requirement_snapshot or governance_snapshot field.
+type WorkOrderAuditPins struct {
+	ServedRequirements bool
+	Governance         bool
+}
+
+// Any reports whether the order holds at least one pin body.
+func (p WorkOrderAuditPins) Any() bool { return p.ServedRequirements || p.Governance }
+
+func (m *memory) ListTaskWorkOrderAuditPins(ctx context.Context, taskID string) (map[string]WorkOrderAuditPins, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, workspaceSelected := WorkspaceFromContext(ctx)
+	out := map[string]WorkOrderAuditPins{}
+	for _, order := range m.workOrders {
+		task, ok := m.tasks[order.TaskID]
+		if !ok || order.TaskID != taskID || workspaceSelected && workspace != "" && task.Workspace != workspace {
+			continue
+		}
+		pins := WorkOrderAuditPins{ServedRequirements: len(order.ServedRequirementSnapshot) > 0, Governance: order.GovernanceSnapshot != nil}
+		if pins.Any() {
+			out[order.ID] = pins
+		}
+	}
+	return out, nil
+}
+
 func (m *memory) ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

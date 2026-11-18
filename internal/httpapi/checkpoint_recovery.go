@@ -16,6 +16,9 @@ import (
 type workOrderActivityView struct {
 	core.WorkOrder
 	Checkpoint *checkpointActivityView `json:"checkpoint,omitempty"`
+	// auditAvailable marks an order read without its pin bodies that holds
+	// one; projectWorkOrderViews then marks it as it marks a stripped body.
+	auditAvailable bool
 }
 
 func (view workOrderActivityView) MarshalJSON() ([]byte, error) {

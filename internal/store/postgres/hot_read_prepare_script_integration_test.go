@@ -2,11 +2,15 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -62,12 +66,166 @@ func TestHotReadPrepareScriptIntegration(t *testing.T) {
 	if len(names) != 9 {
 		t.Fatalf("reopened hot-read indexes = %d, want 9: %v", len(names), names)
 	}
+	requirePGHotReadIndexesValid(t, ctx, reopened)
 	queried, executed = applyPGPrepareScript(t, ctx, reopened, script)
 	if queried == 0 || executed == 0 {
 		t.Fatalf("prepared rerun queried=%d executed=%d", queried, executed)
 	}
-	if n := len(pgHotReadIndexDefinitions(t, ctx, reopened)); n != 9 {
-		t.Fatalf("rerun hot-read indexes = %d, want 9", n)
+	rerun := pgHotReadIndexDefinitions(t, ctx, reopened)
+	if len(rerun) != 9 {
+		t.Fatalf("rerun hot-read indexes = %d, want 9", len(rerun))
+	}
+	requirePGHotReadIndexesValid(t, ctx, reopened)
+
+	// Migration 171, unchanged, is the definition oracle: each index the
+	// script built concurrently has the same pg_get_indexdef as the one the
+	// migration builds in its own isolated schema, apart from the schema name.
+	migrated, migratedSchema := isolatedPool(t, "hot_read_migrated", nil)
+	if err = migrateControlPlaneToVersion(ctx, migrated, 171); err != nil {
+		t.Fatal(err)
+	}
+	want := pgHotReadIndexDefinitions(t, ctx, migrated)
+	if len(want) != 9 {
+		t.Fatalf("migration 171 hot-read indexes = %d, want 9: %v", len(want), want)
+	}
+	for name, def := range want {
+		wantDef := strings.ReplaceAll(def, migratedSchema+".", "")
+		gotDef := strings.ReplaceAll(rerun[name], schema+".", "")
+		if gotDef != wantDef {
+			t.Fatalf("%s definition = %q, migration 171 = %q", name, gotDef, wantDef)
+		}
+	}
+
+	// Each CREATE statement is the concurrent form, which PostgreSQL refuses
+	// inside a transaction block, so the runner above executed every one as
+	// its own statement outside a transaction.
+	creates := 0
+	for _, stmt := range splitSQLScript(script) {
+		if !strings.HasPrefix(strings.ToUpper(stmt), "CREATE") {
+			continue
+		}
+		creates++
+		if !strings.HasPrefix(stmt, "CREATE INDEX CONCURRENTLY IF NOT EXISTS ") {
+			t.Fatalf("script statement is not a concurrent index build: %q", stmt)
+		}
+		tx, beginErr := migrated.Begin(ctx)
+		if beginErr != nil {
+			t.Fatal(beginErr)
+		}
+		_, execErr := tx.Exec(ctx, stmt)
+		_ = tx.Rollback(ctx)
+		var pgErr *pgconn.PgError
+		if !errors.As(execErr, &pgErr) || pgErr.Code != "25001" {
+			t.Fatalf("statement inside a transaction = %v, want SQLSTATE 25001: %q", execErr, stmt)
+		}
+	}
+	if creates != 9 {
+		t.Fatalf("script CREATE statements = %d, want 9", creates)
+	}
+	requirePGInvalidIndexRecovery(t, ctx, script)
+}
+
+// requirePGInvalidIndexRecovery follows the script's recovery for a failed
+// concurrent build. A build that times out waiting for an open writer leaves
+// an INVALID index, IF NOT EXISTS then skips the name, and the documented
+// DROP INDEX CONCURRENTLY and retry build a valid index in its place.
+func requirePGInvalidIndexRecovery(t *testing.T, ctx context.Context, script string) {
+	t.Helper()
+	pool, _ := isolatedPool(t, "hot_read_invalid", nil)
+	if err := migrateControlPlaneToVersion(ctx, pool, 170); err != nil {
+		t.Fatal(err)
+	}
+	var create string
+	for _, stmt := range splitSQLScript(script) {
+		if strings.Contains(stmt, " tasks_workspace_created_idx") {
+			create = stmt
+		}
+	}
+	if create == "" {
+		t.Fatal("script has no tasks_workspace_created_idx statement")
+	}
+	valid := func() (bool, bool) {
+		t.Helper()
+		var isValid bool
+		err := pool.QueryRow(ctx, `SELECT i.indisvalid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_index i ON i.indexrelid=c.oid WHERE n.nspname=current_schema() AND c.relname='tasks_workspace_created_idx'`).Scan(&isValid)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, false
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return true, isValid
+	}
+	writer, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = writer.Exec(ctx, `LOCK TABLE tasks IN ROW EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	builder, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = builder.Exec(ctx, `SET lock_timeout = '300ms'`); err != nil {
+		t.Fatal(err)
+	}
+	_, buildErr := builder.Exec(ctx, create)
+	if _, err = builder.Exec(ctx, `RESET lock_timeout`); err != nil {
+		t.Fatal(err)
+	}
+	builder.Release()
+	_ = writer.Rollback(ctx)
+	var pgErr *pgconn.PgError
+	if !errors.As(buildErr, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("concurrent build behind an open writer = %v, want a lock timeout", buildErr)
+	}
+	if present, isValid := valid(); !present || isValid {
+		t.Fatalf("failed build left present=%t valid=%t, want an INVALID index", present, isValid)
+	}
+	if _, err = pool.Exec(ctx, create); err != nil {
+		t.Fatal(err)
+	}
+	if _, isValid := valid(); isValid {
+		t.Fatal("IF NOT EXISTS repaired an INVALID index; the documented drop is not needed")
+	}
+	if _, err = pool.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS tasks_workspace_created_idx`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, create); err != nil {
+		t.Fatal(err)
+	}
+	if present, isValid := valid(); !present || !isValid {
+		t.Fatalf("retry after the documented drop left present=%t valid=%t", present, isValid)
+	}
+}
+
+// requirePGHotReadIndexesValid fails when any hot-read index is INVALID, as a
+// failed or cancelled concurrent build leaves it.
+func requirePGHotReadIndexesValid(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	rows, err := pool.Query(ctx, `SELECT c.relname, i.indisvalid, i.indisready FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_index i ON i.indexrelid=c.oid WHERE n.nspname=current_schema() AND c.relname=ANY($1::text[])`, slices.Collect(maps.Keys(pgHotReadIndexDefinitions(t, ctx, pool))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	checked := 0
+	for rows.Next() {
+		var name string
+		var valid, ready bool
+		if err = rows.Scan(&name, &valid, &ready); err != nil {
+			t.Fatal(err)
+		}
+		if !valid || !ready {
+			t.Fatalf("hot-read index %s valid=%t ready=%t", name, valid, ready)
+		}
+		checked++
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if checked != 9 {
+		t.Fatalf("checked %d hot-read indexes for validity, want 9", checked)
 	}
 }
 

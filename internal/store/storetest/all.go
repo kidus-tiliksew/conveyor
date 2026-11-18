@@ -23,7 +23,6 @@ type ArtifactListStatementContract uint8
 
 const (
 	ArtifactListStatementsUnspecified ArtifactListStatementContract = iota
-	ArtifactListStatementsPaged
 	ArtifactListStatementsExactlyTwo
 )
 
@@ -78,6 +77,12 @@ type Fixture struct {
 	// JSON, modelling rows an earlier encoding wrote. No public writer accepts
 	// a raw contract; the volatile backend decodes it into the task.
 	SeedSetupContract func(t *testing.T, ctx context.Context, taskID, raw string)
+	// SeedTaskIntakeKey writes key as one task's intake key directly, without
+	// the command's uniqueness check, as a SingleStore row an older writer
+	// could leave. It reports whether the backend stored the key: a backend
+	// whose schema refuses a duplicate key, as PostgreSQL's unique index
+	// does, proves the refusal and reports false.
+	SeedTaskIntakeKey func(t *testing.T, ctx context.Context, taskID, key string) bool
 	// SeedStoredTaskHold sets one task's stored historical hold column to
 	// true, modelling a row written before the hold retirement (DEC-125(3)).
 	// No public writer can; each backend seeds it directly in its test

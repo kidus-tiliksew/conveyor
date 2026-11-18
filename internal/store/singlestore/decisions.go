@@ -244,10 +244,10 @@ const decisionCitationMembershipSQL = `(LOCATE(BINARY(CONCAT('|',k.decision_id,'
 	OR LOCATE(BINARY(CONCAT('-',k.decision_id,'-')),BINARY(doc.tokens))>0)`
 
 // decisionCitationChunkSQL renders one decision-citation statement for a
-// bounded batch of decision IDs. SingleStore accepts only a literal regular
-// expression, so the batch's IDs are statement literals joined to the
-// tokenized sources. The statement carries the workspace twice, once for
-// each source tier.
+// bounded batch of decision IDs. Membership is a LOCATE test, not a regular
+// expression, so each ID is a bound argument in a derived table joined to the
+// tokenized sources. Arguments follow placeholder order: the workspace once
+// for each source tier, then the batch's IDs (decisionCitationChunkArgs).
 func decisionCitationChunkSQL(batch []string) string {
 	var query strings.Builder
 	query.WriteString(`SELECT k.decision_id,doc.tier,doc.document_id,doc.title,doc.version
@@ -256,16 +256,27 @@ FROM (`)
 	query.WriteString(`
 ) doc
 JOIN (`)
-	for i, id := range batch {
+	for i := range batch {
 		if i > 0 {
 			query.WriteString(" UNION ALL ")
 		}
-		query.WriteString(`SELECT '` + strings.ReplaceAll(id, "'", "''") + `' AS decision_id`)
+		query.WriteString(`SELECT ? AS decision_id`)
 	}
 	query.WriteString(`
 ) k ON `)
 	query.WriteString(decisionCitationMembershipSQL)
 	return query.String()
+}
+
+// decisionCitationChunkArgs returns decisionCitationChunkSQL's arguments in
+// placeholder order.
+func decisionCitationChunkArgs(workspace string, batch []string) []any {
+	args := make([]any, 0, len(batch)+2)
+	args = append(args, workspace, workspace)
+	for _, id := range batch {
+		args = append(args, id)
+	}
+	return args
 }
 
 // ListDecisionCitations issues one workspace-scoped statement for the
@@ -300,7 +311,7 @@ func (s *Store) ListDecisionCitations(ctx context.Context) ([]core.DecisionCitat
 	citations := []core.DecisionCitation{}
 	for start := 0; start < len(decisionIDs); start += core.DecisionCitationChunk {
 		batch := decisionIDs[start:min(start+core.DecisionCitationChunk, len(decisionIDs))]
-		rows, err = documentRows(ctx, s.db, decisionCitationChunkSQL(batch), documentWorkspace(ctx), documentWorkspace(ctx))
+		rows, err = documentRows(ctx, s.db, decisionCitationChunkSQL(batch), decisionCitationChunkArgs(documentWorkspace(ctx), batch)...)
 		if err != nil {
 			return nil, err
 		}

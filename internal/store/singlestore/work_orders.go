@@ -460,6 +460,32 @@ func (s *Store) ListTaskWorkOrdersStored(ctx context.Context, id string) ([]core
 	return s.listOrderColumns(ctx, s.db, activityWorkOrderColumns, []string{id})
 }
 
+// ListTaskWorkOrderAuditPins reports which pin bodies the task's orders hold
+// in one statement that returns no body: an array length and a join to the
+// governance_snapshots row whose content the snapshot read selects; the
+// unique (workspace_id, digest) key admits at most one such row
+// (component-web-task-surfaces invariant 22).
+func (s *Store) ListTaskWorkOrderAuditPins(ctx context.Context, id string) (map[string]store.WorkOrderAuditPins, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrderAuditPins")
+	rows, err := documentRows(ctx, s.db, `SELECT w.id, COALESCE(JSON_LENGTH(w.served_requirement_snapshot),0)>0, gs.digest IS NOT NULL
+		FROM work_orders w LEFT JOIN governance_snapshots gs ON gs.workspace_id=w.workspace_id AND gs.digest=w.governance_snapshot_digest
+		WHERE w.workspace_id=? AND w.task_id=? AND (COALESCE(JSON_LENGTH(w.served_requirement_snapshot),0)>0 OR gs.digest IS NOT NULL)`, documentWorkspace(ctx), id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]store.WorkOrderAuditPins{}
+	for rows.Next() {
+		var orderID string
+		var pins store.WorkOrderAuditPins
+		if err := rows.Scan(&orderID, &pins.ServedRequirements, &pins.Governance); err != nil {
+			return nil, err
+		}
+		out[orderID] = pins
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, id string) ([]core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrdersSnapshot")
 	orders, err := s.listOrders(ctx, s.db, []string{id})

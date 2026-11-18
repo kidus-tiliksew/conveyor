@@ -32,7 +32,8 @@ func runArtifactReadScoping(t *testing.T, x Fixture) {
 	const payloadSize = 4096
 	sentinel := []byte("CONTENT-SENTINEL-ab2c4b")
 	payload := bytes.Repeat(sentinel, payloadSize/len(sentinel)+1)[:payloadSize]
-	equalCount := 110
+	// More than 200 artifacts: two old 100-artifact pages and part of a third.
+	equalCount := 190
 	for i := range equalCount {
 		body := append(append([]byte(nil), payload...), []byte(fmt.Sprintf("\nequal-%03d-%s", i, task.ID))...)
 		_, err := st.CreateArtifact(ctx, core.Artifact{Name: fmt.Sprintf("equal-%03d.txt", i), ContentType: "text/plain", TaskID: task.ID, CreatedAt: now}, body)
@@ -86,10 +87,6 @@ func runArtifactReadScoping(t *testing.T, x Fixture) {
 	if x.DrainReadQueries != nil {
 		queries := measureListing(x.DrainReadQueries, "ListArtifacts")
 		switch x.ArtifactListStatements {
-		case ArtifactListStatementsPaged:
-			if len(listed) > store.ArtifactMetadataPageSize && queries < 5 {
-				t.Fatalf("ListArtifacts statements = %d, want at least 5 for snapshot plus paged hydrations", queries)
-			}
 		case ArtifactListStatementsExactlyTwo:
 			if queries != 2 {
 				t.Fatalf("ListArtifacts statements = %d, want exactly 2", queries)
@@ -145,8 +142,12 @@ func runArtifactReadScoping(t *testing.T, x Fixture) {
 	if ownedRows != equalCount+1 {
 		t.Fatalf("task association rows = %d, want %d", ownedRows, equalCount+1)
 	}
-	if len(listed) <= store.ArtifactMetadataPageSize {
-		t.Fatalf("fixture listed %d rows, want more than one %d-artifact page", len(listed), store.ArtifactMetadataPageSize)
+	listedIDs := map[string]bool{}
+	for _, artifact := range listed {
+		listedIDs[artifact.ID] = true
+	}
+	if len(listedIDs) <= 2*store.ArtifactMetadataPageSize {
+		t.Fatalf("fixture listed %d artifacts, want more than %d", len(listedIDs), 2*store.ArtifactMetadataPageSize)
 	}
 
 	if x.DrainReadRows != nil {
@@ -233,6 +234,18 @@ func runArtifactReadScoping(t *testing.T, x Fixture) {
 	for _, artifact := range snapshot {
 		if inserted.ID != "" && artifact.ID == inserted.ID {
 			t.Fatalf("listing observed an insert past the forward key boundary: %+v", artifact)
+		}
+	}
+	// The fence defers a later artifact to the next listing; it is not lost.
+	if inserted.ID != "" {
+		next, err := st.ListArtifacts(ctx)
+		requireOK(t, err)
+		found := false
+		for _, artifact := range next {
+			found = found || artifact.ID == inserted.ID
+		}
+		if !found {
+			t.Fatalf("the listing after the fence omitted artifact %s", inserted.ID)
 		}
 	}
 	seen := map[string]int{}

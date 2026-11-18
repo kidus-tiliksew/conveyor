@@ -571,13 +571,21 @@ func (s *Store) ListSystemDesignVersions(ctx context.Context, id string) ([]core
 
 func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListGovernanceDesigns")
+	// One statement selects the governing designs with their content.
 	// Repository identity and a non-empty path list are tested on one scope
 	// element, so another repository's paths cannot admit a document that
-	// governs no path here (req-task-authority-boundary REQ-5).
-	rows, err := s.boundary.Query(ctx, `SELECT d.id,d.title,d.category,v.version,v.governs
+	// governs no path here (req-task-authority-boundary REQ-5). The column is
+	// checked to hold an array, and the element tests never raise on another
+	// shape, so a design whose governs value does not decode fails this read
+	// only when one of its scope elements governs paths in this repository.
+	rows, err := s.boundary.Query(ctx, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs
 		FROM system_designs d JOIN system_design_versions v
 		  ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
-		WHERE d.workspace_id=$1 AND d.archived_at IS NULL ORDER BY d.id`, workspace(ctx))
+		WHERE d.workspace_id=$1 AND d.archived_at IS NULL AND EXISTS (
+			SELECT 1 FROM jsonb_array_elements(v.governs) AS governed_scope
+			WHERE jsonb_typeof(governed_scope)='object' AND governed_scope->>'repository'=$2
+			  AND jsonb_typeof(governed_scope->'paths')='array' AND governed_scope->'paths'<>'[]'::jsonb
+		) ORDER BY d.id`, workspace(ctx), repository)
 	if err != nil {
 		return nil, err
 	}
@@ -586,50 +594,15 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 	for rows.Next() {
 		var item core.GovernanceDesignContext
 		var governs []byte
-		if err = rows.Scan(&item.ID, &item.Title, &item.Category, &item.Version, &governs); err != nil {
+		if err = rows.Scan(&item.ID, &item.Title, &item.Category, &item.Version, &item.Content, &governs); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal(governs, &item.Governs); err != nil {
 			return nil, err
 		}
-		if core.GovernsRepositoryPaths(item.Governs, repository) {
-			out = append(out, item)
-		}
+		out = append(out, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	rows.Close()
-	for start := 0; start < len(out); start += 100 {
-		chunk := out[start:min(start+100, len(out))]
-		ids, versions := make([]string, len(chunk)), make([]int, len(chunk))
-		for i, item := range chunk {
-			ids[i], versions[i] = item.ID, item.Version
-		}
-		contentRows, err := s.boundary.Query(ctx, `SELECT v.document_id,v.version,v.content FROM unnest($2::text[],$3::integer[]) AS q(id,version) JOIN system_design_versions v ON v.workspace_id=$1 AND v.document_id=q.id AND v.version=q.version`, workspace(ctx), ids, versions)
-		if err != nil {
-			return nil, err
-		}
-		for contentRows.Next() {
-			var id, content string
-			var version int
-			if err := contentRows.Scan(&id, &version, &content); err != nil {
-				contentRows.Close()
-				return nil, err
-			}
-			for i := range chunk {
-				if chunk[i].ID == id && chunk[i].Version == version {
-					chunk[i].Content = content
-				}
-			}
-		}
-		err = contentRows.Err()
-		contentRows.Close()
-		if err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
+	return out, rows.Err()
 }
 
 func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
