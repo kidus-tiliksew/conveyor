@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -10,15 +11,21 @@ import (
 	"go/types"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // unnamedCrate matches a crate written without its name. Inside a JSON string
@@ -28,8 +35,14 @@ var unnamedCrate = regexp.MustCompile(`"crate":\{"id":"[^"]*","name":""\}`)
 // TestCrateTaskResponsesNameEveryCrate type-checks this package and fails on
 // any JSON write of a value whose type can hold a task's crate, unless the
 // write is writeTaskJSON or the same function names the written value with
-// nameTaskCrates first (component-crates, Public surfaces). A new response
-// that writes a task or a task row through a plain writer fails here.
+// nameTaskCrates earlier in its body (component-crates, Public surfaces). A
+// new response that writes a task or a task row through a plain writer fails
+// here. Both accepted forms name the whole value: the walk reaches every
+// shape a response holds, and it returns an error, never an empty name, for
+// a reference it cannot name (TestCrateNamesReachNestedRows,
+// TestCrateNamesRefuseWhatTheyCannotName). A nameTaskCrates call whose error
+// is dropped fails here too. MarshalJSON methods are not writes: they encode
+// parts of a value its writer already named.
 func TestCrateTaskResponsesNameEveryCrate(t *testing.T) {
 	pkg, info, fset, files := typeCheckHTTPAPI(t)
 	writers := map[string][]int{"writeJSON": {2}, "writeJSONWithETag": {2}, "writeConditionalJSON": {2, 3}, "renderMCPReadItem": {0}}
@@ -43,6 +56,13 @@ func TestCrateTaskResponsesNameEveryCrate(t *testing.T) {
 			}
 			named := map[string]bool{}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if statement, ok := n.(*ast.ExprStmt); ok {
+					if call, ok := statement.X.(*ast.CallExpr); ok {
+						if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "nameTaskCrates" {
+							violations = append(violations, fmt.Sprintf("%s: %s drops the error of nameTaskCrates", fset.Position(call.Pos()), fn.Name.Name))
+						}
+					}
+				}
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
@@ -274,45 +294,279 @@ func TestCrateNameOnEveryTaskResponse(t *testing.T) {
 	}
 }
 
-// TestCrateNamesReachNestedRows names crates in every shape a response uses:
-// a task by value, an embedded task, a task pointer, slices, a map of task
-// pointers, and an interface. It keeps a shared crate reference unchanged
-// and skips a field JSON does not encode.
+// TestCrateNamesReachNestedRows names crates in every shape a response can
+// hold: a task by value, an embedded task, a task pointer, slices, arrays,
+// maps of task values and of task pointers, a map[string]any holding a task
+// by value or by pointer, an interface holding a task by value, and nested
+// maps. It keeps a shared crate reference unchanged and skips a field JSON
+// does not encode (component-crates, Public surfaces).
 func TestCrateNamesReachNestedRows(t *testing.T) {
 	f := newCrateFixture(t)
 	crate := f.createCrate(t, f.editor, map[string]any{"name": "Nested"})
 	shared := &core.TaskCrate{ID: crate.ID}
+	member := func(id string) core.Task { return core.Task{ID: id, Crate: shared} }
 	type embedded struct{ core.Task }
 	type holder struct {
-		Task     core.Task             `json:"task"`
-		Embedded embedded              `json:"embedded"`
-		Pointer  *core.Task            `json:"pointer"`
-		Rows     []activityItem        `json:"rows"`
-		ByID     map[string]*core.Task `json:"by_id"`
-		Any      any                   `json:"any"`
-		Hidden   core.Task             `json:"-"`
+		Task      core.Task             `json:"task"`
+		Embedded  embedded              `json:"embedded"`
+		Pointer   *core.Task            `json:"pointer"`
+		Rows      []activityItem        `json:"rows"`
+		Array     [2]core.Task          `json:"array"`
+		ByID      map[string]*core.Task `json:"by_id"`
+		Values    map[string]core.Task  `json:"values"`
+		Any       any                   `json:"any"`
+		AnyValue  any                   `json:"any_value"`
+		Hidden    core.Task             `json:"-"`
+		unexposed core.Task
 	}
 	value := holder{
-		Task:     core.Task{ID: "a", Crate: shared},
-		Embedded: embedded{core.Task{ID: "b", Crate: shared}},
-		Pointer:  &core.Task{ID: "c", Crate: shared},
-		Rows:     []activityItem{{Task: activityTask{ID: "d", Crate: shared}}},
-		ByID:     map[string]*core.Task{"e": {ID: "e", Crate: shared}},
-		Any:      &core.Task{ID: "f", Crate: shared},
-		Hidden:   core.Task{ID: "g", Crate: shared},
+		Task:      member("a"),
+		Embedded:  embedded{member("b")},
+		Pointer:   &core.Task{ID: "c", Crate: shared},
+		Rows:      []activityItem{{Task: activityTask{ID: "d", Crate: shared}}},
+		Array:     [2]core.Task{member("e"), member("f")},
+		ByID:      map[string]*core.Task{"g": {ID: "g", Crate: shared}},
+		Values:    map[string]core.Task{"h": member("h")},
+		Any:       &core.Task{ID: "i", Crate: shared},
+		AnyValue:  member("j"),
+		Hidden:    member("hidden"),
+		unexposed: member("unexposed"),
 	}
-	if err := f.server.nameTaskCrates(store.WithWorkspace(t.Context(), "alpha"), &value); err != nil {
+	byValue := map[string]any{"task": member("k"), "created": true}
+	byPointer := map[string]any{"task": &core.Task{ID: "l", Crate: shared}}
+	nested := map[string]any{"items": []any{member("m")}, "inner": map[string]any{"task": member("n")}}
+	if err := f.server.nameTaskCrates(store.WithWorkspace(t.Context(), "alpha"), &value, &byValue, &byPointer, &nested); err != nil {
 		t.Fatal(err)
 	}
-	for label, got := range map[string]*core.TaskCrate{
-		"value": value.Task.Crate, "embedded": value.Embedded.Crate, "pointer": value.Pointer.Crate,
-		"slice": value.Rows[0].Task.Crate, "map": value.ByID["e"].Crate, "interface": value.Any.(*core.Task).Crate,
-	} {
-		if got == nil || got.ID != crate.ID || got.Name != "Nested" {
-			t.Fatalf("%s crate = %+v, want {%s Nested}", label, got, crate.ID)
+	want := `"crate":{"id":"` + crate.ID + `","name":"Nested"}`
+	for label, target := range map[string]any{"holder": value, "map by value": byValue, "map by pointer": byPointer, "nested maps": nested} {
+		raw, err := json.Marshal(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unnamedCrate.Match(raw) || !strings.Contains(string(raw), want) {
+			t.Fatalf("%s holds an unnamed crate: %s", label, raw)
 		}
 	}
-	if shared.Name != "" || value.Hidden.Crate != shared {
-		t.Fatalf("naming changed a shared reference: shared=%+v hidden=%p", shared, value.Hidden.Crate)
+	if got := strings.Count(crateJSON(t, value), want); got != 10 {
+		t.Fatalf("holder names %d crates, want 10 (every encoded task): %s", got, crateJSON(t, value))
 	}
+	if shared.Name != "" || value.Hidden.Crate != shared || value.unexposed.Crate != shared {
+		t.Fatalf("naming changed a shared reference or a field JSON skips: shared=%+v", shared)
+	}
+}
+
+func crateJSON(t *testing.T, value any) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// TestCrateNamesRefuseWhatTheyCannotName fails the naming, never sends an
+// empty name, when a crate reference sits where it cannot be stored back or
+// its crate has no name in the workspace.
+func TestCrateNamesRefuseWhatTheyCannotName(t *testing.T) {
+	namer := &crateNamer{reaches: map[reflect.Type]bool{}, names: map[string]string{"crate-1": "Named"}}
+	unaddressable := reflect.ValueOf(core.Task{ID: "a", Crate: &core.TaskCrate{ID: "crate-1"}})
+	if err := namer.name(unaddressable); err == nil {
+		t.Fatal("naming a task that cannot be stored back succeeded")
+	}
+	f := newCrateFixture(t)
+	if err := f.server.nameTaskCrates(t.Context(), core.Task{}); err == nil {
+		t.Fatal("naming a target that is not a pointer succeeded")
+	}
+	missing := core.Task{ID: "b", Crate: &core.TaskCrate{ID: "crate-000000-000000"}}
+	if err := f.server.nameTaskCrates(store.WithWorkspace(t.Context(), "alpha"), &missing); err == nil || missing.Crate.Name != "" {
+		t.Fatalf("naming a crate with no name returned err=%v crate=%+v", err, missing.Crate)
+	}
+}
+
+// TestCrateNamesConcurrentColdCalls names different task-bearing wrappers at
+// the same time, each call with its own cold memo. Run it with -race: no
+// state is shared between calls, so every call names every crate.
+func TestCrateNamesConcurrentColdCalls(t *testing.T) {
+	f := newCrateFixture(t)
+	crate := f.createCrate(t, f.editor, map[string]any{"name": "Concurrent"})
+	want := `"crate":{"id":"` + crate.ID + `","name":"Concurrent"}`
+	type wrapper struct {
+		Rows []struct{ core.Task } `json:"rows"`
+	}
+	build := []func() any{
+		func() any { return map[string]any{"task": core.Task{ID: "a", Crate: &core.TaskCrate{ID: crate.ID}}} },
+		func() any { return []activityItem{{Task: activityTask{ID: "b", Crate: &core.TaskCrate{ID: crate.ID}}}} },
+		func() any {
+			return wrapper{Rows: []struct{ core.Task }{{core.Task{ID: "c", Crate: &core.TaskCrate{ID: crate.ID}}}}}
+		},
+		func() any {
+			return store.Board{Items: []store.BoardItem{{ID: "d", Crate: &core.TaskCrate{ID: crate.ID}}}}
+		},
+		func() any { return []inboxItem{{Task: &core.Task{ID: "e", Crate: &core.TaskCrate{ID: crate.ID}}}} },
+	}
+	ctx := store.WithWorkspace(t.Context(), "alpha")
+	errs := make(chan error, 200)
+	var wg sync.WaitGroup
+	for i := range 200 {
+		wg.Add(1)
+		go func(value any) {
+			defer wg.Done()
+			target := reflect.New(reflect.TypeOf(value))
+			target.Elem().Set(reflect.ValueOf(value))
+			if err := f.server.nameTaskCrates(ctx, target.Interface()); err != nil {
+				errs <- err
+				return
+			}
+			raw, err := json.Marshal(target.Elem().Interface())
+			if err != nil || !strings.Contains(string(raw), want) || unnamedCrate.Match(raw) {
+				errs <- fmt.Errorf("%T: %s %v", value, raw, err)
+			}
+		}(build[i%len(build)]())
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+}
+
+// TestCrateNamedOnReviewRequestChangesAndFollowUp calls the three acts that
+// answer with a task inside a map for a member task through their real
+// routes, and requires the crate's current name in each answer
+// (component-crates, Public surfaces).
+func TestCrateNamedOnReviewRequestChangesAndFollowUp(t *testing.T) {
+	want := func(t *testing.T, label string, status, wantStatus int, raw []byte, crateID, name string) {
+		t.Helper()
+		if status != wantStatus {
+			t.Fatalf("%s status=%d body=%s", label, status, raw)
+		}
+		if !strings.Contains(string(raw), `"crate":{"id":"`+crateID+`","name":"`+name+`"}`) || unnamedCrate.Match(raw) {
+			t.Fatalf("%s body lacks the named crate: %s", label, raw)
+		}
+	}
+	t.Run("review", func(t *testing.T) {
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+		st := store.NewMemory()
+		crate, err := st.(store.CrateStore).CreateCrate(ctx, store.CrateInput{Name: "Reviewed"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateTask(ctx, core.Task{ID: "crate-review", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: time.Now(), Crate: &core.TaskCrate{ID: crate.ID}}); err != nil {
+			t.Fatal(err)
+		}
+		server := NewServer(st)
+		server.BearerToken, server.Workspace = "token", "demo"
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/crate-review/review", strings.NewReader(`{"action":"pull_to_local","reason_code":"needs-human"}`))
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		want(t, "review", response.Code, http.StatusAccepted, response.Body.Bytes(), crate.ID, "Reviewed")
+	})
+	t.Run("request changes", func(t *testing.T) {
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+		st := store.NewMemory()
+		crate, err := st.(store.CrateStore).CreateCrate(ctx, store.CrateInput{Name: "Bounced"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		task := core.Task{
+			ID: "crate-request-changes", Workspace: "demo", Repo: "conveyor", BaseBranch: "main",
+			Branch: "conveyor/task-crate-request-changes", State: core.TaskRunning,
+			NextStage: core.StageReview, RecoveryStage: core.StageImplement, CreatedAt: time.Now().UTC(),
+			Crate: &core.TaskCrate{ID: crate.ID},
+		}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateJob(ctx, core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
+			t.Fatal(err)
+		}
+		cfg := &config.Config{
+			Workspace: "demo", MaxBounces: 3, WorkOrderQueueTimeout: time.Hour,
+			Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}},
+			Repos:   []config.Repo{{Name: "conveyor", Base: "main"}},
+		}
+		server := NewServer(st)
+		server.BearerToken, server.Workspace = "user-token", "demo"
+		server.InvitationSessions = &invitationSessionFixture{credential: core.AuthenticatedCredential{
+			ID: "session_local", OwnerUserID: "local-operator", Kind: core.CredentialUser,
+			Scope: core.CredentialScopeOperator, Method: core.CredentialMethodSession,
+		}}
+		server.ConfigProvider = func(context.Context) (*config.Config, error) { return cfg, nil }
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/request-changes", strings.NewReader(`{"feedback":"Name the crate."}`))
+		request.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-secret"})
+		request.Header.Set("X-Conveyor-CSRF", "1")
+		request.Header.Set("Origin", "http://example.com")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		want(t, "request changes", response.Code, http.StatusAccepted, response.Body.Bytes(), crate.ID, "Bounced")
+	})
+	t.Run("staleness follow-up", func(t *testing.T) {
+		ctx := store.WithActor(store.WithWorkspace(t.Context(), "demo"), store.Actor{ID: "alice", Role: core.ActorHuman})
+		st := store.NewMemory()
+		requirement, v1, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-crate-staleness", Title: "Crate staleness"}, core.RequirementVersion{
+			Content: "# First intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned."}}, Origin: core.RequirementOriginOperator,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, v1.Version); err != nil {
+			t.Fatal(err)
+		}
+		delivery := core.Task{ID: "crate-stale-delivery", Workspace: "demo", Title: "Stale delivery", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-crate-stale-delivery", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+		if err = st.CreateTask(ctx, delivery); err != nil {
+			t.Fatal(err)
+		}
+		if err = st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": requirement.ID, "version": v1.Version})}); err != nil {
+			t.Fatal(err)
+		}
+		v2, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Second intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned with revisions."}}, Origin: core.RequirementOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, v2.Version); err != nil {
+			t.Fatal(err)
+		}
+		if err = st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: "merge.confirmed", At: time.Now().UTC().Add(time.Minute), Payload: core.JSONPayload(map[string]any{"url": "https://example.test/pull/1", "task_title": delivery.Title})}); err != nil {
+			t.Fatal(err)
+		}
+		server := NewServer(st)
+		server.Workspace, server.BearerToken = "demo", "token"
+		server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Investigate stale delivery", nil }
+		handler := server.Handler()
+		read := httptest.NewRecorder()
+		handler.ServeHTTP(read, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil)))
+		var view requirementView
+		if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &view) != nil || len(view.Staleness.Deliveries) != 1 {
+			t.Fatalf("requirement status=%d body=%s", read.Code, read.Body.String())
+		}
+		path := fmt.Sprintf("/v1/requirements/%s/staleness/%s/follow-up", requirement.ID, view.Staleness.Deliveries[0].SignalID)
+		post := func() *httptest.ResponseRecorder {
+			request := httptest.NewRequest(http.MethodPost, path, nil)
+			request.Header.Set("Authorization", "Bearer token")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			return response
+		}
+		created := post()
+		var first struct {
+			Task core.Task `json:"task"`
+		}
+		if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &first) != nil || first.Task.ID == "" {
+			t.Fatalf("follow-up status=%d body=%s", created.Code, created.Body.String())
+		}
+		crate, err := st.(store.CrateStore).CreateCrate(ctx, store.CrateInput{Name: "Followed up"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.(store.CrateStore).SetTaskCrate(ctx, first.Task.ID, crate.ID); err != nil {
+			t.Fatal(err)
+		}
+		retried := post()
+		want(t, "staleness follow-up", retried.Code, http.StatusOK, retried.Body.Bytes(), crate.ID, "Followed up")
+	})
 }
