@@ -375,6 +375,15 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/workspace/config", s.getWorkspaceConfig)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Put("/workspace/config", s.putWorkspaceConfig)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/tasks", s.createTask)
+			// Crates: reads need view_workspace, which this group requires, and
+			// every mutation needs create_tasks (component-crates invariant 3).
+			r.Get("/crates", s.listCrates)
+			r.Get("/crates/{id}", s.getCrate)
+			r.Get("/crates/{id}/activity", s.getCrateActivity)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/crates", s.createCrate)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Patch("/crates/{id}", s.patchCrate)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Put("/tasks/{id}/crate", s.setTaskCrate)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Delete("/tasks/{id}/crate", s.clearTaskCrate)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/monitor/observations", s.observeMonitorSignal)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/monitor/drift/{id}/resolve", s.resolveMonitorDrift)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/redispatch", s.redispatchTask)
@@ -1310,6 +1319,10 @@ type createTaskReq struct {
 	DependsOn       []string             `json:"depends_on,omitempty"`
 	RequirementIDs  []string             `json:"requirement_ids,omitempty"`
 	SystemDesignIDs []string             `json:"system_design_ids,omitempty"`
+	// CrateID names the open crate the task joins at creation. The creating
+	// transaction validates it, and it attaches no requirement by itself
+	// (component-crates invariant 7; req-crates AC-2.1, AC-3.1).
+	CrateID string `json:"crate_id,omitempty"`
 }
 
 func (req *createTaskReq) UnmarshalJSON(data []byte) error {
@@ -1352,7 +1365,12 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeTaskCreateError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, result.Task)
+	created := []core.Task{result.Task}
+	if err := s.hydrateTaskCrates(r.Context(), created); err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, created[0])
 }
 
 func (s *Server) createTaskWithAttachments(w http.ResponseWriter, r *http.Request) {
@@ -1417,7 +1435,12 @@ func (s *Server) createTaskWithAttachments(w http.ResponseWriter, r *http.Reques
 	if !result.Created {
 		status = http.StatusOK
 	}
-	writeJSON(w, status, result.Task)
+	created := []core.Task{result.Task}
+	if err := s.hydrateTaskCrates(r.Context(), created); err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	writeJSON(w, status, created[0])
 }
 
 func readTaskAttachment(header *multipart.FileHeader) (store.ArtifactUpload, error) {
@@ -2376,6 +2399,9 @@ func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
 		Query:                strings.TrimSpace(values.Get("q")),
 		ServesRequirementIDs: parseTaskFilterList(values["serves_requirement"]),
 		GoverningDesignIDs:   parseTaskFilterList(values["governing_design"]),
+		// crate selects one crate's members by exact ID (component-crates,
+		// Public surfaces).
+		Crate: strings.TrimSpace(values.Get("crate")),
 	}
 	for _, state := range parseTaskFilterList(values["state"]) {
 		candidate := core.TaskState(state)

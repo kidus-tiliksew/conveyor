@@ -77,13 +77,13 @@ INSERT INTO tasks (
     setup_name, setup_contract, reviewed_head_sha, approved_head_sha, approval_stale,
     refresh_baseline_sha, refresh_head_sha, refresh_review_scope,
     repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id,
-    origin_spec_version, origin_sub_id, intake_key, created_at
+    origin_spec_version, origin_sub_id, intake_key, created_at, crate_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
     $13, $14, $15, $16, $17, $18, $19, $20,
     $21, $22, $23, $24, $25, $26, sqlc.narg(parent_task_id),
     sqlc.arg(origin_spec_version), sqlc.arg(origin_sub_id),
-    sqlc.arg(intake_key), sqlc.arg(created_at)
+    sqlc.arg(intake_key), sqlc.arg(created_at), sqlc.narg(crate_id)
 )
 RETURNING *;
 
@@ -239,6 +239,7 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
            WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
        ))
   AND (cardinality(sqlc.arg(plan_states)::text[]) = 0 OR t.plan_state = ANY(sqlc.arg(plan_states)::text[]))
+  AND (sqlc.arg(crate)::text = '' OR t.crate_id = sqlc.arg(crate)::text)
 ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
@@ -306,6 +307,7 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
            WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
        ))
   AND (cardinality(sqlc.arg(plan_states)::text[]) = 0 OR t.plan_state = ANY(sqlc.arg(plan_states)::text[]))
+  AND (sqlc.arg(crate)::text = '' OR t.crate_id = sqlc.arg(crate)::text)
 ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
@@ -364,7 +366,8 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
            SELECT 1 FROM tasks child
            WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
        ))
-  AND (cardinality(sqlc.arg(plan_states)::text[]) = 0 OR t.plan_state = ANY(sqlc.arg(plan_states)::text[]));
+  AND (cardinality(sqlc.arg(plan_states)::text[]) = 0 OR t.plan_state = ANY(sqlc.arg(plan_states)::text[]))
+  AND (sqlc.arg(crate)::text = '' OR t.crate_id = sqlc.arg(crate)::text);
 
 -- name: ListTaskOperationsEvents :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id

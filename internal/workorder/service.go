@@ -960,6 +960,10 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	if (order.Stage == core.StageReview || order.Stage == core.StageVerify) && order.ServedRequirementSnapshot != nil && order.GovernanceSnapshot != nil {
 		authoritySource = "pinned"
 	}
+	// A crate reaches an order only through the labeled context field of
+	// component-crates invariant 20, never through the task row, so the
+	// order's task carries no crate (req-crates AC-4.3, AC-4.5).
+	task.Crate = nil
 	result := Context{Order: order, Task: task, AuthoritySource: authoritySource, RolePrompt: role, ServedRequirements: servedRequirements, GovernanceSnapshot: governance, PlanRevision: planRevision}
 	result.ProgressReportIntervalSeconds = config.ProgressReportIntervalSeconds(cfg)
 	if order.Stage == core.StageReview {

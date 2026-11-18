@@ -30,6 +30,12 @@ func (s *Server) taskResponse(w http.ResponseWriter, r *http.Request, task core.
 		writeStoreFailure(w, r, err)
 		return nil, false
 	}
+	named := []core.Task{task}
+	if err := s.hydrateTaskCrates(r.Context(), named); err != nil {
+		writeStoreFailure(w, r, err)
+		return nil, false
+	}
+	task = named[0]
 	// One order read serves the next action and plan_acts, so plan_acts
 	// makes no store call of its own (component-plan-state invariant 6).
 	orders, err := s.Store.ListWorkOrdersForTasks(r.Context(), []string{task.ID})
@@ -63,6 +69,10 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, page store.T
 	tasks := page.Tasks
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	if err := s.hydrateTaskCrates(r.Context(), tasks); err != nil {
 		writeStoreFailure(w, r, err)
 		return
 	}

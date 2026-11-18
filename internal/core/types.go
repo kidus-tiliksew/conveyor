@@ -157,6 +157,11 @@ type Task struct {
 	Mode      TaskMode        `json:"-"`                  // legacy persistence only; never emitted or read for behavior
 	Hold      bool            `json:"-"`                  // historical stored value only; read by no decision (DEC-125(3))
 	Assignee  *TaskAssignee   `json:"assignee,omitempty"` // claim-eligibility identity; never an ordering field
+	// Crate is the one crate the task belongs to, or nil. Stores carry its ID
+	// and task row reads add its name. No dispatch, claim, gate, review, merge,
+	// next-action, or lineage code reads it (component-crates invariants 1
+	// and 2; req-crates REQ-4).
+	Crate *TaskCrate `json:"crate,omitempty"`
 	// SpecApproval is the retained tasks.spec_approval column. No decision
 	// reads it as plan authority and no task read serves it; PlanState is the
 	// task's plan state (component-plan-state invariant 1; DEC-125(5)).
@@ -199,6 +204,21 @@ type Task struct {
 	PullRequestCloseState   string            `json:"pull_request_close_state,omitempty"`
 	GitHub                  *GitHubLifecycle  `json:"github,omitempty"` // durable forge projection
 	CreatedAt               time.Time         `json:"created_at"`
+}
+
+// TaskCrate names the crate a task belongs to on a task row
+// (component-crates, Public surfaces).
+type TaskCrate struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// TaskCrateID returns the ID of the task's crate, or "" when it has none.
+func (t Task) TaskCrateID() string {
+	if t.Crate == nil {
+		return ""
+	}
+	return t.Crate.ID
 }
 
 // TaskAssignee is the member-safe identity rendered on task and work-order

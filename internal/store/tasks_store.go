@@ -61,6 +61,11 @@ type TaskFilter struct {
 	CreatedTo            time.Time
 	ServesRequirementIDs []string
 	GoverningDesignIDs   []string
+	// Crate selects the members of one crate by exact crate ID. Empty leaves
+	// the member inactive, and an unknown ID matches no tasks. It orders
+	// nothing and no delivery read sets it (component-crates invariant 1;
+	// component-http-api).
+	Crate string
 	// Open is a store-side member no route parses: it selects tasks in a state
 	// other than merged and closed that no other task names as its parent, the
 	// inbox's candidate set (component-http-api; feature-operator-next-action
@@ -80,7 +85,7 @@ type TaskFilter struct {
 func (f TaskFilter) Active() bool {
 	return len(f.States) > 0 || len(f.PlanStates) > 0 || len(f.Repositories) > 0 || f.Assignee != "" || f.Query != "" || !f.UpdatedFrom.IsZero() ||
 		!f.UpdatedTo.IsZero() || !f.CreatedFrom.IsZero() || !f.CreatedTo.IsZero() || len(f.ServesRequirementIDs) > 0 ||
-		len(f.GoverningDesignIDs) > 0 || f.Open || f.ExcludeBlueprintAnchors
+		len(f.GoverningDesignIDs) > 0 || f.Open || f.ExcludeBlueprintAnchors || f.Crate != ""
 }
 
 // Validate rejects a range no task can satisfy, so an inverted range fails at
@@ -700,6 +705,15 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	if _, exists := m.tasks[t.ID]; exists {
 		return Refusef("task %s already exists", t.ID)
 	}
+	// The named crate is validated under the store mutex that closing a crate
+	// also holds, so a closed crate never gains a task (component-crates
+	// invariants 6 and 7; req-crates AC-2.1).
+	if crateID := t.TaskCrateID(); crateID != "" {
+		if err := m.crateJoinableLocked(t.Workspace, crateID); err != nil {
+			return err
+		}
+		t.Crate = &core.TaskCrate{ID: crateID}
+	}
 	// The workspace-scoped intake key is unique, as PostgreSQL's
 	// tasks_workspace_intake_key_idx and SingleStore's lock-row claim plus
 	// committed-row count enforce. A concurrent retry that loses the race
@@ -919,6 +933,10 @@ func (m *memory) UpdateTaskContext(ctx context.Context, taskID string, change Ta
 }
 
 func (m *memory) hydrateTaskLocked(task core.Task) core.Task {
+	if task.Crate != nil {
+		crate := *task.Crate
+		task.Crate = &crate
+	}
 	if p, ok := m.pullRequestCloses[task.ID]; ok {
 		task.PullRequestClose = &p
 		task.PullRequestCloseState = p.State
@@ -1095,6 +1113,9 @@ func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool
 		return false
 	}
 	if len(filter.PlanStates) > 0 && !slices.Contains(filter.PlanStates, task.PlanState) {
+		return false
+	}
+	if filter.Crate != "" && task.TaskCrateID() != filter.Crate {
 		return false
 	}
 	if len(filter.Repositories) > 0 && !slices.Contains(filter.Repositories, task.Repo) {

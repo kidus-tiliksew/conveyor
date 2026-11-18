@@ -97,6 +97,14 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 	if pinned != nil {
 		designVersions = pinned
 	}
+	// The named crate is read FOR SHARE in the creating transaction, so a
+	// concurrent close waits or is seen, and a closed crate never gains a
+	// task (component-crates invariants 6 and 7; req-crates AC-2.1).
+	if crateID := task.TaskCrateID(); crateID != "" {
+		if err := lockJoinableCrateTx(ctx, tx, task.Workspace, crateID); err != nil {
+			return err
+		}
+	}
 	if occupant, err := occupyingOpenTaskID(ctx, tx, task.Repo, task.Branch, task.ID); err != nil {
 		return err
 	} else if occupant != "" {
@@ -352,7 +360,7 @@ func taskFilterParams(ctx context.Context, filter store.TaskFilter) db.CountTask
 		CreatedTo: nullableTimestamp(filter.CreatedTo), ServesRequirements: emptyIfNil(filter.ServesRequirementIDs),
 		GoverningDesigns: emptyIfNil(filter.GoverningDesignIDs), Assignee: filter.Assignee,
 		UpdatedFrom: nullableTimestamp(filter.UpdatedFrom), UpdatedTo: nullableTimestamp(filter.UpdatedTo),
-		OpenOnly: filter.Open, ExcludeAnchors: filter.ExcludeBlueprintAnchors,
+		OpenOnly: filter.Open, ExcludeAnchors: filter.ExcludeBlueprintAnchors, Crate: filter.Crate,
 	}
 }
 
@@ -365,7 +373,7 @@ func taskOperationsListParams(ctx context.Context, filter store.TaskFilter, limi
 		Assignee:    bound.Assignee,
 		UpdatedFrom: bound.UpdatedFrom, UpdatedTo: bound.UpdatedTo,
 		PageLimit: int32(limit), PageOffset: int32(offset), OpenOnly: bound.OpenOnly,
-		ExcludeAnchors: bound.ExcludeAnchors, PlanStates: bound.PlanStates,
+		ExcludeAnchors: bound.ExcludeAnchors, PlanStates: bound.PlanStates, Crate: bound.Crate,
 	}
 }
 
@@ -1854,6 +1862,7 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage),
 		ParentTaskID: nullableText(task.ParentTaskID), OriginSpecVersion: int32(task.OriginSpecVersion), OriginSubID: task.OriginSubID,
 		IntakeKey: nullableText(task.IntakeKey), CreatedAt: timestamp(task.CreatedAt),
+		CrateID: nullableText(task.TaskCrateID()),
 	}
 }
 
@@ -1879,8 +1888,17 @@ func taskFromDB(task db.Task) core.Task {
 		BaseBranch: task.BaseBranch, Branch: task.Branch,
 		State: core.TaskState(task.State), GateKind: core.GateKind(task.GateKind.String), NextStage: core.Stage(task.NextStage), RecoveryStage: core.Stage(task.RecoveryStage),
 		ParentTaskID: task.ParentTaskID.String, OriginSpecVersion: int(task.OriginSpecVersion), OriginSubID: task.OriginSubID,
-		CreatedAt: task.CreatedAt.Time,
+		CreatedAt: task.CreatedAt.Time, Crate: taskCrateFromDB(task.CrateID),
 	}
+}
+
+// taskCrateFromDB carries the stored crate ID. A task row read adds the
+// crate's name (component-crates, Public surfaces).
+func taskCrateFromDB(crateID pgtype.Text) *core.TaskCrate {
+	if !crateID.Valid || crateID.String == "" {
+		return nil
+	}
+	return &core.TaskCrate{ID: crateID.String}
 }
 
 func setupContractJSON(setup config.PolicyContract) []byte {
