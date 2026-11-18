@@ -11,8 +11,8 @@ import (
 )
 
 // TestVolatilePeerMarks: the volatile backend's peer check read moves a
-// workspace's log position on an enqueue and its task-event count and
-// highest ID on a task event, and nothing else (component-persistence,
+// workspace's log position on an enqueue and its task-event count on a task
+// event, and nothing else (component-persistence,
 // Change notices).
 func TestVolatilePeerMarks(t *testing.T) {
 	st := NewVolatileBackend()
@@ -51,14 +51,14 @@ func TestVolatilePeerMarks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterJob["a"].Log <= before["a"].Log || afterJob["a"].Events != before["a"].Events || afterJob["a"].LastEvent != before["a"].LastEvent {
+	if afterJob["a"].Log <= before["a"].Log || afterJob["a"].Events != before["a"].Events {
 		t.Fatalf("enqueue in a: %+v -> %+v", before["a"], afterJob["a"])
 	}
 	if afterJob["b"] != before["b"] {
 		t.Fatalf("enqueue in a moved b: %+v -> %+v", before["b"], afterJob["b"])
 	}
 
-	// A task event in b moves only b's count and highest ID.
+	// A task event in b moves only b's count.
 	if err = st.AppendEvent(WithActor(WithWorkspace(base, "b"), SystemActor()), core.Event{TaskID: tasks["b"], Kind: "peer.probe"}); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestVolatilePeerMarks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterEvent["b"].Events != afterJob["b"].Events+1 || afterEvent["b"].LastEvent <= afterJob["b"].LastEvent || afterEvent["b"].Log != afterJob["b"].Log {
+	if afterEvent["b"].Events != afterJob["b"].Events+1 || afterEvent["b"].Log != afterJob["b"].Log {
 		t.Fatalf("event in b: %+v -> %+v", afterJob["b"], afterEvent["b"])
 	}
 	if afterEvent["a"] != afterJob["a"] {

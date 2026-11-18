@@ -119,9 +119,18 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (result sql.Result, e
 			return nil, fmt.Errorf("%s insert: %w", w.table, err)
 		}
 	}
+	taskEventInsert := false
 	if w.table == "events_columnstore" {
 		taskID, _ := w.values["task_id"].(string)
 		w.values["event_shard_key"] = eventShardKey(taskID)
+		// A task event commits only through a transaction whose commit
+		// preparation advances task_event_positions (component-persistence
+		// invariant 42). Refuse it before any SQL otherwise.
+		if taskEventInsert = taskID != "" && w.operation == "INSERT"; taskEventInsert {
+			if _, ok := txBatches.Load(tx); !ok {
+				return nil, errTaskEventOutsideNotices
+			}
+		}
 		if w.operation == "INSERT" {
 			defer func() {
 				if err == nil {
@@ -331,9 +340,16 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (result sql.Result, e
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	result, err = tx.ExecContext(ctx, query, args...)
-	if err == nil && w.table == "events_columnstore" && w.values["task_id"] != nil && w.values["task_id"] != "" {
-		ws, _ := w.values["workspace_id"].(string)
-		markTaskEvent(tx, ws)
+	if err == nil && taskEventInsert {
+		witness := eventWitness{}
+		witness.workspace, _ = w.values["workspace_id"].(string)
+		witness.shard, _ = w.values["event_shard_key"].(string)
+		if witness.id, err = result.LastInsertId(); err != nil {
+			return nil, err
+		}
+		if err = markTaskEvent(tx, witness); err != nil {
+			return nil, err
+		}
 	}
 	return result, err
 }

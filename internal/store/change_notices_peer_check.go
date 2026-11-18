@@ -15,8 +15,8 @@ import (
 
 var _ changes.PeerReader = (*volatileMemory)(nil)
 
-// PeerMarks returns each workspace's log head position and the count and
-// highest ID of its task events.
+// PeerMarks returns each workspace's log head position and the count of its
+// task events. Events are append-only, so the count moves with every one.
 func (m *volatileMemory) PeerMarks(ctx context.Context) (map[string]changes.PeerMark, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -39,12 +39,7 @@ func (m *volatileMemory) PeerMarks(ctx context.Context) (map[string]changes.Peer
 			continue
 		}
 		mark := marks[task.Workspace]
-		for _, event := range events {
-			mark.Events++
-			if event.ID > mark.LastEvent {
-				mark.LastEvent = event.ID
-			}
-		}
+		mark.Events += int64(len(events))
 		marks[task.Workspace] = mark
 	}
 	return marks, nil
