@@ -69,6 +69,8 @@ type planPusher struct {
 	designs         map[string]core.SystemDesign
 	decisions       map[string]core.Decision
 	highestDecision int
+	// crates holds each crate the pre-check read, by ID.
+	crates map[string]planCrateRead
 	// edges are the same-layer prerequisites of each item.
 	edges map[string][]string
 	// simulated holds dry-run server IDs for items posted earlier in the
@@ -179,6 +181,9 @@ func (p *planPusher) prepare(ctx context.Context, rank int) ([]*planPushEntry, e
 			}
 		case PlanKindTask:
 			p.checkIntakeKey(entry.Item, p.taskIntakeKey(entry))
+			if err := p.checkCrate(ctx, entry.Item); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return entries, nil

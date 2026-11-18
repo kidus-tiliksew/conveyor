@@ -30,6 +30,7 @@ func runCrates(t *testing.T, factory Factory) {
 	t.Run("CrateActivity", func(t *testing.T) { runCrateActivity(t, factory.fresh(t, nil)) })
 	t.Run("CrateTaskFilter", func(t *testing.T) { runCrateTaskFilter(t, factory.fresh(t, nil)) })
 	t.Run("CrateIntakeRecordsCrate", func(t *testing.T) { runCrateIntake(t, factory.fresh(t, nil)) })
+	t.Run("CrateMemberRead", func(t *testing.T) { runCrateMemberRead(t, factory.fresh(t, nil)) })
 }
 
 func crateText(value string) *string { return &value }
@@ -836,6 +837,73 @@ func runCrateIntake(t *testing.T, x Fixture) {
 		if artifact.TaskID == refused.ID {
 			t.Fatalf("refused multipart intake left an artifact: %+v", artifact)
 		}
+	}
+}
+
+// runCrateMemberRead holds ListCrateMembers to its contract: each listed
+// crate's member tasks with ID, title, and state, ordered by creation time and
+// then ID, no entry for a crate with no member or of another workspace, and
+// the membership as it stands at the read (component-crates invariants 14 and
+// 20).
+func runCrateMemberRead(t *testing.T, x Fixture) {
+	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Members"})
+	requireOK(t, err)
+	other, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Other members"})
+	requireOK(t, err)
+	empty, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "No members"})
+	requireOK(t, err)
+	base := store.CrateTime(time.Now().Add(-time.Hour))
+	member := func(state core.TaskState, crateID string, at time.Time) core.Task {
+		t.Helper()
+		id := fixtureTaskID()
+		task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: "Member read " + id, Body: "Member read.", State: state, NextStage: core.StageImplement, CreatedAt: at, Branch: "conveyor/task-" + id}
+		if crateID != "" {
+			task.Crate = &core.TaskCrate{ID: crateID}
+		}
+		requireOK(t, x.Backend.CreateTask(x.Context, task))
+		return task
+	}
+	// Created last but at the earliest time, so creation time, not insertion,
+	// orders it first. Two members share one time, so the ID breaks the tie.
+	late := member(core.TaskQueued, crate.ID, base.Add(2*time.Second))
+	tieA := member(core.TaskMerged, crate.ID, base.Add(time.Second))
+	tieB := member(core.TaskRunning, crate.ID, base.Add(time.Second))
+	first := member(core.TaskClosed, crate.ID, base)
+	otherMember := member(core.TaskQueued, other.ID, base)
+	member(core.TaskQueued, "", base)
+	ties := []core.Task{tieA, tieB}
+	slices.SortFunc(ties, func(a, b core.Task) int { return strings.Compare(a.ID, b.ID) })
+	want := []store.CrateMemberTask{}
+	for _, task := range []core.Task{first, ties[0], ties[1], late} {
+		want = append(want, store.CrateMemberTask{ID: task.ID, Title: task.Title, State: task.State})
+	}
+	members, err := x.Backend.ListCrateMembers(x.Context, []string{crate.ID, other.ID, empty.ID, "crate-000000-000000"})
+	requireOK(t, err)
+	if !slices.Equal(members[crate.ID], want) {
+		t.Fatalf("crate members = %+v, want %+v", members[crate.ID], want)
+	}
+	if got := members[other.ID]; len(got) != 1 || got[0] != (store.CrateMemberTask{ID: otherMember.ID, Title: otherMember.Title, State: otherMember.State}) {
+		t.Fatalf("other crate members = %+v, want only %s", got, otherMember.ID)
+	}
+	if _, found := members[empty.ID]; found || len(members) != 2 {
+		t.Fatalf("member read holds %d crates (%v), want entries only for the two crates with members", len(members), members)
+	}
+	none, err := x.Backend.ListCrateMembers(x.Context, nil)
+	requireOK(t, err)
+	if len(none) != 0 {
+		t.Fatalf("member read of no crate = %v", none)
+	}
+	foreign, err := x.Backend.ListCrateMembers(store.WithWorkspace(x.Context, "ws-crate-member-read-other"), []string{crate.ID})
+	requireOK(t, err)
+	if len(foreign) != 0 {
+		t.Fatalf("member read from another workspace = %v, want nothing", foreign)
+	}
+	_, err = x.Backend.ClearTaskCrate(x.Context, first.ID)
+	requireOK(t, err)
+	members, err = x.Backend.ListCrateMembers(x.Context, []string{crate.ID})
+	requireOK(t, err)
+	if !slices.Equal(members[crate.ID], want[1:]) {
+		t.Fatalf("crate members after a removal = %+v, want %+v", members[crate.ID], want[1:])
 	}
 }
 
