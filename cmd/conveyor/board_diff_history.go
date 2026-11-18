@@ -65,6 +65,19 @@ func (e boardDiffHistoryEvent) field(name string, out any) bool {
 	}
 	return len(raw) > 0 && json.Unmarshal(raw, out) == nil
 }
+
+// payloadStage reads the stage of a work-order event from its stored payload
+// only. An omitted payload has no stage: the CLI never reads stage from
+// payload_index and never guesses it from an order ID (component-next-action
+// invariant 50).
+func (e boardDiffHistoryEvent) payloadStage() (string, bool) {
+	var stage string
+	raw := e.Payload["stage"]
+	if len(raw) == 0 || json.Unmarshal(raw, &stage) != nil || stage == "" {
+		return "", false
+	}
+	return stage, true
+}
 func (c *client) boardDiffHistory(id string, cutoff time.Time, needStart bool) (boardDiffHistory, error) {
 	for range 2 {
 		result, restart, err := c.walkBoardDiffHistory(id, cutoff, needStart)
@@ -108,8 +121,7 @@ func (c *client) walkBoardDiffHistory(id string, cutoff time.Time, needStart boo
 			if !event.At.After(cutoff) {
 				crossed = true
 				if event.Kind == "work_order.created" || event.Kind == "work_order.claimed" {
-					var stage string
-					if event.field("stage", &stage) && stage != "" {
+					if _, ok := event.payloadStage(); ok {
 						foundStart = true
 					}
 				}
@@ -147,6 +159,9 @@ func boardDiffEventLess(a, b boardDiffHistoryEvent) bool {
 
 // reduceBoardDiff merges one activity row with the saved task. Events at or
 // before cutoff seed an unknown stage start but never produce duplicate changes.
+// It reports incomplete history for a task the caller lists in incomplete.
+// History the run could not read in full also drops the saved stage. A
+// created order without a payload stage keeps it.
 func reduceBoardDiff(row boardDiffActivity, previous boardDiffTask, exists bool, cutoff time.Time, history boardDiffHistory) (boardDiffChange, boardDiffTask, bool) {
 	change := boardDiffChange{ID: row.Task.ID, Title: row.Task.Title}
 	next := previous
@@ -172,8 +187,8 @@ func reduceBoardDiff(row boardDiffActivity, previous boardDiffTask, exists bool,
 			if e.Kind != "work_order.created" && e.Kind != "work_order.claimed" {
 				continue
 			}
-			var stage string
-			if !e.field("stage", &stage) || stage == "" {
+			stage, ok := e.payloadStage()
+			if !ok {
 				continue
 			}
 			if unknown && next.Stage != stage {
@@ -193,6 +208,7 @@ func reduceBoardDiff(row boardDiffActivity, previous boardDiffTask, exists bool,
 		}
 	}
 	incomplete := history.Incomplete
+	stageOmitted := false
 	terminalTransition := false
 	for _, e := range history.Events {
 		if !e.At.After(cutoff) {
@@ -221,10 +237,17 @@ func reduceBoardDiff(row boardDiffActivity, previous boardDiffTask, exists bool,
 			}
 			next.State = to
 		case "work_order.created", "work_order.claimed":
-			var stage string
-			if !e.field("stage", &stage) || stage == "" {
-				stage = "unknown"
-				incomplete = true
+			// An order's stage never changes after the order is created, so a
+			// claim without a payload stage keeps the current stage. A created
+			// order without one reports no stage change and lists the task in
+			// incomplete (component-next-action invariant 50). A
+			// work_order.updated event never changes the stage.
+			stage, ok := e.payloadStage()
+			if !ok {
+				if e.Kind == "work_order.created" {
+					stageOmitted = true
+				}
+				continue
 			}
 			if next.Stage != stage {
 				var seconds *int64
@@ -263,7 +286,10 @@ func reduceBoardDiff(row boardDiffActivity, previous boardDiffTask, exists bool,
 	}
 	next.Decision = decision
 	change.Terminal = terminalTransition || (exists && previous.State != "merged" && previous.State != "closed" && (next.State == "merged" || next.State == "closed"))
-	return change, next, incomplete
+	if incomplete {
+		next.Stage, next.EnteredAt = "unknown", nil
+	}
+	return change, next, incomplete || stageOmitted
 }
 
 // diffBoardActivities reads history only for changed overlap rows and reports
@@ -309,7 +335,6 @@ func (c *client) diffBoardActivities(state boardDiffState, feed boardDiffFeed) (
 		}
 		if partial {
 			incomplete = append(incomplete, boardDiffIncomplete{ID: id, Reason: "history incomplete; open task detail with conveyor task show " + id})
-			task.Stage, task.EnteredAt = "unknown", nil
 		}
 		next.Recent[id] = row.LastEventAt
 		if task.State == "merged" || task.State == "closed" {

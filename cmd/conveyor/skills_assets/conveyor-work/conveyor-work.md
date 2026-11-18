@@ -14,9 +14,9 @@ Never edit, test, commit, or push for a task without its claim. If a claim is
 declined, fails, expires, or is lost, stop. Never bypass the factory by working
 the task branch bare.
 
-Use `get_board` for an overview of open tasks. Continue from the offset plus
-the number of items until you reach the total, even when a page is short.
-Use `get_task_status` for one task's full next action.
+Use `get_board` or `conveyor board` for an overview of open tasks. Continue
+from the offset plus the number of items until you reach the total, even when
+a page is short. Use `get_task_status` for one task's full next action.
 
 ## Own the session
 

@@ -30,7 +30,7 @@ func TestBoardDiffResetReasons(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &client{base: srv.URL}
-	path, _ := boardDiffStatePath(srv.URL, "")
+	path, _ := boardDiffStatePath(srv.URL, "", "")
 	var out bytes.Buffer
 	if err := runBoardDiff(c, &out, boardDiffOptions{asJSON: true}); err != nil {
 		t.Fatal(err)
