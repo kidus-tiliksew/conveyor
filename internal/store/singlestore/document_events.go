@@ -174,12 +174,16 @@ func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []strin
 }
 
 // The event kinds each activity-marker fold reads. listActivityMarkers
-// selects only these kinds.
+// selects only these kinds, and of them only the rows a fold can act on
+// (markerFoldQuery): a bounce from user-request-changes, an implement
+// claim or a claim of a task with an open review order, and the review
+// lifecycle kinds of review tasks.
 var (
 	activityMarkerReviewKinds  = []string{"work_order.claimed", "work_order.lease_renewed", "work_order.released", "review.completed", "review.accepted", "task.setup.changed"}
 	activityMarkerRequestKinds = []string{"pipeline.bounced", "work_order.claimed"}
 	// The forge failure kinds are the ones store.LatestForgeFailure reads;
-	// of work_order.updated the query selects only an implement submission
+	// of work_order.updated the query selects only an update whose payload
+	// may name the implement stage and the submitted state
 	// (component-next-action; component-submission-merge).
 	activityMarkerForgeKinds = store.ForgeFailureEventKinds
 )
@@ -226,6 +230,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	seenReviewTask := map[string]bool{}
 	var liveReviewTaskIDs []string
 	seenLiveReviewTask := map[string]bool{}
+	var openReviewOrders []store.MarkerReviewOrder
 	for _, order := range orders {
 		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			blockers := blockersByTask[order.TaskID]
@@ -243,6 +248,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 		// Only an open review order reads its claim and renewal events:
 		// ReviewVerdictDiagnostics and ActivityReviewLeaseHorizon skip the rest.
 		if order.Stage == core.StageReview && (order.State == core.WorkOrderClaimed || order.State == core.WorkOrderQueued) {
+			openReviewOrders = append(openReviewOrders, store.MarkerReviewOrder{TaskID: order.TaskID, ID: order.ID, JobID: order.JobID})
 			if !seenLiveReviewTask[order.TaskID] {
 				liveReviewTaskIDs = append(liveReviewTaskIDs, order.TaskID)
 				seenLiveReviewTask[order.TaskID] = true
@@ -253,7 +259,10 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	for i := range rows {
 		pageTaskIDs[i] = rows[i].taskID
 	}
-	foldEvents, err := s.markerFoldRows(ctx, pageTaskIDs, reviewTaskIDs, liveReviewTaskIDs, now)
+	foldEvents, err := s.markerFoldRows(ctx, store.MarkerFoldInput{
+		Workspace: documentWorkspace(ctx), Page: pageTaskIDs, ReviewTasks: reviewTaskIDs,
+		LiveReviewTasks: liveReviewTaskIDs, OpenReviewOrders: openReviewOrders, Now: now,
+	})
 	if err != nil {
 		return nil, nil, time.Time{}, err
 	}

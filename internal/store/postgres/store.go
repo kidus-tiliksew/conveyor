@@ -878,11 +878,11 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 		return nil, nil, time.Time{}, err
 	}
 	ordersByTask := make(map[string][]core.WorkOrder)
-	hasReviewOrders := false
 	reviewTaskIDs := make([]string, 0)
-	seenReviewTask := map[string]bool{}
+	reviewTasks := map[string]bool{}
 	var liveReviewTaskIDs []string
 	seenLiveReviewTask := map[string]bool{}
+	var openReviewOrders []store.MarkerReviewOrder
 	for _, order := range orders {
 		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			blockers := blockersByTask[order.TaskID]
@@ -893,56 +893,42 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 			}
 		}
 		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
-		hasReviewOrders = hasReviewOrders || order.Stage == core.StageReview
-		if order.Stage == core.StageReview && !seenReviewTask[order.TaskID] {
+		if order.Stage == core.StageReview && !reviewTasks[order.TaskID] {
 			reviewTaskIDs = append(reviewTaskIDs, order.TaskID)
-			seenReviewTask[order.TaskID] = true
+			reviewTasks[order.TaskID] = true
 		}
 		// Only an open review order reads its claim and renewal events:
 		// ReviewVerdictDiagnostics and ActivityReviewLeaseHorizon skip the rest.
 		if order.Stage == core.StageReview && (order.State == core.WorkOrderClaimed || order.State == core.WorkOrderQueued) {
+			openReviewOrders = append(openReviewOrders, store.MarkerReviewOrder{TaskID: order.TaskID, ID: order.ID, JobID: order.JobID})
 			if !seenLiveReviewTask[order.TaskID] {
 				liveReviewTaskIDs = append(liveReviewTaskIDs, order.TaskID)
 				seenLiveReviewTask[order.TaskID] = true
 			}
 		}
 	}
-	eventsByTask := make(map[string][]core.Event)
-	requestEventsByTask := make(map[string][]core.Event)
-	forgeEventsByTask := make(map[string][]core.Event)
-	// Keep Go decoding for fold semantics, reducing only safe renewal shapes.
-	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,'') AS job_id,e.kind,` + markerEventPayloadColumn + ` AS event_payload,e.at AS event_at
-		FROM events e JOIN tasks t ON t.id=e.task_id
-		WHERE t.workspace_id=$1
-		AND (cardinality($2::text[])=0 OR t.id=ANY($2::text[]))
-		AND (
-			e.kind IN ('pipeline.bounced','work_order.claimed','work_order.updated') OR
-			(e.kind IN ('work_order.released','review.completed','review.accepted','task.setup.changed') AND e.task_id=ANY($3::text[])) OR
-			(e.kind IN ('work_order.claimed','work_order.lease_renewed') AND e.task_id=ANY($5::text[])) OR
-			e.kind=ANY($4::text[])
-		)
-		ORDER BY event_at,id`
-	// The forge failure kinds are the ones store.LatestForgeFailure reads;
-	// of work_order.updated it reads only an implement submission
-	// (component-next-action; component-submission-merge).
-	markerArgs := []any{workspace(ctx), emptyIfNil(taskIDs), emptyIfNil(reviewTaskIDs), store.ForgeFailureEventKinds, emptyIfNil(liveReviewTaskIDs)}
-	if len(liveReviewTaskIDs) > 0 {
-		markerQuery = boundedMarkerFoldQuery(markerQuery)
-		markerArgs = append(markerArgs, now.Unix(), now.Nanosecond())
-	}
-	markerRows, err := s.boundary.Query(ctx, markerQuery, markerArgs...)
+	// The read selects only the rows each fold can act on: a bounce from
+	// user-request-changes, an implement order's update to submitted, an
+	// implement claim or a claim of a task with an open review order, the
+	// forge kinds store.LatestForgeFailure reads, and the review lifecycle
+	// kinds of review tasks (component-next-action;
+	// component-submission-merge; component-web-task-surfaces invariant 19).
+	foldEvents, err := s.markerFoldRows(ctx, store.MarkerFoldInput{
+		Workspace: workspace(ctx), Page: taskIDs, ReviewTasks: reviewTaskIDs,
+		LiveReviewTasks: liveReviewTaskIDs, OpenReviewOrders: openReviewOrders, Now: now,
+	})
 	if err != nil {
 		return nil, nil, time.Time{}, err
 	}
-	for markerRows.Next() {
-		var event core.Event
-		if scanErr := markerRows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.Payload, &event.At); scanErr != nil {
-			markerRows.Close()
-			return nil, nil, time.Time{}, scanErr
-		}
+	eventsByTask := make(map[string][]core.Event)
+	requestEventsByTask := make(map[string][]core.Event)
+	forgeEventsByTask := make(map[string][]core.Event)
+	for _, event := range foldEvents {
+		// A task's review lifecycle events feed its review folds only when
+		// the task has a review order, as on SingleStore.
 		switch event.Kind {
 		case "work_order.claimed", "work_order.lease_renewed", "work_order.released", "review.completed", "review.accepted", "task.setup.changed":
-			if hasReviewOrders {
+			if reviewTasks[event.TaskID] {
 				eventsByTask[event.TaskID] = append(eventsByTask[event.TaskID], event)
 			}
 		}
@@ -953,11 +939,6 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 			forgeEventsByTask[event.TaskID] = append(forgeEventsByTask[event.TaskID], event)
 		}
 	}
-	if err = markerRows.Err(); err != nil {
-		markerRows.Close()
-		return nil, nil, time.Time{}, err
-	}
-	markerRows.Close()
 	var horizon time.Time
 	for taskID, taskOrders := range ordersByTask {
 		lease := store.ActivityReviewLeaseHorizon(taskOrders, eventsByTask[taskID], now)
