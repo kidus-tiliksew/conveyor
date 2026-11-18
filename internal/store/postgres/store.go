@@ -1083,6 +1083,7 @@ func insertWorkspaceEventRow(ctx context.Context, q *db.Queries, arg db.InsertWo
 	inserted, err := q.InsertWorkspaceEvent(ctx, arg)
 	if err == nil {
 		raiseEventDeadline(q.DB(), arg.WorkspaceID, arg.Kind, arg.PayloadJson, arg.At.Time)
+		raiseWorkspaceEventNotice(q.DB(), arg.WorkspaceID, arg.Kind)
 	}
 	return inserted, err
 }
@@ -1175,6 +1176,7 @@ func insertWorkspaceEvent(ctx context.Context, q *db.Queries, event core.Event) 
 		return err
 	}
 	raiseEventDeadline(q.DB(), workspace(ctx), event.Kind, event.Payload, event.At)
+	raiseWorkspaceEventNotice(q.DB(), workspace(ctx), event.Kind)
 	event.ID, event.At = inserted.ID, inserted.At.Time
 	projection := store.ProjectLineageEvent(inserted.WorkspaceID, event)
 	for _, link := range projection.Suppresses {

@@ -7,7 +7,9 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,17 +31,83 @@ const mergeReadinessReuse = 10 * time.Second
 // completion for one key never evicts another key's entry. Concurrent misses
 // for one task and key share one in-flight hook call; the mutex is never held
 // across the hook (component-http-api, Request-scoped detail reads).
+//
+// A change of the value a next-action read can peek, and the expiry of one,
+// raises an in-process workspace notice through notify, under the mutex, and
+// signals the task's open streams (watch): a stored value that
+// differs from the live one, forget dropping a live value, and an expired
+// value found or swept. A response memo and a conditional statement read
+// that peeked the old value are dropped or answer a new tag (DEC-140(3);
+// component-next-action invariant 58). The notice stays in this daemon,
+// because each daemon reads its own cache; it is never persisted or sent to
+// a peer.
 type mergeReadinessCache struct {
 	mu      sync.Mutex
 	entries map[string]map[string]mergeReadinessEntry
 	flights map[string][]*mergeReadinessFlight
 	clock   func() time.Time
+	// notify publishes a workspace notice. It runs under the mutex, so a
+	// reader that sees a new value also finds its notice delivered; Publish
+	// never blocks.
+	notify func(workspace string)
+	// watchers are the open task streams of each task, signalled under the
+	// mutex when the task's readiness changes or expires.
+	watchers map[string]map[chan struct{}]struct{}
+	// revision advances each time a stored value differs from the live one,
+	// so a read can tell a value replaced and restored from one held still.
+	revision uint64
 }
 
 type mergeReadinessEntry struct {
 	key       string
+	workspace string
 	readiness dispatch.MergeReadiness
 	readAt    time.Time
+	revision  uint64
+}
+
+// expires is the instant the entry stops being served.
+func (e mergeReadinessEntry) expires() time.Time { return e.readAt.Add(mergeReadinessReuse) }
+
+// announceLocked publishes the in-process workspace notice of one task's
+// readiness change and signals that task's open streams. The caller holds
+// the mutex, so the change and its announcement become visible together.
+func (c *mergeReadinessCache) announceLocked(id, workspace string) {
+	if c.notify != nil {
+		c.notify(workspace)
+	}
+	for watcher := range c.watchers[id] {
+		select {
+		case watcher <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// watch returns a channel signalled each time the readiness a next-action
+// read can peek for the task changes or expires, and a stop function. A
+// signal coalesces, as a hub notice does (component-http-api invariant 26:
+// the stream answers it without a database read).
+func (c *mergeReadinessCache) watch(workspace, taskID string) (<-chan struct{}, func()) {
+	id := workspace + "\x00" + taskID
+	watcher := make(chan struct{}, 1)
+	c.mu.Lock()
+	if c.watchers == nil {
+		c.watchers = map[string]map[chan struct{}]struct{}{}
+	}
+	if c.watchers[id] == nil {
+		c.watchers[id] = map[chan struct{}]struct{}{}
+	}
+	c.watchers[id][watcher] = struct{}{}
+	c.mu.Unlock()
+	return watcher, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		delete(c.watchers[id], watcher)
+		if len(c.watchers[id]) == 0 {
+			delete(c.watchers, id)
+		}
+	}
 }
 
 // mergeReadinessFlight is one in-flight hook call. done closes after
@@ -107,12 +175,13 @@ func (c *mergeReadinessCache) readObserved(ctx context.Context, task core.Task, 
 		c.flights[id] = append(c.flights[id], flight)
 		c.mu.Unlock()
 		readiness, err := hook(ctx, task)
-		c.finish(id, flight, readiness, err)
+		workspaceID, _ := store.WorkspaceFromContext(ctx)
+		c.finish(id, workspaceID, flight, readiness, err)
 		return readiness, err == nil, err
 	}
 }
 
-func (c *mergeReadinessCache) finish(id string, flight *mergeReadinessFlight, readiness dispatch.MergeReadiness, err error) {
+func (c *mergeReadinessCache) finish(id, workspaceID string, flight *mergeReadinessFlight, readiness dispatch.MergeReadiness, err error) {
 	c.mu.Lock()
 	defer close(flight.done)
 	defer c.mu.Unlock()
@@ -135,10 +204,13 @@ func (c *mergeReadinessCache) finish(id string, flight *mergeReadinessFlight, re
 	if c.entries == nil {
 		c.entries = map[string]map[string]mergeReadinessEntry{}
 	}
+	previous, hadLive := c.entries[id][flight.key]
+	hadLive = hadLive && now.Sub(previous.readAt) < mergeReadinessReuse
 	for cachedID, keys := range c.entries {
 		for cachedKey, entry := range keys {
 			if now.Sub(entry.readAt) >= mergeReadinessReuse {
 				delete(keys, cachedKey)
+				c.announceLocked(cachedID, entry.workspace)
 			}
 		}
 		if len(keys) == 0 {
@@ -148,7 +220,19 @@ func (c *mergeReadinessCache) finish(id string, flight *mergeReadinessFlight, re
 	if c.entries[id] == nil {
 		c.entries[id] = map[string]mergeReadinessEntry{}
 	}
-	c.entries[id][flight.key] = mergeReadinessEntry{key: flight.key, readiness: readiness, readAt: now}
+	// An unchanged live value keeps its revision and raises no notice: what
+	// a read peeks is the same, and its later expiry only moves a horizon
+	// outward.
+	revision := previous.revision
+	changed := !hadLive || previous.readiness != readiness
+	if changed {
+		c.revision++
+		revision = c.revision
+	}
+	c.entries[id][flight.key] = mergeReadinessEntry{key: flight.key, workspace: workspaceID, readiness: readiness, readAt: now, revision: revision}
+	if changed {
+		c.announceLocked(id, workspaceID)
+	}
 }
 
 // forget drops every key's entry for the task and advances its generation:
@@ -158,6 +242,15 @@ func (c *mergeReadinessCache) forget(ctx context.Context, taskID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	id := mergeReadinessID(ctx, taskID)
+	// A dropped live value changes what a read peeks; a dropped expired
+	// value expired unseen and is announced here.
+	announced := map[string]bool{}
+	for _, entry := range c.entries[id] {
+		if !announced[entry.workspace] {
+			announced[entry.workspace] = true
+			c.announceLocked(id, entry.workspace)
+		}
+	}
 	delete(c.entries, id)
 	for _, flight := range c.flights[id] {
 		flight.superseded = true
@@ -188,14 +281,121 @@ func (s *Server) callerCapability(ctx context.Context, capability core.Capabilit
 // lastKnown returns the cached readiness peek for a next-action projection.
 // It never calls the forge, so a next-action read cannot loop forge calls;
 // a missing or expired entry yields nil, which projects as UNKNOWN (DEC-64(3)).
+//
+// The peek joins the read's coverage: the value's expiry bounds the
+// response memo and the conditional tag (memoHorizon), and a statement read
+// records the value so its answer can check it again (readinessReads). An
+// expired value found here is dropped and announced, so a memo that read
+// it is dropped even when no new forge read follows (DEC-140(3);
+// component-next-action invariant 58).
 func (c *mergeReadinessCache) lastKnown(ctx context.Context, task core.Task) *nextaction.MergeReadiness {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	entry, ok := c.entries[mergeReadinessID(ctx, task.ID)][mergeReadinessKey(task)]
-	if !ok || c.now().Sub(entry.readAt) >= mergeReadinessReuse {
+	id, key := mergeReadinessID(ctx, task.ID), mergeReadinessKey(task)
+	value, expires, revision := c.peek(id, key)
+	if !expires.IsZero() {
+		memoHorizon(ctx, expires)
+	}
+	if reads, ok := readinessReadsFrom(ctx); ok {
+		reads.add(id, key, value, revision)
+	}
+	if value == nil {
 		return nil
 	}
-	return &nextaction.MergeReadiness{State: entry.readiness.State, HeadSHA: entry.readiness.HeadSHA, Number: entry.readiness.Number}
+	return &nextaction.MergeReadiness{State: value.State, HeadSHA: value.HeadSHA, Number: value.Number}
+}
+
+// peek returns the live value for one task and key with its expiry and
+// revision, all read under one hold of the mutex, or nil, a zero time, and
+// revision 0. It drops and announces an expired value.
+func (c *mergeReadinessCache) peek(id, key string) (*dispatch.MergeReadiness, time.Time, uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[id][key]
+	if !ok {
+		return nil, time.Time{}, 0
+	}
+	if c.now().Sub(entry.readAt) >= mergeReadinessReuse {
+		delete(c.entries[id], key)
+		if len(c.entries[id]) == 0 {
+			delete(c.entries, id)
+		}
+		c.announceLocked(id, entry.workspace)
+		return nil, time.Time{}, 0
+	}
+	readiness := entry.readiness
+	return &readiness, entry.expires(), entry.revision
+}
+
+type readinessReadsKey struct{}
+
+// readinessReads records the merge-readiness values one statement read
+// peeked, so its answer can check that each is still the live value
+// (component-next-action invariant 58).
+type readinessReads struct {
+	mu    sync.Mutex
+	reads []readinessRead
+}
+
+type readinessRead struct {
+	id, key  string
+	value    *dispatch.MergeReadiness
+	revision uint64
+}
+
+func (r *readinessReads) add(id, key string, value *dispatch.MergeReadiness, revision uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reads = append(r.reads, readinessRead{id: id, key: key, value: value, revision: revision})
+}
+
+func (r *readinessReads) addAll(reads []readinessRead) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reads = append(r.reads, reads...)
+}
+
+func (r *readinessReads) snapshot() []readinessRead {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]readinessRead(nil), r.reads...)
+}
+
+// digest encodes every recorded peek, in a stable order, for a tag: a read
+// that peeked another value, or no value, gets another tag even when the
+// body it served is the same (component-next-action invariant 58).
+func (r *readinessReads) digest() []byte {
+	reads := r.snapshot()
+	lines := make([]string, 0, len(reads))
+	for _, read := range reads {
+		value := "none"
+		if read.value != nil {
+			value = read.value.State + "\x00" + read.value.HeadSHA + "\x00" + read.value.URL + "\x00" + strconv.Itoa(read.value.Number)
+		}
+		lines = append(lines, read.id+"\x00"+read.key+"\x00"+value)
+	}
+	slices.Sort(lines)
+	lines = slices.Compact(lines)
+	return []byte(strings.Join(lines, "\n"))
+}
+
+// readinessReadsFrom returns the recorder of the statement read ctx serves.
+func readinessReadsFrom(ctx context.Context) (*readinessReads, bool) {
+	reads, ok := ctx.Value(readinessReadsKey{}).(*readinessReads)
+	return reads, ok
+}
+
+// unchanged reports whether every recorded peek still returns its value at
+// the same revision.
+func (r *readinessReads) unchanged(c *mergeReadinessCache) bool {
+	r.mu.Lock()
+	reads := append([]readinessRead(nil), r.reads...)
+	r.mu.Unlock()
+	for _, read := range reads {
+		current, _, revision := c.peek(read.id, read.key)
+		if revision != read.revision || (current == nil) != (read.value == nil) || (current != nil && *current != *read.value) {
+			return false
+		}
+	}
+	return true
 }
 
 // mergeReadinessKey is the one readiness cache key for every reader and

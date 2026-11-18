@@ -96,9 +96,10 @@ func (s *Server) memoizedRead(w http.ResponseWriter, r *http.Request, kind strin
 			return readMemoValue{}, err
 		}
 		horizon := &readMemoHorizon{now: now, until: memoReadUntil(now)}
+		reads := &readinessReads{}
 		ctx = context.WithValue(ctx, readMemoHorizonKey{}, horizon)
+		ctx = context.WithValue(ctx, readinessReadsKey{}, reads)
 		ctx = context.WithValue(ctx, memoReadNowKey{}, now)
-		ctx = context.WithValue(ctx, memoReadValidationKey{}, validation)
 		response := &memoResponse{header: make(http.Header)}
 		request := r.Clone(ctx)
 		request.Header.Del("If-None-Match")
@@ -106,12 +107,23 @@ func (s *Server) memoizedRead(w http.ResponseWriter, r *http.Request, kind strin
 		if response.status != http.StatusOK {
 			return readMemoValue{}, response
 		}
-		conditional := activityConditional{now: now, opts: opts, scope: []byte(key), validation: validation}
 		value := readMemoValue{body: response.body.Bytes(), validUntil: horizon.until, header: map[string]string{}}
-		value.etag = conditional.etag(value.validUntil, "")
 		for key := range response.header {
 			value.header[key] = response.header.Get(key)
 		}
+		// The body is published only when the state it was read from is
+		// still the state at its end: the validation read and every
+		// merge-readiness value it peeked. Otherwise it answers once with
+		// no ETag and is not stored (component-next-action invariant 58).
+		after, err := s.Store.ReadActivityValidation(ctx, now)
+		if err != nil {
+			return readMemoValue{}, err
+		}
+		if after != validation || !reads.unchanged(&s.mergeReadiness) {
+			value.unstored = true
+			return value, nil
+		}
+		value.etag = statementConditional(now, opts, []byte(key), validation, value.body, reads).etag(value.validUntil, "")
 		return value, nil
 	})
 	if err != nil {
@@ -125,15 +137,15 @@ func (s *Server) memoizedRead(w http.ResponseWriter, r *http.Request, kind strin
 	for key, value := range value.header {
 		w.Header().Set(key, value)
 	}
-	w.Header().Set("ETag", value.etag)
-	if r.Header.Get("If-None-Match") == value.etag {
-		w.WriteHeader(http.StatusNotModified)
-		return
+	if value.etag != "" {
+		w.Header().Set("ETag", value.etag)
+		if ifNoneMatchAdmits(r.Header.Values("If-None-Match"), value.etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(value.body)
 }
 
 type memoReadNowKey struct{}
-
-type memoReadValidationKey struct{}
