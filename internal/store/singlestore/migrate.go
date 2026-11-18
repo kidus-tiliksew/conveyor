@@ -134,7 +134,7 @@ func (s *Store) migrateFiles(ctx context.Context, files []migration) error {
 	if err != nil {
 		return err
 	}
-	freshBootstrap, err := s.hotReadBootstrapOrigin(ctx, len(applied) == 0)
+	freshTables, err := s.hotReadBootstrapOrigin(ctx, len(applied) == 0)
 	if err != nil {
 		return err
 	}
@@ -251,8 +251,8 @@ func (s *Store) migrateFiles(ctx context.Context, files []migration) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
-		if file.version == hotReadIndexesMigrationVersion && freshBootstrap {
-			if err := s.migrateHotReadIndexes(ctx); err != nil {
+		if file.version == hotReadIndexesMigrationVersion {
+			if err := s.migrateHotReadIndexes(ctx, freshTables); err != nil {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}

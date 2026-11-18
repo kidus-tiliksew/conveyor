@@ -104,6 +104,26 @@ func applySSPrepareScript(t *testing.T, ctx context.Context, db *sql.DB, script 
 			if table == "" || kind == "" || name == "" {
 				t.Fatalf("unrecognized ALTER %q", stmt)
 			}
+			if kind == "key" && (table == "events_columnstore" || table == "artifact_links") {
+				columnstore, err := (&Store{db: db}).hotReadTableColumnstore(ctx, table)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !columnstore {
+					var replacement string
+					for _, candidate := range hotReadEngineStatements(t, script, table, true) {
+						_, candidateKind, candidateName := sqlScriptAlterTarget(candidate)
+						if candidateKind == "key" && candidateName == name {
+							replacement = candidate
+							break
+						}
+					}
+					if replacement == "" {
+						t.Fatalf("missing rowstore script variant for %s.%s", table, name)
+					}
+					stmt = replacement
+				}
+			}
 			present, err := ssPrepareObjectPresent(ctx, db, table, kind, name)
 			if err != nil {
 				t.Fatalf("inspect %s %s.%s: %v", kind, table, name, err)

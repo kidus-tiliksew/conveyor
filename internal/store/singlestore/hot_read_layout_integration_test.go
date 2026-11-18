@@ -15,6 +15,10 @@ import (
 // The private database is created specifically for this test: preparing its
 // schema must not change the shared integration fixture or another test.
 func hotReadIntegrationDatabase(t *testing.T, legacy bool) (*sql.DB, string) {
+	return hotReadIntegrationDatabaseWithEvents(t, legacy, true)
+}
+
+func hotReadIntegrationDatabaseWithEvents(t *testing.T, legacy, createEvents bool) (*sql.DB, string) {
 	t.Helper()
 	integrationStore(t)
 	ctx := t.Context()
@@ -35,8 +39,28 @@ func hotReadIntegrationDatabase(t *testing.T, legacy bool) (*sql.DB, string) {
 	}
 	db := sql.OpenDB(connector)
 	t.Cleanup(func() { db.Close() })
-	if err := execEventsOperatorScript(ctx, db, "01-create.sql"); err != nil {
-		t.Fatal(err)
+	if createEvents {
+		if legacy {
+			statements, err := eventsOperatorStatements("01-create.sql")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var lines []string
+			for _, line := range strings.Split(statements[0], "\n") {
+				if strings.Contains(line, "event_document_key") || strings.Contains(line, "event_requirement_key") || strings.Contains(line, "event_session_key") {
+					continue
+				}
+				if strings.Contains(line, "KEY events_task_idx") {
+					line = strings.TrimSuffix(line, ",")
+				}
+				lines = append(lines, line)
+			}
+			if _, err := db.ExecContext(ctx, strings.Join(lines, "\n")); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := execEventsOperatorScript(ctx, db, "01-create.sql"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if legacy {
 		if _, err := db.ExecContext(ctx, `CREATE ROWSTORE TABLE conveyor_singlestore_bootstrap (id INT NOT NULL,origin VARCHAR(16) NOT NULL,PRIMARY KEY(id),SHARD KEY(id))`); err != nil {
@@ -82,10 +106,8 @@ func TestHotReadLayoutDatabaseIntegration(t *testing.T) {
 	if legacy.hotReadIndexReady(index.name) {
 		t.Fatal("legacy store changed after preparation")
 	}
-	// The existing preparation implementation supplies the rest of the manifest.
-	if err := (&Store{db: db}).migrateHotReadIndexes(ctx); err != nil {
-		t.Fatal(err)
-	}
+	// Prepare the remaining operator-owned and legacy objects explicitly.
+	applySSPrepareScript(t, ctx, db, loadHotReadPrepareScript(t, "prepare-singlestore.sql", "ws", "task"))
 	if partial.hotReadIndexReady(hotReadIndexes[1].name) || legacy.hotReadIndexReady(index.name) {
 		t.Fatal("running store changed after preparation")
 	}
@@ -101,8 +123,8 @@ func TestHotReadLayoutDatabaseIntegration(t *testing.T) {
 	if err := probe.initHotReadLayout(measured); err != nil {
 		t.Fatal(err)
 	}
-	if got := collector.Snapshot().Queries; got > 21 {
-		t.Fatalf("discovery used %d queries, want at most 21", got)
+	if got := collector.Snapshot().Queries; got > 24 {
+		t.Fatalf("discovery used %d queries, want at most 24", got)
 	}
 	prepared.ReadStats(0)
 	readCollector := dbmetrics.NewCollector()
@@ -142,15 +164,99 @@ func TestHotReadLayoutIncompatibleDatabaseIntegration(t *testing.T) {
 }
 
 func TestHotReadLayoutFreshDatabaseIntegration(t *testing.T) {
-	_, dsn := hotReadIntegrationDatabase(t, false)
+	db, dsn := hotReadIntegrationDatabase(t, false)
+	before := hotReadShowCreate(t, db, "events_columnstore")
 	s, err := Open(t.Context(), dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
+	if after := hotReadShowCreate(t, db, "events_columnstore"); after != before {
+		t.Fatalf("startup changed operator-owned events layout:\nbefore: %s\nafter: %s", before, after)
+	}
 	for _, index := range hotReadIndexes {
 		if index.column != "" && !s.hotReadIndexReady(index.name) {
 			t.Errorf("fresh lookup %s not ready", index.name)
+		}
+	}
+}
+
+func hotReadColumnCount(t *testing.T, db *sql.DB, table, like string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name LIKE ?`, table, like).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// An events table prepared by the old operator script has no hot-read columns.
+// Startup must neither add them nor treat those lookups as ready, while the
+// Conveyor-created core tables are still prepared on a fresh bootstrap.
+func TestHotReadLayoutOldOperatorEventsIntegration(t *testing.T) {
+	ctx := t.Context()
+	db, dsn := hotReadIntegrationDatabase(t, false)
+	for _, statement := range []string{
+		`ALTER TABLE events_columnstore DROP KEY events_document_key_idx`,
+		`ALTER TABLE events_columnstore DROP KEY events_requirement_key_idx`,
+		`ALTER TABLE events_columnstore DROP KEY events_session_key_idx`,
+		`ALTER TABLE events_columnstore DROP COLUMN event_document_key`,
+		`ALTER TABLE events_columnstore DROP COLUMN event_requirement_key`,
+		`ALTER TABLE events_columnstore DROP COLUMN event_session_key`,
+	} {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := hotReadShowCreate(t, db, "events_columnstore")
+	s, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	if after := hotReadShowCreate(t, db, "events_columnstore"); after != before {
+		t.Fatalf("startup changed operator-owned events layout:\nbefore: %s\nafter: %s", before, after)
+	}
+	if n := hotReadColumnCount(t, db, "events_columnstore", "event_document_key") + hotReadColumnCount(t, db, "events_columnstore", "event_requirement_key") + hotReadColumnCount(t, db, "events_columnstore", "event_session_key"); n != 0 {
+		t.Fatalf("startup added %d event hot-read columns to an operator-owned table", n)
+	}
+	for _, index := range hotReadIndexes {
+		if index.column == "" {
+			continue
+		}
+		if want := index.table != "events_columnstore"; s.hotReadIndexReady(index.name) != want {
+			t.Errorf("lookup %s ready = %v, want %v", index.name, !want, want)
+		}
+	}
+}
+
+// A persisted per-table record decides, not the current schema: a table
+// recorded as pre-existing gets no startup DDL while its siblings are prepared.
+func TestHotReadLayoutMixedProvenanceIntegration(t *testing.T) {
+	ctx := t.Context()
+	db, dsn := hotReadIntegrationDatabase(t, false)
+	for _, statement := range []string{
+		`CREATE ROWSTORE TABLE conveyor_singlestore_bootstrap (id INT NOT NULL,origin VARCHAR(16) NOT NULL,PRIMARY KEY(id),SHARD KEY(id))`,
+		`INSERT INTO conveyor_singlestore_bootstrap(id,origin) VALUES (1,'fresh'),(2,'legacy'),(3,'fresh'),(4,'fresh')`,
+	} {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	if n := hotReadColumnCount(t, db, "tasks", "task_state_key") + hotReadColumnCount(t, db, "tasks", "task_intake_key"); n != 0 {
+		t.Fatalf("legacy-recorded tasks table received %d hot-read columns", n)
+	}
+	for _, index := range hotReadIndexes {
+		if index.column == "" {
+			continue
+		}
+		if want := index.table != "tasks"; s.hotReadIndexReady(index.name) != want {
+			t.Errorf("lookup %s ready = %v, want %v", index.name, !want, want)
 		}
 	}
 }

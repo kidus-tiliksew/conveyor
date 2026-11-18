@@ -2,6 +2,7 @@ package singlestore
 
 import (
 	"context"
+	"database/sql"
 	"sort"
 	"strings"
 	"time"
@@ -76,34 +77,14 @@ func (s *Store) markerTaskRows(ctx context.Context, taskIDs []string) ([]markerR
 	return out, rows.Err()
 }
 
-func markerLatestClaimsQuery(ws string, taskIDs []string) (string, []any) {
+func markerLatestSummariesQuery(ws string, taskIDs []string) (string, []any) {
 	arms := make([]string, 0, len(taskIDs))
-	args := make([]any, 0, len(taskIDs)*2)
+	args := make([]any, 0, len(taskIDs)*8)
 	for _, id := range taskIDs {
-		arms = append(arms, `(SELECT task_id,stage FROM work_orders WHERE workspace_id=? AND task_id=? AND state='claimed' ORDER BY execution_started_at DESC,created_at DESC,id DESC LIMIT 1)`)
-		args = append(args, ws, id)
+		arms = append(arms, `(SELECT t.task_id,e.at,e.id,j.stage AS job_stage,c.stage AS claim_stage FROM (SELECT ? AS task_id) t LEFT JOIN (SELECT at,id FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=? ORDER BY at DESC,id DESC LIMIT 1) e ON 1=1 LEFT JOIN (SELECT stage FROM jobs WHERE workspace_id=? AND task_id=? ORDER BY started_at DESC,id DESC LIMIT 1) j ON 1=1 LEFT JOIN (SELECT stage FROM work_orders WHERE workspace_id=? AND task_id=? AND state='claimed' ORDER BY execution_started_at DESC,created_at DESC,id DESC LIMIT 1) c ON 1=1)`)
+		args = append(args, id, ws, id, id, ws, id, ws, id)
 	}
-	return `SELECT per_task.task_id,per_task.stage FROM (` + strings.Join(arms, " UNION ALL ") + `) per_task`, args
-}
-
-func markerLatestJobsQuery(ws string, taskIDs []string) (string, []any) {
-	arms := make([]string, 0, len(taskIDs))
-	args := make([]any, 0, len(taskIDs)*2)
-	for _, id := range taskIDs {
-		arms = append(arms, `(SELECT task_id,stage FROM jobs WHERE workspace_id=? AND task_id=? ORDER BY started_at DESC,id DESC LIMIT 1)`)
-		args = append(args, ws, id)
-	}
-	return `SELECT per_task.task_id,per_task.stage FROM (` + strings.Join(arms, " UNION ALL ") + `) per_task`, args
-}
-
-func markerLatestEventsQuery(ws string, taskIDs []string) (string, []any) {
-	arms := make([]string, 0, len(taskIDs))
-	args := make([]any, 0, len(taskIDs)*3)
-	for _, id := range taskIDs {
-		arms = append(arms, `(SELECT task_id,at,id FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=? ORDER BY at DESC,id DESC LIMIT 1)`)
-		args = append(args, ws, id, id)
-	}
-	return `SELECT per_task.task_id,per_task.at,per_task.id FROM (` + strings.Join(arms, " UNION ALL ") + `) per_task`, args
+	return `SELECT per_task.task_id,per_task.at,per_task.id,per_task.job_stage,per_task.claim_stage FROM (` + strings.Join(arms, " UNION ALL ") + `) per_task`, args
 }
 
 // markerLatestSummaries folds the latest claim stage, job stage, and event
@@ -117,21 +98,15 @@ func (s *Store) markerLatestSummaries(ctx context.Context, rows []markerRow) err
 		byTask[rows[i].taskID] = &rows[i]
 	}
 	for _, chunk := range markerTaskBatches(ids) {
-		if err := s.markerLatestEvents(ctx, byTask, chunk); err != nil {
-			return err
-		}
-		if err := s.markerLatestJobs(ctx, byTask, chunk); err != nil {
-			return err
-		}
-		if err := s.markerLatestClaims(ctx, byTask, chunk); err != nil {
+		if err := s.markerLatestTuples(ctx, byTask, chunk); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Store) markerLatestEvents(ctx context.Context, byTask map[string]*markerRow, taskIDs []string) error {
-	query, args := markerLatestEventsQuery(documentWorkspace(ctx), taskIDs)
+func (s *Store) markerLatestTuples(ctx context.Context, byTask map[string]*markerRow, taskIDs []string) error {
+	query, args := markerLatestSummariesQuery(documentWorkspace(ctx), taskIDs)
 	rows, err := documentRows(ctx, s.db, query, args...)
 	if err != nil {
 		return err
@@ -139,51 +114,27 @@ func (s *Store) markerLatestEvents(ctx context.Context, byTask map[string]*marke
 	defer rows.Close()
 	for rows.Next() {
 		var taskID string
-		var at time.Time
-		var id int64
-		if err = rows.Scan(&taskID, &at, &id); err != nil {
+		var at sql.NullTime
+		var id sql.NullInt64
+		var jobStage, claimStage sql.NullString
+		if err = rows.Scan(&taskID, &at, &id, &jobStage, &claimStage); err != nil {
 			return err
 		}
-		if row := byTask[taskID]; row != nil {
-			row.lastEventAt, row.lastEventID = at, id
+		row := byTask[taskID]
+		if row == nil {
+			continue
 		}
-	}
-	return rows.Err()
-}
-
-func (s *Store) markerLatestJobs(ctx context.Context, byTask map[string]*markerRow, taskIDs []string) error {
-	query, args := markerLatestJobsQuery(documentWorkspace(ctx), taskIDs)
-	rows, err := documentRows(ctx, s.db, query, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var taskID, stage string
-		if err = rows.Scan(&taskID, &stage); err != nil {
-			return err
+		if at.Valid {
+			row.lastEventAt = at.Time
 		}
-		if row := byTask[taskID]; row != nil {
-			row.latestStage = stage
+		if id.Valid {
+			row.lastEventID = id.Int64
 		}
-	}
-	return rows.Err()
-}
-
-func (s *Store) markerLatestClaims(ctx context.Context, byTask map[string]*markerRow, taskIDs []string) error {
-	query, args := markerLatestClaimsQuery(documentWorkspace(ctx), taskIDs)
-	rows, err := documentRows(ctx, s.db, query, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var taskID, stage string
-		if err = rows.Scan(&taskID, &stage); err != nil {
-			return err
+		if jobStage.Valid {
+			row.latestStage = jobStage.String
 		}
-		if row := byTask[taskID]; row != nil {
-			row.latestStage = stage
+		if claimStage.Valid {
+			row.latestStage = claimStage.String
 		}
 	}
 	return rows.Err()

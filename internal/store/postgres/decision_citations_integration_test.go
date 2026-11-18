@@ -54,7 +54,7 @@ func TestDecisionCitationsIntegration(t *testing.T) {
 	}
 	decide("DEC-4", "", true)
 	decide("DEC-40", "", false)
-	decide("DEC-9", "", true)
+	decide("DEC-9", "", false)
 	if _, err = st.DismissDecision(ctx, "DEC-9"); err != nil {
 		t.Fatal(err)
 	}

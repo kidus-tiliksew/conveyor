@@ -12,11 +12,13 @@ import (
 )
 
 type layoutFixture struct {
-	columns   map[string]bool
-	keys      map[string][]string
-	kinds     map[string]string
-	badColumn string
-	failure   string
+	columns        map[string]bool
+	keys           map[string][]string
+	kinds          map[string]string
+	storage        map[string]string
+	storageQueries map[string]int
+	badColumn      string
+	failure        string
 }
 
 type layoutConnector struct{ fixture *layoutFixture }
@@ -71,6 +73,10 @@ func (c layoutConn) QueryContext(_ context.Context, query string, args []driver.
 			fmt.Fprintf(&definition, "\n`%s` AS (%s) PERSISTED VARCHAR(64),", index.column, expression)
 		}
 		return &layoutRows{columns: []string{"table", "create"}, values: [][]driver.Value{{table, definition.String()}}}, nil
+	case strings.Contains(query, "information_schema.tables"):
+		table := args[0].Value.(string)
+		f.storageQueries[table]++
+		return &layoutRows{columns: []string{"storage_type"}, values: [][]driver.Value{{f.storage[table]}}}, nil
 	case strings.Contains(query, "information_schema.statistics"):
 		name := args[1].Value.(string)
 		r := &layoutRows{columns: []string{"column_name", "index_type", "non_unique"}}
@@ -84,12 +90,13 @@ func (c layoutConn) QueryContext(_ context.Context, query string, args []driver.
 }
 
 func preparedLayoutFixture() *layoutFixture {
-	f := &layoutFixture{columns: map[string]bool{}, keys: map[string][]string{}, kinds: map[string]string{}}
+	f := &layoutFixture{columns: map[string]bool{}, keys: map[string][]string{}, kinds: map[string]string{}, storage: map[string]string{}, storageQueries: map[string]int{}}
 	for _, index := range hotReadIndexes {
 		if index.column == "" {
 			continue
 		}
 		f.columns[index.column] = true
+		f.storage[index.table] = "COLUMNSTORE"
 		f.keys[index.name] = append([]string(nil), index.columns...)
 		if index.hash {
 			f.kinds[index.name] = "COLUMNSTORE HASH"
@@ -124,8 +131,34 @@ func TestHotReadLayoutDiscovery(t *testing.T) {
 				t.Errorf("%s not ready", index.name)
 			}
 		}
+		for _, table := range []string{"events_columnstore", "tasks", "artifact_links"} {
+			if got := f.storageQueries[table]; got != 1 {
+				t.Errorf("%s storage queries=%d, want 1", table, got)
+			}
+		}
 		if s.hotReadIndexReady("unknown") || s.hotReadIndexReady("tasks_workspace_created_idx") {
 			t.Fatal("unknown lookup ready")
+		}
+	})
+	t.Run("rowstore keys", func(t *testing.T) {
+		f := preparedLayoutFixture()
+		f.storage["artifact_links"] = "INMEMORY_ROWSTORE"
+		for _, index := range hotReadIndexes {
+			if index.table == "artifact_links" {
+				f.kinds[index.name] = "BTREE"
+			}
+		}
+		s, err := layoutStore(t, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, index := range hotReadIndexes {
+			if index.table == "artifact_links" && !s.hotReadIndexReady(index.name) {
+				t.Errorf("%s rowstore key not ready", index.name)
+			}
+		}
+		if got := f.storageQueries["artifact_links"]; got != 1 {
+			t.Errorf("artifact_links storage queries=%d, want 1", got)
 		}
 	})
 	t.Run("legacy and reopen", func(t *testing.T) {
@@ -178,7 +211,7 @@ func TestHotReadLayoutDiscovery(t *testing.T) {
 			t.Fatalf("layout=%v err=%v", s.hotReadLayout, err)
 		}
 	})
-	for _, failure := range []string{"information_schema.columns", "SHOW CREATE TABLE", "information_schema.statistics"} {
+	for _, failure := range []string{"information_schema.columns", "SHOW CREATE TABLE", "information_schema.tables", "information_schema.statistics"} {
 		t.Run("metadata failure "+failure, func(t *testing.T) {
 			f := preparedLayoutFixture()
 			f.failure = failure

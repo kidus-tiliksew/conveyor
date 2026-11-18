@@ -68,9 +68,7 @@ func TestHotReadTaskLookupsIntegration(t *testing.T) {
 		t.Fatal("legacy store changed after preparation")
 	}
 
-	if err := (&Store{db: db}).migrateHotReadIndexes(ctx); err != nil {
-		t.Fatal(err)
-	}
+	applySSPrepareScript(t, ctx, db, loadHotReadPrepareScript(t, "prepare-singlestore.sql", ws, anchorID))
 	if partial.hotReadIndexReady(hotReadIndexes[1].name) || partial.hotReadIndexReady("tasks_workspace_state_created_idx") || legacy.hotReadIndexReady(index.name) || legacy.hotReadIndexReady("tasks_workspace_state_created_idx") {
 		t.Fatal("running store changed after preparation")
 	}

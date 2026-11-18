@@ -11,6 +11,7 @@ import (
 func (s *Store) initHotReadLayout(ctx context.Context) error {
 	ready := make(map[string]bool)
 	definitions := make(map[string]string)
+	columnstore := make(map[string]bool)
 	for _, index := range hotReadIndexes {
 		if index.column == "" {
 			continue
@@ -33,6 +34,13 @@ func (s *Store) initHotReadLayout(ctx context.Context) error {
 		if err := validateHotReadColumn(index, definition); err != nil {
 			return err
 		}
+		if _, ok := columnstore[index.table]; !ok {
+			isColumnstore, err := s.hotReadTableColumnstore(ctx, index.table)
+			if err != nil {
+				return fmt.Errorf("discover hot-read storage: metadata query failed")
+			}
+			columnstore[index.table] = isColumnstore
+		}
 		rows, err := backendRows(ctx, s.db, `SELECT column_name,index_type,non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name=? AND index_name=? ORDER BY seq_in_index`, index.table, index.name)
 		if err != nil {
 			return fmt.Errorf("discover hot-read indexes: metadata query failed")
@@ -46,7 +54,7 @@ func (s *Store) initHotReadLayout(ctx context.Context) error {
 				rows.Close()
 				return fmt.Errorf("discover hot-read indexes: invalid metadata")
 			}
-			validType = validType && hotReadIndexTypeMatches(index, kind, nonUnique)
+			validType = validType && hotReadIndexTypeMatches(index, columnstore[index.table], kind, nonUnique)
 			columns = append(columns, column)
 		}
 		err = rows.Err()

@@ -688,6 +688,7 @@ func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.Lineag
 }
 
 func (s *Store) ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementDeliveryLineage")
 	if strings.TrimSpace(requirementID) == "" || budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
 		return nil, fmt.Errorf("requirement delivery lineage requires a requirement id and bounded depth, nodes, and links")
 	}

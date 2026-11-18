@@ -67,19 +67,37 @@ ALTER TABLE artifact_links
 ALTER TABLE artifact_links
  ADD COLUMN session_lookup_key AS (SHA2(COALESCE(planning_session_id,''),256)) PERSISTED VARCHAR(64);
 
--- Approved keys. Hash keys use USING HASH. Rowstore keys are BTREE keys.
+-- Approved keys. Columnstore keys use USING HASH. Rowstore keys are plain keys.
+-- events_columnstore engine check. Run this first and apply ONLY the variant
+-- that matches storage_type (rowstore rejects non-unique hash keys, errno 1706).
+SELECT table_name, storage_type FROM information_schema.tables
+WHERE table_schema=DATABASE() AND table_name='events_columnstore';
+-- Variant A: storage_type = COLUMNSTORE (USING HASH).
 ALTER TABLE events_columnstore
  ADD KEY events_document_key_idx (workspace_id,event_document_key) USING HASH;
 ALTER TABLE events_columnstore
  ADD KEY events_requirement_key_idx (workspace_id,event_requirement_key) USING HASH;
 ALTER TABLE events_columnstore
  ADD KEY events_session_key_idx (workspace_id,event_session_key) USING HASH;
+-- Variant B: storage_type = INMEMORY_ROWSTORE (plain key, BTREE/SKIPLIST).
+-- ALTER TABLE events_columnstore
+--  ADD KEY events_document_key_idx (workspace_id,event_document_key);
+-- ALTER TABLE events_columnstore
+--  ADD KEY events_requirement_key_idx (workspace_id,event_requirement_key);
+-- ALTER TABLE events_columnstore
+--  ADD KEY events_session_key_idx (workspace_id,event_session_key);
 ALTER TABLE tasks
  ADD KEY tasks_workspace_state_created_idx (workspace_id,task_state_key,created_at,id);
 ALTER TABLE tasks
  ADD KEY tasks_workspace_intake_lookup_idx (workspace_id,task_intake_key);
 ALTER TABLE tasks ADD KEY tasks_workspace_created_idx (workspace_id,created_at,id);
 ALTER TABLE artifacts ADD KEY artifacts_workspace_created_idx (workspace_id,created_at,id);
+-- artifact_links engine check. Run this first and apply ONLY the variant that
+-- matches storage_type. SingleStore rejects a non-unique hash key on rowstore
+-- (errno 1706), so a rowstore artifact_links takes plain keys.
+SELECT table_name, storage_type FROM information_schema.tables
+WHERE table_schema=DATABASE() AND table_name='artifact_links';
+-- Variant A: storage_type = COLUMNSTORE (USING HASH).
 ALTER TABLE artifact_links
  ADD KEY artifact_links_artifact_lookup_idx (workspace_id,artifact_lookup_key) USING HASH;
 ALTER TABLE artifact_links
@@ -88,6 +106,15 @@ ALTER TABLE artifact_links
  ADD KEY artifact_links_requirement_lookup_idx (workspace_id,requirement_lookup_key) USING HASH;
 ALTER TABLE artifact_links
  ADD KEY artifact_links_session_lookup_idx (workspace_id,session_lookup_key) USING HASH;
+-- Variant B: storage_type = INMEMORY_ROWSTORE (plain key, BTREE/SKIPLIST).
+-- ALTER TABLE artifact_links
+--  ADD KEY artifact_links_artifact_lookup_idx (workspace_id,artifact_lookup_key);
+-- ALTER TABLE artifact_links
+--  ADD KEY artifact_links_task_lookup_idx (workspace_id,task_lookup_key);
+-- ALTER TABLE artifact_links
+--  ADD KEY artifact_links_requirement_lookup_idx (workspace_id,requirement_lookup_key);
+-- ALTER TABLE artifact_links
+--  ADD KEY artifact_links_session_lookup_idx (workspace_id,session_lookup_key);
 
 -- Postflight: SHOW CREATE must show each generated column as
 -- AS (<approved expression>) PERSISTED VARCHAR(64).

@@ -113,6 +113,28 @@ func TestArtifactLinkPredicatesFollowEachLookupIndependently(t *testing.T) {
 	}
 }
 
+func requireLegacyArtifactSQL(t *testing.T, name, query string) {
+	t.Helper()
+	for _, index := range hotReadIndexes {
+		if index.column != "" && strings.Contains(query, index.column) {
+			t.Errorf("%s legacy SQL references generated column %s: %s", name, index.column, query)
+		}
+	}
+}
+
+func TestArtifactLegacyBuildersAvoidGeneratedColumns(t *testing.T) {
+	legacy := &Store{hotReadLayout: map[string]bool{}}
+	query, _ := legacy.artifactHydrationQuery("workspace", []string{"artifact"})
+	requireLegacyArtifactSQL(t, "hydration", query)
+	owners := []ownerPredicate{{"task_id", "task"}, {"requirement_id", "requirement"}, {"planning_session_id", "session"}}
+	for _, owner := range owners {
+		query, _ := legacy.artifactOwnerChunkQuery("workspace", []ownerPredicate{owner})
+		requireLegacyArtifactSQL(t, owner.column, query)
+	}
+	query, _ = legacy.artifactOwnerChunkQuery("workspace", owners)
+	requireLegacyArtifactSQL(t, "mixed owners", query)
+}
+
 func TestArtifactProfileDecoderCountsActualTree(t *testing.T) {
 	full := `Top
  Project [` + "`SUM(CRC32(artifact_id))`" + `] actual_rows: 1 exec_time: 0ms
@@ -146,6 +168,16 @@ func TestArtifactProfileDecoderCountsActualTree(t *testing.T) {
 	}
 	if p.baseInput == p.filterInput+p.scanRows {
 		t.Fatalf("hydration double counted filter and scan: base=%d", p.baseInput)
+	}
+	for _, scan := range []string{"TableScan", "RowStoreScan", "IndexRangeScan"} {
+		t.Run(scan, func(t *testing.T) {
+			profile := parseArtifactProfile("Aggregate actual_rows: 1\n" +
+				scan + " conveyor_test.artifact_links table_type:sharded_rowstore actual_rows: 51,072\n" +
+				"IndexRangeScan conveyor_test.artifacts actual_rows: 20,936")
+			if profile.baseInput != 51_072 || profile.scanRows != 51_072 {
+				t.Fatalf("rowstore link input=%d scans=%d, want 51072 excluding artifact-table input", profile.baseInput, profile.scanRows)
+			}
+		})
 	}
 }
 
@@ -1151,6 +1183,17 @@ func artifactFirstPageIDs(t *testing.T, st *Store, ctx context.Context, ws strin
 	return ids
 }
 
+func flushArtifactPlanLinks(t *testing.T, st *Store, ctx context.Context) {
+	t.Helper()
+	columnstore, err := st.hotReadTableColumnstore(ctx, "artifact_links")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if columnstore {
+		runArtifactPlanSQL(t, st, ctx, "OPTIMIZE TABLE artifact_links FLUSH")
+	}
+}
+
 func runArtifactPlanSQL(t *testing.T, st *Store, ctx context.Context, statement string) {
 	started := time.Now()
 	rows, err := st.db.QueryContext(ctx, statement)
@@ -1265,8 +1308,8 @@ func explainArtifactPlanWithWarnings(t *testing.T, st *Store, ctx context.Contex
 
 func prepareArtifactPlanMeasurement(t *testing.T, st *Store, ctx context.Context, statements map[string]func(*Store) (string, []any)) {
 	t.Helper()
+	flushArtifactPlanLinks(t, st, ctx)
 	for _, statement := range []string{
-		"OPTIMIZE TABLE artifact_links FLUSH",
 		"OPTIMIZE TABLE artifact_links",
 		"ANALYZE TABLE artifact_links",
 		"ANALYZE TABLE artifacts",
@@ -1347,7 +1390,7 @@ var artifactProfileOperators = map[string]bool{
 	"Union": true, "Broadcast": true, "Distribute": true, "Limit": true,
 	"Order": true, "Sort": true, "Insert": true, "Delete": true,
 	"Update": true, "Result": true, "Remote": true, "Exchange": true,
-	"Merge": true, "Materialize": true, "RowStoreScan": true,
+	"Merge": true, "Materialize": true, "RowStoreScan": true, "TableScan": true,
 	"HashTableProbe": true, "HashTableBuild": true, "ChoosePlan": true,
 	"IndexRangeScan": true,
 }
@@ -1410,7 +1453,7 @@ func parseArtifactProfile(text string) artifactProfile {
 				}
 			}
 			p.filterOutput += op.actualRows
-		case "ColumnStoreScan":
+		case "ColumnStoreScan", "RowStoreScan", "TableScan", "IndexRangeScan":
 			if !strings.Contains(op.block, "artifact_links") {
 				continue
 			}
@@ -2024,9 +2067,47 @@ func assertArtifactPageAndChunkStatements(t *testing.T, st *Store, seed artifact
 // checks the plans take the prepared lookup only when it is prepared.
 func TestArtifactHotReadLayoutsIntegration(t *testing.T) {
 	st := integrationStore(t)
+	exerciseArtifactHotReadLayouts(t, st, sharedDatabase.cfg.FormatDSN())
+}
+
+func TestArtifactHotReadRowstoreLayoutsIntegration(t *testing.T) {
+	db, dsn := hotReadIntegrationDatabase(t, false)
+	ctx := t.Context()
+	// An operator-owned rowstore is a supported legacy layout. Preparing it
+	// adds the same lookups without changing its engine.
+	if _, err := db.ExecContext(ctx, `CREATE ROWSTORE TABLE artifact_links (
+		workspace_id VARCHAR(255) NOT NULL,
+		artifact_id LONGTEXT NOT NULL,
+		task_id LONGTEXT,
+		role LONGTEXT NOT NULL DEFAULT 'task_context',
+		requirement_id LONGTEXT,
+		planning_session_id LONGTEXT,
+		SHARD KEY(workspace_id)
+	) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin`); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Close()
+	applySSPrepareScript(t, ctx, db, loadHotReadPrepareScript(t, "prepare-singlestore.sql", "rowstore-proof", "rowstore-task"))
+	st, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if columnstore, err := st.hotReadTableColumnstore(ctx, "artifact_links"); err != nil || columnstore {
+		t.Fatalf("artifact_links engine changed: columnstore=%v err=%v", columnstore, err)
+	}
+	exerciseArtifactHotReadLayouts(t, st, dsn)
+}
+
+func exerciseArtifactHotReadLayouts(t *testing.T, st *Store, dsn string) {
+	t.Helper()
 	for _, name := range artifactLookupIndexes {
 		if !st.hotReadIndexReady(name) {
-			t.Skipf("%s is not prepared", name)
+			t.Fatalf("%s is not prepared", name)
 		}
 	}
 	seed := seedArtifactAssociations(t, st)
@@ -2057,7 +2138,7 @@ func TestArtifactHotReadLayoutsIntegration(t *testing.T) {
 	}
 
 	t.Run("reopen", func(t *testing.T) {
-		reopened, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN())
+		reopened, err := Open(t.Context(), dsn)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2106,10 +2187,7 @@ func TestArtifactHotReadLayoutsIntegration(t *testing.T) {
 			requireArtifactScanBudget(t, st, planSeed.ctx, name, query, args, F)
 			setArtifactLayout(t, st)
 			query, args = build(st)
-			legacy := strings.Join(explainDocumentEventQuery(t, st, planSeed.ctx, query, args), "\n")
-			if strings.Contains(legacy, "lookup") {
-				t.Errorf("%s legacy plan names a lookup:\n%s", name, legacy)
-			}
+			requireLegacyArtifactSQL(t, name, query)
 			setArtifactLayout(t, st, artifactLookupIndexes...)
 		}
 	})
@@ -2379,7 +2457,7 @@ func TestArtifactHotReadLayoutsIntegration(t *testing.T) {
 		requireArtifactRows(t, "sparse before noise", sparseBefore, sharedExpected, sharedBytes)
 		addArtifactNoiseLinks(t, st, planSeed.ctx, 12000)
 		addArtifactNoiseLinks(t, st, planSeed.ctx, 12000)
-		runArtifactPlanSQL(t, st, planSeed.ctx, "OPTIMIZE TABLE artifact_links FLUSH")
+		flushArtifactPlanLinks(t, st, planSeed.ctx)
 		runArtifactPlanSQL(t, st, planSeed.ctx, "ANALYZE TABLE artifact_links")
 		runArtifactPlanSQL(t, st, planSeed.ctx, "ANALYZE TABLE artifacts")
 		FNoise := calibrateArtifactFullScan(t, st, planSeed.ctx)
