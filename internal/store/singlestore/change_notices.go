@@ -3,6 +3,7 @@ package singlestore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
@@ -16,8 +17,11 @@ import (
 // notification, so a peered daemon runs the peer check on PeerMarks instead.
 
 type txNoticeState struct {
-	batch          *changes.Batch
-	taskWorkspaces map[string]struct{}
+	batch *changes.Batch
+	// taskEvents holds, per workspace, the task events tx wrote. Commit
+	// preparation advances each workspace's position once and records these
+	// events as the position's witnesses (change_notices_positions.go).
+	taskEvents map[string][]eventWitness
 }
 
 // txBatches maps each open store transaction to its notice state.
@@ -26,7 +30,7 @@ var txBatches sync.Map // *sql.Tx -> *txNoticeState
 // beginNotices registers tx's batch; finishNotices publishes it after a
 // commit or drops it.
 func (s *Store) beginNotices(tx *sql.Tx) {
-	txBatches.Store(tx, &txNoticeState{batch: s.changes.Begin(), taskWorkspaces: make(map[string]struct{})})
+	txBatches.Store(tx, &txNoticeState{batch: s.changes.Begin(), taskEvents: make(map[string][]eventWitness)})
 }
 
 func finishNotices(tx *sql.Tx, committed bool) {
@@ -49,10 +53,22 @@ func txBatch(tx *sql.Tx) *changes.Batch {
 	return nil
 }
 
-func markTaskEvent(tx *sql.Tx, ws string) {
-	if value, ok := txBatches.Load(tx); ok {
-		value.(*txNoticeState).taskWorkspaces[ws] = struct{}{}
+// errTaskEventOutsideNotices refuses a task event written in a transaction
+// that registered no notice state: its commit could not advance the
+// workspace's task-event position, so a peer would never notice it
+// (component-persistence invariant 42).
+var errTaskEventOutsideNotices = errors.New("task event written outside a store transaction that advances task_event_positions")
+
+// markTaskEvent records a committed-to-be task event of tx for commit
+// preparation. A transaction without notice state cannot take a task event.
+func markTaskEvent(tx *sql.Tx, w eventWitness) error {
+	value, ok := txBatches.Load(tx)
+	if !ok {
+		return errTaskEventOutsideNotices
 	}
+	state := value.(*txNoticeState)
+	state.taskEvents[w.workspace] = append(state.taskEvents[w.workspace], w)
+	return nil
 }
 
 // raiseTx adds n to tx's batch. Every event writer runs in a registered

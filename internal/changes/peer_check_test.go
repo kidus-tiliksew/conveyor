@@ -108,33 +108,32 @@ func TestPeerCheckPublishesWhatChanged(t *testing.T) {
 
 	// The first check has no previous marks: every workspace it reads gets
 	// both notices, so a reader that subscribed before it re-reads once.
-	reader.push(map[string]PeerMark{"a": {Log: 3, Events: 5, LastEvent: 9}, "b": {Log: 1}}, nil)
+	reader.push(map[string]PeerMark{"a": {Log: 3, Events: 5}, "b": {Log: 1}}, nil)
 	if err := check.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
 	requireKeys(t, "first check", rec.drain(t), "a:job", "a:task", "b:job", "b:task")
 
 	// Nothing changed: nothing published.
-	reader.push(map[string]PeerMark{"a": {Log: 3, Events: 5, LastEvent: 9}, "b": {Log: 1}}, nil)
+	reader.push(map[string]PeerMark{"a": {Log: 3, Events: 5}, "b": {Log: 1}}, nil)
 	if err := check.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
 	requireKeys(t, "idle check", rec.drain(t))
 
 	// a's log moved; b gained an event; c appeared with a log only.
-	reader.push(map[string]PeerMark{"a": {Log: 4, Events: 5, LastEvent: 9}, "b": {Log: 1, Events: 1, LastEvent: 10}, "c": {Log: 1}}, nil)
+	reader.push(map[string]PeerMark{"a": {Log: 4, Events: 5}, "b": {Log: 1, Events: 1}, "c": {Log: 1}}, nil)
 	if err := check.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
 	requireKeys(t, "changed check", rec.drain(t), "a:job", "b:task", "c:job", "c:task")
 
-	// A deletion paired with an insert keeps the count and moves the
-	// highest ID; that is still a change.
-	reader.push(map[string]PeerMark{"a": {Log: 4, Events: 5, LastEvent: 12}, "b": {Log: 1, Events: 1, LastEvent: 10}, "c": {Log: 1}}, nil)
+	// a's task-event mark moved alone: one task notice.
+	reader.push(map[string]PeerMark{"a": {Log: 4, Events: 6}, "b": {Log: 1, Events: 1}, "c": {Log: 1}}, nil)
 	if err := check.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	requireKeys(t, "same count, new highest ID", rec.drain(t), "a:task")
+	requireKeys(t, "task-event mark moved", rec.drain(t), "a:task")
 	if reader.count() != 4 {
 		t.Fatalf("reads=%d, want one per check", reader.count())
 	}
@@ -157,7 +156,7 @@ func TestPeerCheckFailureKeepsMarksAndRetries(t *testing.T) {
 	}
 	rec := newPeerRecorder(hub, "a")
 	ctx := context.Background()
-	reader.push(map[string]PeerMark{"a": {Log: 1, Events: 1, LastEvent: 1}}, nil)
+	reader.push(map[string]PeerMark{"a": {Log: 1, Events: 1}}, nil)
 	if err := check.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +174,7 @@ func TestPeerCheckFailureKeepsMarksAndRetries(t *testing.T) {
 	}
 
 	// The retry compares with the marks before the failure and finds both.
-	reader.push(map[string]PeerMark{"a": {Log: 2, Events: 2, LastEvent: 2}}, nil)
+	reader.push(map[string]PeerMark{"a": {Log: 2, Events: 2}}, nil)
 	if err := check.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +188,7 @@ func TestPeerCheckFailureKeepsMarksAndRetries(t *testing.T) {
 	fresh := &PeerCheck{Reader: reader, Hub: hub, Interval: time.Second}
 	reader.push(nil, failure)
 	_ = fresh.Check(ctx)
-	reader.push(map[string]PeerMark{"a": {Log: 2, Events: 2, LastEvent: 2}}, nil)
+	reader.push(map[string]PeerMark{"a": {Log: 2, Events: 2}}, nil)
 	if err := fresh.Check(ctx); err != nil {
 		t.Fatal(err)
 	}

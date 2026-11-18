@@ -92,14 +92,25 @@ func (s *Store) migrateDocumentDismissalArchival(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	// The repair commits like every store transaction, so a task event it
+	// ever writes advances task_event_positions (component-persistence
+	// invariant 42).
+	s.beginNotices(tx)
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+		finishNotices(tx, committed)
+	}()
 	affected, err := repairDismissalArchives(ctx, tx)
 	if err != nil {
 		return err
 	}
-	if err = tx.Commit(); err != nil {
+	if err = commitTx(ctx, tx); err != nil {
 		return err
 	}
+	committed = true
 	logDismissalArchiveRepair(affected)
 	return nil
 }

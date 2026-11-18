@@ -567,7 +567,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 	}()
 	// commit publishes the transaction's notices only after it committed.
 	commit := func() error {
-		e := tx.Commit()
+		e := commitTx(ctx, tx)
 		finishNotices(tx, e == nil)
 		return translateBackendConflict(e)
 	}
