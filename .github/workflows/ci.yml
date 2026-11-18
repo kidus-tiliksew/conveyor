@@ -63,6 +63,13 @@ jobs:
       # own job and no shard can be left out of a matrix.
       - id: matrix
         run: make -s ci-shard-matrix | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache-dependency-path: go.sum
+      # Every SingleStore test and top-level conformance suite runs in
+      # exactly one shard.
+      - run: make singlestore-shard-union-check
 
   go-test:
     name: Go tests and web lint
@@ -290,6 +297,18 @@ jobs:
         env:
           CONVEYOR_TEST_SINGLESTORE_URL: root:${{ secrets.SINGLESTORE_ROOT_PASSWORD }}@tcp(127.0.0.1:3306)/conveyor_test
           CONVEYOR_FIXTURE_STATE: ${{ runner.temp }}/singlestore-integration-fixture
+      # The commands shard is the shortest SingleStore job, so it also
+      # measures the bytes each measured read receives with protocol
+      # compression requested and disabled on this service. The job log keeps
+      # the COMPRESSION_MEASUREMENT lines and the comparison table.
+      - name: Measure SingleStore protocol compression
+        if: matrix.shard == 'commands'
+        env:
+          CONVEYOR_TEST_SINGLESTORE_URL: root:${{ secrets.SINGLESTORE_ROOT_PASSWORD }}@tcp(127.0.0.1:3306)/conveyor_test
+          CONVEYOR_FIXTURE_STATE: ${{ runner.temp }}/singlestore-compression-fixture
+        run: |
+          docker image ls --digests --format '{{.Repository}}:{{.Tag}} {{.Digest}}' | grep -i singlestore || true
+          make measure-singlestore-compression
       - name: Upload the SingleStore fixture phase logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -299,5 +318,6 @@ jobs:
             ${{ runner.temp }}/singlestore-regression-fixture/phases.jsonl
             ${{ runner.temp }}/singlestore-no-tests-fixture/phases.jsonl
             ${{ runner.temp }}/singlestore-integration-fixture/phases.jsonl
+            ${{ runner.temp }}/singlestore-compression-fixture/phases.jsonl
           if-no-files-found: warn
           retention-days: 14

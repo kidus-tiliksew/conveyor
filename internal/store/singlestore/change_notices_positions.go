@@ -3,9 +3,12 @@ package singlestore
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sort"
 	"strings"
 	"sync/atomic"
+
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // Task-event positions and their witnesses (component-persistence, Change
@@ -23,12 +26,42 @@ import (
 // (PeerMarks). Commit order comes from the counter row lock, never from event
 // IDs or times.
 //
-// A witness is needed only until its event is visible to everyone. Each
-// writer, holding the workspace counter lock, deletes the earlier witnesses
-// whose events its own read can see, so the table keeps only the latest
-// position's witnesses and any whose events are still in flight. A peer
-// treats an absent witness below a present one as visible: only a writer that
-// saw its event removes it.
+// A witness is needed only until its event is visible to everyone. A writer
+// removes earlier witnesses only at a prune position, every
+// taskEventPruneCadence-th position of a workspace, while it holds the
+// workspace counter lock and before it records its own witnesses. It deletes
+// at most taskEventPositionPrune witnesses whose events its own read can see,
+// oldest first, and keeps every witness whose event is still in flight. A
+// peer treats an absent witness below a present one as visible: only a
+// writer that saw its event removes it. The counter's own position keeps its
+// witnesses until a later commit.
+//
+// The ordinary commit sends two statements per written workspace beyond its
+// event writes: the counter update, which returns the new position through
+// LAST_INSERT_ID(expr) in its OK packet, and the witness insert. Only a
+// workspace's first commit, whose update matches no row, adds the counter
+// insert. The ordinary path never reads events_columnstore. (SingleStore
+// leaves the last insert ID at 0 on the ON DUPLICATE KEY UPDATE branch of an
+// upsert, so the counter is not an upsert:
+// TestSingleStoreTaskEventPositionResultIntegration.) A prune position adds
+// one delete of fixed shape that returns no rows, so it adds no row to the
+// read account of the request that commits (component-persistence invariant
+// 31).
+//
+// The cadence counts positions, which advance only in committed
+// transactions, so no timer, peer read, or process state drives the prune
+// and a rollback rolls the cadence back with the counter
+// (req-quiet-idle-runtime AC-1.3; component-runtime invariant 36).
+//
+// Retained witnesses per workspace: let W be the rows before a prune
+// position's commit, V the witnesses below it whose events that commit can
+// read, and E its own events. After the commit W' = W - min(V,
+// taskEventPositionPrune) + E, and every other commit adds its event count.
+// While every event is visible at the next prune position and no position
+// carries more than B witnesses, with 64B <= taskEventPositionPrune, the
+// table never holds more than taskEventPruneCadence*B rows of the
+// workspace: 64 for one event per commit. A witness of an invisible event
+// stays however long its event takes, so no constant bounds every workload.
 
 // eventWitness names one task event a transaction wrote.
 type eventWitness struct {
@@ -37,13 +70,52 @@ type eventWitness struct {
 	id        int64
 }
 
-// taskEventPositionPrune bounds the earlier witnesses one commit removes.
-const taskEventPositionPrune = 1000
+const (
+	// taskEventPruneCadence is the position interval of witness pruning: a
+	// commit prunes only when its new position is a multiple of it.
+	taskEventPruneCadence = 64
+	// taskEventPositionPrune bounds the earlier witnesses one prune removes.
+	taskEventPositionPrune = 1000
+)
+
+// taskEventPositionUpdateSQL advances an existing workspace counter, takes
+// its row lock, and returns the new position as the statement's last insert
+// ID. taskEventPositionInsertSQL creates the counter of a workspace whose
+// update matched no row.
+const (
+	taskEventPositionUpdateSQL = `UPDATE task_event_positions SET position=LAST_INSERT_ID(position+1) WHERE workspace_id=?`
+	taskEventPositionInsertSQL = `INSERT INTO task_event_positions(workspace_id,position) VALUES(?,1)`
+)
+
+// taskEventPruneSQL deletes, in one statement, up to the limit of earlier
+// witnesses of a workspace whose event rows this transaction can read,
+// oldest first. The derived selection joins each witness to its event
+// through events_task_event_idx on the exact key, so the inner join filters
+// visibility before the limit and invisible witnesses never crowd out
+// visible ones. The delete matches each selected key exactly, never a
+// position range. Its text does not change with the number of witnesses, and
+// it returns no rows.
+const taskEventPruneSQL = `DELETE w FROM task_event_witnesses w JOIN (SELECT x.workspace_id,x.position,x.event_shard_key,x.event_id FROM task_event_witnesses x
+JOIN events_columnstore e FORCE INDEX (events_task_event_idx) ON e.event_shard_key=x.event_shard_key AND e.workspace_id=x.workspace_id AND e.id=x.event_id
+WHERE x.workspace_id=? AND x.position<? ORDER BY x.position,x.event_shard_key,x.event_id LIMIT ?) c
+ON w.workspace_id=c.workspace_id AND w.position=c.position AND w.event_shard_key=c.event_shard_key AND w.event_id=c.event_id
+WHERE w.workspace_id=?`
+
+// isTaskEventPrunePosition reports whether the commit that takes position
+// prunes earlier witnesses.
+func isTaskEventPrunePosition(position int64) bool {
+	return position > 0 && position%taskEventPruneCadence == 0
+}
 
 // observeTaskEventPreparation, when set by a fixture, receives the
 // workspaces each commit preparation advanced, empty when the transaction
 // wrote no task event.
 var observeTaskEventPreparation atomic.Pointer[func(workspaces []string)]
+
+// observeTaskEventCounterMiss, when set by a fixture, runs after a counter
+// update matched no row and before the counter insert, so a fixture can make
+// two first commits of a workspace race on that insert.
+var observeTaskEventCounterMiss atomic.Pointer[func(ws string)]
 
 // commitTx is the only commit of a store transaction that registered notice
 // state (change_notices_positions_test.go, TestTaskEventCommitSites): withTx,
@@ -84,15 +156,14 @@ func prepareTaskEventPositions(ctx context.Context, tx *sql.Tx) error {
 }
 
 func advanceTaskEventPosition(ctx context.Context, tx *sql.Tx, ws string, witnesses []eventWitness) error {
-	if _, err := tx.ExecContext(ctx, `INSERT INTO task_event_positions(workspace_id,position) VALUES(?,1) ON DUPLICATE KEY UPDATE position=position+1`, ws); err != nil {
+	position, err := advanceTaskEventCounter(ctx, tx, ws)
+	if err != nil {
 		return err
 	}
-	var position int64
-	if err := tx.QueryRowContext(ctx, `SELECT position FROM task_event_positions WHERE workspace_id=?`, ws).Scan(&position); err != nil {
-		return err
-	}
-	if err := pruneTaskEventWitnesses(ctx, tx, ws, position); err != nil {
-		return err
+	if isTaskEventPrunePosition(position) {
+		if _, err := tx.ExecContext(ctx, taskEventPruneSQL, ws, position, taskEventPositionPrune, ws); err != nil {
+			return err
+		}
 	}
 	marks := make([]string, 0, len(witnesses))
 	args := make([]any, 0, 4*len(witnesses))
@@ -100,37 +171,47 @@ func advanceTaskEventPosition(ctx context.Context, tx *sql.Tx, ws string, witnes
 		marks = append(marks, "(?,?,?,?)")
 		args = append(args, ws, position, w.shard, w.id)
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO task_event_witnesses(workspace_id,position,event_shard_key,event_id) VALUES `+strings.Join(marks, ","), args...)
+	_, err = tx.ExecContext(ctx, `INSERT INTO task_event_witnesses(workspace_id,position,event_shard_key,event_id) VALUES `+strings.Join(marks, ","), args...)
 	return err
 }
 
-// pruneTaskEventWitnesses deletes the earlier witnesses of ws whose events
-// this transaction can read. A visible committed event stays visible to every
-// later read, so no peer needs its witness again.
-func pruneTaskEventWitnesses(ctx context.Context, tx *sql.Tx, ws string, position int64) error {
-	rows, err := tx.QueryContext(ctx, `SELECT w.position,w.event_shard_key,w.event_id FROM task_event_witnesses w
-JOIN events_columnstore e FORCE INDEX (events_task_event_idx) ON e.event_shard_key=w.event_shard_key AND e.workspace_id=w.workspace_id AND e.id=w.event_id
-WHERE w.workspace_id=? AND w.position<? LIMIT ?`, ws, position, taskEventPositionPrune)
+// advanceTaskEventCounter advances ws's counter and returns the new
+// position. An existing counter takes one update. A workspace without one
+// takes the update and an insert at position 1. Two transactions that both
+// find no row race on that insert; the loser gets the retryable store error
+// and its caller retries the whole operation, whose update then advances the
+// winner's committed row (component-persistence, State and failure).
+func advanceTaskEventCounter(ctx context.Context, tx *sql.Tx, ws string) (int64, error) {
+	result, err := tx.ExecContext(ctx, taskEventPositionUpdateSQL, ws)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	var conditions []string
-	args := []any{ws}
-	for rows.Next() {
-		var p, id int64
-		var shard string
-		if err = rows.Scan(&p, &shard, &id); err != nil {
-			rows.Close()
-			return err
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	switch affected {
+	case 1:
+		position, err := result.LastInsertId()
+		if err != nil {
+			return 0, err
 		}
-		conditions = append(conditions, "(position=? AND event_shard_key=? AND event_id=?)")
-		args = append(args, p, shard, id)
+		if position < 2 {
+			return 0, fmt.Errorf("task event position of workspace %q: the counter update returned position %d", ws, position)
+		}
+		return position, nil
+	case 0:
+		if hook := observeTaskEventCounterMiss.Load(); hook != nil {
+			(*hook)(ws)
+		}
+		if _, err := tx.ExecContext(ctx, taskEventPositionInsertSQL, ws); err != nil {
+			if isDuplicateKey(err, "PRIMARY") {
+				return 0, fmt.Errorf("task event position of workspace %q: a concurrent first commit created the counter: %w", ws, store.ErrRetryable)
+			}
+			return 0, err
+		}
+		return 1, nil
+	default:
+		return 0, fmt.Errorf("task event position of workspace %q: the counter update matched %d rows", ws, affected)
 	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil || len(conditions) == 0 {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM task_event_witnesses WHERE workspace_id=? AND (`+strings.Join(conditions, " OR ")+`)`, args...)
-	return err
 }

@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -157,28 +158,45 @@ func openProxiedStore(t *testing.T) (*Store, *statementProxy) {
 	return st, proxy
 }
 
-func TestSingleStoreCompressionStartupLogIntegration(t *testing.T) {
+// TestSingleStoreCompressionOpenIntegration checks that Open reports
+// compression from its own connections' handshakes and does nothing else for
+// it: no log line and no statement of its own. conveyord logs the one
+// summary at startup (component-runtime invariant 43; component-persistence
+// invariant 28).
+func TestSingleStoreCompressionOpenIntegration(t *testing.T) {
 	resetSharedDatabase(t)
 	var logs bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	st, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN())
+	proxy := startStatementProxy(t, sharedDatabase.cfg.Addr)
+	proxied := sharedDatabase.cfg.Clone()
+	proxied.Addr = proxy.addr()
+	proxied.TLSConfig = "false"
+	st, err := Open(t.Context(), proxied.FormatDSN())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if got := strings.Count(logs.String(), "SingleStore connection compression"); got != 1 {
-		t.Fatalf("compression log count = %d, want 1", got)
+	if strings.Contains(strings.ToLower(logs.String()), "compression") {
+		t.Fatalf("Open logged compression: %s", logs.String())
 	}
-	if !strings.Contains(logs.String(), "requested=true") || !strings.Contains(logs.String(), "status=") {
-		t.Fatalf("compression log lacks status: %s", logs.String())
+	for _, command := range proxy.since(0) {
+		if strings.Contains(strings.ToUpper(command.text), "SHOW SESSION STATUS") {
+			t.Fatalf("Open sent a compression status statement: %s", command.text)
+		}
+	}
+	requested, negotiation := st.Compression()
+	if !requested || (negotiation != CompressionNegotiated && negotiation != CompressionNotNegotiated) {
+		t.Fatalf("Compression() = %t %s, want the default request and a handshake-derived state", requested, negotiation)
 	}
 }
 
-func TestSingleStoreCompressionWireIntegration(t *testing.T) {
-	on := openOwnedStore(t)
-	conn, err := net.DialTimeout("tcp", sharedDatabase.cfg.Addr, 5*time.Second)
+// serverGreeting reads the protocol 10 greeting of a fresh connection to
+// addr and returns its version string and capability flags.
+func serverGreeting(t *testing.T, addr string) (string, uint32) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,21 +213,56 @@ func TestSingleStoreCompressionWireIntegration(t *testing.T) {
 	if _, err := io.ReadFull(conn, packet); err != nil {
 		t.Fatal(err)
 	}
-	if len(packet) == 0 {
-		t.Fatal("empty server handshake")
+	if len(packet) == 0 || packet[0] != 10 {
+		t.Fatalf("the server sent no protocol 10 greeting: % x", packet)
 	}
 	versionEnd := bytes.IndexByte(packet[1:], 0)
-	if versionEnd < 0 || 1+versionEnd+1+4+8+1+2 > len(packet) {
+	lower := 1 + versionEnd + 1 + 4 + 8 + 1
+	if versionEnd < 0 || lower+2+1+2+2 > len(packet) {
 		t.Fatal("invalid server handshake")
 	}
-	capOffset := 1 + versionEnd + 1 + 4 + 8 + 1
-	advertised := binary.LittleEndian.Uint16(packet[capOffset:])&0x20 != 0
-	t.Logf("server advertises CLIENT_COMPRESS: %t", advertised)
+	flags := uint32(binary.LittleEndian.Uint16(packet[lower:])) | uint32(binary.LittleEndian.Uint16(packet[lower+2+1+2:]))<<16
+	return string(packet[1 : 1+versionEnd]), flags
+}
+
+// TestSingleStoreCompressionWireIntegration requires a store that requests
+// compression to negotiate it whenever the server offers CLIENT_COMPRESS,
+// read from the tested store's own handshake, and then to receive
+// compressed frames: a 256 KiB repetitive result arrives in far fewer wire
+// bytes than on the disabled control store. When the server does not offer
+// compression, the requested store must still connect uncompressed with no
+// error (component-runtime invariant 43), and the test skips with the
+// server's version and flags rather than passing. A connection failure, a
+// malformed greeting, or a handshake the store did not observe fails.
+func TestSingleStoreCompressionWireIntegration(t *testing.T) {
+	on := openOwnedStore(t)
+	version, flags := serverGreeting(t, sharedDatabase.cfg.Addr)
+	advertised := flags&clientCompress != 0
+	var memsqlVersion string
+	if err := on.db.QueryRowContext(t.Context(), "SELECT @@memsql_version").Scan(&memsqlVersion); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("server %s (memsql_version %s) capability flags 0x%08x; CLIENT_COMPRESS offered: %t", version, memsqlVersion, flags, advertised)
 	off, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer off.Close()
+	if requested, negotiation := off.Compression(); requested || negotiation != CompressionNotNegotiated {
+		t.Fatalf("disabled control store reports %t %s, want false %s", requested, negotiation, CompressionNotNegotiated)
+	}
+	requested, negotiation := on.Compression()
+	t.Logf("requested store: requested=%t negotiation=%s", requested, negotiation)
+	switch {
+	case !requested:
+		t.Fatal("the default store did not request compression")
+	case negotiation == CompressionUnknown:
+		t.Fatal("the requested store's handshake was not observed")
+	case advertised && negotiation != CompressionNegotiated:
+		t.Fatalf("the server offers CLIENT_COMPRESS, but the requested store reports %s", negotiation)
+	case !advertised && negotiation != CompressionNotNegotiated:
+		t.Fatalf("the server does not offer CLIENT_COMPRESS, but the requested store reports %s", negotiation)
+	}
 	wire := map[string]uint64{}
 	for _, tc := range []struct {
 		name string
@@ -226,8 +279,17 @@ func TestSingleStoreCompressionWireIntegration(t *testing.T) {
 		wire[tc.name] = tc.st.ReadStats(0).Bytes
 		t.Logf("%s received %d wire bytes for %d decoded bytes", tc.name, wire[tc.name], len(payload))
 	}
-	if advertised && wire["requested"] >= wire["disabled"] {
-		t.Fatalf("server advertised compression, but requested read used %d bytes versus %d disabled", wire["requested"], wire["disabled"])
+	if wire["disabled"] < 262144 {
+		t.Fatalf("the disabled control received %d wire bytes for 262144 decoded bytes", wire["disabled"])
+	}
+	if !advertised {
+		if wire["requested"] < 262144 {
+			t.Fatalf("an unnegotiated requested store received %d wire bytes for 262144 decoded bytes", wire["requested"])
+		}
+		t.Skipf("SingleStore %s (memsql_version %s) does not offer CLIENT_COMPRESS in its greeting (capability flags 0x%08x), so protocol compression cannot be negotiated on this server; the requested store connected uncompressed without error", version, memsqlVersion, flags)
+	}
+	if wire["requested"]*4 > wire["disabled"] {
+		t.Fatalf("compression was negotiated, but the requested read used %d wire bytes versus %d disabled", wire["requested"], wire["disabled"])
 	}
 }
 
@@ -387,6 +449,62 @@ func peerIdleFrames(t *testing.T, ctx context.Context, url string) <-chan string
 	return frames
 }
 
+// peerCheckRealTimeEnv selects the real-time variant of the peer-check
+// tests: "1" lets the check run on its own PeerTailInterval ticker and
+// measures the idle window in real time, as the nightly soak workflow does.
+// Unset or "0" drives the check with an injected ticker, so a pull request
+// waits on no 30-second period.
+const peerCheckRealTimeEnv = "CONVEYOR_PEER_CHECK_REAL_TIME"
+
+// peerCheckClock drives a peer check's ticks. Injected, it replaces the
+// check's ticker with one that fails the test unless asked for
+// logqueue.PeerTailInterval, the period conveyord wires (cmd/conveyord
+// main_test.go and main_peer_check_test.go prove that wiring), and fires a
+// tick only when the test calls tick.
+type peerCheckClock struct {
+	t        *testing.T
+	realTime bool
+	ticks    chan time.Time
+}
+
+func newPeerCheckClock(t *testing.T, check *changes.PeerCheck) *peerCheckClock {
+	t.Helper()
+	clock := &peerCheckClock{t: t, ticks: make(chan time.Time)}
+	switch raw, _ := os.LookupEnv(peerCheckRealTimeEnv); raw {
+	case "", "0":
+		check.Ticker = clock.ticker
+	case "1":
+		clock.realTime = true
+		t.Logf("%s=1: the peer check runs on its real %s ticker", peerCheckRealTimeEnv, logqueue.PeerTailInterval)
+	default:
+		t.Fatalf("%s=%q: want 1, 0, or unset", peerCheckRealTimeEnv, raw)
+	}
+	return clock
+}
+
+func (c *peerCheckClock) ticker(interval time.Duration) (<-chan time.Time, func()) {
+	if interval != logqueue.PeerTailInterval {
+		c.t.Errorf("the peer check asked for a %s ticker, want logqueue.PeerTailInterval (%s)", interval, logqueue.PeerTailInterval)
+	}
+	return c.ticks, func() {}
+}
+
+// tick fires one injected tick and returns once the running check took it.
+func (c *peerCheckClock) tick() {
+	c.t.Helper()
+	select {
+	case c.ticks <- time.Now():
+	case <-time.After(10 * time.Second):
+		c.t.Fatal("the running peer check did not take a tick")
+	}
+}
+
+// peerCheckQuietGap is the real time an injected-ticker test waits to show
+// that nothing happens before the next check. Every timer in the wired
+// daemon either sends no statement or has a period far above it (see
+// TestSingleStorePeerCheckIdleDaemonIntegration).
+const peerCheckQuietGap = 2 * time.Second
+
 // TestSingleStorePeerCheckIdleDaemonIntegration: a daemon wired as conveyord
 // wires it with runtime.peers: true on SingleStore (the queue runtime with
 // its deadline alarm, the daemon-wide peer check, the HTTP server, and the
@@ -394,7 +512,27 @@ func peerIdleFrames(t *testing.T, ctx context.Context, url string) <-chan string
 // pending await_review, sends at most two statements in 60 seconds of idle
 // time (req-quiet-idle-runtime AC-1.3). Another daemon's task event and
 // settled review round then reach the stream and await_review at the next
-// check (AC-2.5).
+// check, and not before it (AC-2.5).
+//
+// The injected ticker stands in for the check's 30-second period. The 60
+// idle seconds are the 60s/PeerTailInterval ticks they contain, followed by
+// a real quiet gap. That stands for real time because every other timer in
+// the wired daemon sends no statement within a minute of idle time:
+//   - logqueue runtime: the deadline alarm (alarm.go time.NewTimer) is armed
+//     for the earliest stored deadline, here the claimed order's one-hour
+//     lease and execution deadlines; the load retry timer (runtime.go) runs
+//     only after a failed load.
+//   - notify stream: the 25-second keep-alive ticker
+//     (task_event_stream.go streamKeepaliveInterval) writes a comment frame
+//     and sends no statement.
+//   - await_review: its wait timer (workorder.Service.AwaitReview) is the
+//     requested 10 minutes; it otherwise waits on hub notices.
+//   - store pool: connections expire after 5 minutes (SetConnMaxLifetime),
+//     which closes a connection and sends no statement.
+//   - HTTP server: httptest keeps no timer that reads the store.
+//
+// CONVEYOR_PEER_CHECK_REAL_TIME=1 runs the original real-time variant, which
+// the nightly soak workflow runs.
 func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 	writer := openOwnedStore(t)
 	suffix := strings.ToLower(core.NewTaskID())
@@ -458,6 +596,7 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 	if check == nil {
 		t.Fatal("SingleStore with peers selected no peer check")
 	}
+	clock := newPeerCheckClock(t, check)
 	outcomes := make(chan int, 16)
 	check.Checked = func(published int, err error) {
 		if errors.Is(err, context.Canceled) {
@@ -519,18 +658,53 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 	}
 
 	// Settle: wait for a check that found nothing to publish, so start-up
-	// reads and writes are over, then measure 60 seconds.
-	settled := false
-	for deadline := time.After(3 * logqueue.PeerTailInterval); !settled; {
+	// reads and writes are over.
+	nextOutcome := func(within time.Duration, what string) int {
+		t.Helper()
 		select {
 		case published := <-outcomes:
-			settled = published == 0
-		case <-deadline:
-			t.Fatal("no peer check found the daemon settled")
+			return published
+		case <-time.After(within):
+			t.Fatalf("no peer check outcome within %s: %s", within, what)
+			return 0
 		}
 	}
+	if clock.realTime {
+		settled := false
+		for deadline := time.After(3 * logqueue.PeerTailInterval); !settled; {
+			select {
+			case published := <-outcomes:
+				settled = published == 0
+			case <-deadline:
+				t.Fatal("no peer check found the daemon settled")
+			}
+		}
+	} else {
+		for attempt := 1; ; attempt++ {
+			if attempt > 10 {
+				t.Fatal("no peer check found the daemon settled in 10 checks")
+			}
+			clock.tick()
+			if nextOutcome(30*time.Second, "settle") == 0 {
+				break
+			}
+		}
+	}
+
+	// Measure 60 seconds of idle time: in real time, or as the checks those
+	// seconds contain plus a real quiet gap.
 	start, first := time.Now(), proxy.count()
-	time.Sleep(60 * time.Second)
+	if clock.realTime {
+		time.Sleep(60 * time.Second)
+	} else {
+		checks := int(time.Minute / logqueue.PeerTailInterval)
+		for range checks {
+			clock.tick()
+			nextOutcome(30*time.Second, "idle window")
+		}
+		time.Sleep(peerCheckQuietGap)
+		t.Logf("idle window: %d checks for 60 s at one per %s, then %s of real quiet", checks, logqueue.PeerTailInterval, peerCheckQuietGap)
+	}
 	window := proxy.since(first)
 	t.Logf("statements in 60 s of idle time: %d\n%s", len(window), describeCommands(start, window))
 	if len(window) > 2 {
@@ -546,8 +720,7 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 
 	// Another daemon commits a task event and settles the review round
 	// partway through a period; both reach this daemon at the next check.
-	// Drop the outcomes of the checks inside the window, then wait for a
-	// fresh one to start the period.
+	// Drop the outcomes of the checks inside the window.
 	for drained := false; !drained; {
 		select {
 		case <-outcomes:
@@ -555,12 +728,11 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 			drained = true
 		}
 	}
-	select {
-	case <-outcomes:
-	case <-time.After(2 * logqueue.PeerTailInterval):
-		t.Fatal("no peer check ran")
+	if clock.realTime {
+		// Wait for a fresh check to start the period.
+		nextOutcome(2*logqueue.PeerTailInterval, "period start")
+		time.Sleep(12 * time.Second)
 	}
-	time.Sleep(12 * time.Second)
 	if err = writer.AppendEvent(system(workspaces[0]), core.Event{TaskID: streamTask, Kind: "peer.probe"}); err != nil {
 		t.Fatal(err)
 	}
@@ -568,13 +740,22 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	committed := time.Now()
-	select {
-	case published := <-outcomes:
-		if published < 2 {
-			t.Fatalf("the next check published %d notices, want a task notice for each workspace", published)
+	if !clock.realTime {
+		// Nothing arrives before the next check.
+		select {
+		case frame := <-frames:
+			t.Fatalf("the stream wrote %q before the next check", frame)
+		case outcome := <-awaited:
+			t.Fatalf("await_review returned before the next check: %+v", outcome)
+		case published := <-outcomes:
+			t.Fatalf("a peer check ran without a tick and published %d notices", published)
+		case <-time.After(peerCheckQuietGap):
 		}
-	case <-time.After(logqueue.PeerTailInterval):
-		t.Fatalf("no peer check within %s of the commit", logqueue.PeerTailInterval)
+		clock.tick()
+	}
+	checked := time.Now()
+	if published := nextOutcome(logqueue.PeerTailInterval, "after the commit"); published < 2 {
+		t.Fatalf("the next check published %d notices, want a task notice for each workspace", published)
 	}
 	select {
 	case frame := <-frames:
@@ -592,10 +773,12 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("await_review did not return after the check")
 	}
+	// Production checks every PeerTailInterval, so delivery at the next check
+	// is delivery within PeerTailInterval of the commit.
 	if latency := time.Since(committed); latency > logqueue.PeerTailInterval {
 		t.Fatalf("another daemon's commit reached the stream and await_review %s after it, over %s", latency, logqueue.PeerTailInterval)
 	} else {
-		t.Logf("another daemon's commit reached the stream and await_review %s after it", latency)
+		t.Logf("another daemon's commit reached the stream and await_review %s after it, %s after the check began", latency, time.Since(checked))
 	}
 	stopDaemon()
 }
@@ -695,14 +878,14 @@ func profileCounter(raw any) float64 {
 // never repartitions it (plan version 2 of task 261118-a22ffc). It profiles
 // the statement twice: with the events in the unflushed in-memory segment,
 // whose probe is allowed and logged, and after a flush moves them to on-disk
-// segments. A join on the event ID alone, which repartitions the event
-// table, shows the repartition check finds one.
+// segments. After the flush, a join on the event ID alone shows the checks
+// reject a read that reaches the whole event table. The optimizer either
+// repartitions the event table for that join or gathers the event scan to the
+// aggregator, which it chose in CI for a few estimated rows; either plan
+// scans the flushed on-disk segments, so the control trips a check under
+// every plan the optimizer picks.
 func requireIdlePeerReadProfile(t *testing.T, st *Store, query string, args []any) {
 	t.Helper()
-	control := profilePeerRead(t, st, `SELECT COUNT(*) FROM task_event_witnesses w JOIN events_columnstore e ON e.id = w.event_id`, nil)
-	if len(control.eventOperators) == 0 || len(control.repartitions) == 0 {
-		t.Fatalf("the repartition check found no repartitioned event read in a join on the ID alone: operators %v\n%s", control.eventOperators, control.json)
-	}
 	check := func(stage string) peerReadProfile {
 		t.Helper()
 		p := profilePeerRead(t, st, query, args)
@@ -733,6 +916,11 @@ func requireIdlePeerReadProfile(t *testing.T, st *Store, query string, args []an
 	if segments == 0 {
 		t.Fatal("the flush left no on-disk event segment to prove the idle read skips")
 	}
+	control := profilePeerRead(t, st, `SELECT COUNT(*) FROM task_event_witnesses w JOIN events_columnstore e ON e.id = w.event_id`, nil)
+	if len(control.eventOperators) == 0 || (len(control.repartitions) == 0 && control.eventSegments == 0) {
+		t.Fatalf("the checks reject neither a repartition nor an on-disk segment scan in a join on the ID alone: operators %v\n%s", control.eventOperators, control.json)
+	}
+	t.Logf("a join on the event ID alone: event-table operators %v, repartitioned %v, on-disk segments scanned %v", control.eventOperators, control.repartitions, control.eventSegments)
 	flushed := check("flushed")
 	t.Logf("idle peer read, events flushed to %d on-disk segments: in-memory event rows probed %v, on-disk segments scanned %v, witness rows read %v",
 		segments, flushed.eventRows, flushed.eventSegments, flushed.witnessRows)

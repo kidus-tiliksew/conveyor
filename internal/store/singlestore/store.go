@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/url"
 	"strconv"
@@ -33,6 +32,9 @@ type Store struct {
 	// store assembled without Open (component-persistence, Database read
 	// accounting).
 	reads *dbmetrics.ReadLedger
+	// compression reads protocol compression from the handshakes of this
+	// store's connections; nil for a store assembled without Open.
+	compression *compressionObserver
 	// peerAccepted holds the task-event position each workspace's last
 	// successful PeerMarks read accepted; peerMu serializes those reads.
 	peerMu       sync.Mutex
@@ -123,6 +125,19 @@ func connectionConfig(raw string, compress ...bool) (*mysql.Config, error) {
 	return cfg, nil
 }
 
+// compressionRequested reports whether cfg asks the driver for protocol
+// compression. The driver keeps the setting unexported, so it is read back
+// from the configuration's own DSN form.
+func compressionRequested(cfg *mysql.Config) bool {
+	dsn := cfg.FormatDSN()
+	_, query, _ := strings.Cut(dsn[strings.LastIndex(dsn, "/")+1:], "?")
+	params, _ := url.ParseQuery(query)
+	return params.Get("compress") == "true"
+}
+
+// Open connects, migrates, and checks the server. It logs nothing about
+// compression: conveyord reports it once at startup through Compression,
+// and CLI opens report nothing (component-runtime invariant 43).
 func Open(ctx context.Context, raw string, compress ...bool) (*Store, error) {
 	cfg, err := connectionConfig(raw, compress...)
 	if err != nil {
@@ -131,7 +146,11 @@ func Open(ctx context.Context, raw string, compress ...bool) (*Store, error) {
 	// The counting dial attributes received bytes to store-method labels
 	// (component-persistence, Database read accounting).
 	reads := dbmetrics.NewReadLedger()
-	cfg.DialFunc = countingDialFunc(reads)
+	// The handshake observer reports compression without a statement of its
+	// own (component-runtime invariant 43; component-persistence
+	// invariant 28).
+	compression := &compressionObserver{requested: compressionRequested(cfg)}
+	cfg.DialFunc = countingDialFunc(reads, compression.wrap)
 	connector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("invalid SingleStore connection configuration")
@@ -143,7 +162,7 @@ func Open(ctx context.Context, raw string, compress ...bool) (*Store, error) {
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	hub := changes.NewHub()
-	st := &Store{db: db, log: logqueue.Notify(s2log.New(db), hub), changes: hub, reads: reads}
+	st := &Store{db: db, log: logqueue.Notify(s2log.New(db), hub), changes: hub, reads: reads, compression: compression}
 	if err = db.PingContext(ctx); err == nil {
 		// SingleStore accepts SET time_zone but ignores it. Refuse a non-UTC
 		// server instead of interpreting local DATETIME defaults as UTC.
@@ -166,21 +185,6 @@ func Open(ctx context.Context, raw string, compress ...bool) (*Store, error) {
 		db.Close()
 		return nil, translateBackendConflict(err)
 	}
-	dsn := cfg.FormatDSN()
-	_, query, _ := strings.Cut(dsn[strings.LastIndex(dsn, "/")+1:], "?")
-	params, _ := url.ParseQuery(query)
-	requested := params.Get("compress") == "true"
-	status := "unknown"
-	var name, value string
-	if err := db.QueryRowContext(ctx, "SHOW SESSION STATUS LIKE 'Compression'").Scan(&name, &value); err == nil {
-		switch strings.ToLower(value) {
-		case "on", "yes", "1":
-			status = "enabled"
-		case "off", "no", "0":
-			status = "disabled"
-		}
-	}
-	slog.Info("SingleStore connection compression", "requested", requested, "status", status)
 	return st, nil
 }
 func (s *Store) Close()              { s.db.Close() }

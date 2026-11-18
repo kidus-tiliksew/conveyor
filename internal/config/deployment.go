@@ -391,7 +391,11 @@ func normalizeDeployment(c *Config, path string) (*Config, error) {
 	if err := resolveDeploymentDatabaseMaxConns(&c.Database, os.LookupEnv); err != nil {
 		return nil, err
 	}
-	if raw, ok := os.LookupEnv("CONVEYOR_SINGLESTORE_COMPRESS"); ok {
+	// The compression variable applies only to the effective SingleStore
+	// backend, inferred from the URL when the file names none. There it must
+	// be a boolean even when the file setting wins, and the refusal echoes no
+	// value. Other backends ignore it (component-runtime invariant 43).
+	if raw, ok := os.LookupEnv("CONVEYOR_SINGLESTORE_COMPRESS"); ok && c.Database.Backend == "singlestore" {
 		value, err := strconv.ParseBool(strings.TrimSpace(raw))
 		if err != nil {
 			return nil, fmt.Errorf("CONVEYOR_SINGLESTORE_COMPRESS must be a boolean")

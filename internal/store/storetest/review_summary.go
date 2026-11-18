@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -413,12 +415,44 @@ func runReviewSummaryConcurrentReplay(t *testing.T, x Fixture) {
 // predecessor's lock row is released but its event is not yet visible, and
 // only a task whose lock row and events land on different partitions has that
 // window. Twenty writers give nineteen lock handoffs per settled round, and
-// every repetition uses a fresh task, so one case exercises
-// reviewSummaryStressRounds tasks and reviewSummaryStressRounds*19 handoffs.
+// every repetition uses a fresh task, so one case exercises N tasks and N*19
+// handoffs for N rounds.
+//
+// CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS sets N, which is 50 when the variable
+// is unset; a value that is not a positive integer fails the case
+// (component-testing-strategy, Configuration). The original bug failed
+// ConcurrentVersions (6 writers, 5 handoffs) once in 61 CI runs: about one
+// failure in 305 handoffs, p ≈ 0.33% per handoff. With independent handoffs a
+// run detects a regression at that rate with probability 1-(1-p)^(19N):
+//
+//	rounds  handoffs  detection
+//	    20       380  about 71%
+//	    50       950  about 95%
+//	   100      1900  about 99.8%
+//	   500      9500  about 100%
+//
+// The SingleStore pull-request shards run 50 rounds, and the nightly soak
+// workflow runs them at 500. make test and the PostgreSQL integration target
+// set 500, so memory and PostgreSQL run 500 rounds wherever they run.
 const (
-	reviewSummaryStressWriters = 20
-	reviewSummaryStressRounds  = 500
+	reviewSummaryStressWriters       = 20
+	reviewSummaryStressRoundsEnv     = "CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS"
+	reviewSummaryStressDefaultRounds = 50
 )
+
+// reviewSummaryStressRounds reads the stress round count through lookup,
+// which os.LookupEnv satisfies.
+func reviewSummaryStressRounds(lookup func(string) (string, bool)) (int, error) {
+	raw, ok := lookup(reviewSummaryStressRoundsEnv)
+	if !ok {
+		return reviewSummaryStressDefaultRounds, nil
+	}
+	rounds, err := strconv.Atoi(raw)
+	if err != nil || rounds < 1 {
+		return 0, fmt.Errorf("%s=%q: want a positive integer", reviewSummaryStressRoundsEnv, raw)
+	}
+	return rounds, nil
+}
 
 func runReviewSummaryConcurrentVersionsStress(t *testing.T, x Fixture) {
 	repeatSummaryStress(t, func() { requireConcurrentSummaryVersions(t, x, reviewSummaryStressWriters) })
@@ -428,17 +462,22 @@ func runReviewSummaryConcurrentReplayStress(t *testing.T, x Fixture) {
 	repeatSummaryStress(t, func() { requireConcurrentSummaryReplay(t, x, reviewSummaryStressWriters) })
 }
 
-// repeatSummaryStress runs one stress repetition reviewSummaryStressRounds
-// times and names the failing repetition.
+// repeatSummaryStress runs one stress repetition once per configured round
+// and names the failing repetition.
 func repeatSummaryStress(t *testing.T, repetition func()) {
 	t.Helper()
+	rounds, err := reviewSummaryStressRounds(os.LookupEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("ReviewSummary stress: %d rounds", rounds)
 	current := 0
 	defer func() {
 		if t.Failed() {
-			t.Logf("failed in repetition %d of %d", current, reviewSummaryStressRounds)
+			t.Logf("failed in repetition %d of %d", current, rounds)
 		}
 	}()
-	for current = 1; current <= reviewSummaryStressRounds; current++ {
+	for current = 1; current <= rounds; current++ {
 		repetition()
 	}
 }
