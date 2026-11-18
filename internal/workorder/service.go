@@ -599,7 +599,7 @@ func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reaso
 		if prior.Reason != reason {
 			return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: request_id %s was already used for different inputs", store.ErrReviewRetryConflict, requestID)
 		}
-		orders, listErr := s.Store.ListTaskWorkOrders(ctx, taskID)
+		orders, listErr := s.Store.ListTaskWorkOrdersSnapshot(ctx, taskID)
 		if listErr != nil {
 			return store.ReviewRoundRetryResult{}, listErr
 		}

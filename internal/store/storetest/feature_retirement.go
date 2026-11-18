@@ -200,4 +200,6 @@ func RunFeatureRetirementConformance(t *testing.T, x Fixture) {
 			t.Fatalf("foreign workspace listed artifact %+v", artifact)
 		}
 	}
+	runArtifactReadScoping(t, x)
+
 }

@@ -585,7 +585,7 @@ func (s *Store) ListSystemDesignVersions(ctx context.Context, id string) ([]core
 
 func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListGovernanceDesigns")
-	rows, err := documentRows(ctx, s.db, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs
+	rows, err := documentRows(ctx, s.db, `SELECT d.id,d.title,d.category,v.version,v.governs
 		FROM system_designs d JOIN system_design_versions v
 		  ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
 		WHERE d.workspace_id=? AND d.archived_at IS NULL ORDER BY d.id`, documentWorkspace(ctx))
@@ -597,7 +597,7 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 	for rows.Next() {
 		var item core.GovernanceDesignContext
 		var governs []byte
-		if err = rows.Scan(&item.ID, &item.Title, &item.Category, &item.Version, &item.Content, &governs); err != nil {
+		if err = rows.Scan(&item.ID, &item.Title, &item.Category, &item.Version, &governs); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal(governs, &item.Governs); err != nil {
@@ -607,7 +607,42 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 			out = append(out, item)
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for start := 0; start < len(out); start += 100 {
+		chunk := out[start:min(start+100, len(out))]
+		clauses := make([]string, 0, len(chunk))
+		args := []any{documentWorkspace(ctx)}
+		for _, item := range chunk {
+			clauses = append(clauses, "(document_id=? AND version=?)")
+			args = append(args, item.ID, item.Version)
+		}
+		contentRows, err := documentRows(ctx, s.db, `SELECT document_id,version,content FROM system_design_versions WHERE workspace_id=? AND (`+strings.Join(clauses, " OR ")+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for contentRows.Next() {
+			var id, content string
+			var version int
+			if err := contentRows.Scan(&id, &version, &content); err != nil {
+				contentRows.Close()
+				return nil, err
+			}
+			for i := range chunk {
+				if chunk[i].ID == id && chunk[i].Version == version {
+					chunk[i].Content = content
+				}
+			}
+		}
+		err = contentRows.Err()
+		contentRows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
@@ -627,9 +662,68 @@ func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[str
 	}
 	return out, rows.Err()
 }
+
+// systemDesignVersionSummarySelect reads the current version and every
+// pending version of the requested designs in version order. A historical or
+// dismissed version is not selected.
+const systemDesignVersionSummarySelect = `SELECT v.workspace_id,v.document_id,v.version,v.content,v.governs,v.origin,coalesce(v.origin_session_id,''),coalesce(v.origin_task_id,''),v.confirmed,coalesce(v.confirmed_by,''),v.confirmed_at,v.dismissed,coalesce(v.dismissed_by,''),v.dismissed_at,v.created_at,COALESCE(v.dismissal_note,'')
+FROM system_design_versions v JOIN system_designs d
+  ON d.workspace_id=v.workspace_id AND d.id=v.document_id
+WHERE v.workspace_id=?`
+
+// ListSystemDesignVersionSummaries reads each requested design's current and
+// pending versions in one query per ID chunk, with their content. A historical
+// version is absent (component-persistence; component-document-corpus).
+func (s *Store) ListSystemDesignVersionSummaries(ctx context.Context, documentIDs []string) (map[string][]core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignVersionSummaries")
+	out := map[string][]core.SystemDesignVersion{}
+	ids := store.UniqueDocumentIDs(documentIDs)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	ws, err := workspace(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = eachIDChunk(ids, func(marks string, chunkArgs []any) error {
+		rows, queryErr := documentRows(ctx, s.db, systemDesignVersionSummarySelect+
+			` AND v.document_id IN (`+marks+`)
+			AND (v.version=d.current_version OR (NOT v.confirmed AND NOT v.dismissed))
+			ORDER BY v.document_id,v.version`, append([]any{ws}, chunkArgs...)...)
+		if queryErr != nil {
+			return queryErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			item, scanErr := scanSystemDesignVersion(rows, "", 0)
+			if scanErr != nil {
+				return scanErr
+			}
+			out[item.DocumentID] = append(out[item.DocumentID], item)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// hotReadLookup adds the generated digest predicate only when this Store found
+// the lookup's column and key ready. The original comparison is always kept, so
+// a legacy schema runs the same authoritative predicate without naming a missing
+// identifier.
+func (s *Store) hotReadLookup(indexName, column, original, value string) (string, []any) {
+	if s.hotReadIndexReady(indexName) {
+		return column + "=SHA2(?,256) AND " + original, []any{value, value}
+	}
+	return original, []any{value}
+}
+
 func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignEvents")
-	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(payload_json,'document_id')=? ORDER BY at,id`, documentWorkspace(ctx), id)
+	filter, filterArgs := s.hotReadLookup("events_document_key_idx", "event_document_key", "BINARY JSON_EXTRACT_STRING(payload_json,'document_id')=BINARY ?", id)
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'system_design.%' AND `+filter+` ORDER BY at,id`, append([]any{documentWorkspace(ctx)}, filterArgs...)...)
 	if err != nil {
 		return nil, err
 	}

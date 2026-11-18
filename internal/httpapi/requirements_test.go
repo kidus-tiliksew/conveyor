@@ -518,9 +518,23 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	if guard.neighborhood != 0 || guard.scopedArtifacts != 0 {
 		t.Fatalf("confirmed list queries neighborhood=%d scoped_artifacts=%d", guard.neighborhood, guard.scopedArtifacts)
 	}
-	if guard.batchVersions != 2 || guard.batchEvents != 2 || guard.batchDelivery != 2 || guard.batchDeliveryEvents != 2 || guard.taskLists != 2 || guard.singleVersions != 0 || guard.singleEvents != 0 || guard.singleDelivery != 0 {
+	if guard.batchVersions != 2 || guard.batchEvents != 2 || guard.batchDelivery != 2 || guard.batchDeliveryEvents != 2 || guard.taskLists != 0 || guard.singleVersions != 0 || guard.singleEvents != 0 || guard.singleDelivery != 0 {
 		t.Fatalf("confirmed list requirement reads batch_versions=%d batch_events=%d batch_delivery=%d batch_delivery_events=%d task_lists=%d single_versions=%d single_events=%d single_delivery=%d",
 			guard.batchVersions, guard.batchEvents, guard.batchDelivery, guard.batchDeliveryEvents, guard.taskLists, guard.singleVersions, guard.singleEvents, guard.singleDelivery)
+	}
+	for name, calls := range map[string][][]string{
+		"versions": guard.versionIDs, "events": guard.eventIDs, "delivery": guard.deliveryIDs,
+	} {
+		for _, ids := range calls {
+			if !slices.Equal(ids, []string{requirement.ID}) {
+				t.Fatalf("%s read IDs=%v, want [%s]", name, ids, requirement.ID)
+			}
+		}
+	}
+	for _, ids := range guard.deliveryTaskIDs {
+		if len(ids) != 0 {
+			t.Fatalf("delivery event task IDs=%v, want none for unlinked requirement", ids)
+		}
 	}
 
 	detail := httptest.NewRecorder()
@@ -560,6 +574,7 @@ type requirementsScopedStore struct {
 	fullLineage, fullArtifacts, neighborhood, scopedArtifacts                 int
 	batchVersions, batchEvents, batchDelivery, batchDeliveryEvents, taskLists int
 	singleVersions, singleEvents, singleDelivery, eventPages                  int
+	versionIDs, eventIDs, deliveryIDs, deliveryTaskIDs                        [][]string
 }
 
 func (st *requirementsScopedStore) ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, query store.DocumentEventQuery) (store.DocumentEventPage, error) {
@@ -567,14 +582,24 @@ func (st *requirementsScopedStore) ListDocumentEventPage(ctx context.Context, ki
 	return st.Store.ListDocumentEventPage(ctx, kind, id, query)
 }
 
-func (st *requirementsScopedStore) ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error) {
+func (st *requirementsScopedStore) ListRequirementVersionSummaries(ctx context.Context, ids []string) (map[string][]core.RequirementVersion, error) {
 	st.batchVersions++
-	return st.Store.ListRequirementVersionsByRequirement(ctx)
+	st.versionIDs = append(st.versionIDs, slices.Clone(ids))
+	return st.Store.ListRequirementVersionSummaries(ctx, ids)
 }
 
-func (st *requirementsScopedStore) ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error) {
+func (st *requirementsScopedStore) ListRequirementEventsForRequirements(ctx context.Context, ids []string) (map[string][]core.Event, error) {
 	st.batchEvents++
-	return st.Store.ListRequirementEventsByRequirement(ctx)
+	st.eventIDs = append(st.eventIDs, slices.Clone(ids))
+	return st.Store.ListRequirementEventsForRequirements(ctx, ids)
+}
+
+func (st *requirementsScopedStore) ListRequirementVersionsByRequirement(context.Context) (map[string][]core.RequirementVersion, error) {
+	return nil, fmt.Errorf("whole-workspace version scan forbidden")
+}
+
+func (st *requirementsScopedStore) ListRequirementEventsByRequirement(context.Context) (map[string][]core.Event, error) {
+	return nil, fmt.Errorf("whole-workspace event scan forbidden")
 }
 
 func (st *requirementsScopedStore) ListRequirementVersions(ctx context.Context, requirementID string) ([]core.RequirementVersion, error) {
@@ -589,11 +614,13 @@ func (st *requirementsScopedStore) ListRequirementEvents(ctx context.Context, re
 
 func (st *requirementsScopedStore) ListRequirementDeliveryLineageByRequirement(ctx context.Context, requirementIDs []string, budget core.LineageTraversalBudget) (map[string][]core.LineageLink, error) {
 	st.batchDelivery++
+	st.deliveryIDs = append(st.deliveryIDs, slices.Clone(requirementIDs))
 	return st.Store.ListRequirementDeliveryLineageByRequirement(ctx, requirementIDs, budget)
 }
 
 func (st *requirementsScopedStore) ListRequirementDeliveryEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
 	st.batchDeliveryEvents++
+	st.deliveryTaskIDs = append(st.deliveryTaskIDs, slices.Clone(taskIDs))
 	return st.Store.ListRequirementDeliveryEventsForTasks(ctx, taskIDs)
 }
 

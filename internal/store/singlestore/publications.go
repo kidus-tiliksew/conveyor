@@ -335,11 +335,11 @@ func (s *Store) failRetryingReviewPublicationsWithoutJob(ctx context.Context) (i
 			if err != nil {
 				return err
 			}
-			job, err := logqueue.Load(logTx(ctx, tx), s.log, documentWorkspace(ctx), logqueue.StreamFor(queue.ReviewPublicationArgs{}.Kind(), id))
+			unfinished, err := logqueue.StreamUnfinished(logTx(ctx, tx), s.log, documentWorkspace(ctx), logqueue.StreamFor(queue.ReviewPublicationArgs{}.Kind(), id))
 			if err != nil {
 				return err
 			}
-			if job.Active() {
+			if unfinished {
 				return nil
 			}
 			publication.State = core.ReviewPublicationFailed

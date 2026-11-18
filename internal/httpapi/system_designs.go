@@ -100,7 +100,11 @@ func (s *Server) listSystemDesigns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	views := make([]systemDesignSummary, 0, len(items))
-	versions, err := s.Store.ListSystemDesignVersionsByDocument(r.Context())
+	designIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		designIDs = append(designIDs, item.ID)
+	}
+	versions, err := s.Store.ListSystemDesignVersionSummaries(r.Context(), designIDs)
 	if err != nil {
 		log.Printf("handle system design request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

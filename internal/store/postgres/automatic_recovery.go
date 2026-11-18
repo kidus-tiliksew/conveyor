@@ -103,7 +103,7 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx pgx.Tx, taskID 
 		return 0, err
 	}
 	task := taskFromDB(taskRow)
-	rows, err := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 FOR UPDATE", workspace(ctx), taskID)
+	rows, err := tx.Query(ctx, "SELECT "+clockWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 FOR UPDATE", workspace(ctx), taskID)
 	if err != nil {
 		return 0, err
 	}

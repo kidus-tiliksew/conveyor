@@ -67,7 +67,7 @@ func (s *Store) recoverAnsweredAuthorityTx(ctx context.Context, tx *sql.Tx, task
 	order.OperatorDirection = decision.Direction
 	order.Checkpoint = nil
 	order.UpdatedAt = now
-	if err = orderWrite(ctx, tx, order); err != nil {
+	if err = orderLifecycleWrite(ctx, tx, order); err != nil {
 		return false, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO work_order_recoveries (workspace_id,work_order_id,request_id,created_at) VALUES (?,?,?,?)`, ws, order.ID, decision.RequestID, now); err != nil {

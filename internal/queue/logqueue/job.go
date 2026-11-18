@@ -95,11 +95,11 @@ func Enqueue(ctx context.Context, log eventlog.Store, workspace, kind, key strin
 		return false, fmt.Errorf("logqueue: encode %s args: %w", kind, err)
 	}
 	stream := StreamFor(kind, key)
-	job, err := Load(ctx, log, workspace, stream)
+	state, head, fromIndex, err := enqueueHead(ctx, log, workspace, stream)
 	if err != nil {
 		return false, err
 	}
-	if job.Active() {
+	if jobindex.Unfinished(state) {
 		return false, nil
 	}
 	// An enqueue is immediate; ScheduledAt is only ever set by a retry,
@@ -109,9 +109,23 @@ func Enqueue(ctx context.Context, log eventlog.Store, workspace, kind, key strin
 	if err != nil {
 		return false, err
 	}
-	_, err = log.Append(ctx, workspace, stream, job.Head, []eventlog.NewEvent{{
+	events := []eventlog.NewEvent{{
 		Kind: KindEnqueued, ActorID: core.SystemActor("queue").ID, ActorRole: string(core.ActorSystem), Payload: payload, At: now,
-	}})
+	}}
+	_, err = log.Append(ctx, workspace, stream, head, events)
+	if eventlog.IsVersionConflict(err) && fromIndex {
+		// The index row is written in every append's transaction, so a
+		// conflict means a concurrent writer; fold the stream once to tell a
+		// lost race from a row that fell behind.
+		job, loadErr := Load(ctx, log, workspace, stream)
+		if loadErr != nil {
+			return false, loadErr
+		}
+		if job.Active() {
+			return false, nil
+		}
+		_, err = log.Append(ctx, workspace, stream, job.Head, events)
+	}
 	if eventlog.IsVersionConflict(err) {
 		return false, nil
 	}
@@ -119,4 +133,63 @@ func Enqueue(ctx context.Context, log eventlog.Store, workspace, kind, key strin
 		return false, err
 	}
 	return true, nil
+}
+
+// enqueueHead returns the stream's job state and head from its job index row,
+// one primary-key read, instead of folding every event of the stream. A log
+// without an index, or a stream without a row, is folded.
+func enqueueHead(ctx context.Context, log eventlog.Store, workspace string, stream eventlog.StreamID) (State, eventlog.Version, bool, error) {
+	if reader, ok := jobindex.ReaderOf(log); ok {
+		row, found, err := reader.JobIndexRow(ctx, workspace, stream)
+		if err != nil && !errors.Is(err, jobindex.ErrUnsupported) {
+			return "", 0, false, err
+		}
+		if err == nil && found {
+			return row.State, row.Version, true, nil
+		}
+	}
+	job, err := Load(ctx, log, workspace, stream)
+	if err != nil {
+		return "", 0, false, err
+	}
+	return job.State, job.Head, false, nil
+}
+
+// StreamUnfinished reports whether the stream still holds a job that may run,
+// from the job index when the log keeps one.
+func StreamUnfinished(ctx context.Context, log eventlog.Store, workspace string, stream eventlog.StreamID) (bool, error) {
+	state, _, _, err := enqueueHead(ctx, log, workspace, stream)
+	if err != nil {
+		return false, err
+	}
+	return jobindex.Unfinished(state), nil
+}
+
+// LoadDiscarded loads a discarded job from its current generation. A missing,
+// unsupported, or inconsistent index row folds the whole stream. ok is true
+// only when the job was discarded after its final attempt.
+func LoadDiscarded(ctx context.Context, log eventlog.Store, workspace string, stream eventlog.StreamID) (Job, bool, error) {
+	if reader, ok := jobindex.ReaderOf(log); ok {
+		row, found, err := reader.JobIndexRow(ctx, workspace, stream)
+		if err != nil && !errors.Is(err, jobindex.ErrUnsupported) {
+			return Job{}, false, err
+		}
+		if err == nil && found {
+			if row.State != StateDiscarded {
+				return Job{}, false, nil
+			}
+			job, matched, err := jobindex.LoadCurrent(ctx, reader, row)
+			if err != nil {
+				return Job{}, false, err
+			}
+			if matched {
+				return job, job.Attempt >= job.MaxAttempts, nil
+			}
+		}
+	}
+	job, err := Load(ctx, log, workspace, stream)
+	if err != nil {
+		return Job{}, false, err
+	}
+	return job, job.State == StateDiscarded && job.Attempt >= job.MaxAttempts, nil
 }

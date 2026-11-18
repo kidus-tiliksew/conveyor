@@ -22,6 +22,75 @@ type memoryArtifactKey struct {
 	id        string
 }
 
+// ArtifactMetadataPageSize is the keyset page used by unfiltered listings.
+const ArtifactMetadataPageSize = 100
+
+// ArtifactOwners names the task, requirement, and planning-session IDs a
+// scoped metadata read may return.
+type ArtifactOwners struct {
+	TaskIDs        []string
+	RequirementIDs []string
+	SessionIDs     []string
+}
+
+// ArtifactOwnerReader selects association metadata for named owners without a
+// workspace-wide listing.
+type ArtifactOwnerReader interface {
+	ListArtifactsForOwners(context.Context, ArtifactOwners) ([]core.Artifact, error)
+}
+
+// ArtifactListPageHook, when set by tests, runs after the listing snapshot and
+// after each metadata page so a concurrent insert can prove the bound.
+var ArtifactListPageHook func()
+
+// ArtifactOwnerIDs returns unique non-empty owner IDs in first-seen order.
+func ArtifactOwnerIDs(ids []string) []string {
+	ids = UniqueTaskIDs(ids)
+	n := 0
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		ids[n] = id
+		n++
+	}
+	return ids[:n]
+}
+
+func ownerIDSet(ids []string) map[string]struct{} {
+	ids = ArtifactOwnerIDs(ids)
+	out := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		out[id] = struct{}{}
+	}
+	return out
+}
+
+func artifactOwnedBy(artifact core.Artifact, tasks, requirements, sessions map[string]struct{}) bool {
+	if artifact.TaskID != "" {
+		if _, ok := tasks[artifact.TaskID]; ok {
+			return true
+		}
+	}
+	if artifact.RequirementID != "" {
+		if _, ok := requirements[artifact.RequirementID]; ok {
+			return true
+		}
+	}
+	if artifact.PlanningSessionID != "" {
+		if _, ok := sessions[artifact.PlanningSessionID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func RunArtifactListPageHook() {
+	if ArtifactListPageHook != nil {
+		ArtifactListPageHook()
+	}
+}
+
 func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
 	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
 		return core.Artifact{}, ErrVerificationAccess
@@ -170,7 +239,37 @@ func (m *memory) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 		}
 		out = append(out, artifact.links...)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	// Equal creation times keep a stable (id, role) order, the SQL listings'
+	// ORDER BY a.created_at,a.id,l.role (component-persistence).
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		if out[i].ID != out[j].ID {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Role < out[j].Role
+	})
+	return out, nil
+}
+
+func (m *memory) ListArtifactsForOwners(ctx context.Context, owners ArtifactOwners) ([]core.Artifact, error) {
+	tasks := ownerIDSet(owners.TaskIDs)
+	requirements := ownerIDSet(owners.RequirementIDs)
+	sessions := ownerIDSet(owners.SessionIDs)
+	if len(tasks)+len(requirements)+len(sessions) == 0 {
+		return []core.Artifact{}, nil
+	}
+	listed, err := m.ListArtifacts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]core.Artifact, 0, len(listed))
+	for _, artifact := range listed {
+		if artifactOwnedBy(artifact, tasks, requirements, sessions) {
+			out = append(out, artifact)
+		}
+	}
 	return out, nil
 }
 

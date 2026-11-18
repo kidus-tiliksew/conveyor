@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -68,6 +69,26 @@ func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.memoizedRead(w, r, "next-actions", []any{band, filter, page}, s.listNextActionsUncached)
+}
+
+func (s *Server) listNextActionsUncached(w http.ResponseWriter, r *http.Request) {
+	band := r.URL.Query().Get("band")
+	switch band {
+	case "", "decisions", "blocked", "automatic":
+	default:
+		http.Error(w, "invalid band", http.StatusBadRequest)
+		return
+	}
+	filter, err := parseTaskFilter(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	page, ok := readListPage(w, r, defaultInboxPageLimit)
+	if !ok {
+		return
+	}
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
 		writeStoreFailure(w, r, err)
@@ -102,6 +123,43 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 	if opts.Now.IsZero() {
 		opts.Now = time.Now().UTC()
 	}
+	if s.readMemo == nil {
+		return s.readInboxUncached(ctx, opts, band, filter)
+	}
+	ctx, admitted, key, err := s.memoReadScope(ctx, "inbox", []any{band, filter})
+	if err != nil {
+		return nil, err
+	}
+	opts.Capabilities, opts.CallerUserID = admitted.Capabilities, admitted.CallerUserID
+	opts.TrustedAuthors = admitted.TrustedAuthors
+	value, err := s.readMemo.get(ctx, key, func(ctx context.Context, now time.Time) (readMemoValue, error) {
+		horizon := &readMemoHorizon{now: now, until: memoReadUntil(now)}
+		if _, loaded := ctx.Value(memoReadValidationKey{}).(store.ActivityValidation); !loaded {
+			if _, err := s.Store.ReadActivityValidation(ctx, now); err != nil {
+				return readMemoValue{}, err
+			}
+		}
+		ctx = context.WithValue(ctx, readMemoHorizonKey{}, horizon)
+		opts.Now = now
+		items, err := s.readInboxUncached(ctx, opts, band, filter)
+		if err != nil {
+			return readMemoValue{}, err
+		}
+		body, err := json.Marshal(items)
+		return readMemoValue{body: body, validUntil: horizon.until}, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	memoHorizon(ctx, value.validUntil)
+	var items []inboxItem
+	if err := json.Unmarshal(value.body, &items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *Server) readInboxUncached(ctx context.Context, opts store.NextActionOptions, band string, filter store.TaskFilter) ([]inboxItem, error) {
 	// The store excludes merged and closed tasks and blueprint anchors before
 	// a row is read, so the inbox's reads cover open tasks only
 	// (feature-operator-next-action NA-5).
@@ -114,25 +172,24 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 	for _, task := range candidates {
 		ids = append(ids, task.ID)
 	}
-	// Read the markers once and hand them to the projection: the inbox needs
-	// LastEventAt from the same rows, and a second marker read would repeat the
-	// whole event scan (activity-marker-bounds).
-	markers, err := s.Store.ListActivityMarkersForTasks(ctx, ids)
+	inputs, err := s.Store.ReadActivityInputs(ctx, ids, opts.Now)
 	if err != nil {
 		return nil, err
 	}
-	opts.MarkersLoaded = true
-	opts.Markers = markers
-	projected, err := store.ReadNextActions(ctx, s.Store, candidates, opts)
-	if err != nil {
-		return nil, err
-	}
+	memoHorizon(ctx, inputs.ValidUntil)
+	opts.MarkersLoaded, opts.Markers = true, inputs.Markers
+	opts.OrdersLoaded, opts.Orders = true, inputs.Orders
 	proposals, err := s.Store.ListPendingProposals(ctx)
 	if err != nil {
 		return nil, err
 	}
+	opts.ProposalsLoaded, opts.Proposals = true, proposals
+	projected, err := store.ReadNextActions(ctx, s.Store, candidates, opts)
+	if err != nil {
+		return nil, err
+	}
 	lastEvent := map[string]time.Time{}
-	for _, marker := range markers {
+	for _, marker := range inputs.Markers {
 		lastEvent[marker.TaskID] = marker.LastEventAt
 	}
 	items := inboxTaskItems(candidates, projected, lastEvent)
@@ -140,6 +197,19 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 		return nil, err
 	}
 	items = append(items, documentProposalItems(proposals, opts.Now)...)
+	for _, item := range items {
+		if item.Deadline != nil {
+			memoHorizon(ctx, *item.Deadline)
+		}
+		if item.Proposal != nil && !item.Proposal.ProposedAt.IsZero() {
+			proposed := item.Proposal.ProposedAt
+			if proposed.After(opts.Now) {
+				memoHorizon(ctx, proposed.Add(time.Second))
+			} else {
+				memoHorizon(ctx, proposed.Add((opts.Now.Sub(proposed)/time.Second+1)*time.Second))
+			}
+		}
+	}
 	if band != "" {
 		filtered := make([]inboxItem, 0, len(items))
 		for _, item := range items {

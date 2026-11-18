@@ -88,6 +88,10 @@ func (w *verificationPublicationWorker) Work(ctx context.Context, job queue.Job)
 			next.ErrorClass = class
 			next.ObservedHead = observedHead
 			next.ObservedDigest = observedDigest
+			if class == "head_mismatch" {
+				next.NextAttemptAt = nil
+				return save("fail", next)
+			}
 			at := time.Now().UTC().Add(time.Second * time.Duration(1<<min(d.CycleAttempts-1, 12)))
 			next.NextAttemptAt = &at
 			command := "retry_error"
@@ -163,4 +167,34 @@ func (w *verificationPublicationWorker) Work(ctx context.Context, job queue.Job)
 		return err
 	}
 	return deliveryErr
+}
+
+func (w *verificationPublicationWorker) Discarded(ctx context.Context, job queue.Job, reason string) error {
+	_ = reason
+	var a queue.VerificationPublicationArgs
+	if err := core.DecodeVerificationRequest(job.Args, &a); err != nil {
+		return nil
+	}
+	if !a.ValidWorkspace(job.WorkspaceID) {
+		return nil
+	}
+	b, ok := w.dispatcher.Store.(store.VerificationDeliveryStore)
+	if !ok {
+		return nil
+	}
+	ctx = store.WithWorkspace(store.WithActor(ctx, store.SystemActor("verification-publication")), job.WorkspaceID)
+	return b.RunVerificationDelivery(ctx, a, func(d *core.VerificationDelivery, save func(string, core.VerificationDelivery) error) error {
+		if d.State != "pending" && d.State != "retrying" {
+			return nil
+		}
+		if d.State == "pending" {
+			if err := save("attempt", *d); err != nil {
+				return err
+			}
+		}
+		next := *d
+		next.ErrorClass = "forge"
+		next.NextAttemptAt = nil
+		return save("fail", next)
+	})
 }

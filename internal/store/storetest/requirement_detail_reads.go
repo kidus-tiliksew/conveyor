@@ -72,6 +72,39 @@ func runRequirementDetailReads(t *testing.T, x Fixture) {
 	missing := "missing-" + core.NewTaskID()
 	requested := []string{anchor.ID, child.ID, noPlan.ID, olderApproved.ID, latestApproved.ID, missing, foreign.ID, anchor.ID, olderApproved.ID}
 
+	t.Run("FollowUpsSelectExactWorkspaceIntakeKeys", func(t *testing.T) {
+		key := "requirement-follow-up-" + core.NewTaskID()
+		body := strings.Repeat(requirementDetailBodySentinel, 1024)
+		followUp := core.Task{ID: core.NewTaskID(), Workspace: ws, Repo: "conveyor", BaseBranch: "main", Title: "Selected follow-up", Body: body, State: core.TaskQueued, NextStage: core.StageImplement, IntakeKey: key, CreatedAt: time.Now().UTC()}
+		requireOK(t, st.CreateTask(ctx, followUp))
+		foreignFollowUp := followUp
+		foreignFollowUp.ID = core.NewTaskID()
+		foreignFollowUp.Workspace = other
+		foreignFollowUp.Title = "Foreign follow-up"
+		requireOK(t, st.CreateTask(otherCtx, foreignFollowUp))
+		if x.DrainReadBytes != nil {
+			x.DrainReadBytes()
+		}
+		got, err := st.ListRequirementFollowUps(ctx, []string{key, key, "missing-follow-up"})
+		requireOK(t, err)
+		want := map[string]store.RequirementDetailTask{
+			key: {ID: followUp.ID, Title: followUp.Title, State: followUp.State},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("follow-up summaries = %+v, want %+v", got, want)
+		}
+		if x.DrainReadBytes != nil {
+			if received := x.DrainReadBytes()["ListRequirementFollowUps"]; received >= uint64(len(body)) {
+				t.Fatalf("follow-up read received %d bytes, including an unused task body", received)
+			}
+		}
+		empty, err := st.ListRequirementFollowUps(ctx, nil)
+		requireOK(t, err)
+		if len(empty) != 0 {
+			t.Fatalf("empty intake keys selected %d follow-ups", len(empty))
+		}
+	})
+
 	t.Run("TasksEqualSingleTaskReads", func(t *testing.T) {
 		got, err := st.ListRequirementDetailTasks(ctx, requested)
 		requireOK(t, err)

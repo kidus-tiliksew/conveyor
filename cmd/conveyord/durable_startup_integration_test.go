@@ -58,6 +58,10 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 		}
 		start := func(t *testing.T, raw, cfgPath string, timeout time.Duration) *durableDaemon {
 			t.Helper()
+			started := time.Now()
+			defer func() {
+				t.Logf("%s daemon start to healthy elapsed=%s deadline=%s", name, time.Since(started).Round(time.Millisecond), timeout)
+			}()
 			daemon := startDurableDaemon(t, raw, cfgPath, timeout)
 			if name == "singlestore" {
 				migrated = strings.TrimSpace(raw)

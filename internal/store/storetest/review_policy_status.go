@@ -3,6 +3,9 @@ package storetest
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -65,6 +68,51 @@ func RunReviewPolicyStatusConformance(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		return job.Active()
 	}
+
+	t.Run("StartupReadsOnlyRelevantTasks", func(t *testing.T) {
+		active := fileTask(t, riskpolicy.ModeEnforce, false)
+		terminal := active
+		terminal.ID = core.NewTaskID()
+		terminal.Branch = "conveyor/task-" + terminal.ID
+		terminal.State = core.TaskMerged
+		terminal.Body = strings.Repeat("UNUSED-STARTUP-TASK-BODY", 2048)
+		requireOK(t, st.CreateTask(ctx, terminal))
+		_, _, err := st.QueueReviewPolicyStatus(ctx, terminal.ID, "terminal-head", core.PolicyStatusSuccess)
+		requireOK(t, err)
+		irrelevant := terminal
+		irrelevant.ID = core.NewTaskID()
+		irrelevant.Branch = "conveyor/task-" + irrelevant.ID
+		requireOK(t, st.CreateTask(ctx, irrelevant))
+		tasks, err := st.ListTasks(ctx)
+		requireOK(t, err)
+		statuses, err := st.ListOpenReviewPolicyStatuses(ctx)
+		requireOK(t, err)
+		open := make(map[string]bool)
+		for _, status := range statuses {
+			open[status.TaskID] = true
+		}
+		want := []core.Task{}
+		for _, task := range tasks {
+			if !core.TaskTerminal(task.State) || open[task.ID] {
+				want = append(want, core.Task{ID: task.ID, State: task.State, SetupContract: task.SetupContract})
+			}
+		}
+		if x.DrainReadBytes != nil {
+			x.DrainReadBytes()
+		}
+		got, err := st.ListReviewPolicyReconciliationTasks(ctx)
+		requireOK(t, err)
+		sort.Slice(want, func(i, j int) bool { return want[i].ID < want[j].ID })
+		sort.Slice(got, func(i, j int) bool { return got[i].ID < got[j].ID })
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("startup tasks = %+v, want full-read selection %+v", got, want)
+		}
+		if x.DrainReadBytes != nil {
+			if received := x.DrainReadBytes()["ListReviewPolicyReconciliationTasks"]; received >= uint64(len(terminal.Body)) {
+				t.Fatalf("startup task read received %d bytes including an unused task body", received)
+			}
+		}
+	})
 
 	t.Run("QueueUpdateAndReopen", func(t *testing.T) {
 		task := fileTask(t, riskpolicy.ModeEnforce, false)

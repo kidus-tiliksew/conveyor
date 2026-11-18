@@ -25,9 +25,10 @@ import (
 
 type Store struct {
 	gitHubAppKeyEncryptionState
-	db      *sql.DB
-	log     eventlog.Store
-	changes *changes.Hub
+	db            *sql.DB
+	log           eventlog.Store
+	changes       *changes.Hub
+	hotReadLayout map[string]bool
 	// reads attributes received bytes to store-method labels; nil for a
 	// store assembled without Open (component-persistence, Database read
 	// accounting).
@@ -152,6 +153,9 @@ func Open(ctx context.Context, raw string, compress ...bool) (*Store, error) {
 		}
 		if err == nil {
 			err = st.checkEventsPrerequisite(ctx)
+		}
+		if err == nil {
+			err = st.initHotReadLayout(ctx)
 		}
 	}
 	if err != nil {

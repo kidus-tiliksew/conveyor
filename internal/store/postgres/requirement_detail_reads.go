@@ -81,3 +81,43 @@ JOIN task_specs s ON s.task_id = latest.task_id AND s.version = latest.version`,
 	}
 	return out, nil
 }
+
+// requirementVersionSummarySelect reads every version of the requested
+// requirements in version order. A historical row projects an empty content,
+// so only the current and pending rows transfer one.
+const requirementVersionSummarySelect = `SELECT v.workspace_id,v.requirement_id,v.version,
+CASE WHEN v.version=r.current_version OR (NOT v.confirmed AND NOT v.retired) THEN v.content ELSE '' END,
+v.statements_json,v.origin,v.origin_session_id,v.origin_task_id,v.origin_drift_id,v.confirmed,v.confirmed_by,v.confirmed_at,v.retired,v.retired_by,v.retired_at,v.retired_by_version,v.created_at,v.derived_from,COALESCE(v.dismissal_note,'')
+FROM requirement_versions v JOIN requirements r
+  ON r.workspace_id=v.workspace_id AND r.id=v.requirement_id`
+
+// ListRequirementVersionSummaries reads the requested requirements' versions
+// in one set query. Current and pending rows keep their content and
+// statements; a historical row keeps its metadata and statements, and its
+// content is empty (component-persistence; component-document-corpus).
+func (s *Store) ListRequirementVersionSummaries(ctx context.Context, requirementIDs []string) (map[string][]core.RequirementVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementVersionSummaries")
+	out := map[string][]core.RequirementVersion{}
+	ids := store.UniqueDocumentIDs(requirementIDs)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.boundary.Query(ctx, requirementVersionSummarySelect+
+		` WHERE v.workspace_id=$1 AND v.requirement_id=ANY($2::text[])
+		ORDER BY v.requirement_id,v.version`, workspace(ctx), ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		version, scanErr := scanRequirementVersionRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out[version.RequirementID] = append(out[version.RequirementID], version)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

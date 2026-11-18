@@ -54,7 +54,11 @@ type Server struct {
 	mergeReadiness mergeReadinessCache
 	// attention serves the workspace attention count the badge reads from a
 	// cache bounded by attentionCountReuse (attention_count.go).
-	attention   *attentionCountCache
+	attention *attentionCountCache
+	// readMemo caches the encoded bytes of repeated list reads for at most
+	// readMemoLifetime, on one generation invalidated by every hub notice
+	// (read_memo.go; component-http-api, Conditional REST reads).
+	readMemo    *readMemo
 	Store       store.Store
 	Credentials CredentialVerifier
 	// Release is the build-injected binary identity reported by /v1/version.
@@ -211,6 +215,11 @@ func NewServer(s store.Store) *Server {
 	// (req-operator-next-action AC-2.7).
 	server.attention = &attentionCountCache{}
 	server.attention.subscribe(server.Changes)
+	// The read memo is process-wide, so it is created once here and hears
+	// the same hub: every task, work-order, or document notice drops its
+	// generation (read_memo.go).
+	server.readMemo = &readMemo{}
+	server.readMemo.subscribe(server.Changes)
 	return server
 }
 
@@ -278,7 +287,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/activity", s.listActivity)
 			r.Get("/attention/tasks", s.listCallerAttentionTasks)
 			r.Get("/pending-proposals", s.listPendingProposals)
-			r.Get("/tasks", s.listTasks)
+			r.Get("/tasks", s.memoizedListTasks)
 			r.Get("/task-operations", s.listTaskOperations)
 			r.Get("/task-map", s.getTaskMap)
 			r.Get("/tasks/{id}", s.getTask)
@@ -2310,21 +2319,22 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	for _, task := range page.Tasks {
 		taskIDs = append(taskIDs, task.ID)
 	}
-	markers, err := s.Store.ListActivityMarkersForTasks(ctx, taskIDs)
-	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	markerByTask := make(map[string]store.ActivityMarker, len(markers))
-	for _, marker := range markers {
-		markerByTask[marker.TaskID] = marker
-	}
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return
 	}
-	opts.MarkersLoaded, opts.Markers = true, markers
+	inputs, err := s.Store.ReadActivityInputs(ctx, taskIDs, opts.Now)
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	markerByTask := make(map[string]store.ActivityMarker, len(inputs.Markers))
+	for _, marker := range inputs.Markers {
+		markerByTask[marker.TaskID] = marker
+	}
+	opts.MarkersLoaded, opts.Markers = true, inputs.Markers
+	opts.OrdersLoaded, opts.Orders = true, inputs.Orders
 	projected, err := store.ReadNextActions(ctx, s.Store, page.Tasks, opts)
 	if err != nil {
 		writeStoreFailure(w, r, err)
@@ -2693,7 +2703,11 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		spec.MaterializedChildren = materializedChildrenForSpec(task.Children, spec.Version)
 		specPointer = &spec
 	}
-	workOrders, err := s.Store.ListTaskWorkOrders(store.WithWorkspace(r.Context(), task.Workspace), id)
+	// The response embeds the whole order, including the authority and
+	// governance snapshots it served before, so this read keeps them: the
+	// activity-column read would narrow the served body
+	// (component-http-api, Task detail; component-work-orders invariant 65).
+	workOrders, err := s.Store.ListTaskWorkOrdersSnapshot(store.WithWorkspace(r.Context(), task.Workspace), id)
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return

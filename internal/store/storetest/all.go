@@ -19,6 +19,14 @@ type Capabilities struct {
 	Identity, Membership, Tokens bool
 }
 
+type ArtifactListStatementContract uint8
+
+const (
+	ArtifactListStatementsUnspecified ArtifactListStatementContract = iota
+	ArtifactListStatementsPaged
+	ArtifactListStatementsExactlyTwo
+)
+
 type Fixture struct {
 	ReopenVerification func(*testing.T) store.Backend
 	Backend            store.Backend
@@ -29,6 +37,7 @@ type Fixture struct {
 
 	RestoreSupersededDeliveries func(*testing.T, context.Context, string)
 	DrainReadQueries            func() map[string]uint64
+	ArtifactListStatements      ArtifactListStatementContract
 
 	// SeedHistoricalLink inserts one retained, non-projector-owned link row
 	// exactly as historical migrations left it, such as migration 046's
@@ -427,7 +436,10 @@ func RunAll(t *testing.T, factory Factory) {
 		{"ReconcileReads", true, runReconcileReads},
 		{"TaskDetailReads", true, runTaskDetailReads},
 		{"ActivityMarkerBounds", true, RunActivityMarkerBoundsConformance},
+		{"ActivityMarkerHorizon", true, RunActivityMarkerHorizonConformance},
 		{"RequirementDetailReads", true, runRequirementDetailReads},
+		{"DocumentVersionSummaries", true, runDocumentVersionSummaries},
+		{"RequirementEventReads", true, RunRequirementEventReads},
 		{"TaskLifecycle", true, runTaskLifecycle},
 		{"TaskBranchUniqueness", true, runTaskBranchUniqueness},
 		{"TaskBranchConcurrentClaims", true, runTaskBranchConcurrentClaims},

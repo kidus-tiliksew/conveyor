@@ -248,6 +248,8 @@ func TestRegistrationsBindDiscardHandlers(t *testing.T) {
 		// A discarded policy status job leaves its row failed for the next
 		// re-evaluation (component-git-delivery invariant 37).
 		queue.ReviewPolicyStatusArgs{}.Kind(): true,
+		// A discarded verification publication fails its delivery row.
+		queue.VerificationPublicationArgs{}.Kind(): true,
 	}
 	for _, registration := range d.Registrations(&ShutdownMarker{}) {
 		if got := registration.Discarded != nil; got != want[registration.Kind] {
