@@ -1,16 +1,18 @@
 # Retained validation evidence: Conveyor task 261118-79d8d8, pull request 1689
 
 These records come from `scripts/validation_evidence.py run`, as `docs/validation-evidence.md` describes. They are the
-local-only read-egress measurement that approved plan item 7 names, taken in the task worktree. r14 and r15 are taken at the
-submitted head `3c10a248173ec0b5d5470271b58d31d75363fb4b`, which merges `origin/main` (with the SingleStore event-write
-fix `d3e43ffbc`) into `cefbaa1b`. Earlier heads of the same review round are kept as records: r1 to r3 at `86ba554b`, r4 and
+local-only read-egress measurement that approved plan item 7 names, taken in the task worktree. r16 and r17 are taken at the
+submitted head `869c877c60ae54b20e4d27f7b56abbe128c83775`, which answers CodeRabbit's second review (PostgreSQL's
+key-ambiguity guard also requires the lowered key list to be ASCII; SingleStore keeps the caller's `KeepAllClaims` per
+chunk). r14 and r15 are at `3c10a248`, which merges `origin/main` (with the SingleStore event-write fix `d3e43ffbc`) into
+`cefbaa1b`. Earlier heads of the same review round are kept as records: r1 to r3 at `86ba554b`, r4 and
 r5 at `f689fed2` (a merge of `origin/main`), r6 to r8 at `04286be2` (the SingleStore key-list fix), r9 and r10 at `b09ba7b7`
 (a merge of `origin/main`), and r11 to r13 at `cefbaa1b` (the answers to the CodeRabbit review: a claim read-back reruns the
 page in one statement, and PostgreSQL binds open review orders as arrays). No merge changed the marker SQL. Each run used `env -i` with only PATH, HOME, LANG, a fresh
 empty GOCACHE, and, for SingleStore, the backend URL, under `setpriv --inh-caps=-all --ambient-caps=-all`. The helper owned
 each fixture database: it created the database, took the backend snapshots, ran the Make command once, and dropped the
-database. The r1 PostgreSQL server was the helper's own managed container, which the helper removed after the run. The r4, r6, r9, r11, and r14 PostgreSQL servers were further managed containers, also
-removed. The r2, r3, r5, r7, r8, r10, r12, r13, and r15 SingleStore server was a disposable local container,
+database. The r1 PostgreSQL server was the helper's own managed container, which the helper removed after the run. The r4, r6, r9, r11, r14, and r17 PostgreSQL servers were further managed containers,
+also removed. The r2, r3, r5, r7, r8, r10, r12, r13, r15, and r16 SingleStore server was a disposable local container,
 `ghcr.io/singlestore-labs/singlestoredb-dev@sha256:2f181587a74b63a83e7dbd46b02e9dce031b8cacf1f5651bff297b2d8c87df37`
 (`--cpus=4 --memory=6g`).
 
@@ -29,8 +31,10 @@ removed. The r2, r3, r5, r7, r8, r10, r12, r13, and r15 SingleStore server was a
 | r11 | PostgreSQL read-egress measurement at `cefbaa1b` | `make measure-hot-read-egress-postgres` | `cefbaa1b4b9ce3c5d515dc3bfa39b655bd5a8d42` | success (exit 0) | 2026-11-18T16:19:34Z to 2026-11-18T16:20:24Z | `conveyor_markers_1da1b3a4c3a0_test` on postgres: teardown success | success | 55137 bytes, complete, sha256 `e48b11563fdfbf286b7b1ce8ab4bfc1cf78d6303196f94edcc6cad64a8f53760` |
 | r12 | SingleStore read-egress measurement at `cefbaa1b`, first attempt | `make measure-hot-read-egress-singlestore` | `cefbaa1b4b9ce3c5d515dc3bfa39b655bd5a8d42` | failure (exit 2): schema migration 0043 hit the test's two-minute open deadline; no case ran | 2026-11-18T16:20:26Z to 2026-11-18T16:23:06Z | `conveyor_markers_04e6d3fcec09_test` on singlestore: teardown success | success | 769 bytes, complete, sha256 `68bbbbd687e9092f557477c84954403deb242702ed83b3d1907c2e89fd41c629` |
 | r13 | SingleStore read-egress measurement at `cefbaa1b`, same policy, rerun | `make measure-hot-read-egress-singlestore` | `cefbaa1b4b9ce3c5d515dc3bfa39b655bd5a8d42` | success (exit 0) | 2026-11-18T16:23:14Z to 2026-11-18T16:28:06Z | `conveyor_markers_a76b4a5f8277_test` on singlestore: teardown success | success | 55686 bytes, complete, sha256 `3b82fcaa3a2e5977b7b69bb82d62cb28509268d7ce7b0e58c03008557dd5e317` |
-| r14 | PostgreSQL read-egress measurement at the submitted head | `make measure-hot-read-egress-postgres` | `3c10a248173ec0b5d5470271b58d31d75363fb4b` | success (exit 0) | 2026-11-18T16:49:31Z to 2026-11-18T16:50:20Z | `conveyor_markers_9a6bf0c99216_test` on postgres: teardown success | success | 55137 bytes, complete, sha256 `e683114af23c079db2aed4ed4554fb4331a6887df735cc02c88df972846aa2c1` |
-| r15 | SingleStore read-egress measurement at the submitted head | `make measure-hot-read-egress-singlestore` | `3c10a248173ec0b5d5470271b58d31d75363fb4b` | success (exit 0) | 2026-11-18T16:50:22Z to 2026-11-18T16:53:22Z | `conveyor_markers_c6d14d18b935_test` on singlestore: teardown success | success | 55596 bytes, complete, sha256 `f54250db11627c11d21ab649580eeca5c01fa71f3e8f22bcc4793ddaae0f9323` |
+| r14 | PostgreSQL read-egress measurement at `3c10a248` | `make measure-hot-read-egress-postgres` | `3c10a248173ec0b5d5470271b58d31d75363fb4b` | success (exit 0) | 2026-11-18T16:49:31Z to 2026-11-18T16:50:20Z | `conveyor_markers_9a6bf0c99216_test` on postgres: teardown success | success | 55137 bytes, complete, sha256 `e683114af23c079db2aed4ed4554fb4331a6887df735cc02c88df972846aa2c1` |
+| r15 | SingleStore read-egress measurement at `3c10a248` | `make measure-hot-read-egress-singlestore` | `3c10a248173ec0b5d5470271b58d31d75363fb4b` | success (exit 0) | 2026-11-18T16:50:22Z to 2026-11-18T16:53:22Z | `conveyor_markers_c6d14d18b935_test` on singlestore: teardown success | success | 55596 bytes, complete, sha256 `f54250db11627c11d21ab649580eeca5c01fa71f3e8f22bcc4793ddaae0f9323` |
+| r16 | SingleStore read-egress measurement at the submitted head | `make measure-hot-read-egress-singlestore` | `869c877c60ae54b20e4d27f7b56abbe128c83775` | success (exit 0) | 2026-11-18T17:08:46Z to 2026-11-18T17:14:21Z | `conveyor_markers_53fc56b5e15e_test` on singlestore: teardown success | success | 55596 bytes, complete, sha256 `73ec7befea87f01fdec57f25d4a1fa4a2af16ef904304e8190b406c3f21b2768` |
+| r17 | PostgreSQL read-egress measurement at the submitted head | `make measure-hot-read-egress-postgres` | `869c877c60ae54b20e4d27f7b56abbe128c83775` | success (exit 0) | 2026-11-18T17:14:30Z to 2026-11-18T17:15:39Z | `conveyor_markers_43852c446358_test` on postgres: teardown success | success | 55137 bytes, complete, sha256 `4f684b1c13532b6668826cc2816f2f1a965d1f754f9a295ab64f36ab38420526` |
 
 The `activity-markers` case compares the read at `inline-queries@3062eb520fab76502cd86507fd0342a9dfb57c3c` (baseline) with
 the public `ReadActivityInputs` at each run's head (candidate) on 12 tasks, 40 history steps, 2,460 events, 1,024-byte padding,
@@ -50,6 +54,8 @@ and 6 tasks with an open review order. Both variants served equal work in every 
 | r13 | SingleStore | 3,580,299 to 55,931 | 2,514 to 102 | 5 to 5 |
 | r14 | PostgreSQL | 3,645,385 to 56,824 | 2,502 to 90 | 4 to 4 |
 | r15 | SingleStore | 3,580,299 to 55,931 | 2,514 to 102 | 5 to 5 |
+| r16 | SingleStore | 3,580,299 to 55,931 | 2,514 to 102 | 5 to 5 |
+| r17 | PostgreSQL | 3,645,385 to 56,824 | 2,502 to 90 | 4 to 4 |
 
 Byte totals differ by a few kilobytes between runs because each run's fixture uses fresh task IDs and timestamps.
 
@@ -59,7 +65,7 @@ Byte totals differ by a few kilobytes between runs because each run's fixture us
   status, log digest, fixture phases, and resource cleanup. Its HMAC key stays on the run machine. The key only detects
   accidental corruption, and the log's sha256 above checks the published log.
 - `rN-command.log`: the complete command output, including every `READ_EGRESS_MEASUREMENT` line.
-- `rN-policy.json`: the audited input policy (r2, r3, r5, r7, r8, r10, r12, r13, and r15 use the same policy; r1, r4, r6, r9, r11, and r14 use the same policy).
+- `rN-policy.json`: the audited input policy (r2, r3, r5, r7, r8, r10, r12, r13, r15, and r16 use the same policy; r1, r4, r6, r9, r11, r14, and r17 use the same policy).
 - `rN-fixture-ownership.json` and `rN-fixture-phases.jsonl`: the owned database record and its prepare, snapshot, gate,
   and teardown phases.
 - `rN-invocation-inventory.json`: the invocation's owned resources and their removal.
