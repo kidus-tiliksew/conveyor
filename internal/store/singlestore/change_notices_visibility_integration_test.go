@@ -184,6 +184,35 @@ func (p *peerProbe) expect(what string, workspaces ...string) {
 	}
 }
 
+// legacyPeerReader is the peer read before witnesses: each workspace's
+// log and task-event counters, with no visibility check.
+type legacyPeerReader struct{ db *sql.DB }
+
+func (r legacyPeerReader) PeerMarks(ctx context.Context) (map[string]changes.PeerMark, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT workspace_id, 0, position FROM event_log_positions UNION ALL SELECT workspace_id, 1, position FROM task_event_positions`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	marks := map[string]changes.PeerMark{}
+	for rows.Next() {
+		var ws string
+		var source int
+		var n int64
+		if err = rows.Scan(&ws, &source, &n); err != nil {
+			return nil, err
+		}
+		mark := marks[ws]
+		if source == 0 {
+			mark.Log = n
+		} else {
+			mark.Events = n
+		}
+		marks[ws] = mark
+	}
+	return marks, rows.Err()
+}
+
 // TestSingleStorePeerMarksVisibilityIntegration: a peer never accepts a
 // task-event position whose event it cannot read, and accepts it at the
 // first check after the event becomes visible, without another task event.
@@ -211,6 +240,18 @@ func TestSingleStorePeerMarksVisibilityIntegration(t *testing.T) {
 	if sent := proxy.since(before); len(sent) != 1 || witnessRows != 0 {
 		t.Fatalf("idle check sent %d statements with %d witness rows, want one statement and none:\n%s", len(sent), witnessRows, describeCommands(time.Now(), sent))
 	}
+
+	// The old read, the counter alone, fails this regression: it notices
+	// the counter before the event is visible and never again after.
+	legacy := startPeerProbe(t, legacyPeerReader{daemon.db}, wsA, wsB)
+	legacy.expect("legacy first check", wsA, wsB)
+	missed := holdTaskEvent(t, writer, ctxA, taskA, "peer.legacy")
+	commitPositionFirst(t, missed)
+	legacy.expect("legacy: counter visible, event not", wsA)
+	peer.expect("counter visible, event not")
+	missed.release(t)
+	legacy.expect("legacy: event visible, nothing noticed")
+	peer.expect("event visible", wsA)
 
 	// The regression: the counter commits before the event row.
 	start, _ := taskEventPosition(t, writer, wsA)

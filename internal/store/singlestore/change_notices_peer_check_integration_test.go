@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -264,6 +265,20 @@ func TestSingleStorePeerMarksIntegration(t *testing.T) {
 	}
 	if witnessRows != 0 {
 		t.Fatalf("an idle read returned %d witness rows, want none", witnessRows)
+	}
+	daemon.peerMu.Lock()
+	idleQuery, idleArgs := peerMarksStatement(daemon.peerAccepted)
+	daemon.peerMu.Unlock()
+	// The profile walk finds event-table work when there is some: a read
+	// with no accepted position looks up each workspace's latest witnesses.
+	allQuery, _ := peerMarksStatement(nil)
+	if operators, work, profile := profileEventTableWork(t, writer, allQuery, nil); len(work) == 0 {
+		t.Fatalf("a read of every witness showed no event-table work (operators %v):\n%s", operators, profile)
+	}
+	if operators, work, profile := profileEventTableWork(t, writer, idleQuery, idleArgs); len(work) != 0 {
+		t.Fatalf("the idle peer read did event-table work: %v (operators %v)\n%s", work, operators, profile)
+	} else {
+		t.Logf("idle peer read: event-table operators %v, none produced a row or scanned a segment", operators)
 	}
 	if _, err := logqueue.Enqueue(ctxA, writer.Log(), wsA, "peer_probe", "one", struct{}{}, 1, time.Now().UTC()); err != nil {
 		t.Fatal(err)
@@ -593,4 +608,69 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 		t.Logf("another daemon's commit reached the stream and await_review %s after it", latency)
 	}
 	stopDaemon()
+}
+
+// profileEventTableWork profiles query and returns the operators on
+// events_columnstore and those that produced a row or scanned a segment.
+func profileEventTableWork(t *testing.T, st *Store, query string, args []any) (operators, work []string, profile string) {
+	t.Helper()
+	conn, err := st.db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	rows, err := conn.QueryContext(t.Context(), "PROFILE "+query, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+	if err = conn.QueryRowContext(t.Context(), "SHOW PROFILE JSON").Scan(&profile); err != nil {
+		t.Fatal(err)
+	}
+	var tree any
+	if err = json.Unmarshal([]byte(profile), &tree); err != nil {
+		t.Fatalf("profile JSON: %v\n%s", err, profile)
+	}
+	var walk func(any)
+	walk = func(node any) {
+		switch v := node.(type) {
+		case map[string]any:
+			if table, _ := v["table"].(string); table == "events_columnstore" {
+				executor, _ := v["executor"].(string)
+				operators = append(operators, executor)
+				for _, counter := range []string{"actual_row_count", "segments_scanned"} {
+					if value := profileCounter(v[counter]); value > 0 {
+						work = append(work, fmt.Sprintf("%s %s=%v", executor, counter, value))
+					}
+				}
+			}
+			for _, child := range v {
+				walk(child)
+			}
+		case []any:
+			for _, child := range v {
+				walk(child)
+			}
+		}
+	}
+	walk(tree)
+	return operators, work, profile
+}
+
+// profileCounter reads a SHOW PROFILE JSON counter, a number or an object
+// whose value field holds it.
+func profileCounter(raw any) float64 {
+	switch v := raw.(type) {
+	case float64:
+		return v
+	case map[string]any:
+		value, _ := v["value"].(float64)
+		return value
+	}
+	return 0
 }
