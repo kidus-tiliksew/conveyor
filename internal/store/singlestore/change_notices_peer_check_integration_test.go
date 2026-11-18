@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -374,6 +375,62 @@ func peerIdleFrames(t *testing.T, ctx context.Context, url string) <-chan string
 	return frames
 }
 
+// peerCheckRealTimeEnv selects the real-time variant of the peer-check
+// tests: "1" lets the check run on its own PeerTailInterval ticker and
+// measures the idle window in real time, as the nightly soak workflow does.
+// Unset or "0" drives the check with an injected ticker, so a pull request
+// waits on no 30-second period.
+const peerCheckRealTimeEnv = "CONVEYOR_PEER_CHECK_REAL_TIME"
+
+// peerCheckClock drives a peer check's ticks. Injected, it replaces the
+// check's ticker with one that fails the test unless asked for
+// logqueue.PeerTailInterval, the period conveyord wires (cmd/conveyord
+// main_test.go and main_peer_check_test.go prove that wiring), and fires a
+// tick only when the test calls tick.
+type peerCheckClock struct {
+	t        *testing.T
+	realTime bool
+	ticks    chan time.Time
+}
+
+func newPeerCheckClock(t *testing.T, check *changes.PeerCheck) *peerCheckClock {
+	t.Helper()
+	clock := &peerCheckClock{t: t, ticks: make(chan time.Time)}
+	switch raw, _ := os.LookupEnv(peerCheckRealTimeEnv); raw {
+	case "", "0":
+		check.Ticker = clock.ticker
+	case "1":
+		clock.realTime = true
+		t.Logf("%s=1: the peer check runs on its real %s ticker", peerCheckRealTimeEnv, logqueue.PeerTailInterval)
+	default:
+		t.Fatalf("%s=%q: want 1, 0, or unset", peerCheckRealTimeEnv, raw)
+	}
+	return clock
+}
+
+func (c *peerCheckClock) ticker(interval time.Duration) (<-chan time.Time, func()) {
+	if interval != logqueue.PeerTailInterval {
+		c.t.Errorf("the peer check asked for a %s ticker, want logqueue.PeerTailInterval (%s)", interval, logqueue.PeerTailInterval)
+	}
+	return c.ticks, func() {}
+}
+
+// tick fires one injected tick and returns once the running check took it.
+func (c *peerCheckClock) tick() {
+	c.t.Helper()
+	select {
+	case c.ticks <- time.Now():
+	case <-time.After(10 * time.Second):
+		c.t.Fatal("the running peer check did not take a tick")
+	}
+}
+
+// peerCheckQuietGap is the real time an injected-ticker test waits to show
+// that nothing happens before the next check. Every timer in the wired
+// daemon either sends no statement or has a period far above it (see
+// TestSingleStorePeerCheckIdleDaemonIntegration).
+const peerCheckQuietGap = 2 * time.Second
+
 // TestSingleStorePeerCheckIdleDaemonIntegration: a daemon wired as conveyord
 // wires it with runtime.peers: true on SingleStore (the queue runtime with
 // its deadline alarm, the daemon-wide peer check, the HTTP server, and the
@@ -381,7 +438,27 @@ func peerIdleFrames(t *testing.T, ctx context.Context, url string) <-chan string
 // pending await_review, sends at most two statements in 60 seconds of idle
 // time (req-quiet-idle-runtime AC-1.3). Another daemon's task event and
 // settled review round then reach the stream and await_review at the next
-// check (AC-2.5).
+// check, and not before it (AC-2.5).
+//
+// The injected ticker stands in for the check's 30-second period. The 60
+// idle seconds are the 60s/PeerTailInterval ticks they contain, followed by
+// a real quiet gap. That stands for real time because every other timer in
+// the wired daemon sends no statement within a minute of idle time:
+//   - logqueue runtime: the deadline alarm (alarm.go time.NewTimer) is armed
+//     for the earliest stored deadline, here the claimed order's one-hour
+//     lease and execution deadlines; the load retry timer (runtime.go) runs
+//     only after a failed load.
+//   - notify stream: the 25-second keep-alive ticker
+//     (task_event_stream.go streamKeepaliveInterval) writes a comment frame
+//     and sends no statement.
+//   - await_review: its wait timer (workorder.Service.AwaitReview) is the
+//     requested 10 minutes; it otherwise waits on hub notices.
+//   - store pool: connections expire after 5 minutes (SetConnMaxLifetime),
+//     which closes a connection and sends no statement.
+//   - HTTP server: httptest keeps no timer that reads the store.
+//
+// CONVEYOR_PEER_CHECK_REAL_TIME=1 runs the original real-time variant, which
+// the nightly soak workflow runs.
 func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 	writer := openOwnedStore(t)
 	suffix := strings.ToLower(core.NewTaskID())
@@ -445,6 +522,7 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 	if check == nil {
 		t.Fatal("SingleStore with peers selected no peer check")
 	}
+	clock := newPeerCheckClock(t, check)
 	outcomes := make(chan int, 16)
 	check.Checked = func(published int, err error) {
 		if errors.Is(err, context.Canceled) {
@@ -506,18 +584,53 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 	}
 
 	// Settle: wait for a check that found nothing to publish, so start-up
-	// reads and writes are over, then measure 60 seconds.
-	settled := false
-	for deadline := time.After(3 * logqueue.PeerTailInterval); !settled; {
+	// reads and writes are over.
+	nextOutcome := func(within time.Duration, what string) int {
+		t.Helper()
 		select {
 		case published := <-outcomes:
-			settled = published == 0
-		case <-deadline:
-			t.Fatal("no peer check found the daemon settled")
+			return published
+		case <-time.After(within):
+			t.Fatalf("no peer check outcome within %s: %s", within, what)
+			return 0
 		}
 	}
+	if clock.realTime {
+		settled := false
+		for deadline := time.After(3 * logqueue.PeerTailInterval); !settled; {
+			select {
+			case published := <-outcomes:
+				settled = published == 0
+			case <-deadline:
+				t.Fatal("no peer check found the daemon settled")
+			}
+		}
+	} else {
+		for attempt := 1; ; attempt++ {
+			if attempt > 10 {
+				t.Fatal("no peer check found the daemon settled in 10 checks")
+			}
+			clock.tick()
+			if nextOutcome(30*time.Second, "settle") == 0 {
+				break
+			}
+		}
+	}
+
+	// Measure 60 seconds of idle time: in real time, or as the checks those
+	// seconds contain plus a real quiet gap.
 	start, first := time.Now(), proxy.count()
-	time.Sleep(60 * time.Second)
+	if clock.realTime {
+		time.Sleep(60 * time.Second)
+	} else {
+		checks := int(time.Minute / logqueue.PeerTailInterval)
+		for range checks {
+			clock.tick()
+			nextOutcome(30*time.Second, "idle window")
+		}
+		time.Sleep(peerCheckQuietGap)
+		t.Logf("idle window: %d checks for 60 s at one per %s, then %s of real quiet", checks, logqueue.PeerTailInterval, peerCheckQuietGap)
+	}
 	window := proxy.since(first)
 	t.Logf("statements in 60 s of idle time: %d\n%s", len(window), describeCommands(start, window))
 	if len(window) > 2 {
@@ -533,8 +646,7 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 
 	// Another daemon commits a task event and settles the review round
 	// partway through a period; both reach this daemon at the next check.
-	// Drop the outcomes of the checks inside the window, then wait for a
-	// fresh one to start the period.
+	// Drop the outcomes of the checks inside the window.
 	for drained := false; !drained; {
 		select {
 		case <-outcomes:
@@ -542,12 +654,11 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 			drained = true
 		}
 	}
-	select {
-	case <-outcomes:
-	case <-time.After(2 * logqueue.PeerTailInterval):
-		t.Fatal("no peer check ran")
+	if clock.realTime {
+		// Wait for a fresh check to start the period.
+		nextOutcome(2*logqueue.PeerTailInterval, "period start")
+		time.Sleep(12 * time.Second)
 	}
-	time.Sleep(12 * time.Second)
 	if err = writer.AppendEvent(system(workspaces[0]), core.Event{TaskID: streamTask, Kind: "peer.probe"}); err != nil {
 		t.Fatal(err)
 	}
@@ -555,13 +666,22 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	committed := time.Now()
-	select {
-	case published := <-outcomes:
-		if published < 2 {
-			t.Fatalf("the next check published %d notices, want a task notice for each workspace", published)
+	if !clock.realTime {
+		// Nothing arrives before the next check.
+		select {
+		case frame := <-frames:
+			t.Fatalf("the stream wrote %q before the next check", frame)
+		case outcome := <-awaited:
+			t.Fatalf("await_review returned before the next check: %+v", outcome)
+		case published := <-outcomes:
+			t.Fatalf("a peer check ran without a tick and published %d notices", published)
+		case <-time.After(peerCheckQuietGap):
 		}
-	case <-time.After(logqueue.PeerTailInterval):
-		t.Fatalf("no peer check within %s of the commit", logqueue.PeerTailInterval)
+		clock.tick()
+	}
+	checked := time.Now()
+	if published := nextOutcome(logqueue.PeerTailInterval, "after the commit"); published < 2 {
+		t.Fatalf("the next check published %d notices, want a task notice for each workspace", published)
 	}
 	select {
 	case frame := <-frames:
@@ -579,10 +699,12 @@ func TestSingleStorePeerCheckIdleDaemonIntegration(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("await_review did not return after the check")
 	}
+	// Production checks every PeerTailInterval, so delivery at the next check
+	// is delivery within PeerTailInterval of the commit.
 	if latency := time.Since(committed); latency > logqueue.PeerTailInterval {
 		t.Fatalf("another daemon's commit reached the stream and await_review %s after it, over %s", latency, logqueue.PeerTailInterval)
 	} else {
-		t.Logf("another daemon's commit reached the stream and await_review %s after it", latency)
+		t.Logf("another daemon's commit reached the stream and await_review %s after it, %s after the check began", latency, time.Since(checked))
 	}
 	stopDaemon()
 }

@@ -169,7 +169,9 @@ func TestSingleStoreJobStartsWithinOneSecondOfCommitIntegration(t *testing.T) {
 // first committed through its daemon-wide peer check, which runs every 30
 // seconds and wakes the runtime with a job notice; the runtime keeps no peer
 // timer of its own (feature-quiet-idle-runtime, Peers;
-// req-quiet-idle-runtime AC-2.5).
+// req-quiet-idle-runtime AC-2.5). The check runs on an injected ticker that
+// requires logqueue.PeerTailInterval, so the job reaches the peer only at the
+// next tick; CONVEYOR_PEER_CHECK_REAL_TIME=1 runs the real-time variant.
 func TestSingleStorePeerCheckStartsJobWithinThirtySecondsIntegration(t *testing.T) {
 	committer := openOwnedStore(t)
 	peer := reopenSharedStore(t)
@@ -179,6 +181,7 @@ func TestSingleStorePeerCheckStartsJobWithinThirtySecondsIntegration(t *testing.
 	if check == nil {
 		t.Fatal("SingleStore with peers selected no peer check")
 	}
+	clock := newPeerCheckClock(t, check)
 	check.Checked = func(_ int, err error) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Errorf("peer check: %v", err)
@@ -195,6 +198,19 @@ func TestSingleStorePeerCheckStartsJobWithinThirtySecondsIntegration(t *testing.
 	runCtx, stop := context.WithCancel(context.Background())
 	defer stop()
 	go check.Run(runCtx)
+	if !clock.realTime {
+		// The job reaches the peer only through the next check: nothing
+		// starts it during a quiet gap, and the next tick does.
+		committed := commitSingleStoreProbeJob(t, committer, ctx, ws, taskID)
+		select {
+		case at := <-started:
+			t.Fatalf("peer started the job %s after commit, before its next check", at.Sub(committed))
+		case <-time.After(peerCheckQuietGap):
+		}
+		clock.tick()
+		singleStoreStartedWithin(t, started, committed, logqueue.PeerTailInterval, "peer check")
+		return
+	}
 	// Commit partway through the first period, so the job can reach the
 	// peer only through the next check.
 	time.Sleep(12 * time.Second)

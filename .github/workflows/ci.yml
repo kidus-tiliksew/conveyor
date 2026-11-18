@@ -63,6 +63,13 @@ jobs:
       # own job and no shard can be left out of a matrix.
       - id: matrix
         run: make -s ci-shard-matrix | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache-dependency-path: go.sum
+      # Every SingleStore test and top-level conformance suite runs in
+      # exactly one shard.
+      - run: make singlestore-shard-union-check
 
   go-test:
     name: Go tests and web lint
