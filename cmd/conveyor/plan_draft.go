@@ -111,6 +111,10 @@ type PlanTaskFields struct {
 	PlanApproval    *bool
 	PlanBaseCommit  *string
 	MergeApproval   *bool
+	// Crate is the crate the item names. Nil means the item states no crate.
+	// A stated empty, null, or non-scalar value is a pointer to "", which
+	// plan check refuses (component-crates invariant 16).
+	Crate *string
 	// HasPlan reports that tasks/<name>.plan.md exists; Plan holds its text
 	// with CRLF normalized to LF.
 	HasPlan bool
@@ -194,6 +198,8 @@ type planTaskFrontMatter struct {
 	PlanApproval    *bool    `yaml:"plan_approval"`
 	PlanBaseCommit  *string  `yaml:"plan_base_commit"`
 	MergeApproval   *bool    `yaml:"merge_approval"`
+	// Crate is a node so a stated null stays apart from an omitted field.
+	Crate yaml.Node `yaml:"crate"`
 }
 
 type planDecisionFile struct {
@@ -456,8 +462,22 @@ func parsePlanTaskItem(item *PlanItem, data []byte) error {
 		PlanApproval:    fields.PlanApproval,
 		PlanBaseCommit:  trimPlanString(fields.PlanBaseCommit),
 		MergeApproval:   fields.MergeApproval,
+		Crate:           planTaskCrate(fields.Crate),
 	}
 	return nil
+}
+
+// planTaskCrate returns nil for an omitted crate field, the trimmed value of
+// a scalar crate, and a pointer to "" for a null or non-scalar value.
+func planTaskCrate(node yaml.Node) *string {
+	if node.Kind == 0 {
+		return nil
+	}
+	value := ""
+	if node.Kind == yaml.ScalarNode && node.ShortTag() != "!!null" {
+		value = strings.TrimSpace(node.Value)
+	}
+	return &value
 }
 
 func trimPlanString(value *string) *string {
@@ -567,6 +587,12 @@ func BuildPlanItemRequest(item PlanItem) (PlanItemRequest, error) {
 		}
 		if item.Task.MergeApproval != nil {
 			body["merge_approval"] = *item.Task.MergeApproval
+		}
+		// crate_id travels only when the item names a crate, so an item
+		// without one keeps the request and digest it had before crates
+		// (component-crates invariant 16; req-crates AC-6.4).
+		if item.Task.Crate != nil && *item.Task.Crate != "" {
+			body["crate_id"] = *item.Task.Crate
 		}
 		// A plan file travels as approved under the operator's approval of
 		// this item at the digest that covers it (req-local-planning AC-4.7;

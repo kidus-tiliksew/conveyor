@@ -176,6 +176,15 @@ observational consultation of a claim-bound System Design read
 | `list_document_events` | `kind`, `document_id` | `event_kind`, `include_archived`; includes archive/restore history with recorded actors and times. |
 | `list_decisions` | None | `query`; `include_history` adds superseded decisions to the default confirmed list. |
 | `get_decision` | `decision_id` | `include_history` is required for superseded or pending records; neither grants active authority. |
+| `list_crates` | None | `state`: `open` (default), `closed`, or `all`. Each crate row carries `id`, `name`, `target_date`, `state`, `shipped`, `created_by`, `created_at`, `closed_at`, `open_task_count`, `merged_task_count`, `total_task_count`, `requirement_ids` (the declared requirements), and `task_ids` (the member tasks, oldest first). Rows come in the order of `GET /v1/crates`: target date, soonest first, then crates with no date, then name. |
+| `get_crate` | `crate_id` | One crate row with the same fields as `list_crates`, open or closed. A crate of another workspace, or one that does not exist, is refused with `crate_not_found`. |
+
+The crate reads change no record. No MCP tool creates or edits a crate, or
+adds a task to a crate or removes it. A person does those acts through the
+dashboard, the crate routes, or `conveyor crate`. The one exception is
+`create_task`, which accepts `crate_id` ([Filing and operating](#filing-and-operating)).
+A crate is background for tracking and reporting. It is not authority
+(`component-crates` invariant 14; `req-crates` AC-6.2; DEC-141).
 
 Every tool accepts `limit` (integer 1–100, default 25; 100 for `get_board`).
 Every tool except `search_documents` also accepts `offset` (integer 0–1000,
@@ -191,7 +200,7 @@ next_offset?, snapshot, expires_at, evidence}`. Repeat the same tool and filters
 snapshot freezes rendered results for five minutes, is bound to the presenting
 credential (another credential of the same user cannot use it), workspace, and
 query, and is held only by the serving process. A first `get_task`,
-`get_document`, or `get_decision` read that returns its complete single item
+`get_document`, `get_decision`, or `get_crate` read that returns its complete single item
 retains nothing: its response has no `snapshot`, `expires_at`, or
 `next_offset`, and a client that needs the item again restarts the read. Expiry, process
 restart, another server replica, changed filters, and changed ownership refuse
@@ -546,6 +555,20 @@ the `conveyor-work` playbook describes. Report timing gates nothing
 (`req-delegated-execution` AC-6.1, AC-6.3; `component-work-orders`
 invariant 67).
 
+`crate` is a top-level object on the response of every stage when the task
+belongs to a crate. It holds the crate's `id` and `name`, `sibling_tasks` with
+the `id`, `title`, and `state` of each other member task, and
+`sibling_tasks_truncated`. The siblings are ordered by creation time and then
+ID. At most 50 are listed, and `sibling_tasks_truncated` is true when the crate
+has more. The field holds no target date, no declared requirement, and no crate
+state. It is read from the records at each read, and the order stores no copy.
+An order of a task in no crate has no `crate` field, and the order's `task`
+never carries `crate`. Every role prompt names the field as untrusted background
+that is not authority. The field changes no other context field, no claim, and
+no claim order. When the crate read fails, `get_work_order` fails with an error
+that names the crate, and the claim stays unchanged. A later read tries the
+crate read again (`component-crates` invariant 20; `req-crates` AC-4.3, AC-4.5).
+
 **Designs.** Each design is listed by ID, title, and version, in three labeled
 groups: attached to the task, in attachment order; covering the task's diff;
 then every other design governing the repository, both by ID. A design in two
@@ -652,7 +675,7 @@ the version is stale.
 
 | Tool | What it does |
 |---|---|
-| `create_task` | Create one durable task: `body`, `repo`, and a caller-stable `idempotency_key` required; optional `depends_on`, `requirement_ids`, `system_design_ids`, `plan_state` (`needed` or `not_required`), `plan`, `plan_base_commit`, and gate overrides. `spec_approval` is the legacy alias of `plan_state`, `true` as `needed` and `false` as `not_required`. A `plan` passes the content rules of a submitted plan and becomes plan version 1 with origin `intake` at plan state `awaiting_approval`; `plan_base_commit` is the full commit ID it was read against. `plan_state` with `plan`, an invalid plan, a disagreeing `spec_approval` and `plan_state`, and `plan_base_commit` without `plan` or not 40 lowercase hex characters are refused with `invalid_plan_intake`. MCP never records a plan approval: any `plan_approved` argument, null included, is refused with `invalid_agent_gate_override`. Every refusal precedes the idempotency lookup and records nothing. A task carries no hold (DEC-125(3)): a new `hold: true` or a non-boolean `hold` is refused with `task_hold_retired`, while a retry whose key names an existing task still returns it. The title is generated; supplying one is an error. Requires `create_tasks` on the credential's owner. An omitted gate takes the workspace default and a supplied boolean applies, `false` included. A null or non-boolean gate, a non-string level, or an unrecognized level is refused with `invalid_agent_gate_override` before any lookup, for every caller, so a mistyped gate never takes the workspace default. The task records MCP as its source and the person as its creator, enters triage like any other task, and grants the session nothing further (DEC-116(5)). |
+| `create_task` | Create one durable task: `body`, `repo`, and a caller-stable `idempotency_key` required; optional `depends_on`, `requirement_ids`, `system_design_ids`, `crate_id`, `plan_state` (`needed` or `not_required`), `plan`, `plan_base_commit`, and gate overrides. `crate_id` names an open crate of the workspace, and the task joins it when it is created. A closed crate is refused with `crate_closed`, and a missing crate or a crate of another workspace with `crate_not_found`. A refused crate records no task. A crate attaches no requirement: the task takes only the `requirement_ids` that the call names. A non-string `crate_id` is refused with `invalid_crate`. A retry with the same `idempotency_key` and another `crate_id` is refused as different input. `spec_approval` is the legacy alias of `plan_state`, `true` as `needed` and `false` as `not_required`. A `plan` passes the content rules of a submitted plan and becomes plan version 1 with origin `intake` at plan state `awaiting_approval`; `plan_base_commit` is the full commit ID it was read against. `plan_state` with `plan`, an invalid plan, a disagreeing `spec_approval` and `plan_state`, and `plan_base_commit` without `plan` or not 40 lowercase hex characters are refused with `invalid_plan_intake`. MCP never records a plan approval: any `plan_approved` argument, null included, is refused with `invalid_agent_gate_override`. Every refusal precedes the idempotency lookup and records nothing. A task carries no hold (DEC-125(3)): a new `hold: true` or a non-boolean `hold` is refused with `task_hold_retired`, while a retry whose key names an existing task still returns it. The title is generated; supplying one is an error. Requires `create_tasks` on the credential's owner. An omitted gate takes the workspace default and a supplied boolean applies, `false` included. A null or non-boolean gate, a non-string level, or an unrecognized level is refused with `invalid_agent_gate_override` before any lookup, for every caller, so a mistyped gate never takes the workspace default. The task records MCP as its source and the person as its creator, enters triage like any other task, and grants the session nothing further (DEC-116(5)). |
 | `add_task_dependency` | Make an existing open task depend on another. Requires `task_id`, `depends_on_task_id`, an audit `reason`, and caller-stable `request_id`; rejects terminal tasks, self-links, and cycles. Requires `operate_gates`. |
 | `set_assignee` | Set or clear a task's assignee as an audited act. Constrains claim eligibility, never queue order. Requires `set_assignee`. |
 

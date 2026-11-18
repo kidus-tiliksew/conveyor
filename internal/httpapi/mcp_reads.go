@@ -36,7 +36,7 @@ const (
 // mcpReadSingleItem names reads whose complete result holds at most one item.
 // get_task_context is excluded: it pages several attachments and proposals.
 func mcpReadSingleItem(name string) bool {
-	return name == "get_task" || name == "get_document" || name == "get_decision"
+	return name == "get_task" || name == "get_document" || name == "get_decision" || name == "get_crate"
 }
 
 // mcpReadRefusesSnapshot names reads that return one bounded page and state
@@ -69,6 +69,8 @@ func mcpReadDefinitions() []mcpReadDefinition {
 		{"list_document_events", "Read recorded document history, including archive/restore events, with chronological ID tie-breaks. Archived documents require explicit inclusion.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "document_id": str(), "include_archived": boolean, "event_kind": str()}, []string{"kind", "document_id"}},
 		{"list_decisions", "Discover confirmed decisions; include_history explicitly includes superseded decisions, which are not active authority.", map[string]any{"include_history": boolean, "query": str()}, nil},
 		{"get_decision", "Read a decision by stable DEC identifier. Superseded records require include_history=true; pending decisions are not confirmed authority. The complete single-item result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"decision_id": str(), "include_history": boolean}, []string{"decision_id"}},
+		{"list_crates", listCratesDescription, map[string]any{"state": enum("open", "closed", "all")}, nil},
+		{"get_crate", getCrateDescription, map[string]any{"crate_id": str()}, []string{"crate_id"}},
 		{"get_lineage", "Walk the lineage graph from one root under the operator read budget. Items are the reached nodes in walk order, each with label, depth, the edge_path that admitted it, and status (task or work-order state, version status, verdict outcome and seat). traversal reports the budget, truncation, omissions per axis, and the reached link count. root_type is a lineage node type such as requirement, task, or system_design_version. direction is out, in, or both; edge_kind and node_type take comma-separated edge kinds and node types. The graph is read-only: no tool accepts a link.", map[string]any{"root_type": str(), "root_id": str(), "direction": enum("out", "in", "both"), "edge_kind": str(), "node_type": str(), "max_depth": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadDepth}, "max_nodes": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadNodes}, "max_links": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadNodes * config.DefaultLineageContextLinksPerNode}}, []string{"root_type", "root_id"}},
 	}
 }
@@ -566,6 +568,8 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 			}
 			result = append(result, item)
 		}
+	case "list_crates", "get_crate":
+		return s.mcpCrateRead(ctx, name, a)
 	case "list_documents":
 		return s.mcpDocumentList(ctx, a)
 	case "get_document":

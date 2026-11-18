@@ -277,6 +277,31 @@ func (s *Store) CrateNames(ctx context.Context, ids []string) (map[string]string
 	return out, rows.Err()
 }
 
+// ListCrateMembers implements store.CrateStore in one query over the
+// member tasks of the listed crates.
+func (s *Store) ListCrateMembers(ctx context.Context, ids []string) (map[string][]store.CrateMemberTask, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListCrateMembers")
+	out := make(map[string][]store.CrateMemberTask, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT crate_id, id, title, state FROM tasks WHERE workspace_id=$1 AND crate_id=ANY($2::text[]) ORDER BY crate_id, created_at, id`, workspace(ctx), ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var crateID, state string
+		var member store.CrateMemberTask
+		if err := rows.Scan(&crateID, &member.ID, &member.Title, &state); err != nil {
+			return nil, err
+		}
+		member.State = core.TaskState(state)
+		out[crateID] = append(out[crateID], member)
+	}
+	return out, rows.Err()
+}
+
 // ListCrateActivity implements store.CrateStore: the listed event kinds of
 // the crate's current members, newest first by (at, id) (component-crates
 // invariant 13).
