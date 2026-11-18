@@ -72,6 +72,9 @@ func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
 	s.memoizedRead(w, r, "next-actions", []any{band, filter, page}, s.listNextActionsUncached)
 }
 
+// factoryActWindow is how far back the inbox's factory act log reads.
+const factoryActWindow = 24 * time.Hour
+
 func (s *Server) listNextActionsUncached(w http.ResponseWriter, r *http.Request) {
 	band := r.URL.Query().Get("band")
 	switch band {
@@ -107,10 +110,16 @@ func (s *Server) listNextActionsUncached(w http.ResponseWriter, r *http.Request)
 	total := len(items)
 	start := min(page.Offset, total)
 	end := min(start+page.Limit, total)
-	acts, err := s.Store.ListFactoryActs(r.Context(), time.Now().UTC().Add(-24*time.Hour), 100)
+	acts, err := s.Store.ListFactoryActs(r.Context(), opts.Now.Add(-factoryActWindow), 100)
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return
+	}
+	// An act leaves the window factoryActWindow after it happened, so the
+	// response is not reused past the first such instant
+	// (component-next-action invariant 58).
+	for _, act := range acts {
+		memoHorizon(r.Context(), act.At.Add(factoryActWindow))
 	}
 	page.writeHeaders(w, total)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items[start:end], "acts": acts})
@@ -133,12 +142,9 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 	opts.Capabilities, opts.CallerUserID = admitted.Capabilities, admitted.CallerUserID
 	opts.TrustedAuthors = admitted.TrustedAuthors
 	value, err := s.readMemo.get(ctx, key, func(ctx context.Context, now time.Time) (readMemoValue, error) {
+		// The entry is dropped by change notices and bounded by its
+		// horizon; it reads no validation state it would not use.
 		horizon := &readMemoHorizon{now: now, until: memoReadUntil(now)}
-		if _, loaded := ctx.Value(memoReadValidationKey{}).(store.ActivityValidation); !loaded {
-			if _, err := s.Store.ReadActivityValidation(ctx, now); err != nil {
-				return readMemoValue{}, err
-			}
-		}
 		ctx = context.WithValue(ctx, readMemoHorizonKey{}, horizon)
 		opts.Now = now
 		items, err := s.readInboxUncached(ctx, opts, band, filter)

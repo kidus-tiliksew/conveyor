@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -156,8 +157,15 @@ func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOpti
 	}
 	opts.MergeReadiness = s.mergeReadiness.lastKnown
 	opts.TrustedAuthors = s.requestTrustedAuthors()
-	if loaded, ok := ctx.Value(requestConfigurationKey{}).(loadedRequestConfiguration); ok {
-		opts.TrustedAuthors = func(_ context.Context, task core.Task) ([]string, error) {
+	workspaceID, _ := store.WorkspaceFromContext(ctx)
+	if loaded, ok := loadedConfiguration(ctx, workspaceID); ok {
+		// The loaded configuration answers only for its own workspace; a
+		// task of another workspace reads that workspace's configuration.
+		other := opts.TrustedAuthors
+		opts.TrustedAuthors = func(ctx context.Context, task core.Task) ([]string, error) {
+			if task.Workspace != "" && task.Workspace != workspaceID {
+				return other(ctx, task)
+			}
 			if loaded.config == nil {
 				return nil, nil
 			}
@@ -171,37 +179,37 @@ func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOpti
 	return opts, nil
 }
 
+// getNextAction answers GET /v1/tasks/{id}/next-action under the
+// conditional statement read (component-next-action invariant 58). One read
+// of the task's markers and orders serves the projection and states the
+// review lease horizon.
 func (s *Server) getNextAction(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
-	opts, err := s.nextActionOptions(r)
-	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	// An unchanged poll is answered from the validation read alone, before
-	// the task read and the projection, exactly as the Board activity read
-	// does (component-http-api, Activity conditional admission).
-	now := activityClock().UTC()
-	opts.Now = now
-	validation, err := s.Store.ReadActivityValidation(r.Context(), now)
-	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	conditional := &activityConditional{now: now, opts: opts, scope: taskObservationValidatorScope(r.Context(), "next-action", taskID, opts.Capabilities), validation: validation}
-	if tag, admitted := conditional.admits(r.Header.Get("If-None-Match")); admitted {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("ETag", tag.raw)
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	action, err := store.ReadNextAction(r.Context(), s.Store, taskID, opts)
-	if err != nil {
-		writeClassifiedStoreError(w, r, err, refuseSentinel(store.ErrNotFound, http.StatusNotFound, "task not found"))
-		return
-	}
-	w.Header().Set("ETag", conditional.etag(taskObservationValidUntil(now, action), ""))
-	writeJSON(w, http.StatusOK, action)
+	s.answerStatement(w, r, "next-action", taskID, func(ctx context.Context, opts store.NextActionOptions) (any, error) {
+		task, err := s.Store.GetTask(ctx, taskID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, statementNotFound{err}
+			}
+			return nil, err
+		}
+		inputs, err := s.Store.ReadActivityInputs(ctx, []string{task.ID}, opts.Now)
+		if err != nil {
+			return nil, err
+		}
+		memoHorizon(ctx, inputs.ValidUntil)
+		opts.MarkersLoaded, opts.Markers = true, inputs.Markers
+		opts.OrdersLoaded, opts.Orders = true, inputs.Orders
+		projected, err := store.ReadNextActions(ctx, s.Store, []core.Task{task}, opts)
+		if err != nil {
+			return nil, err
+		}
+		action := projected[task.ID]
+		if action.Deadline != nil {
+			memoHorizon(ctx, *action.Deadline)
+		}
+		return action, nil
+	})
 }
 
 func (s *Server) listInbox(w http.ResponseWriter, r *http.Request) {

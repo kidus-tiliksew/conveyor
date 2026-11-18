@@ -35,7 +35,9 @@ func TestMemoPublicRoutesWarmAndExpired(t *testing.T) {
 			if cold.Code != http.StatusOK || cold.Header().Get("ETag") == "" {
 				t.Fatalf("cold status=%d tag=%q body=%s", cold.Code, cold.Header().Get("ETag"), cold.Body.String())
 			}
-			if f.counted.calls["ReadActivityInputs"] != 1 || f.counted.calls["ReadActivityValidation"] != 1 {
+			// One validation read precedes the build and one checks it before
+			// the body is published (component-next-action invariant 58).
+			if f.counted.calls["ReadActivityInputs"] != 1 || f.counted.calls["ReadActivityValidation"] != 2 {
 				t.Fatalf("miss did not share bounded inputs: %v", f.counted.calls)
 			}
 			f.counted.reset()
@@ -55,7 +57,7 @@ func TestMemoPublicRoutesWarmAndExpired(t *testing.T) {
 			if expired.Code != http.StatusOK || expired.Header().Get("ETag") == cold.Header().Get("ETag") {
 				t.Fatalf("expired tag admitted: status=%d", expired.Code)
 			}
-			if f.counted.calls["ReadActivityInputs"] != 1 || f.counted.calls["ReadActivityValidation"] != 1 {
+			if f.counted.calls["ReadActivityInputs"] != 1 || f.counted.calls["ReadActivityValidation"] != 2 {
 				t.Fatalf("expiry reads: %v", f.counted.calls)
 			}
 		})
@@ -270,7 +272,9 @@ func TestMemoPublicSimultaneousMissesShareProjection(t *testing.T) {
 			t.Fatalf("inconsistent concurrent response: %d %s", response.Code, response.Body.String())
 		}
 	}
-	if st.validations.Load() != 1 {
+	// One build serves every request: its validation read and its
+	// publication check.
+	if st.validations.Load() != 2 {
 		t.Fatalf("validation refreshes=%d", st.validations.Load())
 	}
 }

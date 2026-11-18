@@ -7,19 +7,29 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 const readMemoCapacity = 128
 const readMemoLifetime = 5 * time.Second
 
-type requestConfigurationKey struct{}
+// readMemoByteBudget bounds the encoded bytes the memo holds across all of
+// its entries. An entry larger than the budget is served and never stored,
+// and older entries are evicted first until a new entry fits.
+const readMemoByteBudget = 8 << 20
+
+// requestConfigurationKey holds one request's configuration per workspace,
+// so a context that changes workspace reads that workspace's configuration.
+type requestConfigurationKey struct{ workspace string }
 
 type loadedRequestConfiguration struct {
 	config *config.Config
 }
 
 func (s *Server) requestConfiguration(ctx context.Context) (context.Context, *config.Config, error) {
-	if loaded, ok := ctx.Value(requestConfigurationKey{}).(loadedRequestConfiguration); ok {
+	workspaceID, _ := store.WorkspaceFromContext(ctx)
+	key := requestConfigurationKey{workspace: workspaceID}
+	if loaded, ok := ctx.Value(key).(loadedRequestConfiguration); ok {
 		return ctx, loaded.config, nil
 	}
 	var cfg *config.Config
@@ -30,7 +40,14 @@ func (s *Server) requestConfiguration(ctx context.Context) (context.Context, *co
 			return ctx, nil, err
 		}
 	}
-	return context.WithValue(ctx, requestConfigurationKey{}, loadedRequestConfiguration{config: cfg}), cfg, nil
+	return context.WithValue(ctx, key, loadedRequestConfiguration{config: cfg}), cfg, nil
+}
+
+// loadedConfiguration returns the configuration this request already loaded
+// for workspaceID.
+func loadedConfiguration(ctx context.Context, workspaceID string) (loadedRequestConfiguration, bool) {
+	loaded, ok := ctx.Value(requestConfigurationKey{workspace: workspaceID}).(loadedRequestConfiguration)
+	return loaded, ok
 }
 
 type readMemoHorizonKey struct{}
@@ -58,6 +75,18 @@ type readMemoValue struct {
 	etag       string
 	validUntil time.Time
 	header     map[string]string
+	// unstored marks a result whose inputs changed during its build: it
+	// answers its own caller once, carries no ETag, and is never stored.
+	unstored bool
+}
+
+// size is the encoded bytes an entry holds against readMemoByteBudget.
+func (v readMemoValue) size() int {
+	size := len(v.body) + len(v.etag)
+	for key, value := range v.header {
+		size += len(key) + len(value)
+	}
+	return size
 }
 
 func (v readMemoValue) clone() readMemoValue {
@@ -90,8 +119,54 @@ type readMemo struct {
 	flights    map[string]*readMemoFlight
 	generation uint64
 	sequence   uint64
-	notices    []*changes.Subscription
-	clock      func() time.Time
+	// bytes is the summed size of every held entry.
+	bytes   int
+	notices []*changes.Subscription
+	clock   func() time.Time
+	// budget overrides readMemoByteBudget in tests.
+	budget int
+}
+
+func (m *readMemo) byteBudget() int {
+	if m.budget > 0 {
+		return m.budget
+	}
+	return readMemoByteBudget
+}
+
+// removeLocked drops one entry and its bytes.
+func (m *readMemo) removeLocked(key string) {
+	if entry, ok := m.entries[key]; ok {
+		m.bytes -= entry.value.size()
+		delete(m.entries, key)
+	}
+}
+
+// storeLocked holds value under key. A value larger than the byte budget is
+// not stored. Otherwise the oldest entries are evicted until both the entry
+// count and the byte budget fit.
+func (m *readMemo) storeLocked(key string, value readMemoValue) {
+	m.removeLocked(key)
+	size := value.size()
+	if size > m.byteBudget() {
+		return
+	}
+	if m.entries == nil {
+		m.entries = make(map[string]readMemoEntry)
+	}
+	for len(m.entries) > 0 && (len(m.entries) >= readMemoCapacity || m.bytes+size > m.byteBudget()) {
+		var oldestKey string
+		var oldest uint64
+		for k, entry := range m.entries {
+			if oldestKey == "" || entry.sequence < oldest {
+				oldestKey, oldest = k, entry.sequence
+			}
+		}
+		m.removeLocked(oldestKey)
+	}
+	m.sequence++
+	m.entries[key] = readMemoEntry{value: value.clone(), sequence: m.sequence}
+	m.bytes += size
 }
 
 func (m *readMemo) subscribe(hub *changes.Hub) {
@@ -128,6 +203,7 @@ func (m *readMemo) drainLocked() {
 	if changed {
 		m.generation++
 		m.entries = nil
+		m.bytes = 0
 	}
 }
 
@@ -142,19 +218,22 @@ func (m *readMemo) get(ctx context.Context, key string, build func(context.Conte
 		m.mu.Lock()
 		m.drainLocked()
 		now := m.now()
-		if entry, ok := m.entries[key]; ok && now.Before(entry.value.validUntil) {
-			value := entry.value.clone()
-			m.mu.Unlock()
-			return value, nil
+		if entry, ok := m.entries[key]; ok {
+			if now.Before(entry.value.validUntil) {
+				value := entry.value.clone()
+				m.mu.Unlock()
+				return value, nil
+			}
+			m.removeLocked(key)
 		}
 		if flight := m.flights[key]; flight != nil {
 			done := flight.done
 			m.mu.Unlock()
 			select {
 			case <-done:
-				if flight.err != nil {
-					return readMemoValue{}, flight.err
-				}
+				// A leader's failure, its cancellation included, belongs
+				// to the leader: this caller looks again and builds under
+				// its own context when nothing was stored.
 				continue
 			case <-ctx.Done():
 				return readMemoValue{}, ctx.Err()
@@ -179,27 +258,16 @@ func (m *readMemo) get(ctx context.Context, key string, build func(context.Conte
 			value.validUntil = now.Add(readMemoLifetime)
 		}
 		expired := !m.now().Before(value.validUntil)
-		if err == nil && !changed && !expired {
-			if m.entries == nil {
-				m.entries = make(map[string]readMemoEntry)
-			}
-			delete(m.entries, key)
-			if len(m.entries) >= readMemoCapacity {
-				var oldestKey string
-				var oldest uint64
-				for k, entry := range m.entries {
-					if oldestKey == "" || entry.sequence < oldest {
-						oldestKey, oldest = k, entry.sequence
-					}
-				}
-				delete(m.entries, oldestKey)
-			}
-			m.sequence++
-			m.entries[key] = readMemoEntry{value: value.clone(), sequence: m.sequence}
+		if err == nil && !changed && !expired && !value.unstored {
+			m.storeLocked(key, value)
 		}
 		m.mu.Unlock()
 		if err != nil {
 			return readMemoValue{}, err
+		}
+		if value.unstored {
+			// The build saw its inputs move and answers once, untagged.
+			return value.clone(), nil
 		}
 		if changed || expired {
 			continue
