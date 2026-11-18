@@ -1,0 +1,196 @@
+{
+ "argv": [
+  "make",
+  "measure-hot-read-egress-postgres"
+ ],
+ "checkout": "/home/user/conveyor-worktrees/conveyor-task-261118-79d8d8",
+ "cleanup": {
+  "detail": [],
+  "outcome": "success"
+ },
+ "configuration": {
+  "evidence": "/home/user/.local/state/conveyor/261118-79d8d8/attempt-20261118T173348Z-948415-28e9aca3f3bb",
+  "layer": "postgres"
+ },
+ "created_at": 1795023228.0402005,
+ "detached": false,
+ "finished_at": 1795023284.5517764,
+ "host": {
+  "hostname": "box-node-e0ae3791998ab38b",
+  "machine": "294b2f52a12c8716cc0834a6da9df0b1e15191110f363ede3d8aa3f836ec5cd0"
+ },
+ "invocation": "20261118t173348z-ef9c63ac083f",
+ "kind": "conveyor-validation-invocation",
+ "outcome": "success",
+ "owner": {
+  "birth": {
+   "boot_id": "799ab2d1-a160-49c2-a378-e2f2ace635ec",
+   "start_ticks": 2059583
+  },
+  "pid": 948415,
+  "uid": 1000
+ },
+ "references": [
+  "/home/user/.local/state/conveyor/261118-79d8d8/attempt-20261118T173348Z-948415-28e9aca3f3bb"
+ ],
+ "resources": [
+  {
+   "detail": "removed disposable path /home/user/.cache/conveyor/261118-79d8d8/invocations/20261118t173348z-ef9c63ac083f; Disregarded Linux user manager: pid=1180 uid=1000 service=user@1000.service main_pid=1180 start=803 monotonic_usec=8036774 reason=same-user-uninspectable-system-manager-reported-mainpid; Disregarded Linux user manager helper: pid=1204 parent=1180 uid=1000 command=(sd-pam) start=810 parent_start=803 clk_tck=100 reason=same-user-uninspectable-sd-pam-child-of-authenticated-user-manager-within-one-second",
+   "finished_at": 1795023284.5090203,
+   "id": "path-cf6bf8bae2d2",
+   "identity": {
+    "boot_id": "799ab2d1-a160-49c2-a378-e2f2ace635ec",
+    "created_ticks": 2059593,
+    "device": 64769,
+    "inode": 1942096,
+    "path": "/home/user/.cache/conveyor/261118-79d8d8/invocations/20261118t173348z-ef9c63ac083f"
+   },
+   "kind": "path",
+   "registered_at": 1795023228.0582237,
+   "registered_by": {
+    "birth": {
+     "boot_id": "799ab2d1-a160-49c2-a378-e2f2ace635ec",
+     "start_ticks": 2059583
+    },
+    "pid": 948415
+   },
+   "role": "tmp",
+   "sealed_at": 1795023228.09002,
+   "state": "removed"
+  },
+  {
+   "detail": "removed container 3281ee2c316e8c54d7aa2b3c46dfc7bf0aa07361a5a8b3a985d36197a9351a6f",
+   "finished_at": 1795023284.1530595,
+   "id": "container-7b68c4254b70",
+   "identity": {
+    "budget": {
+     "memory": "2g",
+     "memory_bytes": 2147483648,
+     "tmpfs": "1g",
+     "tmpfs_bytes": 1073741824
+    },
+    "id": "3281ee2c316e8c54d7aa2b3c46dfc7bf0aa07361a5a8b3a985d36197a9351a6f",
+    "image": "postgres:16-alpine",
+    "labels": {
+     "sh.conveyor.validation.invocation": "20261118t173348z-ef9c63ac083f",
+     "sh.conveyor.validation.task": "261118-79d8d8"
+    },
+    "memory": 2147483648,
+    "name": "conveyor-test-20261118t173348z-ef9c63ac083f-postgres-test-1",
+    "pinned_port": false,
+    "port": 38541,
+    "project": "conveyor-test-20261118t173348z-ef9c63ac083f",
+    "service": "postgres-test",
+    "tmpfs": {
+     "/var/lib/postgresql/data": "size=1g"
+    }
+   },
+   "kind": "container",
+   "registered_at": 1795023228.2841814,
+   "registered_by": {
+    "birth": {
+     "boot_id": "799ab2d1-a160-49c2-a378-e2f2ace635ec",
+     "start_ticks": 2059583
+    },
+    "pid": 948415
+   },
+   "role": "postgres",
+   "sealed_at": 1795023229.028921,
+   "state": "removed"
+  },
+  {
+   "detail": "removed network cd2daebca4983c83469ad67a6f04cc3c6f75ca021e7bf11840ed7545f26bcb4a",
+   "finished_at": 1795023284.4138365,
+   "id": "network-f441210359cd",
+   "identity": {
+    "external": false,
+    "id": "cd2daebca4983c83469ad67a6f04cc3c6f75ca021e7bf11840ed7545f26bcb4a",
+    "labels": {
+     "sh.conveyor.validation.invocation": "20261118t173348z-ef9c63ac083f",
+     "sh.conveyor.validation.task": "261118-79d8d8"
+    },
+    "name": "conveyor-test-20261118t173348z-ef9c63ac083f_default",
+    "project": "conveyor-test-20261118t173348z-ef9c63ac083f"
+   },
+   "kind": "network",
+   "registered_at": 1795023228.3242126,
+   "registered_by": {
+    "birth": {
+     "boot_id": "799ab2d1-a160-49c2-a378-e2f2ace635ec",
+     "start_ticks": 2059583
+    },
+    "pid": 948415
+   },
+   "role": "postgres-network",
+   "sealed_at": 1795023229.0872626,
+   "state": "removed"
+  },
+  {
+   "detail": "owned fixture teardown dropped the database",
+   "finished_at": 1795023283.025584,
+   "id": "database-fc49c6fa4437",
+   "identity": {
+    "backend": "postgres",
+    "container": "3281ee2c316e8c54d7aa2b3c46dfc7bf0aa07361a5a8b3a985d36197a9351a6f",
+    "database": "conveyor_markers_5b33c4132f94_test",
+    "endpoint": "127.0.0.1:38541",
+    "incarnation": "16385",
+    "server": "invocation-container",
+    "url_env": "CONVEYOR_TEST_DATABASE_URL"
+   },
+   "kind": "database",
+   "registered_at": 1795023231.6635203,
+   "registered_by": {
+    "birth": {
+     "boot_id": "799ab2d1-a160-49c2-a378-e2f2ace635ec",
+     "start_ticks": 2059583
+    },
+    "pid": 948415
+   },
+   "role": "fixture-database",
+   "sealed_at": 1795023241.1032975,
+   "state": "removed"
+  },
+  {
+   "detail": "process group 951869 has no remaining members",
+   "finished_at": 1795023279.5758612,
+   "id": "process-group-e488948c010c",
+   "identity": {
+    "argv0": "make",
+    "birth": {
+     "boot_id": "799ab2d1-a160-49c2-a378-e2f2ace635ec",
+     "start_ticks": 2061133
+    },
+    "leader": 951869,
+    "pgid": 951869,
+    "uid": 1000
+   },
+   "kind": "process-group",
+   "registered_at": 1795023243.4395852,
+   "registered_by": {
+    "birth": {
+     "boot_id": "799ab2d1-a160-49c2-a378-e2f2ace635ec",
+     "start_ticks": 2059583
+    },
+    "pid": 948415
+   },
+   "role": "gate",
+   "sealed_at": 1795023243.488725,
+   "state": "removed"
+  }
+ ],
+ "schema": 1,
+ "state": "completed",
+ "task": "261118-79d8d8",
+ "tmp": {
+  "GOTMPDIR": "/home/user/.cache/conveyor/261118-79d8d8/invocations/20261118t173348z-ef9c63ac083f/go-tmp",
+  "TMPDIR": "/home/user/.cache/conveyor/261118-79d8d8/invocations/20261118t173348z-ef9c63ac083f/tmp"
+ },
+ "tmp_root": {
+  "backing": "disk",
+  "filesystem": "ext4",
+  "override": false,
+  "path": "/home/user/.cache/conveyor/261118-79d8d8",
+  "warning": null
+ }
+}
