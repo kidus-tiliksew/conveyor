@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
@@ -763,11 +764,15 @@ type memory struct {
 	tasks              map[string]core.Task
 	// crates holds crate records by workspace and crate ID
 	// (component-crates). Membership lives on each task's Crate.
-	crates                      map[memoryScopedKey]Crate
-	repositories                map[string]map[string]string
-	dependencies                map[string]map[string]struct{}
-	jobs                        map[string][]core.Job
-	events                      map[string][]core.Event
+	crates       map[memoryScopedKey]Crate
+	repositories map[string]map[string]string
+	dependencies map[string]map[string]struct{}
+	jobs         map[string][]core.Job
+	events       map[string][]core.Event
+	// timelineReads counts ListEvents copies of a whole task timeline, which
+	// the compact and context reads also make, so a test can prove that a
+	// narrow read never copies one (component-work-orders invariant 24).
+	timelineReads               atomic.Int64
 	lineage                     *memoryLineage
 	interventions               map[string][]core.Intervention
 	transcripts                 map[string]core.Transcript
@@ -855,6 +860,7 @@ func (m *memory) AppendEvent(ctx context.Context, event core.Event) error {
 }
 
 func (m *memory) ListEvents(_ context.Context, taskID string) ([]core.Event, error) {
+	m.timelineReads.Add(1)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	events := append([]core.Event(nil), m.events[taskID]...)

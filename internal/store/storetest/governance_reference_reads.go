@@ -138,6 +138,68 @@ func newGovernanceReferenceTask(t *testing.T, x Fixture, stage core.Stage, desig
 	return fixture
 }
 
+// governanceReferencePinShape is one claimed verify order, in a workspace of
+// its own, whose live pin holds only designs, only decisions, or neither.
+type governanceReferencePinShape struct {
+	name    string
+	ctx     context.Context
+	order   core.WorkOrder
+	designs int
+	decided int
+}
+
+// newGovernanceReferencePinShapes claims one verify order in each of three
+// fresh workspaces: one with a confirmed design and no decision, one with a
+// confirmed decision and no design, and one with neither. Each claim pins the
+// live governance, and a claim pins an empty collection as a nil slice, so the
+// stored pin holds that collection as JSON null, as pins stored before the
+// reference reads existed do (component-work-orders invariants 19 and 22).
+func newGovernanceReferencePinShapes(t *testing.T, x Fixture, session string) []governanceReferencePinShape {
+	t.Helper()
+	st := x.Backend
+	suffix := strings.ToLower(core.NewTaskID())
+	var shapes []governanceReferencePinShape
+	for _, shape := range []struct {
+		name               string
+		designs, decisions bool
+	}{{"design-only", true, false}, {"decision-only", false, true}, {"empty", false, false}} {
+		workspace := x.Workspace + "-pin-" + shape.name + "-" + suffix
+		ctx := store.WithWorkspace(x.Context, workspace)
+		cfg := &config.Config{Workspace: workspace, Repos: x.Config.Repos}
+		_, err := st.BootstrapWorkspaceConfig(ctx, cfg)
+		requireOK(t, err)
+		if shape.designs {
+			document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "component-pin-shape-" + suffix, Title: "Pin shape", Category: "Component design"}, core.SystemDesignVersion{Content: "# Pin shape\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - shape/**\n```\n", Origin: core.SystemDesignOriginOperator})
+			requireOK(t, err)
+			_, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, version.Version, 0)
+			requireOK(t, err)
+		}
+		if shape.decisions {
+			decision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Pin shape decision.", Context: "Shape.", AlternativesRejected: "None.", Origin: core.DecisionOriginOperator})
+			requireOK(t, err)
+			_, err = st.ConfirmDecision(ctx, decision.ID)
+			requireOK(t, err)
+		}
+		fixture := Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg}
+		order := newAggregateOrder(t, fixture, core.StageVerify)
+		governance, err := store.GovernanceForTask(ctx, st, order.TaskID, "conveyor")
+		requireOK(t, err)
+		claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("claim-session"), SessionID: session + "-" + shape.name, ClientToken: session + "-" + shape.name, Lease: time.Hour, ExecutionTimeout: time.Hour, Governance: &governance})
+		requireOK(t, err)
+		stored, err := st.GetWorkOrder(ctx, claimed.ID)
+		requireOK(t, err)
+		if stored.GovernanceSnapshot == nil {
+			t.Fatalf("%s claim pinned no governance", shape.name)
+		}
+		got := governanceReferencePinShape{name: shape.name, ctx: ctx, order: claimed, designs: len(stored.GovernanceSnapshot.Designs), decided: len(stored.GovernanceSnapshot.Decisions)}
+		if (got.designs > 0) != shape.designs || (got.decided > 0) != shape.decisions {
+			t.Fatalf("%s pin holds %d designs and %d decisions", shape.name, got.designs, got.decided)
+		}
+		shapes = append(shapes, got)
+	}
+	return shapes
+}
+
 // legacyGovernanceReferences is the list DeliverOrder built before it read
 // only references: the full order's pin, the full task's repository, and the
 // whole compact timeline's design provenance.
@@ -276,6 +338,28 @@ func runGovernanceReferenceReads(t *testing.T, x Fixture) {
 	if got, full := store.TaskDesignProvenance(events), store.TaskDesignProvenance(ledger); !reflect.DeepEqual(got, full) || len(got.Attached) != 2 {
 		t.Fatalf("design provenance %+v, want the full ledger's %+v with two attached designs", got, full)
 	}
+
+	// A design-only, a decision-only, and an empty pin each read as the Go
+	// projection of the full pin and list what the full reads listed.
+	for _, shape := range newGovernanceReferencePinShapes(t, x, "reference-shape-"+suffix) {
+		full, err := st.GetWorkOrder(shape.ctx, shape.order.ID)
+		requireOK(t, err)
+		pin, err := st.GetWorkOrderGovernancePin(shape.ctx, shape.order.ID)
+		requireOK(t, err)
+		if pin == nil {
+			t.Fatalf("%s pin read returned no pin", shape.name)
+		}
+		requireSameJSON(t, shape.name+" pin", sortedReferencePin(*pin), sortedReferencePin(core.GovernanceReferencePin(*full.GovernanceSnapshot)))
+		if len(pin.Designs) != shape.designs || len(pin.Decisions) != shape.decided {
+			t.Fatalf("%s pin read %d designs and %d decisions, want %d and %d", shape.name, len(pin.Designs), len(pin.Decisions), shape.designs, shape.decided)
+		}
+		want, _ := legacyGovernanceReferences(t, shape.ctx, st, shape.order.ID)
+		repository, err := st.GetTaskRepository(shape.ctx, shape.order.TaskID)
+		requireOK(t, err)
+		events, err := st.ListTaskDesignContextEvents(shape.ctx, shape.order.TaskID)
+		requireOK(t, err)
+		requireSameJSON(t, shape.name+" references", core.ProjectGovernanceReferences(*pin, repository, store.TaskDesignProvenance(events), nil), want)
+	}
 }
 
 // RenewDeliveryFunc is MCP renew_work_order's service path over the given
@@ -294,8 +378,11 @@ type RenewDeliveryFunc func(st store.Store) func(ctx context.Context, claim core
 // renewal, delivery included, must receive fewer bytes than one snapshot,
 // although the task body, its timeline, and the pinned design body each
 // exceed that. The same claim's completed order keeps the acknowledgement
-// exception: it answers with its own snapshot and reads no pin
-// (component-work-orders invariants 14, 20, 23, and 24).
+// exception: it answers with its own snapshot and reads no pin. A
+// design-only, a decision-only, and an empty pin, each in its own workspace,
+// renew with the same checks. With TimelineReads, no renewal may copy a whole
+// task timeline inside the backend (component-work-orders invariants 14, 20,
+// 23, and 24).
 func RunRenewalDeliveryReads(t *testing.T, x Fixture, scale ClaimSessionScale, deliver RenewDeliveryFunc) {
 	st, ctx := x.Backend, x.Context
 	suffix := core.NewTaskID()
@@ -306,6 +393,7 @@ func RunRenewalDeliveryReads(t *testing.T, x Fixture, scale ClaimSessionScale, d
 	designs, requirement := governanceReferenceCorpus(t, x)
 	verify := newGovernanceReferenceTask(t, x, core.StageVerify, designs, requirement, "delivery-verify-"+suffix)
 	review := newGovernanceReferenceTask(t, x, core.StageReview, designs, requirement, "delivery-review-"+suffix)
+	shapes := newGovernanceReferencePinShapes(t, x, "delivery-shape-"+suffix)
 	drain := func() map[string]uint64 {
 		if scale.DrainReadBytes == nil {
 			return nil
@@ -317,22 +405,39 @@ func RunRenewalDeliveryReads(t *testing.T, x Fixture, scale ClaimSessionScale, d
 	identity := func(session string) core.WorkOrderClaimIdentity {
 		return core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("claim-session"), SessionID: session}
 	}
-	for _, fixture := range []governanceReferenceTask{verify, review} {
-		stage := string(fixture.pinned.Stage)
-		want, before := legacyGovernanceReferences(t, ctx, st, fixture.pinned.ID)
+	timelineReads := func() int64 {
+		if scale.TimelineReads == nil {
+			return 0
+		}
+		return scale.TimelineReads()
+	}
+	type renewalCase struct {
+		name     string
+		ctx      context.Context
+		order    core.WorkOrder
+		attached bool
+	}
+	cases := []renewalCase{{"verify", ctx, verify.pinned, true}, {"review", ctx, review.pinned, true}}
+	for _, shape := range shapes {
+		cases = append(cases, renewalCase{shape.name, shape.ctx, shape.order, false})
+	}
+	for _, c := range cases {
+		stage := c.name
+		want, before := legacyGovernanceReferences(t, c.ctx, st, c.order.ID)
 		_ = drain()
 		recorder.Reset()
+		timeline := timelineReads()
 		label := "renewal-delivery-" + stage
-		order, references, referencesError, err := renew(dbmetrics.WithReadLabel(ctx, label), identity(fixture.pinned.SessionID), fixture.pinned.ID, time.Hour)
+		order, references, referencesError, err := renew(dbmetrics.WithReadLabel(c.ctx, label), identity(c.order.SessionID), c.order.ID, time.Hour)
 		requireOK(t, err)
 		if referencesError != "" || references == nil {
 			t.Fatalf("%s renewal delivered no list: %q", stage, referencesError)
 		}
 		requireSameJSON(t, stage+" renewal references", *references, want)
-		if len(want.Designs) < 2 || want.Designs[0].ID != designs[0] || want.Designs[1].ID != designs[1] || want.Designs[0].Group != core.GovernanceDesignAttached {
+		if c.attached && (len(want.Designs) < 2 || want.Designs[0].ID != designs[0] || want.Designs[1].ID != designs[1] || want.Designs[0].Group != core.GovernanceDesignAttached) {
 			t.Fatalf("%s renewal does not list the attached designs in attachment order: %+v", stage, want.Designs)
 		}
-		if order.ID != fixture.pinned.ID || order.State != core.WorkOrderClaimed || encodedSnapshotBytes([]core.WorkOrder{order}) != 0 {
+		if order.ID != c.order.ID || order.State != core.WorkOrderClaimed || encodedSnapshotBytes([]core.WorkOrder{order}) != 0 {
 			t.Fatalf("%s renewal answered %s in state %s with %d snapshot bytes", stage, order.ID, order.State, encodedSnapshotBytes([]core.WorkOrder{order}))
 		}
 		if recorder.SnapshotBytes() != 0 {
@@ -348,6 +453,11 @@ func RunRenewalDeliveryReads(t *testing.T, x Fixture, scale ClaimSessionScale, d
 				t.Fatalf("%s renewal called %s %d times, want once", stage, method, n)
 			}
 		}
+		// The backend's own count sees calls it makes on itself, which the
+		// recorder above cannot.
+		if n := timelineReads() - timeline; n != 0 {
+			t.Fatalf("%s renewal copied %d whole task timelines inside the backend, want none", stage, n)
+		}
 		if bytes := drain(); bytes != nil {
 			got := bytes[label]
 			if got == 0 || got >= ClaimSessionSnapshotBytes {
@@ -355,7 +465,7 @@ func RunRenewalDeliveryReads(t *testing.T, x Fixture, scale ClaimSessionScale, d
 			}
 			t.Logf("%s renewal and delivery received %d bytes", stage, got)
 		}
-		after, err := st.GetWorkOrder(ctx, fixture.pinned.ID)
+		after, err := st.GetWorkOrder(c.ctx, c.order.ID)
 		requireOK(t, err)
 		if after.GovernanceSnapshotDigest != before.GovernanceSnapshotDigest || !reflect.DeepEqual(after.GovernanceSnapshot, before.GovernanceSnapshot) {
 			t.Fatalf("%s renewal changed the stored pin", stage)

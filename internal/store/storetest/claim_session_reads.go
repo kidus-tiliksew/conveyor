@@ -398,6 +398,11 @@ type ClaimSessionScale struct {
 	// received per read label. Durable backends provide it; nil skips the
 	// byte bounds.
 	DrainReadBytes func() map[string]uint64
+	// TimelineReads returns how many whole task timelines the backend has
+	// copied, counted inside the backend, where a wrapper cannot see calls
+	// the backend makes on itself. The volatile backend provides it; nil
+	// skips the check.
+	TimelineReads func() int64
 }
 
 // RenewFunc is workorder.Service.RenewClaimWithLease over the given store.

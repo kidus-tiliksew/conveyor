@@ -19,8 +19,7 @@ import (
 // WorkOrderReadRecorder, which must see zero snapshot bytes, no full order
 // read, no task read, and no timeline read, while the renewal lists exactly
 // the documents the claim response listed from the order's own pin
-// (component-work-orders invariants 20, 23, and 24; req-design-delivery
-// AC-1.4).
+// (component-work-orders invariants 20, 23, and 24).
 func TestRenewWorkOrderReadsNoSnapshotThroughMCP(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []core.Stage{core.StageVerify, core.StageReview} {
@@ -141,6 +140,11 @@ func TestRenewWorkOrderReportsAFailedPinReadThroughMCP(t *testing.T) {
 	// The claim held a ten-minute lease; the renewal asked for an hour.
 	if !stored.LeaseExpiresAt.After(time.Now().Add(30 * time.Minute)) {
 		t.Fatalf("the renewal did not extend the ten-minute lease: %s", stored.LeaseExpiresAt)
+	}
+	// The response carries the renewed order, not the claim's lease.
+	answered, err := time.Parse(time.RFC3339Nano, renewed.LeaseExpiresAt)
+	if err != nil || !answered.Equal(stored.LeaseExpiresAt) {
+		t.Fatalf("the renewal answered lease %q (%v), want the stored %s", renewed.LeaseExpiresAt, err, stored.LeaseExpiresAt)
 	}
 }
 

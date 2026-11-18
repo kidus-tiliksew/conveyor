@@ -402,18 +402,24 @@ func (v *kitVerifier) checkLive(ctx context.Context, grantID string, mode kitLiv
 	if err := v.cachedLive(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithDeadline(ctx, v.claimDeadline())
-	defer cancel()
 	now := v.clock()
 	if mode == kitLiveForced || v.renewDue(now) {
-		if err := v.renew(ctx, now); err != nil {
+		renewCtx, cancel := context.WithDeadline(ctx, v.claimDeadline())
+		err := v.renew(renewCtx, now)
+		cancel()
+		if err != nil {
 			return err
 		}
 	}
 	if mode == kitLivePeriodic && now.Before(v.contextDue()) {
 		return nil
 	}
-	return v.readContext(ctx, grantID, now)
+	// The reread is bounded by the claim as it stands now, so a renewal that
+	// just extended the lease gives the reread the renewed lease, not the
+	// remainder of the one it replaced.
+	readCtx, cancel := context.WithDeadline(ctx, v.claimDeadline())
+	defer cancel()
+	return v.readContext(readCtx, grantID, now)
 }
 
 // clock is the verifier's time source; a test replaces it to advance the

@@ -34,7 +34,7 @@ func (s *Store) GetWorkOrderGovernancePin(ctx context.Context, id string) (*core
 	pin := core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}
 	rows, err := documentRows(ctx, s.db, `SELECT COALESCE(JSON_EXTRACT_STRING(d.table_col,'id'),''),COALESCE(JSON_EXTRACT_STRING(d.table_col,'title'),''),
 		COALESCE(JSON_EXTRACT_BIGINT(d.table_col,'version'),0),JSON_EXTRACT_JSON(d.table_col,'pinned_at_attachment'),JSON_EXTRACT_JSON(d.table_col,'archived'),JSON_EXTRACT_JSON(d.table_col,'superseded_by')
-		FROM governance_snapshots gs JOIN TABLE(JSON_TO_ARRAY(JSON_EXTRACT_JSON(gs.content,'designs'))) d
+		FROM governance_snapshots gs JOIN TABLE(JSON_TO_ARRAY(`+governancePinArraySQL("designs")+`)) d
 		WHERE gs.workspace_id=? AND gs.digest=?`, documentWorkspace(ctx), digest)
 	if err != nil {
 		return nil, err
@@ -69,7 +69,7 @@ func (s *Store) GetWorkOrderGovernancePin(ctx context.Context, id string) (*core
 	}
 	rows, err = documentRows(ctx, s.db, `SELECT COALESCE(JSON_EXTRACT_STRING(c.table_col,'id'),''),COALESCE(JSON_EXTRACT_STRING(c.table_col,'status'),''),
 		COALESCE(JSON_EXTRACT_STRING(c.table_col,'statement'),''),COALESCE(JSON_EXTRACT_STRING(c.table_col,'superseded_by'),'')
-		FROM governance_snapshots gs JOIN TABLE(JSON_TO_ARRAY(JSON_EXTRACT_JSON(gs.content,'decisions'))) c
+		FROM governance_snapshots gs JOIN TABLE(JSON_TO_ARRAY(`+governancePinArraySQL("decisions")+`)) c
 		WHERE gs.workspace_id=? AND gs.digest=?`, documentWorkspace(ctx), digest)
 	if err != nil {
 		return nil, err
@@ -88,6 +88,16 @@ func (s *Store) GetWorkOrderGovernancePin(ctx context.Context, id string) (*core
 		return nil, err
 	}
 	return &pin, nil
+}
+
+// governancePinArraySQL is the stored pin's collection key as a JSON array.
+// JSON_TO_ARRAY refuses any other input, and a stored pin can hold the
+// collection as JSON null, because a claim pins an empty collection as a nil
+// slice, or can lack the key. Both read as an empty array, as decoding the
+// whole snapshot reads them as no documents.
+func governancePinArraySQL(key string) string {
+	extract := `JSON_EXTRACT_JSON(gs.content,'` + key + `')`
+	return `CASE WHEN JSON_GET_TYPE(` + extract + `)='array' THEN ` + extract + ` ELSE '[]' END`
 }
 
 // decodeOptionalJSON decodes one extracted JSON value; an absent or null

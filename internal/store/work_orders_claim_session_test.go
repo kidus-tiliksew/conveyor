@@ -48,8 +48,11 @@ func renewThroughService(st store.Store) func(ctx context.Context, claim core.Wo
 // through the renew_work_order service path, DeliverOrder included, over 200
 // snapshot-bearing orders on the volatile backend (component-work-orders
 // invariants 23 and 24).
+// The volatile backend's own timeline count proves that no renewal copies a
+// whole task timeline, including through calls it makes on itself.
 func TestRenewalDeliveryReadsAtScale(t *testing.T) {
-	storetest.RunRenewalDeliveryReads(t, claimSessionScaleFixture(t), storetest.ClaimSessionScale{}, renewAndDeliverThroughService)
+	x := claimSessionScaleFixture(t)
+	storetest.RunRenewalDeliveryReads(t, x, storetest.ClaimSessionScale{TimelineReads: func() int64 { return store.MemoryTimelineReads(x.Backend) }}, renewAndDeliverThroughService)
 }
 
 // renewAndDeliverThroughService is MCP renew_work_order's service path:

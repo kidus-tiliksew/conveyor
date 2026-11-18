@@ -287,3 +287,63 @@ func TestKitRunnerReplayRenewsAndRereadsBeforeRetainedUpload(t *testing.T) {
 		t.Fatal("the acknowledged retained report stayed in the spool")
 	}
 }
+
+// TestKitForcedRereadUsesTheRenewedLease proves the reread after a forced
+// renewal is bounded by the renewed lease: the old lease ends while the
+// context read is still in flight, and the check still succeeds.
+func TestKitForcedRereadUsesTheRenewedLease(t *testing.T) {
+	p := newPollingFixture(t)
+	short := time.Now().Add(300 * time.Millisecond)
+	p.v.mu.Lock()
+	p.v.order.LeaseExpiresAt = short
+	p.v.mu.Unlock()
+	p.onContext = func(int) { time.Sleep(600 * time.Millisecond) }
+	if err := p.v.liveForced(t.Context(), "grant"); err != nil {
+		t.Fatalf("forced check failed under the renewed lease: %v", err)
+	}
+	if rpcs := p.rpcLog(); len(rpcs) != 2 || rpcs[0] != "renew_work_order" || rpcs[1] != "get_verification_context" {
+		t.Fatalf("forced check calls %v, want a renewal and then a reread", rpcs)
+	}
+	if !p.v.claimDeadline().After(short) {
+		t.Fatal("the forced renewal did not extend the known lease")
+	}
+}
+
+// TestKitRunnerStartFailureRenewsAndRereadsBeforeBlockedReport drives the
+// path where the exercise executable resolves but cannot start: under a long
+// lease, its blocked outcome follows a fixed-point renewal and reread, and a
+// refused renewal reports nothing and says so (component-verification-runner
+// invariant 26).
+func TestKitRunnerStartFailureRenewsAndRereadsBeforeBlockedReport(t *testing.T) {
+	for _, refused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "reported", true: "refused"}[refused], func(t *testing.T) {
+			p, _ := newFixedPointFixture(t, "exit 0")
+			// An executable file the kernel cannot run: no ELF header and no
+			// interpreter line.
+			tool := filepath.Join(t.TempDir(), "not-a-program")
+			if err := os.WriteFile(tool, []byte("not a program\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{tool}, TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
+			if refused {
+				p.refuseRenewAfter = p.renewCalls
+			}
+			environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
+			err := p.v.launch(t.Context(), e, p.v.root, t.TempDir(), "run", "grant", p.snapshot.PermissionGrants[0].Subject, environment, nil)
+			if err == nil || !strings.Contains(err.Error(), "could not start") {
+				t.Fatalf("start failure: %v", err)
+			}
+			rpcs := p.rpcLog()
+			if refused {
+				if p.outcome != "" || slices.Contains(rpcs, "report_verification_outcome") || !strings.Contains(err.Error(), "outcome not reported") {
+					t.Fatalf("refused check: outcome %q err %v rpcs %v", p.outcome, err, rpcs)
+				}
+				return
+			}
+			if p.outcome != "blocked" {
+				t.Fatalf("start failure outcome %q, want blocked", p.outcome)
+			}
+			requireRenewThenRereadBefore(t, rpcs, "report_verification_outcome", 0)
+		})
+	}
+}
