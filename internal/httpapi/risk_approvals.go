@@ -227,12 +227,12 @@ func (s *Server) approvalResponse(ctx context.Context, taskID string) (map[strin
 	return map[string]any{"task": task, "risk": risk}, nil
 }
 
-// trustedAuthors reads the task repository's live trusted_authors list.
+// trustedAuthors reads the task repository's live trusted_authors list from
+// the request-scoped configuration, so a memoized or batched caller never
+// resolves the same configuration again (read_memo.go; req-risk-based-review
+// AC-9.3).
 func (s *Server) trustedAuthors(ctx context.Context, task core.Task) ([]string, error) {
-	if s.ConfigProvider == nil {
-		return nil, nil
-	}
-	cfg, err := s.ConfigProvider(store.WithWorkspace(ctx, task.Workspace))
+	_, cfg, err := s.requestConfiguration(store.WithWorkspace(ctx, task.Workspace))
 	if err != nil {
 		return nil, fmt.Errorf("resolve trusted authors: %w", err)
 	}
@@ -243,6 +243,10 @@ func (s *Server) trustedAuthors(ctx context.Context, task core.Task) ([]string, 
 	return repo.TrustedAuthors, nil
 }
 
+// requestTrustedAuthors returns the live trusted_authors list of each task's
+// repository, resolved from the request-scoped configuration once per
+// workspace so a next-action batch reads no configuration twice
+// (read_memo.go; req-risk-based-review AC-9.3).
 func (s *Server) requestTrustedAuthors() func(context.Context, core.Task) ([]string, error) {
 	type result struct {
 		cfg *config.Config
@@ -250,12 +254,9 @@ func (s *Server) requestTrustedAuthors() func(context.Context, core.Task) ([]str
 	}
 	cache := map[string]result{}
 	return func(ctx context.Context, task core.Task) ([]string, error) {
-		if s.ConfigProvider == nil {
-			return nil, nil
-		}
 		entry, ok := cache[task.Workspace]
 		if !ok {
-			entry.cfg, entry.err = s.ConfigProvider(store.WithWorkspace(ctx, task.Workspace))
+			_, entry.cfg, entry.err = s.requestConfiguration(store.WithWorkspace(ctx, task.Workspace))
 			cache[task.Workspace] = entry
 		}
 		if entry.err != nil {

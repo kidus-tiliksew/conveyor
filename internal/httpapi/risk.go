@@ -23,40 +23,16 @@ func (s *Server) taskRisk(ctx context.Context, task core.Task) (*core.TaskRisk, 
 	if !task.SetupContract.Risk.Enabled() {
 		return nil, nil
 	}
-	scoped := store.WithWorkspace(ctx, task.Workspace)
-	ratings, err := s.Store.ListTaskRiskRatings(scoped, task.ID)
-	if err != nil {
-		return nil, fmt.Errorf("list risk ratings: %w", err)
-	}
-	// Like the review seat projection, a task that froze no seat list takes
-	// the workspace seat count.
-	workspaceSeats := 0
-	if task.SetupContract.Review.Seats == nil && s.ConfigProvider != nil {
-		cfg, cfgErr := s.ConfigProvider(scoped)
-		if cfgErr != nil {
-			return nil, fmt.Errorf("resolve review seat minimum: %w", cfgErr)
-		}
-		if cfg != nil {
-			workspaceSeats = len(cfg.Review.Seats)
+	if risks, ok := taskRiskProjectionFrom(ctx); ok {
+		if projection, present := risks[task.ID]; present {
+			return projection, nil
 		}
 	}
-	projection := store.ProjectTaskRisk(task, ratings, store.ReviewSeatMinimum(task.SetupContract, workspaceSeats))
-	// Every task read names the same risk orders with what each rates and
-	// its state (req-risk-based-review AC-11.2; component-risk-review, Public
-	// surfaces).
-	orders, err := s.Store.ListTaskRiskOrders(scoped, task.ID)
+	risks, _, err := s.projectTaskRisks(ctx, []core.Task{task}, store.RiskProjectionOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("list risk orders: %w", err)
+		return nil, err
 	}
-	projection.Orders = core.TaskRiskOrders(orders)
-	// An enforcing task's approval count and author conditions come from the
-	// same evaluation the merge act uses (req-risk-based-review AC-11.2).
-	evaluation, err := s.taskApprovalEvaluation(scoped, task)
-	if err != nil {
-		return nil, fmt.Errorf("evaluate approvals: %w", err)
-	}
-	store.ProjectTaskApprovals(projection, evaluation)
-	return projection, nil
+	return risks[task.ID], nil
 }
 
 // riskTierRequest is the body of POST /v1/tasks/{id}/risk-tier.
@@ -157,11 +133,12 @@ func (s *Server) raiseTaskRiskTier(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The workspace seat-list length and queue clock size any seats the raise
-	// adds to an enforcing task's open round; only the configuration provider
-	// knows them, never the request body (req-risk-based-review AC-7.2).
+	// adds to an enforcing task's open round; only the request-scoped
+	// configuration knows them, never the request body
+	// (req-risk-based-review AC-7.2).
 	var seats store.RiskSeatSettings
-	if task.SetupContract.Risk.Enforcing() && s.ConfigProvider != nil {
-		cfg, cfgErr := s.ConfigProvider(store.WithWorkspace(r.Context(), task.Workspace))
+	if task.SetupContract.Risk.Enforcing() {
+		_, cfg, cfgErr := s.requestConfiguration(store.WithWorkspace(r.Context(), task.Workspace))
 		if cfgErr != nil {
 			writeStoreFailure(w, r, fmt.Errorf("resolve review seat settings: %w", cfgErr))
 			return

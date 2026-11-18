@@ -10,13 +10,33 @@ import (
 func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.listPendingProposalsLocked(workspaceOrDefault(ctx, "")), nil
+	return m.listPendingProposalsLocked(workspaceOrDefault(ctx, ""), nil), nil
 }
 
-func (m *memory) listPendingProposalsLocked(workspace string) []core.PendingProposal {
+// ListPendingProposalsForDocuments selects the pending requirement and System
+// Design versions of the named documents whatever their origin: the only
+// proposals next-action projection reads are those an authority-conflict
+// citation names. Empty IDs select nothing, never the workspace queue.
+func (m *memory) ListPendingProposalsForDocuments(ctx context.Context, documentIDs []string) ([]core.PendingProposal, error) {
+	if len(documentIDs) == 0 {
+		return []core.PendingProposal{}, nil
+	}
+	documents := make(map[string]bool, len(documentIDs))
+	for _, id := range documentIDs {
+		documents[id] = true
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.listPendingProposalsLocked(workspaceOrDefault(ctx, ""), documents), nil
+}
+
+// listPendingProposalsLocked selects the workspace's pending proposals; a
+// non-nil documents map keeps only requirement and System Design versions of
+// those documents.
+func (m *memory) listPendingProposalsLocked(workspace string, documents map[string]bool) []core.PendingProposal {
 	out := make([]core.PendingProposal, 0)
 	for key, versions := range m.systemDesignVersions {
-		if key.workspace != workspace {
+		if key.workspace != workspace || (documents != nil && !documents[key.id]) {
 			continue
 		}
 		document := m.systemDesigns[key]
@@ -37,7 +57,7 @@ func (m *memory) listPendingProposalsLocked(workspace string) []core.PendingProp
 		}
 	}
 	for key, versions := range m.requirementVersions {
-		if key.workspace != workspace {
+		if key.workspace != workspace || (documents != nil && !documents[key.id]) {
 			continue
 		}
 		document := m.requirements[key]
@@ -63,7 +83,7 @@ func (m *memory) listPendingProposalsLocked(workspace string) []core.PendingProp
 		}
 	}
 	for key, decision := range m.decisions {
-		if key.workspace != workspace || decision.Status != core.DecisionProposed {
+		if documents != nil || key.workspace != workspace || decision.Status != core.DecisionProposed {
 			continue
 		}
 		originType, originID := "operator", ""
@@ -75,7 +95,7 @@ func (m *memory) listPendingProposalsLocked(workspace string) []core.PendingProp
 		out = append(out, core.PendingProposal{ID: decision.ID, Title: decision.Statement, Tier: "decision", OriginType: originType, OriginID: originID, ProposedAt: decision.CreatedAt})
 	}
 	for _, proposal := range m.taskContextProposals {
-		if proposal.Workspace != workspace || proposal.State != core.TaskContextProposalProposed {
+		if documents != nil || proposal.Workspace != workspace || proposal.State != core.TaskContextProposalProposed {
 			continue
 		}
 		task, ok := m.tasks[proposal.TaskID]

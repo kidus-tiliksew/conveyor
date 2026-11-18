@@ -574,13 +574,10 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 	// Repository identity and a non-empty path list are tested on one scope
 	// element, so another repository's paths cannot admit a document that
 	// governs no path here (req-task-authority-boundary REQ-5).
-	rows, err := s.boundary.Query(ctx, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs
+	rows, err := s.boundary.Query(ctx, `SELECT d.id,d.title,d.category,v.version,v.governs
 		FROM system_designs d JOIN system_design_versions v
 		  ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
-		WHERE d.workspace_id=$1 AND d.archived_at IS NULL AND EXISTS (
-			SELECT 1 FROM jsonb_array_elements(v.governs) AS governed_scope
-			WHERE governed_scope->>'repository'=$2 AND jsonb_typeof(governed_scope->'paths')='array' AND governed_scope->'paths'<>'[]'::jsonb
-		) ORDER BY d.id`, workspace(ctx), repository)
+		WHERE d.workspace_id=$1 AND d.archived_at IS NULL ORDER BY d.id`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -589,15 +586,50 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 	for rows.Next() {
 		var item core.GovernanceDesignContext
 		var governs []byte
-		if err = rows.Scan(&item.ID, &item.Title, &item.Category, &item.Version, &item.Content, &governs); err != nil {
+		if err = rows.Scan(&item.ID, &item.Title, &item.Category, &item.Version, &governs); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal(governs, &item.Governs); err != nil {
 			return nil, err
 		}
-		out = append(out, item)
+		if core.GovernsRepositoryPaths(item.Governs, repository) {
+			out = append(out, item)
+		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for start := 0; start < len(out); start += 100 {
+		chunk := out[start:min(start+100, len(out))]
+		ids, versions := make([]string, len(chunk)), make([]int, len(chunk))
+		for i, item := range chunk {
+			ids[i], versions[i] = item.ID, item.Version
+		}
+		contentRows, err := s.boundary.Query(ctx, `SELECT v.document_id,v.version,v.content FROM unnest($2::text[],$3::integer[]) AS q(id,version) JOIN system_design_versions v ON v.workspace_id=$1 AND v.document_id=q.id AND v.version=q.version`, workspace(ctx), ids, versions)
+		if err != nil {
+			return nil, err
+		}
+		for contentRows.Next() {
+			var id, content string
+			var version int
+			if err := contentRows.Scan(&id, &version, &content); err != nil {
+				contentRows.Close()
+				return nil, err
+			}
+			for i := range chunk {
+				if chunk[i].ID == id && chunk[i].Version == version {
+					chunk[i].Content = content
+				}
+			}
+		}
+		err = contentRows.Err()
+		contentRows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
@@ -616,6 +648,44 @@ func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[str
 		out[item.DocumentID] = append(out[item.DocumentID], item)
 	}
 	return out, rows.Err()
+}
+
+// systemDesignVersionSummarySelect reads the current version and every
+// pending version of the requested designs in version order. A historical or
+// dismissed version is not selected.
+const systemDesignVersionSummarySelect = `SELECT v.workspace_id,v.document_id,v.version,v.content,v.governs,v.origin,coalesce(v.origin_session_id,''),coalesce(v.origin_task_id,''),v.confirmed,coalesce(v.confirmed_by,''),v.confirmed_at,v.dismissed,coalesce(v.dismissed_by,''),v.dismissed_at,v.created_at,COALESCE(v.dismissal_note,'')
+FROM system_design_versions v JOIN system_designs d
+  ON d.workspace_id=v.workspace_id AND d.id=v.document_id`
+
+// ListSystemDesignVersionSummaries reads each requested design's current and
+// pending versions in one set query, with their content. A historical version
+// is absent (component-persistence; component-document-corpus).
+func (s *Store) ListSystemDesignVersionSummaries(ctx context.Context, documentIDs []string) (map[string][]core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignVersionSummaries")
+	out := map[string][]core.SystemDesignVersion{}
+	ids := store.UniqueDocumentIDs(documentIDs)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.boundary.Query(ctx, systemDesignVersionSummarySelect+
+		` WHERE v.workspace_id=$1 AND v.document_id=ANY($2::text[])
+		AND (v.version=d.current_version OR (NOT v.confirmed AND NOT v.dismissed))
+		ORDER BY v.document_id,v.version`, workspace(ctx), ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		item, scanErr := scanSystemDesignVersion(rows, "", 0)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out[item.DocumentID] = append(out[item.DocumentID], item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignEvents")
@@ -936,11 +1006,43 @@ func decisionSupersessionSweep(entries []core.DecisionSupersessionSweepEntry) co
 	return core.DecisionSupersessionSweep{Clean: clean, Entries: entries}
 }
 
-// ListDecisionCitations issues two workspace-scoped statements whatever the
-// corpus size: the workspace's decision IDs, then each live requirement and
-// System Design document's current confirmed version. Matching and order are
-// core.DeriveDecisionCitations's (component-document-corpus, Decision
-// citations).
+// decisionCitationQuery is one bounded decision-citation statement. It reads
+// each source's current confirmed version by its primary key, keeps only the
+// columns membership needs, and returns citation metadata rather than
+// document bodies. The normalized content carries one separator for every
+// character that cannot appear inside a decision token, so the four boundary
+// spellings of a batch's token are plain string searches
+// (component-document-corpus, Decision citations).
+const decisionCitationQuery = `
+SELECT k.decision_id,doc.tier,doc.document_id,doc.title,doc.version
+FROM (
+	SELECT 'requirement' AS tier,r.id AS document_id,r.title AS title,r.current_version AS version,
+		'|'||regexp_replace(v.content,'` + core.DecisionCitationTokenClass + `','|','g')||'|' AS tokens
+	FROM requirements r
+	JOIN requirement_versions v ON v.workspace_id=r.workspace_id AND v.requirement_id=r.id AND v.version=r.current_version
+	WHERE r.workspace_id=$1 AND r.archived_at IS NULL AND v.confirmed
+	UNION ALL
+	SELECT 'system_design' AS tier,d.id AS document_id,d.title AS title,d.current_version AS version,
+		'|'||regexp_replace(v.content,'` + core.DecisionCitationTokenClass + `','|','g')||'|'
+	FROM system_designs d
+	JOIN system_design_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
+	WHERE d.workspace_id=$1 AND d.archived_at IS NULL AND v.confirmed
+) doc
+CROSS JOIN unnest($2::text[]) AS k(decision_id)
+WHERE strpos(doc.tokens,'|'||k.decision_id||'|')>0
+	OR strpos(doc.tokens,'|'||k.decision_id||'-')>0
+	OR strpos(doc.tokens,'-'||k.decision_id||'|')>0
+	OR strpos(doc.tokens,'-'||k.decision_id||'-')>0`
+
+// ListDecisionCitations issues one workspace-scoped statement for the
+// workspace's decision IDs and one statement per bounded batch of them. Each
+// batch selects only the current confirmed version row of each unarchived
+// requirement and System Design document, matches the batch's whole decision
+// tokens inside the database, and returns the citation metadata rather than
+// the document bodies. A decision in any state is citable and a version
+// confirmed before that column had an actor stays confirmed, so no state or
+// confirmer filter is added. Order is core.SortDecisionCitations's
+// (component-document-corpus, Decision citations).
 func (s *Store) ListDecisionCitations(ctx context.Context) ([]core.DecisionCitation, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListDecisionCitations")
 	rows, err := s.boundary.Query(ctx, `SELECT id FROM decisions WHERE workspace_id=$1`, workspace(ctx))
@@ -960,30 +1062,28 @@ func (s *Store) ListDecisionCitations(ctx context.Context) ([]core.DecisionCitat
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
-	rows, err = s.boundary.Query(ctx, `
-SELECT 'requirement',r.id,r.title,r.current_version,v.content
-FROM requirements r JOIN requirement_versions v ON v.workspace_id=r.workspace_id AND v.requirement_id=r.id AND v.version=r.current_version
-WHERE r.workspace_id=$1 AND r.archived_at IS NULL AND v.confirmed
-UNION ALL
-SELECT 'system_design',d.id,d.title,d.current_version,v.content
-FROM system_designs d JOIN system_design_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
-WHERE d.workspace_id=$1 AND d.archived_at IS NULL AND v.confirmed`, workspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	sources := []core.DecisionCitationSource{}
-	for rows.Next() {
-		var source core.DecisionCitationSource
-		if err = rows.Scan(&source.Tier, &source.DocumentID, &source.Title, &source.Version, &source.Content); err != nil {
+	citations := []core.DecisionCitation{}
+	for start := 0; start < len(decisionIDs); start += core.DecisionCitationChunk {
+		batch := decisionIDs[start:min(start+core.DecisionCitationChunk, len(decisionIDs))]
+		rows, err = s.boundary.Query(ctx, decisionCitationQuery, workspace(ctx), batch)
+		if err != nil {
 			return nil, err
 		}
-		sources = append(sources, source)
+		for rows.Next() {
+			var citation core.DecisionCitation
+			if err = rows.Scan(&citation.DecisionID, &citation.Tier, &citation.DocumentID, &citation.Title, &citation.Version); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			citations = append(citations, citation)
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			return nil, err
+		}
 	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	return core.DeriveDecisionCitations(decisionIDs, sources), nil
+	core.SortDecisionCitations(citations)
+	return citations, nil
 }
 
 func recomputeDecisionSupersessionSweepTx(ctx context.Context, tx pgx.Tx, q *db.Queries, decision core.Decision) error {

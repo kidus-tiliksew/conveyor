@@ -216,11 +216,67 @@ func (s *Store) ListDecisions(ctx context.Context) ([]core.Decision, error) {
 	return out, nil
 }
 
-// ListDecisionCitations issues two workspace-scoped statements whatever the
-// corpus size: the workspace's decision IDs, then each live requirement and
-// System Design document's current confirmed version. Matching and order are
-// core.DeriveDecisionCitations's (component-document-corpus, Decision
-// citations).
+// decisionCitationSourcesSQL selects the current confirmed version row of
+// each unarchived requirement and System Design document by its primary key
+// and tokenizes its content: DecisionCitationTokenClass becomes the
+// separator "|", and the result is padded with the same separator so a whole
+// token can only be found between separators. Only the columns membership
+// needs are selected, and no document body leaves the database.
+const decisionCitationSourcesSQL = `SELECT 'requirement' AS tier,r.id AS document_id,r.title AS title,r.current_version AS version,
+	CONCAT('|',REGEXP_REPLACE(v.content,'` + core.DecisionCitationTokenClass + `','|','g'),'|') AS tokens
+FROM requirements r
+JOIN requirement_versions v ON v.workspace_id=r.workspace_id AND v.requirement_id=r.id AND v.version=r.current_version
+WHERE r.workspace_id=? AND r.archived_at IS NULL AND v.confirmed
+UNION ALL
+SELECT 'system_design' AS tier,d.id AS document_id,d.title AS title,d.current_version AS version,
+	CONCAT('|',REGEXP_REPLACE(v.content,'` + core.DecisionCitationTokenClass + `','|','g'),'|') AS tokens
+FROM system_designs d
+JOIN system_design_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
+WHERE d.workspace_id=? AND d.archived_at IS NULL AND v.confirmed`
+
+// decisionCitationMembershipSQL finds a batch's whole token in tokenized
+// content. A token may be bounded by a separator or by a hyphen, so the four
+// prefix/suffix spellings are compared. BINARY makes both operands byte
+// strings, so ASCII case is exact whatever the column's collation.
+const decisionCitationMembershipSQL = `(LOCATE(BINARY(CONCAT('|',k.decision_id,'|')),BINARY(doc.tokens))>0
+	OR LOCATE(BINARY(CONCAT('|',k.decision_id,'-')),BINARY(doc.tokens))>0
+	OR LOCATE(BINARY(CONCAT('-',k.decision_id,'|')),BINARY(doc.tokens))>0
+	OR LOCATE(BINARY(CONCAT('-',k.decision_id,'-')),BINARY(doc.tokens))>0)`
+
+// decisionCitationChunkSQL renders one decision-citation statement for a
+// bounded batch of decision IDs. SingleStore accepts only a literal regular
+// expression, so the batch's IDs are statement literals joined to the
+// tokenized sources. The statement carries the workspace twice, once for
+// each source tier.
+func decisionCitationChunkSQL(batch []string) string {
+	var query strings.Builder
+	query.WriteString(`SELECT k.decision_id,doc.tier,doc.document_id,doc.title,doc.version
+FROM (`)
+	query.WriteString(decisionCitationSourcesSQL)
+	query.WriteString(`
+) doc
+JOIN (`)
+	for i, id := range batch {
+		if i > 0 {
+			query.WriteString(" UNION ALL ")
+		}
+		query.WriteString(`SELECT '` + strings.ReplaceAll(id, "'", "''") + `' AS decision_id`)
+	}
+	query.WriteString(`
+) k ON `)
+	query.WriteString(decisionCitationMembershipSQL)
+	return query.String()
+}
+
+// ListDecisionCitations issues one workspace-scoped statement for the
+// workspace's decision IDs and one statement per bounded batch of them. Each
+// batch selects only the current confirmed version row of each unarchived
+// requirement and System Design document, matches the batch's whole decision
+// tokens inside the database, and returns the citation metadata rather than
+// the document bodies. A decision in any state is citable and a version
+// confirmed before that column had an actor stays confirmed, so no state or
+// confirmer filter is added. Order is core.SortDecisionCitations's
+// (component-document-corpus, Decision citations).
 func (s *Store) ListDecisionCitations(ctx context.Context) ([]core.DecisionCitation, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListDecisionCitations")
 	rows, err := documentRows(ctx, s.db, `SELECT id FROM decisions WHERE workspace_id=?`, documentWorkspace(ctx))
@@ -241,24 +297,29 @@ func (s *Store) ListDecisionCitations(ctx context.Context) ([]core.DecisionCitat
 	if err != nil {
 		return nil, err
 	}
-	rows, err = documentRows(ctx, s.db, `SELECT 'requirement',r.id,r.title,r.current_version,v.content FROM requirements r JOIN requirement_versions v ON v.workspace_id=r.workspace_id AND v.requirement_id=r.id AND v.version=r.current_version WHERE r.workspace_id=? AND r.archived_at IS NULL AND v.confirmed
- UNION ALL SELECT 'system_design',d.id,d.title,d.current_version,v.content FROM system_designs d JOIN system_design_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version WHERE d.workspace_id=? AND d.archived_at IS NULL AND v.confirmed`, documentWorkspace(ctx), documentWorkspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	sources := []core.DecisionCitationSource{}
-	for rows.Next() {
-		var source core.DecisionCitationSource
-		if err = rows.Scan(&source.Tier, &source.DocumentID, &source.Title, &source.Version, &source.Content); err != nil {
+	citations := []core.DecisionCitation{}
+	for start := 0; start < len(decisionIDs); start += core.DecisionCitationChunk {
+		batch := decisionIDs[start:min(start+core.DecisionCitationChunk, len(decisionIDs))]
+		rows, err = documentRows(ctx, s.db, decisionCitationChunkSQL(batch), documentWorkspace(ctx), documentWorkspace(ctx))
+		if err != nil {
 			return nil, err
 		}
-		sources = append(sources, source)
+		for rows.Next() {
+			var citation core.DecisionCitation
+			if err = rows.Scan(&citation.DecisionID, &citation.Tier, &citation.DocumentID, &citation.Title, &citation.Version); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			citations = append(citations, citation)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	return core.DeriveDecisionCitations(decisionIDs, sources), nil
+	core.SortDecisionCitations(citations)
+	return citations, nil
 }
 
 const decisionSupersessionSweepSelect = `SELECT decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at,resolved_by,resolved_at FROM decision_supersession_sweeps`

@@ -350,7 +350,11 @@ func (s *Server) getRequirementInsightDocuments(w http.ResponseWriter, r *http.R
 		writeRequirementInsightReadError(w, "design read", err)
 		return
 	}
-	versions, err := s.Store.ListSystemDesignVersionsByDocument(ctx)
+	designIDs := make([]string, 0, len(designs))
+	for _, design := range designs {
+		designIDs = append(designIDs, design.ID)
+	}
+	versions, err := s.Store.ListSystemDesignVersionSummaries(ctx, designIDs)
 	if err != nil {
 		writeRequirementInsightReadError(w, "design version read", err)
 		return

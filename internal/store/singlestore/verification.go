@@ -630,59 +630,88 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 	return commit()
 }
 
-// ReconcileVerificationDeliveries enqueues each pending or retrying delivery
-// and each failed one whose next_attempt_at passed. A pending or retrying
-// delivery whose job it enqueues is drift and is reported to the context's
-// drift recorder after the commit (component-persistence, Drift repair
-// reports).
+// ReconcileVerificationDeliveries converges due deliveries for each
+// pull-request key. Stale pending and retrying generations supersede; a
+// terminal head mismatch is not retried. A pending or retrying delivery whose
+// job it enqueues is drift and is reported after the commit.
 func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 	ctx = dbmetrics.WithReadLabel(ctx, "ReconcileVerificationDeliveries")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return err
 	}
-	var repaired []string
+	var repaired, discarded []string
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		repaired = repaired[:0]
+		discarded = discarded[:0]
 		if err := lockKey(ctx, tx, "verification:"+ws); err != nil {
 			return err
 		}
-		// Phase one reads the due window without any retained body, so a pass
-		// that can act on nothing decodes nothing (component-persistence,
-		// Database read accounting). The window is ordered by due time, then
-		// pull-request key, and bounded per pass.
-		candidates, err := verificationDeliveryDueTx(ctx, tx, ws, time.Now().UTC())
+		now := time.Now().UTC()
+		candidates, err := verificationDeliveryDueTx(ctx, tx, ws, now)
 		if err != nil {
 			return err
 		}
 		if len(candidates) == 0 {
 			return nil
 		}
-		// Phase two decodes the body of exactly the rows this pass acts on, in
-		// the order phase one selected them.
 		ds, err := verificationDeliveryBodiesTx(ctx, tx, ws, candidates)
 		if err != nil {
 			return err
 		}
+		byKey := make(map[string][]core.VerificationDelivery)
+		var keys []string
 		for _, d := range ds {
-			due := d.State == "failed"
-			if due {
-				next, e := store.AdvanceVerificationDelivery(d, "retry", d, time.Now().UTC())
-				if e != nil {
-					return e
-				}
-				if e = putDelivery(ctx, tx, next); e != nil {
-					return e
-				}
-				d = next
+			key := store.VerificationDeliveryKey(d.Repository, d.PullRequestNumber)
+			if _, ok := byKey[key]; !ok {
+				keys = append(keys, key)
 			}
-			a := store.VerificationDeliveryArgs(d)
-			inserted, err := logqueue.Enqueue(logTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC())
+			byKey[key] = append(byKey[key], d)
+		}
+		for _, key := range keys {
+			if err := lockKey(ctx, tx, "verification-publication:"+ws+":"+key); err != nil {
+				return err
+			}
+			latest, err := verificationDeliveryLatestGenerationTx(ctx, tx, ws, key)
 			if err != nil {
 				return err
 			}
-			if inserted && !due {
-				repaired = append(repaired, d.TaskID)
+			for _, d := range byKey[key] {
+				next, enqueue, err := store.ConvergeVerificationDelivery(d, latest, now)
+				if err != nil {
+					return err
+				}
+				if enqueue {
+					a := store.VerificationDeliveryArgs(next)
+					_, discardedJob, err := logqueue.LoadDiscarded(logTx(ctx, tx), s.log, ws, logqueue.StreamFor(a.Kind(), a.UniqueKey()))
+					if err != nil {
+						return err
+					}
+					if discardedJob {
+						next, err = store.FailDiscardedVerificationDelivery(next, now)
+						if err != nil {
+							return err
+						}
+						enqueue = false
+						discarded = append(discarded, next.TaskID)
+					}
+				}
+				if store.VerificationDeliveryNeedsWrite(d, next) {
+					if err := putDelivery(ctx, tx, next); err != nil {
+						return err
+					}
+				}
+				if !enqueue {
+					continue
+				}
+				a := store.VerificationDeliveryArgs(next)
+				inserted, err := logqueue.Enqueue(logTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, now)
+				if err != nil {
+					return err
+				}
+				if inserted && d.State != "failed" {
+					repaired = append(repaired, next.TaskID)
+				}
 			}
 		}
 		return nil
@@ -693,6 +722,9 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 	for _, taskID := range repaired {
 		store.ReportDriftRepair(ctx, store.DriftVerificationDeliveryWithoutJob.For(taskID))
 	}
+	for _, taskID := range discarded {
+		store.ReportDriftRepair(ctx, store.DriftVerificationDeliveryDiscarded.For(taskID))
+	}
 	return nil
 }
 
@@ -701,27 +733,72 @@ type verificationDeliveryDue struct {
 	Key        string
 	Generation int
 	State      string
+	Due        time.Time
 }
 
-// verificationDeliveryDueTx selects the due deliveries of one pass: pending and
-// retrying rows, and failed rows whose next attempt time has passed. It reads no
-// body, so a pass that finds nothing to do reads no retained payload.
-func verificationDeliveryDueTx(ctx context.Context, tx *sql.Tx, ws string, now time.Time) ([]verificationDeliveryDue, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT pr_key, generation, state FROM verification_publication_deliveries WHERE workspace_id=? AND (state IN ('pending','retrying') OR (state='failed' AND next_attempt_at<=?)) ORDER BY COALESCE(next_attempt_at,'1970-01-01 00:00:00'), pr_key, generation LIMIT ?`, ws, now, store.VerificationDeliveryReconcileWindow)
-	if err != nil {
-		return nil, err
-	}
+func verificationDeliveryLatestGenerationTx(ctx context.Context, tx *sql.Tx, ws, key string) (int, error) {
+	var generation int
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(generation),0) FROM verification_publication_deliveries WHERE workspace_id=? AND pr_key=?`, ws, key).Scan(&generation)
+	return generation, err
+}
+
+func scanVerificationDeliveryDue(rows *sql.Rows) ([]verificationDeliveryDue, error) {
 	defer rows.Close()
 	var out []verificationDeliveryDue
 	for rows.Next() {
 		var d verificationDeliveryDue
-		if err = rows.Scan(&d.Key, &d.Generation, &d.State); err != nil {
+		var due sql.NullTime
+		if err := rows.Scan(&d.Key, &d.Generation, &d.State, &due); err != nil {
 			return nil, err
+		}
+		if due.Valid {
+			d.Due = due.Time
 		}
 		out = append(out, d)
 	}
-	store.NoteVerificationRead(store.VerificationReadDue, ws, "", len(out))
 	return out, rows.Err()
+}
+
+func mergeVerificationDeliveryDue(pending, failed []verificationDeliveryDue, window int) []verificationDeliveryDue {
+	out := append(append([]verificationDeliveryDue{}, pending...), failed...)
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].Due.Equal(out[j].Due) {
+			return out[i].Due.Before(out[j].Due)
+		}
+		if out[i].Key != out[j].Key {
+			return out[i].Key < out[j].Key
+		}
+		return out[i].Generation < out[j].Generation
+	})
+	if len(out) > window {
+		out = out[:window]
+	}
+	return out
+}
+
+// verificationDeliveryDueTx selects pending and retrying rows separately from
+// failed rows whose next attempt time has passed, then merges a bounded window.
+func verificationDeliveryDueTx(ctx context.Context, tx *sql.Tx, ws string, now time.Time) ([]verificationDeliveryDue, error) {
+	window := store.VerificationDeliveryReconcileWindow
+	pendingRows, err := tx.QueryContext(ctx, `SELECT pr_key, generation, state, next_attempt_at FROM verification_publication_deliveries WHERE workspace_id=? AND state IN ('pending','retrying') ORDER BY COALESCE(next_attempt_at,'1970-01-01 00:00:00'), pr_key, generation LIMIT ?`, ws, window)
+	if err != nil {
+		return nil, err
+	}
+	pending, err := scanVerificationDeliveryDue(pendingRows)
+	if err != nil {
+		return nil, err
+	}
+	failedRows, err := tx.QueryContext(ctx, `SELECT pr_key, generation, state, next_attempt_at FROM verification_publication_deliveries WHERE workspace_id=? AND state='failed' AND next_attempt_at<=? ORDER BY next_attempt_at, pr_key, generation LIMIT ?`, ws, now, window)
+	if err != nil {
+		return nil, err
+	}
+	failed, err := scanVerificationDeliveryDue(failedRows)
+	if err != nil {
+		return nil, err
+	}
+	out := mergeVerificationDeliveryDue(pending, failed, window)
+	store.NoteVerificationRead(store.VerificationReadDue, ws, "", len(out))
+	return out, nil
 }
 
 // verificationDeliveryBodiesTx decodes the retained body of exactly the due

@@ -102,7 +102,7 @@ func TestVerificationPublicationWorkerReconciliation(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	for _, scenario := range []string{"success", "lost_response", "already_written", "readback_mismatch", "head_change", "auth_failure", "exhaustion"} {
+	for _, scenario := range []string{"success", "lost_response", "already_written", "readback_mismatch", "head_change", "head_mismatch", "auth_failure", "exhaustion"} {
 		t.Run(scenario, func(t *testing.T) {
 			summary := "### Durable verification\nallowlisted metadata"
 			digest := fmt.Sprintf("%x", sha256.Sum256([]byte(summary)))
@@ -122,7 +122,7 @@ func TestVerificationPublicationWorkerReconciliation(t *testing.T) {
 				reads++
 				pr := github.VerificationPullRequest{Number: 42, Body: body}
 				pr.Head.SHA = strings.Repeat("a", 40)
-				if scenario == "head_change" && reads > 1 {
+				if scenario == "head_mismatch" || (scenario == "head_change" && reads > 1) {
 					pr.Head.SHA = strings.Repeat("b", 40)
 				}
 				return pr, nil
@@ -147,15 +147,15 @@ func TestVerificationPublicationWorkerReconciliation(t *testing.T) {
 			if scenario == "exhaustion" {
 				calls = 5
 			}
-			for i := 0; i < calls; i++ {
+			for i := range calls {
 				job.Attempt = i + 1
 				err = worker.Work(ctx, job)
 			}
 			expected := "published"
 			switch scenario {
-			case "readback_mismatch", "head_change", "auth_failure":
+			case "readback_mismatch", "auth_failure":
 				expected = "retrying"
-			case "exhaustion":
+			case "head_change", "head_mismatch", "exhaustion":
 				expected = "failed"
 			}
 			if b.delivery.State != expected {
@@ -170,6 +170,16 @@ func TestVerificationPublicationWorkerReconciliation(t *testing.T) {
 			if scenario == "lost_response" && (writes != 1 || reads != 2) {
 				t.Fatal("lost response not reconciled")
 			}
+			if scenario == "head_mismatch" {
+				if err != nil || writes != 0 || b.delivery.ErrorClass != "head_mismatch" || b.delivery.NextAttemptAt != nil {
+					t.Fatalf("head mismatch delivery=%+v writes=%d err=%v", b.delivery, writes, err)
+				}
+			}
+			if scenario == "head_change" {
+				if err != nil || writes != 1 || b.delivery.ErrorClass != "head_mismatch" || b.delivery.NextAttemptAt != nil {
+					t.Fatalf("changed head delivery=%+v writes=%d err=%v", b.delivery, writes, err)
+				}
+			}
 			if strings.Contains(b.delivery.ErrorMessage, "private") {
 				t.Fatal("provider error retained")
 			}
@@ -182,6 +192,23 @@ func TestVerificationPublicationWorkerReconciliation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestVerificationPublicationWorkerDiscarded(t *testing.T) {
+	b := &publicationWorkerFixture{delivery: core.VerificationDelivery{WorkspaceID: "demo", Repository: "org/repo", TaskID: "task", ContextID: "context", SourcePublicationID: "source", ID: "delivery", Generation: 1, State: "pending", PullRequestNumber: 42}}
+	worker := &verificationPublicationWorker{dispatcher: &Dispatcher{Store: b}}
+	args := queue.VerificationPublicationArgs{WorkspaceID: "demo", Repository: "org/repo", PullRequestNumber: 42}
+	raw, _ := json.Marshal(args)
+	job := queue.Job{WorkspaceID: "demo", ID: "opaque-stream", Args: raw, Attempt: 5, MaxAttempts: 5}
+	if err := worker.Discarded(t.Context(), job, "exhausted after private credentials"); err != nil {
+		t.Fatal(err)
+	}
+	if b.delivery.State != "failed" || b.delivery.ErrorClass != "forge" || b.delivery.NextAttemptAt != nil {
+		t.Fatalf("delivery=%+v", b.delivery)
+	}
+	if strings.Contains(b.delivery.ErrorMessage, "private") || strings.Contains(b.delivery.ErrorMessage, "exhausted") {
+		t.Fatal("discard reason copied")
 	}
 }
 

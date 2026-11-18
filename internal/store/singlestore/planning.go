@@ -698,9 +698,9 @@ func insertPlanningBundleTask(ctx context.Context, tx *sql.Tx, t core.Task) (sql
 	}})
 }
 
-func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListPendingProposals")
-	rows, err := documentRows(ctx, s.db, `
+// pendingProposalsSelect is the workspace queue's pending-proposal selection.
+// It keeps the queue's deterministic order in the outer query.
+const pendingProposalsSelect = `
 		SELECT proposal_id,title,tier,version,origin_type,origin_id,target_kind,justification,proposed_at
 		FROM (
 			SELECT v.document_id AS proposal_id,d.title,'system_design' AS tier,v.version,
@@ -728,17 +728,68 @@ func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposa
 			FROM task_context_proposals p
 			JOIN tasks t ON t.workspace_id=p.workspace_id AND t.id=p.task_id
 			WHERE p.workspace_id=? AND p.state='proposed' AND t.state NOT IN ('merged','closed')
-		) pending
+		) pending`
+
+func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPendingProposals")
+	rows, err := documentRows(ctx, s.db, pendingProposalsSelect+`
 		ORDER BY proposed_at,tier,proposal_id,version`, documentWorkspace(ctx), documentWorkspace(ctx), documentWorkspace(ctx), documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanPendingProposals(rows)
+}
+
+// ListPendingProposalsForDocuments selects the pending requirement and System
+// Design versions of the named documents from any origin, applying the ID
+// filter inside each tier's own selection so no other document's rows are
+// read. Empty IDs select nothing, never the workspace queue.
+func (s *Store) ListPendingProposalsForDocuments(ctx context.Context, documentIDs []string) ([]core.PendingProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPendingProposalsForDocuments")
+	if len(documentIDs) == 0 {
+		return []core.PendingProposal{}, nil
+	}
+	in := strings.TrimSuffix(strings.Repeat("?,", len(documentIDs)), ",")
+	args := make([]any, 0, 2*(1+len(documentIDs)))
+	for range 2 {
+		args = append(args, documentWorkspace(ctx))
+		for _, id := range documentIDs {
+			args = append(args, id)
+		}
+	}
+	rows, err := documentRows(ctx, s.db, `
+		SELECT proposal_id,title,tier,version,origin_type,origin_id,target_kind,justification,proposed_at
+		FROM (
+			SELECT v.document_id AS proposal_id,d.title,'system_design' AS tier,v.version,
+				CASE WHEN v.origin_task_id IS NOT NULL THEN 'task' WHEN v.origin_session_id IS NOT NULL THEN 'session' ELSE 'operator' END AS origin_type,
+				coalesce(v.origin_task_id,v.origin_session_id,'') AS origin_id,'' AS target_kind,'' AS justification,v.created_at AS proposed_at
+			FROM system_design_versions v
+			JOIN system_designs d ON d.workspace_id=v.workspace_id AND d.id=v.document_id
+			WHERE v.workspace_id=? AND v.document_id IN (`+in+`) AND d.archived_at IS NULL AND NOT v.confirmed AND NOT v.dismissed
+			UNION ALL
+			SELECT v.requirement_id,r.title,'requirement' AS tier,v.version,
+				CASE WHEN v.origin_task_id <> '' THEN 'task' WHEN v.origin_session_id <> '' THEN 'session' WHEN v.origin_drift_id <> '' THEN 'drift' ELSE v.origin END AS origin_type,
+				coalesce(nullif(v.origin_task_id,''),nullif(v.origin_session_id,''),nullif(v.origin_drift_id,''),'') AS origin_id,'' AS target_kind,'' AS justification,v.created_at AS proposed_at
+			FROM requirement_versions v
+			JOIN requirements r ON r.workspace_id=v.workspace_id AND r.id=v.requirement_id
+			WHERE v.workspace_id=? AND v.requirement_id IN (`+in+`) AND r.archived_at IS NULL AND NOT v.confirmed AND NOT v.retired
+			  AND v.version > coalesce(r.current_version,0)
+		) pending
+		ORDER BY proposed_at,tier,proposal_id,version`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPendingProposals(rows)
+}
+
+func scanPendingProposals(rows *documentResultSet) ([]core.PendingProposal, error) {
 	out := make([]core.PendingProposal, 0)
 	for rows.Next() {
 		var item core.PendingProposal
 		var version *int
-		if err = rows.Scan(&item.ID, &item.Title, &item.Tier, &version, &item.OriginType, &item.OriginID, &item.TargetKind, &item.Justification, &item.ProposedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Title, &item.Tier, &version, &item.OriginType, &item.OriginID, &item.TargetKind, &item.Justification, &item.ProposedAt); err != nil {
 			return nil, err
 		}
 		if version != nil {

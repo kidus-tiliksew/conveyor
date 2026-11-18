@@ -157,6 +157,11 @@ func (s *Store) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([
 
 const governanceSnapshotContentSQL = `(SELECT gs.content FROM governance_snapshots gs WHERE gs.workspace_id = work_orders.workspace_id AND gs.digest = work_orders.governance_snapshot_digest)`
 
+// clockWorkOrderColumns is workOrderColumns without the served-requirement
+// and governance snapshot bodies. It keeps governance_snapshot_digest, so a
+// lifecycle read or event carries the pin identity without its body.
+var clockWorkOrderColumns = strings.Replace(workOrderColumns, "served_requirement_snapshot, governance_snapshot_digest, "+governanceSnapshotContentSQL+" AS governance_snapshot", "NULL::jsonb, governance_snapshot_digest, NULL::jsonb", 1)
+
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
@@ -1135,9 +1140,13 @@ func (s *Store) listWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([
 	return orders, rows.Err()
 }
 
+// ListTaskWorkOrders is the projected per-task read of detail and next-action
+// folds. It selects clockWorkOrderColumns, so neither pin body leaves the
+// database; readers that render or recheck a pin use
+// ListTaskWorkOrdersSnapshot (component-work-orders, Snapshot-free fold reads).
 func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrders")
-	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
+	rows, err := s.boundary.Query(ctx, "SELECT "+clockWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -1831,7 +1840,7 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 			count = len(retired)
 			return err
 		}
-		rows, err := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state IN ('queued','claimed','stale') FOR UPDATE", workspace(ctx), taskID)
+		rows, err := tx.Query(ctx, "SELECT "+clockWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state IN ('queued','claimed','stale') FOR UPDATE", workspace(ctx), taskID)
 		if err != nil {
 			return err
 		}
@@ -1946,7 +1955,7 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx pgx.Tx, order cor
 	}
 	attemptID := order.AttemptID
 	taskRunClaim := core.IsTaskRunClaimantID(order.ClaimantID)
-	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',last_attempt_id=$1,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,`+clearExecutionPinsSQL+`,last_attempt_outcome=$2,next_retry_at=NULL,retry_suppressed=$3,updated_at=$4 WHERE workspace_id=$5 AND id=$6 AND state='claimed' RETURNING `+workOrderColumns, attemptID, core.WorkOrderOutcomeExpired, !taskRunClaim, now, workspace(ctx), order.ID))
+	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',last_attempt_id=$1,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,`+clearExecutionPinsSQL+`,last_attempt_outcome=$2,next_retry_at=NULL,retry_suppressed=$3,updated_at=$4 WHERE workspace_id=$5 AND id=$6 AND state='claimed' RETURNING `+clockWorkOrderColumns, attemptID, core.WorkOrderOutcomeExpired, !taskRunClaim, now, workspace(ctx), order.ID))
 	if err != nil {
 		return core.WorkOrder{}, err
 	}

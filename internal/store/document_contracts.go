@@ -175,3 +175,40 @@ func (m *memory) ListRequirementEventsByRequirement(ctx context.Context) (map[st
 	}
 	return out, nil
 }
+
+func (m *memory) ListRequirementEventsForRequirements(ctx context.Context, ids []string) (map[string][]core.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string][]core.Event, len(ids))
+	for _, id := range ids {
+		out[id] = []core.Event{}
+	}
+	if len(out) == 0 {
+		return out, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	for _, event := range m.events[""] {
+		var payload struct {
+			WorkspaceID   string `json:"workspace_id"`
+			RequirementID string `json:"requirement_id"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.WorkspaceID != workspace || payload.RequirementID == "" {
+			continue
+		}
+		if _, ok := out[payload.RequirementID]; ok {
+			out[payload.RequirementID] = append(out[payload.RequirementID], event)
+		}
+	}
+	for id := range out {
+		sort.Slice(out[id], func(i, j int) bool {
+			if out[id][i].At.Equal(out[id][j].At) {
+				return out[id][i].ID < out[id][j].ID
+			}
+			return out[id][i].At.Before(out[id][j].At)
+		})
+	}
+	return out, nil
+}

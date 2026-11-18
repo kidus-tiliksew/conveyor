@@ -224,7 +224,7 @@ func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queue.Registratio
 	issueWorker := &githubIssuePublicationWorker{dispatcher: d}
 	policyWorker := &reviewPolicyStatusWorker{dispatcher: d}
 	return []queue.Registration{
-		{Kind: queue.VerificationPublicationArgs{}.Kind(), Handle: publications.Work},
+		{Kind: queue.VerificationPublicationArgs{}.Kind(), Handle: publications.Work, Discarded: publications.Discarded},
 		{Kind: "verification_publication", Handle: publications.Legacy},
 		{
 			Kind:      queue.DispatchTaskArgs{}.Kind(),

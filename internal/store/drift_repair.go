@@ -81,6 +81,8 @@ var (
 		Mismatch: "started-over task had no pull-request close intent", Repair: "queued the pull-request close"}
 	DriftVerificationDeliveryWithoutJob = DriftRepair{Pass: DriftPassVerificationDeliveries,
 		Mismatch: "pending verification delivery had no active job", Repair: "enqueued the delivery job"}
+	DriftVerificationDeliveryDiscarded = DriftRepair{Pass: DriftPassVerificationDeliveries,
+		Mismatch: "verification delivery job was discarded after its final attempt", Repair: "recorded a terminal publication failure"}
 	DriftReviewPolicyStatusStale = DriftRepair{Pass: DriftPassReviewPolicyStatuses,
 		Mismatch: "enforcing task's policy status was missing, failed, or did not match its head's requirements", Repair: "queued the policy status"}
 )

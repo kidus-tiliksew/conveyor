@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -263,5 +264,88 @@ func TestDeriveDecisionCitations(t *testing.T) {
 	}
 	if empty := DeriveDecisionCitations(nil, sources); empty == nil || len(empty) != 0 {
 		t.Fatalf("no decisions = %#v, want a non-nil empty list", empty)
+	}
+}
+
+// TestDecisionCitationTokenRule pins the database membership rule against
+// DecisionTokens: normalized content separates every character that cannot
+// appear inside a DEC token, and a token is whole only between a separator
+// or a hyphen on each side. The classes and needles the backends embed in
+// their SQL must accept exactly the tokens Go accepts
+// (component-document-corpus, Decision citations; req-document-operating-surfaces
+// AC-8.5).
+func TestDecisionCitationTokenRule(t *testing.T) {
+	normalize := regexp.MustCompile(DecisionCitationTokenClass)
+	member := func(content, id string) bool {
+		padded := "|" + normalize.ReplaceAllString(content, "|") + "|"
+		for _, before := range []string{"|", "-"} {
+			for _, after := range []string{"|", "-"} {
+				if strings.Contains(padded, before+id+after) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	contents := []string{
+		"", "DEC-4", "(DEC-4)", "DEC-4.", "DEC-4,", "-DEC-4-", "--DEC-4--",
+		"DEC-4_", "_DEC-4", "DEC-4_x", "xDEC-4", "DEC-40", "DEC-400x", "xDEC-4x",
+		"DEC-4DEC-4", "DEC-4-DEC-4", "DEC-4-DEC-40", "DEC-40-DEC-4", "DEC 4", "DEC--4",
+		"dec-4", "Dec-4", "DEC-4é", "éDEC-4", "éDEC-4é", "（DEC-4）", "DEC\u20114",
+		"DEC-4\u00a0DEC-4", "DEC-4\nDEC-4", "DEC-4\tDEC-4", "DEC-4/DEC-4",
+		"DEC-4 again; DEC-4 twice", "DEC-9 and DEC-10 and DEC-10", "Cites DEC-7.",
+	}
+	for _, content := range contents {
+		tokens := map[string]bool{}
+		for _, token := range DecisionTokens(content) {
+			tokens[token] = true
+		}
+		for _, id := range []string{"DEC-4", "DEC-7", "DEC-9", "DEC-10", "DEC-40"} {
+			if got, want := member(content, id), tokens[id]; got != want {
+				t.Errorf("membership(%q, %q)=%v, DecisionTokens says %v", content, id, got, want)
+			}
+		}
+	}
+	if DecisionCitationChunk != 100 {
+		t.Fatalf("DecisionCitationChunk=%d, want a bounded 100", DecisionCitationChunk)
+	}
+}
+
+// TestSortDecisionCitations pins the citation order every backend's selected
+// metadata rows use: decision number, requirement before System Design,
+// listed title in byte order, then document ID
+// (component-document-corpus, Decision citations).
+func TestSortDecisionCitations(t *testing.T) {
+	citations := []DecisionCitation{
+		{DecisionID: "DEC-10", Tier: DecisionSweepTierSystemDesign, DocumentID: "design-a", Title: "Gamma", Version: 1},
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierSystemDesign, DocumentID: "design-b", Title: "Gamma", Version: 1},
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierSystemDesign, DocumentID: "alpha", Title: "Zed", Version: 1},
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierSystemDesign, DocumentID: "Zed", Title: "Zed", Version: 1},
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierSystemDesign, DocumentID: "a", Title: "alpha", Version: 1},
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierSystemDesign, DocumentID: "b", Title: "Beta", Version: 1},
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierRequirement, DocumentID: "req", Title: "Zeta", Version: 1},
+	}
+	SortDecisionCitations(citations)
+	want := []DecisionCitation{
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierRequirement, DocumentID: "req", Title: "Zeta", Version: 1},
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierSystemDesign, DocumentID: "b", Title: "Beta", Version: 1},
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierSystemDesign, DocumentID: "design-b", Title: "Gamma", Version: 1},
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierSystemDesign, DocumentID: "Zed", Title: "Zed", Version: 1},
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierSystemDesign, DocumentID: "alpha", Title: "Zed", Version: 1},
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierSystemDesign, DocumentID: "a", Title: "alpha", Version: 1},
+		{DecisionID: "DEC-10", Tier: DecisionSweepTierSystemDesign, DocumentID: "design-a", Title: "Gamma", Version: 1},
+	}
+	if !reflect.DeepEqual(citations, want) {
+		t.Fatalf("SortDecisionCitations=%+v\nwant %+v", citations, want)
+	}
+	sources := []DecisionCitationSource{
+		{Tier: DecisionSweepTierSystemDesign, DocumentID: "design-a", Title: "Gamma", Version: 1, Content: "Cites DEC-10."},
+		{Tier: DecisionSweepTierRequirement, DocumentID: "req", Title: "Zeta", Version: 1, Content: "Cites DEC-9."},
+	}
+	if got := DeriveDecisionCitations([]string{"DEC-10", "DEC-9"}, sources); !reflect.DeepEqual(got, []DecisionCitation{
+		{DecisionID: "DEC-9", Tier: DecisionSweepTierRequirement, DocumentID: "req", Title: "Zeta", Version: 1},
+		{DecisionID: "DEC-10", Tier: DecisionSweepTierSystemDesign, DocumentID: "design-a", Title: "Gamma", Version: 1},
+	}) {
+		t.Fatalf("derivation order=%+v", got)
 	}
 }

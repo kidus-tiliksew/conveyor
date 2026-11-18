@@ -89,6 +89,11 @@ func (c *countingStore) ListPendingProposals(ctx context.Context) ([]core.Pendin
 	return c.Store.ListPendingProposals(ctx)
 }
 
+func (c *countingStore) ListPendingProposalsForDocuments(ctx context.Context, ids []string) ([]core.PendingProposal, error) {
+	c.count("ListPendingProposalsForDocuments", ids)
+	return c.Store.ListPendingProposalsForDocuments(ctx, ids)
+}
+
 func (c *countingStore) ListDependencyBlockers(ctx context.Context, ids []string) (map[string]store.DependencyBlockers, error) {
 	c.count("ListDependencyBlockers", ids)
 	return c.Store.ListDependencyBlockers(ctx, ids)
@@ -367,6 +372,18 @@ func (f *batchFixture) add(t *testing.T, long bool) {
 		order.LastAttemptOutcome = core.WorkOrderOutcomeReleased
 		order.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: "Confirm the cited requirement.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: cited, CitedVersion: 1}, {DocumentID: "design-batch-missing", CitedVersion: 1}}}
 	})
+	// The citation's pending revisions come from an operator and from
+	// another task, never from the checkpoint task itself: the projection
+	// still presents them.
+	for i, version := range []core.RequirementVersion{
+		{Content: "# Cited operator revision", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "The operator revises the cited requirement."}}, Origin: core.RequirementOriginOperator},
+		{Content: "# Cited other-task revision", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Another task revises the cited requirement."}}, Origin: core.RequirementOriginImplementation, OriginTaskID: waiting.ID},
+	} {
+		version.RequirementID = cited
+		if _, err := f.st.ProposeRequirementVersion(f.ctx, version); err != nil {
+			t.Fatalf("cited revision %d: %v", i, err)
+		}
+	}
 	f.kinds[checkpoint.ID] = nextaction.KindAgentQuestion
 
 	disposition := f.task(t, "disposition", core.TaskRunning, "")
@@ -398,11 +415,19 @@ func (f *batchFixture) openTasks(t *testing.T) []core.Task {
 	return open
 }
 
-// oracle projects the batch through the previous full-history fold and the
-// previous whole-workspace open-task dependency read.
+// fullHistory is the oracle's store: the previous full-history fold.
+func (f *batchFixture) fullHistory() store.Store { return fullHistoryStore{f.st} }
+
+// oracle projects the batch through the previous full-history fold, the
+// previous whole-workspace open-task dependency read, and the previous
+// global pending-proposal queue.
 func (f *batchFixture) oracle(t *testing.T) map[string]nextaction.NextAction {
 	t.Helper()
-	want, err := store.ReadNextActions(f.ctx, fullHistoryStore{f.st}, f.requested, store.NextActionOptions{Now: f.now, Capabilities: batchCapabilities, OpenTasksLoaded: true, OpenTasks: f.openTasks(t)})
+	global, err := f.st.ListPendingProposals(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := store.ReadNextActions(f.ctx, f.fullHistory(), f.requested, store.NextActionOptions{Now: f.now, Capabilities: batchCapabilities, OpenTasksLoaded: true, OpenTasks: f.openTasks(t), ProposalsLoaded: true, Proposals: global})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +541,11 @@ func TestCountOperatorAttentionStoreCallsDoNotGrowWithTasks(t *testing.T) {
 		}
 		calls := counter.reset()
 		open := f.openTasks(t)
-		full, err := store.ReadNextActions(f.ctx, fullHistoryStore{f.st}, open, store.NextActionOptions{OpenTasksLoaded: true, OpenTasks: open})
+		global, err := f.st.ListPendingProposals(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		full, err := store.ReadNextActions(f.ctx, fullHistoryStore{f.st}, open, store.NextActionOptions{OpenTasksLoaded: true, OpenTasks: open, ProposalsLoaded: true, Proposals: global})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -794,5 +823,100 @@ func TestReadNextActionForTaskMatchesReadNextAction(t *testing.T) {
 	}
 	if calls := counter.reset(); calls["ListWorkOrdersForTasks"] != 0 || calls["GetTask"] != 0 {
 		t.Fatalf("empty preloaded orders read again: %v", calls)
+	}
+}
+
+// failingProposalStore fails the cited-document proposal read.
+type failingProposalStore struct{ store.Store }
+
+func (failingProposalStore) ListPendingProposalsForDocuments(context.Context, []string) ([]core.PendingProposal, error) {
+	return nil, fmt.Errorf("proposal read failed")
+}
+
+func TestReadNextActionsReadsOnlyCitedProposalsAndMatchesGlobalOracle(t *testing.T) {
+	f := newBatchFixture(t)
+	f.add(t, false)
+	opts := store.NextActionOptions{Now: f.now, Capabilities: batchCapabilities}
+	// The oracle is the previous behavior: the whole workspace queue.
+	global, err := f.st.ListPendingProposals(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oracleOpts := opts
+	oracleOpts.ProposalsLoaded, oracleOpts.Proposals = true, global
+	want, err := store.ReadNextActions(f.ctx, f.fullHistory(), f.requested, oracleOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter := newCountingStore(fullHistoryStore{f.st})
+	got, err := store.ReadNextActions(f.ctx, counter, f.requested, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cited-document proposals changed actions: got %#v, want %#v", got, want)
+	}
+	// The checkpoint task presents the cited requirement's operator and
+	// other-task revisions; unrelated pending proposals stay unread.
+	presented := 0
+	for id, kind := range f.kinds {
+		if kind != nextaction.KindAgentQuestion {
+			continue
+		}
+		details := got[id].Details.PendingProposals
+		if len(details) != 2 || details[0].Tier != "requirement" || details[1].Tier != "requirement" || details[0].ID != details[1].ID {
+			t.Fatalf("task %s pending proposals=%+v, want the cited requirement's two other-origin revisions", id, details)
+		}
+		presented++
+	}
+	if presented != 1 {
+		t.Fatalf("agent questions presented=%d, want 1", presented)
+	}
+	selections := counter.args["ListPendingProposalsForDocuments"]
+	if len(selections) != 1 || len(selections[0]) != 2 || !slices.Contains(selections[0], "design-batch-missing") || !slices.IsSorted(selections[0]) {
+		t.Fatalf("cited proposal selections=%v, want one sorted selection of the two cited documents", selections)
+	}
+	if len(global) <= 2 {
+		t.Fatalf("fixture must hold unrelated pending proposals, global=%d", len(global))
+	}
+	if calls := counter.reset(); calls["ListPendingProposals"] != 0 {
+		t.Fatalf("task-only read selected the global queue: %v", calls)
+	}
+
+	// Loaded proposals, including a loaded empty selection, are never read
+	// again.
+	loaded := opts
+	loaded.ProposalsLoaded, loaded.Proposals = true, global
+	if _, err := store.ReadNextActions(f.ctx, counter, f.requested, loaded); err != nil {
+		t.Fatal(err)
+	}
+	loaded.Proposals = nil
+	if _, err := store.ReadNextActions(f.ctx, counter, f.requested, loaded); err != nil {
+		t.Fatal(err)
+	}
+	if calls := counter.reset(); calls["ListPendingProposals"] != 0 || calls["ListPendingProposalsForDocuments"] != 0 {
+		t.Fatalf("loaded proposals read again: %v", calls)
+	}
+
+	// A batch without a citation, and an empty batch, read nothing.
+	var uncited []core.Task
+	for _, task := range f.requested {
+		if f.kinds[task.ID] != nextaction.KindAgentQuestion {
+			uncited = append(uncited, task)
+		}
+	}
+	if _, err := store.ReadNextActions(f.ctx, counter, uncited, opts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadNextActions(f.ctx, counter, nil, opts); err != nil {
+		t.Fatal(err)
+	}
+	if calls := counter.reset(); calls["ListPendingProposals"] != 0 || calls["ListPendingProposalsForDocuments"] != 0 {
+		t.Fatalf("uncited or empty batch read proposals: %v", calls)
+	}
+
+	// A failed proposal read fails the whole read.
+	if _, err := store.ReadNextActions(f.ctx, failingProposalStore{f.st}, f.requested, opts); err == nil {
+		t.Fatal("failed proposal read returned no error")
 	}
 }

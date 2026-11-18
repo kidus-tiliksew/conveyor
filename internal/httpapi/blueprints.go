@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // blueprintView is the dashboard read model for one blueprint anchor
@@ -105,7 +106,11 @@ func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]bluepri
 	if err != nil {
 		return nil, err
 	}
-	artifacts, err := s.Store.ListArtifacts(r.Context())
+	taskIDs := make([]string, len(anchors))
+	for i, task := range anchors {
+		taskIDs[i] = task.ID
+	}
+	artifacts, err := s.Store.ListArtifactsForOwners(r.Context(), store.ArtifactOwners{TaskIDs: taskIDs})
 	if err != nil {
 		return nil, err
 	}

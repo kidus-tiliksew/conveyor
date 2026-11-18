@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"time"
 
@@ -135,68 +136,100 @@ func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID
 
 func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListArtifacts")
-	rows, err := s.boundary.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 ORDER BY a.created_at,a.id,l.role`, workspace(ctx))
+	ws := workspace(ctx)
+	var snapAt time.Time
+	var snapID string
+	err := s.boundary.QueryRow(ctx, `SELECT created_at,id FROM artifacts WHERE workspace_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1`, ws).Scan(&snapAt, &snapID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
+	store.RunArtifactListPageHook()
+	var result []core.Artifact
+	cursorAt := time.Time{}
+	cursorID := ""
+	for {
+		rows, err := s.boundary.Query(ctx, `SELECT id,workspace_id,name,content_type,size_bytes,created_at FROM artifacts WHERE workspace_id=$1 AND (created_at>$2 OR (created_at=$2 AND id>$3)) AND (created_at<$4 OR (created_at=$4 AND id<=$5)) ORDER BY created_at,id LIMIT $6`, ws, cursorAt, cursorID, snapAt, snapID, store.ArtifactMetadataPageSize)
+		if err != nil {
+			return nil, err
+		}
+		var page []core.Artifact
+		for rows.Next() {
+			var artifact core.Artifact
+			if err := rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			page = append(page, artifact)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		ids := make([]string, len(page))
+		for i, artifact := range page {
+			ids[i] = artifact.ID
+		}
+		store.RunArtifactListPageHook()
+		hydrated, err := s.hydrateArtifactAssociations(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, hydrated...)
+		cursorAt = page[len(page)-1].CreatedAt
+		cursorID = page[len(page)-1].ID
+		if len(page) < store.ArtifactMetadataPageSize {
+			break
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) hydrateArtifactAssociations(ctx context.Context, ids []string) ([]core.Artifact, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=ANY($2::text[]) ORDER BY a.created_at,a.id,l.role`, workspace(ctx), ids)
+	if err != nil {
+		return nil, err
+	}
+	return scanArtifactListRows(rows)
+}
+
+func (s *Store) ListArtifactsForOwners(ctx context.Context, owners store.ArtifactOwners) ([]core.Artifact, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListArtifactsForOwners")
+	tasks := store.ArtifactOwnerIDs(owners.TaskIDs)
+	requirements := store.ArtifactOwnerIDs(owners.RequirementIDs)
+	sessions := store.ArtifactOwnerIDs(owners.SessionIDs)
+	if len(tasks)+len(requirements)+len(sessions) == 0 {
+		return []core.Artifact{}, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifact_links l JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id WHERE l.workspace_id=$1 AND (l.task_id=ANY($2::text[]) OR l.requirement_id=ANY($3::text[]) OR l.planning_session_id=ANY($4::text[])) ORDER BY a.created_at,a.id,l.role`, workspace(ctx), tasks, requirements, sessions)
+	if err != nil {
+		return nil, err
+	}
+	result, err := scanArtifactListRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return []core.Artifact{}, nil
+	}
+	return result, nil
+}
+
+func scanArtifactListRows(rows pgx.Rows) ([]core.Artifact, error) {
 	defer rows.Close()
 	var result []core.Artifact
 	for rows.Next() {
 		var artifact core.Artifact
 		if err := rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.RequirementID, &artifact.PlanningSessionID); err != nil {
-			return nil, err
-		}
-		result = append(result, artifact)
-	}
-	return result, rows.Err()
-}
-
-const listArtifactsForLineageSQL = `WITH wanted(node_type,node_id,ord) AS (
-	SELECT node_type,node_id,ord::int FROM unnest($2::text[],$3::text[]) WITH ORDINALITY AS w(node_type,node_id,ord)
-), matched AS (
-	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
-	FROM wanted w JOIN artifact_links l ON w.node_type='task' AND l.workspace_id=$1 AND l.task_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
-	UNION ALL
-	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
-	FROM wanted w JOIN artifact_links l ON w.node_type='requirement' AND l.workspace_id=$1 AND l.requirement_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
-	UNION ALL
-	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
-	FROM wanted w JOIN artifact_links l ON w.node_type='planning_session' AND l.workspace_id=$1 AND l.planning_session_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
-	UNION ALL
-	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
-	FROM wanted w JOIN artifacts a ON w.node_type='evidence' AND a.workspace_id=$1 AND a.id=w.node_id JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
-		AND l.role='verification_evidence' AND l.task_id IS NOT NULL
-		AND ((a.content_type IN ('image/png','image/jpeg','image/webp') AND a.size_bytes BETWEEN 1 AND 10485760)
-			OR (a.content_type IN ('video/mp4','video/webm') AND a.size_bytes BETWEEN 1 AND 26214400))
-), dedup AS (
-	SELECT id,workspace_id,name,content_type,size_bytes,created_at,role,task_id,requirement_id,planning_session_id,min(ord) AS ord
-	FROM matched GROUP BY id,workspace_id,name,content_type,size_bytes,created_at,role,task_id,requirement_id,planning_session_id
-)
-SELECT id,workspace_id,name,content_type,size_bytes,created_at,role,
-	COALESCE(task_id,''),COALESCE(requirement_id,''),COALESCE(planning_session_id,'')
-FROM dedup ORDER BY ord,created_at,id,role`
-
-func (s *Store) ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListArtifactsForLineage")
-	types, ids := make([]string, 0, len(nodes)), make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		if node.Valid() {
-			types = append(types, string(node.Type))
-			ids = append(ids, node.ID)
-		}
-	}
-	if len(types) == 0 {
-		return []core.Artifact{}, nil
-	}
-	rows, err := s.boundary.Query(ctx, listArtifactsForLineageSQL, workspace(ctx), types, ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []core.Artifact
-	for rows.Next() {
-		var artifact core.Artifact
-		if err = rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.RequirementID, &artifact.PlanningSessionID); err != nil {
 			return nil, err
 		}
 		result = append(result, artifact)
