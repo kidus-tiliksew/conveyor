@@ -273,7 +273,8 @@ changes and ends with reason `reached` when the task's `next_action.actor`
 is `operator`, when the task is merged, closed, or parked (`terminal`), or
 when `next_action.current_order.stage` equals the named work-order stage
 (`spec`, `implement`, `verify`, `review`, or `risk`). Each poll decodes the
-`next_action` embedded in `GET /v1/tasks/{id}`; no extra request is made. A
+`next_action` embedded in `GET /v1/tasks/{id}/observation`; no extra request
+is made. A
 task that turns terminal before another target ends with reason `terminal`.
 Every observed change of actor, kind, or current-order stage prints one line,
 `<observed_at> <label>: actor=<actor> kind=<kind> stage=<stage>` (to stderr
