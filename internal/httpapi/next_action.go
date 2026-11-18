@@ -47,12 +47,17 @@ func (s *Server) taskResponse(w http.ResponseWriter, r *http.Request, task core.
 		writeStoreFailure(w, r, err)
 		return nil, false
 	}
-	return struct {
+	response := struct {
 		core.Task
 		NextAction nextaction.NextAction `json:"next_action"`
 		PlanActs   store.PlanActs        `json:"plan_acts"`
 		Risk       *core.TaskRisk        `json:"risk,omitempty"`
-	}{Task: task, NextAction: action, PlanActs: store.PlanActsFor(task, orders), Risk: risk}, true
+	}{Task: task, NextAction: action, PlanActs: store.PlanActsFor(task, orders), Risk: risk}
+	if err := s.nameTaskCrates(r.Context(), &response); err != nil {
+		writeStoreFailure(w, r, err)
+		return nil, false
+	}
+	return response, true
 }
 
 func planActsPointer(acts store.PlanActs) *store.PlanActs { return &acts }
@@ -121,7 +126,7 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, page store.T
 	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
 	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(limit))
 	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(offset))
-	writeJSON(w, http.StatusOK, rows)
+	s.writeTaskJSON(w, r, http.StatusOK, rows)
 }
 
 func (s *Server) nextActionOptions(r *http.Request) (store.NextActionOptions, error) {

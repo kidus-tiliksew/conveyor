@@ -40,6 +40,10 @@ The routes:
 - The monitor and staleness follow-ups, which file ordinary gated tasks; see
   [Misalignment](misalignment.md).
 
+`POST /v1/tasks` accepts an optional `crate_id` in the JSON body and in the
+`task` field of the multipart form. The task then joins that crate when it is
+created. See [Crates](#crates).
+
 A new task gets an ID like `260822-2bc3b1` (date plus random hex) and a
 branch assignment `conveyor/task-<id>`. The branch is an assignment, not a
 ref; nothing is created in Git until an agent checks out.
@@ -123,6 +127,105 @@ The CLI commands are `conveyor task new` with `--plan-state`, `--plan-file`,
 On the dashboard, the plan section of task detail offers the same two
 operator acts, Change plan state and Attach plan, to members with
 `operate_gates`.
+
+## Crates
+
+A crate groups tasks of one workspace for tracking and reporting. It has a
+name, an optional target date, a list of declared requirements, and a state of
+`open` or `closed`. A crate is not authority. No dispatch, claim, gate, review,
+merge, next action, or lineage reads it, so a crate changes no task's delivery
+(`req-crates` REQ-4; DEC-141; `component-crates`).
+
+A task belongs to one crate or to none. Its membership changes only at
+creation or by a membership act of a person with `create_tasks`:
+
+- **At creation.** `crate_id` on `POST /v1/tasks` names an open crate of the
+  workspace. The server checks it in the transaction that creates the task. A
+  missing crate, or a crate of another workspace, answers 404 `crate_not_found`.
+  A closed crate answers 409 `crate_closed`. Both name the crate and record no
+  task. A crate attaches no requirement by itself: the task gets only the
+  `requirement_ids` that its request names. An idempotent retry, a request
+  that repeats the multipart form's `idempotency_key`, compares `crate_id`
+  with the request that created the task. A different value is a conflict,
+  also after the task moves to another crate.
+- **Join.** `PUT /v1/tasks/{id}/crate` with `crate_id` moves the task into an
+  open crate. The task leaves the crate it was in. A closed crate answers 409
+  `crate_closed`.
+- **Leave.** `DELETE /v1/tasks/{id}/crate` removes the task from its crate. A
+  task can leave a closed crate.
+
+Each membership change records one task event, `task.crate_set` or
+`task.crate_cleared`. The event names the actor, the crate the task joined,
+and the crate it left. Creation records the crate in the `task.created` event.
+
+Every response that holds a task or a task row carries `crate` as
+`{id, name}`, with the crate's current name, when the task is in a crate, and
+no `crate` when it is in none. This covers the task list, task detail, the
+activity, attention, reviews, board, task map, task operations, and inbox
+reads, the task acts such as close, merge, assignee, dependencies, and branch,
+and the MCP tools that return a task. Two places carry no `crate`: the task
+in a work order's context, because a crate reaches an order only through the
+order's own crate context, and a task reference inside another record, such as
+a dependency, a child, a requirement's serving task, or a row on the crate
+page. The `crate` filter on
+`GET /v1/tasks` and `GET /v1/activity` selects the members of one crate by
+its ID, and it works with the other filters before paging and totals.
+
+The crate routes are in the workspace group. A read needs `view_workspace`,
+and a change needs `create_tasks`:
+
+| Route | Request and response |
+| --- | --- |
+| `GET /v1/crates` | `state` is `open` (the default), `closed`, or `all`. A list of crate rows, ordered by target date with the soonest first, then crates with no date, then name, then ID |
+| `POST /v1/crates` | `name`, and optional `target_date` and `requirement_ids`. 201 with the crate row |
+| `GET /v1/crates/{id}` | The crate row with `requirements`, `undeclared_requirements`, and `tasks` |
+| `PATCH /v1/crates/{id}` | Any of `name`, `target_date`, `requirement_ids`, and `state`. A `target_date` of `null` removes the date. The crate row |
+| `GET /v1/crates/{id}/activity` | `limit` (1 to 200, default 50) and `cursor`. `events`, newest first, and `next_cursor` when more remain |
+| `PUT /v1/tasks/{id}/crate` | `crate_id`. The task with its crate |
+| `DELETE /v1/tasks/{id}/crate` | The task with no crate |
+
+A crate row has `id`, `name`, `target_date`, `state`, `shipped`, `created_by`,
+`created_at`, `closed_at`, `open_task_count`, `merged_task_count`, and
+`total_task_count`. The server makes the ID, in the form
+`crate-<yymmdd>-<6 hex>`. The counts follow these rules:
+
+- `total_task_count` counts the member tasks.
+- `merged_task_count` counts the members in state `merged`.
+- `open_task_count` counts the members in neither `merged` nor `closed`.
+- `shipped` is true for an open crate with at least one member and no open
+  member.
+
+On the crate read, `requirements` holds `{id, title, task_count}` for each
+declared requirement. `task_count` counts the members whose active context
+attachments hold the requirement, so a count of 0 marks a declared requirement
+that no member carries. `undeclared_requirements` has the same form for each
+requirement that a member carries and the crate does not declare. Each row of
+`tasks` has `id`, `title`, `state`, `branch`, `pull_request`, and
+`next_action`, and `next_action` is the statement that `GET /v1/tasks` gives.
+The activity read lists these events of the current members: `task.created`,
+`task.crate_set`, `pull_request.opened`, `review.round_completed`,
+`merge.confirmed`, `merge.reconciled`, and `task.cancelled`. Each event names
+its task ID and title. A pull request event carries the pull request link, and
+a review round event carries its verdict.
+
+A name is 1 to 120 characters after the server removes the spaces at each end.
+A target date is a calendar date written `YYYY-MM-DD`, or `null`. Each declared
+requirement must be a confirmed requirement of the workspace that is not
+archived. A change to the declared list replaces the whole list and changes no
+task's context attachments. Closing and reopening a crate change only its
+state, so a reopened crate has the same members. A crate cannot be deleted.
+
+Each crate change records one workspace event, `crate.created`,
+`crate.updated`, `crate.closed`, or `crate.reopened`. The event names the
+actor and the old and new value of each changed field. A refused request
+records nothing. The refusals are:
+
+- 400 `invalid_crate` with the `field` that holds a value the rules refuse.
+- 400 `invalid_context_reference` with the `requirement` that is missing,
+  unconfirmed, archived, or in another workspace.
+- 404 `crate_not_found` with the `crate_id`. A crate of another workspace
+  answers the same.
+- 409 `crate_closed` with the `crate_id`.
 
 ## Ordering, blocking, and eligibility
 

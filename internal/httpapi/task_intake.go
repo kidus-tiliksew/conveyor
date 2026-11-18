@@ -65,6 +65,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	req.Repo = strings.TrimSpace(req.Repo)
 	req.BaseBranch = strings.TrimSpace(req.BaseBranch)
 	req.Source = strings.TrimSpace(req.Source)
+	req.CrateID = strings.TrimSpace(req.CrateID)
 	for index := range req.DependsOn {
 		req.DependsOn[index] = strings.TrimSpace(req.DependsOn[index])
 	}
@@ -225,6 +226,9 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		NextStage:     core.StageTriage,
 		CreatedAt:     time.Now().UTC(),
 	}
+	if req.CrateID != "" {
+		task.Crate = &core.TaskCrate{ID: req.CrateID}
+	}
 	// The create event is immutable retry authority. Keep the intake-time IDs
 	// on its task payload so later context edits do not change the meaning of
 	// an otherwise byte-identical idempotent retry.
@@ -253,6 +257,16 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 				}
 				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
 			}
+		}
+		// A missing, foreign, or closed crate refuses the creation and names
+		// the crate. The store recorded no task (req-crates AC-2.1).
+		var crateMissing *store.CrateNotFoundError
+		if errors.As(err, &crateMissing) {
+			return taskCreateResult{}, &taskCreateError{Status: http.StatusNotFound, Code: "crate_not_found", Message: crateMissing.Error()}
+		}
+		var crateClosed *store.CrateClosedError
+		if errors.As(err, &crateClosed) {
+			return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Code: "crate_closed", Message: crateClosed.Error()}
 		}
 		if code := contextArchiveCode(err); code != "" {
 			return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Code: code, Message: err.Error()}
@@ -327,6 +341,11 @@ func resolvedIntakePolicy(req createTaskReq, plan store.PlanStateRequest, curren
 type taskIntakeRecord struct {
 	PlanState   core.PlanState
 	PlanVersion *core.SpecVersion
+	// CrateID is the crate the creation request named, read from
+	// task.created, never from the task's current membership, so a later
+	// move does not change what a retry compares (component-crates
+	// invariant 7).
+	CrateID string
 }
 
 // sameIntakeRequest decides whether a keyed retry repeats the original
@@ -351,6 +370,9 @@ func sameIntakeRequest(task core.Task, req createTaskReq, intake store.TaskConte
 		return false
 	}
 	if !sameIntakePlan(req, record) {
+		return false
+	}
+	if record.CrateID != req.CrateID {
 		return false
 	}
 	if req.MergeApproval != nil && task.MergeApproval != *req.MergeApproval {
@@ -399,7 +421,7 @@ func (s *Server) taskContextsForRetry(ctx context.Context, taskID string) (core.
 		// An older payload carries no plan state; its spec_approval is the
 		// intake decision the plan state replaces (component-task-lifecycle
 		// invariant 22).
-		record := taskIntakeRecord{PlanState: created.PlanState}
+		record := taskIntakeRecord{PlanState: created.PlanState, CrateID: created.CrateID}
 		if record.PlanState == "" {
 			record.PlanState = store.PlanStateFromSpecApproval(created.SpecApproval)
 		}

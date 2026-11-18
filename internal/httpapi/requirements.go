@@ -253,7 +253,7 @@ func (s *Server) createRequirementStalenessFollowUp(w http.ResponseWriter, r *ht
 	if result.Created {
 		status = http.StatusCreated
 	}
-	writeJSON(w, status, map[string]any{"task": result.Task, "created": result.Created})
+	s.writeTaskJSON(w, r, status, map[string]any{"task": result.Task, "created": result.Created})
 }
 
 func (s *Server) currentRequirementDelivery(r *http.Request, requirementID, signalID string, allowLinked bool) (requirementDelivery, error) {

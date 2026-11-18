@@ -757,10 +757,13 @@ type memory struct {
 	// configuration and membership bindings. A raw memory store has no
 	// membership boundary and leaves them nil, so it trusts no named author,
 	// as EvaluateTaskApprovals does for a store without that boundary.
-	readTrustedAuthors          func(workspace, repo string) ([]string, error)
-	operateGatesLocked          func(workspace, userID string) bool
-	mu                          sync.RWMutex
-	tasks                       map[string]core.Task
+	readTrustedAuthors func(workspace, repo string) ([]string, error)
+	operateGatesLocked func(workspace, userID string) bool
+	mu                 sync.RWMutex
+	tasks              map[string]core.Task
+	// crates holds crate records by workspace and crate ID
+	// (component-crates). Membership lives on each task's Crate.
+	crates                      map[memoryScopedKey]Crate
 	repositories                map[string]map[string]string
 	dependencies                map[string]map[string]struct{}
 	jobs                        map[string][]core.Job

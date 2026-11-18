@@ -88,7 +88,7 @@ func (s *Server) attachTaskPlan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	s.writeTaskJSON(w, r, http.StatusOK, result)
 }
 
 // attachPlan runs the attach under the task side-effect lock and the

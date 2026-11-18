@@ -58,14 +58,15 @@ func taskEvent(ctx context.Context, tx *sql.Tx, e core.Event) error {
 // writer from before migration 0035 that still runs during an overlapping
 // deployment inserts such a row after the fill, and its reads must not fail
 // (component-plan-state invariant 8).
-const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction,COALESCE(gate_kind,''),check_status_deadline,COALESCE(check_status_deadline_head,''),COALESCE(plan_state,'needed')`
+const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction,COALESCE(gate_kind,''),check_status_deadline,COALESCE(check_status_deadline_head,''),COALESCE(plan_state,'needed'),COALESCE(crate_id,'')`
 
 func scanTask(row interface{ Scan(...any) error }) (core.Task, error) {
 	var t core.Task
 	var setup []byte
 	var assignee string
 	var checkStatusDeadline sql.NullTime
-	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection, &t.GateKind, &checkStatusDeadline, &t.CheckStatusDeadlineHead, &t.PlanState)
+	var crateID string
+	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection, &t.GateKind, &checkStatusDeadline, &t.CheckStatusDeadlineHead, &t.PlanState, &crateID)
 	if err != nil {
 		return core.Task{}, err
 	}
@@ -80,6 +81,9 @@ func scanTask(row interface{ Scan(...any) error }) (core.Task, error) {
 	}
 	if assignee != "" {
 		t.Assignee = &core.TaskAssignee{UserID: assignee}
+	}
+	if crateID != "" {
+		t.Crate = &core.TaskCrate{ID: crateID}
 	}
 	return t, nil
 }
@@ -166,6 +170,14 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 	designVersions := versions.Designs
 	if pinned != nil {
 		designVersions = pinned
+	}
+	// The named crate's state is read under its claim row, which closing the
+	// crate also takes, so a closed crate never gains a task
+	// (component-crates invariants 6 and 7; req-crates AC-2.1).
+	if crateID := t.TaskCrateID(); crateID != "" {
+		if err := lockJoinableCrateTx(ctx, tx, ws, crateID); err != nil {
+			return err
+		}
 	}
 	if err = insertTaskRow(ctx, tx, t); err != nil {
 		return err
@@ -294,6 +306,7 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 		"hold":                 false, // a task carries no worker reservation (DEC-125(3))
 		"spec_approval":        t.SpecApproval,
 		"plan_state":           string(t.PlanState),
+		"crate_id":             nullString(t.TaskCrateID()),
 		"merge_approval":       t.MergeApproval,
 		"policy_version":       t.PolicyVersion,
 		"setup_name":           t.SetupName,
@@ -842,6 +855,12 @@ func (s *Store) taskPredicate(ctx context.Context, f store.TaskFilter) (string, 
 		planStates[i] = string(v)
 	}
 	addIn("COALESCE(plan_state,'needed')", planStates)
+	// crate applies before paging and totals like every other member, and no
+	// delivery read sets it (component-crates invariant 1).
+	if f.Crate != "" {
+		q += " AND crate_id=?"
+		args = append(args, f.Crate)
+	}
 	// Open selects the inbox's candidates: no merged or closed task and no
 	// blueprint anchor (component-http-api, Activity and attention reads).
 	if f.Open {

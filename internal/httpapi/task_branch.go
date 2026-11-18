@@ -22,7 +22,7 @@ func (s *Server) attachTaskBranch(w http.ResponseWriter, r *http.Request) {
 		writeTaskBranchAttachError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, task)
+	s.writeTaskJSON(w, r, http.StatusOK, task)
 }
 
 func writeTaskBranchAttachError(w http.ResponseWriter, r *http.Request, err error) {

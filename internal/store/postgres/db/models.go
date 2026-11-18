@@ -296,6 +296,7 @@ type Task struct {
 	CheckStatusDeadline     pgtype.Timestamptz `json:"check_status_deadline"`
 	CheckStatusDeadlineHead pgtype.Text        `json:"check_status_deadline_head"`
 	PlanState               string             `json:"plan_state"`
+	CrateID                 pgtype.Text        `json:"crate_id"`
 }
 
 type TaskDependency struct {

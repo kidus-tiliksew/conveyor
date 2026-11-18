@@ -113,7 +113,7 @@ func (s *Server) listNextActionsUncached(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	page.writeHeaders(w, total)
-	writeJSON(w, http.StatusOK, map[string]any{"items": items[start:end], "acts": acts})
+	s.writeTaskJSON(w, r, http.StatusOK, map[string]any{"items": items[start:end], "acts": acts})
 }
 
 // readInbox builds the operator inbox in server order. GET /v1/next-actions
@@ -124,7 +124,16 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 		opts.Now = time.Now().UTC()
 	}
 	if s.readMemo == nil {
-		return s.readInboxUncached(ctx, opts, band, filter)
+		items, err := s.readInboxUncached(ctx, opts, band, filter)
+		if err != nil {
+			return nil, err
+		}
+		// Each item's task carries its crate's current name, for the inbox
+		// route and for MCP list_operator_inbox (component-crates).
+		if err := s.nameTaskCrates(ctx, &items); err != nil {
+			return nil, err
+		}
+		return items, nil
 	}
 	ctx, admitted, key, err := s.memoReadScope(ctx, "inbox", []any{band, filter})
 	if err != nil {
@@ -143,6 +152,9 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 		opts.Now = now
 		items, err := s.readInboxUncached(ctx, opts, band, filter)
 		if err != nil {
+			return readMemoValue{}, err
+		}
+		if err := s.nameTaskCrates(ctx, &items); err != nil {
 			return readMemoValue{}, err
 		}
 		body, err := json.Marshal(items)

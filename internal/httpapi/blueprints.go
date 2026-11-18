@@ -95,7 +95,7 @@ func (s *Server) listBlueprints(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, views)
+	s.writeTaskJSON(w, r, http.StatusOK, views)
 }
 
 func (s *Server) blueprintViews(r *http.Request, anchors []core.Task) ([]blueprintView, error) {
