@@ -203,27 +203,24 @@ func TestPeerMarksStatementBoundsWitnesses(t *testing.T) {
 	}
 }
 
-// TestTaskEventPruneDeleteShape: the delete always carries the same key
-// slots, whatever the number of selected witnesses, and pads with a
-// selected key.
+// TestTaskEventPruneDeleteShape: the prune is one delete whose text does not
+// depend on the number of witnesses it removes. It selects through the
+// visible-event inner join on the exact key, oldest first, under a bound,
+// and deletes only the selected keys of its workspace.
 func TestTaskEventPruneDeleteShape(t *testing.T) {
-	if got := strings.Count(taskEventPruneDeleteSQL, "(?,?,?)"); got != taskEventPositionPrune {
-		t.Fatalf("delete key slots=%d, want %d", got, taskEventPositionPrune)
+	query := strings.Join(strings.Fields(taskEventPruneSQL), " ")
+	for _, want := range []string{
+		"DELETE w FROM task_event_witnesses w JOIN (SELECT",
+		"JOIN events_columnstore e FORCE INDEX (events_task_event_idx) ON e.event_shard_key=x.event_shard_key AND e.workspace_id=x.workspace_id AND e.id=x.event_id",
+		"WHERE x.workspace_id=? AND x.position<? ORDER BY x.position,x.event_shard_key,x.event_id LIMIT ?) c",
+		"ON w.workspace_id=c.workspace_id AND w.position=c.position AND w.event_shard_key=c.event_shard_key AND w.event_id=c.event_id WHERE w.workspace_id=?",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("prune statement %q lacks %q", query, want)
+		}
 	}
-	for _, n := range []int{1, 2, taskEventPositionPrune} {
-		keys := make([]any, 0, 3*n)
-		for i := 0; i < n; i++ {
-			keys = append(keys, int64(64+i), "shard", int64(1000+i))
-		}
-		args := taskEventPruneDeleteArgs("ws", keys)
-		if len(args) != 1+3*taskEventPositionPrune || args[0] != "ws" {
-			t.Fatalf("%d keys: %d args, want %d", n, len(args), 1+3*taskEventPositionPrune)
-		}
-		for slot := n; slot < taskEventPositionPrune; slot++ {
-			if fmt.Sprint(args[1+3*slot:4+3*slot]) != fmt.Sprint(keys[:3]) {
-				t.Fatalf("%d keys: slot %d pads with %v, want the first key", n, slot, args[1+3*slot:4+3*slot])
-			}
-		}
+	if strings.Count(query, "?") != 4 || strings.Contains(query, " OR ") || strings.Contains(query, " IN (") || strings.Contains(strings.ToUpper(query), "LEFT JOIN") {
+		t.Fatalf("prune statement %q is not one fixed-shape exact-key delete", query)
 	}
 	for _, tc := range []struct {
 		position int64

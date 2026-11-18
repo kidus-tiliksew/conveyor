@@ -756,14 +756,14 @@ func profileCounter(raw any) float64 {
 // never repartitions it (plan version 2 of task 261118-a22ffc). It profiles
 // the statement twice: with the events in the unflushed in-memory segment,
 // whose probe is allowed and logged, and after a flush moves them to on-disk
-// segments. A join on the event ID alone, which repartitions the event
-// table, shows the repartition check finds one.
+// segments. After the flush, a join on the event ID alone shows the checks
+// reject a read that reaches the whole event table. The optimizer either
+// repartitions the event table for that join or gathers the event scan to the
+// aggregator, which it chose in CI for a few estimated rows; either plan
+// scans the flushed on-disk segments, so the control trips a check under
+// every plan the optimizer picks.
 func requireIdlePeerReadProfile(t *testing.T, st *Store, query string, args []any) {
 	t.Helper()
-	control := profilePeerRead(t, st, `SELECT COUNT(*) FROM task_event_witnesses w JOIN events_columnstore e ON e.id = w.event_id`, nil)
-	if len(control.eventOperators) == 0 || len(control.repartitions) == 0 {
-		t.Fatalf("the repartition check found no repartitioned event read in a join on the ID alone: operators %v\n%s", control.eventOperators, control.json)
-	}
 	check := func(stage string) peerReadProfile {
 		t.Helper()
 		p := profilePeerRead(t, st, query, args)
@@ -794,6 +794,11 @@ func requireIdlePeerReadProfile(t *testing.T, st *Store, query string, args []an
 	if segments == 0 {
 		t.Fatal("the flush left no on-disk event segment to prove the idle read skips")
 	}
+	control := profilePeerRead(t, st, `SELECT COUNT(*) FROM task_event_witnesses w JOIN events_columnstore e ON e.id = w.event_id`, nil)
+	if len(control.eventOperators) == 0 || (len(control.repartitions) == 0 && control.eventSegments == 0) {
+		t.Fatalf("the checks reject neither a repartition nor an on-disk segment scan in a join on the ID alone: operators %v\n%s", control.eventOperators, control.json)
+	}
+	t.Logf("a join on the event ID alone: event-table operators %v, repartitioned %v, on-disk segments scanned %v", control.eventOperators, control.repartitions, control.eventSegments)
 	flushed := check("flushed")
 	t.Logf("idle peer read, events flushed to %d on-disk segments: in-memory event rows probed %v, on-disk segments scanned %v, witness rows read %v",
 		segments, flushed.eventRows, flushed.eventSegments, flushed.witnessRows)
