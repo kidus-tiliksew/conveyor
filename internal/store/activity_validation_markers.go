@@ -3,7 +3,6 @@ package store
 import (
 	"encoding/json"
 	"regexp"
-	"slices"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -26,7 +25,9 @@ type MarkerReviewOrder struct {
 // MarkerFoldInput is the page an activity-marker fold read covers.
 type MarkerFoldInput struct {
 	Workspace string
-	// Page lists the read's tasks; nil reads every task of the workspace.
+	// Page lists the read's tasks. On PostgreSQL a nil page reads every task
+	// of the workspace; SingleStore reads in task chunks and refuses a nil
+	// page.
 	Page []string
 	// ReviewTasks have at least one review order; their review lifecycle
 	// kinds feed the review folds.
@@ -37,6 +38,10 @@ type MarkerFoldInput struct {
 	// OpenReviewOrders are the open review orders of LiveReviewTasks.
 	OpenReviewOrders []MarkerReviewOrder
 	Now              time.Time
+	// KeepAllClaims turns the claim reduction off. A backend sets it to read
+	// a page again, in one statement, after MarkerClaimBackfill finds that a
+	// kept claim does not supersede the claims the reduction left out.
+	KeepAllClaims bool
 }
 
 // markerForgeKeys are the keys LatestForgeFailure decodes from a forge
@@ -123,7 +128,7 @@ type MarkerFoldRow struct {
 // request, or give an open review order its lease. The earliest future
 // claim must decode; otherwise a left-out claim's lease can be the review
 // lease horizon. The caller reads such a history back whole
-// (each backend's claim history read).
+// (the backend reads the page again with KeepAllClaims).
 func MarkerClaimBackfill(rows []MarkerFoldRow, openReviewOrders []MarkerReviewOrder) []MarkerClaimPartition {
 	openJobs := map[MarkerClaimPartition]bool{}
 	for _, order := range openReviewOrders {
@@ -160,35 +165,4 @@ func MarkerClaimBackfill(rows []MarkerFoldRow, openReviewOrders []MarkerReviewOr
 		}
 	}
 	return out
-}
-
-// MergeMarkerFoldRows adds the backfilled claims to the fold rows, once each,
-// in the ledger's (at, id) order.
-func MergeMarkerFoldRows(rows, backfill []MarkerFoldRow) []MarkerFoldRow {
-	if len(backfill) == 0 {
-		return rows
-	}
-	seen := make(map[int64]bool, len(rows))
-	for _, row := range rows {
-		seen[row.Event.ID] = true
-	}
-	for _, row := range backfill {
-		if !seen[row.Event.ID] {
-			seen[row.Event.ID] = true
-			rows = append(rows, row)
-		}
-	}
-	slices.SortStableFunc(rows, func(a, b MarkerFoldRow) int {
-		if c := a.Event.At.Compare(b.Event.At); c != 0 {
-			return c
-		}
-		switch {
-		case a.Event.ID < b.Event.ID:
-			return -1
-		case a.Event.ID > b.Event.ID:
-			return 1
-		}
-		return 0
-	})
-	return rows
 }

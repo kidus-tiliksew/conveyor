@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -140,11 +141,15 @@ func (s *Store) markerLatestTuples(ctx context.Context, byTask map[string]*marke
 	return rows.Err()
 }
 
-// markerFoldRows reads the fold inputs for the page's tasks in chunks, and
-// reads back the claim histories whose newest claim does not supersede the
-// claims the reduction left out (store.MarkerClaimBackfill).
+// markerFoldRows reads the fold inputs for the page's tasks in chunks. When a
+// kept claim of a chunk does not supersede the claims the reduction left out
+// (store.MarkerClaimBackfill), it reads that chunk again without claim
+// reduction and uses only that result. The page must list its tasks.
 func (s *Store) markerFoldRows(ctx context.Context, in store.MarkerFoldInput) ([]core.Event, error) {
 	out := []core.Event{}
+	if in.Page == nil {
+		return nil, errors.New("singlestore marker fold read needs an explicit task page")
+	}
 	for _, chunk := range markerTaskBatches(in.Page) {
 		chunkSet := make(map[string]bool, len(chunk))
 		for _, id := range chunk {
@@ -171,12 +176,13 @@ func (s *Store) markerFoldRows(ctx context.Context, in store.MarkerFoldInput) ([
 			return nil, err
 		}
 		if partitions := store.MarkerClaimBackfill(rows, part.OpenReviewOrders); len(partitions) > 0 {
-			query, args = markerClaimHistoryQuery(part, partitions)
-			history, err := s.markerFoldScan(ctx, query, args)
-			if err != nil {
+			// Read the whole chunk again without claim reduction, in one
+			// statement, so every fold input comes from one snapshot.
+			part.KeepAllClaims = true
+			query, args = markerFoldQuery(part)
+			if rows, err = s.markerFoldScan(ctx, query, args); err != nil {
 				return nil, err
 			}
-			rows = store.MergeMarkerFoldRows(rows, history)
 		}
 		for i := range rows {
 			out = append(out, rows[i].Event)
@@ -413,8 +419,8 @@ func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput) string {
 // and dropped_implement, how many of those may name the implement stage; the
 // earliest future claim carries future_dropped, how many claims with a
 // later future lease were left out. The caller decodes those claims and
-// reads the left-out claims back with markerClaimHistoryQuery when they do not
-// supersede them (store.MarkerClaimBackfill).
+// reads the page again with KeepAllClaims when they do not supersede them
+// (store.MarkerClaimBackfill).
 //
 // The result columns are id, task_id, job_id, kind, event_payload, event_at,
 // dropped, dropped_implement, and future_dropped, ordered by event_at and id.
@@ -441,7 +447,7 @@ func markerFoldQuery(in store.MarkerFoldInput) (string, []any) {
 		ranked_claims AS (
 			SELECT ` + carry + `,
 				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY event_at DESC,id DESC) AS claim_rank,
-				CASE WHEN job_id<>'' THEN 1 ELSE 0 END AS reducible,
+				` + markerReducibleOrNone(in, "CASE WHEN job_id<>'' THEN 1 ELSE 0 END") + ` AS reducible,
 				1 AS maybe_implement,0 AS future_lease,0 AS horizon_claim
 			FROM marker_rows WHERE kind='work_order.claimed'
 		),
@@ -499,9 +505,7 @@ func markerFoldQuery(in store.MarkerFoldInput) (string, []any) {
 		),
 		ranked_claims AS (
 			SELECT ` + carry + `,claim_rank,future_lease,
-				CASE WHEN job_id<>'' AND (NOT (` + b.in("task_id", in.LiveReviewTasks) + `) OR (` + markerIdentitySafe(b, in) + ` AND lease_key=1
-					AND (future_lease=0 OR claim_horizon_rank>1)))
-					THEN 1 ELSE 0 END AS reducible,
+				` + markerLiveReducible(b, in) + ` AS reducible,
 				CASE WHEN ` + markerMayEqual("stage", string(core.StageImplement)) + ` THEN 1 ELSE 0 END AS maybe_implement,
 				CASE WHEN claim_horizon_rank=1 AND future_lease=1 AND lease_key=1 THEN 1 ELSE 0 END AS horizon_claim
 			FROM ordered_claims
@@ -521,6 +525,30 @@ func markerFoldQuery(in store.MarkerFoldInput) (string, []any) {
 	query += `		SELECT id,task_id,job_id,kind,` + markerProjectedPayload() + ` AS event_payload,event_at,dropped,dropped_implement,future_dropped
 		FROM kept ORDER BY event_at,id`
 	return b.finish(query)
+}
+
+// markerReducibleOrNone is the claim reduction rule, or no reduction when the
+// read must keep every claim: a read-back after store.MarkerClaimBackfill
+// reruns the whole page in one statement, so every fold input comes from one
+// snapshot.
+func markerReducibleOrNone(in store.MarkerFoldInput, rule string) string {
+	if in.KeepAllClaims {
+		return "0"
+	}
+	return rule
+}
+
+// markerLiveReducible is the claim reduction rule of a page with an open
+// review order: an older claim of a job is left out only when it names no
+// other open review order, its lease key is unambiguous, and it holds no
+// lease after now or is not the job's earliest future claim.
+func markerLiveReducible(b *markerBinder, in store.MarkerFoldInput) string {
+	if in.KeepAllClaims {
+		return "0"
+	}
+	return `CASE WHEN job_id<>'' AND (NOT (` + b.in("task_id", in.LiveReviewTasks) + `) OR (` + markerIdentitySafe(b, in) + ` AND lease_key=1
+					AND (future_lease=0 OR claim_horizon_rank>1)))
+					THEN 1 ELSE 0 END`
 }
 
 // markerIdentitySafe is true for a claim whose payload names no open review
@@ -549,20 +577,4 @@ func markerIdentitySafe(b *markerBinder, in store.MarkerFoldInput) string {
 		safe += " AND NOT (" + b.in("task_id", unsafeTasks) + ")"
 	}
 	return "(" + safe + ")"
-}
-
-// markerClaimHistoryQuery reads every claim of the listed task and job
-// histories with markerFoldQuery's selection and compact payload. The result
-// columns match markerFoldQuery's, with zero counts.
-func markerClaimHistoryQuery(in store.MarkerFoldInput, partitions []store.MarkerClaimPartition) (string, []any) {
-	b := &markerBinder{}
-	rows := markerRowsSQL(b, in)
-	terms := make([]string, len(partitions))
-	for i, partition := range partitions {
-		terms[i] = fmt.Sprintf("(task_id=%s AND job_id=%s)", b.bind(partition.TaskID), b.bind(partition.JobID))
-	}
-	return b.finish(`WITH ` + rows + `
-		SELECT id,task_id,job_id,kind,event_payload,event_at,0 AS dropped,0 AS dropped_implement,0 AS future_dropped FROM marker_rows
-		WHERE kind='work_order.claimed' AND (` + strings.Join(terms, " OR ") + `)
-		ORDER BY event_at,id`)
 }

@@ -36,6 +36,11 @@ func TestMarkerFoldQueryShape(t *testing.T) {
 	plain.LiveReviewTasks, plain.OpenReviewOrders = nil, nil
 	query, args = markerFoldQuery(plain)
 	check("fold", query, args)
-	query, args = markerClaimHistoryQuery(in, []store.MarkerClaimPartition{{TaskID: "task", JobID: "job-1"}})
-	check("claim history", query, args)
+	full := in
+	full.KeepAllClaims = true
+	query, args = markerFoldQuery(full)
+	check("keep-all-claims fold", query, args)
+	if strings.Contains(query, "claim_horizon_rank>1") {
+		t.Fatal("the keep-all-claims statement still reduces claims")
+	}
 }

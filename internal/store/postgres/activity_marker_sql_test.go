@@ -10,8 +10,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// TestMarkerFoldQueryShape pins the PostgreSQL marker statements: every
-// numbered placeholder from $1 to $n meets one argument, no snapshot body
+// TestMarkerFoldQueryShape pins the PostgreSQL marker statements: the
+// placeholders read $1 to $n in text order, one per argument, no snapshot body
 // key is named outside the compact payload, and a task whose open review order ID needs JSON escaping
 // keeps every claim.
 func TestMarkerFoldQueryShape(t *testing.T) {
@@ -20,13 +20,16 @@ func TestMarkerFoldQueryShape(t *testing.T) {
 	placeholder := regexp.MustCompile(`\$([0-9]+)`)
 	check := func(name, query string, args []any) {
 		t.Helper()
-		highest := 0
-		for _, match := range placeholder.FindAllStringSubmatch(query, -1) {
-			n, _ := strconv.Atoi(match[1])
-			highest = max(highest, n)
+		// The binder numbers every occurrence in text order, so the
+		// placeholders must read $1, $2, ... $n with n the argument count.
+		matches := placeholder.FindAllStringSubmatch(query, -1)
+		if len(matches) != len(args) {
+			t.Errorf("%s statement holds %d placeholders for %d arguments", name, len(matches), len(args))
 		}
-		if highest != len(args) {
-			t.Errorf("%s statement uses placeholders up to $%d for %d arguments", name, highest, len(args))
+		for i, match := range matches {
+			if n, _ := strconv.Atoi(match[1]); n != i+1 {
+				t.Fatalf("%s statement's placeholder %d is $%d, want $%d", name, i+1, n, i+1)
+			}
 		}
 		// The compact payload column names the snapshot keys only to delete them.
 		outside := strings.ReplaceAll(query, markerCompact, "")
@@ -43,6 +46,11 @@ func TestMarkerFoldQueryShape(t *testing.T) {
 	plain.LiveReviewTasks, plain.OpenReviewOrders = nil, nil
 	query, args = markerFoldQuery(plain)
 	check("fold", query, args)
-	query, args = markerClaimHistoryQuery(in, []store.MarkerClaimPartition{{TaskID: "task", JobID: "job-1"}})
-	check("claim history", query, args)
+	full := in
+	full.KeepAllClaims = true
+	query, args = markerFoldQuery(full)
+	check("keep-all-claims fold", query, args)
+	if strings.Contains(query, "claim_horizon_rank>1") {
+		t.Fatal("the keep-all-claims statement still reduces claims")
+	}
 }

@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
 	"time"
 
@@ -38,29 +37,16 @@ func TestMarkerClaimBackfill(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := MarkerClaimBackfill([]MarkerFoldRow{c.row}, open)
-			if (len(got) == 1) != c.want {
-				t.Fatalf("backfill = %+v, want backfill %t", got, c.want)
+			want := 0
+			if c.want {
+				want = 1
+			}
+			if len(got) != want {
+				t.Fatalf("backfill = %+v, want %d partitions", got, want)
 			}
 			if c.want && got[0] != (MarkerClaimPartition{TaskID: "task", JobID: c.row.Event.JobID}) {
 				t.Fatalf("backfill partition = %+v", got[0])
 			}
 		})
-	}
-}
-
-// TestMergeMarkerFoldRows pins that backfilled claims join once each, in the
-// ledger's (at, id) order.
-func TestMergeMarkerFoldRows(t *testing.T) {
-	at := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
-	event := func(id int64, second int) MarkerFoldRow {
-		return MarkerFoldRow{Event: core.Event{ID: id, At: at.Add(time.Duration(second) * time.Second)}}
-	}
-	merged := MergeMarkerFoldRows([]MarkerFoldRow{event(3, 2), event(9, 5)}, []MarkerFoldRow{event(1, 1), event(3, 2), event(7, 2), event(4, 2)})
-	var ids []int64
-	for _, row := range merged {
-		ids = append(ids, row.Event.ID)
-	}
-	if want := []int64{1, 3, 4, 7, 9}; !reflect.DeepEqual(ids, want) {
-		t.Fatalf("merged ids = %v, want %v", ids, want)
 	}
 }

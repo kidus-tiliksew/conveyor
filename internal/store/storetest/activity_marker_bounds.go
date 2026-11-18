@@ -255,16 +255,28 @@ func runActivityMarkerPredicates(t *testing.T, x Fixture, ctx context.Context, n
 	nonASCII := seedPredicateLastBounce(t, ctx, st, ws, now, "non-ASCII key", "{\"\u017fource\":\"user-request-changes\"}")
 	duplicateRaised := seedPredicateLastBounce(t, ctx, st, ws, now, "duplicate key raised", `{"source":"operator","source":"user-request-changes"}`)
 	duplicateCleared := seedPredicateLastBounce(t, ctx, st, ws, now, "duplicate key cleared", `{"source":"user-request-changes","source":"operator"}`)
+	caseVariant := seedPredicateLastBounce(t, ctx, st, ws, now, "case-variant key", `{"Source":"user-request-changes"}`)
 	closed := seedMarkerHistory(t, ctx, st, ws, now, "closed", 3)
 	if _, err := For(st).CancelTask(ctx, core.Intervention{TaskID: closed, Action: core.InterventionCancel, ReasonCode: "marker-predicates-closed"}); err != nil {
 		t.Fatalf("cancel the closed marker task: %v", err)
 	}
-	page := []string{plain, excluded, shapes, backfill, shortClaims, longClaims, nonASCII, duplicateRaised, duplicateCleared, closed}
+	page := []string{plain, excluded, shapes, backfill, shortClaims, longClaims, nonASCII, duplicateRaised, duplicateCleared, caseVariant, closed}
 
 	read, err := st.ListActivityMarkersForTasks(ctx, page)
 	requireOK(t, err)
 	if len(read) != len(page) {
 		t.Fatalf("ListActivityMarkersForTasks(page) = %d markers, want %d", len(read), len(page))
+	}
+	// Each requested task must come back exactly once.
+	requested := make(map[string]bool, len(page))
+	for _, taskID := range page {
+		requested[taskID] = true
+	}
+	for _, got := range read {
+		if !requested[got.TaskID] {
+			t.Fatalf("mixed page returned task %s, which was not requested or came back twice", got.TaskID)
+		}
+		delete(requested, got.TaskID)
 	}
 	for _, got := range read {
 		want := markerReference(t, ctx, st, got.TaskID, now)
@@ -288,6 +300,9 @@ func runActivityMarkerPredicates(t *testing.T, x Fixture, ctx context.Context, n
 	}
 	if byTask[backfill].UserChangesRequested {
 		t.Fatal("the implement claim behind an undecodable newest claim did not clear the change request")
+	}
+	if !byTask[caseVariant].UserChangesRequested {
+		t.Fatal("the case-variant Source bounce did not raise the change request")
 	}
 	if !byTask[nonASCII].UserChangesRequested || !byTask[duplicateRaised].UserChangesRequested || byTask[duplicateCleared].UserChangesRequested {
 		t.Fatalf("key-shape markers non-ASCII=%t duplicate raised=%t duplicate cleared=%t, want true, true, false",
@@ -331,11 +346,11 @@ func runActivityMarkerPredicates(t *testing.T, x Fixture, ctx context.Context, n
 	}
 	// Rows no fold can act on, and repeated claims of one implement order,
 	// transfer nothing more than the history without them.
-	if plainRows, excludedRows := rows(plain), rows(excluded); plainRows == 0 || excludedRows > plainRows {
+	if plainRows, excludedRows := rows(plain), rows(excluded); plainRows == 0 || excludedRows == 0 || excludedRows > plainRows {
 		t.Fatalf("marker read rows = %d with %d excluded rows per kind, want at most the %d rows without them", excludedRows, extra, plainRows)
 	}
 	// A review order's older claims with past leases transfer as one claim.
-	if shortRows, longRows := rows(shortClaims), rows(longClaims); shortRows == 0 || longRows > shortRows {
+	if shortRows, longRows := rows(shortClaims), rows(longClaims); shortRows == 0 || longRows == 0 || longRows > shortRows {
 		t.Fatalf("marker read rows = %d for %d review claims, want at most the %d rows of 3 claims", longRows, extra, shortRows)
 	}
 }

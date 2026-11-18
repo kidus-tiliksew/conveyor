@@ -11,9 +11,10 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// markerFoldRows reads the fold inputs of one page and reads back the claim
-// histories whose newest claim does not supersede the claims the reduction
-// left out (store.MarkerClaimBackfill).
+// markerFoldRows reads the fold inputs of one page. When a kept claim does
+// not supersede the claims the reduction left out (store.MarkerClaimBackfill),
+// it reads the whole page again without claim reduction and uses only that
+// result.
 func (s *Store) markerFoldRows(ctx context.Context, in store.MarkerFoldInput) ([]core.Event, error) {
 	query, args := markerFoldQuery(in)
 	rows, err := s.markerFoldScan(ctx, query, args)
@@ -21,12 +22,14 @@ func (s *Store) markerFoldRows(ctx context.Context, in store.MarkerFoldInput) ([
 		return nil, err
 	}
 	if partitions := store.MarkerClaimBackfill(rows, in.OpenReviewOrders); len(partitions) > 0 {
-		query, args = markerClaimHistoryQuery(in, partitions)
-		history, err := s.markerFoldScan(ctx, query, args)
-		if err != nil {
+		// Read the whole page again without claim reduction, in one statement,
+		// so every fold input comes from one snapshot.
+		full := in
+		full.KeepAllClaims = true
+		query, args = markerFoldQuery(full)
+		if rows, err = s.markerFoldScan(ctx, query, args); err != nil {
 			return nil, err
 		}
-		rows = store.MergeMarkerFoldRows(rows, history)
 	}
 	out := make([]core.Event, len(rows))
 	for i := range rows {
@@ -240,8 +243,8 @@ func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput) string {
 // and dropped_implement, how many of those may name the implement stage; the
 // earliest future claim carries future_dropped, how many claims with a
 // later future lease were left out. The caller decodes those claims and
-// reads the left-out claims back with markerClaimHistoryQuery when they do not
-// supersede them (store.MarkerClaimBackfill).
+// reads the page again with KeepAllClaims when they do not supersede them
+// (store.MarkerClaimBackfill).
 //
 // The result columns are id, task_id, job_id, kind, event_payload, event_at,
 // dropped, dropped_implement, and future_dropped, ordered by event_at and id.
@@ -268,7 +271,7 @@ func markerFoldQuery(in store.MarkerFoldInput) (string, []any) {
 		ranked_claims AS (
 			SELECT ` + carry + `,
 				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY event_at DESC,id DESC) AS claim_rank,
-				CASE WHEN job_id<>'' THEN 1 ELSE 0 END AS reducible,
+				` + markerReducibleOrNone(in, "CASE WHEN job_id<>'' THEN 1 ELSE 0 END") + ` AS reducible,
 				1 AS maybe_implement,0 AS future_lease,0 AS horizon_claim
 			FROM marker_rows WHERE kind='work_order.claimed'
 		),
@@ -326,9 +329,7 @@ func markerFoldQuery(in store.MarkerFoldInput) (string, []any) {
 		),
 		ranked_claims AS (
 			SELECT ` + carry + `,claim_rank,future_lease,
-				CASE WHEN job_id<>'' AND (NOT (` + b.in("task_id", in.LiveReviewTasks) + `) OR (` + markerIdentitySafe(b, in) + ` AND lease_key=1
-					AND (future_lease=0 OR claim_horizon_rank>1)))
-					THEN 1 ELSE 0 END AS reducible,
+				` + markerLiveReducible(b, in) + ` AS reducible,
 				CASE WHEN ` + markerMayEqual("stage", string(core.StageImplement)) + ` THEN 1 ELSE 0 END AS maybe_implement,
 				CASE WHEN claim_horizon_rank=1 AND future_lease=1 AND lease_key=1 THEN 1 ELSE 0 END AS horizon_claim
 			FROM ordered_claims
@@ -350,6 +351,30 @@ func markerFoldQuery(in store.MarkerFoldInput) (string, []any) {
 	return b.finish(query)
 }
 
+// markerReducibleOrNone is the claim reduction rule, or no reduction when the
+// read must keep every claim: a read-back after store.MarkerClaimBackfill
+// reruns the whole page in one statement, so every fold input comes from one
+// snapshot.
+func markerReducibleOrNone(in store.MarkerFoldInput, rule string) string {
+	if in.KeepAllClaims {
+		return "0"
+	}
+	return rule
+}
+
+// markerLiveReducible is the claim reduction rule of a page with an open
+// review order: an older claim of a job is left out only when it names no
+// other open review order, its lease key is unambiguous, and it holds no
+// lease after now or is not the job's earliest future claim.
+func markerLiveReducible(b *markerBinder, in store.MarkerFoldInput) string {
+	if in.KeepAllClaims {
+		return "0"
+	}
+	return `CASE WHEN job_id<>'' AND (NOT (` + b.in("task_id", in.LiveReviewTasks) + `) OR (` + markerIdentitySafe(b, in) + ` AND lease_key=1
+					AND (future_lease=0 OR claim_horizon_rank>1)))
+					THEN 1 ELSE 0 END`
+}
+
 // markerIdentitySafe is true for a claim whose payload names no open review
 // order of its task other than the one its job runs: Go matches a lifecycle
 // event to an order by job ID or by a payload id or review_work_order_id
@@ -357,39 +382,24 @@ func markerFoldQuery(in store.MarkerFoldInput) (string, []any) {
 // markerSafeOrderID characters appears in the text as the quoted ID. A task
 // with an order outside that alphabet keeps every claim.
 func markerIdentitySafe(b *markerBinder, in store.MarkerFoldInput) string {
-	var unsafeTasks []string
-	var terms []string
+	var unsafeTasks, tasks, jobs, quotedIDs []string
 	for _, order := range in.OpenReviewOrders {
 		if !store.MarkerSafeOrderID(order.ID) {
 			unsafeTasks = append(unsafeTasks, order.TaskID)
 			continue
 		}
 		quoted, _ := json.Marshal(order.ID)
-		terms = append(terms, fmt.Sprintf("(task_id=%s AND job_id<>%s AND %s)",
-			b.bind(order.TaskID), b.bind(order.JobID), markerContains(markerText("event_payload"), b.bind(string(quoted)))))
+		tasks, jobs, quotedIDs = append(tasks, order.TaskID), append(jobs, order.JobID), append(quotedIDs, string(quoted))
 	}
+	// The orders are three bound arrays, so the statement's parameter count
+	// does not grow with the number of open review orders.
 	safe := "1=1"
-	if len(terms) > 0 {
-		safe = "NOT (" + strings.Join(terms, " OR ") + ")"
+	if len(tasks) > 0 {
+		safe = "NOT EXISTS (SELECT 1 FROM unnest(" + b.bind(tasks) + "::text[]," + b.bind(jobs) + "::text[]," + b.bind(quotedIDs) + "::text[]) AS open_order(order_task,order_job,order_quoted)" +
+			" WHERE open_order.order_task=task_id AND open_order.order_job<>job_id AND " + markerContains(markerText("event_payload"), "open_order.order_quoted") + ")"
 	}
 	if len(unsafeTasks) > 0 {
 		safe += " AND NOT (" + b.in("task_id", unsafeTasks) + ")"
 	}
 	return "(" + safe + ")"
-}
-
-// markerClaimHistoryQuery reads every claim of the listed task and job
-// histories with markerFoldQuery's selection and compact payload. The result
-// columns match markerFoldQuery's, with zero counts.
-func markerClaimHistoryQuery(in store.MarkerFoldInput, partitions []store.MarkerClaimPartition) (string, []any) {
-	b := &markerBinder{}
-	rows := markerRowsSQL(b, in)
-	terms := make([]string, len(partitions))
-	for i, partition := range partitions {
-		terms[i] = fmt.Sprintf("(task_id=%s AND job_id=%s)", b.bind(partition.TaskID), b.bind(partition.JobID))
-	}
-	return b.finish(`WITH ` + rows + `
-		SELECT id,task_id,job_id,kind,event_payload,event_at,0 AS dropped,0 AS dropped_implement,0 AS future_dropped FROM marker_rows
-		WHERE kind='work_order.claimed' AND (` + strings.Join(terms, " OR ") + `)
-		ORDER BY event_at,id`)
 }
