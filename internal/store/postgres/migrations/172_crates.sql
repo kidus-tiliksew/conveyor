@@ -31,7 +31,8 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS crate_id text NULL;
 
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tasks_crate_fk') THEN
+    -- pg_constraint spans every schema, so the check names this schema's tasks.
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tasks_crate_fk' AND conrelid = 'tasks'::regclass) THEN
         ALTER TABLE tasks ADD CONSTRAINT tasks_crate_fk
             FOREIGN KEY (workspace_id, crate_id) REFERENCES crates(workspace_id, id);
     END IF;
