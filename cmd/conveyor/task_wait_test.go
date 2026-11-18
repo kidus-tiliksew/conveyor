@@ -257,24 +257,20 @@ func taskWaitTestGateTag(step taskWaitStep) []byte {
 	return []byte(fmt.Sprintf("%d/%d/%v", step.gate.SpecVersion, step.gate.PlanVersion, step.gate.MergeReadiness))
 }
 
-// taskWaitTestClaimableOrders projects a step's orders onto the observation's
-// claimable list. The decoys prove the list holds this task's queued, claimable
-// orders alone (component-cli-onboarding invariant 22).
+// taskWaitTestClaimableOrders serves a step's orders as the observation's
+// claimable list, in the order the step gives. The server filters and ranks
+// that list, so each step states the wire order directly and no test ranker
+// can hide a server or client regression (component-cli-onboarding invariant
+// 22).
 func taskWaitTestClaimableOrders(step taskWaitStep) []taskWaitOrder {
-	orders := []core.WorkOrder{
-		{ID: "other-task-implement-1", TaskID: "other-task", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true},
-		{ID: taskWaitTestTaskID + "-claimed", TaskID: taskWaitTestTaskID, Stage: core.StageSpec, State: core.WorkOrderClaimed},
-	}
+	claimable := []taskWaitOrder{}
 	if step.order.ID != "" {
-		order := step.order
-		order.TaskID, order.State, order.Claimable = taskWaitTestTaskID, core.WorkOrderQueued, true
-		orders = append(orders, order)
+		claimable = append(claimable, taskWaitOrder{ID: step.order.ID, Stage: step.order.Stage})
 	}
 	for _, order := range step.orders {
-		order.TaskID = taskWaitTestTaskID
-		orders = append(orders, order)
+		claimable = append(claimable, taskWaitOrder{ID: order.ID, Stage: order.Stage})
 	}
-	return taskWaitClaimableOrders(orders, taskWaitTestTaskID)
+	return claimable
 }
 
 func taskWaitTestOptions(timeout time.Duration) taskWaitOptions {
@@ -1164,15 +1160,6 @@ func TestTaskWaitReportsPlanRevisionGateAndNextOrderPrecedence(t *testing.T) {
 	if result.PendingGate == nil || *result.PendingGate != (taskWaitGate{Kind: "plan_revision", PlanVersion: 4}) {
 		t.Fatalf("result = %+v", result)
 	}
-	orders := []core.WorkOrder{
-		{ID: "b-review", TaskID: "t", Stage: core.StageReview, State: core.WorkOrderQueued, Claimable: true},
-		{ID: "c-implement", TaskID: "t", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: taskWaitTestTime.Add(time.Minute)},
-		{ID: "a-implement", TaskID: "t", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: taskWaitTestTime},
-		{ID: "z-spec", TaskID: "t", Stage: core.StageSpec, State: core.WorkOrderQueued, Claimable: false},
-	}
-	if got := taskWaitNextOrder(orders, "t"); got == nil || got.ID != "a-implement" {
-		t.Fatalf("next order = %+v, want a-implement", got)
-	}
 }
 
 // A wait stops at a check hold, whether the hold was there at the start or
@@ -1263,43 +1250,6 @@ func TestTaskWaitReturnsWhenRiskOrderBecomesClaimable(t *testing.T) {
 	var timedOut *taskWaitTimeoutError
 	if !errors.As(err, &timedOut) || result.NextOrder == nil || result.NextOrder.ID != risk.ID || result.NextOrder.Stage != core.StageRisk {
 		t.Fatalf("a repeated risk order ended the wait: err=%v result=%+v", err, result)
-	}
-}
-
-// taskWaitNextOrder ranks risk after every existing stage, keeps the existing
-// stages in their order, and reports a lone claimable risk order.
-func TestTaskWaitNextOrderRanksRiskLast(t *testing.T) {
-	at := func(minutes int) time.Time { return taskWaitTestTime.Add(time.Duration(minutes) * time.Minute) }
-	order := func(id string, stage core.Stage, entered time.Time) core.WorkOrder {
-		return core.WorkOrder{ID: id, TaskID: taskWaitTestTaskID, Stage: stage, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: entered}
-	}
-	for _, tc := range []struct {
-		name   string
-		orders []core.WorkOrder
-		want   string
-	}{
-		{"lone risk", []core.WorkOrder{order("risk", core.StageRisk, at(0))}, "risk"},
-		{"older risk beside implementation", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("implement", core.StageImplement, at(5))}, "implement"},
-		{"older risk beside review", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("review", core.StageReview, at(5))}, "review"},
-		{"older risk beside verification", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("verify", core.StageVerify, at(5))}, "verify"},
-		{"older risk beside plan", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("spec", core.StageSpec, at(5))}, "spec"},
-		{"two risk orders take the oldest", []core.WorkOrder{order("risk-2", core.StageRisk, at(5)), order("risk-1", core.StageRisk, at(0))}, "risk-1"},
-		{"existing order unchanged", []core.WorkOrder{order("review", core.StageReview, at(0)), order("verify", core.StageVerify, at(1)), order("implement", core.StageImplement, at(2)), order("spec", core.StageSpec, at(3))}, "spec"},
-		{"claimed risk is not next", []core.WorkOrder{{ID: "risk", TaskID: taskWaitTestTaskID, Stage: core.StageRisk, State: core.WorkOrderClaimed}}, ""},
-		{"another task's risk order", []core.WorkOrder{{ID: "risk", TaskID: "other-task", Stage: core.StageRisk, State: core.WorkOrderQueued, Claimable: true}}, ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := taskWaitNextOrder(tc.orders, taskWaitTestTaskID)
-			switch {
-			case tc.want == "" && got != nil:
-				t.Fatalf("next order = %+v, want none", got)
-			case tc.want != "" && (got == nil || got.ID != tc.want):
-				t.Fatalf("next order = %+v, want %s", got, tc.want)
-			}
-		})
-	}
-	if rank, ok := taskWaitStageOrder[core.StageRisk]; !ok || rank <= taskWaitStageOrder[core.StageReview] {
-		t.Fatalf("risk rank = %d (declared %t), want an explicit rank after review", rank, ok)
 	}
 }
 
@@ -1397,7 +1347,7 @@ func TestTaskWaitReportsClaimableOrders(t *testing.T) {
 		},
 		{
 			name:     "verification beside risk",
-			changed:  taskWaitStep{state: core.TaskRunning, orders: []core.WorkOrder{risk, verify}},
+			changed:  taskWaitStep{state: core.TaskRunning, orders: []core.WorkOrder{verify, risk}},
 			wantList: `[{"id":"261004-abc123-verify-1","stage":"verify"},{"id":"261004-abc123-risk-1","stage":"risk"}]`,
 			wantNext: `{"id":"261004-abc123-verify-1","stage":"verify"}`,
 			wantLines: []string{
@@ -1426,50 +1376,35 @@ func TestTaskWaitReportsClaimableOrders(t *testing.T) {
 	}
 }
 
-// claimable_orders ranks spec, implement, verify, review, then risk, breaks a
-// stage tie by queue entry and then by ID, and leaves out another task's
-// orders, an unknown stage, and orders that are not queued or not claimable
-// (component-cli-onboarding invariant 22).
-func TestTaskWaitClaimableOrdersRankAndExclusions(t *testing.T) {
-	at := func(minutes int) time.Time { return taskWaitTestTime.Add(time.Duration(minutes) * time.Minute) }
-	claimed := claimableTestOrder("261004-abc123-verify-claimed", core.StageVerify, at(0))
-	claimed.State, claimed.Claimable = core.WorkOrderClaimed, false
-	completed := claimableTestOrder("261004-abc123-review-done", core.StageReview, at(0))
-	completed.State = core.WorkOrderCompleted
-	unclaimable := claimableTestOrder("261004-abc123-spec-held", core.StageSpec, at(0))
-	unclaimable.Claimable = false
-	step := taskWaitStep{state: core.TaskRunning, orders: []core.WorkOrder{
-		claimableTestOrder("261004-abc123-risk-1", core.StageRisk, at(0)),
-		claimableTestOrder("261004-abc123-review-new", core.StageReview, at(4)),
-		claimableTestOrder("261004-abc123-review-old", core.StageReview, at(1)),
-		claimableTestOrder("261004-abc123-implement-b", core.StageImplement, at(2)),
-		claimableTestOrder("261004-abc123-implement-a", core.StageImplement, at(2)),
-		claimableTestOrder("261004-abc123-verify-1", core.StageVerify, at(3)),
-		claimableTestOrder("261004-abc123-spec-1", core.StageSpec, at(9)),
-		claimableTestOrder("261004-abc123-deploy-1", core.Stage("deploy"), at(0)),
-		claimed, completed, unclaimable,
-	}}
-	// The fixture also serves another task's claimable order and a claimed
-	// plan order of this task.
-	raw, text := runTaskWaitBoth(t, 20*time.Millisecond, step)
-	want := `[{"id":"261004-abc123-spec-1","stage":"spec"},` +
-		`{"id":"261004-abc123-implement-a","stage":"implement"},` +
-		`{"id":"261004-abc123-implement-b","stage":"implement"},` +
-		`{"id":"261004-abc123-verify-1","stage":"verify"},` +
-		`{"id":"261004-abc123-review-old","stage":"review"},` +
-		`{"id":"261004-abc123-review-new","stage":"review"},` +
-		`{"id":"261004-abc123-risk-1","stage":"risk"}]`
+// The wait reports the observation's claimable_orders in the server's order
+// and takes the first entry as next_order. The served plan order entered the
+// queue after the implementation order, so a client that ranked by queue
+// entry, or took any entry but the first, would report the implementation
+// order (component-cli-onboarding invariant 22; req-agent-skills AC-4.1).
+func TestTaskWaitReportsTheServerRankedOrderAsNextOrder(t *testing.T) {
+	implement := claimableTestOrder("261004-abc123-implement-1", core.StageImplement, taskWaitTestTime)
+	spec := claimableTestOrder("261004-abc123-spec-2", core.StageSpec, taskWaitTestTime.Add(5*time.Minute))
+	raw, text := runTaskWaitBoth(t, 5*time.Second,
+		taskWaitStep{state: core.TaskRunning},
+		taskWaitStep{state: core.TaskRunning, orders: []core.WorkOrder{spec, implement}},
+	)
+	if got := string(raw["reason"]); got != `"changed"` {
+		t.Fatalf("reason = %s", got)
+	}
+	want := `[{"id":"261004-abc123-spec-2","stage":"spec"},{"id":"261004-abc123-implement-1","stage":"implement"}]`
 	if got := string(raw["claimable_orders"]); got != want {
 		t.Fatalf("claimable_orders = %s\nwant %s", got, want)
 	}
-	if got := string(raw["next_order"]); got != `{"id":"261004-abc123-spec-1","stage":"spec"}` {
+	if got := string(raw["next_order"]); got != `{"id":"261004-abc123-spec-2","stage":"spec"}` {
 		t.Fatalf("next_order = %s", got)
 	}
-	wantLine := "claimable orders:  261004-abc123-spec-1 (spec), 261004-abc123-implement-a (implement), " +
-		"261004-abc123-implement-b (implement), 261004-abc123-verify-1 (verify), 261004-abc123-review-old (review), " +
-		"261004-abc123-review-new (review), 261004-abc123-risk-1 (risk)\n"
-	if !strings.Contains(text, wantLine) {
-		t.Fatalf("text output lacks %q:\n%s", wantLine, text)
+	for _, line := range []string{
+		"next order:        261004-abc123-spec-2 (spec)\n",
+		"claimable orders:  261004-abc123-spec-2 (spec), 261004-abc123-implement-1 (implement)\n",
+	} {
+		if !strings.Contains(text, line) {
+			t.Fatalf("text output lacks %q:\n%s", line, text)
+		}
 	}
 }
 
@@ -1484,7 +1419,7 @@ func TestTaskWaitClaimableOrdersChangeAloneDoesNotEndWait(t *testing.T) {
 	verify := claimableTestOrder("261004-abc123-verify-1", core.StageVerify, taskWaitTestTime)
 	steps := []taskWaitStep{
 		{state: core.TaskRunning, orders: []core.WorkOrder{implement, risk}},
-		{state: core.TaskRunning, orders: []core.WorkOrder{implement, risk, review}},
+		{state: core.TaskRunning, orders: []core.WorkOrder{implement, review, risk}},
 		{state: core.TaskRunning, orders: []core.WorkOrder{implement, review}},
 		{state: core.TaskRunning, orders: []core.WorkOrder{implement, verify}},
 	}

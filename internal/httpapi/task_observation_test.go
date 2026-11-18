@@ -1,12 +1,18 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
 	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // attentionPollComposition names the reads a poll composes its body from. A
@@ -128,4 +134,138 @@ func TestNextActionPollAnswersUnchangedWith304(t *testing.T) {
 	if changed.Header().Get("ETag") == etag {
 		t.Fatal("the changed next action kept the old tag")
 	}
+}
+
+// ListLiveWorkOrders counts the workspace live-order listing, so a test can
+// prove the observation never reads it.
+func (s *activityConditionalStore) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	s.count("ListLiveWorkOrders")
+	return s.Store.ListLiveWorkOrders(ctx)
+}
+
+// taskObservationClaimableOrders ranks spec, implement, verify, review, then
+// risk, breaks a stage tie by queue entry and then by ID, and leaves out an
+// unknown stage and orders that are not queued or not claimable. A risk order
+// ranks last beside ordinary work and is reported when it stands alone. The
+// list is empty, never null, when nothing is claimable
+// (component-cli-onboarding invariant 22).
+func TestTaskObservationClaimableOrdersRankAndExclusions(t *testing.T) {
+	base := time.Date(2026, 10, 4, 8, 0, 0, 0, time.UTC)
+	at := func(minutes int) time.Time { return base.Add(time.Duration(minutes) * time.Minute) }
+	order := func(id string, stage core.Stage, entered time.Time) core.WorkOrder {
+		return core.WorkOrder{ID: id, Stage: stage, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: entered}
+	}
+	claimed := order("verify-claimed", core.StageVerify, at(0))
+	claimed.State, claimed.Claimable = core.WorkOrderClaimed, false
+	completed := order("review-done", core.StageReview, at(0))
+	completed.State = core.WorkOrderCompleted
+	unclaimable := order("spec-held", core.StageSpec, at(0))
+	unclaimable.Claimable = false
+	for _, tc := range []struct {
+		name   string
+		orders []core.WorkOrder
+		want   []string
+	}{
+		{"empty", nil, []string{}},
+		{"lone risk", []core.WorkOrder{order("risk", core.StageRisk, at(0))}, []string{"risk"}},
+		{"older risk beside implementation", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("implement", core.StageImplement, at(5))}, []string{"implement", "risk"}},
+		{"older risk beside review", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("review", core.StageReview, at(5))}, []string{"review", "risk"}},
+		{"older risk beside verification", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("verify", core.StageVerify, at(5))}, []string{"verify", "risk"}},
+		{"older risk beside plan", []core.WorkOrder{order("risk", core.StageRisk, at(0)), order("spec", core.StageSpec, at(5))}, []string{"spec", "risk"}},
+		{"two risk orders take the oldest", []core.WorkOrder{order("risk-2", core.StageRisk, at(5)), order("risk-1", core.StageRisk, at(0))}, []string{"risk-1", "risk-2"}},
+		{"stage precedence over queue entry", []core.WorkOrder{order("review", core.StageReview, at(0)), order("verify", core.StageVerify, at(1)), order("implement", core.StageImplement, at(2)), order("spec", core.StageSpec, at(3))}, []string{"spec", "implement", "verify", "review"}},
+		{"queue entry then ID", []core.WorkOrder{order("c-implement", core.StageImplement, at(1)), order("b-implement", core.StageImplement, at(0)), order("a-implement", core.StageImplement, at(1))}, []string{"b-implement", "a-implement", "c-implement"}},
+		{"exclusions", []core.WorkOrder{claimed, completed, unclaimable, order("deploy", core.Stage("deploy"), at(0))}, []string{}},
+		{"full rank", []core.WorkOrder{
+			order("risk-1", core.StageRisk, at(0)),
+			order("review-new", core.StageReview, at(4)),
+			order("review-old", core.StageReview, at(1)),
+			order("implement-b", core.StageImplement, at(2)),
+			order("implement-a", core.StageImplement, at(2)),
+			order("verify-1", core.StageVerify, at(3)),
+			order("spec-1", core.StageSpec, at(9)),
+			order("deploy-1", core.Stage("deploy"), at(0)),
+			claimed, completed, unclaimable,
+		}, []string{"spec-1", "implement-a", "implement-b", "verify-1", "review-old", "review-new", "risk-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := taskObservationClaimableOrders(tc.orders)
+			if got == nil {
+				t.Fatal("claimable orders = nil, want a list")
+			}
+			ids := make([]string, 0, len(got))
+			for _, entry := range got {
+				ids = append(ids, entry.ID)
+			}
+			if !slices.Equal(ids, tc.want) {
+				t.Fatalf("claimable orders = %v, want %v", ids, tc.want)
+			}
+		})
+	}
+}
+
+// TestTaskObservationAppliesWorkOrderProjectionsWithoutWorkspaceListing
+// serves the observation through a configured work-order service. A recovery
+// refused order and a dependency blocked order drop out, the claimable orders
+// come in server rank, and no poll reads a workspace order listing
+// (component-next-action invariant 57; req-agent-skills AC-4.3).
+func TestTaskObservationAppliesWorkOrderProjectionsWithoutWorkspaceListing(t *testing.T) {
+	f := newActivityConditionalFixture(t)
+	f.server.WorkOrders = &workorder.Service{Store: f.counted}
+	created := f.now.Add(-30 * time.Minute)
+	f.task("task-ranked", core.TaskRunning)
+	// The review order is created first, so creation order is the reverse of
+	// rank order.
+	f.order(core.WorkOrder{ID: "task-ranked-review-1", TaskID: "task-ranked", JobID: "job-ranked-review", Stage: core.StageReview, CreatedAt: created, QueueEnteredAt: created, QueueDeadline: created.Add(time.Hour)})
+	f.order(core.WorkOrder{ID: "task-ranked-implement-2", TaskID: "task-ranked", JobID: "job-ranked-implement-2", Stage: core.StageImplement, CreatedAt: created.Add(2 * time.Second), QueueEnteredAt: created.Add(2 * time.Second), QueueDeadline: created.Add(time.Hour)})
+	// An older implementation order created after its successor is refused
+	// by recovery while its stored row stays claimable.
+	f.order(core.WorkOrder{ID: "task-ranked-implement-1", TaskID: "task-ranked", JobID: "job-ranked-implement-1", Stage: core.StageImplement, CreatedAt: created.Add(time.Second), QueueEnteredAt: created.Add(time.Second), QueueDeadline: created.Add(time.Hour)})
+
+	f.counted.reset()
+	response := f.read("/v1/tasks/task-ranked/observation?workspace_id=demo", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("observation status=%d body=%s", response.Code, response.Body.String())
+	}
+	var observation taskObservation
+	if err := json.Unmarshal(response.Body.Bytes(), &observation); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, order := range observation.ClaimableOrders {
+		ids = append(ids, order.ID)
+	}
+	if want := []string{"task-ranked-implement-2", "task-ranked-review-1"}; !slices.Equal(ids, want) {
+		t.Fatalf("claimable orders = %v, want %v", ids, want)
+	}
+	for _, listing := range []string{"ListWorkOrders", "ListLiveWorkOrders", "ListWorkOrdersForTasks"} {
+		if f.counted.calls[listing] != 0 {
+			t.Fatalf("the observation read the workspace order listing %s: %v", listing, f.counted.calls)
+		}
+	}
+}
+
+// TestTaskObservationFailsWhenAProjectionReadFails proves a projection
+// failure fails the observation instead of reporting the stored
+// claimability (component-next-action invariant 57; DEC-105(1)).
+func TestTaskObservationFailsWhenAProjectionReadFails(t *testing.T) {
+	f := newActivityConditionalFixture(t)
+	failing := &failingBlockerStore{activityConditionalStore: f.counted}
+	f.server.WorkOrders = &workorder.Service{Store: failing}
+	f.task("task-failing", core.TaskRunning)
+	f.order(core.WorkOrder{ID: "task-failing-implement-1", TaskID: "task-failing", JobID: "job-failing", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true})
+	response := f.read("/v1/tasks/task-failing/observation?workspace_id=demo", "")
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "task-failing-implement-1") {
+		t.Fatalf("observation status=%d body=%s, want 500 without the order", response.Code, response.Body.String())
+	}
+}
+
+// failingBlockerStore fails the dependency blocker read that the work-order
+// projection makes for a queued implementation order.
+type failingBlockerStore struct {
+	*activityConditionalStore
+}
+
+func (s *failingBlockerStore) ListDependencyBlockers(context.Context, []string) (map[string]store.DependencyBlockers, error) {
+	return nil, store.ErrBackendOperation
 }
