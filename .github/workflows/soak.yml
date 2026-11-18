@@ -56,8 +56,10 @@ jobs:
           CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS: "500"
           CONVEYOR_FIXTURE_STATE: ${{ runner.temp }}/soak-stress-fixture
       # conformance-2 runs one package, so its -run can be replaced by the
-      # peer-check tests alone; its -skip names only conformance suites.
+      # peer-check tests alone; its -skip names only conformance suites. It
+      # runs even when the stress step fails, so one night reports both.
       - name: Peer-check tests on the real interval
+        if: ${{ !cancelled() }}
         run: make test-integration-singlestore-ci SINGLESTORE_INTEGRATION_SHARD=conformance-2 GO_INTEGRATION_FLAGS=-run=^TestSingleStorePeerCheck
         env:
           CONVEYOR_PEER_CHECK_REAL_TIME: "1"

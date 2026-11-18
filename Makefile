@@ -350,6 +350,9 @@ SINGLESTORE_INTEGRATION_TIMEOUT_commands = 10m
 # The three packages the gate runs whole; the commands shard adds its cases
 # from the command packages.
 SINGLESTORE_INTEGRATION_WHOLE_PACKAGES = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore
+# The command cases the gate requires, as package:test; the union check fails
+# unless exactly one shard runs each.
+SINGLESTORE_INTEGRATION_REQUIRED_CASES = ./cmd/conveyor:TestSingleStoreInitAndUserIntegration ./cmd/conveyord:TestConveyordDurableStartupIntegration ./cmd/conveyord:TestConveyordIdleRuntimeIntegration
 singlestore_integration_args = $(SINGLESTORE_INTEGRATION_PACKAGES_$(1))$(if $(SINGLESTORE_INTEGRATION_RUN_$(1)), -run '$(SINGLESTORE_INTEGRATION_RUN_$(1))')$(if $(SINGLESTORE_INTEGRATION_SKIP_$(1)), -skip '$(SINGLESTORE_INTEGRATION_SKIP_$(1))') -timeout=$(SINGLESTORE_INTEGRATION_TIMEOUT_$(1))
 SINGLESTORE_INTEGRATION_SHARD ?=
 singlestore_integration_selected = $(or $(SINGLESTORE_INTEGRATION_SHARD),$(SINGLESTORE_INTEGRATION_SHARDS))
@@ -398,8 +401,11 @@ ci-shard-matrix:
 # test does: patterns split at top-level | into alternatives and at / into
 # levels, -run matches a name whose levels match, and -skip removes a name
 # whose levels match every skip level. Every name a pattern spells must exist,
-# so a misspelt name cannot silently move a test. The Plan CI shards job runs
-# it on every CI run.
+# so a misspelt name cannot silently move a test. The whole packages and the
+# required command cases' packages are always listed, so a package dropped
+# from every shard still fails as running in no shard, and each required
+# command case must run in exactly one shard. The Plan CI shards job runs it
+# on every CI run.
 define singlestore_shard_union_awk
 function split_top(s, sep, out,    n, i, c, cs, cp, cur) {
 	n = 0; cs = 0; cp = 0; cur = ""
@@ -463,8 +469,13 @@ END {
 			if (index(pkgs[shard[s]], " " epkg[e] " ") && selected(shard[s], epath[e])) { count[e]++; where[e] = where[e] " " shard[s]; per[shard[s]]++ }
 		}
 		if (count[e] > 1) fail(epkg[e] " " epath[e] " runs in" where[e])
-		else if (count[e] == 0 && index(" " whole " ", " " epkg[e] " ")) fail(epkg[e] " " epath[e] " runs in no shard")
+		else if (count[e] == 0 && (index(" " whole " ", " " epkg[e] " ") || index(" " required " ", " " epkg[e] ":" epath[e] " "))) fail(epkg[e] " " epath[e] " runs in no shard")
 		else if (count[e] == 1) total++
+	}
+	nreq = split(required, req, " ")
+	for (r = 1; r <= nreq; r++) {
+		split(req[r], rp, ":")
+		if (!((rp[1], rp[2]) in known)) fail("required command case " req[r] " is no test in its package")
 	}
 	for (s = 1; s <= nshard; s++) {
 		patterns = run[shard[s]] " " skip[shard[s]]
@@ -488,8 +499,8 @@ singlestore-shard-union-check:
 	@set -e; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 		sed -n '/^var suiteMethods = /,/^}/p' internal/store/storetest/coverage.go | grep -oE '^[[:space:]]+"[A-Za-z0-9]+":' | tr -d ' \t":' > "$$tmp/suites"; \
 		printf '%s\t%s\t%s\t%s\n' $(foreach shard,$(SINGLESTORE_INTEGRATION_SHARDS),'$(shard)' '$(SINGLESTORE_INTEGRATION_PACKAGES_$(shard))' '$(SINGLESTORE_INTEGRATION_RUN_$(shard))' '$(SINGLESTORE_INTEGRATION_SKIP_$(shard))') > "$$tmp/shards"; \
-		if ! $(VALIDATION_CHILD_ENV) go test -vet=off -list '.*' $(sort $(foreach shard,$(SINGLESTORE_INTEGRATION_SHARDS),$(SINGLESTORE_INTEGRATION_PACKAGES_$(shard)))) > "$$tmp/list" 2>&1; then cat "$$tmp/list" >&2; exit 1; fi; \
-		awk -v module="$$(go list -m)" -v conf_pkg='$(SINGLESTORE_INTEGRATION_PACKAGES_conformance-1)' -v conf_test='$(SINGLESTORE_CONFORMANCE_TEST)' -v whole='$(SINGLESTORE_INTEGRATION_WHOLE_PACKAGES)' "$$SINGLESTORE_SHARD_UNION_AWK" "$$tmp/suites" "$$tmp/shards" "$$tmp/list"
+		if ! $(VALIDATION_CHILD_ENV) go test -vet=off -list '.*' $(sort $(SINGLESTORE_INTEGRATION_WHOLE_PACKAGES) $(foreach case,$(SINGLESTORE_INTEGRATION_REQUIRED_CASES),$(firstword $(subst :, ,$(case)))) $(foreach shard,$(SINGLESTORE_INTEGRATION_SHARDS),$(SINGLESTORE_INTEGRATION_PACKAGES_$(shard)))) > "$$tmp/list" 2>&1; then cat "$$tmp/list" >&2; exit 1; fi; \
+		awk -v module="$$(go list -m)" -v conf_pkg='$(SINGLESTORE_INTEGRATION_PACKAGES_conformance-1)' -v conf_test='$(SINGLESTORE_CONFORMANCE_TEST)' -v whole='$(SINGLESTORE_INTEGRATION_WHOLE_PACKAGES)' -v required='$(SINGLESTORE_INTEGRATION_REQUIRED_CASES)' "$$SINGLESTORE_SHARD_UNION_AWK" "$$tmp/suites" "$$tmp/shards" "$$tmp/list"
 
 test-singlestore-unit:
 	CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./internal/eventlog/s2log ./internal/store/singlestore ./internal/store/backend ./internal/store/storetest ./internal/store ./internal/config ./cmd/conveyor ./cmd/conveyord

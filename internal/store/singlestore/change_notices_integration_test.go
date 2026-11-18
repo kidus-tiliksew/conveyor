@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -103,10 +105,32 @@ func TestSingleStoreNoticesPublishOnlyAfterCommitIntegration(t *testing.T) {
 	expectNoNotice(t, jobs, 10*time.Millisecond, "rolled-back enqueue")
 }
 
+// caughtUpLog signals once the runtime's start-up catch-up has read to the
+// end of the workspace log, the first Tail that returns a short page.
+type caughtUpLog struct {
+	eventlog.Store
+	workspace string
+	once      sync.Once
+	caughtUp  chan struct{}
+}
+
+func (l *caughtUpLog) Tail(ctx context.Context, workspace string, after eventlog.Position, limit int) ([]eventlog.Event, error) {
+	events, err := l.Store.Tail(ctx, workspace, after, limit)
+	if err == nil && workspace == l.workspace && (limit <= 0 || len(events) < limit) {
+		l.once.Do(func() { close(l.caughtUp) })
+	}
+	return events, err
+}
+
+// singleStoreNoticeRuntime starts a runtime for ws and returns once its
+// start-up catch-up has read the whole log, because Start returns before
+// that catch-up runs; a job committed after this can reach the runtime only
+// through a notice or a later catch-up.
 func singleStoreNoticeRuntime(t *testing.T, st *Store, ws string) <-chan time.Time {
 	t.Helper()
 	started := make(chan time.Time, 1)
-	rt := logqueue.NewRuntime(st.Log(), logqueue.Options{Workspaces: []string{ws}, Changes: st.Changes()})
+	log := &caughtUpLog{Store: st.Log(), workspace: ws, caughtUp: make(chan struct{})}
+	rt := logqueue.NewRuntime(log, logqueue.Options{Workspaces: []string{ws}, Changes: st.Changes()})
 	rt.Register(queue.Registration{Kind: "notice_probe", Handle: func(context.Context, queue.Job) error {
 		started <- time.Now()
 		return nil
@@ -119,6 +143,11 @@ func singleStoreNoticeRuntime(t *testing.T, st *Store, ws string) <-chan time.Ti
 		defer cancel()
 		_ = rt.Stop(ctx)
 	})
+	select {
+	case <-log.caughtUp:
+	case <-time.After(30 * time.Second):
+		t.Fatal("runtime did not finish its start-up catch-up within 30s")
+	}
 	return started
 }
 
