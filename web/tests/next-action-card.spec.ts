@@ -1766,6 +1766,42 @@ for (const [state, copy] of Object.entries(mergeStatusCopy)) {
   })
 }
 
+// A merge-readiness change changes the statement's tag, so a refetch answers
+// the new statement and the card shows it (component-next-action invariant
+// 58; DEC-140(3)). The server tags each statement by the readiness it read.
+test('the next-action card updates after a merge-readiness change', async ({ page }) => {
+  let readiness = 'UNKNOWN'
+  await mockAPI(
+    page,
+    () => mergeGateActivity(readiness),
+    () => mergeApproval(readiness),
+  )
+  const tags: string[] = []
+  await page.route(`**/v1/tasks/${taskId}/next-action**`, (route) => {
+    const tag = `"a1.${readiness}"`
+    tags.push(tag)
+    return route.fulfill({ json: mergeApproval(readiness), headers: { ETag: tag } })
+  })
+  // Each task stream connection delivers an activity frame once the
+  // readiness has changed.
+  const changed = Promise.withResolvers<void>()
+  await page.route('**/events/stream**', async (route) => {
+    await changed.promise
+    return route.fulfill({ contentType: 'text/event-stream', body: 'event: activity\ndata: {}\n\n' })
+  })
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await expect(gate.locator('[data-merge-status]')).toHaveAttribute('data-merge-status', 'UNKNOWN')
+  await expect(gate.locator('[data-merge-at-gate]')).toBeDisabled()
+  const readsBefore = tags.length
+  readiness = 'MERGEABLE'
+  changed.resolve()
+  await expect(gate.locator('[data-merge-at-gate]')).toBeEnabled()
+  await expect(gate.locator('[data-merge-status]')).toHaveAttribute('data-merge-status', 'MERGEABLE')
+  expect(tags.length).toBeGreaterThan(readsBefore)
+  expect(tags.at(-1)).toBe('"a1.MERGEABLE"')
+})
+
 test('a merge refusal without a readiness read reads as not available yet', async ({ page }) => {
   await mockAPI(
     page,
@@ -2853,7 +2889,7 @@ test('the merge_approval gate withholds the merge when only a waiver can complet
   const gate = page.getByRole('region', { name: 'Human gate' })
   await expect(gate.locator('[data-approval-refusal]')).toHaveText(waiverOnly.refusal)
   await expect(gate.locator('[data-merge-at-gate]')).toHaveCount(0)
-  await expect(gate.locator('[data-merge-status]')).toHaveCount(0)
+  await expect(gate.locator('[data-merge-status]')).toHaveAttribute('data-merge-status', 'MERGEABLE')
   await expect(gate.locator('[data-choice="approve"]')).toHaveCount(0)
 })
 
