@@ -6,7 +6,7 @@
 set -eu
 cd "$(dirname "$0")"
 sha256sum -c SHA256SUMS
-for run in r1 r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12 r13; do
+for run in r1 r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12 r13 r14 r15; do
   echo "== $run"
   python3 - "$run" <<'PY'
 import hashlib, json, sys
