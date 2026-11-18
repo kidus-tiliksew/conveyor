@@ -238,6 +238,10 @@ type Factory struct {
 	// dispatcher, for the same reason. The plan-submission serialization
 	// case requires it and never skips.
 	SubmitPlanService SubmitPlanServiceFunc
+	// StatementMemo builds an HTTP server over the backend, so the workspace
+	// notice suite proves each notice drops the response memo. A nil value
+	// proves the notices alone.
+	StatementMemo StatementMemoFunc
 }
 
 func (f Factory) fresh(t *testing.T, repos []config.Repo) Fixture {
@@ -300,6 +304,9 @@ func RunAll(t *testing.T, factory Factory) {
 		})
 	})
 	run("ChangeNotices", func(t *testing.T) { RunChangeNoticeConformance(t, factory.fresh(t, nil)) })
+	run("WorkspaceNotices", func(t *testing.T) {
+		RunWorkspaceNoticeConformance(t, factory.fresh(t, nil), factory.StatementMemo, factory.Capabilities.Identity && factory.Capabilities.Membership)
+	})
 	run("Crates", func(t *testing.T) { runCrates(t, factory) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("RedispatchOfferParity", func(t *testing.T) { runRedispatchOfferParity(t, factory.fresh(t, nil)) })

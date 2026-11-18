@@ -220,6 +220,11 @@ func NewServer(s store.Store) *Server {
 	// generation (read_memo.go).
 	server.readMemo = &readMemo{}
 	server.readMemo.subscribe(server.Changes)
+	// A merge-readiness change or expiry is announced on this daemon's hub
+	// only: each daemon reads its own cache (DEC-140(3)).
+	server.mergeReadiness.notify = func(workspace string) {
+		server.Changes.Publish(changes.Notice{Workspace: workspace, Kind: changes.Workspace})
+	}
 	return server
 }
 
@@ -1991,6 +1996,11 @@ type activityConditional struct {
 	opts       store.NextActionOptions
 	scope      []byte
 	validation store.ActivityValidation
+	// covered is the digest of the encoded statement body a statement read
+	// answers (statementConditional). It covers every input the body
+	// reflects, including merge readiness and configuration. The Board
+	// activity read leaves it nil, so its tags are unchanged.
+	covered []byte
 }
 
 // activityTag is a parsed Board ETag: "a1.<valid_until micros>.<cursor>.<hex>".
@@ -2048,6 +2058,9 @@ func (c *activityConditional) validator(validUntil time.Time, cursor string) str
 	number(c.now.Truncate(time.Minute).Unix())
 	number(validUntil.UnixMicro())
 	field([]byte(cursor))
+	if c.covered != nil {
+		field(c.covered)
+	}
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 

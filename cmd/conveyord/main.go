@@ -159,6 +159,7 @@ func main() {
 		// Read from the opened pool, so a pool_max_conns override shows.
 		log.Printf("database pool max_conns=%d (effective)", dbStats.Pool().MaxConns)
 	}
+	logStoreCompression(dbStats, log.Printf)
 	if gitHubAppKey != nil {
 		st.ConfigureGitHubAppKeyEncryptionKey(gitHubAppKey)
 	}

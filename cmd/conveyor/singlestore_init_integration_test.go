@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +61,13 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 	t.Setenv("CONVEYOR_API_TOKEN", "singlestore-init-fixture-token")
 	t.Setenv(config.LLMAPIKeyEnv, "unused-fixture-key")
 	t.Setenv(config.PublicURLEnv, "https://conveyor.example/")
+	// CLI opens report no compression; only conveyord logs the summary
+	// once per start (component-runtime invariant 43). The default logger
+	// also carries the log package's output.
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
 	answers := initAnswers{Organization: "SingleStore fixture", OperatorName: "Owner", OperatorEmail: "owner@example.test", WorkspaceID: "fresh", WorkspaceName: "Fresh", RepositoryName: "app", RepositoryURL: "https://github.com/example/app", BaseBranch: "main"}
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
 	var output strings.Builder
@@ -115,5 +124,8 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 	}
 	if signInTokenFromOutput(t, output.String()) == "" {
 		t.Fatal("user issue-link did not open the SingleStore deployment")
+	}
+	if strings.Contains(strings.ToLower(logs.String()+output.String()), "compression") {
+		t.Fatalf("a CLI open reported compression:\n%s%s", logs.String(), output.String())
 	}
 }

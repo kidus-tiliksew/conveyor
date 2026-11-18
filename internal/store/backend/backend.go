@@ -40,11 +40,18 @@ type PoolStatsFunc func() dbmetrics.PoolStats
 // received since the previous drain and the top labels by bytes.
 type ReadStatsFunc func(top int) dbmetrics.ReadInterval
 
+// CompressionFunc reports a SingleStore backend's protocol compression:
+// whether the configuration requested it, and "negotiated",
+// "not_negotiated", or "unknown" from the handshakes of its connections. It
+// sends no statement (component-runtime invariant 43).
+type CompressionFunc func() (requested bool, negotiation string)
+
 // Stats holds the statistics an opened backend reports; a nil function
 // reports nothing (component-runtime, Durable backend selection).
 type Stats struct {
-	Pool  PoolStatsFunc
-	Reads ReadStatsFunc
+	Pool        PoolStatsFunc
+	Reads       ReadStatsFunc
+	Compression CompressionFunc
 }
 
 var errMaxConnsRange = errors.New("database.max_conns must be an integer from 1 to 2147483647")
@@ -54,8 +61,8 @@ var errMaxConnsRange = errors.New("database.max_conns must be an integer from 1 
 var errDatabaseURLRequired = errors.New("the database URL is empty; set CONVEYOR_DATABASE_URL")
 
 // OpenWithStats is Open plus the opened backend's statistics functions:
-// pool statistics for PostgreSQL and read statistics for both durable
-// backends. Each capability is a compiler-checked method value, not a
+// pool statistics for PostgreSQL, read statistics for both durable
+// backends, and compression for SingleStore. Each capability is a compiler-checked method value, not a
 // discovered interface (component-runtime, Durable backend selection).
 //
 // This is the one path from a connection string to a durable store, for
@@ -95,7 +102,7 @@ func OpenWithStats(ctx context.Context, database config.Database, options ...Opt
 		if err != nil {
 			return nil, Stats{}, err
 		}
-		return st, Stats{Reads: st.ReadStats}, nil
+		return st, Stats{Reads: st.ReadStats, Compression: st.Compression}, nil
 	case "memory":
 		for _, option := range options {
 			if option == AllowVolatile {

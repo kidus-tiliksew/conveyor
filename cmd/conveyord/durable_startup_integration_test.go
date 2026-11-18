@@ -89,6 +89,7 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 				t.Fatalf("startup log missing backend: %s", b)
 			}
 			requireReadStatsLogged(t, string(b))
+			requireCompressionSummary(t, name, string(b))
 			deprecationWarning := config.DeprecatedGitHubAppKeyEncryptionKeyEnv + " is deprecated; rename it to " + config.GitHubAppKeyEncryptionKeyEnv
 			// The routing-only fixture carries executor models; the deployment
 			// loader ignores and names them (component-runtime).
@@ -567,5 +568,37 @@ func requireReadStatsLogged(t *testing.T, daemonLog string) {
 	}
 	if !final || !attributed {
 		t.Fatalf("daemon log lacks database read attribution (final %t, labeled %t): %s", final, attributed, daemonLog)
+	}
+}
+
+// requireCompressionSummary checks that one daemon start logs exactly one
+// SingleStore compression summary, with a negotiation state read from the
+// handshake of the store's own connections, and that PostgreSQL logs none
+// (component-runtime invariant 43).
+func requireCompressionSummary(t *testing.T, backendName, logs string) {
+	t.Helper()
+	const prefix = "SingleStore protocol compression requested="
+	want := 0
+	if backendName == "singlestore" {
+		want = 1
+	}
+	if got := strings.Count(logs, prefix); got != want {
+		t.Fatalf("%s startup logged %d compression summaries, want %d: %s", backendName, got, want, logs)
+	}
+	if strings.Contains(logs, "SingleStore connection compression") {
+		t.Fatalf("startup logged the retired per-open compression line: %s", logs)
+	}
+	if want == 0 {
+		return
+	}
+	line := logs[strings.Index(logs, prefix):]
+	if end := strings.IndexByte(line, '\n'); end >= 0 {
+		line = line[:end]
+	}
+	if !strings.Contains(line, "requested=true") {
+		t.Fatalf("compression summary does not report the default request: %s", line)
+	}
+	if !strings.HasSuffix(line, "negotiation=negotiated") && !strings.HasSuffix(line, "negotiation=not_negotiated") {
+		t.Fatalf("compression summary did not report a handshake-derived state: %s", line)
 	}
 }

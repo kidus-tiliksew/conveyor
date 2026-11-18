@@ -14,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
@@ -104,6 +105,16 @@ func raiseTx(exec any, n changes.Notice) {
 // raiseTaskNotice raises a task notice for an event inserted through exec.
 func raiseTaskNotice(ctx context.Context, exec any, taskID string) {
 	raiseTx(exec, changes.Notice{Workspace: workspace(ctx), Kind: changes.Task, TaskID: taskID})
+}
+
+// raiseWorkspaceEventNotice raises the workspace notice of a task-less
+// event whose kind changes pending proposals or memberships. It joins the
+// transaction's batch, so it is published, and sent to peers, only when the
+// transaction commits (component-persistence invariants 23, 27; DEC-140(3)).
+func raiseWorkspaceEventNotice(exec any, workspaceID, kind string) {
+	if store.WorkspaceEventRaisesNotice(kind) {
+		raiseTx(exec, changes.Notice{Workspace: workspaceID, Kind: changes.Workspace})
+	}
 }
 
 // logTx binds tx to the event-log driver and its notice batch to the
