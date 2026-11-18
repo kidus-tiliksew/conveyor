@@ -1067,8 +1067,9 @@ func firstTrimmed(values []string) string {
 
 func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListPlanningSessionEvents")
+	filter, filterArgs := s.hotReadLookup("events_session_key_idx", "event_session_key", "JSON_EXTRACT_STRING(payload_json,'session_id')=?", sessionID)
 	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at
-		FROM events_columnstore WHERE workspace_id=? AND JSON_EXTRACT_STRING(payload_json,'session_id')=? ORDER BY at,id`, documentWorkspace(ctx), sessionID)
+		FROM events_columnstore WHERE workspace_id=? AND `+filter+` ORDER BY at,id`, append([]any{documentWorkspace(ctx)}, filterArgs...)...)
 	if err != nil {
 		return nil, err
 	}

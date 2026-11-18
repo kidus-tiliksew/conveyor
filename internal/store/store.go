@@ -125,6 +125,11 @@ type Store interface {
 	ReconcileReadStore
 	TaskDetailReadStore
 	RequirementDetailReadStore
+	DocumentVersionSummaryReadStore
+	RequirementEventReadStore
+	RequirementFollowUpReader
+	ReviewPolicyReconciliationReader
+	ArtifactOwnerReader
 	// DeadlineReader serves the deadline alarm (component-persistence,
 	// Deadlines).
 	DeadlineReader
@@ -333,6 +338,8 @@ type WorkOrderStore interface {
 	// selected workspace, projected at read time, without the served-requirement
 	// and governance snapshots (component-work-orders, Snapshot-free fold reads).
 	ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error)
+	// ListTaskWorkOrders projects the named task's lifecycle at read time and
+	// omits authority snapshot bodies, as ListWorkOrdersForTasks does.
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	// ListTaskWorkOrdersStored returns persisted work-order states without
 	// read-time clock projection. Dispatch stage holds use it so a dead claim
@@ -340,9 +347,9 @@ type WorkOrderStore interface {
 	// (component-work-orders "Stages and order minting"; DEC-62). It returns no
 	// authority snapshot (component-work-orders, Snapshot-free fold reads).
 	ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error)
-	// ListTaskWorkOrdersSnapshot returns order state with elapsed clocks
-	// projected but never persisted. It is for observational responses whose
-	// reads must not mutate the work-order lifecycle.
+	// ListTaskWorkOrdersSnapshot includes served-requirement and governance
+	// snapshots for responses that expose those pinned bodies. Elapsed clocks
+	// are projected without persisting lifecycle transitions.
 	ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error)
 	ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error)
@@ -452,16 +459,22 @@ type DocumentStore interface {
 	DismissDecision(ctx context.Context, id string) (core.Decision, error)
 	GetDecision(ctx context.Context, id string) (core.Decision, error)
 	ListDecisions(ctx context.Context) ([]core.Decision, error)
-	// ListDecisionCitations derives, in one workspace read, every pair of a
-	// workspace decision and a live requirement or System Design document whose
-	// current confirmed version names it as a whole token, ordered as
-	// core.DeriveDecisionCitations orders them (component-document-corpus,
-	// Decision citations; req-document-operating-surfaces AC-8.5).
+	// ListDecisionCitations derives every pair of a workspace decision and a
+	// live requirement or System Design document whose current confirmed
+	// version names it as a whole token, in bounded batches and ordered as
+	// core.SortDecisionCitations orders them. A backend evaluates membership
+	// in the database and returns only the pair's metadata, never a document
+	// body (component-document-corpus, Decision citations;
+	// req-document-operating-surfaces AC-8.5).
 	ListDecisionCitations(ctx context.Context) ([]core.DecisionCitation, error)
 	DismissDecisionSupersessionSweep(ctx context.Context, decisionID, documentTier, documentID string) (core.DecisionSupersessionSweepEntry, error)
 	// ListPendingProposals normalizes unresolved proposals across the
 	// requirement, System Design, and decision tiers (REQ-1, AC-1.2).
 	ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error)
+	// ListPendingProposalsForDocuments returns pending requirement and
+	// System Design revisions of the named documents from any origin, for
+	// authority-conflict citations. Empty IDs never select the global queue.
+	ListPendingProposalsForDocuments(ctx context.Context, documentIDs []string) ([]core.PendingProposal, error)
 	// PendingProposalsProjection returns the workspace proposal queue together
 	// with the exact task-attention count without materializing the general task,
 	// activity, or work-order list projections (REQ-1, REQ-3).

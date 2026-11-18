@@ -174,7 +174,7 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx *sql.Tx, taskID
 	if err != nil {
 		return 0, err
 	}
-	orders, err := s.listOrders(ctx, tx, []string{taskID})
+	orders, err := s.listTaskOrdersInStatesTx(ctx, tx, taskID)
 	if err != nil {
 		return 0, err
 	}
@@ -210,14 +210,14 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx *sql.Tx, taskID
 		case store.AutomaticRecoverySchedule:
 			store.ScheduleAutomaticRecovery(&order, decision)
 			order.UpdatedAt = now
-			if err = orderWrite(ctx, tx, order); err != nil {
+			if err = orderLifecycleWrite(ctx, tx, order); err != nil {
 				return acted, err
 			}
 		case store.AutomaticRecoveryExhausted:
 			order.RetrySuppressed = true
 			order.RetrySuppressionReason = core.AutomaticRecoveryExhaustedReason
 			order.UpdatedAt = now
-			if err = orderWrite(ctx, tx, order); err != nil {
+			if err = orderLifecycleWrite(ctx, tx, order); err != nil {
 				return acted, err
 			}
 			eventCtx := store.WithActor(ctx, store.SystemActor("queue:"+order.JobID))
@@ -296,7 +296,7 @@ func (s *Store) actAutomaticRecoveryTx(ctx context.Context, tx *sql.Tx, order co
 	order.AutomaticRecoveryCount = count
 	order.AutomaticRecoveryWindowStartedAt = window
 	order.NextAutomaticRecoveryAt = time.Time{}
-	if err := orderWrite(ctx, tx, order); err != nil {
+	if err := orderLifecycleWrite(ctx, tx, order); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO work_order_recoveries (workspace_id,work_order_id,request_id,created_at) VALUES (?,?,?,?)`, documentWorkspace(ctx), order.ID, requestID, now); err != nil {

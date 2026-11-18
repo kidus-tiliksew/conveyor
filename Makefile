@@ -312,18 +312,20 @@ dev: db-up
 # built from the shard's packages, -run and -skip patterns, and timeout.
 # The two conformance shards select complementary subtests of
 # TestSingleStoreConformanceIntegration through one shared pattern. The
-# migrations shard runs the DDL-heavy migration and layout tests and the VK-10
-# browser scenario that a second shared pattern selects, and the packages
-# shard skips the conformance test and that pattern, so together they run
-# exactly the three packages. The commands shard keeps the command and daemon
-# cases. CI runs one shard per job through SINGLESTORE_INTEGRATION_SHARD; an
-# empty value runs every shard in order. Only the migrations shard, which
-# runs the VK-10 browser scenario, builds the CLI and installs Chromium.
-# RunAll registers every suite in each conformance shard, so its registration
-# audit runs in both. make singlestore-shard-union-check proves the union.
-SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages migrations commands
+# proofs shard runs the heavy artifact-hot-read, hot-read and activity proofs,
+# and the migrations shard the DDL-heavy migration and layout tests and the
+# VK-10 browser scenario, each by full test name; the packages shard skips the
+# conformance test and both lists, so together they run exactly the three
+# packages. The commands shard keeps the command and daemon cases. CI runs one
+# shard per job through SINGLESTORE_INTEGRATION_SHARD; an empty value runs
+# every shard in order. Only the migrations shard, which runs the VK-10
+# browser scenario, builds the CLI and installs Chromium. RunAll registers
+# every suite in each conformance shard, so its registration audit runs in
+# both. make singlestore-shard-union-check proves the union.
+SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages proofs migrations commands
 SINGLESTORE_CONFORMANCE_TEST = ^TestSingleStoreConformanceIntegration$$
 SINGLESTORE_CONFORMANCE_FIRST = ^(Verification|Requirements|NextAction|Lineage|AutomaticRecovery|ListPages|ActivityMarkerBounds|SystemDesignDrift)$$
+SINGLESTORE_PROOF_TESTS = ^(TestActivityValidationSeesRowOnlyWritesAndLateCommitsIntegration|TestArtifactHotReadLayoutsIntegration|TestArtifactHotReadRowstoreLayoutsIntegration|TestHotReadActualMixedOriginAndInterruptedBootstrapIntegration|TestHotReadEgressMeasurementIntegration|TestHotReadEventLookupsIntegration|TestHotReadIndexKeyKindMatchesEngine|TestHotReadLayoutDatabaseIntegration|TestHotReadLayoutDiscovery|TestHotReadLayoutFreshDatabaseIntegration|TestHotReadLayoutIncompatibleDatabaseIntegration|TestHotReadLayoutMixedProvenanceIntegration|TestHotReadLayoutOldOperatorEventsIntegration|TestHotReadLookupNamesDigestOnlyWhenKeyIsReady|TestHotReadOperatorScriptEngineVariantsIntegration|TestHotReadPrepareScriptIntegration|TestHotReadResumeWrongExistingObjectFailsBeforeDDLIntegration|TestHotReadRowstoreArtifactLinksStoreReadinessIntegration|TestHotReadTaskLookupsIntegration)$$
 SINGLESTORE_MIGRATION_TESTS = ^(TestActivityValidationTransfersFixedSizeIntegration|TestExistingColumnstoreEventLogPreservedIntegration|TestHistoryMigrationLayoutsIntegration|TestFeatureRetirementPartialDDLRetryIntegration|TestVK10SingleStoreScenarioIntegration)$$
 SINGLESTORE_INTEGRATION_PACKAGES_conformance-1 = ./internal/store/singlestore
 SINGLESTORE_INTEGRATION_RUN_conformance-1 = $(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)
@@ -333,8 +335,11 @@ SINGLESTORE_INTEGRATION_RUN_conformance-2 = $(SINGLESTORE_CONFORMANCE_TEST)
 SINGLESTORE_INTEGRATION_SKIP_conformance-2 = $(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)
 SINGLESTORE_INTEGRATION_TIMEOUT_conformance-2 = 20m
 SINGLESTORE_INTEGRATION_PACKAGES_packages = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore
-SINGLESTORE_INTEGRATION_SKIP_packages = $(SINGLESTORE_CONFORMANCE_TEST)|$(SINGLESTORE_MIGRATION_TESTS)
+SINGLESTORE_INTEGRATION_SKIP_packages = $(SINGLESTORE_CONFORMANCE_TEST)|$(SINGLESTORE_PROOF_TESTS)|$(SINGLESTORE_MIGRATION_TESTS)
 SINGLESTORE_INTEGRATION_TIMEOUT_packages = 20m
+SINGLESTORE_INTEGRATION_PACKAGES_proofs = ./internal/store/singlestore
+SINGLESTORE_INTEGRATION_RUN_proofs = $(SINGLESTORE_PROOF_TESTS)
+SINGLESTORE_INTEGRATION_TIMEOUT_proofs = 20m
 SINGLESTORE_INTEGRATION_PACKAGES_migrations = ./internal/store/singlestore
 SINGLESTORE_INTEGRATION_RUN_migrations = $(SINGLESTORE_MIGRATION_TESTS)
 SINGLESTORE_INTEGRATION_TIMEOUT_migrations = 20m
@@ -532,6 +537,53 @@ test-document-event-plans-singlestore: _singlestore-integration-url-check
 _test-document-event-plans-singlestore:
 	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "SingleStore fixture was not prepared" >&2; exit 1)
 	CONVEYOR_DOCUMENT_EVENT_MEASUREMENT=$(DOCUMENT_EVENT_MEASUREMENT) $(GO_TEST_REQUIRE_TESTS) -v ./internal/store/singlestore -run '^TestDocumentEventQueryPlansIntegration$$' -count=1 -timeout=45m
+
+# Focused hot-read egress measurements: warmup, then five interleaved
+# baseline/candidate trials per registered case, recorded from the store's
+# driver read statistics. Standard output carries only the machine-readable
+# READ_EGRESS_MEASUREMENT lines; capture it into the task validation evidence
+# directory. A missing URL, fixture failure, skipped or unselected test, or
+# missing measurement fails the target. These are focused measurements, not a
+# substitute for the CI gates. Registered cases are listed in
+# internal/store/{postgres,singlestore}/read_egress_measurement_integration_test.go.
+.PHONY: measure-hot-read-egress-singlestore measure-hot-read-egress-postgres _measure-hot-read-egress-singlestore _measure-hot-read-egress-postgres _hot-read-egress-run
+measure-hot-read-egress-singlestore: _singlestore-integration-url-check
+	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) --no-print-directory _measure-hot-read-egress-singlestore; else \
+		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/singlestore-hot-read-egress-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
+		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend singlestore --url-env CONVEYOR_TEST_SINGLESTORE_URL --prepared-url-env CONVEYOR_TEST_SINGLESTORE_URL --state "$$state" -- $(MAKE) --no-print-directory _measure-hot-read-egress-singlestore; \
+	fi
+
+_measure-hot-read-egress-singlestore:
+	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "SingleStore fixture was not prepared" >&2; exit 1)
+	@$(MAKE) --no-print-directory _hot-read-egress-run HOT_READ_EGRESS_PKG=singlestore
+
+measure-hot-read-egress-postgres:
+	@test -n "$$CONVEYOR_TEST_DATABASE_URL" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
+	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) --no-print-directory _measure-hot-read-egress-postgres; else \
+		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/postgres-hot-read-egress-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
+		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend postgres --url-env CONVEYOR_TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) --no-print-directory _measure-hot-read-egress-postgres; \
+	fi
+
+_measure-hot-read-egress-postgres:
+	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "PostgreSQL fixture was not prepared" >&2; exit 1)
+	@$(MAKE) --no-print-directory _hot-read-egress-run HOT_READ_EGRESS_PKG=postgres
+
+# Runs the focused measurement test, prints only its measurement lines to
+# standard output and the test log to standard error, and fails when the test
+# fails, is skipped, or emits no measurement.
+# Override with ./internal/httpapi to measure memo routes on the same owned
+# backend fixture; CONVEYOR_READ_EGRESS_MEMO_BACKEND selects that backend.
+HOT_READ_EGRESS_PACKAGE ?= ./internal/store/$(HOT_READ_EGRESS_PKG)
+_hot-read-egress-run:
+	@test -n "$(HOT_READ_EGRESS_PKG)" || (echo "HOT_READ_EGRESS_PKG is required" >&2; exit 1)
+	@out=$$(mktemp "$${TMPDIR:-/tmp}/hot-read-egress.XXXXXX") && trap 'rm -f "$$out"' EXIT && \
+	if ! CONVEYOR_READ_EGRESS_MEASUREMENT=1 $(GO_TEST_REQUIRE_TESTS) -v $(HOT_READ_EGRESS_PACKAGE) -run '^TestHotReadEgressMeasurementIntegration$$' -count=1 -timeout=45m >"$$out" 2>&1; then \
+		cat "$$out" >&2; echo "hot-read egress measurement test failed" >&2; exit 1; \
+	fi && \
+	if ! grep -q '^READ_EGRESS_MEASUREMENT ' "$$out" || grep -q -- '--- SKIP' "$$out"; then \
+		cat "$$out" >&2; echo "no hot-read egress measurement was recorded (test skipped or unselected)" >&2; exit 1; \
+	fi && \
+	grep -v '^READ_EGRESS_MEASUREMENT ' "$$out" >&2 && grep '^READ_EGRESS_MEASUREMENT ' "$$out"
 
 # Focused context-entry and corpus regressions; full validation remains make test.
 .PHONY: test-context-eligibility

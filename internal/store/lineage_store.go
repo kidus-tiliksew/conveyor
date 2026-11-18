@@ -518,9 +518,7 @@ func (m *memory) ListRequirementDeliveryEventsForTasks(ctx context.Context, task
 			}
 			return events[i].At.Before(events[j].At)
 		})
-		if len(events) > 0 {
-			result[taskID] = events
-		}
+		result[taskID] = events
 	}
 	return result, nil
 }
@@ -574,23 +572,35 @@ func (m *memory) ListRequirementDeliveryLineage(ctx context.Context, requirement
 	if strings.TrimSpace(requirementID) == "" || budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
 		return nil, fmt.Errorf("requirement delivery lineage requires a requirement id and bounded depth, nodes, and links")
 	}
+	selected, err := m.ListRequirementDeliveryLineageByRequirement(ctx, []string{requirementID}, budget)
+	return selected[requirementID], err
+}
+
+func (m *memory) ListRequirementDeliveryLineageByRequirement(ctx context.Context, requirementIDs []string, budget core.LineageTraversalBudget) (map[string][]core.LineageLink, error) {
 	links, err := m.ListLineageLinks(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return boundedRequirementDeliveryLinks(links, requirementID, budget), nil
-}
-
-func (m *memory) ListRequirementDeliveryLineageByRequirement(ctx context.Context, requirementIDs []string, budget core.LineageTraversalBudget) (map[string][]core.LineageLink, error) {
-	out := make(map[string][]core.LineageLink, len(requirementIDs))
-	for _, requirementID := range requirementIDs {
-		links, err := m.ListRequirementDeliveryLineage(ctx, requirementID, budget)
-		if err != nil {
-			return nil, err
+	adjacency := make(map[core.LineageNode][]core.LineageLink)
+	for _, link := range links {
+		if !requirementDeliveryLink(link) || budget.Workspace != "" && link.Workspace != budget.Workspace {
+			continue
 		}
-		out[requirementID] = links
+		node := core.LineageNode{Type: link.SrcType, ID: link.SrcID}
+		adjacency[node] = append(adjacency[node], link)
 	}
-	return out, nil
+	for node := range adjacency {
+		sort.Slice(adjacency[node], func(i, j int) bool {
+			return lineageLinkKey(adjacency[node][i]) < lineageLinkKey(adjacency[node][j])
+		})
+	}
+	return FetchRequirementDeliveryLineage(ctx, requirementIDs, budget, func(_ context.Context, nodes []core.LineageNode, limit int) (map[core.LineageNode][]core.LineageLink, error) {
+		selected := make(map[core.LineageNode][]core.LineageLink, len(nodes))
+		for _, node := range nodes {
+			selected[node] = adjacency[node][:min(limit, len(adjacency[node]))]
+		}
+		return selected, nil
+	})
 }
 
 func boundedRequirementDeliveryLinks(links []core.LineageLink, requirementID string, budget core.LineageTraversalBudget) []core.LineageLink {

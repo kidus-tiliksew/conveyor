@@ -141,8 +141,9 @@ func (s *Store) GetReferenceDocumentVersion(ctx context.Context, documentID stri
 
 func (s *Store) ListReferenceDocumentEvents(ctx context.Context, documentID string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListReferenceDocumentEvents")
+	filter, filterArgs := s.hotReadLookup("events_document_key_idx", "event_document_key", "BINARY JSON_EXTRACT_STRING(payload_json,'document_id')=BINARY ?", documentID)
 	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id
-		FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'reference_document.%' ORDER BY at,id`, documentWorkspace(ctx))
+		FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'reference_document.%' AND `+filter+` ORDER BY at,id`, append([]any{documentWorkspace(ctx)}, filterArgs...)...)
 	if err != nil {
 		return nil, err
 	}

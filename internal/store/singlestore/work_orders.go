@@ -440,9 +440,14 @@ func (s *Store) ListWorkOrdersForTasks(ctx context.Context, ids []string) ([]cor
 	projectOrders(orders)
 	return orders, err
 }
+
+// ListTaskWorkOrders is the projected per-task read of detail and
+// next-action folds. It selects clockWorkOrderColumns, so neither pin body
+// leaves the database; readers that render or recheck a pin use
+// ListTaskWorkOrdersSnapshot (component-work-orders, Snapshot-free fold reads).
 func (s *Store) ListTaskWorkOrders(ctx context.Context, id string) ([]core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrders")
-	orders, err := s.listOrders(ctx, s.db, []string{id})
+	orders, err := s.listTaskOrdersInStatesTx(ctx, s.db, id)
 	projectOrders(orders)
 	return orders, err
 }
@@ -727,7 +732,7 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx *sql.Tx, o core.W
 	o.NextRetryAt = time.Time{}
 	o.RetrySuppressed = !run
 	o.UpdatedAt = now
-	if err = orderWrite(ctx, tx, o); err != nil {
+	if err = orderLifecycleWrite(ctx, tx, o); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if err = resetOrderJob(ctx, tx, o, now); err != nil {
@@ -786,7 +791,7 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx *sql.Tx, o core.Wo
 	o.State = state
 	o.LeaseExpiresAt = time.Time{}
 	o.UpdatedAt = now
-	if err = orderWrite(ctx, tx, o); err != nil {
+	if err = orderLifecycleWrite(ctx, tx, o); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if state == core.WorkOrderTimedOut {
@@ -888,7 +893,7 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 			count = len(retired)
 			return err
 		}
-		orders, err := s.listOrders(ctx, tx, []string{id})
+		orders, err := s.listTaskOrdersInStatesTx(ctx, tx, id, core.WorkOrderQueued, core.WorkOrderClaimed, core.WorkOrderStale)
 		if err != nil {
 			return err
 		}
@@ -913,7 +918,7 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 					if o.QueueBlockedAt.IsZero() {
 						o.QueueBlockedAt = now
 						o.UpdatedAt = now
-						if err = orderWrite(ctx, tx, o); err != nil {
+						if err = orderLifecycleWrite(ctx, tx, o); err != nil {
 							return err
 						}
 					}
@@ -923,12 +928,17 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 					o.QueueDeadline = o.QueueDeadline.Add(now.Sub(o.QueueBlockedAt))
 					o.QueueBlockedAt = time.Time{}
 					o.UpdatedAt = now
-					if err = orderWrite(ctx, tx, o); err != nil {
+					if err = orderLifecycleWrite(ctx, tx, o); err != nil {
 						return err
 					}
 				}
 			}
 			if !o.ExecutionDeadline.IsZero() && !o.ExecutionDeadline.After(now) {
+				// The timed_out event lists the pinned documents by reference,
+				// so this one transition loads the governance content.
+				if err = hydrateGovernanceSnapshotTx(ctx, tx, &o); err != nil {
+					return err
+				}
 				_, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdTimeout, "work_order.timed_out", now)
 			} else if o.State == core.WorkOrderClaimed && !o.LeaseExpiresAt.After(now) {
 				_, err = s.expireWorkOrderClaimTx(ctx, tx, o, now)

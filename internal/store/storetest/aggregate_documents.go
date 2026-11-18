@@ -159,6 +159,18 @@ func runDecisionCitations(t *testing.T, x Fixture) {
 			requireOK(t, err)
 		}
 	}
+	// requirementSlug names a title and a slug that differ, so two documents
+	// can share a title without colliding where the fixture proves the
+	// document-ID tie-break.
+	requirementSlug := func(ctx context.Context, id, slug, title, body string, confirm bool) {
+		t.Helper()
+		_, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: title, Slug: slug}, core.RequirementVersion{Content: "# " + title + "\n\n" + body, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Cite decisions."}}, Origin: core.RequirementOriginOperator})
+		requireOK(t, err)
+		if confirm {
+			_, _, err = st.ConfirmRequirementVersion(ctx, id, version.Version)
+			requireOK(t, err)
+		}
+	}
 	designText := func(title, body string) string {
 		return "# " + title + "\n\n" + body + "\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/store/**\n```"
 	}
@@ -239,6 +251,58 @@ func runDecisionCitations(t *testing.T, x Fixture) {
 	}
 	if got := read(foreign); !reflect.DeepEqual(got, foreignWant) {
 		t.Fatalf("foreign citations = %+v\nwant %+v", got, foreignWant)
+	}
+
+	// Token boundaries: only a whole, case-exact ASCII token counts.
+	// Parentheses, punctuation, slashes, tabs, newlines, and non-ASCII
+	// characters separate tokens; an underscore, letter, or digit does not; a
+	// non-breaking hyphen is not the ID's hyphen; and repeated tokens make
+	// one citation.
+	decide(ctx, "DEC-10", "", true)
+	requirement(ctx, "req-cite-tokens", "Tokens", "Cites (DEC-4), DEC-4, DEC-4/DEC-4, DEC-4\tDEC-4, _DEC-40_, DEC-4_DEC-9, DEC-4DEC-9, DEC-40x, xDEC-4, DEC 4, dec-4, and DEC\u20114.", true)
+	design(ctx, "design-cite-tokens", "Token design", "Cites DEC-4é, éDEC-10, and DEC-10.")
+	citationsOf := func(documents ...string) []core.DecisionCitation {
+		t.Helper()
+		wanted := map[string]bool{}
+		for _, document := range documents {
+			wanted[document] = true
+		}
+		items := []core.DecisionCitation{}
+		for _, citation := range read(ctx) {
+			if wanted[citation.DocumentID] {
+				items = append(items, citation)
+			}
+		}
+		return items
+	}
+	tokenWant := []core.DecisionCitation{
+		{DecisionID: "DEC-4", Tier: req, DocumentID: "req-cite-tokens", Title: "Tokens", Version: 1},
+		{DecisionID: "DEC-4", Tier: sd, DocumentID: "design-cite-tokens", Title: "Token design", Version: 1},
+		{DecisionID: "DEC-10", Tier: sd, DocumentID: "design-cite-tokens", Title: "Token design", Version: 1},
+	}
+	if got := citationsOf("req-cite-tokens", "design-cite-tokens"); !reflect.DeepEqual(got, tokenWant) {
+		t.Fatalf("token citations = %+v\nwant %+v", got, tokenWant)
+	}
+	// Ordering compares titles and then document IDs in byte order, so a
+	// database collation cannot change which citation comes first. Explicit
+	// slugs keep the case documents apart from the earlier "Alpha"/"Beta"
+	// titles whose derived slugs they would otherwise repeat.
+	requirement(ctx, "req-cite-archived", "Archived", "Cites DEC-10.", true)
+	requireOK(t, st.ArchiveRequirement(ctx, "req-cite-archived", "operator", nil))
+	requirementSlug(ctx, "Zed", "case-zed", "Zed", "Cites DEC-10.", true)
+	requirementSlug(ctx, "alpha", "case-alpha", "alpha", "Cites DEC-10.", true)
+	requirementSlug(ctx, "beta", "case-beta", "Beta", "Cites DEC-10.", true)
+	requirementSlug(ctx, "same-Zed", "same-zed", "Same", "Cites DEC-10.", true)
+	requirementSlug(ctx, "same-alpha", "same-alpha", "Same", "Cites DEC-10.", true)
+	orderWant := []core.DecisionCitation{
+		{DecisionID: "DEC-10", Tier: req, DocumentID: "beta", Title: "Beta", Version: 1},
+		{DecisionID: "DEC-10", Tier: req, DocumentID: "same-Zed", Title: "Same", Version: 1},
+		{DecisionID: "DEC-10", Tier: req, DocumentID: "same-alpha", Title: "Same", Version: 1},
+		{DecisionID: "DEC-10", Tier: req, DocumentID: "Zed", Title: "Zed", Version: 1},
+		{DecisionID: "DEC-10", Tier: req, DocumentID: "alpha", Title: "alpha", Version: 1},
+	}
+	if got := citationsOf("req-cite-archived", "Zed", "alpha", "beta", "same-Zed", "same-alpha"); !reflect.DeepEqual(got, orderWant) {
+		t.Fatalf("ordered citations = %+v\nwant %+v", got, orderWant)
 	}
 }
 

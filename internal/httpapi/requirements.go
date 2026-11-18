@@ -659,30 +659,25 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		return nil, err
 	}
 	loadTaskEvents := func(taskID string) ([]core.Event, error) {
-		if events, ok := eventsByTask[taskID]; ok {
-			return events, nil
-		}
-		events, listErr := s.Store.ListCompactEvents(r.Context(), taskID)
-		if listErr == nil {
-			eventsByTask[taskID] = events
-		}
-		return events, listErr
+		return eventsByTask[taskID], nil
 	}
 	versionsByRequirement := map[string][]core.RequirementVersion{}
 	requirementEventsByRequirement := map[string][]core.Event{}
 	if !includeDetail {
-		versionsByRequirement, err = s.Store.ListRequirementVersionsByRequirement(r.Context())
+		requirementIDs := make([]string, 0, len(requirements))
+		for _, requirement := range requirements {
+			requirementIDs = append(requirementIDs, requirement.ID)
+		}
+		versionsByRequirement, err = s.Store.ListRequirementVersionSummaries(r.Context(), requirementIDs)
 		if err != nil {
 			return nil, err
 		}
-		requirementEventsByRequirement, err = s.Store.ListRequirementEventsByRequirement(r.Context())
+		requirementEventsByRequirement, err = s.Store.ListRequirementEventsForRequirements(r.Context(), requirementIDs)
 		if err != nil {
 			return nil, err
 		}
 	}
-	// The detail reads every task it names, and the latest plan of every
-	// confirmed link, in one set read each, whatever the number of tasks
-	// (component-persistence). The list keeps its workspace task read.
+	// Both list and detail select only the task summaries they name.
 	tasksByID := map[string]store.RequirementDetailTask{}
 	plansByTask := map[string]store.PlanSummary{}
 	if includeDetail {
@@ -696,29 +691,16 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			return nil, err
 		}
 	} else {
-		tasks, listErr := s.Store.ListTasks(r.Context())
-		if listErr != nil {
-			return nil, listErr
-		}
-		for _, task := range tasks {
-			tasksByID[task.ID] = requirementDetailTaskOf(task)
+		tasksByID, err = s.Store.ListRequirementDetailTasks(r.Context(), taskIDs)
+		if err != nil {
+			return nil, err
 		}
 	}
 	loadTask := func(taskID string) (store.RequirementDetailTask, error) {
 		if task, ok := tasksByID[taskID]; ok {
 			return task, nil
 		}
-		if includeDetail {
-			// A named task that the batch read did not return fails the
-			// read, as the single-task read did.
-			return store.RequirementDetailTask{}, fmt.Errorf("%w: task %s", store.ErrNotFound, taskID)
-		}
-		task, getErr := s.Store.GetTask(r.Context(), taskID)
-		if getErr != nil {
-			return store.RequirementDetailTask{}, getErr
-		}
-		tasksByID[taskID] = requirementDetailTaskOf(task)
-		return tasksByID[taskID], nil
+		return store.RequirementDetailTask{}, fmt.Errorf("%w: task %s", store.ErrNotFound, taskID)
 	}
 	views := make([]requirementView, 0, len(requirements))
 	for _, requirement := range requirements {
@@ -833,14 +815,6 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 					if delivery.Label == taskID && strings.TrimSpace(task.Title) != "" {
 						delivery.Label = task.Title
 					}
-					if delivery.NeedsAttention {
-						if followUp, found, lookupErr := s.Store.GetTaskByIntakeKey(r.Context(), requirementStalenessIntakeKey(delivery.SignalID)); lookupErr != nil {
-							return nil, lookupErr
-						} else if found && requirementFollowUpOpen(followUp.State) {
-							delivery.FollowUp = &requirementFollowUp{TaskID: followUp.ID, Title: followUp.Title, State: followUp.State}
-							delivery.NeedsAttention = false
-						}
-					}
 					view.Staleness.Deliveries = append(view.Staleness.Deliveries, delivery)
 					view.Staleness.DeliveryAfterIntent = view.Staleness.DeliveryAfterIntent || delivery.NeedsAttention
 				}
@@ -864,6 +838,31 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			}
 		}
 		views = append(views, view)
+	}
+	followUpKeys := []string{}
+	for _, view := range views {
+		for _, delivery := range view.Staleness.Deliveries {
+			if delivery.NeedsAttention {
+				followUpKeys = append(followUpKeys, requirementStalenessIntakeKey(delivery.SignalID))
+			}
+		}
+	}
+	followUps, err := s.Store.ListRequirementFollowUps(r.Context(), followUpKeys)
+	if err != nil {
+		return nil, err
+	}
+	for i := range views {
+		views[i].Staleness.DeliveryAfterIntent = false
+		for j := range views[i].Staleness.Deliveries {
+			delivery := &views[i].Staleness.Deliveries[j]
+			if delivery.NeedsAttention {
+				if followUp, found := followUps[requirementStalenessIntakeKey(delivery.SignalID)]; found && requirementFollowUpOpen(followUp.State) {
+					delivery.FollowUp = &requirementFollowUp{TaskID: followUp.ID, Title: followUp.Title, State: followUp.State}
+					delivery.NeedsAttention = false
+				}
+			}
+			views[i].Staleness.DeliveryAfterIntent = views[i].Staleness.DeliveryAfterIntent || delivery.NeedsAttention
+		}
 	}
 	return views, nil
 }

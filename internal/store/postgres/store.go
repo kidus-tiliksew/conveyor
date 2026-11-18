@@ -797,6 +797,7 @@ func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []strin
 func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now time.Time) ([]store.ActivityMarker, []core.WorkOrder, time.Time, error) {
 	type markerRow struct {
 		taskID      string
+		state       core.TaskState
 		latestStage string
 		lastEventAt time.Time
 		lastEventID int64
@@ -813,9 +814,13 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 				(SELECT j.stage FROM jobs j WHERE j.task_id=t.id ORDER BY j.started_at DESC,j.id DESC LIMIT 1),
 				''
 			)::text,
-			COALESCE((SELECT e.at FROM events e WHERE e.task_id=t.id ORDER BY e.at DESC, e.id DESC LIMIT 1),t.created_at)::timestamptz,
-			COALESCE((SELECT e.id FROM events e WHERE e.task_id=t.id ORDER BY e.at DESC, e.id DESC LIMIT 1),0)::bigint
+			COALESCE(e.at,t.created_at)::timestamptz,
+			COALESCE(e.id,0)::bigint,
+			t.state::text
 			FROM tasks t
+			LEFT JOIN LATERAL (
+				SELECT e.at,e.id FROM events e WHERE e.task_id=t.id ORDER BY e.at DESC,e.id DESC LIMIT 1
+			) e ON true
 			WHERE t.workspace_id=$1
 			ORDER BY t.created_at,t.id`, workspace(ctx))
 	} else {
@@ -827,9 +832,13 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 				(SELECT j.stage FROM jobs j WHERE j.task_id=t.id ORDER BY j.started_at DESC,j.id DESC LIMIT 1),
 				''
 			)::text,
-			COALESCE((SELECT e.at FROM events e WHERE e.task_id=t.id ORDER BY e.at DESC, e.id DESC LIMIT 1),t.created_at)::timestamptz,
-			COALESCE((SELECT e.id FROM events e WHERE e.task_id=t.id ORDER BY e.at DESC, e.id DESC LIMIT 1),0)::bigint
+			COALESCE(e.at,t.created_at)::timestamptz,
+			COALESCE(e.id,0)::bigint,
+			t.state::text
 			FROM tasks t
+			LEFT JOIN LATERAL (
+				SELECT e.at,e.id FROM events e WHERE e.task_id=t.id ORDER BY e.at DESC,e.id DESC LIMIT 1
+			) e ON true
 			WHERE t.workspace_id=$1 AND t.id=ANY($2::text[])
 			ORDER BY t.created_at,t.id`, workspace(ctx), taskIDs)
 	}
@@ -838,7 +847,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	}
 	for selected.Next() {
 		var row markerRow
-		if err = selected.Scan(&row.taskID, &row.latestStage, &row.lastEventAt, &row.lastEventID); err != nil {
+		if err = selected.Scan(&row.taskID, &row.latestStage, &row.lastEventAt, &row.lastEventID, &row.state); err != nil {
 			selected.Close()
 			return nil, nil, time.Time{}, err
 		}
@@ -872,6 +881,8 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	hasReviewOrders := false
 	reviewTaskIDs := make([]string, 0)
 	seenReviewTask := map[string]bool{}
+	var liveReviewTaskIDs []string
+	seenLiveReviewTask := map[string]bool{}
 	for _, order := range orders {
 		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			blockers := blockersByTask[order.TaskID]
@@ -883,55 +894,42 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 		}
 		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
 		hasReviewOrders = hasReviewOrders || order.Stage == core.StageReview
-		if order.Stage == core.StageReview && (order.State == core.WorkOrderClaimed || order.State == core.WorkOrderQueued) &&
-			!order.ExecutionStartedAt.IsZero() && !seenReviewTask[order.TaskID] {
+		if order.Stage == core.StageReview && !seenReviewTask[order.TaskID] {
 			reviewTaskIDs = append(reviewTaskIDs, order.TaskID)
 			seenReviewTask[order.TaskID] = true
+		}
+		// Only an open review order reads its claim and renewal events:
+		// ReviewVerdictDiagnostics and ActivityReviewLeaseHorizon skip the rest.
+		if order.Stage == core.StageReview && (order.State == core.WorkOrderClaimed || order.State == core.WorkOrderQueued) {
+			if !seenLiveReviewTask[order.TaskID] {
+				liveReviewTaskIDs = append(liveReviewTaskIDs, order.TaskID)
+				seenLiveReviewTask[order.TaskID] = true
+			}
 		}
 	}
 	eventsByTask := make(map[string][]core.Event)
 	requestEventsByTask := make(map[string][]core.Event)
 	forgeEventsByTask := make(map[string][]core.Event)
-	// The folds below read no snapshot key, so the query leaves historical
-	// snapshot bodies in the database (component-task-lifecycle, Compact event
-	// reads).
-	// Rank inside the database: a task that renewed one lease a thousand times
-	// contributes one row per (kind, order) instead of a thousand
-	// (activity-marker-bounds). The folds read rows in event order, so the
-	// kept rows must still arrive ordered by at and id.
-	// activityMarkerLatestKinds are the kinds whose folds read only the newest
-	// row of each order: a lease renewal supersedes the previous renewal and
-	// nothing else. Every other kind keeps all of its rows, because its fold
-	// reads the whole set or depends on the order of the rows it reads
-	// (activity-marker-bounds).
-	activityMarkerLatestKinds := []string{"work_order.lease_renewed"}
-	markerScope := `SELECT e.id,e.task_id,COALESCE(e.job_id,'') AS job_id,e.kind,` + compactEventPayloadColumn + ` AS event_payload,e.at AS event_at,
-		COALESCE(NULLIF(e.job_id,''),NULLIF(e.payload_json->>'review_work_order_id',''),NULLIF(e.payload_json->>'id',''),'') AS order_key
+	// Keep Go decoding for fold semantics, reducing only safe renewal shapes.
+	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,'') AS job_id,e.kind,` + markerEventPayloadColumn + ` AS event_payload,e.at AS event_at
 		FROM events e JOIN tasks t ON t.id=e.task_id
 		WHERE t.workspace_id=$1
 		AND (cardinality($2::text[])=0 OR t.id=ANY($2::text[]))
 		AND (
-			(e.kind='pipeline.bounced' AND e.payload_json->>'source'='user-request-changes') OR
-			(e.kind='work_order.claimed' AND e.payload_json->>'stage'='implement') OR
-			(e.kind IN ('work_order.claimed','work_order.lease_renewed','work_order.released','review.completed','review.accepted','task.setup.changed')
-				AND e.task_id=ANY($3::text[])) OR
-			(e.kind='work_order.updated' AND e.payload_json->>'stage'='implement' AND e.payload_json->>'state'='submitted') OR
-			(e.kind<>'work_order.updated' AND e.kind=ANY($4::text[]))
-		)`
-	markerQuery := `WITH marker_scope AS (` + markerScope + `), ranked AS (
-		SELECT id,task_id,job_id,kind,event_payload,event_at,
-			ROW_NUMBER() OVER (PARTITION BY task_id,kind,order_key ORDER BY event_at DESC,id DESC) AS position
-		FROM marker_scope WHERE kind = ANY($5::text[])
-	), kept AS (
-		SELECT id,task_id,job_id,kind,event_payload,event_at FROM ranked WHERE position=1
-		UNION ALL
-		SELECT id,task_id,job_id,kind,event_payload,event_at FROM marker_scope WHERE kind <> ALL($5::text[])
-	)
-	SELECT id,task_id,job_id,kind,event_payload,event_at FROM kept ORDER BY event_at,id`
+			e.kind IN ('pipeline.bounced','work_order.claimed','work_order.updated') OR
+			(e.kind IN ('work_order.released','review.completed','review.accepted','task.setup.changed') AND e.task_id=ANY($3::text[])) OR
+			(e.kind IN ('work_order.claimed','work_order.lease_renewed') AND e.task_id=ANY($5::text[])) OR
+			e.kind=ANY($4::text[])
+		)
+		ORDER BY event_at,id`
 	// The forge failure kinds are the ones store.LatestForgeFailure reads;
 	// of work_order.updated it reads only an implement submission
 	// (component-next-action; component-submission-merge).
-	markerArgs := []any{workspace(ctx), emptyIfNil(taskIDs), emptyIfNil(reviewTaskIDs), store.ForgeFailureEventKinds, activityMarkerLatestKinds}
+	markerArgs := []any{workspace(ctx), emptyIfNil(taskIDs), emptyIfNil(reviewTaskIDs), store.ForgeFailureEventKinds, emptyIfNil(liveReviewTaskIDs)}
+	if len(liveReviewTaskIDs) > 0 {
+		markerQuery = boundedMarkerFoldQuery(markerQuery)
+		markerArgs = append(markerArgs, now.Unix(), now.Nanosecond())
+	}
 	markerRows, err := s.boundary.Query(ctx, markerQuery, markerArgs...)
 	if err != nil {
 		return nil, nil, time.Time{}, err
@@ -960,40 +958,16 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 		return nil, nil, time.Time{}, err
 	}
 	markerRows.Close()
-	taskIDsForState := make([]string, 0, len(rows))
-	for _, row := range rows {
-		taskIDsForState = append(taskIDsForState, row.taskID)
-	}
-	taskStates := make(map[string]core.TaskState, len(taskIDsForState))
-	if len(taskIDsForState) > 0 {
-		stateRows, stateErr := s.boundary.Query(ctx, `SELECT id,state FROM tasks WHERE workspace_id=$1 AND id=ANY($2::text[])`, workspace(ctx), taskIDsForState)
-		if stateErr != nil {
-			return nil, nil, time.Time{}, stateErr
-		}
-		for stateRows.Next() {
-			var taskID string
-			var state core.TaskState
-			if stateErr = stateRows.Scan(&taskID, &state); stateErr != nil {
-				stateRows.Close()
-				return nil, nil, time.Time{}, stateErr
-			}
-			taskStates[taskID] = state
-		}
-		if stateErr = stateRows.Err(); stateErr != nil {
-			stateRows.Close()
-			return nil, nil, time.Time{}, stateErr
-		}
-		stateRows.Close()
-	}
 	var horizon time.Time
-	for taskID, events := range eventsByTask {
-		if lease := store.ActivityReviewLeaseHorizon(ordersByTask[taskID], events, now); !lease.IsZero() && (horizon.IsZero() || lease.Before(horizon)) {
+	for taskID, taskOrders := range ordersByTask {
+		lease := store.ActivityReviewLeaseHorizon(taskOrders, eventsByTask[taskID], now)
+		if !lease.IsZero() && (horizon.IsZero() || lease.Before(horizon)) {
 			horizon = lease
 		}
 	}
 	result := make([]store.ActivityMarker, len(rows))
 	for i, row := range rows {
-		task := core.Task{ID: row.taskID, State: taskStates[row.taskID]}
+		task := core.Task{ID: row.taskID, State: row.state}
 		result[i] = store.ActivityMarker{
 			TaskID: row.taskID, LatestStage: core.Stage(row.latestStage), LastEventAt: row.lastEventAt, LastEventID: row.lastEventID,
 			ForgeFailure:              store.LatestForgeFailure(forgeEventsByTask[row.taskID]),

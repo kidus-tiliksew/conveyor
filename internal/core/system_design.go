@@ -450,12 +450,56 @@ type DecisionCitationSource struct {
 	Content    string
 }
 
+// DecisionCitationChunk bounds the decision IDs one citation statement
+// names, so a workspace's decision set costs a bounded number of statements
+// rather than one statement over an unbounded list
+// (component-document-corpus, Decision citations).
+const DecisionCitationChunk = 100
+
+// DecisionCitationTokenClass is the regular expression a citation query
+// applies to document content before it looks for a whole decision token:
+// every character that cannot appear inside a token becomes the separator
+// "|", while ASCII word characters and the "-" inside an ID stay. The class
+// spells its ranges explicitly, so a database evaluates the same ASCII rule
+// whatever its locale, collation, or word-boundary syntax.
+//
+// A token is whole when it sits between separators, so the query pads the
+// normalized content with "|" and searches for the ID between a boundary on
+// each side. A token may be bounded by a separator or by a hyphen, because a
+// hyphen is not an ASCII word character either; the four prefix/suffix
+// spellings cover both. That search reproduces DecisionTokens exactly: a
+// multi-byte character is a separator, ASCII case is exact, and DEC-4 never
+// matches inside DEC-40.
+const DecisionCitationTokenClass = `[^A-Za-z0-9_-]`
+
+// SortDecisionCitations orders citations as DeriveDecisionCitations does:
+// decision number, then tier with requirement first, then listed title in
+// byte order, then document ID. A backend that selects the citation rows in
+// the database calls it, so ordering never depends on a database collation.
+func SortDecisionCitations(citations []DecisionCitation) {
+	sort.SliceStable(citations, func(i, j int) bool { return decisionCitationLess(citations[i], citations[j]) })
+}
+
+func decisionCitationLess(left, right DecisionCitation) bool {
+	if left.DecisionID != right.DecisionID {
+		return decisionIDLess(left.DecisionID, right.DecisionID)
+	}
+	if left.Tier != right.Tier {
+		return decisionCitationTierRank(left.Tier) < decisionCitationTierRank(right.Tier)
+	}
+	if left.Title != right.Title {
+		return left.Title < right.Title
+	}
+	return left.DocumentID < right.DocumentID
+}
+
 // DeriveDecisionCitations applies the corpus whole-token rule to each source
 // and keeps the tokens that name one of decisionIDs, the workspace's decision
-// records in any state. Every backend hands its rows here, so matching and
-// order never depend on SQL regular expressions or collation. Items sort by
-// decision number, then tier with requirement first, then listed title in byte
-// order, then document ID. The result is never nil.
+// records in any state. The memory store and the citation tests hand their
+// rows here, so this derivation is the reference every database membership
+// must reproduce. Items sort by decision number, then tier with requirement
+// first, then listed title in byte order, then document ID. The result is
+// never nil.
 func DeriveDecisionCitations(decisionIDs []string, sources []DecisionCitationSource) []DecisionCitation {
 	known := make(map[string]bool, len(decisionIDs))
 	for _, id := range decisionIDs {
@@ -469,19 +513,7 @@ func DeriveDecisionCitations(decisionIDs []string, sources []DecisionCitationSou
 			}
 		}
 	}
-	sort.SliceStable(citations, func(i, j int) bool {
-		left, right := citations[i], citations[j]
-		if left.DecisionID != right.DecisionID {
-			return decisionIDLess(left.DecisionID, right.DecisionID)
-		}
-		if left.Tier != right.Tier {
-			return decisionCitationTierRank(left.Tier) < decisionCitationTierRank(right.Tier)
-		}
-		if left.Title != right.Title {
-			return left.Title < right.Title
-		}
-		return left.DocumentID < right.DocumentID
-	})
+	SortDecisionCitations(citations)
 	return citations
 }
 

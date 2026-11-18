@@ -49,6 +49,44 @@ func RunSystemDesignProposalConformance(t *testing.T, st store.Store, ctx contex
 	if len(eventsAfter) != len(eventsBefore) {
 		t.Fatalf("repeat proposal appended event: before=%d after=%d", len(eventsBefore), len(eventsAfter))
 	}
+	// A document-bounded selection returns the pending revisions of exactly
+	// the named documents from any origin: the document's unconfirmed
+	// operator-origin initial version and its task-origin proposal, and
+	// nothing of other documents (req-operator-next-action AC-1.6).
+	all, err := st.ListPendingProposals(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []core.PendingProposal
+	for _, proposal := range all {
+		if proposal.Tier == "system_design" && proposal.ID == document.ID {
+			want = append(want, proposal)
+		}
+	}
+	bounded, err := st.ListPendingProposalsForDocuments(ctx, []string{document.ID, "missing-document"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(want) != 2 || len(bounded) != len(want) {
+		t.Fatalf("global document queue=%+v, bounded=%+v", want, bounded)
+	}
+	origins := map[string]bool{}
+	for i := range bounded {
+		if bounded[i].ID != want[i].ID || bounded[i].Version != want[i].Version || bounded[i].Tier != want[i].Tier ||
+			bounded[i].OriginType != want[i].OriginType || bounded[i].OriginID != want[i].OriginID {
+			t.Fatalf("bounded[%d]=%+v, global=%+v", i, bounded[i], want[i])
+		}
+		origins[bounded[i].OriginType] = true
+	}
+	if !origins["operator"] || !origins["task"] || bounded[len(bounded)-1].Version != first.Version {
+		t.Fatalf("bounded proposals omit an origin: %+v", bounded)
+	}
+	if none, err := st.ListPendingProposalsForDocuments(ctx, []string{"missing-document"}); err != nil || len(none) != 0 {
+		t.Fatalf("unnamed document bound=%+v err=%v", none, err)
+	}
+	if empty, err := st.ListPendingProposalsForDocuments(ctx, nil); err != nil || len(empty) != 0 {
+		t.Fatalf("empty bound=%+v err=%v", empty, err)
+	}
 	var wg sync.WaitGroup
 	errs := make(chan error, 4)
 	for range 4 {

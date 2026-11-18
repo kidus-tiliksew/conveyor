@@ -154,7 +154,7 @@ func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []by
 	ctx = dbmetrics.WithReadLabel(ctx, "GetArtifact")
 	var artifact core.Artifact
 	var content []byte
-	err := documentRow(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=? AND a.id=? ORDER BY (l.role='typed_verification_evidence') DESC,l.role LIMIT 1`, documentWorkspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.RequirementID, &artifact.PlanningSessionID)
+	err := documentRow(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND `+s.artifactLinkIDMatch("l", "a.id", false)+` WHERE a.workspace_id=? AND a.id=? ORDER BY (l.role='typed_verification_evidence') DESC,l.role LIMIT 1`, documentWorkspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.RequirementID, &artifact.PlanningSessionID)
 	if err != nil {
 		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
 	}
@@ -168,11 +168,16 @@ func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID
 	ctx = dbmetrics.WithReadLabel(ctx, "GetArtifactForPlanningSession")
 	var artifact core.Artifact
 	var content []byte
+	sessionMatch := s.artifactLinkOwnerMatch("l", "planning_session_id", "?", false)
+	args := []any{documentWorkspace(ctx), id}
+	for range strings.Count(sessionMatch, "?") {
+		args = append(args, sessionID)
+	}
 	err := documentRow(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,l.role,COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'')
 		FROM artifacts a
-		JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
-		WHERE a.workspace_id=? AND a.id=? AND l.planning_session_id=?
-		ORDER BY l.role LIMIT 1`, documentWorkspace(ctx), id, sessionID).Scan(
+		JOIN artifact_links l ON l.workspace_id=a.workspace_id AND `+s.artifactLinkIDMatch("l", "a.id", false)+`
+		WHERE a.workspace_id=? AND a.id=? AND `+sessionMatch+`
+		ORDER BY l.role LIMIT 1`, args...).Scan(
 		&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType,
 		&artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role,
 		&artifact.TaskID, &artifact.RequirementID, &artifact.PlanningSessionID,
@@ -181,24 +186,6 @@ func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID
 		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
 	}
 	return artifact, content, nil
-}
-
-func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListArtifacts")
-	rows, err := documentRows(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=? ORDER BY a.created_at,a.id,l.role`, documentWorkspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []core.Artifact
-	for rows.Next() {
-		var artifact core.Artifact
-		if err := rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.RequirementID, &artifact.PlanningSessionID); err != nil {
-			return nil, err
-		}
-		result = append(result, artifact)
-	}
-	return result, rows.Err()
 }
 
 // attemptCaptureInsertFault is a test-only seam that fails the capture

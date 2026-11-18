@@ -1788,6 +1788,9 @@ func (m *memory) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.
 			continue
 		}
 		order.Assignee = task.Assignee
+		// Pin bodies stay out of the projected read, as in the SQL backends;
+		// the digest stays, ListTaskWorkOrdersSnapshot returns the bodies.
+		order.ServedRequirementSnapshot, order.GovernanceSnapshot = nil, nil
 		out = append(out, ProjectWorkOrderAt(order, now))
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1821,15 +1824,19 @@ func (m *memory) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([
 	return out, nil
 }
 
-func (m *memory) ListTaskWorkOrdersSnapshot(_ context.Context, taskID string) ([]core.WorkOrder, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *memory) ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, workspaceSelected := WorkspaceFromContext(ctx)
 	now := time.Now().UTC()
 	orders := make([]core.WorkOrder, 0)
 	for _, order := range m.workOrders {
-		if order.TaskID == taskID {
-			orders = append(orders, ProjectWorkOrderAt(order, now))
+		task, ok := m.tasks[order.TaskID]
+		if !ok || order.TaskID != taskID || workspaceSelected && workspace != "" && task.Workspace != workspace {
+			continue
 		}
+		order.Assignee = task.Assignee
+		orders = append(orders, ProjectWorkOrderAt(order, now))
 	}
 	sort.Slice(orders, func(i, j int) bool {
 		if orders[i].CreatedAt.Equal(orders[j].CreatedAt) {

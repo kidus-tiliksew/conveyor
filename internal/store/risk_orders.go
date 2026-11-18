@@ -804,7 +804,7 @@ func (m *memory) ListRiskOrdersForTasks(ctx context.Context, workspaceID string,
 	for _, taskID := range taskIDs {
 		orders := m.taskRiskOrdersLocked(workspaceID, taskID)
 		for i := range orders {
-			orders[i].Order = ProjectWorkOrderAt(orders[i].Order, now)
+			orders[i].Order = withoutAuthoritySnapshots(ProjectWorkOrderAt(orders[i].Order, now))
 		}
 		if orders == nil {
 			orders = []core.RiskOrder{}

@@ -182,12 +182,6 @@ var (
 	// of work_order.updated the query selects only an implement submission
 	// (component-next-action; component-submission-merge).
 	activityMarkerForgeKinds = store.ForgeFailureEventKinds
-	// activityMarkerLatestKinds are the kinds whose folds read only the newest
-	// row of each order: a lease renewal supersedes the previous renewal and
-	// nothing else. Every other kind keeps all of its rows, because its fold
-	// reads the whole set or depends on the order of the rows it reads
-	// (activity-marker-bounds).
-	activityMarkerLatestKinds = []string{"work_order.lease_renewed"}
 )
 
 // listActivityMarkers folds the markers from one order selection projected
@@ -195,69 +189,18 @@ var (
 // lifecycle events it read (component-persistence, Board activity validation
 // reads).
 func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now time.Time) ([]store.ActivityMarker, []core.WorkOrder, time.Time, error) {
-	type markerRow struct {
-		taskID      string
-		latestStage string
-		lastEventAt time.Time
-		lastEventID int64
-	}
-	var rows []markerRow
-	var selected *documentResultSet
-	var err error
-	taskFilter := ""
-	if len(taskIDs) > 0 {
-		taskFilter = " AND id IN (%s)"
-	}
-	// Events shard by task rather than workspace. Rank the scoped rows and
-	// join once: correlated LIMIT subqueries cannot cross those shard keys.
-	query := `WITH scoped_tasks AS (
-		SELECT workspace_id,id,created_at FROM tasks WHERE workspace_id=?` + taskFilter + `
-	), claimed AS (
-		SELECT w.workspace_id,w.task_id,w.stage,
-			ROW_NUMBER() OVER (PARTITION BY w.workspace_id,w.task_id ORDER BY w.execution_started_at DESC,w.created_at DESC,w.id DESC) AS position
-		FROM work_orders w JOIN scoped_tasks t ON t.workspace_id=w.workspace_id AND t.id=w.task_id WHERE w.state='claimed'
-	), latest_jobs AS (
-		SELECT j.workspace_id,j.task_id,j.stage,
-			ROW_NUMBER() OVER (PARTITION BY j.workspace_id,j.task_id ORDER BY j.started_at DESC,j.id DESC) AS position
-		FROM jobs j JOIN scoped_tasks t ON t.workspace_id=j.workspace_id AND t.id=j.task_id
-	), latest_events AS (
-		SELECT e.workspace_id,e.task_id,e.at,e.id,
-			ROW_NUMBER() OVER (PARTITION BY e.workspace_id,e.event_shard_key ORDER BY e.at DESC,e.id DESC) AS position
-		FROM events_columnstore e JOIN scoped_tasks t ON t.workspace_id=e.workspace_id AND t.id=e.event_shard_key AND t.id=e.task_id
-	)
-	SELECT t.id,COALESCE(w.stage,j.stage,''),COALESCE(e.at,t.created_at),COALESCE(e.id,0)
-	FROM scoped_tasks t
-	LEFT JOIN claimed w ON w.workspace_id=t.workspace_id AND w.task_id=t.id AND w.position=1
-	LEFT JOIN latest_jobs j ON j.workspace_id=t.workspace_id AND j.task_id=t.id AND j.position=1
-	LEFT JOIN latest_events e ON e.workspace_id=t.workspace_id AND e.task_id=t.id AND e.position=1
-	ORDER BY t.created_at,t.id`
-	if len(taskIDs) == 0 {
-		selected, err = documentRows(ctx, s.db, query, documentWorkspace(ctx))
-	} else {
-		selected, err = documentBatchRows(ctx, s.db, query, documentWorkspace(ctx), taskIDs)
-	}
-
+	rows, err := s.markerTaskRows(ctx, taskIDs)
 	if err != nil {
 		return nil, nil, time.Time{}, err
 	}
-	for selected.Next() {
-		var row markerRow
-		if err = selected.Scan(&row.taskID, &row.latestStage, &row.lastEventAt, &row.lastEventID); err != nil {
-			selected.Close()
-			return nil, nil, time.Time{}, err
-		}
-		rows = append(rows, row)
-	}
-	if err = selected.Err(); err != nil {
-		selected.Close()
-		return nil, nil, time.Time{}, err
-	}
-	selected.Close()
 	// Scope the order read to the requested tasks. The activity feed still
 	// wants the whole workspace, but a Tasks page must not pull every
 	// workspace order in only to discard most of it.
 	if len(rows) == 0 {
 		return []store.ActivityMarker{}, []core.WorkOrder{}, time.Time{}, nil
+	}
+	if err = s.markerLatestSummaries(ctx, rows); err != nil {
+		return nil, nil, time.Time{}, err
 	}
 	orders, err := s.activityWorkOrdersAt(ctx, taskIDs, now)
 	if err != nil {
@@ -279,9 +222,10 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 		}
 	}
 	ordersByTask := make(map[string][]core.WorkOrder)
-	hasReviewOrders := false
 	reviewTaskIDs := make([]string, 0)
 	seenReviewTask := map[string]bool{}
+	var liveReviewTaskIDs []string
+	seenLiveReviewTask := map[string]bool{}
 	for _, order := range orders {
 		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			blockers := blockersByTask[order.TaskID]
@@ -292,66 +236,36 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 			}
 		}
 		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
-		hasReviewOrders = hasReviewOrders || order.Stage == core.StageReview
-		if order.Stage == core.StageReview && (order.State == core.WorkOrderClaimed || order.State == core.WorkOrderQueued) &&
-			!order.ExecutionStartedAt.IsZero() && !seenReviewTask[order.TaskID] {
+		if order.Stage == core.StageReview && !seenReviewTask[order.TaskID] {
 			reviewTaskIDs = append(reviewTaskIDs, order.TaskID)
 			seenReviewTask[order.TaskID] = true
 		}
+		// Only an open review order reads its claim and renewal events:
+		// ReviewVerdictDiagnostics and ActivityReviewLeaseHorizon skip the rest.
+		if order.Stage == core.StageReview && (order.State == core.WorkOrderClaimed || order.State == core.WorkOrderQueued) {
+			if !seenLiveReviewTask[order.TaskID] {
+				liveReviewTaskIDs = append(liveReviewTaskIDs, order.TaskID)
+				seenLiveReviewTask[order.TaskID] = true
+			}
+		}
+	}
+	pageTaskIDs := make([]string, len(rows))
+	for i := range rows {
+		pageTaskIDs[i] = rows[i].taskID
+	}
+	foldEvents, err := s.markerFoldRows(ctx, pageTaskIDs, reviewTaskIDs, liveReviewTaskIDs, now)
+	if err != nil {
+		return nil, nil, time.Time{}, err
 	}
 	eventsByTask := make(map[string][]core.Event)
 	requestEventsByTask := make(map[string][]core.Event)
 	forgeEventsByTask := make(map[string][]core.Event)
-	// Select only the kinds the marker folds below read, so a marker read
-	// never transfers task.created bodies or other unrelated history. The
-	// review kinds are read only when a review order can consume them
-	// (component-persistence).
-	kinds := append([]string(nil), activityMarkerRequestKinds...)
-	kinds = append(kinds, activityMarkerForgeKinds...)
-	if hasReviewOrders {
-		kinds = append(kinds, activityMarkerReviewKinds...)
+	reviewTasks := make(map[string]bool, len(reviewTaskIDs))
+	for _, id := range reviewTaskIDs {
+		reviewTasks[id] = true
 	}
-	// The folds below read no snapshot key, so the query leaves historical
-	// snapshot bodies in the database (component-task-lifecycle, Compact event
-	// reads).
-	markerScope := `SELECT e.id,e.task_id,COALESCE(e.job_id,'') AS job_id,e.kind,` + compactEventPayloadColumn + ` AS event_payload,e.at AS event_at,` +
-		`COALESCE(NULLIF(e.job_id,''),NULLIF(JSON_EXTRACT_STRING(e.payload_json,'review_work_order_id'),''),NULLIF(JSON_EXTRACT_STRING(e.payload_json,'id'),''),'') AS order_key` +
-		` FROM events_columnstore e WHERE e.workspace_id=? AND e.task_id IS NOT NULL AND e.kind IN (` + taskMapMarks(len(kinds)) + `)` +
-		` AND (e.kind<>'work_order.updated' OR (JSON_EXTRACT_STRING(e.payload_json,'stage')='implement' AND JSON_EXTRACT_STRING(e.payload_json,'state')='submitted'))` +
-		` AND (e.kind<>'pipeline.bounced' OR JSON_EXTRACT_STRING(e.payload_json,'source')='user-request-changes')`
-	markerArgs := append([]any{documentWorkspace(ctx)}, taskMapArgs(kinds)...)
-	if len(taskIDs) > 0 {
-		markerScope += ` AND e.task_id IN (` + taskMapMarks(len(taskIDs)) + `)`
-		markerArgs = append(markerArgs, taskMapArgs(taskIDs)...)
-	}
-	// Rank inside the database: a task that renewed one lease a thousand times
-	// contributes one row per order instead of a thousand
-	// (activity-marker-bounds). The folds read rows in event order, so the
-	// kept rows must still arrive ordered by at and id.
-	markerQuery := `WITH marker_scope AS (` + markerScope + `), ranked AS (
-		SELECT id,task_id,job_id,kind,event_payload,event_at,
-			ROW_NUMBER() OVER (PARTITION BY task_id,kind,order_key ORDER BY event_at DESC,id DESC) AS position
-		FROM marker_scope WHERE kind IN (` + taskMapMarks(len(activityMarkerLatestKinds)) + `)
-	), kept AS (
-		SELECT id,task_id,job_id,kind,event_payload,event_at FROM ranked WHERE position=1
-		UNION ALL
-		SELECT id,task_id,job_id,kind,event_payload,event_at FROM marker_scope WHERE kind NOT IN (` + taskMapMarks(len(activityMarkerLatestKinds)) + `)
-	)
-	SELECT id,task_id,job_id,kind,event_payload,event_at FROM kept ORDER BY event_at,id`
-	markerArgs = append(markerArgs, taskMapArgs(activityMarkerLatestKinds)...)
-	markerArgs = append(markerArgs, taskMapArgs(activityMarkerLatestKinds)...)
-	markerRows, err := documentRows(ctx, s.db, markerQuery, markerArgs...)
-
-	if err != nil {
-		return nil, nil, time.Time{}, err
-	}
-	for markerRows.Next() {
-		var event core.Event
-		if scanErr := markerRows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.Payload, &event.At); scanErr != nil {
-			markerRows.Close()
-			return nil, nil, time.Time{}, scanErr
-		}
-		if hasReviewOrders && slices.Contains(activityMarkerReviewKinds, event.Kind) {
+	for _, event := range foldEvents {
+		if reviewTasks[event.TaskID] && slices.Contains(activityMarkerReviewKinds, event.Kind) {
 			eventsByTask[event.TaskID] = append(eventsByTask[event.TaskID], event)
 		}
 		switch {
@@ -361,45 +275,16 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 			forgeEventsByTask[event.TaskID] = append(forgeEventsByTask[event.TaskID], event)
 		}
 	}
-	if err = markerRows.Err(); err != nil {
-		markerRows.Close()
-		return nil, nil, time.Time{}, err
-	}
-	markerRows.Close()
-	taskIDsForState := make([]string, 0, len(rows))
-	for _, row := range rows {
-		taskIDsForState = append(taskIDsForState, row.taskID)
-	}
-	taskStates := make(map[string]core.TaskState, len(taskIDsForState))
-	if len(taskIDsForState) > 0 {
-		stateRows, stateErr := documentBatchRows(ctx, s.db, `SELECT id,state FROM tasks WHERE workspace_id=? AND id IN (%s)`, documentWorkspace(ctx), taskIDsForState)
-		if stateErr != nil {
-			return nil, nil, time.Time{}, stateErr
-		}
-		for stateRows.Next() {
-			var taskID string
-			var state core.TaskState
-			if stateErr = stateRows.Scan(&taskID, &state); stateErr != nil {
-				stateRows.Close()
-				return nil, nil, time.Time{}, stateErr
-			}
-			taskStates[taskID] = state
-		}
-		if stateErr = stateRows.Err(); stateErr != nil {
-			stateRows.Close()
-			return nil, nil, time.Time{}, stateErr
-		}
-		stateRows.Close()
-	}
 	var horizon time.Time
-	for taskID, events := range eventsByTask {
-		if lease := store.ActivityReviewLeaseHorizon(ordersByTask[taskID], events, now); !lease.IsZero() && (horizon.IsZero() || lease.Before(horizon)) {
+	for taskID, taskOrders := range ordersByTask {
+		lease := store.ActivityReviewLeaseHorizon(taskOrders, eventsByTask[taskID], now)
+		if !lease.IsZero() && (horizon.IsZero() || lease.Before(horizon)) {
 			horizon = lease
 		}
 	}
 	result := make([]store.ActivityMarker, len(rows))
 	for i, row := range rows {
-		task := core.Task{ID: row.taskID, State: taskStates[row.taskID]}
+		task := core.Task{ID: row.taskID, State: row.state}
 		result[i] = store.ActivityMarker{
 			TaskID: row.taskID, LatestStage: core.Stage(row.latestStage), LastEventAt: row.lastEventAt, LastEventID: row.lastEventID,
 			ForgeFailure:              store.LatestForgeFailure(forgeEventsByTask[row.taskID]),
@@ -617,6 +502,49 @@ func (s *Store) ListRequirementEventsByRequirement(ctx context.Context) (map[str
 	}
 	return out, rows.Err()
 }
+func (s *Store) ListRequirementEventsForRequirements(ctx context.Context, ids []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementEventsForRequirements")
+	out := make(map[string][]core.Event, len(ids))
+	predicates := make([]string, 0, len(ids))
+	args := []any{documentWorkspace(ctx)}
+	prepared := s.hotReadIndexReady("events_requirement_key_idx")
+	for _, id := range ids {
+		if _, exists := out[id]; exists {
+			continue
+		}
+		out[id] = []core.Event{}
+		if id == "" {
+			continue
+		}
+		if prepared {
+			predicates = append(predicates, "(event_requirement_key=SHA2(?,256) AND BINARY JSON_EXTRACT_STRING(payload_json,'requirement_id')=BINARY ?)")
+			args = append(args, id, id)
+		} else {
+			predicates = append(predicates, "BINARY JSON_EXTRACT_STRING(payload_json,'requirement_id')=BINARY ?")
+			args = append(args, id)
+		}
+	}
+	if len(predicates) == 0 {
+		return out, nil
+	}
+	query := `SELECT id,kind,actor_id,actor_role,payload_json,at,JSON_EXTRACT_STRING(payload_json,'requirement_id') FROM events_columnstore WHERE workspace_id=? AND task_id IS NULL AND (` + strings.Join(predicates, " OR ") + `) ORDER BY at,id`
+	rows, err := documentRows(ctx, s.db, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var event core.Event
+		var id string
+		if err := rows.Scan(&event.ID, &event.Kind, &event.ActorID, &event.ActorRole, &event.Payload, &event.At, &id); err != nil {
+			return nil, err
+		}
+		if _, ok := out[id]; ok {
+			out[id] = append(out[id], event)
+		}
+	}
+	return out, rows.Err()
+}
 func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, ids []string) (map[string][]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementDeliveryEventsForTasks")
 	out := map[string][]core.Event{}
@@ -685,7 +613,7 @@ func (s *Store) ListDocumentEventPage(ctx context.Context, kind core.LineageNode
 	}
 	// One statement pins count, snapshot, and page membership together. Only
 	// selected event payloads cross the database boundary.
-	query, args := documentEventPageQuery(documentWorkspace(ctx), kind, id, q)
+	query, args := documentEventPageQueryForLayout(documentWorkspace(ctx), kind, id, q, s.hotReadIndexReady("events_requirement_key_idx"))
 	return readDocumentEventPage(ctx, s.db, page, query, args...)
 }
 
@@ -717,9 +645,17 @@ func readDocumentEventPage(ctx context.Context, db s2log.Executor, page store.Do
 // Go instead of one OR predicate over both kinds (component-persistence;
 // component-document-corpus, Public surfaces).
 func documentEventPageQuery(ws string, kind core.LineageNodeType, id string, q store.DocumentEventQuery) (string, []any) {
+	return documentEventPageQueryForLayout(ws, kind, id, q, false)
+}
+
+func documentEventPageQueryForLayout(ws string, kind core.LineageNodeType, id string, q store.DocumentEventQuery, prepared bool) (string, []any) {
 	page := []any{q.Limit, q.Offset, q.SnapshotID, q.SnapshotID, ws}
 	if kind == core.LineageSystemDesign {
 		return systemDesignDocumentEventPageSQL, append([]any{ws, id, q.SnapshotID, q.SnapshotID}, page...)
+	}
+	if prepared {
+		query := strings.Replace(requirementDocumentEventPageSQL, "JSON_EXTRACT_STRING(e.payload_json,'requirement_id')=?", "e.event_requirement_key=SHA2(?,256) AND JSON_EXTRACT_STRING(e.payload_json,'requirement_id')=?", 1)
+		return query, append([]any{ws, id, id, q.SnapshotID, q.SnapshotID, ws, id, q.SnapshotID, q.SnapshotID}, page...)
 	}
 	return requirementDocumentEventPageSQL, append([]any{ws, id, q.SnapshotID, q.SnapshotID, ws, id, q.SnapshotID, q.SnapshotID}, page...)
 }

@@ -692,99 +692,45 @@ func (s *Store) ListRequirementDeliveryLineage(ctx context.Context, requirementI
 	if strings.TrimSpace(requirementID) == "" || budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
 		return nil, fmt.Errorf("requirement delivery lineage requires a requirement id and bounded depth, nodes, and links")
 	}
-	rows, err := s.boundary.Query(ctx, `WITH RECURSIVE walk(node_type,node_id,depth) AS (
-		SELECT 'requirement'::text,$2::text,0
-		UNION
-		SELECT l.dst_type,l.dst_id,w.depth+1
-		FROM walk w JOIN links l ON l.workspace_id=$1 AND l.src_type=w.node_type AND l.src_id=w.node_id
-		WHERE w.depth < $3 AND (
-			(l.kind='serves' AND l.src_type='requirement' AND l.dst_type IN ('task','blueprint')) OR
-			(l.kind='versions' AND l.src_type='blueprint' AND l.dst_type='blueprint_version') OR
-			(l.kind='materializes' AND l.src_type='blueprint_version' AND l.dst_type='task')
-		)
-	), chosen AS (
-		SELECT min(w.depth) AS src_depth,l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
-		FROM walk w JOIN links l ON l.workspace_id=$1 AND l.src_type=w.node_type AND l.src_id=w.node_id
-		WHERE w.depth < $3 AND (
-			(l.kind='serves' AND l.src_type='requirement' AND l.dst_type IN ('task','blueprint')) OR
-			(l.kind='versions' AND l.src_type='blueprint' AND l.dst_type='blueprint_version') OR
-			(l.kind='materializes' AND l.src_type='blueprint_version' AND l.dst_type='task')
-		)
-		GROUP BY l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
-	)
-	SELECT workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event,created_at,created_by_event_id
-	FROM chosen ORDER BY src_depth,src_type,src_id,dst_type,dst_id,kind LIMIT $4`, workspace(ctx), requirementID, budget.MaxDepth, budget.MaxLinks+1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	result := make([]core.LineageLink, 0, budget.MaxLinks+1)
-	for rows.Next() {
-		var link core.LineageLink
-		var legacy pgtype.Text
-		var createdAt pgtype.Timestamptz
-		var eventID pgtype.Int8
-		if err = rows.Scan(&link.Workspace, &link.SrcType, &link.SrcID, &link.DstType, &link.DstID, &link.Kind, &legacy, &createdAt, &eventID); err != nil {
-			return nil, err
-		}
-		link.LegacyCreatedByEvent, link.CreatedByEventID, link.CreatedAt = legacy.String, eventID.Int64, createdAt.Time
-		result = append(result, link)
-	}
-	return result, rows.Err()
+	selected, err := s.ListRequirementDeliveryLineageByRequirement(ctx, []string{requirementID}, budget)
+	return selected[requirementID], err
 }
 
 func (s *Store) ListRequirementDeliveryLineageByRequirement(ctx context.Context, requirementIDs []string, budget core.LineageTraversalBudget) (map[string][]core.LineageLink, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementDeliveryLineageByRequirement")
-	if len(requirementIDs) == 0 {
-		return map[string][]core.LineageLink{}, nil
-	}
-	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
-		return nil, fmt.Errorf("requirement delivery lineage requires bounded depth, nodes, and links")
-	}
-	rows, err := s.boundary.Query(ctx, `WITH RECURSIVE walk(requirement_id,node_type,node_id,depth) AS (
-		SELECT requirement_id,'requirement'::text,requirement_id,0
-		FROM unnest($2::text[]) AS seed(requirement_id)
-		UNION
-		SELECT w.requirement_id,l.dst_type,l.dst_id,w.depth+1
-		FROM walk w JOIN links l ON l.workspace_id=$1 AND l.src_type=w.node_type AND l.src_id=w.node_id
-		WHERE w.depth < $3 AND (
-			(l.kind='serves' AND l.src_type='requirement' AND l.dst_type IN ('task','blueprint')) OR
-			(l.kind='versions' AND l.src_type='blueprint' AND l.dst_type='blueprint_version') OR
-			(l.kind='materializes' AND l.src_type='blueprint_version' AND l.dst_type='task')
-		)
-	), chosen AS (
-		SELECT w.requirement_id,min(w.depth) AS src_depth,l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
-		FROM walk w JOIN links l ON l.workspace_id=$1 AND l.src_type=w.node_type AND l.src_id=w.node_id
-		WHERE w.depth < $3 AND (
-			(l.kind='serves' AND l.src_type='requirement' AND l.dst_type IN ('task','blueprint')) OR
-			(l.kind='versions' AND l.src_type='blueprint' AND l.dst_type='blueprint_version') OR
-			(l.kind='materializes' AND l.src_type='blueprint_version' AND l.dst_type='task')
-		)
-		GROUP BY w.requirement_id,l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
-	), ranked AS (
-		SELECT *,row_number() OVER (PARTITION BY requirement_id ORDER BY src_depth,src_type,src_id,dst_type,dst_id,kind) AS position
-		FROM chosen
-	)
-	SELECT requirement_id,workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event,created_at,created_by_event_id
-	FROM ranked WHERE position <= $4 ORDER BY requirement_id,position`, workspace(ctx), requirementIDs, budget.MaxDepth, budget.MaxLinks+1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make(map[string][]core.LineageLink, len(requirementIDs))
-	for rows.Next() {
-		var requirementID string
-		var link core.LineageLink
-		var legacy pgtype.Text
-		var createdAt pgtype.Timestamptz
-		var eventID pgtype.Int8
-		if err = rows.Scan(&requirementID, &link.Workspace, &link.SrcType, &link.SrcID, &link.DstType, &link.DstID, &link.Kind, &legacy, &createdAt, &eventID); err != nil {
+	return store.FetchRequirementDeliveryLineage(ctx, requirementIDs, budget, func(ctx context.Context, nodes []core.LineageNode, limit int) (map[core.LineageNode][]core.LineageLink, error) {
+		types, ids := make([]string, len(nodes)), make([]string, len(nodes))
+		for i, node := range nodes {
+			types[i], ids[i] = string(node.Type), node.ID
+		}
+		rows, err := s.boundary.Query(ctx, `SELECT workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event,created_at,created_by_event_id FROM (
+			SELECT l.*,ROW_NUMBER() OVER (PARTITION BY l.src_type,l.src_id ORDER BY l.dst_type COLLATE "C",l.dst_id COLLATE "C",l.kind COLLATE "C") AS rn
+			FROM unnest($2::text[],$3::text[]) AS q(node_type,node_id)
+			JOIN links l ON l.workspace_id=$1 AND l.src_type=q.node_type AND l.src_id=q.node_id
+			WHERE (l.kind='serves' AND l.src_type='requirement' AND l.dst_type IN ('task','blueprint')) OR
+				(l.kind='versions' AND l.src_type='blueprint' AND l.dst_type='blueprint_version') OR
+				(l.kind='materializes' AND l.src_type='blueprint_version' AND l.dst_type='task')
+		) selected WHERE rn<=$4 ORDER BY src_type COLLATE "C",src_id COLLATE "C",dst_type COLLATE "C",dst_id COLLATE "C",kind COLLATE "C"`,
+			workspace(ctx), types, ids, limit)
+		if err != nil {
 			return nil, err
 		}
-		link.LegacyCreatedByEvent, link.CreatedByEventID, link.CreatedAt = legacy.String, eventID.Int64, createdAt.Time
-		out[requirementID] = append(out[requirementID], link)
-	}
-	return out, rows.Err()
+		defer rows.Close()
+		out := make(map[core.LineageNode][]core.LineageLink, len(nodes))
+		for rows.Next() {
+			var link core.LineageLink
+			var legacy pgtype.Text
+			var createdAt pgtype.Timestamptz
+			var eventID pgtype.Int8
+			if err := rows.Scan(&link.Workspace, &link.SrcType, &link.SrcID, &link.DstType, &link.DstID, &link.Kind, &legacy, &createdAt, &eventID); err != nil {
+				return nil, err
+			}
+			link.LegacyCreatedByEvent, link.CreatedByEventID, link.CreatedAt = legacy.String, eventID.Int64, createdAt.Time
+			node := core.LineageNode{Type: link.SrcType, ID: link.SrcID}
+			out[node] = append(out[node], link)
+		}
+		return out, rows.Err()
+	})
 }
 
 func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
@@ -924,4 +870,48 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		return nil
 	})
 	return result, err
+}
+
+const listArtifactsForLineageSQL = `WITH wanted(node_type,node_id,ord) AS (
+	SELECT node_type,node_id,ord::int FROM unnest($2::text[],$3::text[]) WITH ORDINALITY AS w(node_type,node_id,ord)
+), matched AS (
+	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
+	FROM wanted w JOIN artifact_links l ON w.node_type='task' AND l.workspace_id=$1 AND l.task_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
+	UNION ALL
+	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
+	FROM wanted w JOIN artifact_links l ON w.node_type='requirement' AND l.workspace_id=$1 AND l.requirement_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
+	UNION ALL
+	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
+	FROM wanted w JOIN artifact_links l ON w.node_type='planning_session' AND l.workspace_id=$1 AND l.planning_session_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
+	UNION ALL
+	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
+	FROM wanted w JOIN artifacts a ON w.node_type='evidence' AND a.workspace_id=$1 AND a.id=w.node_id JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
+		AND l.role='verification_evidence' AND l.task_id IS NOT NULL
+		AND ((a.content_type IN ('image/png','image/jpeg','image/webp') AND a.size_bytes BETWEEN 1 AND 10485760)
+			OR (a.content_type IN ('video/mp4','video/webm') AND a.size_bytes BETWEEN 1 AND 26214400))
+), dedup AS (
+	SELECT id,workspace_id,name,content_type,size_bytes,created_at,role,task_id,requirement_id,planning_session_id,min(ord) AS ord
+	FROM matched GROUP BY id,workspace_id,name,content_type,size_bytes,created_at,role,task_id,requirement_id,planning_session_id
+)
+SELECT id,workspace_id,name,content_type,size_bytes,created_at,role,
+	COALESCE(task_id,''),COALESCE(requirement_id,''),COALESCE(planning_session_id,'')
+FROM dedup ORDER BY ord,created_at,id,role`
+
+func (s *Store) ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListArtifactsForLineage")
+	types, ids := make([]string, 0, len(nodes)), make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Valid() {
+			types = append(types, string(node.Type))
+			ids = append(ids, node.ID)
+		}
+	}
+	if len(types) == 0 {
+		return []core.Artifact{}, nil
+	}
+	rows, err := s.boundary.Query(ctx, listArtifactsForLineageSQL, workspace(ctx), types, ids)
+	if err != nil {
+		return nil, err
+	}
+	return scanArtifactListRows(rows)
 }

@@ -314,11 +314,11 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 					continue
 				}
 			}
-			job, err := logqueue.Load(logTx(ctx, tx), s.log, ws, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), id))
+			unfinished, err := logqueue.StreamUnfinished(logTx(ctx, tx), s.log, ws, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), id))
 			if err != nil {
 				return err
 			}
-			if job.Active() {
+			if unfinished {
 				continue
 			}
 			inserted, err := s.enqueueTaskTx(ctx, tx, id, ws)
@@ -349,11 +349,17 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 		return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
 	})
 	for _, t := range tasks {
-		job, err := s.loadJob(ctx, ws, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), t.ID))
+		var job logqueue.Job
+		var discarded bool
+		err = s.withTx(ctx, func(tx *sql.Tx) error {
+			var loadErr error
+			job, discarded, loadErr = logqueue.LoadDiscarded(logTx(ctx, tx), s.log, ws, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), t.ID))
+			return loadErr
+		})
 		if err != nil {
 			return n, err
 		}
-		if job.State == logqueue.StateDiscarded && job.Attempt >= job.MaxAttempts {
+		if discarded {
 			_, err = taskops.New(s).Perform(ctx, t.ID, taskops.Command{Kind: core.TaskDispatchFailFinal, RecoveryStage: t.NextStage, ProjectStages: true, FailureMessage: "the queue discarded the dispatch job after its final attempt", Attempt: job.Attempt, MaxAttempts: job.MaxAttempts})
 			if err != nil {
 				return n, err

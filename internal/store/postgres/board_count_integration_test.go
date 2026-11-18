@@ -44,9 +44,9 @@ func TestBoardStatementCountIntegration(t *testing.T) {
 			t.Fatalf("size %d: items=%d total=%d", size, len(board.Items), board.Total)
 		}
 		stats := st.ReadStats(100)
-		wantRows := map[int]uint64{10: 49, 100: 490}
-		if stats.Rows != wantRows[size] || collector.Snapshot().Queries != 25 {
-			t.Errorf("size %d: rows=%d statements=%d, want rows=%d statements=25", size, stats.Rows, collector.Snapshot().Queries, wantRows[size])
+		wantRows := map[int]uint64{10: 39, 100: 390}
+		if stats.Rows != wantRows[size] || collector.Snapshot().Queries != 23 {
+			t.Errorf("size %d: rows=%d statements=%d, want rows=%d statements=23", size, stats.Rows, collector.Snapshot().Queries, wantRows[size])
 		}
 		labels := make(map[string]bool)
 		for _, entry := range stats.Top {
@@ -57,6 +57,6 @@ func TestBoardStatementCountIntegration(t *testing.T) {
 				t.Errorf("size %d: missing batched read %s; labels=%v", size, label, stats.Top)
 			}
 		}
-		t.Logf("board size=%d rows=%d statements=%d", size, stats.Rows, collector.Snapshot().Queries)
+		t.Logf("board size=%d rows=%d statements=%d labels=%+v", size, stats.Rows, collector.Snapshot().Queries, stats.Top)
 	}
 }

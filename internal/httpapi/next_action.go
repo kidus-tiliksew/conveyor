@@ -66,6 +66,24 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, page store.T
 		writeStoreFailure(w, r, err)
 		return
 	}
+	ids := make([]string, len(tasks))
+	for i := range tasks {
+		ids[i] = tasks[i].ID
+	}
+	inputs, err := s.Store.ReadActivityInputs(r.Context(), ids, opts.Now)
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	memoHorizon(r.Context(), inputs.ValidUntil)
+	opts.MarkersLoaded, opts.Markers = true, inputs.Markers
+	opts.OrdersLoaded, opts.Orders = true, inputs.Orders
+	ctx, err := s.loadTaskRisksWith(r.Context(), tasks, store.RiskProjectionOptions{Orders: inputs.Orders, OrdersLoaded: true})
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	r = r.WithContext(ctx)
 	// Rows carry only the compact action, so the projection skips the
 	// disposition read and covers the given page alone (component-http-api,
 	// Task list read).
@@ -88,6 +106,9 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, page store.T
 	for i, task := range tasks {
 		rows[i].Task = task
 		rows[i].NextAction = nextaction.CompactFrom(projected[task.ID])
+		if rows[i].NextAction.Deadline != nil {
+			memoHorizon(r.Context(), *rows[i].NextAction.Deadline)
+		}
 		// Only a task whose frozen risk mode is record or enforce reads its
 		// ratings (req-risk-based-review REQ-11).
 		risk, riskErr := s.taskRisk(r.Context(), task)
@@ -120,6 +141,9 @@ func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOpti
 	if s.nextActionClock != nil {
 		now = s.nextActionClock()
 	}
+	if captured, ok := ctx.Value(memoReadNowKey{}).(time.Time); ok {
+		now = captured
+	}
 	opts := store.NextActionOptions{Now: now, Capabilities: map[core.Capability]bool{}}
 	for _, capability := range nextActionCapabilities {
 		allowed, err := s.callerCapability(ctx, capability)
@@ -132,6 +156,15 @@ func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOpti
 	}
 	opts.MergeReadiness = s.mergeReadiness.lastKnown
 	opts.TrustedAuthors = s.requestTrustedAuthors()
+	if loaded, ok := ctx.Value(requestConfigurationKey{}).(loadedRequestConfiguration); ok {
+		opts.TrustedAuthors = func(_ context.Context, task core.Task) ([]string, error) {
+			if loaded.config == nil {
+				return nil, nil
+			}
+			repo, _ := loaded.config.Repo(task.Repo)
+			return repo.TrustedAuthors, nil
+		}
+	}
 	if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialUser {
 		opts.CallerUserID = credential.OwnerUserID
 	}

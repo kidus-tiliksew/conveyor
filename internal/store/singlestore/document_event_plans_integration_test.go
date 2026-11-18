@@ -63,6 +63,29 @@ func TestDocumentEventQueryPlansIntegration(t *testing.T) {
 	other := documentPlanWorkspace(t, st, "document-plans-other-"+core.NewTaskID())
 	seedDocumentPlanOtherWorkspace(t, st, other, fixture)
 
+	t.Run("prepared and legacy requirement pages", func(t *testing.T) {
+		if !st.hotReadIndexReady("events_requirement_key_idx") {
+			t.Skip("requirement index is not prepared")
+		}
+		for _, id := range []string{fixture.Requirement, "missing-" + core.NewTaskID()} {
+			for _, q := range []store.DocumentEventQuery{{Limit: 50}, {Limit: 50, Offset: 50}, {Limit: 20, SnapshotID: 1}} {
+				var pages [2]store.DocumentEventPage
+				for i, prepared := range []bool{false, true} {
+					query, args := documentEventPageQueryForLayout(ws, core.LineageRequirement, id, q, prepared)
+					page := store.DocumentEventPage{Events: []core.Event{}, Limit: q.Limit, Offset: q.Offset}
+					var err error
+					pages[i], err = readDocumentEventPage(ctx, st.db, page, query, args...)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !reflect.DeepEqual(pages[0], pages[1]) {
+					t.Fatalf("id=%s query=%+v: legacy=%+v prepared=%+v", id, q, pages[0], pages[1])
+				}
+			}
+		}
+	})
+
 	t.Run("results", func(t *testing.T) {
 		for kind, id := range ids {
 			compareDocumentEventPages(t, st, ctx, ws, kind, id)
@@ -166,7 +189,7 @@ func documentPlanWorkspace(t *testing.T, st *Store, ws string) context.Context {
 	return ctx
 }
 
-func documentPlanTask(t *testing.T, st *Store, ctx context.Context, prefix string) string {
+func documentPlanTask(t testing.TB, st *Store, ctx context.Context, prefix string) string {
 	t.Helper()
 	ws, _ := store.WorkspaceFromContext(ctx)
 	id := prefix + "-" + core.NewTaskID()

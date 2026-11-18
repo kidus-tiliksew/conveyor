@@ -164,8 +164,13 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		if err != nil {
 			return fmt.Errorf("prepare pending migration %s: %w", name, err)
 		}
-		if _, err := tx.Exec(ctx, string(sql)); err != nil {
-			return fmt.Errorf("apply migration %s: %w", name, err)
+		// Index preparation on an existing installation is an operator action.
+		// Keep the original ledger state: a fresh bootstrap remains fresh
+		// throughout this transaction (component-persistence, Read migration invariants).
+		if version != 171 || storeVersion == 0 {
+			if _, err := tx.Exec(ctx, string(sql)); err != nil {
+				return fmt.Errorf("apply migration %s: %w", name, err)
+			}
 		}
 		if version == planStateMigrationVersion {
 			if err := fillTaskPlanStates(ctx, tx); err != nil {

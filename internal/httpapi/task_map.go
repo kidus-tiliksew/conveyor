@@ -108,19 +108,21 @@ func (s *Server) getTaskMap(w http.ResponseWriter, r *http.Request) {
 	for i, node := range taskMap.Tasks {
 		tasks[i], ids[i] = node.Task, node.Task.ID
 	}
-	markers, err := s.Store.ListActivityMarkersForTasks(ctx, ids)
-	if err != nil {
-		log.Printf("read task map markers: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
 		log.Printf("read task map next-action options: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	inputs, err := s.Store.ReadActivityInputs(ctx, ids, opts.Now)
+	if err != nil {
+		log.Printf("read task map activity inputs: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	markers := inputs.Markers
 	opts.MarkersLoaded, opts.Markers = true, markers
+	opts.OrdersLoaded, opts.Orders = true, inputs.Orders
 	opts.OpenTasksLoaded, opts.OpenTasks = true, taskMap.OpenTasks
 	opts.CompactOnly = true
 	projected, err := store.ReadNextActions(ctx, s.Store, tasks, opts)

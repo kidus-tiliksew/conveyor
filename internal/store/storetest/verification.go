@@ -171,6 +171,7 @@ func verificationSHA(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b
 
 func runVerification(t *testing.T, x Fixture) {
 	runVerificationPublicationDelivery(t, x)
+	runVerificationDeliveryConverge(t, x)
 	runVerificationPublicationLegacyAndRace(t, x)
 	runVerificationOperations(t, x)
 	runVerificationOperationKeyScope(t, x)
@@ -553,6 +554,40 @@ func runVerificationPublicationDelivery(t *testing.T, x Fixture) {
 
 		})
 	}
+}
+
+func runVerificationDeliveryConverge(t *testing.T, x Fixture) {
+	t.Run("DeliveryConverge", func(t *testing.T) {
+		v := newVerificationFixture(t, x)
+		pr := core.Event{TaskID: v.access.TaskID, JobID: v.access.WorkOrderID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "fixture/publication", "number": 4499, "head_sha": strings.Repeat("a", 40)})}
+		e := v.envelope("converge-evidence", "converge-evidence", "allowlisted")
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e)}})
+		requireOK(t, x.Backend.RecordVerificationPullRequest(v.ctx, pr))
+		first := v.snapshot(t)
+		if len(first.Publications) != 1 || first.Publications[0].Delivery == nil {
+			t.Fatalf("intent missing: %+v", first.Publications)
+		}
+		args := store.VerificationDeliveryArgs(*first.Publications[0].Delivery)
+		requireOK(t, x.Backend.RunVerificationDelivery(v.ctx, args, func(d *core.VerificationDelivery, save func(string, core.VerificationDelivery) error) error {
+			if err := save("attempt", *d); err != nil {
+				return err
+			}
+			next := *d
+			next.ErrorClass = "head_mismatch"
+			past := time.Now().UTC().Add(-time.Minute)
+			next.NextAttemptAt = &past
+			return save("fail", next)
+		}))
+		requireOK(t, x.Backend.ReconcileVerificationDeliveries(v.ctx))
+		var current core.VerificationDelivery
+		requireOK(t, x.Backend.RunVerificationDelivery(v.ctx, args, func(d *core.VerificationDelivery, _ func(string, core.VerificationDelivery) error) error {
+			current = *d
+			return nil
+		}))
+		if current.State != "failed" || current.ErrorClass != "head_mismatch" || current.NextAttemptAt != nil {
+			t.Fatalf("head mismatch after reconcile: %+v", current)
+		}
+	})
 }
 
 func runVerificationPublicationLegacyAndRace(t *testing.T, x Fixture) {

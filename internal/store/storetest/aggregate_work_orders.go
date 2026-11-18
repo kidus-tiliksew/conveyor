@@ -49,6 +49,7 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("StoredReadKeepsExpiredClaimUnprojected", func(t *testing.T) { runStoredReadKeepsExpiredClaim(t, x) })
 	t.Run("LiveListing", func(t *testing.T) { runLiveWorkOrderListing(t, x) })
 	t.Run("SnapshotFreeFoldReads", func(t *testing.T) { runSnapshotFreeFoldReads(t, x) })
+	t.Run("WorkOrderClockPins", func(t *testing.T) { runWorkOrderClockPins(t, x) })
 	t.Run("GovernanceSnapshotDedup", func(t *testing.T) { runGovernanceSnapshotDedup(t, x) })
 	t.Run("WorkOrderEventsNameAuthority", func(t *testing.T) { runWorkOrderEventsNameAuthority(t, x) })
 	t.Run("ClaimSessionReads", func(t *testing.T) { runClaimSessionReads(t, x) })
@@ -725,11 +726,25 @@ func runSnapshotFreeFoldReads(t *testing.T, x Fixture) {
 	}
 	requireSameOrders(t, "ListWorkOrdersForTasks(pair)", pair, withoutSnapshots(ordersOfTasks(full, live.TaskID, sealed.access.TaskID)))
 
-	// The full per-task read keeps the pins for the readers that need them.
-	kept, err := st.ListTaskWorkOrders(ctx, live.TaskID)
+	// The projected per-task read carries no pin body; the explicit snapshot
+	// read keeps them for the readers that need them.
+	projected, err := st.ListTaskWorkOrders(ctx, live.TaskID)
+	requireOK(t, err)
+	if n := snapshotBytes(t, projected); n != 0 {
+		t.Fatalf("ListTaskWorkOrders decoded %d snapshot bytes, want 0", n)
+	}
+	kept, err := st.ListTaskWorkOrdersSnapshot(ctx, live.TaskID)
 	requireOK(t, err)
 	if snapshotBytes(t, kept) < foldGovernanceBytes {
-		t.Fatal("ListTaskWorkOrders dropped the pinned snapshots its claim-time readers need")
+		t.Fatal("ListTaskWorkOrdersSnapshot dropped the pinned snapshots its authority readers need")
+	}
+	if len(projected) != len(kept) {
+		t.Fatalf("ListTaskWorkOrders returned %d orders, the snapshot read %d", len(projected), len(kept))
+	}
+	for i := range projected {
+		if projected[i].ID != kept[i].ID || projected[i].State != kept[i].State || projected[i].GovernanceSnapshotDigest != kept[i].GovernanceSnapshotDigest {
+			t.Fatalf("ListTaskWorkOrders order %d = %s/%s/%s, snapshot read %s/%s/%s", i, projected[i].ID, projected[i].State, projected[i].GovernanceSnapshotDigest, kept[i].ID, kept[i].State, kept[i].GovernanceSnapshotDigest)
+		}
 	}
 	if other, err := st.ListWorkOrdersForTasks(store.WithWorkspace(ctx, x.Workspace+"-fold-foreign"), taskIDs); err != nil || len(other) != 0 {
 		t.Fatalf("another workspace read %d of the fixture's orders: %v", len(other), err)

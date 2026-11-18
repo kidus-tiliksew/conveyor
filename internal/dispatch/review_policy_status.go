@@ -305,7 +305,7 @@ func (d *Dispatcher) SyncReviewPolicyStatusAfterAct(ctx context.Context, taskID 
 // tasks repaired.
 func (d *Dispatcher) ReconcileReviewPolicyStatuses(ctx context.Context) (int, error) {
 	ctx = store.WithActor(ctx, store.SystemActor("review-policy-status"))
-	tasks, err := d.Store.ListTasks(ctx)
+	tasks, err := d.Store.ListReviewPolicyReconciliationTasks(ctx)
 	if err != nil {
 		return 0, err
 	}

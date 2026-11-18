@@ -339,12 +339,37 @@ func WithCapabilityAuthorizer(st Store, authorizer CapabilityAuthorizer) Store {
 	return capabilityStore{Store: st, authorizer: authorizer}
 }
 
+// ApprovalBatchInputs are already-selected rows EvaluateTaskApprovalsBatch
+// would otherwise read. Loaded flags distinguish not-loaded from loaded-empty
+// so a risk projection can share ratings, orders, claims, and approvals with
+// the evaluation instead of selecting them again.
+type ApprovalBatchInputs struct {
+	Orders          []core.WorkOrder
+	OrdersLoaded    bool
+	Ratings         map[string][]core.RiskRating
+	RatingsLoaded   bool
+	Claims          map[string][]core.Event
+	ClaimsLoaded    bool
+	Approvals       map[string][]core.TaskApproval
+	ApprovalsLoaded bool
+}
+
 // EvaluateTaskApprovalsBatch evaluates tasks in one workspace using live membership.
 func EvaluateTaskApprovalsBatch(ctx context.Context, st Store, tasks []core.Task, trusted map[string][]string, prospective string) (map[string]ApprovalEvaluation, error) {
 	return evaluateTaskApprovalsBatch(ctx, st, tasks, nil, false, trusted, prospective)
 }
 
+// EvaluateTaskApprovalsBatchInputs is EvaluateTaskApprovalsBatch with shared
+// preload rows from a request-scoped risk projection.
+func EvaluateTaskApprovalsBatchInputs(ctx context.Context, st Store, tasks []core.Task, inputs ApprovalBatchInputs, trusted map[string][]string, prospective string) (map[string]ApprovalEvaluation, error) {
+	return evaluateTaskApprovalsBatchInputs(ctx, st, tasks, inputs, trusted, prospective)
+}
+
 func evaluateTaskApprovalsBatch(ctx context.Context, st Store, tasks []core.Task, orders []core.WorkOrder, ordersLoaded bool, trusted map[string][]string, prospective string) (map[string]ApprovalEvaluation, error) {
+	return evaluateTaskApprovalsBatchInputs(ctx, st, tasks, ApprovalBatchInputs{Orders: orders, OrdersLoaded: ordersLoaded}, trusted, prospective)
+}
+
+func evaluateTaskApprovalsBatchInputs(ctx context.Context, st Store, tasks []core.Task, inputs ApprovalBatchInputs, trusted map[string][]string, prospective string) (map[string]ApprovalEvaluation, error) {
 	out := make(map[string]ApprovalEvaluation, len(tasks))
 	var ids []string
 	var workspace string
@@ -366,23 +391,34 @@ func evaluateTaskApprovalsBatch(ctx context.Context, st Store, tasks []core.Task
 	if workspace != "" {
 		ctx = WithWorkspace(ctx, workspace)
 	}
-	ratings, err := st.ListRiskRatingsForTasks(ctx, ids)
-	if err != nil {
-		return nil, err
+	ratings := inputs.Ratings
+	var err error
+	if !inputs.RatingsLoaded {
+		ratings, err = st.ListRiskRatingsForTasks(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
 	}
-	events, err := st.ListClaimEventsForTasks(ctx, ids)
-	if err != nil {
-		return nil, err
+	events := inputs.Claims
+	if !inputs.ClaimsLoaded {
+		events, err = st.ListClaimEventsForTasks(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
 	}
-	if !ordersLoaded {
+	orders := inputs.Orders
+	if !inputs.OrdersLoaded {
 		orders, err = st.ListWorkOrdersForTasks(ctx, ids)
 		if err != nil {
 			return nil, err
 		}
 	}
-	records, err := st.ListTaskApprovalsForTasks(ctx, ids)
-	if err != nil {
-		return nil, err
+	records := inputs.Approvals
+	if !inputs.ApprovalsLoaded {
+		records, err = st.ListTaskApprovalsForTasks(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
 	}
 	ordersByTask := make(map[string][]core.WorkOrder, len(ids))
 	for _, order := range orders {
