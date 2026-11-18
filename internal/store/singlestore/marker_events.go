@@ -270,7 +270,14 @@ func markerLower(text string) string { return "LOWER(" + text + ")" }
 func markerStripped(text, literal string) string {
 	return "LENGTH(REPLACE(CAST(" + text + " AS BINARY)," + literal + ",''))"
 }
-func markerASCII(text string) string { return "(LENGTH(" + text + ")=CHAR_LENGTH(" + text + "))" }
+
+// markerASCII reports whether a key list holds only plain ASCII keys.
+// JSON_KEYS writes a non-ASCII key as \u escapes, which are ASCII bytes, so a
+// backslash (CHAR(92)) marks a key that may fold to a field name in Go and
+// keeps the key ambiguous.
+func markerASCII(text string) string {
+	return "(LENGTH(" + text + ")=CHAR_LENGTH(" + text + ") AND INSTR(" + text + ",CHAR(92))=0)"
+}
 
 // markerBinder collects the bound arguments of one statement. Bind
 // returns a token; finish numbers the tokens in the statement's text order,
