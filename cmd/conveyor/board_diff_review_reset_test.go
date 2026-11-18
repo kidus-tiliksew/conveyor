@@ -39,7 +39,7 @@ func TestBoardDiffReviewChangesAfterReset(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &client{base: srv.URL}
-	path, _ := boardDiffStatePath(srv.URL, "")
+	path, _ := boardDiffStatePath(srv.URL, "", "")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}

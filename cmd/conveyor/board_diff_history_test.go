@@ -63,9 +63,11 @@ func TestBoardDiffHistoryPagingAndUnknown(t *testing.T) {
 		row := boardDiffActivity{}
 		row.Task.ID = "a"
 		row.Task.State = "running"
-		change, _, incomplete := reduceBoardDiff(row, boardDiffTask{Stage: "implement", State: "running"}, true, now, boardDiffHistory{Events: []boardDiffHistoryEvent{{Kind: "work_order.created", At: now.Add(time.Second)}}})
-		if !incomplete || len(change.Transitions) != 1 || change.Transitions[0].To != "unknown" || change.Transitions[0].PreviousSeconds != nil {
-			t.Fatalf("change %#v incomplete %v", change, incomplete)
+		// An omitted created payload reports no stage change and lists the
+		// task in incomplete (component-next-action invariant 50).
+		change, next, incomplete := reduceBoardDiff(row, boardDiffTask{Stage: "implement", State: "running"}, true, now, boardDiffHistory{Events: []boardDiffHistoryEvent{{Kind: "work_order.created", At: now.Add(time.Second)}}})
+		if !incomplete || len(change.Transitions) != 0 || next.Stage != "implement" {
+			t.Fatalf("change %#v next %#v incomplete %v", change, next, incomplete)
 		}
 	})
 	t.Run("restart", func(t *testing.T) {

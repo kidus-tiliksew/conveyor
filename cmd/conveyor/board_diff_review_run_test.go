@@ -38,7 +38,7 @@ func TestBoardDiffReviewChangedRun(t *testing.T) {
 	state := boardDiffState{Position: pos, SavedAt: now, Recent: map[string]time.Time{"a": pos, "c": pos}, Tasks: map[string]boardDiffTask{"a": {Title: "Task A", State: "running", Stage: "implement", EnteredAt: &entered}, "c": {Title: "Task C", State: "running", Stage: "review", EnteredAt: &entered, Decision: "Decide"}}}
 	var out bytes.Buffer
 	for _, asJSON := range []bool{false, true} {
-		if err := saveBoardDiffState(srv.URL, "", state); err != nil {
+		if err := saveBoardDiffState(srv.URL, "", "", state); err != nil {
 			t.Fatal(err)
 		}
 		out.Reset()

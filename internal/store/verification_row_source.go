@@ -86,8 +86,9 @@ func VerificationCommandTables(c VerificationCommand) VerificationTableSet {
 }
 
 // VerificationDeliveryReconcileWindow bounds one reconciler pass's due
-// deliveries, so a pass holds the workspace verification lock over a bounded
-// amount of work (component-verification-publication).
+// deliveries, so a pass does a bounded amount of work; a row an unfinished
+// job serves takes no place (component-verification-publication invariant
+// 19).
 const VerificationDeliveryReconcileWindow = 100
 
 // VerificationOperationScope reads the operation rows a registration must

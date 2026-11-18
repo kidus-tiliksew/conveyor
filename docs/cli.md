@@ -296,7 +296,7 @@ the server body verbatim.
 
 ```sh
 conveyor board [--limit N] [--offset N] [--json]
-conveyor board diff [--json] [--since POSITION | --reset]
+conveyor board diff [--json] [--consumer NAME] [--since POSITION | --reset]
 ```
 
 `board` lists open tasks and their next actions. `board diff` reports changes
@@ -308,6 +308,17 @@ with a second-precision RFC 3339 position to read changes without reading or
 writing the snapshot. An unchanged board prints nothing in text mode.
 `--json` prints the position and changes, plus a summary on the first run or
 reset. Incomplete histories appear in `incomplete`.
+
+Use `--consumer NAME` to keep a snapshot for one consumer. Each consumer has
+its own position, so two sessions with different names do not take changes
+from each other. Without `--consumer`, or with `--consumer default`, the
+command uses the default snapshot, `board.json`, as before. A named consumer
+uses `board-NAME.json` in the same directory. An empty name, `.`, `..`, or a
+name that contains `/` or `\` is a usage error, and the command then sends no
+request and changes no snapshot. A run locks its snapshot from before it reads
+it until after it writes it, `--reset` included. A second run on the same
+snapshot waits until the first ends. The lock ends when its process exits. A
+`--since` run takes no lock.
 
 ## order
 
