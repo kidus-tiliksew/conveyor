@@ -176,6 +176,7 @@ func runVerification(t *testing.T, x Fixture) {
 	runVerificationOperations(t, x)
 	runVerificationOperationKeyScope(t, x)
 	runVerificationReadVolume(t, x)
+	runVerificationDeliveryRecovery(t, x)
 	runVerificationScope(t, x)
 	runVerificationFinalization(t, x)
 	runVerificationClaimLoss(t, x)

@@ -82,7 +82,8 @@ func commitSiteFindings(sources map[string]string) ([]string, error) {
 
 // TestTaskEventCommitSites: the package's transactions commit only through
 // commitTx, after registering notice state. Today these are withTx,
-// RunVerificationDelivery, and the dismissal archive repair.
+// RunVerificationDelivery, the per-key transactions of a verification
+// delivery pass (withKeyTx), and the dismissal archive repair.
 func TestTaskEventCommitSites(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -107,7 +108,7 @@ func TestTaskEventCommitSites(t *testing.T) {
 		t.Fatalf("task-event commit guard:\n%s", strings.Join(findings, "\n"))
 	}
 	// The guard reaches every commit site it names.
-	for _, site := range []string{"store.go:withTx", "verification.go:RunVerificationDelivery", "migrate_document_dismissal.go:migrateDocumentDismissalArchival"} {
+	for _, site := range []string{"store.go:withTx", "verification.go:RunVerificationDelivery", "locks.go:withKeyTx", "migrate_document_dismissal.go:migrateDocumentDismissalArchival"} {
 		file, function, _ := strings.Cut(site, ":")
 		if !strings.Contains(sources[file], "func ") || !strings.Contains(sources[file], function) || !strings.Contains(sources[file], "commitTx(") {
 			t.Errorf("%s no longer commits through commitTx", site)

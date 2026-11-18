@@ -1,15 +1,19 @@
 package storetest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
@@ -164,7 +168,8 @@ func runVerificationReadVolume(t *testing.T, x Fixture) {
 	t.Run("SnapshotStatementsFixed", func(t *testing.T) { runVerificationSnapshotStatements(t, x) })
 	t.Run("PublicationCreateSummary", func(t *testing.T) { runVerificationPublicationCreateSummary(t, x) })
 	t.Run("DeliveryReadsNewestGeneration", func(t *testing.T) { runVerificationDeliveryGeneration(t, x) })
-	t.Run("ReconcilerReadsActedRows", func(t *testing.T) { runVerificationReconcilerReads(t, x) })
+	t.Run("ReconcilerSupersedesOlderGeneration", func(t *testing.T) { runVerificationReconcilerReads(t, x) })
+	t.Run("ReviewBatchReadsOwnTasks", func(t *testing.T) { runVerificationReviewBatchScope(t, x) })
 	t.Run("OneTaskIndependentOfOthers", func(t *testing.T) { runVerificationTaskIndependence(t, x) })
 }
 
@@ -306,8 +311,10 @@ func runVerificationDeliveryGeneration(t *testing.T, x Fixture) {
 
 // runVerificationReconcilerReads proves the delivery reconciler reads the due
 // window without a retained body and decodes a body only for a row it acts on,
-// so a superseded generation's body stays on the server (component-persistence,
-// Database read accounting; component-verification-publication).
+// so a superseded generation's body stays on the server, and that of two
+// pending generations of one pull request the older is superseded and only the
+// newest keeps a job (component-persistence, Database read accounting;
+// component-verification-publication invariants 5 and 19).
 func runVerificationReconcilerReads(t *testing.T, x Fixture) {
 	v := newVerificationFixture(t, x)
 	probe, stop := probeVerificationReads(t)
@@ -317,6 +324,8 @@ func runVerificationReconcilerReads(t *testing.T, x Fixture) {
 		requireOK(t, x.Backend.ReconcileVerificationDeliveries(v.ctx))
 		return probe.rows(x.Workspace, store.VerificationReadDue), probe.rows(x.Workspace, store.VerificationReadBodies)
 	}
+	// The first pass settles every earlier case's due rows.
+	reconcile()
 	beforeDue, beforeBodies := reconcile()
 	const number = 4488
 	pr := core.Event{TaskID: v.access.TaskID, JobID: v.access.WorkOrderID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "fixture/volume", "number": number, "head_sha": strings.Repeat("a", 40)})}
@@ -325,21 +334,128 @@ func runVerificationReconcilerReads(t *testing.T, x Fixture) {
 		e := v.envelope(fmt.Sprintf("reconcile-%d", index), fmt.Sprintf("reconcile-evidence-%d", index), "observed state")
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e)}, Publication: &store.VerificationPublication{PullRequestNumber: number, HeadSHA: head, BodyDigest: verificationSHA([]byte(head))}})
 	}
-	// Writing a newer generation leaves one due row for the pull-request key:
-	// the pass acts on it and decodes exactly its one body, so a superseded
-	// generation's retained payload is never read.
+	args := queue.VerificationPublicationArgs{WorkspaceID: x.Workspace, Repository: "fixture/volume", PullRequestNumber: number}
+	stream := logqueue.StreamFor(args.Kind(), args.UniqueKey())
+	job, err := logqueue.Load(v.ctx, x.Backend.Log(), x.Workspace, stream)
+	requireOK(t, err)
+	if !job.Active() {
+		t.Fatalf("planning left the newest generation without a job: %+v", job)
+	}
+	// The newest generation's unfinished job serves it, so the pass selects
+	// no row of the pull request and reads no body, superseded or not.
 	afterDue, afterBodies := reconcile()
-	if due, bodies := afterDue-beforeDue, afterBodies-beforeBodies; due != 1 || bodies != 1 {
-		t.Fatalf("a pass over a superseded generation read %d due rows and %d bodies, want one acted row and one body", due, bodies)
+	if due, bodies := afterDue-beforeDue, afterBodies-beforeBodies; due != 0 || bodies != 0 {
+		t.Fatalf("a pass over a served newest generation read %d due rows and %d bodies, want none", due, bodies)
 	}
 	if x.RestoreSupersededDeliveries == nil {
 		t.Fatal("fixture cannot restore a historical pending generation")
 	}
 	x.RestoreSupersededDeliveries(t, v.ctx, v.access.TaskID)
-	twoDue, twoBodies := reconcile()
-	if due, bodies := twoDue-beforeDue, twoBodies-beforeBodies; due != 2 || bodies != 2 {
-		t.Fatalf("two pending generations read %d due rows and %d bodies, want both acted on", due, bodies)
+	var newest core.VerificationDelivery
+	requireOK(t, x.Backend.RunVerificationDelivery(v.ctx, args, func(d *core.VerificationDelivery, _ func(string, core.VerificationDelivery) error) error {
+		newest = *d
+		return nil
+	}))
+	pending := 0
+	for _, p := range v.snapshot(t).Publications {
+		if p.Delivery != nil && p.Delivery.PullRequestNumber == number && p.Delivery.State == "pending" {
+			pending++
+		}
 	}
+	if pending < 2 {
+		t.Fatalf("fixture restored %d pending generations, want at least two", pending)
+	}
+	// The pass reads and supersedes every older pending generation and leaves
+	// the newest to its one job.
+	twoDue, twoBodies := reconcile()
+	if due, bodies := twoDue-beforeDue, twoBodies-beforeBodies; due != pending-1 || bodies != pending-1 {
+		t.Fatalf("two pending generations read %d due rows and %d bodies, want only the %d older ones", due, bodies, pending-1)
+	}
+	for _, p := range v.snapshot(t).Publications {
+		d := p.Delivery
+		if d == nil || d.PullRequestNumber != number {
+			continue
+		}
+		if d.Generation == newest.Generation && d.State != "pending" || d.Generation != newest.Generation && d.State != "superseded" {
+			t.Fatalf("generation %d after the pass: %s, newest is %d", d.Generation, d.State, newest.Generation)
+		}
+	}
+	after, err := logqueue.Load(v.ctx, x.Backend.Log(), x.Workspace, stream)
+	requireOK(t, err)
+	if !after.Active() || after.Generation != job.Generation {
+		t.Fatalf("the pass enqueued for an older generation: before %+v after %+v", job, after)
+	}
+}
+
+// runVerificationReviewBatchScope proves the batch review read returns each
+// requested task's own rows, exactly as the per-task read does, and no row of
+// another task, although other tasks hold operations in the same workspace
+// (component-verification-service invariant 55).
+func runVerificationReviewBatchScope(t *testing.T, x Fixture) {
+	batch, ok := x.Backend.(store.VerificationReviewBatchReader)
+	if !ok {
+		t.Skip("backend reads verification reviews one task at a time")
+	}
+	reader, ok := x.Backend.(interface {
+		ReadVerificationReview(context.Context, string, string) (store.VerificationReviewState, error)
+	})
+	if !ok {
+		t.Fatal("backend has no per-task verification review read")
+	}
+	operate := func(v *verificationFixture, key string) {
+		t.Helper()
+		op := v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "dispatching", Source: "fixture", CapturedAt: time.Now().UTC()}})
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "completed", Source: "fixture", CapturedAt: time.Now().UTC()}})
+	}
+	first := newVerificationFixture(t, x)
+	operate(&first, "batch-first-"+first.access.TaskID)
+	second := newVerificationFixture(t, x)
+	operate(&second, "batch-second-"+second.access.TaskID)
+	other := newVerificationFixture(t, x)
+	operate(&other, "batch-other-"+other.access.TaskID)
+	if x.SeedForeignVerificationOperation != nil {
+		x.SeedForeignVerificationOperation(t, other.ctx, other.access.TaskID)
+	}
+	refs := []store.VerificationReviewRef{{TaskID: first.access.TaskID, OrderID: first.access.WorkOrderID}, {TaskID: second.access.TaskID, OrderID: second.access.WorkOrderID}}
+	states, err := batch.ReadVerificationReviews(first.ctx, refs)
+	requireOK(t, err)
+	for _, ref := range refs {
+		state, ok := states[ref.OrderID]
+		if !ok {
+			t.Fatalf("batch read lacks order %s", ref.OrderID)
+		}
+		operations := 0
+		for _, row := range state.Rows {
+			if row.TaskID != ref.TaskID {
+				t.Fatalf("batch read for task %s returned a row of task %s: %s %s", ref.TaskID, row.TaskID, row.Table, row.ID)
+			}
+			if row.Table == "verification_operations" {
+				operations++
+			}
+		}
+		if operations != 1 {
+			t.Fatalf("batch read for task %s returned %d operations, want its own one", ref.TaskID, operations)
+		}
+		single, err := reader.ReadVerificationReview(first.ctx, ref.TaskID, ref.OrderID)
+		requireOK(t, err)
+		if reviewRowSet(single.Rows) != reviewRowSet(state.Rows) || single.Order.ID != state.Order.ID {
+			t.Fatalf("batch read for task %s differs from the per-task read", ref.TaskID)
+		}
+	}
+}
+
+// reviewRowSet is a review read's rows in table and ID order, so reads that
+// return the same rows in another order compare equal.
+func reviewRowSet(rows []store.VerificationRow) string {
+	sorted := append([]store.VerificationRow(nil), rows...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Table != sorted[j].Table {
+			return sorted[i].Table < sorted[j].Table
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+	return string(verificationBytes(sorted))
 }
 
 // runVerificationTaskIndependence proves reading, registering, applying and

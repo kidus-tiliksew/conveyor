@@ -46,14 +46,16 @@ const taskEventPositionPrune = 1000
 var observeTaskEventPreparation atomic.Pointer[func(workspaces []string)]
 
 // commitTx is the only commit of a store transaction that registered notice
-// state (query_boundary_test.go, TestTaskEventCommitSites). It advances every
+// state (change_notices_positions_test.go, TestTaskEventCommitSites): withTx,
+// RunVerificationDelivery, the per-key transactions of a verification
+// delivery pass, and the dismissal archive repair. It advances every
 // workspace the transaction wrote a task event in, then commits. The caller
 // publishes or drops the notices with finishNotices.
 func commitTx(ctx context.Context, tx *sql.Tx) error {
 	if err := prepareTaskEventPositions(ctx, tx); err != nil {
-		return err
+		return translateBackendConflict(err)
 	}
-	return tx.Commit()
+	return translateBackendConflict(tx.Commit())
 }
 
 // prepareTaskEventPositions advances each written workspace's position in

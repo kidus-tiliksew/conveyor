@@ -459,6 +459,26 @@ func TestSingleStoreTaskEventWritePathIntegration(t *testing.T) {
 	if p, _ := taskEventPosition(t, writer, wsA); p != position {
 		t.Fatalf("verification delivery without a task event moved the position %d -> %d", position, p)
 	}
+	// So does the reconcile pass, and a task event in one of its per-key
+	// transactions advances the position like any other commit.
+	if err := writer.ReconcileVerificationDeliveries(ctxA); err != nil {
+		t.Fatal(err)
+	}
+	if got := takePrepared(); len(got) == 0 {
+		t.Fatal("the verification reconcile pass committed without the task-event preparation")
+	}
+	keyHeld, err := writer.withKeyTx(ctxA, "verification-publication:"+wsA+":owner/repo#1", func(tx *sql.Tx) error {
+		return taskEvent(ctxA, tx, core.Event{TaskID: taskA, Kind: "peer.key_tx"})
+	})
+	if err != nil || !keyHeld {
+		t.Fatalf("per-key transaction held=%v err=%v", keyHeld, err)
+	}
+	if p, w := taskEventPosition(t, writer, wsA); p != position+1 || w != 1 {
+		t.Fatalf("a task event in a per-key transaction: position %d -> %d with %d witnesses, want +1 with 1", position, p, w)
+	}
+	if got := takePrepared(); len(got) != 1 || len(got[0]) != 1 || got[0][0] != wsA {
+		t.Fatalf("per-key transaction preparations=%v", got)
+	}
 }
 
 // TestSingleStoreTaskEventWitnessUpgradeIntegration: a database upgraded

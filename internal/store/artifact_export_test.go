@@ -106,6 +106,46 @@ func RestoreSupersededDeliveriesForTest(t *testing.T, st Backend, taskID string)
 	}
 }
 
+// RestoreHistoricalDeliveryForTest sets one superseded delivery generation of
+// a task back to an older state, as releases before the supersede rule left
+// older generations.
+func RestoreHistoricalDeliveryForTest(t *testing.T, st Backend, taskID string, generation int, state, errorClass string, nextAttemptAt *time.Time) {
+	t.Helper()
+	m := st.(*volatileMemory).memory
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, d := range m.verificationDeliveries {
+		if d.TaskID == taskID && d.Generation == generation && d.State == "superseded" {
+			d.State, d.ErrorClass, d.NextAttemptAt = state, errorClass, nextAttemptAt
+			m.verificationDeliveries[key] = d
+			return
+		}
+	}
+	t.Fatalf("task %s has no superseded delivery generation %d", taskID, generation)
+}
+
+// SeedForeignVerificationOperationForTest stores a copy of one of the task's
+// operation rows whose payload does not decode.
+func SeedForeignVerificationOperationForTest(t *testing.T, st Backend, taskID string) {
+	t.Helper()
+	m := st.(*volatileMemory).memory
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, row := range m.verificationRows {
+		if row.TaskID == taskID && row.Table == "verification_operations" {
+			row.ID += "-malformed"
+			row.LogicalKey += "-malformed"
+			row.State = "completed"
+			row.Body = []byte(`{"ID":7,"StepID":7}`)
+			m.verificationRows[taskWorkspace(m, taskID)+"\x00"+row.Table+"\x00"+row.ID] = row
+			return
+		}
+	}
+	t.Fatalf("task %s has no operation row", taskID)
+}
+
+func taskWorkspace(m *memory, taskID string) string { return m.tasks[taskID].Workspace }
+
 // SeedStoredStaleWorkOrderForTest sets one stored order to the retired stale
 // value, as a row the retired queue clock left would read; no command writes
 // it any more (component-work-orders invariant 5). With exhausted it stores
