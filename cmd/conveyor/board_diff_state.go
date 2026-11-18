@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -48,8 +49,26 @@ func boardDiffIdentity(server, workspace string) (string, string, string, error)
 	return strings.TrimRight(server, "/"), workspace, host, nil
 }
 
-func boardDiffStatePath(server, workspace string) (string, error) {
+// boardDiffSnapshotName returns the snapshot file name of a consumer. The
+// default consumer, named by an omitted or `default` value, keeps board.json.
+// A named consumer gets board-<consumer>.json in the same directory
+// (component-next-action invariant 56 and State and failure).
+func boardDiffSnapshotName(consumer string) (string, error) {
+	switch {
+	case consumer == "" || consumer == "default":
+		return "board.json", nil
+	case consumer == "." || consumer == ".." || strings.ContainsAny(consumer, `/\`):
+		return "", fmt.Errorf(`--consumer cannot be ".", "..", or a name that contains "/" or "\"`)
+	}
+	return "board-" + consumer + ".json", nil
+}
+
+func boardDiffStatePath(server, workspace, consumer string) (string, error) {
 	_, workspace, host, err := boardDiffIdentity(server, workspace)
+	if err != nil {
+		return "", err
+	}
+	name, err := boardDiffSnapshotName(consumer)
 	if err != nil {
 		return "", err
 	}
@@ -61,17 +80,59 @@ func boardDiffStatePath(server, workspace string) (string, error) {
 		}
 		root = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(root, "conveyor", host, workspace, "board.json"), nil
+	return filepath.Join(root, "conveyor", host, workspace, name), nil
+}
+
+// boardDiffLockWaiting runs when another process holds the snapshot lock,
+// before the run waits for it. Tests replace it to observe the wait.
+var boardDiffLockWaiting = func() {}
+
+// lockBoardDiffState holds an exclusive lock on the consumer's snapshot. The
+// lock is on a companion file that never moves, because the atomic save
+// renames a new file over the snapshot. A second run on the same snapshot
+// waits until the first unlocks or exits; the operating system releases the
+// lock of a process that exits (component-next-action State and failure).
+func lockBoardDiffState(server, workspace, consumer string) (func(), error) {
+	path, err := boardDiffStatePath(server, workspace, consumer)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Dir(path)
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("create board snapshot directory: %w", err)
+	}
+	if err = os.Chmod(dir, 0700); err != nil {
+		return nil, fmt.Errorf("secure board snapshot directory: %w", err)
+	}
+	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open board snapshot lock: %w", err)
+	}
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		boardDiffLockWaiting()
+		for err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX); errors.Is(err, syscall.EINTR); {
+			err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		}
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("lock board snapshot: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 // loadBoardDiffState returns a reset reason for absent or unusable snapshots;
 // filesystem failures are errors so they cannot silently discard a snapshot.
-func loadBoardDiffState(server, workspace string, now time.Time) (boardDiffState, string, error) {
+func loadBoardDiffState(server, workspace, consumer string, now time.Time) (boardDiffState, string, error) {
 	canonical, workspace, _, err := boardDiffIdentity(server, workspace)
 	if err != nil {
 		return boardDiffState{}, "", err
 	}
-	path, err := boardDiffStatePath(server, workspace)
+	path, err := boardDiffStatePath(server, workspace, consumer)
 	if err != nil {
 		return boardDiffState{}, "", err
 	}
@@ -107,12 +168,12 @@ var boardDiffStateWriter = struct {
 	rename func(string, string) error
 }{func(f *os.File, b []byte) (int, error) { return f.Write(b) }, func(f *os.File) error { return f.Sync() }, os.Rename}
 
-func saveBoardDiffState(server, workspace string, state boardDiffState) (err error) {
+func saveBoardDiffState(server, workspace, consumer string, state boardDiffState) (err error) {
 	canonical, workspace, _, err := boardDiffIdentity(server, workspace)
 	if err != nil {
 		return err
 	}
-	path, err := boardDiffStatePath(server, workspace)
+	path, err := boardDiffStatePath(server, workspace, consumer)
 	if err != nil {
 		return err
 	}
