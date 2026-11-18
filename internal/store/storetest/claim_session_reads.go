@@ -160,6 +160,52 @@ func (r *WorkOrderReadRecorder) GetWorkOrderWithoutSnapshots(ctx context.Context
 	return order, err
 }
 
+// GetWorkOrderGovernancePin records the pin read; the reference projection
+// carries no snapshot body, so it adds no snapshot bytes.
+func (r *WorkOrderReadRecorder) GetWorkOrderGovernancePin(ctx context.Context, id string) (*core.GovernanceSnapshot, error) {
+	pin, err := r.Store.GetWorkOrderGovernancePin(ctx, id)
+	r.record("GetWorkOrderGovernancePin", nil)
+	return pin, err
+}
+
+// GetTask, GetTaskRepository, and the event reads are counted so a test can
+// prove which task and timeline reads a path makes.
+func (r *WorkOrderReadRecorder) GetTask(ctx context.Context, id string) (core.Task, error) {
+	task, err := r.Store.GetTask(ctx, id)
+	r.record("GetTask", nil)
+	return task, err
+}
+
+func (r *WorkOrderReadRecorder) GetTaskRepository(ctx context.Context, id string) (string, error) {
+	repository, err := r.Store.GetTaskRepository(ctx, id)
+	r.record("GetTaskRepository", nil)
+	return repository, err
+}
+
+func (r *WorkOrderReadRecorder) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	events, err := r.Store.ListEvents(ctx, taskID)
+	r.record("ListEvents", nil)
+	return events, err
+}
+
+func (r *WorkOrderReadRecorder) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	events, err := r.Store.ListCompactEvents(ctx, taskID)
+	r.record("ListCompactEvents", nil)
+	return events, err
+}
+
+func (r *WorkOrderReadRecorder) ListTaskContextEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	events, err := r.Store.ListTaskContextEvents(ctx, taskID)
+	r.record("ListTaskContextEvents", nil)
+	return events, err
+}
+
+func (r *WorkOrderReadRecorder) ListTaskDesignContextEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	events, err := r.Store.ListTaskDesignContextEvents(ctx, taskID)
+	r.record("ListTaskDesignContextEvents", nil)
+	return events, err
+}
+
 func (r *WorkOrderReadRecorder) OtherWorkOrderHoldsSession(ctx context.Context, workOrderID, sessionID string) (bool, error) {
 	held, err := r.Store.OtherWorkOrderHoldsSession(ctx, workOrderID, sessionID)
 	r.record("OtherWorkOrderHoldsSession", nil)
@@ -352,6 +398,11 @@ type ClaimSessionScale struct {
 	// received per read label. Durable backends provide it; nil skips the
 	// byte bounds.
 	DrainReadBytes func() map[string]uint64
+	// TimelineReads returns how many whole task timelines the backend has
+	// copied, counted inside the backend, where a wrapper cannot see calls
+	// the backend makes on itself. The volatile backend provides it; nil
+	// skips the check.
+	TimelineReads func() int64
 }
 
 // RenewFunc is workorder.Service.RenewClaimWithLease over the given store.

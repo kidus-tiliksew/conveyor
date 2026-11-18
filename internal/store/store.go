@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
@@ -158,6 +159,10 @@ type TaskStore interface {
 	AttachSubmissionGovernance(ctx context.Context, taskID, repository string, changedPaths []string, attribution SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error)
 	ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]CheckpointContextCandidate, error)
 	GetTask(ctx context.Context, id string) (core.Task, error)
+	// GetTaskRepository returns one task's repository name in the selected
+	// workspace with GetTask's not-found answer. It reads no body and
+	// hydrates no relation (component-work-orders invariant 24).
+	GetTaskRepository(ctx context.Context, id string) (string, error)
 	// ListTasksForRecovery reads the requested tasks of the workspace in one
 	// statement, keyed by ID. Each task carries only what the recovery refusal
 	// and the plan-revision gate read: ID, State, NextStage, RecoveryStage,
@@ -320,6 +325,16 @@ type WorkOrderStore interface {
 	// with the same not-found answer (component-work-orders, Snapshot-free
 	// fold reads).
 	GetWorkOrderWithoutSnapshots(ctx context.Context, id string) (core.WorkOrder, error)
+	// GetWorkOrderGovernancePin returns one order's persisted governance pin
+	// as core.GovernanceReferencePin projects it, or nil when the order holds
+	// no pin, with GetWorkOrder's not-found answer. A durable backend resolves
+	// the stored digest within the selected workspace and projects the
+	// reference fields in its own read, so neither snapshot column and no
+	// design body leaves the database. Element order is not part of the
+	// contract, because core.ProjectGovernanceReferences orders the delivered
+	// list. The stored pin is never changed (component-work-orders invariants
+	// 20, 23, and 24).
+	GetWorkOrderGovernancePin(ctx context.Context, id string) (*core.GovernanceSnapshot, error)
 	// OtherWorkOrderHoldsSession reports whether an order other than
 	// workOrderID, in the selected workspace, holds the non-empty sessionID
 	// after read-time clock projection. An empty sessionID answers false
@@ -586,6 +601,11 @@ type ActivityStore interface {
 	// unrelated history (component-persistence, Compact task event reads;
 	// req-operator-next-action AC-2.7).
 	ListTaskContextEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	// ListTaskDesignContextEvents returns only the design attachment and
+	// removal kinds, TaskDesignContextEventKinds, in ListEvents order with
+	// the compact payload, so a delivery that folds TaskDesignProvenance never
+	// transfers the task's whole timeline (component-work-orders invariant 24).
+	ListTaskDesignContextEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	// ListFactoryActs returns the workspace factory log, newest first, after the
 	// Go filter. The query may only narrow candidates.
 	ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error)
@@ -750,11 +770,15 @@ type memory struct {
 	tasks              map[string]core.Task
 	// crates holds crate records by workspace and crate ID
 	// (component-crates). Membership lives on each task's Crate.
-	crates                      map[memoryScopedKey]Crate
-	repositories                map[string]map[string]string
-	dependencies                map[string]map[string]struct{}
-	jobs                        map[string][]core.Job
-	events                      map[string][]core.Event
+	crates       map[memoryScopedKey]Crate
+	repositories map[string]map[string]string
+	dependencies map[string]map[string]struct{}
+	jobs         map[string][]core.Job
+	events       map[string][]core.Event
+	// timelineReads counts ListEvents copies of a whole task timeline, which
+	// the compact and context reads also make, so a test can prove that a
+	// narrow read never copies one (component-work-orders invariant 24).
+	timelineReads               atomic.Int64
 	lineage                     *memoryLineage
 	interventions               map[string][]core.Intervention
 	transcripts                 map[string]core.Transcript
@@ -842,6 +866,7 @@ func (m *memory) AppendEvent(ctx context.Context, event core.Event) error {
 }
 
 func (m *memory) ListEvents(_ context.Context, taskID string) ([]core.Event, error) {
+	m.timelineReads.Add(1)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	events := append([]core.Event(nil), m.events[taskID]...)

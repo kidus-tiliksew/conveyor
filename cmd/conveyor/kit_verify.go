@@ -350,23 +350,50 @@ const (
 	kitRenewIntervalCeiling = 5 * time.Minute
 )
 
+// kitLiveMode selects what one serialized liveness check asks the server.
+type kitLiveMode int
+
+const (
+	// kitLivePeriodic renews once the lease share elapsed and reads the
+	// context on its own backoff (component-verification-runner invariant 22).
+	kitLivePeriodic kitLiveMode = iota
+	// kitLiveContext always reads the context and renews only when the lease
+	// share elapsed. Relay and spool barriers use it after the run's own
+	// writes.
+	kitLiveContext
+	// kitLiveForced always renews the claim and then always reads the context.
+	// Only the two fixed points use it: before start_verification_attempt and
+	// before report_verification_outcome (component-verification-runner
+	// invariants 17 and 26).
+	kitLiveForced
+)
+
 // live is the periodic liveness check. It renews the claim at most once per
 // lease share and re-reads the verification context on its own backoff, so a
 // long-running observation no longer asks the server once per second
 // (component-verification-runner, Polling cadence).
 func (v *kitVerifier) live(ctx context.Context, grantID string) error {
-	return v.checkLive(ctx, grantID, false)
+	return v.checkLive(ctx, grantID, kitLivePeriodic)
 }
 
-// liveFresh is live at a point where the run needs the current server state:
-// before it starts, after its own writes, and before it reports an outcome. It
-// always reads the verification context and renews the claim when the lease
-// share elapsed.
+// liveFresh is live at a point where the run needs the current server state
+// after its own writes. It always reads the verification context and renews
+// the claim only when the lease share elapsed. It is not a fixed point:
+// before a run starts and before an outcome is reported, use liveForced.
 func (v *kitVerifier) liveFresh(ctx context.Context, grantID string) error {
-	return v.checkLive(ctx, grantID, true)
+	return v.checkLive(ctx, grantID, kitLiveContext)
 }
 
-func (v *kitVerifier) checkLive(ctx context.Context, grantID string, fresh bool) error {
+// liveForced is the fixed-point check. It renews the claim unconditionally,
+// however recent the last renewal is, and then rereads the context for
+// revocation. A refusal stops the start or the outcome report. The renewal
+// also restarts the periodic schedule of invariant 22 from its own time
+// (component-verification-runner invariants 17, 22, and 26).
+func (v *kitVerifier) liveForced(ctx context.Context, grantID string) error {
+	return v.checkLive(ctx, grantID, kitLiveForced)
+}
+
+func (v *kitVerifier) checkLive(ctx context.Context, grantID string, mode kitLiveMode) error {
 	v.liveMu.Lock()
 	defer v.liveMu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -375,18 +402,24 @@ func (v *kitVerifier) checkLive(ctx context.Context, grantID string, fresh bool)
 	if err := v.cachedLive(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithDeadline(ctx, v.claimDeadline())
-	defer cancel()
 	now := v.clock()
-	if v.renewDue(now) {
-		if err := v.renew(ctx, now); err != nil {
+	if mode == kitLiveForced || v.renewDue(now) {
+		renewCtx, cancel := context.WithDeadline(ctx, v.claimDeadline())
+		err := v.renew(renewCtx, now)
+		cancel()
+		if err != nil {
 			return err
 		}
 	}
-	if !fresh && now.Before(v.contextDue()) {
+	if mode == kitLivePeriodic && now.Before(v.contextDue()) {
 		return nil
 	}
-	return v.readContext(ctx, grantID, now)
+	// The reread is bounded by the claim as it stands now, so a renewal that
+	// just extended the lease gives the reread the renewed lease, not the
+	// remainder of the one it replaced.
+	readCtx, cancel := context.WithDeadline(ctx, v.claimDeadline())
+	defer cancel()
+	return v.readContext(readCtx, grantID, now)
 }
 
 // clock is the verifier's time source; a test replaces it to advance the
@@ -629,8 +662,10 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 		// component-verification-runner: name the exact operator act that opens the grant window.
 		return &kitAdmissionError{fmt.Errorf("blocked: missing work-order authorization for exercise %s; required actions: %s; %s", e.ID, kitRequiredActions(e), kitMissingGrantRemedy(v.order.ID, vc.ID))}
 	}
-	// Admission needs the current server state: this is the run's start.
-	if err := v.liveFresh(ctx, grant.ID); err != nil {
+	// The run's start is a fixed point: renew the claim and reread the
+	// context for this grant's revocation however recent the last renewal is
+	// (component-verification-runner invariant 17).
+	if err := v.liveForced(ctx, grant.ID); err != nil {
 		return err
 	}
 	// Checkout content cannot supply local authority: kit_permissions from a

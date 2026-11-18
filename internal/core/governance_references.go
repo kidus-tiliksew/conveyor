@@ -145,6 +145,26 @@ func ProjectGovernanceReferences(snapshot GovernanceSnapshot, repository string,
 	return GovernanceReferences{Designs: designs, Decisions: decisions}
 }
 
+// GovernanceReferencePin is the part of a pinned GovernanceSnapshot that
+// ProjectGovernanceReferences reads without changed paths: each design's ID,
+// title, version, attachment pin, archive flag, and successors, and each
+// decision's ID, status, statement, and successor, in snapshot order. It
+// carries no design body, category, governed scope, decision rationale, or
+// retired proposal evidence, and its slices are never nil. A durable backend
+// projects exactly these fields in its own read, so a claim or renewal
+// response lists the pinned documents without the snapshot body leaving the
+// database (component-work-orders invariants 23 and 24).
+func GovernanceReferencePin(snapshot GovernanceSnapshot) GovernanceSnapshot {
+	pin := GovernanceSnapshot{Designs: make([]GovernanceDesignContext, 0, len(snapshot.Designs)), Decisions: make([]Decision, 0, len(snapshot.Decisions))}
+	for _, design := range snapshot.Designs {
+		pin.Designs = append(pin.Designs, GovernanceDesignContext{ID: design.ID, Title: design.Title, Version: design.Version, PinnedAtAttachment: design.PinnedAtAttachment, Archived: design.Archived, SupersededBy: append([]string(nil), design.SupersededBy...)})
+	}
+	for _, decision := range snapshot.Decisions {
+		pin.Decisions = append(pin.Decisions, Decision{ID: decision.ID, Status: decision.Status, Statement: decision.Statement, SupersededBy: decision.SupersededBy})
+	}
+	return pin
+}
+
 // GovernanceEventReferences is the identity-only list a new work_order.claimed
 // or work_order.updated event carries: IDs, titles, versions, and statuses,
 // with no summary, so a pinned order's events stay small. Events hold no
