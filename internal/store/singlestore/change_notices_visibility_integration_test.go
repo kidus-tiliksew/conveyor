@@ -508,18 +508,18 @@ func TestSingleStoreTaskEventWritePathIntegration(t *testing.T) {
 }
 
 // TestSingleStoreTaskEventWitnessUpgradeIntegration: a database upgraded
-// from before migration 0045 keeps its counters but has no witnesses. A peer
+// from before migration 0046 keeps its counters but has no witnesses. A peer
 // accepts none of those unvalidated positions and accepts the first position
 // a new commit witnesses.
 func TestSingleStoreTaskEventWitnessUpgradeIntegration(t *testing.T) {
 	writer := openOwnedStore(t)
 	ctx, ws, taskID := seedSingleStoreNoticeTask(t, writer)
-	// Reconstruct the pre-0045 schema: drop the table and its ledger row,
+	// Reconstruct the pre-0046 schema: drop the table and its ledger row,
 	// then run startup migration again.
 	if _, err := writer.db.ExecContext(ctx, `DROP TABLE task_event_witnesses`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writer.db.ExecContext(ctx, `DELETE FROM conveyor_singlestore_migrations WHERE version=45`); err != nil {
+	if _, err := writer.db.ExecContext(ctx, `DELETE FROM conveyor_singlestore_migrations WHERE version=46`); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.migrate(ctx); err != nil {
