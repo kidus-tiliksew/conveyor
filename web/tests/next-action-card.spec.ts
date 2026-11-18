@@ -2889,7 +2889,7 @@ test('the merge_approval gate withholds the merge when only a waiver can complet
   const gate = page.getByRole('region', { name: 'Human gate' })
   await expect(gate.locator('[data-approval-refusal]')).toHaveText(waiverOnly.refusal)
   await expect(gate.locator('[data-merge-at-gate]')).toHaveCount(0)
-  await expect(gate.locator('[data-merge-status]')).toHaveAttribute('data-merge-status', 'MERGEABLE')
+  await expect(gate.locator('[data-merge-status]')).toHaveCount(0)
   await expect(gate.locator('[data-choice="approve"]')).toHaveCount(0)
 })
 
