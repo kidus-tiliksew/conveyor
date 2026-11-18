@@ -279,6 +279,43 @@ first read. Without `--until`, output is unchanged.
 | `2` | The timeout elapsed. The result is printed and nothing is written to stderr. |
 | `1` | Failure: invalid arguments or timeout, configuration, authentication, authorization, not found, malformed response, or a failed first observation. |
 
+## crate
+
+```sh
+conveyor crate list [--state open|closed|all] [--json]
+conveyor crate show <crate-id> [--json]
+conveyor crate create --name <name> [--target-date YYYY-MM-DD] [--requirement <id>]... [--json]
+conveyor crate edit <crate-id> [--name <name>] [--target-date YYYY-MM-DD] [--requirement <id>]... [--json]
+conveyor crate close <crate-id> [--json]
+conveyor crate reopen <crate-id> [--json]
+conveyor crate add <task-id> <crate-id> [--json]
+conveyor crate remove <task-id> [--json]
+```
+
+A crate groups tasks for tracking and reporting. It changes no task's
+delivery. Each command calls one crate route and adds no rule of its own. The
+server checks every field, state, and membership act, and a refusal prints the
+server's status and message and exits non-zero. `--json` prints the route's
+response body as the server sent it (`component-crates` invariant 15;
+`req-crates` AC-6.3).
+
+| Command | Route | Notes |
+|---|---|---|
+| `conveyor crate list` | `GET /v1/crates` | Without `--state` the server lists open crates. Prints one line per crate: ID, state, target date, the open, merged, and total task counts, and name. |
+| `conveyor crate show <crate-id>` | `GET /v1/crates/{id}` | Prints the crate, its declared requirements with the number of tasks that carry each, the requirements tasks carry that the crate does not declare, and each task with its state, title, and next action. |
+| `conveyor crate create` | `POST /v1/crates` | `--name` is required by the server. Repeat `--requirement` for each declared requirement. Requires `create_tasks`. |
+| `conveyor crate edit <crate-id>` | `PATCH /v1/crates/{id}` | Sends only the fields you give. An empty `--target-date` removes the target date. A list of `--requirement` values replaces the declared list, and one empty `--requirement` removes every declared requirement. Requires `create_tasks`. |
+| `conveyor crate close <crate-id>` | `PATCH /v1/crates/{id}` with `state: closed` | A closed crate keeps its tasks and its page. No task can join it. Requires `create_tasks`. |
+| `conveyor crate reopen <crate-id>` | `PATCH /v1/crates/{id}` with `state: open` | Requires `create_tasks`. |
+| `conveyor crate add <task-id> <crate-id>` | `PUT /v1/tasks/{id}/crate` | The task joins the open crate and leaves the crate it was in. Prints the task's crate. Requires `create_tasks`. |
+| `conveyor crate remove <task-id>` | `DELETE /v1/tasks/{id}/crate` | The task leaves its crate. Requires `create_tasks`. |
+
+To create a task in a crate, pass `crate_id` to `POST /v1/tasks` or MCP
+`create_task`, or state `crate: <crate-id>` in a planning draft's task item.
+`conveyor plan check` refuses an empty `crate`. `conveyor plan push` reads
+each named crate before the first task of the layer posts, and a missing or
+closed crate refuses the whole tasks layer and names the item.
+
 ## inbox
 
 ```sh
