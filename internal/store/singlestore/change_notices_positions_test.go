@@ -202,3 +202,35 @@ func TestPeerMarksStatementBoundsWitnesses(t *testing.T) {
 		t.Fatalf("the peer read must be one statement that reaches events through one inner join: %q", query)
 	}
 }
+
+// TestTaskEventPruneDeleteShape: the delete always carries the same key
+// slots, whatever the number of selected witnesses, and pads with a
+// selected key.
+func TestTaskEventPruneDeleteShape(t *testing.T) {
+	if got := strings.Count(taskEventPruneDeleteSQL, "(?,?,?)"); got != taskEventPositionPrune {
+		t.Fatalf("delete key slots=%d, want %d", got, taskEventPositionPrune)
+	}
+	for _, n := range []int{1, 2, taskEventPositionPrune} {
+		keys := make([]any, 0, 3*n)
+		for i := 0; i < n; i++ {
+			keys = append(keys, int64(64+i), "shard", int64(1000+i))
+		}
+		args := taskEventPruneDeleteArgs("ws", keys)
+		if len(args) != 1+3*taskEventPositionPrune || args[0] != "ws" {
+			t.Fatalf("%d keys: %d args, want %d", n, len(args), 1+3*taskEventPositionPrune)
+		}
+		for slot := n; slot < taskEventPositionPrune; slot++ {
+			if fmt.Sprint(args[1+3*slot:4+3*slot]) != fmt.Sprint(keys[:3]) {
+				t.Fatalf("%d keys: slot %d pads with %v, want the first key", n, slot, args[1+3*slot:4+3*slot])
+			}
+		}
+	}
+	for _, tc := range []struct {
+		position int64
+		want     bool
+	}{{1, false}, {63, false}, {64, true}, {65, false}, {128, true}} {
+		if got := isTaskEventPrunePosition(tc.position); got != tc.want {
+			t.Fatalf("isTaskEventPrunePosition(%d)=%v, want %v", tc.position, got, tc.want)
+		}
+	}
+}
