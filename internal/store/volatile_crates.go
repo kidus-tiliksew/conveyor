@@ -125,6 +125,24 @@ func (m *memory) CrateNames(ctx context.Context, ids []string) (map[string]strin
 	return out, nil
 }
 
+// ListCrateMembers implements CrateStore.
+func (m *memory) ListCrateMembers(ctx context.Context, ids []string) (map[string][]CrateMemberTask, error) {
+	workspace := workspaceOrDefault(ctx, "")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string][]CrateMemberTask, len(ids))
+	for _, id := range ids {
+		crate, ok := m.crates[memoryScopedKey{workspace: workspace, id: id}]
+		if _, listed := out[id]; !ok || listed {
+			continue
+		}
+		for _, member := range m.crateMembersLocked(crate) {
+			out[id] = append(out[id], CrateMemberTask{ID: member.ID, Title: member.Title, State: member.State})
+		}
+	}
+	return out, nil
+}
+
 // ListCrateActivity implements CrateStore: the listed event kinds of the
 // crate's current members, newest first (component-crates invariant 13).
 func (m *memory) ListCrateActivity(ctx context.Context, id string, query CrateActivityQuery) (CrateActivityPage, error) {
