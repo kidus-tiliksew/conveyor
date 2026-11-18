@@ -17,7 +17,7 @@ import (
 // StatementMemoFunc builds the HTTP handler of a server over st for
 // workspace, authenticating the bearer token StatementMemoToken. storetest
 // cannot import httpapi: httpapi tests import storetest.
-type StatementMemoFunc func(st store.Store, workspace string) http.Handler
+type StatementMemoFunc func(st store.Store, workspace string, memoClock func() time.Time) http.Handler
 
 // StatementMemoToken is the bearer token a StatementMemoFunc server accepts.
 const StatementMemoToken = "statement-memo-reader"
@@ -60,7 +60,10 @@ func RunWorkspaceNoticeConformance(t *testing.T, x Fixture, memo StatementMemoFu
 	var handler http.Handler
 	if memo != nil {
 		probe = &memoProbeStore{Store: st, hub: hub}
-		handler = memo(probe, ws)
+		// The memo clock stands still, so an entry misses only when a
+		// notice drops it, never because it expired between two reads.
+		memoNow := time.Now().UTC()
+		handler = memo(probe, ws, func() time.Time { return memoNow })
 	}
 	read := func(t *testing.T) int64 {
 		t.Helper()
@@ -81,6 +84,9 @@ func RunWorkspaceNoticeConformance(t *testing.T, x Fixture, memo StatementMemoFu
 		t.Helper()
 		notices := hub.Subscribe(ws, changes.Workspace)
 		defer notices.Close()
+		// A notice an earlier write raised, including a peer listener's
+		// late copy on PostgreSQL, arrives before the memo is warmed.
+		settle(notices)
 		if handler != nil {
 			read(t)
 			if read(t) != 0 {

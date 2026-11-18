@@ -134,6 +134,14 @@ type readMemo struct {
 	waiting func()
 }
 
+// UseReadMemoClock replaces the response memo's clock. Store conformance
+// suites hold it still, so a memo entry misses only when a notice drops it.
+func (s *Server) UseReadMemoClock(clock func() time.Time) {
+	if s.readMemo != nil {
+		s.readMemo.clock = clock
+	}
+}
+
 // readMemoRebuilds bounds how many times one caller builds again because a
 // notice arrived during its build. Notices are process-wide, so a stream of
 // unrelated notices could otherwise discard every build of a busy daemon;

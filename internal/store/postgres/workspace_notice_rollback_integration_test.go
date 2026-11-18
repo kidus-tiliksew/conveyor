@@ -20,7 +20,9 @@ import (
 // publishes nothing, and the same write committed publishes one notice
 // (component-persistence invariant 23; DEC-140(3)).
 func TestWorkspaceEventNoticeFollowsCommitIntegration(t *testing.T) {
-	st := conformanceStore(t)
+	// A private schema and store: peers are never enabled on it, so no
+	// listener can republish an earlier notice into the quiet checks.
+	st := newIdentityIntegrationStore(t, 0)
 	workspace := "notice-" + core.NewTaskID()
 	ctx := store.WithActor(store.WithWorkspace(t.Context(), workspace), store.SystemActor())
 	if _, err := st.CreateWorkspace(ctx, workspace, workspace, &config.Config{Workspace: workspace}); err != nil {

@@ -35,9 +35,10 @@ func TestMemoryConformance(t *testing.T) {
 			service := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 			return service.SubmitPlan
 		},
-		StatementMemo: func(st store.Store, workspace string) http.Handler {
+		StatementMemo: func(st store.Store, workspace string, memoClock func() time.Time) http.Handler {
 			server := httpapi.NewServer(st)
 			server.Workspace, server.BearerToken = workspace, storetest.StatementMemoToken
+			server.UseReadMemoClock(memoClock)
 			return server.Handler()
 		},
 		ReviewSweep: func(ctx context.Context, st store.Store, cfg *config.Config, head string, now time.Time) (int, error) {

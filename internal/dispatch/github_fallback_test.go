@@ -557,11 +557,16 @@ func TestGitHubFallbackStopsOnWebhookDelivery(t *testing.T) {
 	g.quiet()
 }
 
-// TestGitHubFallbackWorkspaceNoticesMakeNoForgeRead proves the workspace
-// notices that document proposals, membership changes, and the in-process
-// merge-readiness cache now raise wake the fallback's settings read only:
-// they make no GitHub read and never bring the armed timer forward
-// (DEC-140(3); task 261118-aeb309 item 3).
+// TestGitHubFallbackWorkspaceNoticesMakeNoForgeRead proves the new
+// workspace notices wake the fallback's settings read only: they make no
+// GitHub read and never bring the armed timer forward (DEC-140(3); task
+// 261118-aeb309 item 3). It drives two real producers, a decision proposal
+// and its confirmation through the store's shared workspace event writer,
+// and publishes the workspace notice the httpapi merge-readiness cache
+// raises directly, because dispatch cannot import httpapi. A membership
+// write raises the same notice kind through the same writer; the
+// WorkspaceNotices conformance suite proves that producer. The fallback
+// reads only the notice kind and workspace, never its source.
 func TestGitHubFallbackWorkspaceNoticesMakeNoForgeRead(t *testing.T) {
 	f := newFallbackFixture(t)
 	f.run()
@@ -591,7 +596,8 @@ func TestGitHubFallbackWorkspaceNoticesMakeNoForgeRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectSettings("a decision confirmation")
-	// The in-process notice a merge-readiness change or expiry publishes.
+	// The notice a merge-readiness change or expiry publishes, as
+	// mergeReadinessCache.announceLocked sends it: kind workspace, no task.
 	f.hub.Publish(changes.Notice{Workspace: "test", Kind: changes.Workspace})
 	expectSettings("a merge-readiness notice")
 	f.quiet()
