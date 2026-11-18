@@ -144,8 +144,8 @@ var markerForgeKeys = []string{"review_work_order_id", "work_order_id", "forge_e
 // the review folds' reviewLifecycleEventMatches, ReviewVerdictDiagnostics,
 // ActivityReviewLeaseHorizon, completedReviewWorkOrderIDs, and
 // SupersededReviewWorkOrders (review lifecycle kinds). A claim decodes as a
-// whole work order, so it is projected only when claimCertain proves every
-// field it leaves out decodes (markerClaimReadKeys).
+// whole work order, so it is projected to markerClaimReadKeys only when
+// claimCertain proves every field it leaves out decodes.
 var markerProjections = func() []struct {
 	kinds []string
 	keys  []string
@@ -221,7 +221,7 @@ func (d MarkerSQLDialect) projectedPayload() string {
 	for _, key := range markerClaimReadKeys {
 		pairs = append(pairs, "'"+key+"'", d.Field("event_payload", key))
 	}
-	branches = append(branches, fmt.Sprintf("WHEN kind='work_order.claimed' AND %s THEN %s", d.claimCertain(), d.Object(pairs)))
+	branches = append(branches, "WHEN kind='work_order.claimed' AND certain=1 THEN "+d.Object(pairs))
 	return "CASE " + strings.Join(branches, " ") + " ELSE event_payload END"
 }
 
@@ -385,10 +385,12 @@ func markerRowsSQL(d MarkerSQLDialect, b *MarkerSQLBinder, in MarkerFoldInput) s
 // renewal for the horizon; only the simple renewal payload the store writes
 // is eligible, and other shapes keep their complete history.
 //
-// Claims: an older claim of the same task and job is left out when it
-// cannot raise the review lease horizon (its lease is absent, invalid, or
-// not after now) and its payload names no other open review order of the
-// task. The newest claim of that job carries dropped, the number left out,
+// Claims: an older claim of the same task and job is left out when its
+// payload names no other open review order of the task and it cannot lower
+// the review lease horizon: its lease is absent, invalid, or not after now,
+// or it decodes for certain (claimCertain) and a claim of the job that
+// decodes for certain holds an earlier future lease. So a job keeps its
+// newest claim and its earliest future claim. The newest claim of that job carries dropped, the number left out,
 // and dropped_implement, how many of those may name the implement stage. The
 // caller decodes the newest claim and reads the left-out claims back with
 // MarkerClaimHistorySQL when the newest one does not supersede them
@@ -418,13 +420,13 @@ func MarkerFoldSQL(d MarkerSQLDialect, in MarkerFoldInput) (string, []any) {
 		FROM marker_rows WHERE kind='work_order.claimed'`, carry)
 	const future = `(lease_sec>now_sec OR (lease_sec=now_sec AND lease_nanos>now_nanos))`
 	const counted = `counted_claims AS (
-			SELECT ` + carry + `,claim_rank,reducible,
+			SELECT ` + carry + `,claim_rank,reducible,certain,
 				SUM(CASE WHEN claim_rank>1 AND reducible=1 THEN 1 ELSE 0 END) OVER (PARTITION BY task_id,job_id) AS dropped,
 				SUM(CASE WHEN claim_rank>1 AND reducible=1 AND maybe_implement=1 THEN 1 ELSE 0 END) OVER (PARTITION BY task_id,job_id) AS dropped_implement
 			FROM ranked_claims
 		)`
 	const keptClaims = `SELECT id,task_id,job_id,'work_order.claimed',event_payload,event_at,k_text,k_lower,
-				CASE WHEN claim_rank=1 THEN dropped ELSE 0 END,CASE WHEN claim_rank=1 THEN dropped_implement ELSE 0 END
+				CASE WHEN claim_rank=1 THEN dropped ELSE 0 END,CASE WHEN claim_rank=1 THEN dropped_implement ELSE 0 END,certain
 			FROM counted_claims WHERE claim_rank=1 OR reducible=0`
 	var query string
 	if len(in.LiveReviewTasks) == 0 {
@@ -436,12 +438,13 @@ func MarkerFoldSQL(d MarkerSQLDialect, in MarkerFoldInput) (string, []any) {
 			SELECT ` + carry + `,
 				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY event_at DESC,id DESC) AS claim_rank,
 				CASE WHEN job_id<>'' THEN 1 ELSE 0 END AS reducible,
-				1 AS maybe_implement
+				1 AS maybe_implement,
+				CASE WHEN ` + d.claimCertain() + ` THEN 1 ELSE 0 END AS certain
 			FROM marker_rows WHERE kind='work_order.claimed'
 		),
 		` + counted + `,
 		kept AS (
-			SELECT id,task_id,job_id,kind,event_payload,event_at,k_text,k_lower,0 AS dropped,0 AS dropped_implement FROM marker_rows
+			SELECT id,task_id,job_id,kind,event_payload,event_at,k_text,k_lower,0 AS dropped,0 AS dropped_implement,0 AS certain FROM marker_rows
 			WHERE kind<>'work_order.claimed'
 			UNION ALL
 			` + keptClaims + `
@@ -460,20 +463,33 @@ func MarkerFoldSQL(d MarkerSQLDialect, in MarkerFoldInput) (string, []any) {
 			FROM renewal_instants CROSS JOIN marker_clock
 		),
 		claim_instants AS (` + claims + `),
-		ranked_claims AS (
-			SELECT ` + carry + `,
+		claim_facts AS (
+			SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,now_sec,now_nanos,
+				CASE WHEN ` + d.claimCertain() + ` THEN 1 ELSE 0 END AS certain
+			FROM claim_instants CROSS JOIN marker_clock
+		),
+		ordered_claims AS (
+			SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,now_sec,now_nanos,certain,
 				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY event_at DESC,id DESC) AS claim_rank,
-				CASE WHEN job_id<>'' AND (NOT (` + b.in("task_id", in.LiveReviewTasks) + `) OR (` + markerIdentitySafe(d, b, in) + ` AND COALESCE(` + d.keyUnambiguous("lease_expires_at") + `,1=0) AND (lease_ok=0 OR NOT ` + future + `)))
+				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY
+					CASE WHEN certain=1 AND lease_ok=1 AND ` + future + ` THEN 0 ELSE 1 END,
+					lease_sec,lease_nanos,event_at,id) AS claim_horizon_rank
+			FROM claim_facts
+		),
+		ranked_claims AS (
+			SELECT ` + carry + `,certain,claim_rank,
+				CASE WHEN job_id<>'' AND (NOT (` + b.in("task_id", in.LiveReviewTasks) + `) OR (` + markerIdentitySafe(d, b, in) + ` AND COALESCE(` + d.keyUnambiguous("lease_expires_at") + `,1=0)
+					AND (lease_ok=0 OR NOT ` + future + ` OR (certain=1 AND claim_horizon_rank>1))))
 					THEN 1 ELSE 0 END AS reducible,
 				CASE WHEN ` + d.mayEqual("stage", string(core.StageImplement)) + ` THEN 1 ELSE 0 END AS maybe_implement
-			FROM claim_instants CROSS JOIN marker_clock
+			FROM ordered_claims
 		),
 		` + counted + `,
 		kept AS (
-			SELECT id,task_id,job_id,kind,event_payload,event_at,k_text,k_lower,0 AS dropped,0 AS dropped_implement FROM marker_rows
+			SELECT id,task_id,job_id,kind,event_payload,event_at,k_text,k_lower,0 AS dropped,0 AS dropped_implement,0 AS certain FROM marker_rows
 			WHERE kind NOT IN ('work_order.lease_renewed','work_order.claimed')
 			UNION ALL
-			SELECT id,task_id,job_id,'work_order.lease_renewed',event_payload,event_at,k_text,k_lower,0,0 FROM ranked_renewals
+			SELECT id,task_id,job_id,'work_order.lease_renewed',event_payload,event_at,k_text,k_lower,0,0,0 FROM ranked_renewals
 			WHERE lease_ok=0 OR latest_rank=1 OR (horizon_rank=1 AND ` + future + `)
 			UNION ALL
 			` + keptClaims + `

@@ -246,6 +246,15 @@ func horizonCases() []horizonCase {
 			return []core.Event{h.claim(0, 1, h.at(time.Hour)),
 				h.event(0, "work_order.claimed", 2, fmt.Sprintf(`"id":%q`, h.orders[0].ID), `"stage":"review"`, `"created_at":"2028-02-29T23:59:59.5+05:30"`, `"tokens_in":7`, `"claimable":true`, `"lease_expires_at":`+h.at(time.Minute))}
 		}},
+		{name: "older claims keep only the earliest future lease", orders: oneOpen, horizon: offset(10 * time.Minute), events: func(h *horizonSeed) []core.Event {
+			return []core.Event{h.claim(0, 1, h.at(20*time.Minute)), h.claim(0, 2, h.at(10*time.Minute)), h.claim(0, 3, h.at(30*time.Minute)), h.claim(0, 4, h.at(time.Hour))}
+		}},
+		{name: "an undecodable claim with an earlier future lease", orders: oneOpen, horizon: offset(10 * time.Minute), events: func(h *horizonSeed) []core.Event {
+			return []core.Event{
+				h.event(0, "work_order.claimed", 1, fmt.Sprintf(`"id":%q`, h.orders[0].ID), `"attempt_id":5`, `"lease_expires_at":`+h.at(5*time.Minute)),
+				h.claim(0, 2, h.at(10*time.Minute)), h.claim(0, 3, h.at(20*time.Minute)), h.claim(0, 4, h.at(time.Hour)),
+			}
+		}},
 		{name: "a claim with a fractional count does not decode", orders: oneOpen, horizon: offset(time.Hour), events: func(h *horizonSeed) []core.Event {
 			return []core.Event{h.claim(0, 1, h.at(time.Hour)),
 				h.event(0, "work_order.claimed", 2, fmt.Sprintf(`"id":%q`, h.orders[0].ID), `"tokens_in":7.5`, `"lease_expires_at":`+h.at(time.Minute))}
