@@ -335,7 +335,7 @@ test('Board sheet navigation follows the visible filtered page without an unfilt
   await page.getByRole('link', { name: /Second page newest/ }).click()
   const header = sheet(page).locator('header').first()
   await expect(header).toContainText('Second page newest')
-  await expect(header.getByRole('note')).toHaveText('The previous task is on an earlier Board page.')
+  await expect(header.getByRole('note')).toHaveText('The previous task is on an earlier page of tasks.')
   // A change-driven Board pass refreshes only the Board's own filtered page.
   const beforePass = server.count(reads.activity)
   await changes.activity('page-two-newest')
@@ -371,13 +371,13 @@ test('Board sheet notes a later page and a task outside the page; the full route
   await page.getByRole('link', { name: new RegExp(last.title) }).click()
   const header = sheet(page).locator('header').first()
   await expect(header).toContainText(last.title)
-  await expect(header.getByRole('note')).toHaveText('The next task is on a later Board page.')
+  await expect(header.getByRole('note')).toHaveText('The next task is on a later page of tasks.')
   await expect(header.getByRole('button', { name: 'Next task' })).toBeDisabled()
 
   await page.goto(`/w/demo/tasks/${outside.id}`)
   await expect(sheet(page).locator('header').first()).toContainText(outside.title)
   await expect(sheet(page).locator('header').first().getByRole('note')).toHaveText(
-    'This task is outside the loaded Board window.',
+    'This task is outside the loaded page of tasks.',
   )
 
   await page.goto(`/w/demo/tasks/${secondPage[0].id}/full`)
@@ -616,7 +616,7 @@ test.describe('slow reads', () => {
     await page.getByLabel('Display name').fill('Ada Lovelace')
     await page.getByRole('button', { name: 'Save profile' }).click()
     await expect.poll(() => server.count(reads.identity)).toBeGreaterThan(beforeSave.identity)
-    await page.getByRole('link', { name: 'Board', exact: true }).first().click()
+    await page.getByRole('link', { name: 'Tasks', exact: true }).first().click()
     await expect(page.getByRole('link', { name: new RegExp(sheetTask.title) })).toBeVisible()
     await expect.poll(() => server.count(reads.members)).toBeGreaterThan(beforeSave.members)
 

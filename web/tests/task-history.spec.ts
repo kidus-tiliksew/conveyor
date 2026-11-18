@@ -893,7 +893,7 @@ for (const name of ['20k', '100k'] as const) {
     const back: number[] = []
     for (let run = 0; run <= 5; run++) {
       await page.goto('/')
-      await expect(page.getByRole('region', { name: 'Task board' })).toBeVisible()
+      await expect(page.getByRole('region', { name: 'Task columns' })).toBeVisible()
       let start = performance.now()
       await page.getByText(generated.item.task.title).first().click()
       const sheet = page.getByRole('dialog', { name: 'Task detail' })

@@ -174,7 +174,7 @@ test('registration clears board and sheet notices through the shared cache witho
   const readsBeforeSave = api.reads()
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect.poll(api.reads).toBeGreaterThan(readsBeforeSave)
-  await page.getByRole('link', { name: 'Board', exact: true }).click()
+  await page.getByRole('link', { name: 'Tasks', exact: true }).click()
   await expect(page.getByText(notice, { exact: false })).toHaveCount(0)
   await page.getByRole('button', { name: 'New task', exact: true }).click()
   await expect(sheet.getByText(notice, { exact: false })).toHaveCount(0)

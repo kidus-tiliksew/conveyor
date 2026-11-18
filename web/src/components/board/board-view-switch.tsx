@@ -33,7 +33,7 @@ export function BoardViewSwitch({ view }: { view: BoardView }) {
     })
   return (
     <fieldset
-      aria-label="Board view"
+      aria-label="Tasks view"
       className="m-0 flex shrink-0 gap-0.5 rounded-lg border border-border bg-surface p-0.5"
     >
       {views.map(({ id, label, Icon }) => (

@@ -46,7 +46,7 @@ export function Board() {
   const map = search.view === 'map'
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="Board">
+      <PageHeader title="Tasks">
         <MCPSetup iconOnly />
         {canCreateTasks && (
           <Link to="." search={(prev: BoardSearch) => ({ ...prev, create: true as const })}>
@@ -192,7 +192,7 @@ function Kanban() {
           data &&
           !isLoading &&
           !singlePage && (
-            <nav aria-label="Board pages" className="flex h-8 items-center rounded-md border border-border bg-surface">
+            <nav aria-label="Task pages" className="flex h-8 items-center rounded-md border border-border bg-surface">
               <span className="whitespace-nowrap px-2.5">
                 <span className="font-medium text-foreground">
                   {data.total === 0 ? 0 : data.offset + 1}–{Math.min(shown, data.total)}
@@ -242,17 +242,12 @@ function Kanban() {
         </p>
       )}
       {loadFailed ? (
-        <ErrorState
-          title="Could not load the board"
-          error={error}
-          onRetry={() => void refetch()}
-          retrying={isFetching}
-        />
+        <ErrorState title="Could not load tasks" error={error} onRetry={() => void refetch()} retrying={isFetching} />
       ) : (
         <div className="relative flex min-h-0 flex-1">
           <section
             ref={scroller}
-            aria-label="Task board"
+            aria-label="Task columns"
             className="relative flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto px-4 py-4 lg:px-6"
           >
             {isLoading

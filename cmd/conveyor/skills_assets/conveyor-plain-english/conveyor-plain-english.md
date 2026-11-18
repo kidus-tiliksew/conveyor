@@ -178,7 +178,7 @@ that the dashboard prints for each name.
 
 ### Status labels
 
-The dashboard also shows these labels for checks, entries, and board groups.
+The dashboard also shows these labels for checks, entries, and task map groups.
 
 | Label | Description |
 | --- | --- |

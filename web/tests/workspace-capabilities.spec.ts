@@ -423,7 +423,7 @@ test.describe('empty Board offers Create workspace only with the creation right'
       await unscopedRead
       const create = page.getByRole('link', { name: 'Create workspace' })
       if (!creation) {
-        await expect(page.getByText('Pick a workspace from the left rail to see its board.')).toBeVisible()
+        await expect(page.getByText('Pick a workspace from the left rail to see its tasks.')).toBeVisible()
         await expect(create).toHaveCount(0)
         await expect(page.getByRole('link', { name: 'Add workspace' })).toHaveCount(0)
         expect(identityRequests).toEqual([])

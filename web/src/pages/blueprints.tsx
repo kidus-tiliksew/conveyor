@@ -28,9 +28,9 @@ export function BlueprintsPage() {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
           <p className="mb-5 max-w-2xl text-sm text-muted">
-            New delivery work is proposed through planning bundles and managed in{' '}
+            New delivery work is proposed through planning bundles and managed on{' '}
             <Link to="/w/$workspaceId/" params={{ workspaceId: workspace }} className="text-primary hover:underline">
-              the Board
+              the Tasks page
             </Link>
             .
           </p>
