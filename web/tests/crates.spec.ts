@@ -1191,6 +1191,54 @@ for (const viewport of [
       await expectNoHorizontalScroll(page)
     })
 
+    // AC-1.5 after the first render: when the browser takes the line's WebGL
+    // context away, the counts become visible text and the rest of the page
+    // keeps working (component-crates invariant 34). The spec needs WebGL to
+    // lose, so it skips where the browser has none.
+    test('a lost WebGL context turns the line into visible station counts', async ({ page }) => {
+      await serveCrates(page)
+      await page.goto('/w/demo/crates/crate-line')
+      const band = page.locator('[data-line-mode]')
+      test.skip((await band.getAttribute('data-line-mode')) !== 'scene', 'this browser has no WebGL')
+      // The first frame places the station signs.
+      await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+      const lost = await page.locator('[data-line-scene] canvas').evaluate((canvas) => {
+        const element = canvas as HTMLCanvasElement
+        const context = element.getContext('webgl2') ?? element.getContext('webgl')
+        const extension = context?.getExtension('WEBGL_lose_context')
+        extension?.loseContext()
+        return extension != null
+      })
+      expect(lost).toBe(true)
+
+      await expect(band).toHaveAttribute('data-line-mode', 'text')
+      await expect(page.locator('canvas')).toHaveCount(0)
+      const counts = page.getByRole('list', { name: 'Tasks at each station' })
+      await expect(counts).toBeVisible()
+      for (const item of await counts.getByRole('listitem').all()) await expect(item).toBeVisible()
+      await expect(counts.getByRole('listitem')).toHaveText([
+        'Queued: 2',
+        'Plan: 1',
+        'Build: 1',
+        'Review: 1',
+        'Merge gate: 1',
+        'Merged: 1',
+      ])
+
+      // The task list still expands and collapses.
+      const toggle = page.locator('[data-crate-tasks-toggle]')
+      await toggle.click()
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      await expect(page.locator('[data-crate-task]')).toHaveCount(8)
+      await toggle.click()
+      await expect(page.locator('[data-crate-task]')).toHaveCount(5)
+      // The replay still moves the counts.
+      await replayTo(page, '2026-11-10T10:00:00Z')
+      await expect(counts.locator('[data-station="intake"]')).toHaveText('Queued: 1')
+      await expect(counts.locator('[data-station="build"]')).toHaveText('Build: 0')
+      await expectNoHorizontalScroll(page)
+    })
+
     // REQ-3: pointing at a row emphasizes the task, and the row keeps its
     // link to task detail.
     test('pointing at a task row marks it and emphasizes its block', async ({ page }) => {

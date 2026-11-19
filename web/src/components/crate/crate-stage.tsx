@@ -5,7 +5,7 @@
 // server's (component-crates invariants 9 and 21; DEC-143(3)). The page
 // formats them and derives none.
 import { Archive, CalendarPlus, CircleCheck, Pause, Play, RotateCw } from 'lucide-react'
-import { Component, lazy, type ReactNode, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { Component, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CrateDetail, CrateInsight } from '../../lib/types'
 import { useMediaQuery } from '../../lib/use-media-query'
 import { cn } from '../../lib/utils'
@@ -90,8 +90,11 @@ export function CrateStage({
   const compact = useMediaQuery('(max-width: 767px)')
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const dark = useDarkTheme()
-  // Without WebGL, or once the scene fails, the counts are text.
+  // Without WebGL, once the scene fails, or once the browser takes the
+  // scene's WebGL context away, the counts are text. A lost context keeps the
+  // page on the text counts even if the browser later restores it.
   const [sceneFailed, setSceneFailed] = useState(() => !webglAvailable())
+  const onContextLost = useCallback(() => setSceneFailed(true), [])
 
   // The scene renders only while it is on screen.
   const band = useRef<HTMLDivElement>(null)
@@ -203,6 +206,7 @@ export function CrateStage({
                       emphasizedId={emphasis.emphasizedId}
                       onEmphasize={emphasis.emphasize}
                       onSelect={onSelect}
+                      onContextLost={onContextLost}
                       padTop={compact ? 100 : 78}
                       padBottom={compact ? 44 : 22}
                     />

@@ -31,6 +31,9 @@ export interface LineSceneProps {
   emphasizedId: string | null
   onEmphasize: (id: string | null) => void
   onSelect: (id: string) => void
+  // Called when the browser takes the canvas's WebGL context away, so the
+  // page can state the counts as text (req-crate-insights AC-1.5).
+  onContextLost: () => void
   // Pixels the page overlays on the scene's top and bottom edges.
   padTop: number
   padBottom: number
@@ -661,6 +664,19 @@ function Projector({
   return <group ref={origin} />
 }
 
+// Reports the loss of the mounted canvas's WebGL context. three.js handles
+// the event without throwing and draws nothing until the context returns, so
+// no error boundary sees it (req-crate-insights AC-1.5; component-crates
+// invariant 34).
+function ContextLossWatch({ onLost }: { onLost: () => void }) {
+  const canvas = useThree((state) => state.gl.domElement)
+  useEffect(() => {
+    canvas.addEventListener('webglcontextlost', onLost)
+    return () => canvas.removeEventListener('webglcontextlost', onLost)
+  }, [canvas, onLost])
+  return null
+}
+
 // Under reduced motion the canvas draws on demand. Each change of what it
 // shows draws a frame, and in that frame every block stands at its place.
 function DrawOnChange({
@@ -748,6 +764,7 @@ export default function LineScene({
   emphasizedId,
   onEmphasize,
   onSelect,
+  onContextLost,
   padTop,
   padBottom,
 }: LineSceneProps) {
@@ -882,6 +899,7 @@ export default function LineScene({
             )
           })}
           <Projector anchors={anchors} card={card} groups={groups} elements={elements} />
+          <ContextLossWatch onLost={onContextLost} />
           <DrawOnChange blocks={blocks} emphasizedId={emphasizedId} shipped={shipped} closed={closed} dark={dark} />
           <ContactShadows
             position={[0, 0.005, 0]}
