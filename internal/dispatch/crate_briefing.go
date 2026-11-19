@@ -81,10 +81,12 @@ const (
 const crateBriefingLineBreaks = "\r\n\v\f\u0085  "
 
 // crateBriefingIdentifier matches an identifier that req-crate-insights
-// AC-5.3 keeps out of the prose: a task ID shape such as 261119-fbe6d9;
-// REQ-n, AC-n.m, or DEC-n; a requirement, reference, or crate ID such as
-// req-crate-insights; and a design ID such as component-crates.
-var crateBriefingIdentifier = regexp.MustCompile(`(?:\b\d{6}-[0-9a-f]{6}\b)|(?:\b(?:REQ|AC|DEC)-\d+(?:\.\d+)?\b)|(?:\b(?:req|ref|crate)-[a-z0-9]+(?:-[a-z0-9]+)*\b)|(?:\b(?:component|feature)-[a-z0-9]+(?:-[a-z0-9]+)+\b)`)
+// AC-5.3 keeps out of the prose: the dated ID shape of tasks, crates, and
+// reference documents, such as 261119-fbe6d9 in crate-261119-d9973f;
+// REQ-n, AC-n.m, or DEC-n; a requirement ID such as req-crate-insights; and
+// a design ID such as component-crates. A hyphenated word such as
+// crate-level is no identifier.
+var crateBriefingIdentifier = regexp.MustCompile(`(?:\b\d{6}-[0-9a-f]{6}\b)|(?:\b(?:REQ|AC|DEC)-\d+(?:\.\d+)?\b)|(?:\breq-[a-z0-9]+(?:-[a-z0-9]+)*\b)|(?:\b(?:component|feature)-[a-z0-9]+(?:-[a-z0-9]+)+\b)`)
 
 // GenerateCrateBriefing produces a crate briefing through the trusted
 // in-process client on the triage route (DEC-142(1)).

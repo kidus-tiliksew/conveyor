@@ -247,6 +247,7 @@ func TestCrateBriefingReplyRefusals(t *testing.T) {
 		{"requirement document ID", crateBriefingReplyJSON(t, crateBriefingHeadline, "It serves req-crate-insights "+echo+"."), "task, requirement, or document identifier"},
 		{"design document ID", crateBriefingReplyJSON(t, crateBriefingHeadline, "It follows component-crates and feature-crate-insights "+echo+"."), "task, requirement, or document identifier"},
 		{"crate ID", crateBriefingReplyJSON(t, "crate-261119-d9973f is on track "+echo+".", crateBriefingAccount), "task, requirement, or document identifier"},
+		{"reference document ID", crateBriefingReplyJSON(t, crateBriefingHeadline, "It follows ref-260823-f4729f "+echo+"."), "task, requirement, or document identifier"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			agent := &headlineAgent{result: inprocess.Result{Output: test.output, Model: "served"}}
@@ -286,6 +287,7 @@ func TestCrateBriefingReplyAccepted(t *testing.T) {
 		{"bounds and three entries", crateBriefingReplyJSON(t, headline200, account800, three...), CrateBriefing{Headline: headline200, Account: account800, LookFirst: three}},
 		{"empty look_first", crateBriefingReplyJSON(t, crateBriefingHeadline, crateBriefingAccount), CrateBriefing{Headline: crateBriefingHeadline, Account: crateBriefingAccount, LookFirst: []crateinsight.BriefingEntry{}}},
 		{"plain words", crateBriefingReplyJSON(t, "Two of 5 tasks merged by Nov 26, 2026.", "The follow-up work on the sign-in page is in review. Task #3 is the C# client."), CrateBriefing{Headline: "Two of 5 tasks merged by Nov 26, 2026.", Account: "The follow-up work on the sign-in page is in review. Task #3 is the C# client.", LookFirst: []crateinsight.BriefingEntry{}}},
+		{"hyphenated words", crateBriefingReplyJSON(t, "The crate-level target of Nov 26 looks safe.", "The reference-data import and the component-wide cleanup merged. A feature flag guards the re-run."), CrateBriefing{Headline: "The crate-level target of Nov 26 looks safe.", Account: "The reference-data import and the component-wide cleanup merged. A feature flag guards the re-run.", LookFirst: []crateinsight.BriefingEntry{}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			agent := &headlineAgent{result: inprocess.Result{Output: "  " + test.output + "\n"}}
