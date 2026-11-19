@@ -181,6 +181,7 @@ and a change needs `create_tasks`:
 | `GET /v1/crates/{id}` | The crate row with `requirements`, `undeclared_requirements`, and `tasks` |
 | `PATCH /v1/crates/{id}` | Any of `name`, `target_date`, `requirement_ids`, and `state`. A `target_date` of `null` removes the date. The crate row |
 | `GET /v1/crates/{id}/activity` | `limit` (1 to 200, default 50) and `cursor`. `events`, newest first, and `next_cursor` when more remain |
+| `GET /v1/crates/{id}/insight` | The insight view: where each member is, its branch history, the branch lanes, the delivery numbers, and the replay of the line |
 | `PUT /v1/tasks/{id}/crate` | `crate_id`. The task with its crate |
 | `DELETE /v1/tasks/{id}/crate` | The task with no crate |
 
@@ -202,11 +203,29 @@ that no member carries. `undeclared_requirements` has the same form for each
 requirement that a member carries and the crate does not declare. Each row of
 `tasks` has `id`, `title`, `state`, `branch`, `pull_request`, and
 `next_action`, and `next_action` is the statement that `GET /v1/tasks` gives.
+The crate read and the insight read list the members in one order. Members
+that wait on a person's decision come first. Next come members that an agent
+works, then the other members whose next action names an agent. Then come the
+other open members, then the members that a dependency blocks. Merged members
+and then closed members come last. Creation time and then ID order each group.
 The activity read lists these events of the current members: `task.created`,
 `task.crate_set`, `pull_request.opened`, `review.round_completed`,
 `merge.confirmed`, `merge.reconciled`, and `task.cancelled`. Each event names
 its task ID and title. A pull request event carries the pull request link, and
 a review round event carries its verdict.
+
+The server computes every value of the insight view, and the page only
+formats them. `tasks` holds each member's `phase`, `station`, `base_branch`,
+`created_at`, `pull_request_opened_at`, `changes_requested_at`,
+`review_rounds`, `merged_at`, and `closed_at`. `branches` lists each base
+branch once. `whereabouts` groups the members as not started, on task
+branches, and merged into each branch. `progress` has the form of the
+requirement insight progress view, with a 14-day throughput window.
+`first_review` counts the reviewed members and the members whose first review
+approved. `forecast_days_before_target` is the number of days from the
+forecast day to the target date. It is negative when the forecast falls after
+the target date, and `null` without both dates. `replay` holds each change of
+a member's phase or station from the first member's creation to the read time.
 
 A name is 1 to 120 characters after the server removes the spaces at each end.
 A target date is a calendar date written `YYYY-MM-DD`, or `null`. Each declared

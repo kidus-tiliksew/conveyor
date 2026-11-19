@@ -3,6 +3,7 @@ package store
 import (
 	"container/heap"
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -359,4 +360,52 @@ func cloneCrate(crate Crate) Crate {
 	}
 	crate.RequirementIDs = append([]string{}, crate.RequirementIDs...)
 	return crate
+}
+
+// ReadCrateInsightInputs is the memory backend's read under one read lock.
+// It gathers the same rows the SQL backends read: the crate, its current
+// member tasks, and their events of the listed kinds, each claim with the
+// stage of the order it names.
+func (m *memory) ReadCrateInsightInputs(ctx context.Context, id string) (CrateInsightInputs, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id = strings.TrimSpace(id)
+	crate, ok := m.crates[memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: id}]
+	if !ok {
+		return CrateInsightInputs{}, &CrateNotFoundError{ID: id}
+	}
+	crate = cloneCrate(crate)
+	members := m.crateMembersLocked(crate)
+	tasks := make([]core.Task, len(members))
+	var rows []CrateInsightEventRow
+	for i, member := range members {
+		// The SQL backends read no body: no part of the insight view or the
+		// next-action projection reads it.
+		member.Body = ""
+		member.Dependencies, member.BlockingTaskIDs, member.Children = nil, nil, nil
+		if member.Assignee != nil {
+			assignee := *member.Assignee
+			member.Assignee = &assignee
+		}
+		if member.Crate != nil {
+			crateRef := *member.Crate
+			member.Crate = &crateRef
+		}
+		tasks[i] = member
+		for _, event := range m.events[member.ID] {
+			if !slices.Contains(CrateInsightEventKinds, event.Kind) {
+				continue
+			}
+			row := CrateInsightEventRow{TaskID: member.ID, Event: CrateInsightEvent{ID: event.ID, Kind: event.Kind, At: event.At, Payload: append(json.RawMessage(nil), event.Payload...)}}
+			if event.Kind == "work_order.claimed" {
+				stage, orderID := CrateInsightClaimStage(event.Payload)
+				if stage == "" {
+					stage = m.workOrders[orderID].Stage
+				}
+				row.Event.Stage = stage
+			}
+			rows = append(rows, row)
+		}
+	}
+	return AssembleCrateInsightInputs(crate, tasks, rows), nil
 }

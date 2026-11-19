@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"strings"
@@ -15,10 +16,11 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// runCrates holds every backend to component-crates invariants 2 and 4 to
-// 13: records, membership, the closed-crate refusal, counts, shipped,
-// requirement coverage, list order, and activity (feature-crates CR-1;
-// req-crates REQ-1 to REQ-4). Each case starts from a fresh workspace.
+// runCrates holds every backend to component-crates invariants 2, 4 to 13,
+// and 22: records, membership, the closed-crate refusal, counts, shipped,
+// requirement coverage, list order, activity, and the insight inputs
+// (feature-crates CR-1; feature-crate-insights CI-1; req-crates REQ-1 to
+// REQ-4). Each case starts from a fresh workspace.
 func runCrates(t *testing.T, factory Factory) {
 	t.Run("CrateCreateRecordsOneEvent", func(t *testing.T) { runCrateCreate(t, factory.fresh(t, nil)) })
 	t.Run("CrateRefusalsRecordNothing", func(t *testing.T) { runCrateRefusals(t, factory.fresh(t, nil)) })
@@ -34,6 +36,13 @@ func runCrates(t *testing.T, factory Factory) {
 	t.Run("CrateIntakeRecordsCrate", func(t *testing.T) { runCrateIntake(t, factory.fresh(t, nil)) })
 	t.Run("CrateMemberRead", func(t *testing.T) { runCrateMemberRead(t, factory.fresh(t, nil)) })
 	t.Run("CrateMembersLimited", func(t *testing.T) { runCrateMembersLimited(t, factory.fresh(t, nil)) })
+	t.Run("CrateInsightInputs", func(t *testing.T) { runCrateInsightInputs(t, factory.fresh(t, nil)) })
+	t.Run("CrateInsightInputsBoundedStatements", func(t *testing.T) {
+		runCrateInsightInputsBounded(t, factory.fresh(t, nil), factory.ProductionCapable)
+	})
+	t.Run("CrateInsightInputsMemberLeavesMidRead", func(t *testing.T) {
+		runCrateInsightInputsMemberLeaves(t, factory.fresh(t, nil), factory.ProductionCapable)
+	})
 }
 
 func crateText(value string) *string { return &value }
@@ -1004,4 +1013,368 @@ func jsonEqual(t *testing.T, a, b any) bool {
 	right, err := json.Marshal(b)
 	requireOK(t, err)
 	return string(left) == string(right)
+}
+
+// insightEvent is one event as the insight read returns it, without its ID.
+type insightEvent struct {
+	Kind    string
+	At      time.Time
+	Stage   core.Stage
+	Payload string
+}
+
+func insightEvents(t *testing.T, member store.CrateInsightMember) []insightEvent {
+	t.Helper()
+	out := make([]insightEvent, len(member.Events))
+	for i, event := range member.Events {
+		if i > 0 {
+			previous := member.Events[i-1]
+			if event.At.Before(previous.At) || (event.At.Equal(previous.At) && event.ID <= previous.ID) {
+				t.Fatalf("member %s events are not in (at, id) order at %d: %+v after %+v", member.Task.ID, i, event, previous)
+			}
+		}
+		payload := ""
+		if len(event.Payload) > 0 {
+			var decoded map[string]any
+			requireOK(t, json.Unmarshal(event.Payload, &decoded))
+			if value, ok := decoded["marker"].(string); ok {
+				payload = value
+			} else {
+				payload = "payload"
+			}
+		}
+		out[i] = insightEvent{Kind: event.Kind, At: event.At.UTC(), Stage: event.Stage, Payload: payload}
+	}
+	return out
+}
+
+// runCrateInsightInputs holds invariant 22: the read returns the crate row
+// and, for each current member in creation order, its task row and its
+// listed events in (at, id) order, including events from before it joined,
+// each claim with its order's stage and no payload. A former member, an
+// outsider, and unlisted kinds are absent. An empty crate reads with no
+// member, and a missing or foreign crate is not found.
+func runCrateInsightInputs(t *testing.T, x Fixture) {
+	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Insight", TargetDate: crateText("2026-12-31")})
+	requireOK(t, err)
+	other, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Insight elsewhere"})
+	requireOK(t, err)
+	base := store.CrateTime(time.Now().Add(-48 * time.Hour))
+	member := func(state core.TaskState, stage core.Stage, crateID, base string, created time.Time) core.Task {
+		t.Helper()
+		id := fixtureTaskID()
+		task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: "Insight member " + id, Body: "Insight member body.", State: state, NextStage: stage, CreatedAt: created, BaseBranch: base, Branch: "conveyor/task-" + id}
+		if crateID != "" {
+			task.Crate = &core.TaskCrate{ID: crateID}
+		}
+		requireOK(t, x.Backend.CreateTask(x.Context, task))
+		return task
+	}
+	appendAt := func(task core.Task, kind string, at time.Time, payload any, job string) {
+		t.Helper()
+		requireOK(t, x.Backend.AppendEvent(x.Context, core.Event{TaskID: task.ID, JobID: job, Kind: kind, At: at.UTC(), Payload: core.JSONPayload(payload)}))
+	}
+	marker := func(value string) map[string]any { return map[string]any{"marker": value} }
+
+	// The building member: created in the crate, claimed for implement, a
+	// pull request, a review round that asked for changes, and an unlisted
+	// progress report.
+	building := member(core.TaskRunning, core.StageImplement, crate.ID, "main", base.Add(2*time.Hour))
+	implement := core.WorkOrder{ID: building.ID + "-implement-1", TaskID: building.ID, JobID: building.ID + "-implement-1", Stage: core.StageImplement, State: core.WorkOrderClaimed}
+	appendAt(building, "work_order.claimed", base.Add(3*time.Hour), store.WorkOrderEventPayload(implement), "")
+	appendAt(building, "task.progress_reported", base.Add(3*time.Hour+time.Minute), marker("unlisted"), "")
+	appendAt(building, "pull_request.opened", base.Add(4*time.Hour), map[string]any{"marker": "pull", "number": 7}, "")
+	appendAt(building, "review.round_completed", base.Add(5*time.Hour), map[string]any{"marker": "round", "verdict": "changes_requested"}, "")
+
+	// The joined member: it starts in the other crate with a plan state
+	// change and a legacy claim whose payload names only its review order,
+	// then joins this crate.
+	joined := member(core.TaskRunning, core.StageReview, other.ID, "develop", base.Add(time.Hour))
+	review := core.WorkOrder{ID: joined.ID + "-review-1", TaskID: joined.ID, JobID: joined.ID + "-review-1", Stage: core.StageReview, State: core.WorkOrderQueued,
+		QueueEnteredAt: base, QueueDeadline: base.Add(72 * time.Hour)}
+	requireOK(t, x.Backend.CreateJob(x.Context, core.Job{ID: review.JobID, TaskID: joined.ID, Stage: core.StageReview, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(x.Context, x.Backend, review))
+	appendAt(joined, core.EventTaskPlanStateChanged, base.Add(90*time.Minute), map[string]any{"marker": "plan", "to": "awaiting_approval", "cause": "plan_submitted"}, "")
+	appendAt(joined, "work_order.claimed", base.Add(100*time.Minute), map[string]any{"id": review.ID}, review.JobID)
+	_, err = x.Backend.SetTaskCrate(x.Context, joined.ID, crate.ID)
+	requireOK(t, err)
+
+	// The merged and closed members, and one member with the same creation
+	// time as the merged one so the ID breaks the tie.
+	merged := member(core.TaskMerged, "", crate.ID, "main", base.Add(3*time.Hour))
+	appendAt(merged, "merge.confirmed", base.Add(6*time.Hour), marker("merge"), "")
+	appendAt(merged, "task.state_changed", base.Add(6*time.Hour+time.Second), map[string]any{"marker": "merged", "from": "approved", "to": "merged"}, "")
+	tie := member(core.TaskQueued, core.StageSpec, crate.ID, "main", base.Add(3*time.Hour))
+	closed := member(core.TaskClosed, core.StageImplement, crate.ID, "main", base.Add(4*time.Hour))
+	appendAt(closed, "task.cancelled", base.Add(7*time.Hour), marker("cancel"), "")
+
+	// A former member and an outsider: neither appears, nor do their events.
+	former := member(core.TaskQueued, core.StageImplement, crate.ID, "main", base)
+	appendAt(former, "pull_request.opened", base.Add(time.Hour), marker("former"), "")
+	_, err = x.Backend.ClearTaskCrate(x.Context, former.ID)
+	requireOK(t, err)
+	outsider := member(core.TaskQueued, core.StageImplement, "", "main", base)
+	appendAt(outsider, "pull_request.opened", base.Add(time.Hour), marker("outsider"), "")
+
+	inputs, err := x.Backend.ReadCrateInsightInputs(x.Context, crate.ID)
+	requireOK(t, err)
+	if inputs.Crate.ID != crate.ID || inputs.Crate.Name != "Insight" || inputs.Crate.TargetDate == nil || *inputs.Crate.TargetDate != "2026-12-31" ||
+		inputs.Crate.State != string(store.CrateOpen) || inputs.Crate.TotalTaskCount != 5 || inputs.Crate.MergedTaskCount != 1 || inputs.Crate.OpenTaskCount != 3 {
+		t.Fatalf("crate row %+v", inputs.Crate)
+	}
+	ties := []core.Task{merged, tie}
+	slices.SortFunc(ties, func(a, b core.Task) int { return strings.Compare(a.ID, b.ID) })
+	wantOrder := []core.Task{joined, building, ties[0], ties[1], closed}
+	if len(inputs.Members) != len(wantOrder) {
+		t.Fatalf("read %d members, want %d", len(inputs.Members), len(wantOrder))
+	}
+	byID := map[string]store.CrateInsightMember{}
+	for i, got := range inputs.Members {
+		want := wantOrder[i]
+		if got.Task.ID != want.ID || got.Task.BaseBranch != want.BaseBranch || got.Task.NextStage != want.NextStage || got.Task.State != want.State ||
+			!got.Task.CreatedAt.Equal(want.CreatedAt) || got.Task.Branch != want.Branch || got.Task.TaskCrateID() != crate.ID {
+			t.Fatalf("member %d = %+v, want task %s (%s from %s, next %s, %s)", i, got.Task, want.ID, want.State, want.BaseBranch, want.NextStage, want.Branch)
+		}
+		byID[got.Task.ID] = got
+	}
+	kinds := func(member store.CrateInsightMember) []string {
+		out := []string{}
+		for _, event := range insightEvents(t, member) {
+			out = append(out, event.Kind)
+		}
+		return out
+	}
+	// Creation records its own events, such as task.created and the intake
+	// plan state, and on some backends a membership event. The case compares
+	// only the events it appended: claims and payloads with a marker.
+	recorded := func(member store.CrateInsightMember) []insightEvent {
+		out := []insightEvent{}
+		for _, event := range insightEvents(t, member) {
+			if event.Kind == "work_order.claimed" || (event.Payload != "" && event.Payload != "payload") {
+				out = append(out, event)
+			}
+		}
+		return out
+	}
+	wantBuilding := []insightEvent{
+		{Kind: "work_order.claimed", At: base.Add(3 * time.Hour), Stage: core.StageImplement},
+		{Kind: "pull_request.opened", At: base.Add(4 * time.Hour), Payload: "pull"},
+		{Kind: "review.round_completed", At: base.Add(5 * time.Hour), Payload: "round"},
+	}
+	if got := recorded(byID[building.ID]); !slices.Equal(got, wantBuilding) {
+		t.Fatalf("building member events:\n got %+v\nwant %+v", got, wantBuilding)
+	}
+	wantMerged := []insightEvent{
+		{Kind: "merge.confirmed", At: base.Add(6 * time.Hour), Payload: "merge"},
+		{Kind: "task.state_changed", At: base.Add(6*time.Hour + time.Second), Payload: "merged"},
+	}
+	if got := recorded(byID[merged.ID]); !slices.Equal(got, wantMerged) {
+		t.Fatalf("merged member events:\n got %+v\nwant %+v", got, wantMerged)
+	}
+	if got, want := recorded(byID[closed.ID]), []insightEvent{{Kind: "task.cancelled", At: base.Add(7 * time.Hour), Payload: "cancel"}}; !slices.Equal(got, want) {
+		t.Fatalf("closed member events:\n got %+v\nwant %+v", got, want)
+	}
+	if got := recorded(byID[tie.ID]); len(got) != 0 {
+		t.Fatalf("queued member events %+v, want none beyond creation", got)
+	}
+	if got := kinds(byID[joined.ID]); !slices.Contains(got, store.TaskCrateSetEvent) {
+		t.Fatalf("joined member kinds %v lack its join", got)
+	}
+	gotJoined := insightEvents(t, byID[joined.ID])
+	var claims, plans, crateSets int
+	for _, event := range gotJoined {
+		switch event.Kind {
+		case "work_order.claimed":
+			claims++
+			if event.Stage != core.StageReview || event.Payload != "" || !event.At.Equal(base.Add(100*time.Minute)) {
+				t.Fatalf("legacy claim %+v, want the review stage from its order and no payload", event)
+			}
+		case core.EventTaskPlanStateChanged:
+			if event.Payload == "plan" {
+				plans++
+			}
+		case store.TaskCrateSetEvent:
+			crateSets++
+		case "task.created":
+		default:
+			t.Fatalf("joined member holds unexpected event %+v", event)
+		}
+	}
+	if claims != 1 || plans != 1 || crateSets < 1 {
+		t.Fatalf("joined member events %+v: want the legacy claim, the plan state change from before it joined, and both crate joins", gotJoined)
+	}
+	for _, got := range inputs.Members {
+		for _, event := range got.Events {
+			if !slices.Contains(store.CrateInsightEventKinds, event.Kind) {
+				t.Fatalf("member %s holds unlisted kind %s", got.Task.ID, event.Kind)
+			}
+			if event.Kind != "work_order.claimed" && event.Stage != "" {
+				t.Fatalf("event %+v carries a stage", event)
+			}
+		}
+	}
+
+	empty, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Insight empty"})
+	requireOK(t, err)
+	none, err := x.Backend.ReadCrateInsightInputs(x.Context, empty.ID)
+	requireOK(t, err)
+	if none.Crate.ID != empty.ID || none.Members == nil || len(none.Members) != 0 || none.Crate.TotalTaskCount != 0 {
+		t.Fatalf("empty crate inputs %+v", none)
+	}
+	if _, err := x.Backend.ReadCrateInsightInputs(x.Context, "crate-000000-000000"); !notFoundRefusal(err) {
+		t.Fatalf("missing crate err = %v", err)
+	}
+	if _, err := x.Backend.ReadCrateInsightInputs(store.WithWorkspace(x.Context, "ws-crate-insight-other"), crate.ID); !notFoundRefusal(err) {
+		t.Fatalf("foreign crate err = %v", err)
+	}
+}
+
+// seedCrateInsight creates an open crate with size members of one fixed
+// shape: every third member merged with a merge and a state change, every
+// fifth closed, and the rest open with a claim, a pull request, and a
+// review round.
+func seedCrateInsight(t *testing.T, x Fixture, size int) string {
+	t.Helper()
+	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: fmt.Sprintf("Insight scale %d", size)})
+	requireOK(t, err)
+	base := store.CrateTime(time.Now().Add(-24 * time.Hour))
+	for i := range size {
+		id := fixtureTaskID()
+		state := core.TaskRunning
+		switch {
+		case i%3 == 0:
+			state = core.TaskMerged
+		case i%5 == 0:
+			state = core.TaskClosed
+		}
+		task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: "Insight scale " + id, Body: "Insight scale.", State: state, NextStage: core.StageImplement,
+			CreatedAt: base.Add(time.Duration(i) * time.Second), BaseBranch: "main", Branch: "conveyor/task-" + id, Crate: &core.TaskCrate{ID: crate.ID}}
+		requireOK(t, x.Backend.CreateTask(x.Context, task))
+		order := core.WorkOrder{ID: id + "-implement-1", TaskID: id, JobID: id + "-implement-1", Stage: core.StageImplement, State: core.WorkOrderClaimed}
+		for _, event := range []core.Event{
+			{TaskID: id, Kind: "work_order.claimed", At: base.Add(time.Minute), Payload: store.WorkOrderEventPayload(order)},
+			{TaskID: id, Kind: "pull_request.opened", At: base.Add(2 * time.Minute), Payload: core.JSONPayload(map[string]any{"number": i + 1})},
+			{TaskID: id, Kind: "review.round_completed", At: base.Add(3 * time.Minute), Payload: core.JSONPayload(map[string]any{"verdict": "approve"})},
+		} {
+			requireOK(t, x.Backend.AppendEvent(x.Context, event))
+		}
+		if state == core.TaskMerged {
+			requireOK(t, x.Backend.AppendEvent(x.Context, core.Event{TaskID: id, Kind: "merge.confirmed", At: base.Add(4 * time.Minute), Payload: core.JSONPayload(map[string]any{"sha": "abc"})}))
+			requireOK(t, x.Backend.AppendEvent(x.Context, core.Event{TaskID: id, Kind: "task.state_changed", At: base.Add(4 * time.Minute), Payload: core.JSONPayload(map[string]any{"from": "approved", "to": "merged"})}))
+		}
+	}
+	return crate.ID
+}
+
+// runCrateInsightInputsBounded holds invariant 22's statement bound on the
+// SQL backends: the insight read issues the same number of statements for
+// a crate of 4 members and one of 60, counting only the read itself. Fixture
+// setup and the next-action projection run under other read labels and are
+// drained before the read.
+func runCrateInsightInputsBounded(t *testing.T, x Fixture, productionCapable bool) {
+	if x.DrainReadQueries == nil {
+		if productionCapable {
+			t.Fatal("production-capable conformance fixture must provide DrainReadQueries")
+		}
+		t.Skip("the memory backend runs no SQL statements")
+	}
+	counts := map[int]uint64{}
+	for _, size := range []int{4, 60} {
+		crateID := seedCrateInsight(t, x, size)
+		x.DrainReadQueries()
+		inputs, err := x.Backend.ReadCrateInsightInputs(x.Context, crateID)
+		statements := x.DrainReadQueries()["ReadCrateInsightInputs"]
+		requireOK(t, err)
+		if len(inputs.Members) != size {
+			t.Fatalf("size %d: read %d members", size, len(inputs.Members))
+		}
+		for _, member := range inputs.Members {
+			if len(member.Events) < 3 {
+				t.Fatalf("size %d: member %s holds %d events", size, member.Task.ID, len(member.Events))
+			}
+		}
+		counts[size] = statements
+		t.Logf("crate insight inputs: %d members, %d statements", size, statements)
+	}
+	if counts[4] == 0 || counts[4] != counts[60] {
+		t.Fatalf("insight read statements %v, want one equal nonzero count for 4 and 60 members", counts)
+	}
+}
+
+// runCrateInsightInputsMemberLeaves holds invariant 22 when a member leaves
+// the crate between the insight read's member-row statement and its later
+// statements: the read returns that member with every event recorded before
+// the read, because the later statements read the member IDs the first one
+// returned. A read after the move no longer lists the member. The SQL
+// backends run store.CrateInsightMembersReadHook between the statements.
+// The memory backend reads under one lock, so the move cannot interleave
+// and lands after the read.
+func runCrateInsightInputsMemberLeaves(t *testing.T, x Fixture, productionCapable bool) {
+	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Insight member leaves"})
+	requireOK(t, err)
+	base := store.CrateTime(time.Now().Add(-24 * time.Hour))
+	member := func(created time.Time) core.Task {
+		t.Helper()
+		id := fixtureTaskID()
+		task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: "Insight leaver " + id, Body: "Insight leaver.", State: core.TaskRunning, NextStage: core.StageReview,
+			CreatedAt: created, BaseBranch: "main", Branch: "conveyor/task-" + id, Crate: &core.TaskCrate{ID: crate.ID}}
+		requireOK(t, x.Backend.CreateTask(x.Context, task))
+		return task
+	}
+	leaver := member(base)
+	stayer := member(base.Add(time.Second))
+	for _, task := range []core.Task{leaver, stayer} {
+		requireOK(t, x.Backend.AppendEvent(x.Context, core.Event{TaskID: task.ID, Kind: "pull_request.opened", At: base.Add(time.Hour), Payload: core.JSONPayload(map[string]any{"marker": "pull", "number": 3})}))
+		requireOK(t, x.Backend.AppendEvent(x.Context, core.Event{TaskID: task.ID, Kind: "review.round_completed", At: base.Add(2 * time.Hour), Payload: core.JSONPayload(map[string]any{"marker": "round", "verdict": "changes_requested"})}))
+	}
+	moved := false
+	store.CrateInsightMembersReadHook = func() {
+		if moved {
+			return
+		}
+		moved = true
+		if _, err := x.Backend.ClearTaskCrate(x.Context, leaver.ID); err != nil {
+			t.Errorf("move the member out between the insight statements: %v", err)
+		}
+	}
+	inputs, err := x.Backend.ReadCrateInsightInputs(x.Context, crate.ID)
+	store.CrateInsightMembersReadHook = nil
+	requireOK(t, err)
+	if productionCapable && !moved {
+		t.Fatal("a production-capable backend must run CrateInsightMembersReadHook between its member-row statement and its later statements")
+	}
+	recorded := func(m store.CrateInsightMember) []string {
+		out := []string{}
+		for _, event := range m.Events {
+			var payload map[string]any
+			if len(event.Payload) > 0 && json.Unmarshal(event.Payload, &payload) == nil {
+				if marker, ok := payload["marker"].(string); ok {
+					out = append(out, event.Kind+":"+marker)
+				}
+			}
+		}
+		return out
+	}
+	want := []string{"pull_request.opened:pull", "review.round_completed:round"}
+	if len(inputs.Members) != 2 {
+		t.Fatalf("read %d members, want the leaver and the stayer captured by the member-row statement", len(inputs.Members))
+	}
+	for _, got := range inputs.Members {
+		if got.Task.ID != leaver.ID && got.Task.ID != stayer.ID {
+			t.Fatalf("unexpected member %s", got.Task.ID)
+		}
+		if events := recorded(got); !slices.Equal(events, want) {
+			t.Fatalf("member %s (moved mid-read: %t) events %v, want its recorded history %v", got.Task.ID, moved && got.Task.ID == leaver.ID, events, want)
+		}
+	}
+	if !moved {
+		// The memory backend never interleaves: the move lands after the read.
+		_, err = x.Backend.ClearTaskCrate(x.Context, leaver.ID)
+		requireOK(t, err)
+	}
+	after, err := x.Backend.ReadCrateInsightInputs(x.Context, crate.ID)
+	requireOK(t, err)
+	if len(after.Members) != 1 || after.Members[0].Task.ID != stayer.ID || !slices.Equal(recorded(after.Members[0]), want) {
+		t.Fatalf("read after the move holds %d members, want only %s with its history", len(after.Members), stayer.ID)
+	}
 }

@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/crateinsight"
 )
 
 // CrateState is a crate's one state axis: open or closed
@@ -145,6 +146,16 @@ type CrateStore interface {
 	// field and the MCP crate list stay lean reads (component-crates
 	// invariants 14 and 20).
 	ListCrateMembers(ctx context.Context, ids []string) (map[string][]CrateMemberTask, error)
+	// ReadCrateInsightInputs returns the inputs of component-crates
+	// invariant 22: the crate row and, for each current member ordered by
+	// creation time and then ID, its task row and its events of the kinds
+	// CrateInsightEventKinds lists in (at, id) order, each
+	// work_order.claimed event with the stage of the order it names. Events
+	// match members by workspace and task ID, so a member's events from
+	// before it joined are included. On PostgreSQL and SingleStore it runs a
+	// fixed number of set-based statements whatever the member count. A
+	// crate that is missing or in another workspace is CrateNotFoundError.
+	ReadCrateInsightInputs(ctx context.Context, id string) (CrateInsightInputs, error)
 	// ListCrateMembersLimited returns at most limit member tasks of one crate
 	// of the workspace, leaving out excludeTaskID, in the ListCrateMembers
 	// order: creation time and then ID. An empty excludeTaskID leaves every
@@ -658,4 +669,125 @@ func PageCrateActivity(entries []CrateActivityEntry, limit int) CrateActivityPag
 		page.Entries = []CrateActivityEntry{}
 	}
 	return page
+}
+
+// The crate insight input read (component-crates invariant 22;
+// feature-crate-insights CI-1). The read is pure: it changes no record and
+// appends no event. Its result is the input of internal/crateinsight.
+
+// CrateInsightInputs is the insight read's result, the input of
+// crateinsight.Compute.
+type CrateInsightInputs = crateinsight.Inputs
+
+// CrateInsightMember is one current member of CrateInsightInputs.
+type CrateInsightMember = crateinsight.Member
+
+// CrateInsightEvent is one member event of CrateInsightInputs.
+type CrateInsightEvent = crateinsight.Event
+
+// CrateInsightEventKinds are the member event kinds the read returns
+// (component-crates invariant 22).
+var CrateInsightEventKinds = crateinsight.InsightEventKinds
+
+// CrateInsightMembersReadHook, when set by tests, runs on the SQL backends
+// after the insight read's member-row statement and before its later
+// statements, so a membership change between them can be proved harmless:
+// the later statements read the member IDs that statement returned.
+var CrateInsightMembersReadHook func()
+
+// RunCrateInsightMembersReadHook runs CrateInsightMembersReadHook when set.
+func RunCrateInsightMembersReadHook() {
+	if CrateInsightMembersReadHook != nil {
+		CrateInsightMembersReadHook()
+	}
+}
+
+// CrateInsightEventRow is one member event a backend's set-based read
+// returns, with the task it belongs to.
+type CrateInsightEventRow struct {
+	TaskID string
+	Event  CrateInsightEvent
+}
+
+// CrateInsightClaimStage returns the stage a work_order.claimed payload
+// names. The claim records the whole order, so its stage field names the
+// stage; an empty result means the payload names none, and the caller reads
+// the stage from the order the payload's id names instead.
+func CrateInsightClaimStage(payload json.RawMessage) (core.Stage, string) {
+	var order struct {
+		ID    string     `json:"id"`
+		Stage core.Stage `json:"stage"`
+	}
+	if json.Unmarshal(payload, &order) != nil {
+		return "", ""
+	}
+	return order.Stage, order.ID
+}
+
+// CrateInsightRow converts the crate row to the computation's crate row.
+func CrateInsightRow(crate Crate) crateinsight.Crate {
+	row := crateinsight.Crate{
+		ID: crate.ID, Name: crate.Name, State: string(crate.State), Shipped: crate.Shipped,
+		CreatedBy: crate.CreatedBy, CreatedAt: crate.CreatedAt, OpenTaskCount: crate.OpenTaskCount,
+		MergedTaskCount: crate.MergedTaskCount, TotalTaskCount: crate.TotalTaskCount,
+	}
+	if crate.TargetDate != nil {
+		date := *crate.TargetDate
+		row.TargetDate = &date
+	}
+	if crate.ClosedAt != nil {
+		at := crate.ClosedAt.UTC()
+		row.ClosedAt = &at
+	}
+	return row
+}
+
+// AssembleCrateInsightInputs joins a backend's rows into the read's result.
+// tasks holds the current member rows. Each event row joins the member it
+// names; a row of another task is dropped. The crate's counts come from the
+// member states (invariant 9). Members are ordered by creation time and then
+// ID, and each member's events by (at, id).
+func AssembleCrateInsightInputs(crate Crate, tasks []core.Task, events []CrateInsightEventRow) CrateInsightInputs {
+	members := slices.Clone(tasks)
+	sort.SliceStable(members, func(i, j int) bool {
+		if !members[i].CreatedAt.Equal(members[j].CreatedAt) {
+			return members[i].CreatedAt.Before(members[j].CreatedAt)
+		}
+		return members[i].ID < members[j].ID
+	})
+	states := make([]core.TaskState, len(members))
+	byTask := make(map[string]int, len(members))
+	result := CrateInsightInputs{Members: make([]CrateInsightMember, len(members))}
+	for i, task := range members {
+		states[i] = task.State
+		byTask[task.ID] = i
+		task.CreatedAt = task.CreatedAt.UTC()
+		result.Members[i] = CrateInsightMember{Task: task, Events: []CrateInsightEvent{}}
+	}
+	ApplyCrateCounts(&crate, states)
+	result.Crate = CrateInsightRow(crate)
+	for _, row := range events {
+		i, ok := byTask[row.TaskID]
+		if !ok {
+			continue
+		}
+		event := row.Event
+		event.At = event.At.UTC()
+		if event.Kind == "work_order.claimed" {
+			event.Payload = nil
+		} else {
+			event.Stage = ""
+		}
+		result.Members[i].Events = append(result.Members[i].Events, event)
+	}
+	for i := range result.Members {
+		sort.SliceStable(result.Members[i].Events, func(a, b int) bool {
+			left, right := result.Members[i].Events[a], result.Members[i].Events[b]
+			if !left.At.Equal(right.At) {
+				return left.At.Before(right.At)
+			}
+			return left.ID < right.ID
+		})
+	}
+	return result
 }
