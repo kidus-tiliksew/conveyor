@@ -356,6 +356,44 @@ func (s *Store) ListCrateMembers(ctx context.Context, ids []string) (map[string]
 	return out, rows.Err()
 }
 
+// ListCrateMembersLimited implements store.CrateStore in one query that
+// returns at most limit plus one rows. Migration 0047's key on (workspace_id,
+// crate_id, created_at, id) gives the query an ordered path, and the LIMIT
+// bounds the rows whichever plan the engine picks (component-crates invariant
+// 20; DEC-105(4)).
+func (s *Store) ListCrateMembersLimited(ctx context.Context, crateID, excludeTaskID string, limit int) ([]store.CrateMemberTask, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListCrateMembersLimited")
+	if err := store.CheckCrateMemberLimit(limit); err != nil {
+		return nil, false, err
+	}
+	ws, err := workspace(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	rows, err := documentRows(ctx, s.db, `SELECT id,title,state FROM tasks WHERE workspace_id=? AND crate_id=? AND id<>? ORDER BY created_at,id LIMIT ?`, ws, crateID, excludeTaskID, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	members := []store.CrateMemberTask{}
+	for rows.Next() {
+		var state string
+		var member store.CrateMemberTask
+		if err := rows.Scan(&member.ID, &member.Title, &state); err != nil {
+			return nil, false, err
+		}
+		member.State = core.TaskState(state)
+		members = append(members, member)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(members) > limit {
+		return members[:limit], true, nil
+	}
+	return members, false, nil
+}
+
 // ListCrateActivity implements store.CrateStore: the listed event kinds of
 // the crate's current members, newest first by (at, id) (component-crates
 // invariant 13).

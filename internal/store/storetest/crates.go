@@ -1,9 +1,11 @@
 package storetest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -33,6 +35,7 @@ func runCrates(t *testing.T, factory Factory) {
 	t.Run("CrateTaskFilter", func(t *testing.T) { runCrateTaskFilter(t, factory.fresh(t, nil)) })
 	t.Run("CrateIntakeRecordsCrate", func(t *testing.T) { runCrateIntake(t, factory.fresh(t, nil)) })
 	t.Run("CrateMemberRead", func(t *testing.T) { runCrateMemberRead(t, factory.fresh(t, nil)) })
+	t.Run("CrateMembersLimited", func(t *testing.T) { runCrateMembersLimited(t, factory.fresh(t, nil)) })
 	t.Run("CrateInsightInputs", func(t *testing.T) { runCrateInsightInputs(t, factory.fresh(t, nil)) })
 	t.Run("CrateInsightInputsBoundedStatements", func(t *testing.T) {
 		runCrateInsightInputsBounded(t, factory.fresh(t, nil), factory.ProductionCapable)
@@ -911,6 +914,91 @@ func runCrateMemberRead(t *testing.T, x Fixture) {
 	if !slices.Equal(members[crate.ID], want[1:]) {
 		t.Fatalf("crate members after a removal = %+v, want %+v", members[crate.ID], want[1:])
 	}
+}
+
+// runCrateMembersLimited holds ListCrateMembersLimited to its contract: at
+// most limit members of one crate in creation time and then ID order, the
+// named task left out before the limit, more true only when another eligible
+// member follows, and no member for an empty, unknown, or foreign crate or
+// an empty crate ID (component-crates invariant 20; DEC-105(4)). Members are inserted out of
+// order, two share one creation time, and the excluded task sits inside the
+// ordered prefix. With three eligible members, limits 4, 3, and 2 put the
+// member count one under, exactly at, and one over the limit.
+func runCrateMembersLimited(t *testing.T, x Fixture) {
+	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Limited members"})
+	requireOK(t, err)
+	other, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Other limited members"})
+	requireOK(t, err)
+	empty, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "No limited members"})
+	requireOK(t, err)
+	base := store.CrateTime(time.Now().Add(-time.Hour))
+	member := func(crateID string, at time.Time) core.Task {
+		t.Helper()
+		id := fixtureTaskID()
+		task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: "Limited member " + id, Body: "Limited member.", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: at, Branch: "conveyor/task-" + id}
+		if crateID != "" {
+			task.Crate = &core.TaskCrate{ID: crateID}
+		}
+		requireOK(t, x.Backend.CreateTask(x.Context, task))
+		return task
+	}
+	tieA := member(crate.ID, base.Add(2*time.Second))
+	tieB := member(crate.ID, base.Add(2*time.Second))
+	excluded := member(crate.ID, base.Add(time.Second))
+	first := member(crate.ID, base)
+	// A member of another crate and a task in no crate, both created before
+	// every member, must never appear.
+	member(other.ID, base.Add(-time.Second))
+	member("", base.Add(-time.Second))
+	ties := []core.Task{tieA, tieB}
+	slices.SortFunc(ties, func(a, b core.Task) int { return strings.Compare(a.ID, b.ID) })
+	project := func(tasks ...core.Task) []store.CrateMemberTask {
+		out := make([]store.CrateMemberTask, len(tasks))
+		for i, task := range tasks {
+			out[i] = store.CrateMemberTask{ID: task.ID, Title: task.Title, State: task.State}
+		}
+		return out
+	}
+	check := func(label string, ctx context.Context, crateID, exclude string, limit int, want []store.CrateMemberTask, wantMore bool) {
+		t.Helper()
+		got, more, err := x.Backend.ListCrateMembersLimited(ctx, crateID, exclude, limit)
+		requireOK(t, err)
+		if len(got) != len(want) || (len(want) > 0 && !slices.Equal(got, want)) || more != wantMore {
+			t.Fatalf("%s: members = %+v more = %t, want %+v more = %t", label, got, more, want, wantMore)
+		}
+	}
+	eligible := project(first, ties[0], ties[1])
+	check("count one under the limit", x.Context, crate.ID, excluded.ID, 4, eligible, false)
+	check("count exactly at the limit", x.Context, crate.ID, excluded.ID, 3, eligible, false)
+	check("count one over the limit", x.Context, crate.ID, excluded.ID, 2, eligible[:2], true)
+	check("a limit of one", x.Context, crate.ID, excluded.ID, 1, eligible[:1], true)
+
+	// An empty exclusion leaves every member eligible, the excluded task
+	// included, in the same order.
+	all := project(first, excluded, ties[0], ties[1])
+	check("no exclusion, count one under the limit", x.Context, crate.ID, "", 5, all, false)
+	check("no exclusion, count exactly at the limit", x.Context, crate.ID, "", 4, all, false)
+	check("no exclusion, count one over the limit", x.Context, crate.ID, "", 3, all[:3], true)
+	check("exclusion of a nonmember", x.Context, crate.ID, "task-000000-000000", 4, all, false)
+
+	check("empty crate", x.Context, empty.ID, "", 10, nil, false)
+	check("unknown crate", x.Context, "crate-000000-000000", "", 10, nil, false)
+	// A task in no crate exists, so an empty crate ID must not match it.
+	check("empty crate ID", x.Context, "", "", 10, nil, false)
+	check("crate of another workspace", store.WithWorkspace(x.Context, "ws-crate-member-limited-other"), crate.ID, "", 10, nil, false)
+
+	for _, limit := range []int{0, -1, math.MaxInt} {
+		_, _, err := x.Backend.ListCrateMembersLimited(x.Context, crate.ID, "", limit)
+		var field *store.CrateFieldError
+		if !errors.As(err, &field) || field.Field != "limit" {
+			t.Fatalf("limit %d: error = %v, want a limit CrateFieldError", limit, err)
+		}
+	}
+
+	// The read reflects membership as it stands.
+	_, err = x.Backend.ClearTaskCrate(x.Context, first.ID)
+	requireOK(t, err)
+	check("after a removal", x.Context, crate.ID, excluded.ID, 2, project(ties[0], ties[1]), false)
 }
 
 func jsonUnmarshal(raw []byte, target any) error { return json.Unmarshal(raw, target) }
