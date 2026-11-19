@@ -141,6 +141,7 @@ test('every sidebar entry and Board card link names the page workspace (AC-1.1, 
   const hrefs = await nav.getByRole('link').evaluateAll((links) => links.map((link) => link.getAttribute('href')))
   expect(hrefs).toEqual([
     '/w/bravo/',
+    '/w/bravo/crates',
     '/w/bravo/inbox',
     '/w/bravo/workspace',
     '/w/bravo/requirements',

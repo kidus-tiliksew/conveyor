@@ -9,6 +9,7 @@ import {
   LogOut,
   type LucideIcon,
   Menu,
+  Package,
   Plus,
   Scale,
   Settings,
@@ -295,6 +296,11 @@ function isBlueprintsPath(pathname: string) {
   return path === '/blueprints' || path.startsWith('/blueprints/')
 }
 
+function isCratesPath(pathname: string) {
+  const path = workspacePagePath(pathname)
+  return path === '/crates' || path.startsWith('/crates/')
+}
+
 // The Board's current activity page, read from the Query cache without
 // mounting an activity observer or sending a request (component-web-dashboard,
 // Server-state discipline). The Kanban view is the only activity observer, so
@@ -471,6 +477,11 @@ function WorkspaceProvider({
   useEffect(() => {
     onBlueprintsRef.current = onBlueprints
   }, [onBlueprints])
+  const onCrates = useRouterState({ select: (state) => isCratesPath(state.location.pathname) })
+  const onCratesRef = useRef(onCrates)
+  useEffect(() => {
+    onCratesRef.current = onCrates
+  }, [onCrates])
   const switchWorkspace = useCallback(
     (id: string) => void navigate({ to: '/w/$workspaceId/', params: { workspaceId: id } }),
     [navigate],
@@ -555,6 +566,7 @@ function WorkspaceProvider({
     const stopChanges = startWorkspaceChangeRefresh(queryClient, workspace, {
       refreshActivity: (cold) => void refreshActivity(cold, true),
       blueprintsActive: () => onBlueprintsRef.current,
+      cratesActive: () => onCratesRef.current,
     })
     return () => {
       disposed = true
@@ -713,6 +725,8 @@ function NavSidebar({ className }: { className?: string }) {
       </div>
       <div className="flex-1 space-y-px overflow-y-auto px-2">
         <NavItem to="/w/$workspaceId/" icon={Kanban} label="Tasks" />
+        {/* Directly after Tasks (req-operator-next-action AC-6.4). */}
+        <NavItem to="/w/$workspaceId/crates" icon={Package} label="Crates" />
         <NavItem to="/w/$workspaceId/inbox" icon={Inbox} label="Inbox">
           {operatorDecisions > 0 && <Badge variant="attention">{operatorDecisions}</Badge>}
         </NavItem>
@@ -769,6 +783,7 @@ function ThemeSwitcher() {
 
 type NavTarget =
   | '/w/$workspaceId/'
+  | '/w/$workspaceId/crates'
   | '/w/$workspaceId/inbox'
   | '/w/$workspaceId/workspace'
   | '/w/$workspaceId/requirements'
