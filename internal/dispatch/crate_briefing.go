@@ -31,6 +31,11 @@ const (
 	MaxCrateBriefingAccountCharacters  = 800
 	MaxCrateBriefingReasonCharacters   = 160
 	MaxCrateBriefingLookFirst          = 3
+	// CrateBriefingHeadlineSentences is the headline's exact sentence count,
+	// and MaxCrateBriefingAccountSentences bounds the account
+	// (req-crate-insights AC-5.1).
+	CrateBriefingHeadlineSentences   = 1
+	MaxCrateBriefingAccountSentences = 3
 )
 
 var (
@@ -83,10 +88,51 @@ const crateBriefingLineBreaks = "\r\n\v\f\u0085  "
 // crateBriefingIdentifier matches an identifier that req-crate-insights
 // AC-5.3 keeps out of the prose: the dated ID shape of tasks, crates, and
 // reference documents, such as 261119-fbe6d9 in crate-261119-d9973f;
-// REQ-n, AC-n.m, or DEC-n; a requirement ID such as req-crate-insights; and
-// a design ID such as component-crates. A hyphenated word such as
+// REQ-n, AC-n.m, or DEC-n in any letter case, such as dec-142 or Req-5; and
+// a requirement ID such as req-crate-insights. A hyphenated word such as
 // crate-level is no identifier.
-var crateBriefingIdentifier = regexp.MustCompile(`(?:\b\d{6}-[0-9a-f]{6}\b)|(?:\b(?:REQ|AC|DEC)-\d+(?:\.\d+)?\b)|(?:\breq-[a-z0-9]+(?:-[a-z0-9]+)*\b)|(?:\b(?:component|feature)-[a-z0-9]+(?:-[a-z0-9]+)+\b)`)
+var crateBriefingIdentifier = regexp.MustCompile(`(?:\b\d{6}-[0-9a-f]{6}\b)|(?i:\b(?:REQ|AC|DEC)-\d+(?:\.\d+)?\b)|(?:\breq-[a-z0-9]+(?:-[a-z0-9]+)*\b)`)
+
+// crateBriefingDesignID matches a System Design ID such as component-crates
+// or feature-crate-insights, one segment or more after the prefix. Some
+// ordinary words have the same shape, so crateBriefingDesignWords names the
+// ones a briefing can use, and a match equal to one of them is no
+// identifier.
+var crateBriefingDesignID = regexp.MustCompile(`\b(?:component|feature)-[a-z0-9]+(?:-[a-z0-9]+)*\b`)
+
+// crateBriefingDesignWords are the ordinary English words of the design ID
+// shape that a briefing may hold.
+var crateBriefingDesignWords = []string{"component-based", "component-level", "feature-complete", "feature-rich"}
+
+// crateBriefingSentenceEnd matches one sentence end: a run of ".", "!", or
+// "?", an optional closing quote or bracket, then whitespace or the end of
+// the text. A decimal such as 1.5 has no sentence end.
+var crateBriefingSentenceEnd = regexp.MustCompile(`[.!?]+["'\x{201D}\x{2019})\]]?(?:\s+|$)`)
+
+// crateBriefingSentences counts the sentences of trimmed text: each sentence
+// end, plus one for text after the last end.
+func crateBriefingSentences(text string) int {
+	ends := crateBriefingSentenceEnd.FindAllStringIndex(text, -1)
+	count := len(ends)
+	if count == 0 || ends[count-1][1] < len(text) {
+		count++
+	}
+	return count
+}
+
+// crateBriefingHoldsIdentifier reports whether text holds an identifier of
+// req-crate-insights AC-5.3.
+func crateBriefingHoldsIdentifier(text string) bool {
+	if crateBriefingIdentifier.MatchString(text) {
+		return true
+	}
+	for _, match := range crateBriefingDesignID.FindAllString(text, -1) {
+		if !slices.Contains(crateBriefingDesignWords, match) {
+			return true
+		}
+	}
+	return false
+}
 
 // GenerateCrateBriefing produces a crate briefing through the trusted
 // in-process client on the triage route (DEC-142(1)).
@@ -172,11 +218,13 @@ func invalidCrateBriefing(reason string) error {
 // UTF-8 and exactly one JSON object holding headline, account, and
 // look_first, with no other field and nothing after it. The headline and the
 // account must be non-empty, at most 200 and 800 Unicode characters, and
-// free of line breaks, a leading Markdown heading marker, and fences.
-// look_first holds at most three entries, each naming a current member with
-// the tone attention, info, or positive and a non-empty reason of at most
-// 160 characters on one line. No text may hold a member's task ID or
-// another identifier (req-crate-insights AC-5.3). Every refusal is
+// free of line breaks, a leading Markdown heading marker, and fences. The
+// headline is exactly one sentence and the account at most three
+// (req-crate-insights AC-5.1). look_first holds at most three entries, each
+// naming a different current member with the tone attention, info, or
+// positive and a non-empty reason of at most 160 characters on one line. No
+// text may hold a member's task ID or another identifier
+// (req-crate-insights AC-5.3). Every refusal is
 // ErrCrateBriefingInvalid with a fixed reason that never echoes the reply.
 func ValidateCrateBriefing(output string, memberIDs []string) (CrateBriefing, error) {
 	if !utf8.ValidString(output) {
@@ -198,9 +246,15 @@ func ValidateCrateBriefing(output string, memberIDs []string) (CrateBriefing, er
 	if err != nil {
 		return CrateBriefing{}, err
 	}
+	if crateBriefingSentences(headline) != CrateBriefingHeadlineSentences {
+		return CrateBriefing{}, invalidCrateBriefing("the headline is not exactly one sentence")
+	}
 	account, err := crateBriefingProse("account", *reply.Account, MaxCrateBriefingAccountCharacters)
 	if err != nil {
 		return CrateBriefing{}, err
+	}
+	if crateBriefingSentences(account) > MaxCrateBriefingAccountSentences {
+		return CrateBriefing{}, invalidCrateBriefing("the account holds more than three sentences")
 	}
 	if len(*reply.LookFirst) > MaxCrateBriefingLookFirst {
 		return CrateBriefing{}, invalidCrateBriefing("look_first holds more than three entries")
@@ -212,6 +266,9 @@ func ValidateCrateBriefing(output string, memberIDs []string) (CrateBriefing, er
 		}
 		if !slices.Contains(memberIDs, *entry.TaskID) {
 			return CrateBriefing{}, invalidCrateBriefing("a look_first entry names a task that is not a member of the crate")
+		}
+		if slices.ContainsFunc(briefing.LookFirst, func(kept crateinsight.BriefingEntry) bool { return kept.TaskID == *entry.TaskID }) {
+			return CrateBriefing{}, invalidCrateBriefing("look_first names the same task twice")
 		}
 		if !slices.Contains(crateinsight.BriefingTones, *entry.Tone) {
 			return CrateBriefing{}, invalidCrateBriefing("a look_first entry has a tone other than attention, info, or positive")
@@ -238,7 +295,7 @@ func ValidateCrateBriefing(output string, memberIDs []string) (CrateBriefing, er
 				return CrateBriefing{}, invalidCrateBriefing("the text holds a member task ID")
 			}
 		}
-		if crateBriefingIdentifier.MatchString(text) {
+		if crateBriefingHoldsIdentifier(text) {
 			return CrateBriefing{}, invalidCrateBriefing("the text holds a task, requirement, or document identifier")
 		}
 	}

@@ -332,9 +332,10 @@ func TestCrateBriefingRouteUnconfigured(t *testing.T) {
 }
 
 // TestCrateBriefingRouteFailuresKeepStoredBriefing: a provider error, an
-// invalid reply, and a failed redaction each answer 502 crate_briefing_failed
-// with a redacted detail that never echoes the reply, and leave the stored
-// briefing exactly as it was (req-crate-insights AC-5.4).
+// invalid reply, a reply that breaks a sentence limit of
+// req-crate-insights AC-5.1, and a failed redaction each answer 502
+// crate_briefing_failed with a redacted detail that never echoes the reply,
+// and leave the stored briefing exactly as it was (AC-5.4).
 func TestCrateBriefingRouteFailuresKeepStoredBriefing(t *testing.T) {
 	const echo = "ECHO-OF-THE-REPLY"
 	for _, test := range []struct {
@@ -351,6 +352,12 @@ func TestCrateBriefingRouteFailuresKeepStoredBriefing(t *testing.T) {
 		}},
 		{"nonmember entry", insightReply{output: `{"headline":"H.","account":"A ` + echo + `.","look_first":[{"task_id":"261119-ffffff","tone":"info","reason":"` + echo + `"}]}`, model: "served"}, nil, func(detail string) bool {
 			return strings.Contains(detail, "not a member of the crate")
+		}},
+		{"two-sentence headline", insightReply{output: `{"headline":"Work started. ` + echo + ` follows.","account":"A.","look_first":[]}`, model: "served"}, nil, func(detail string) bool {
+			return strings.Contains(detail, "the headline is not exactly one sentence")
+		}},
+		{"four-sentence account", insightReply{output: `{"headline":"H.","account":"One merged. One is in review. One waits. The ` + echo + ` holds.","look_first":[]}`, model: "served"}, nil, func(detail string) bool {
+			return strings.Contains(detail, "the account holds more than three sentences")
 		}},
 		{"redaction unavailable", insightReply{err: fmt.Errorf("Responses API rejected key %s", crateBriefingSecret)}, errors.New("secret store offline"), func(detail string) bool {
 			return detail == crateBriefingFailureWithheld
