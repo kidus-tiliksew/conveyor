@@ -128,6 +128,9 @@ export function TaskCreateSheet() {
           params: { workspaceId },
           search: ({ create: _create, crate: _crate, ...prev }) => prev,
         })
+  // A closed crate takes no new task (req-crates AC-2.1), so the form sends no
+  // request that names it. "Not in a crate" creates the task without it.
+  const crateClosed = Boolean(crateId) && crate.data?.state === 'closed'
   const leaveCrate = () =>
     void navigate({ to: '/w/$workspaceId/', params: { workspaceId }, search: ({ crate: _crate, ...prev }) => prev })
 
@@ -506,7 +509,14 @@ export function TaskCreateSheet() {
         <div className="flex items-center justify-between gap-3">
           <p className="text-xs text-faint">Dispatches after every attachment is stored.</p>
           <Button
-            disabled={!body.trim() || !repoName || repos.length === 0 || mutation.isPending || baseCommitError !== ''}
+            disabled={
+              !body.trim() ||
+              !repoName ||
+              repos.length === 0 ||
+              mutation.isPending ||
+              baseCommitError !== '' ||
+              crateClosed
+            }
             onClick={() => mutation.mutate()}
           >
             {mutation.isPending ? 'Creating…' : 'Create task'}
@@ -580,7 +590,9 @@ function CrateIntakeNotice({
         <p className="mt-2 text-xs text-failure">This crate did not load. The task can still join it by ID.</p>
       )}
       {crate?.state === 'closed' && (
-        <p className="mt-2 text-xs text-failure">This crate is closed, so a new task cannot join it.</p>
+        <p className="mt-2 text-xs text-failure">
+          This crate is closed, so a new task cannot join it. Choose "Not in a crate" to create the task without it.
+        </p>
       )}
       {declared.length > 0 && (
         <div className="mt-3 border-t border-primary/15 pt-2.5">

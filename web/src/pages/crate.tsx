@@ -525,7 +525,7 @@ function activityText(event: CrateActivityEvent): ReactNode {
 
 function verdictText(verdict: string) {
   if (verdict === 'approve') return 'approved'
-  if (verdict === 'request_changes') return 'changes requested'
+  if (verdict === 'changes_requested') return 'changes requested'
   return verdict.replaceAll('_', ' ')
 }
 

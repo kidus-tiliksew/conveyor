@@ -44,7 +44,9 @@ export function CrateHero({
             open
           </p>
         </div>
-        {open && <Due crate={crate} canAct={canAct} onSetDate={onSetDate} />}
+        {/* Every crate shows its saved target date (req-crates AC-5.2); only an
+            open crate offers the hint and "Set a target date". */}
+        <Due crate={crate} canAct={canAct && open} onSetDate={onSetDate} />
       </div>
 
       {open && total > 0 && !crate.shipped && <MergedBar merged={crate.merged_task_count} total={total} />}
@@ -95,8 +97,10 @@ function MergedBar({ merged, total }: { merged: number; total: number }) {
   )
 }
 
-// The target date of an open crate and how far off it is, worded as on the
-// crates list.
+// The target date and, for an open crate, how far off it is, worded as on the
+// crates list. A closed crate shows its saved date read-only: targetDateHint
+// gives it no hint, and the page passes canAct false so it offers no
+// "Set a target date".
 function Due({ crate, canAct, onSetDate }: { crate: CrateDetail; canAct: boolean; onSetDate: () => void }) {
   // When a date is first set, "Set a target date" goes away. If that left
   // focus on the page body, move it to the new date so keyboard users keep

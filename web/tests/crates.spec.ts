@@ -182,6 +182,22 @@ const undated: CrateDetail = {
   ],
 }
 
+// A closed crate that never had a target date.
+const closedUndated: CrateDetail = {
+  ...crateRow({
+    id: 'crate-closed-undated',
+    name: 'Old experiments',
+    state: 'closed',
+    closed_at: '2026-02-10T12:00:00Z',
+    open_task_count: 0,
+    merged_task_count: 0,
+    total_task_count: 0,
+  }),
+  requirements: [],
+  undeclared_requirements: [],
+  tasks: [],
+}
+
 // Newest first, as the server pages them (AC-5.5).
 const billingActivity: CrateActivityEvent[] = [
   {
@@ -193,6 +209,16 @@ const billingActivity: CrateActivityEvent[] = [
     task_id: '261101-aaaaaa',
     task_title: 'Send invoices by email',
     pull_request: { number: 412, url: 'https://github.com/acme/app/pull/412', repository: 'acme/app' },
+  },
+  {
+    id: 25,
+    kind: 'review.round_completed',
+    at: '2026-11-17T12:00:00Z',
+    actor_id: 'usr_reviewer',
+    actor_role: 'executor',
+    task_id: '261101-aaaaaa',
+    task_title: 'Send invoices by email',
+    verdict: 'changes_requested',
   },
   {
     id: 20,
@@ -232,6 +258,7 @@ async function serveCrates(page: Page, options: { role?: Role } = {}) {
     [shipped.id]: structuredClone(shipped),
     [closed.id]: structuredClone(closed),
     [undated.id]: structuredClone(undated),
+    [closedUndated.id]: structuredClone(closedUndated),
   }
   const listRequests: string[] = []
   const created: Record<string, unknown>[] = []
@@ -478,12 +505,16 @@ test('crate page shows the header, requirements with the uncovered mark, verbati
 
   // Activity newest first, with the pull request entry linked (AC-5.5).
   const activity = page.getByRole('region', { name: 'Activity' })
-  await expect(activity.locator('[data-activity-kind]')).toHaveCount(3)
+  await expect(activity.locator('[data-activity-kind]')).toHaveCount(4)
   expect(
     await activity
       .locator('[data-activity-kind]')
       .evaluateAll((items) => items.map((item) => item.dataset.activityKind)),
-  ).toEqual(['pull_request.opened', 'merge.confirmed', 'task.crate_set'])
+  ).toEqual(['pull_request.opened', 'review.round_completed', 'merge.confirmed', 'task.crate_set'])
+  // The served verdict value reads as plain text.
+  await expect(activity.locator('[data-activity-kind="review.round_completed"]')).toContainText(
+    'Review finished: changes requested',
+  )
   await expect(activity.getByRole('link', { name: /Pull request #412 opened/ })).toHaveAttribute(
     'href',
     'https://github.com/acme/app/pull/412',
@@ -508,18 +539,54 @@ test('a shipped crate shows the shipped statement and no bar', async ({ page }) 
   await expect(hero.getByText(/days? late/)).toHaveCount(0)
 })
 
-test('a closed crate states its closing date, hides the target date, and offers reopening', async ({ page }) => {
+// AC-5.2: a closed crate still shows its saved target date, read-only, with
+// no hint and no "Set a target date".
+test('a closed crate states its closing date, shows its saved target date read-only, and offers reopening', async ({
+  page,
+}) => {
   await serveCrates(page)
   await page.goto('/w/demo/crates/crate-closed')
   const hero = page.getByRole('region', { name: 'Crate summary' })
   await expect(hero.getByText('Closed on Mar 4, 2026')).toBeVisible()
-  await expect(hero.getByText('Target date', { exact: true })).toHaveCount(0)
+  await expect(hero.getByText('Target date', { exact: true })).toBeVisible()
+  await expect(hero.locator('[data-target-date]')).toHaveText('Mar 1, 2026')
+  await expect(hero.getByText(/days? (late|left)|Due today/)).toHaveCount(0)
+  await expect(hero.getByRole('button', { name: 'Set a target date' })).toHaveCount(0)
   await expect(hero.locator('[data-merged-bar]')).toHaveCount(0)
   await expect(hero.locator('[data-stat="open"]')).toHaveText('0')
   await expect(page.getByRole('link', { name: 'New task' })).toHaveCount(0)
   await page.getByRole('button', { name: 'Crate actions' }).click()
   await expect(page.getByRole('menuitem', { name: 'Reopen crate' })).toBeVisible()
   await expect(page.getByRole('menuitem', { name: 'Add an existing task' })).toHaveCount(0)
+})
+
+test('a closed crate with no target date shows no date block and no set-date control', async ({ page }) => {
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-closed-undated')
+  const hero = page.getByRole('region', { name: 'Crate summary' })
+  await expect(hero.getByText('Closed on Feb 10, 2026')).toBeVisible()
+  await expect(hero.getByText('Target date', { exact: true })).toHaveCount(0)
+  await expect(hero.getByRole('button', { name: 'Set a target date' })).toHaveCount(0)
+})
+
+// A closed crate takes no new task (AC-2.1), so the form never sends the
+// request that names it; "Not in a crate" creates the task without it.
+test('task creation from a closed crate sends no crate_id', async ({ page }) => {
+  const { created } = await serveCrates(page)
+  await page.goto('/w/demo/?create=true&crate=crate-closed')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+  await expect(sheet.locator('[data-intake-crate-name]')).toHaveText('Spring migration')
+  await expect(sheet.getByText('This crate is closed, so a new task cannot join it.', { exact: false })).toBeVisible()
+  await sheet.getByRole('textbox', { name: 'Task description' }).fill('Clean up after the migration')
+  const create = sheet.getByRole('button', { name: 'Create task' })
+  await expect(create).toBeDisabled()
+
+  await sheet.getByRole('button', { name: 'Create this task outside the crate' }).click()
+  await expect(sheet.locator('[data-intake-crate-name]')).toHaveCount(0)
+  await expect(create).toBeEnabled()
+  await create.click()
+  await expect.poll(() => created.length).toBe(1)
+  expect(created[0]).not.toHaveProperty('crate_id')
 })
 
 // The ghost button opens the crate form on the date field; after the save,
@@ -701,7 +768,7 @@ test.describe('at 375 px', () => {
 
     await page.goto('/w/demo/crates/crate-billing')
     await expect(page.locator('[data-crate-task]')).toHaveCount(2)
-    await expect(page.getByRole('region', { name: 'Activity' }).locator('[data-activity-kind]')).toHaveCount(3)
+    await expect(page.getByRole('region', { name: 'Activity' }).locator('[data-activity-kind]')).toHaveCount(4)
     await expectNoHorizontalScroll(page)
 
     await page.goto('/w/demo/?create=true&crate=crate-billing')
