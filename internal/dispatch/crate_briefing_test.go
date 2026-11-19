@@ -196,7 +196,9 @@ func TestCrateBriefingUnconfigured(t *testing.T) {
 // one end whatever follows it, so closing quotes, brackets, Markdown, a
 // missing space, a zero-width space, and full-width marks cannot hide one.
 // Round 5 refuses text with no letter or digit, counts every Unicode
-// sentence terminal, and matches requirement and design IDs in any case. Each
+// sentence terminal, and matches requirement and design IDs in any case.
+// Round 6 checks every field exactly as decoded, so a line break or a length
+// over the limit at the ends of a field cannot be trimmed away. Each
 // refusal is ErrCrateBriefingInvalid, returns no briefing, and its error
 // text never holds any part of the reply.
 func TestCrateBriefingReplyRefusals(t *testing.T) {
@@ -293,6 +295,18 @@ func TestCrateBriefingReplyRefusals(t *testing.T) {
 		{"capitalized feature ID", crateBriefingReplyJSON(t, "Feature-crate-insights is done.", crateBriefingAccount), "task, requirement, or document identifier"},
 		{"capitalized component ID", crateBriefingReplyJSON(t, "See Component-crates now.", crateBriefingAccount), "task, requirement, or document identifier"},
 		{"upper-case requirement ID", crateBriefingReplyJSON(t, "See REQ-crate-insights.", crateBriefingAccount), "task, requirement, or document identifier"},
+		{"headline with a trailing line feed", crateBriefingReplyJSON(t, "Work started.\n", crateBriefingAccount), "the headline contains a line break"},
+		{"headline with a leading carriage return and line feed", crateBriefingReplyJSON(t, "\r\nWork started.", crateBriefingAccount), "the headline contains a line break"},
+		{"headline with a trailing line separator", crateBriefingReplyJSON(t, "Work started.\u2028", crateBriefingAccount), "the headline contains a line break"},
+		{"account with a trailing line feed", crateBriefingReplyJSON(t, crateBriefingHeadline, "Work started.\n"), "the account contains a line break"},
+		{"account with a leading carriage return and line feed", crateBriefingReplyJSON(t, crateBriefingHeadline, "\r\nWork started."), "the account contains a line break"},
+		{"account with a trailing line separator", crateBriefingReplyJSON(t, crateBriefingHeadline, "Work started.\u2028"), "the account contains a line break"},
+		{"reason with a trailing line feed", crateBriefingReplyJSON(t, crateBriefingHeadline, crateBriefingAccount, entry(member, "info", "Work started.\n")), "a look_first reason contains a line break"},
+		{"reason with a leading carriage return and line feed", crateBriefingReplyJSON(t, crateBriefingHeadline, crateBriefingAccount, entry(member, "info", "\r\nWork started.")), "a look_first reason contains a line break"},
+		{"reason with a trailing line separator", crateBriefingReplyJSON(t, crateBriefingHeadline, crateBriefingAccount, entry(member, "info", "Work started.\u2028")), "a look_first reason contains a line break"},
+		{"headline of 200 letters and a leading space", crateBriefingReplyJSON(t, " "+echo+strings.Repeat("a", 200-len(echo)), crateBriefingAccount), "the headline exceeds 200 characters"},
+		{"account of 800 characters and a trailing space", crateBriefingReplyJSON(t, crateBriefingHeadline, echo+strings.Repeat("\u00e9", 800-len(echo))+" "), "the account exceeds 800 characters"},
+		{"reason of 160 characters and a space", crateBriefingReplyJSON(t, crateBriefingHeadline, crateBriefingAccount, entry(member, "info", echo+strings.Repeat("\u00e9", 160-len(echo))+" ")), "a look_first reason exceeds 160 characters"},
 		{"same look_first task twice", crateBriefingReplyJSON(t, crateBriefingHeadline, crateBriefingAccount, entry(member, "attention", "It waits "+echo+"."), entry(member, "info", "It is late.")), "look_first names the same task twice"},
 		{"reference document ID", crateBriefingReplyJSON(t, crateBriefingHeadline, "It follows ref-260823-f4729f "+echo+"."), "task, requirement, or document identifier"},
 	} {
@@ -344,6 +358,7 @@ func TestCrateBriefingReplyAccepted(t *testing.T) {
 		{"empty look_first", prose(crateBriefingHeadline, crateBriefingAccount)},
 		{"plain words", prose("Two of 5 tasks merged by Nov 26, 2026.", "The follow-up work on the sign-in page is in review. Task #3 is the C# client.")},
 		{"hyphenated words", prose("The crate-level target of Nov 26 looks safe.", "The reference-data import and the shared cleanup merged. A feature flag guards the re-run.")},
+		{"headline with a leading space within 200 characters, stored trimmed", accepted{crateBriefingReplyJSON(t, " "+strings.Repeat("\u00e9", 199), crateBriefingAccount), CrateBriefing{Headline: strings.Repeat("\u00e9", 199), Account: crateBriefingAccount, LookFirst: []crateinsight.BriefingEntry{}}}},
 		{"capitalized allowlisted word", prose("Feature-rich reports merged on Nov 18.", "The Feature-rich editor is in review.")},
 		{"allowlisted design-shaped words", prose("The component-level work is on track.", "The component-based import and the feature-rich editor merged. The feature-complete report is in review.")},
 		{"one-sentence headline and three-sentence account", prose("Work is on track!", "Two tasks merged. One is in review? The last one waits for an agent.")},

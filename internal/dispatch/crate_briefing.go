@@ -254,7 +254,10 @@ func invalidCrateBriefing(reason string) error {
 }
 
 // ValidateCrateBriefing checks a model reply against component-crates
-// invariant 32 and returns the trimmed briefing. The reply must be valid
+// invariant 32 and returns the briefing to store. Every check reads each
+// field exactly as decoded, and only a field that passes them all has the
+// spaces and tabs at its ends trimmed for storage. Whitespace around the JSON
+// object itself is not part of a field. The reply must be valid
 // UTF-8 and exactly one JSON object holding headline, account, and
 // look_first, with no other field and nothing after it. The headline and the
 // account must be non-empty, at most 200 and 800 Unicode characters, and
@@ -283,15 +286,16 @@ func ValidateCrateBriefing(output string, memberIDs []string) (CrateBriefing, er
 	if reply.Headline == nil || reply.Account == nil || reply.LookFirst == nil {
 		return CrateBriefing{}, invalidCrateBriefing("the reply lacks headline, account, or look_first")
 	}
-	headline, err := crateBriefingProse("headline", *reply.Headline, MaxCrateBriefingHeadlineCharacters)
-	if err != nil {
+	// Every check reads each field exactly as decoded. Only a field that
+	// passes them all is trimmed, and only for storage.
+	headline, account := *reply.Headline, *reply.Account
+	if err := crateBriefingProse("headline", headline, MaxCrateBriefingHeadlineCharacters); err != nil {
 		return CrateBriefing{}, err
 	}
 	if crateBriefingSentences(headline) != CrateBriefingHeadlineSentences {
 		return CrateBriefing{}, invalidCrateBriefing("the headline is not exactly one sentence")
 	}
-	account, err := crateBriefingProse("account", *reply.Account, MaxCrateBriefingAccountCharacters)
-	if err != nil {
+	if err := crateBriefingProse("account", account, MaxCrateBriefingAccountCharacters); err != nil {
 		return CrateBriefing{}, err
 	}
 	if crateBriefingSentences(account) > MaxCrateBriefingAccountSentences {
@@ -300,7 +304,8 @@ func ValidateCrateBriefing(output string, memberIDs []string) (CrateBriefing, er
 	if len(*reply.LookFirst) > MaxCrateBriefingLookFirst {
 		return CrateBriefing{}, invalidCrateBriefing("look_first holds more than three entries")
 	}
-	briefing := CrateBriefing{Headline: headline, Account: account, LookFirst: make([]crateinsight.BriefingEntry, 0, len(*reply.LookFirst))}
+	briefing := CrateBriefing{LookFirst: make([]crateinsight.BriefingEntry, 0, len(*reply.LookFirst))}
+	texts := []string{headline, account}
 	for _, entry := range *reply.LookFirst {
 		if entry.TaskID == nil || entry.Tone == nil || entry.Reason == nil {
 			return CrateBriefing{}, invalidCrateBriefing("a look_first entry lacks task_id, tone, or reason")
@@ -314,9 +319,9 @@ func ValidateCrateBriefing(output string, memberIDs []string) (CrateBriefing, er
 		if !slices.Contains(crateinsight.BriefingTones, *entry.Tone) {
 			return CrateBriefing{}, invalidCrateBriefing("a look_first entry has a tone other than attention, info, or positive")
 		}
-		reason := strings.TrimSpace(*entry.Reason)
+		reason := *entry.Reason
 		switch {
-		case reason == "":
+		case strings.TrimSpace(reason) == "":
 			return CrateBriefing{}, invalidCrateBriefing("a look_first reason is empty")
 		case utf8.RuneCountInString(reason) > MaxCrateBriefingReasonCharacters:
 			return CrateBriefing{}, invalidCrateBriefing(fmt.Sprintf("a look_first reason exceeds %d characters", MaxCrateBriefingReasonCharacters))
@@ -325,11 +330,8 @@ func ValidateCrateBriefing(output string, memberIDs []string) (CrateBriefing, er
 		case !crateBriefingHasContent(reason):
 			return CrateBriefing{}, invalidCrateBriefing("a look_first reason holds no letter or digit")
 		}
-		briefing.LookFirst = append(briefing.LookFirst, crateinsight.BriefingEntry{TaskID: *entry.TaskID, Tone: *entry.Tone, Reason: reason})
-	}
-	texts := []string{briefing.Headline, briefing.Account}
-	for _, entry := range briefing.LookFirst {
-		texts = append(texts, entry.Reason)
+		texts = append(texts, reason)
+		briefing.LookFirst = append(briefing.LookFirst, crateinsight.BriefingEntry{TaskID: *entry.TaskID, Tone: *entry.Tone, Reason: crateBriefingStorageTrim(reason)})
 	}
 	for _, text := range texts {
 		lower := strings.ToLower(text)
@@ -342,28 +344,39 @@ func ValidateCrateBriefing(output string, memberIDs []string) (CrateBriefing, er
 			return CrateBriefing{}, invalidCrateBriefing("the text holds a task, requirement, or document identifier")
 		}
 	}
+	briefing.Headline, briefing.Account = crateBriefingStorageTrim(headline), crateBriefingStorageTrim(account)
 	return briefing, nil
 }
 
-// crateBriefingProse trims the headline or the account and refuses it when
-// it is empty, longer than limit Unicode characters, holds a line break, a
-// leading Markdown heading marker, or a fence, or holds no letter or digit (component-crates invariant
-// 32). The reasons name the field and never the text.
-func crateBriefingProse(field, value string, limit int) (string, error) {
-	text := strings.TrimSpace(value)
+// crateBriefingHeading matches a Markdown ATX heading marker at the start of
+// a field, after any spaces or tabs that the storage trim would remove.
+var crateBriefingHeading = regexp.MustCompile(`^[ \t]*#{1,6}(\s|$)`)
+
+// crateBriefingStorageTrim trims the spaces and tabs at the ends of a field
+// that passed every check. No other rune is trimmed, so the stored text holds
+// no character the checks did not see.
+func crateBriefingStorageTrim(value string) string { return strings.Trim(value, " \t") }
+
+// crateBriefingProse checks the headline or the account exactly as decoded,
+// before any trim (component-crates invariant 32). It refuses a field that
+// is empty or only whitespace, is longer than limit Unicode characters, holds
+// a line break anywhere, starts with a Markdown heading marker, holds a
+// fence, or holds no letter or digit. The reasons name the field and never
+// the text.
+func crateBriefingProse(field, value string, limit int) error {
 	switch {
-	case text == "":
-		return "", invalidCrateBriefing("the " + field + " is empty")
-	case utf8.RuneCountInString(text) > limit:
-		return "", invalidCrateBriefing(fmt.Sprintf("the %s exceeds %d characters", field, limit))
-	case strings.ContainsAny(text, crateBriefingLineBreaks):
-		return "", invalidCrateBriefing("the " + field + " contains a line break")
-	case headlineHeading.MatchString(text):
-		return "", invalidCrateBriefing("the " + field + " contains a Markdown heading")
-	case strings.Contains(text, "```") || strings.Contains(text, "~~~"):
-		return "", invalidCrateBriefing("the " + field + " contains a fenced block")
-	case !crateBriefingHasContent(text):
-		return "", invalidCrateBriefing("the " + field + " holds no letter or digit")
+	case strings.TrimSpace(value) == "":
+		return invalidCrateBriefing("the " + field + " is empty")
+	case utf8.RuneCountInString(value) > limit:
+		return invalidCrateBriefing(fmt.Sprintf("the %s exceeds %d characters", field, limit))
+	case strings.ContainsAny(value, crateBriefingLineBreaks):
+		return invalidCrateBriefing("the " + field + " contains a line break")
+	case crateBriefingHeading.MatchString(value):
+		return invalidCrateBriefing("the " + field + " contains a Markdown heading")
+	case strings.Contains(value, "```") || strings.Contains(value, "~~~"):
+		return invalidCrateBriefing("the " + field + " contains a fenced block")
+	case !crateBriefingHasContent(value):
+		return invalidCrateBriefing("the " + field + " holds no letter or digit")
 	}
-	return text, nil
+	return nil
 }
