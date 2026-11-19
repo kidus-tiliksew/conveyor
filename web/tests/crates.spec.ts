@@ -2310,9 +2310,50 @@ for (const viewport of [
       // The stored text stays while the request runs.
       await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
       await shoot(page, 'regenerating')
+      const getsBefore = server.briefingGets.length
       gate.release()
       await expect(section.locator('[data-briefing-headline]')).toHaveText('A new briefing came back from the server.')
+      // The page reads the briefing again after the answer. Nothing changed
+      // in the crate, so the briefing stays current and Regenerate disabled.
+      await expect.poll(() => server.briefingGets.length).toBeGreaterThan(getsBefore)
       await expect(regenerate).toBeDisabled()
+      expect(server.briefingPosts).toEqual([lineCrate.id])
+    })
+
+    // Invariant 35: the answer to a POST compares the briefing with the crate
+    // as it stood when generation started. When the crate changes while the
+    // model runs, the read that follows the answer shows the briefing is out
+    // of date, and Regenerate is enabled again.
+    test('a crate change during generation leaves the new briefing out of date', async ({ page }) => {
+      const gate = held()
+      const briefings: Record<string, CrateBriefing | null> = {
+        [lineCrate.id]: storedBriefing({ current: false }),
+      }
+      const server = await serveCrates(page, {
+        briefings,
+        briefingPost: async (id) => {
+          await gate.promise
+          // A member changed after the server built the model input: the
+          // stored row's fingerprint no longer matches the live one.
+          const generated = storedBriefing({ headline: 'Written before the crate changed.' })
+          briefings[id] = { ...generated, current: false }
+          return {
+            status: 200,
+            json: { briefing: generated, fingerprint: 'fingerprint-sent', can_generate: true },
+          }
+        },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      const regenerate = section.getByRole('button', { name: 'Regenerate' })
+      await regenerate.click()
+      await expect(regenerate).toBeDisabled()
+      const getsBefore = server.briefingGets.length
+      gate.release()
+      await expect(section.locator('[data-briefing-headline]')).toHaveText('Written before the crate changed.')
+      await expect.poll(() => server.briefingGets.length).toBeGreaterThan(getsBefore)
+      await expect(regenerate).toBeEnabled()
+      await expect(section.getByRole('alert')).toHaveCount(0)
       expect(server.briefingPosts).toEqual([lineCrate.id])
     })
 

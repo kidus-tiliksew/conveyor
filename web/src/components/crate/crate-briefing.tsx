@@ -72,9 +72,13 @@ export function CrateBriefingSection({
     retry: false,
     onSuccess: async (view, target) => {
       const targetKey = crateBriefingQueryKey(target.workspace, target.crateId)
-      // A read that started before the answer must not replace it.
-      await queryClient.cancelQueries({ queryKey: targetKey, exact: true })
       queryClient.setQueryData<CrateBriefingView>(targetKey, view)
+      // The answer says whether the briefing matches the crate as it stood
+      // when generation started. The crate can change while the model runs,
+      // so the page reads the briefing again: the read compares it with the
+      // crate as it stands now (component-crates invariant 35). This also
+      // replaces any read that started before the answer.
+      await queryClient.invalidateQueries({ queryKey: targetKey, exact: true })
     },
     onError: (error, target) => {
       if (error instanceof CrateBriefingError && error.status === 409)
