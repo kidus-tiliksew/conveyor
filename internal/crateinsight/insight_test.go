@@ -56,6 +56,12 @@ func stateChanged(id int64, to core.TaskState, at time.Time) Event {
 	return event(id, kindStateChanged, at, map[string]any{"from": "running", "to": to})
 }
 
+// transition is a task.state_changed event as every store records a
+// lifecycle command: from, to, and the command.
+func transition(id int64, command core.TaskCommand, to core.TaskState, at time.Time) Event {
+	return event(id, kindStateChanged, at, map[string]any{"from": core.TaskRunning, "to": to, "command": command})
+}
+
 func review(id int64, verdict string, at time.Time) Event {
 	return event(id, kindReviewRound, at, map[string]any{"verdict": verdict, "review_round": id})
 }
@@ -151,10 +157,50 @@ func TestReplayRules(t *testing.T) {
 				waiting.MergeApproval = true
 				return waiting
 			}(), action: mergeGate,
-			events: []Event{claim(1, core.StageImplement, ago(90*hour)), opened(2, ago(80*hour)), claim(3, core.StageVerify, ago(79*hour)), review(4, verdictApprove, ago(70*hour))},
+			events: []Event{
+				claim(1, core.StageImplement, ago(90*hour)), opened(2, ago(80*hour)), claim(3, core.StageVerify, ago(79*hour)),
+				review(4, verdictApprove, ago(70*hour)), transition(5, core.TaskGateMerge, core.TaskAwaiting, ago(70*hour)),
+			},
 			want: []Step{
 				step(created, "b", PhaseQueued, StationIntake), step(ago(90*hour), "b", PhaseBuilding, StationBuild),
 				step(ago(80*hour), "b", PhaseReview, StationReview), step(ago(70*hour), "b", PhaseNeedsYou, StationGate),
+			},
+		},
+		{
+			// DEC-124(2): a risk hold sends the approved round to the merge
+			// gate although the frozen merge_approval is off.
+			name: "risk hold with the merge gate off still waits on a person",
+			task: task("h", core.TaskAwaiting, core.StageGate, created), action: mergeGate,
+			events: []Event{
+				claim(1, core.StageImplement, ago(90*hour)), opened(2, ago(80*hour)),
+				review(3, verdictApprove, ago(70*hour)), transition(4, core.TaskGateMerge, core.TaskAwaiting, ago(70*hour)),
+			},
+			want: []Step{
+				step(created, "h", PhaseQueued, StationIntake), step(ago(90*hour), "h", PhaseBuilding, StationBuild),
+				step(ago(80*hour), "h", PhaseReview, StationReview), step(ago(70*hour), "h", PhaseNeedsYou, StationGate),
+			},
+		},
+		{
+			// The first round enters the merge gate. The refresh round's
+			// approval takes review.accept, so it adds no second wait even
+			// though the frozen merge_approval is on.
+			name: "refresh approval that takes review accept bypasses the gate",
+			task: func() core.Task {
+				merged := task("r", core.TaskMerged, "", created)
+				merged.MergeApproval = true
+				return merged
+			}(), action: terminal,
+			events: []Event{
+				claim(1, core.StageImplement, ago(90*hour)), opened(2, ago(80*hour)),
+				review(3, verdictApprove, ago(70*hour)), transition(4, core.TaskGateMerge, core.TaskAwaiting, ago(70*hour)),
+				claim(5, core.StageReview, ago(60*hour)),
+				review(6, verdictApprove, ago(55*hour)), transition(7, core.TaskReviewAccept, core.TaskApproved, ago(55*hour)),
+				event(8, kindMergeConfirmed, ago(50*hour), map[string]any{"sha": "abc"}), stateChanged(9, core.TaskMerged, ago(50*hour)),
+			},
+			want: []Step{
+				step(created, "r", PhaseQueued, StationIntake), step(ago(90*hour), "r", PhaseBuilding, StationBuild),
+				step(ago(80*hour), "r", PhaseReview, StationReview), step(ago(70*hour), "r", PhaseNeedsYou, StationGate),
+				step(ago(60*hour), "r", PhaseReview, StationReview), step(ago(50*hour), "r", PhaseMerged, StationCrate),
 			},
 		},
 		{

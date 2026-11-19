@@ -67,8 +67,8 @@ type Event struct {
 // crate are included.
 type Member struct {
 	// Task is the member's task row, usable by the shared next-action
-	// projection. Its CreatedAt, BaseBranch, NextStage, State, and
-	// MergeApproval fields feed the computation.
+	// projection. Its CreatedAt, BaseBranch, NextStage, and State fields
+	// feed the computation.
 	Task core.Task `json:"task"`
 	// Events are the member's insight events in (at, id) order.
 	Events []Event `json:"events"`

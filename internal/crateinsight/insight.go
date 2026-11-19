@@ -357,7 +357,7 @@ type position struct {
 
 // replayPosition returns the position an event places a member at, and
 // false for an event that places it nowhere (component-crates invariant 25).
-func replayPosition(event Event, task core.Task) (position, bool) {
+func replayPosition(event Event) (position, bool) {
 	switch event.Kind {
 	case kindClaimed:
 		switch event.Stage {
@@ -376,15 +376,11 @@ func replayPosition(event Event, task core.Task) (position, bool) {
 	case kindPullRequestOpened:
 		return position{PhaseReview, StationReview}, true
 	case kindReviewRound:
-		switch reviewVerdict(event) {
-		case verdictChanges:
+		// An approving round places the member nowhere by itself: the
+		// recorded gate transition below says whether the merge waits on a
+		// person.
+		if reviewVerdict(event) == verdictChanges {
 			return position{PhaseBuilding, StationBuild}, true
-		case verdictApprove:
-			// The merge waits on a person only under the task's frozen
-			// merge gate (DEC-125(1)).
-			if task.MergeApproval {
-				return position{PhaseNeedsYou, StationGate}, true
-			}
 		}
 	case kindMergeConfirmed, kindMergeReconciled:
 		return position{PhaseMerged, StationCrate}, true
@@ -392,9 +388,17 @@ func replayPosition(event Event, task core.Task) (position, bool) {
 		return position{PhaseClosed, StationAside}, true
 	case kindStateChanged:
 		var payload struct {
-			To core.TaskState `json:"to"`
+			To      core.TaskState   `json:"to"`
+			Command core.TaskCommand `json:"command"`
 		}
 		if json.Unmarshal(event.Payload, &payload) == nil {
+			// Every store records the round's entry to the merge gate as
+			// gate.merge into awaiting_human, whether the frozen merge gate
+			// or a risk hold requires the person (DEC-124(2)). An admitted
+			// approval records review.accept and enters no gate.
+			if payload.Command == core.TaskGateMerge && payload.To == core.TaskAwaiting {
+				return position{PhaseNeedsYou, StationGate}, true
+			}
 			switch payload.To {
 			case core.TaskMerged:
 				return position{PhaseMerged, StationCrate}, true
@@ -415,7 +419,7 @@ func MemberSteps(member Member, action nextaction.Compact, now time.Time) []Step
 	current := position{PhaseQueued, StationIntake}
 	steps := []Step{{At: task.CreatedAt.UTC(), TaskID: task.ID, Phase: current.phase, Station: current.station}}
 	for _, event := range sortedEvents(member.Events) {
-		next, ok := replayPosition(event, task)
+		next, ok := replayPosition(event)
 		if !ok || next == current {
 			continue
 		}
