@@ -658,6 +658,21 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 		if name == "get_crate" && (!strings.Contains(envelope.Result.Tools[i].Description, "500 oldest member tasks") || !strings.Contains(envelope.Result.Tools[i].Description, "task_ids_truncated")) {
 			t.Fatalf("get_crate description = %q", envelope.Result.Tools[i].Description)
 		}
+		// get_crate states what list_tasks with crate_id returns: active
+		// members by default, state all for merged and closed members, and
+		// the refusal above 1,000 matching tasks. It promises no complete
+		// member list (req-crates AC-6.5).
+		if name == "get_crate" {
+			description := envelope.Result.Tools[i].Description
+			for _, phrase := range []string{"only active member tasks by default", "Set state to all to include merged and closed member tasks", "refuses a read that matches more than 1,000 tasks", "Narrow that read with state, repository, or query"} {
+				if !strings.Contains(description, phrase) {
+					t.Fatalf("get_crate description lacks %q: %q", phrase, description)
+				}
+			}
+			if strings.Contains(description, "every member") {
+				t.Fatalf("get_crate description promises every member task: %q", description)
+			}
+		}
 		if name == "create_task" && !strings.Contains(envelope.Result.Tools[i].Description, "invalid_agent_gate_override") {
 			t.Fatalf("create_task description omits the mistyped gate rule: %q", envelope.Result.Tools[i].Description)
 		}
