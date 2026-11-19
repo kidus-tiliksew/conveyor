@@ -42,6 +42,7 @@ func init() {
 	readEgressCases.Register("governance-designs", buildGovernanceDesigns)
 	readEgressCases.Register("decision-citations", buildDecisionCitations)
 	readEgressCases.Register("activity-markers", buildActivityMarkers)
+	readEgressCases.Register("activity-markers-v0.72.0", buildActivityMarkersTag)
 }
 
 func legacyEventRows(ctx context.Context, st *Store, label, sql string, args ...any) ([]core.Event, error) {

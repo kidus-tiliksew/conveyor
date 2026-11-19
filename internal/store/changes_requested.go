@@ -29,10 +29,7 @@ func UserRequestChangesPending(events []core.Event) bool {
 	for _, event := range events {
 		switch event.Kind {
 		case "pipeline.bounced":
-			var payload struct {
-				Source string `json:"source"`
-			}
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.Source == UserRequestChangesSource {
+			if userRequestChangesBounce(event) {
 				pending = true
 			}
 		case "work_order.claimed":
@@ -43,6 +40,15 @@ func UserRequestChangesPending(events []core.Event) bool {
 		}
 	}
 	return pending
+}
+
+// userRequestChangesBounce reports whether a pipeline.bounced event decodes
+// with the user-request-changes source.
+func userRequestChangesBounce(event core.Event) bool {
+	var payload struct {
+		Source string `json:"source"`
+	}
+	return json.Unmarshal(event.Payload, &payload) == nil && payload.Source == UserRequestChangesSource
 }
 
 const (

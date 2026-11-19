@@ -50,3 +50,43 @@ func TestMarkerClaimBackfill(t *testing.T) {
 		})
 	}
 }
+
+// TestMarkerEventFoldable pins the exact row tests a backend applies after a
+// text selection: a bounce counts only when UserRequestChangesPending reads it
+// as a user change request, an update only when LatestForgeFailure reads it
+// as an implement submission with a head, and every other kind counts.
+func TestMarkerEventFoldable(t *testing.T) {
+	for _, tc := range []struct {
+		kind, payload string
+		want          bool
+	}{
+		{"pipeline.bounced", `{"source":"user-request-changes"}`, true},
+		{"pipeline.bounced", `{"Source":"user-request-changes"}`, true},
+		{"pipeline.bounced", `{"source":"operator","note":"user-request-changes"}`, false},
+		{"pipeline.bounced", `{"source":"user-request-changes","Source":"operator"}`, false},
+		{"pipeline.bounced", `{"source":5}`, false},
+		{"work_order.updated", `{"id":"o","stage":"implement","state":"submitted","head_sha":"h"}`, true},
+		{"work_order.updated", `{"id":"o","Stage":"implement","state":"submitted","head_sha":"h"}`, true},
+		{"work_order.updated", `{"id":"o","stage":"implement","state":"claimed","head_sha":"submitted"}`, false},
+		{"work_order.updated", `{"id":"o","stage":"review","state":"submitted","head_sha":"implement"}`, false},
+		{"work_order.updated", `{"id":"o","stage":"implement","state":"submitted"}`, false},
+		{"work_order.claimed", `not json`, true},
+		{"merge.failed", `{}`, true},
+	} {
+		event := core.Event{Kind: tc.kind, Payload: json.RawMessage(tc.payload)}
+		if got := MarkerEventFoldable(event); got != tc.want {
+			t.Errorf("MarkerEventFoldable(%s %s) = %t, want %t", tc.kind, tc.payload, got, tc.want)
+		}
+		// The filter agrees with the folds it serves.
+		switch tc.kind {
+		case "pipeline.bounced":
+			if UserRequestChangesPending([]core.Event{event}) != tc.want {
+				t.Errorf("bounce %s: filter and fold disagree", tc.payload)
+			}
+		case "work_order.updated":
+			if _, _, ok := implementationSubmission(event); ok != tc.want {
+				t.Errorf("update %s: filter and fold disagree", tc.payload)
+			}
+		}
+	}
+}

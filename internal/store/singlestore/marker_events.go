@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -145,7 +144,9 @@ func (s *Store) markerLatestTuples(ctx context.Context, byTask map[string]*marke
 // markerFoldRows reads the fold inputs for the page's tasks in chunks. When a
 // kept claim of a chunk does not supersede the claims the reduction left out
 // (store.MarkerClaimBackfill), it reads that chunk again without claim
-// reduction and uses only that result. The page must list its tasks.
+// reduction and uses only that result. Go then applies the exact row tests
+// and the payload projection (markerFoldEvents). The page must list its
+// tasks; an empty page issues no statement.
 func (s *Store) markerFoldRows(ctx context.Context, in store.MarkerFoldInput) ([]core.Event, error) {
 	out := []core.Event{}
 	if in.Page == nil {
@@ -185,9 +186,7 @@ func (s *Store) markerFoldRows(ctx context.Context, in store.MarkerFoldInput) ([
 				return nil, err
 			}
 		}
-		for i := range rows {
-			out = append(out, rows[i].Event)
-		}
+		out = append(out, markerFoldEvents(rows)...)
 	}
 	// UNION branches and distributed execution may arrive in physical order;
 	// the lifecycle folds require the ledger's (at,id) order.
@@ -217,71 +216,32 @@ func (s *Store) markerFoldScan(ctx context.Context, query string, args []any) ([
 	return out, rows.Err()
 }
 
-// The rest of this file is the SingleStore activity-marker fold read. The backend owns all of
-// its SQL (component-persistence invariant 2); the shared store package holds
-// only the pure Go facts the folds read and the claim read-back decision
-// (store.MarkerPayloadProjections, store.MarkerClaimBackfill).
+// The rest of this file is the SingleStore activity-marker fold read. The
+// backend owns all of its SQL (component-persistence invariant 2); the shared
+// store package holds only the pure Go facts the folds read, the claim
+// read-back decision, and the folds' own row tests
+// (store.MarkerPayloadProjections, store.MarkerClaimBackfill,
+// store.MarkerEventFoldable).
+//
+// The statement keeps in SQL only the cheap selection (scope, kind lists,
+// and quoted-literal INSTR tests) and the reductions that bound the rows the
+// read transfers. Every literal test is a necessary condition, so a row Go
+// might decode as selected is kept. Go applies the exact tests and the
+// payload projection after the read (markerFoldEvents).
+//
+// The read produces exactly four statement texts: without and with an open
+// review order, each with reduced claims or with every claim. Each list the
+// statement binds has a fixed width, markerTaskChunk, and the open review
+// orders travel as one JSON array, so neither the page size nor the number
+// of open review orders changes the text. SingleStore compiles one plan per
+// statement text, so the read compiles at most four plans
+// (component-web-task-surfaces invariant 19).
 
 func markerPlaceholder(int) string { return "?" }
-
-// markerScope is the FROM and WHERE clause of the read: the events of the
-// page tasks of one chunk.
-func markerScope(b *markerBinder, ws string, page []string) string {
-	marks := make([]string, len(page))
-	workspace := b.bind(ws)
-	for i, id := range page {
-		marks[i] = b.bind(id)
-	}
-	return `FROM events_columnstore e
-		WHERE e.workspace_id=` + workspace + ` AND e.task_id IS NOT NULL AND e.task_id IN (` + strings.Join(marks, ",") + `)`
-}
 
 // markerCompact is the compact payload column: snapshot bodies are not
 // marker inputs and never cross the connection.
 const markerCompact = compactEventPayloadColumn
-
-func markerInList(b *markerBinder, col string, values []string) string {
-	marks := make([]string, len(values))
-	for i, value := range values {
-		marks[i] = b.bind(value)
-	}
-	return col + " IN (" + strings.Join(marks, ",") + ")"
-}
-func markerInt(placeholder string) string { return "CAST(" + placeholder + " AS SIGNED)" }
-func markerText(json string) string       { return json }
-
-// markerKeys is the JSON array of an object's top-level keys, NULL for any
-// other value.
-func markerKeys(json string) string       { return "JSON_KEYS(" + json + ")" }
-func markerField(json, key string) string { return "JSON_EXTRACT_JSON(" + json + ",'" + key + "')" }
-func markerFieldText(json, key string) string {
-	return "JSON_EXTRACT_STRING(" + json + ",'" + key + "')"
-}
-func markerIsString(value string) string {
-	return "(COALESCE(JSON_GET_TYPE(" + value + "),'')='string')"
-}
-func markerObject(pairs []string) string {
-	return "JSON_BUILD_OBJECT(" + strings.Join(pairs, ",") + ")"
-}
-func markerContains(text, literal string) string {
-	return "(INSTR(" + text + "," + literal + ")>0)"
-}
-func markerLower(text string) string { return "LOWER(" + text + ")" }
-
-// markerStripped is the byte length of text with every case-sensitive
-// occurrence of literal removed; the binary cast keeps the replacement
-// case-sensitive under any collation.
-func markerStripped(text, literal string) string {
-	return "LENGTH(REPLACE(CAST(" + text + " AS BINARY)," + literal + ",''))"
-}
-
-// markerASCII reports whether a key list holds only plain ASCII keys.
-// JSON_KEYS writes a non-ASCII key as \u escapes, which are ASCII bytes, so a
-// backslash (CHAR(92)) marks a key that may fold to a field name in Go and
-// keeps the key ambiguous.
-func markerASCII(text string) string {
-	return "(LENGTH(" + text + ")=CHAR_LENGTH(" + text + ") AND INSTR(" + text + ",CHAR(92))=0)"
-}
 
 // markerBinder collects the bound arguments of one statement. Bind
 // returns a token; finish numbers the tokens in the statement's text order,
@@ -298,11 +258,31 @@ func (b *markerBinder) bind(value any) string {
 	return markerArgToken + strconv.Itoa(len(b.values)-1) + markerArgToken
 }
 
-func (b *markerBinder) in(col string, values []string) string {
-	if len(values) == 0 {
-		return "1=0"
+// fixedIn is an IN list of exactly markerTaskChunk placeholders. A nonempty
+// list is padded with its own first member, so the padding matches only rows
+// the list already matches. An empty list is padded with the empty string,
+// which no task ID equals; the caller pairs it with markerBinder.flag.
+func (b *markerBinder) fixedIn(col string, values []string) string {
+	marks := make([]string, markerTaskChunk)
+	for i := range marks {
+		value := ""
+		switch {
+		case i < len(values):
+			value = values[i]
+		case len(values) > 0:
+			value = values[0]
+		}
+		marks[i] = b.bind(value)
 	}
-	return markerInList(b, col, values)
+	return col + " IN (" + strings.Join(marks, ",") + ")"
+}
+
+// flag binds 1 for a nonempty optional list and 0 for an empty one.
+func (b *markerBinder) flag(values []string) string {
+	if len(values) == 0 {
+		return b.bind(int64(0))
+	}
+	return b.bind(int64(1))
 }
 
 func (b *markerBinder) finish(query string) (string, []any) {
@@ -332,248 +312,230 @@ func markerQuotedSQL(kinds []string) string {
 	return strings.Join(quoted, ",")
 }
 
-// keyUnambiguous is true when the row's payload is an object whose top-level
-// keys (k_text, and k_lower lowered) are ASCII and none of them matches key
-// case-insensitively without being key itself. Go's json decoder matches a
-// struct field by any key that folds to its name, so only then is the value
-// at the exact key the value Go decodes. Both backends store JSON
-// normalized: escapes decoded and a duplicated key collapsed to its last
-// value, as Go keeps the last value.
-func markerKeyUnambiguous(key string) string {
-	quoted := `'"` + key + `"'`
-	return fmt.Sprintf("(k_text IS NOT NULL AND %s AND %s=%s)", markerASCII("k_text"), markerStripped("k_text", quoted), markerStripped("k_lower", quoted))
+// markerMayName is a necessary condition for Go to decode a JSON string equal
+// to value anywhere in the payload: both backends store JSON normalized, so a
+// value made of characters JSON writes plainly appears in the text between
+// quotes. It never excludes a row Go would read as value.
+func markerMayName(column, value string) string {
+	return `(INSTR(` + column + `,'"` + value + `"')>0)`
 }
 
-// mayEqual is false only when Go cannot decode the string value at key as
-// value: the payload holds no JSON string equal to value, or the key is
-// unambiguous and its value differs. It never excludes a row Go would read
-// as value.
-func markerMayEqual(key, value string) string {
-	return fmt.Sprintf("(%s AND (NOT %s OR COALESCE(%s,'')='%s'))",
-		markerContains(markerText("event_payload"), `'"`+value+`"'`), markerKeyUnambiguous(key), markerFieldText("event_payload", key), value)
+// markerLeaseKey is the exact top-level lease key as the claim text spells
+// it.
+const markerLeaseKey = `'"lease_expires_at"'`
+
+// markerUTCLeaseShape is the only lease text the claim fast path reads: the
+// UTC form Go's time.Time.MarshalJSON writes, with an optional fraction. The
+// pattern holds no `?`, which the driver reads as a bind placeholder.
+const markerUTCLeaseShape = `^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]([.][0-9]+){0,1}Z$`
+
+// markerPastLease is true only for a claim whose top-level lease Go decodes
+// as an instant at least one second before the read's clock second. It
+// accepts only plain ASCII text without a backslash, so no key or value is
+// escaped and no non-ASCII key can fold to the lease key; it requires the
+// lowercased text to hold the quoted lease key exactly as often as the text
+// itself, so no case variant of the key is present for Go to match; and it
+// reads only the exact UTC shape, whose first 19 bytes order like the
+// instant. Any other claim, including a missing lease, an offset or
+// same-second lease, and a malformed one, is kept.
+func markerPastLease(b *markerBinder, now string) string {
+	lease := "JSON_EXTRACT_STRING(event_payload,'lease_expires_at')"
+	return `(LENGTH(event_payload)=CHAR_LENGTH(event_payload) AND INSTR(event_payload,CHAR(92))=0
+				AND LENGTH(REPLACE(CAST(LOWER(event_payload) AS BINARY),` + markerLeaseKey + `,''))=LENGTH(REPLACE(CAST(event_payload AS BINARY),` + markerLeaseKey + `,''))
+				AND ` + lease + ` ` + markerRegexOp + ` '` + markerUTCLeaseShape + `'
+				AND ASCII(SUBSTRING(` + lease + `,11,1))=84 AND ASCII(RIGHT(` + lease + `,1))=90
+				AND CAST(LEFT(` + lease + `,19) AS BINARY)<CAST(` + now + ` AS BINARY))`
 }
 
-// projectedPayload returns the payload the folds read: the kind's keys when
-// every one of them is unambiguous, and the compact payload otherwise.
-func markerProjectedPayload() string {
-	branches := make([]string, 0, len(store.MarkerPayloadProjections))
-	for _, projection := range store.MarkerPayloadProjections {
-		checks := make([]string, len(projection.Keys))
-		pairs := make([]string, 0, 2*len(projection.Keys))
-		for i, key := range projection.Keys {
-			checks[i] = markerKeyUnambiguous(key)
-			pairs = append(pairs, "'"+key+"'", markerField("event_payload", key))
-		}
-		branches = append(branches, fmt.Sprintf("WHEN kind IN (%s) AND %s THEN %s", markerQuotedSQL(projection.Kinds), strings.Join(checks, " AND "), markerObject(pairs)))
-	}
-	return "CASE " + strings.Join(branches, " ") + " ELSE event_payload END"
-}
-
-// markerRowsSQL is the marker_rows common table expression: the compact
-// rows each fold can act on, with their top-level key lists. A bounce only
-// from user-request-changes, an update only for an implement order
-// submitted, a claim only of an implement order or of a task with an open
-// review order, every forge kind, the review lifecycle and review-round
-// kinds of review tasks, and renewals of tasks with an open review order. The tests read the
-// payload text, so a row Go might decode as selected is kept.
-func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput) string {
+// markerRowsSQL is the marker_rows selection: the compact rows each fold
+// can act on. A bounce that may name user-request-changes, an update that
+// may name the implement stage and the submitted state, a claim that may
+// name the implement stage or belongs to a task with an open review order,
+// every forge kind, the review lifecycle and review-round kinds of review
+// tasks, and renewals of tasks with an open review order. The text tests
+// read the stored payload, a superset of the compact payload's text, so
+// they stay necessary conditions; Go applies the exact tests
+// (store.MarkerEventFoldable). Text tests on the stored column compile
+// faster than tests on the compact expression.
+func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput, live bool) string {
 	forge := store.MarkerForgePageKinds()
 	review := append([]string{"work_order.released", "review.completed", "review.accepted", "task.setup.changed"}, store.MarkerReviewRoundKinds...)
-	candidates := append(append([]string{"pipeline.bounced", "work_order.updated", "work_order.claimed", "work_order.lease_renewed"}, review...), forge...)
-	implement := markerMayEqual("stage", string(core.StageImplement))
-	return `scoped_rows AS (
-			SELECT e.id,e.task_id,COALESCE(e.job_id,'') AS job_id,e.kind,` + markerCompact + ` AS event_payload,e.at AS event_at
-			` + markerScope(b, in.Workspace, in.Page) + `
-			AND e.kind IN (` + markerQuotedSQL(candidates) + `)
-		),
-		keyed_rows AS (SELECT id,task_id,job_id,kind,event_payload,event_at,` + markerKeys("event_payload") + ` AS k_text FROM scoped_rows),
-		folded_rows AS (SELECT id,task_id,job_id,kind,event_payload,event_at,k_text,` + markerLower("k_text") + ` AS k_lower FROM keyed_rows),
-		marker_rows AS (
-			SELECT id,task_id,job_id,kind,event_payload,event_at,k_text,k_lower FROM folded_rows
-			WHERE (kind='pipeline.bounced' AND ` + markerMayEqual("source", store.UserRequestChangesSource) + `)
-			OR (kind='work_order.updated' AND ` + implement + ` AND ` + markerMayEqual("state", string(core.WorkOrderSubmitted)) + `)
-			OR (kind='work_order.claimed' AND (` + implement + ` OR ` + b.in("task_id", in.LiveReviewTasks) + `))
-			OR kind IN (` + markerQuotedSQL(forge) + `)
-			OR (kind IN (` + markerQuotedSQL(review) + `) AND ` + b.in("task_id", in.ReviewTasks) + `)
-			OR (kind='work_order.lease_renewed' AND ` + b.in("task_id", in.LiveReviewTasks) + `)
-		)`
+	candidates := append([]string{"pipeline.bounced", "work_order.updated", "work_order.claimed"}, review...)
+	if live {
+		candidates = append(candidates, "work_order.lease_renewed")
+	}
+	candidates = append(candidates, forge...)
+	liveColumn, liveClaim, liveRenewal := "", "", ""
+	if live {
+		liveTask := b.fixedIn("e.task_id", in.LiveReviewTasks)
+		liveColumn = `,CASE WHEN ` + liveTask + ` THEN 1 ELSE 0 END AS live_task`
+		liveClaim = " OR " + liveTask
+		liveRenewal = `
+				OR (e.kind='work_order.lease_renewed' AND ` + liveTask + `)`
+	}
+	return `SELECT e.id,e.task_id,COALESCE(e.job_id,'') AS job_id,e.kind,` + markerCompact + ` AS event_payload,e.at AS event_at` + liveColumn + `
+				FROM events_columnstore e
+				WHERE e.workspace_id=` + b.bind(in.Workspace) + ` AND e.task_id IS NOT NULL AND ` + b.fixedIn("e.task_id", in.Page) + `
+				AND e.kind IN (` + markerQuotedSQL(candidates) + `)
+				AND ((e.kind='pipeline.bounced' AND ` + markerMayName("e.payload_json", store.UserRequestChangesSource) + `)
+				OR (e.kind='work_order.updated' AND ` + markerMayName("e.payload_json", string(core.StageImplement)) + ` AND ` + markerMayName("e.payload_json", string(core.WorkOrderSubmitted)) + `)
+				OR (e.kind='work_order.claimed' AND (` + markerMayName("e.payload_json", string(core.StageImplement)) + liveClaim + `))
+				OR e.kind IN (` + markerQuotedSQL(forge) + `)
+				OR (e.kind IN (` + markerQuotedSQL(review) + `) AND ` + b.flag(in.ReviewTasks) + `=1 AND ` + b.fixedIn("e.task_id", in.ReviewTasks) + `)` + liveRenewal + `)`
 }
 
-// markerFoldQuery is the activity-marker fold read of one page of tasks. It
-// selects the rows each fold can act on (markerRowsSQL), keeps one claim per
-// order where the folds read only the newest, and sends each payload's fold
-// keys where the database proves Go decodes them the same
+// markerOpenOrders is the JSON array the live reduced statement binds: one
+// object per open review order with its task, job, and order ID, and safe=0
+// for an ID outside the store.MarkerSafeOrderID alphabet.
+func markerOpenOrders(orders []store.MarkerReviewOrder) string {
+	type openOrder struct {
+		TaskID string `json:"task_id"`
+		JobID  string `json:"job_id"`
+		ID     string `json:"id"`
+		Safe   int    `json:"safe"`
+	}
+	out := make([]openOrder, 0, len(orders))
+	for _, order := range orders {
+		safe := 0
+		if store.MarkerSafeOrderID(order.ID) {
+			safe = 1
+		}
+		out = append(out, openOrder{TaskID: order.TaskID, JobID: order.JobID, ID: order.ID, Safe: safe})
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		panic("marker open review orders do not encode: " + err.Error())
+	}
+	return string(encoded)
+}
+
+// markerFoldQuery is the activity-marker fold read of one chunk of tasks. It
+// selects the rows each fold can act on (markerRowsSQL) and keeps one claim
+// per job where the folds read only the newest
 // (component-web-task-surfaces invariant 19).
 //
-// Renewals: the last valid renewal for diagnostics and the earliest future
-// renewal for the horizon; only the simple renewal payload the store writes
-// is eligible, and other shapes keep their complete history.
+// Renewals of a task with an open review order: the last valid renewal for
+// diagnostics and the earliest future renewal for the horizon; only the
+// simple renewal payload the store writes is eligible, and other shapes keep
+// their complete history. The lease decoder reads only renewals.
 //
-// Claims: an older claim of the same task and job is left out when no fold
-// can read it. Without an open review order, the newest claim of the job
-// supersedes it when that claim decodes. With one, the claim must also name
-// no other open review order of the task, have an unambiguous lease key, and
-// either hold no lease after now or not be the job's earliest claim with a
-// lease after now. The newest claim carries dropped, the number left out,
-// and dropped_implement, how many of those may name the implement stage; the
-// earliest future claim carries future_dropped, how many claims with a
-// later future lease were left out. The caller decodes those claims and
-// reads the page again with KeepAllClaims when they do not supersede them
+// Claims: an older claim of a task without an open review order is left out
+// when its job ID is not empty; the newest claim of the job supersedes it
+// when that claim decodes. On a task with an open review order, an older
+// claim is left out only when its payload cannot name an open review order
+// of another job of its task, no open review order of the task has an ID
+// outside the safe alphabet, and its lease is provably past
+// (markerPastLease); a future, same-second, uncertain, or missing lease
+// keeps the claim. The newest claim carries dropped, the number left out,
+// and dropped_implement, how many of those may name the implement stage. No
+// claim with a lease that can be future is left out, so future_dropped is
+// always 0. The caller decodes the newest claims and reads the chunk again
+// with KeepAllClaims when they do not supersede the claims left out
 // (store.MarkerClaimBackfill).
 //
-// The result columns are id, task_id, job_id, kind, event_payload, event_at,
-// dropped, dropped_implement, and future_dropped, ordered by event_at and id.
+// The result columns are id, task_id, job_id, kind, event_payload (the
+// compact payload), event_at, dropped, dropped_implement, and
+// future_dropped, in no particular order.
 func markerFoldQuery(in store.MarkerFoldInput) (string, []any) {
 	b := &markerBinder{}
-	const carry = "id,task_id,job_id,kind,event_payload,event_at,k_text,k_lower"
-	const counted = `counted_claims AS (
-			SELECT ` + carry + `,claim_rank,reducible,horizon_claim,
-				SUM(CASE WHEN claim_rank>1 AND reducible=1 THEN 1 ELSE 0 END) OVER (PARTITION BY task_id,job_id) AS dropped,
-				SUM(CASE WHEN claim_rank>1 AND reducible=1 AND maybe_implement=1 THEN 1 ELSE 0 END) OVER (PARTITION BY task_id,job_id) AS dropped_implement,
-				SUM(CASE WHEN claim_rank>1 AND reducible=1 AND future_lease=1 THEN 1 ELSE 0 END) OVER (PARTITION BY task_id,job_id) AS future_dropped
-			FROM ranked_claims
-		)`
-	const keptClaims = `SELECT ` + carry + `,
-				CASE WHEN claim_rank=1 THEN dropped ELSE 0 END,CASE WHEN claim_rank=1 THEN dropped_implement ELSE 0 END,
-				CASE WHEN horizon_claim=1 THEN future_dropped ELSE 0 END
-			FROM counted_claims WHERE claim_rank=1 OR reducible=0`
-	var query string
-	if len(in.LiveReviewTasks) == 0 {
-		// Without an open review order no fold reads a lease: no renewal is
-		// selected, and every selected claim may name the implement stage,
-		// so only the newest claim of each job can matter while it decodes.
-		query = `WITH ` + markerRowsSQL(b, in) + `,
-		ranked_claims AS (
-			SELECT ` + carry + `,
-				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY event_at DESC,id DESC) AS claim_rank,
-				` + markerReducibleOrNone(in, "CASE WHEN job_id<>'' THEN 1 ELSE 0 END") + ` AS reducible,
-				1 AS maybe_implement,0 AS future_lease,0 AS horizon_claim
-			FROM marker_rows WHERE kind='work_order.claimed'
-		),
-		` + counted + `,
-		kept AS (
-			SELECT ` + carry + `,0 AS dropped,0 AS dropped_implement,0 AS future_dropped FROM marker_rows
-			WHERE kind<>'work_order.claimed'
-			UNION ALL
-			` + keptClaims + `
-		)
-`
-	} else {
-		// One lease decoder serves renewals and claims. Only the simple
-		// renewal payload the store writes is eligible for the renewal
-		// reduction; other renewal shapes keep their complete history. Go
-		// decodes a claim's lease only when the whole work order decodes, so
-		// an invalid lease, a missing one, or the zero time never lowers the
-		// horizon, and lease_ok=1 is exactly Go's non-zero decode.
-		const attemptField = `"attempt_id"[[:space:]]*:[[:space:]]*"[^"]*"`
-		const leaseField = `"lease_expires_at"[[:space:]]*:[[:space:]]*"[0-9T:Z+.,-]+"`
-		const comma = `[[:space:]]*,[[:space:]]*`
-		const renewalShape = `^[[:space:]]*[{][[:space:]]*(` + attemptField + comma + leaseField + `|` + leaseField + `(` + comma + attemptField + `){0,1})[[:space:]]*[}][[:space:]]*$`
-		leaseString := markerIsString(markerField("event_payload", "lease_expires_at"))
-		instants := markerLeaseInstantSQL(`SELECT `+carry+`,
-			`+markerFieldText("event_payload", "lease_expires_at")+` AS lease_text,
-			CASE WHEN kind='work_order.claimed' AND `+leaseString+` THEN 1
-				WHEN kind='work_order.lease_renewed' AND `+markerText("event_payload")+` `+markerRegexOp+` '`+renewalShape+`' AND `+leaseString+` THEN 1
-				ELSE 0 END AS lease_string
-			FROM marker_rows WHERE kind IN ('work_order.lease_renewed','work_order.claimed')`, carry)
-		const future = `(lease_sec>now_sec OR (lease_sec=now_sec AND lease_nanos>now_nanos))`
-		query = `WITH ` + markerRowsSQL(b, in) + `,
-		marker_clock AS (SELECT ` + markerInt(b.bind(in.Now.Unix())) + ` AS now_sec,` + markerInt(b.bind(int64(in.Now.Nanosecond()))) + ` AS now_nanos),
-		lease_instants AS (SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,now_sec,now_nanos FROM (` + instants + `) decoded CROSS JOIN marker_clock),
-		ranked_renewals AS (
-			SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,now_sec,now_nanos,
-				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY lease_ok DESC,event_at DESC,id DESC) AS latest_rank,
-				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY
-					CASE WHEN lease_ok=1 AND ` + future + ` THEN 0 ELSE 1 END,
-					lease_sec,lease_nanos,event_at,id) AS horizon_rank
-			FROM lease_instants WHERE kind='work_order.lease_renewed'
-		),
-		claim_facts AS (
-			SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,
-				CASE WHEN lease_ok=1 AND ` + future + ` THEN 1 ELSE 0 END AS future_lease,
-				CASE WHEN COALESCE(` + markerKeyUnambiguous("lease_expires_at") + `,1=0) THEN 1 ELSE 0 END AS lease_key
-			FROM lease_instants WHERE kind='work_order.claimed'
-		),
-		ordered_claims AS (
-			SELECT ` + carry + `,lease_ok,future_lease,lease_key,
-				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY event_at DESC,id DESC) AS claim_rank,
-				ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY
-					CASE WHEN future_lease=1 AND lease_key=1 THEN 0 ELSE 1 END,
-					lease_sec,lease_nanos,event_at,id) AS claim_horizon_rank
-			FROM claim_facts
-		),
-		ranked_claims AS (
-			SELECT ` + carry + `,claim_rank,future_lease,
-				` + markerLiveReducible(b, in) + ` AS reducible,
-				CASE WHEN ` + markerMayEqual("stage", string(core.StageImplement)) + ` THEN 1 ELSE 0 END AS maybe_implement,
-				CASE WHEN claim_horizon_rank=1 AND future_lease=1 AND lease_key=1 THEN 1 ELSE 0 END AS horizon_claim
-			FROM ordered_claims
-		),
-		` + counted + `,
-		kept AS (
+	const carry = "id,task_id,job_id,kind,event_payload,event_at"
+	live := len(in.LiveReviewTasks) > 0
+	rows := markerRowsSQL(b, in, live)
+	if !live {
+		if in.KeepAllClaims {
+			return b.finish(`SELECT ` + carry + `,0 AS dropped,0 AS dropped_implement,0 AS future_dropped FROM (` + rows + `) marker_rows`)
+		}
+		// Without an open review order every selected claim may name the
+		// implement stage, and only the newest claim of each job can matter
+		// while it decodes. The job ID is in the partition, so a claim
+		// partition with a job ID leaves out every claim but its newest.
+		return b.finish(`SELECT ` + carry + `,
+				CASE WHEN kind='work_order.claimed' AND job_id<>'' THEN claim_count-1 ELSE 0 END AS dropped,
+				CASE WHEN kind='work_order.claimed' AND job_id<>'' THEN claim_count-1 ELSE 0 END AS dropped_implement,0 AS future_dropped
+			FROM (SELECT ` + carry + `,
+					ROW_NUMBER() OVER (PARTITION BY task_id,job_id,kind ORDER BY event_at DESC,id DESC) AS claim_rank,
+					COUNT(*) OVER (PARTITION BY task_id,job_id,kind) AS claim_count
+				FROM (` + rows + `) marker_rows) ranked
+			WHERE kind<>'work_order.claimed' OR job_id='' OR claim_rank=1`)
+	}
+	// Only the simple renewal payload the store writes is eligible for the
+	// renewal reduction; other renewal shapes keep their complete history.
+	const attemptField = `"attempt_id"[[:space:]]*:[[:space:]]*"[^"]*"`
+	const leaseField = `"lease_expires_at"[[:space:]]*:[[:space:]]*"[0-9T:Z+.,-]+"`
+	const comma = `[[:space:]]*,[[:space:]]*`
+	const renewalShape = `^[[:space:]]*[{][[:space:]]*(` + attemptField + comma + leaseField + `|` + leaseField + `(` + comma + attemptField + `){0,1})[[:space:]]*[}][[:space:]]*$`
+	instants := markerLeaseInstantSQL(`SELECT `+carry+`,
+				JSON_EXTRACT_STRING(event_payload,'lease_expires_at') AS lease_text,
+				CASE WHEN event_payload `+markerRegexOp+` '`+renewalShape+`'
+					AND COALESCE(JSON_GET_TYPE(JSON_EXTRACT_JSON(event_payload,'lease_expires_at')),'')='string'
+					THEN 1 ELSE 0 END AS lease_string
+				FROM marker_rows WHERE kind='work_order.lease_renewed'`, carry)
+	const future = `(lease_sec>now_sec OR (lease_sec=now_sec AND lease_nanos>now_nanos))`
+	query := `WITH marker_rows AS (` + rows + `),
+			marker_clock AS (SELECT CAST(` + b.bind(in.Now.Unix()) + ` AS SIGNED) AS now_sec,CAST(` + b.bind(int64(in.Now.Nanosecond())) + ` AS SIGNED) AS now_nanos),
+			renewal_instants AS (` + instants + `),
+			ranked_renewals AS (
+				SELECT ` + carry + `,lease_ok,lease_sec,lease_nanos,now_sec,now_nanos,
+					ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY lease_ok DESC,event_at DESC,id DESC) AS latest_rank,
+					ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY
+						CASE WHEN lease_ok=1 AND ` + future + ` THEN 0 ELSE 1 END,
+						lease_sec,lease_nanos,event_at,id) AS horizon_rank
+				FROM renewal_instants CROSS JOIN marker_clock
+			)`
+	const kept = `
 			SELECT ` + carry + `,0 AS dropped,0 AS dropped_implement,0 AS future_dropped FROM marker_rows
 			WHERE kind NOT IN ('work_order.lease_renewed','work_order.claimed')
 			UNION ALL
 			SELECT ` + carry + `,0,0,0 FROM ranked_renewals
 			WHERE lease_ok=0 OR latest_rank=1 OR (horizon_rank=1 AND ` + future + `)
-			UNION ALL
-			` + keptClaims + `
-		)
-`
-	}
-	query += `		SELECT id,task_id,job_id,kind,` + markerProjectedPayload() + ` AS event_payload,event_at,dropped,dropped_implement,future_dropped
-		FROM kept ORDER BY event_at,id`
-	return b.finish(query)
-}
-
-// markerReducibleOrNone is the claim reduction rule, or no reduction when the
-// read must keep every claim: a read-back after store.MarkerClaimBackfill
-// reruns the whole page in one statement, so every fold input comes from one
-// snapshot.
-func markerReducibleOrNone(in store.MarkerFoldInput, rule string) string {
+			UNION ALL`
 	if in.KeepAllClaims {
-		return "0"
+		return b.finish(query + kept + `
+			SELECT ` + carry + `,0,0,0 FROM marker_rows WHERE kind='work_order.claimed'`)
 	}
-	return rule
+	return b.finish(query + `,
+			named_claims AS (
+				SELECT DISTINCT e.id AS named_id
+				FROM events_columnstore e JOIN (
+					SELECT JSON_EXTRACT_STRING(table_col,'task_id') AS order_task,JSON_EXTRACT_STRING(table_col,'job_id') AS order_job,
+						CONCAT('"',JSON_EXTRACT_STRING(table_col,'id'),'"') AS order_needle,JSON_EXTRACT_BIGINT(table_col,'safe') AS order_safe
+					FROM TABLE(JSON_TO_ARRAY(` + b.bind(markerOpenOrders(in.OpenReviewOrders)) + `))) o ON e.task_id=o.order_task
+				WHERE e.workspace_id=` + b.bind(in.Workspace) + ` AND e.kind='work_order.claimed'
+				AND (o.order_safe<>1 OR (COALESCE(e.job_id,'')<>o.order_job AND INSTR(e.payload_json,o.order_needle)>0))
+			),
+			claim_facts AS (
+				SELECT ` + carry + `,
+					CASE WHEN job_id<>'' AND (live_task=0 OR (named_id IS NULL AND ` + markerPastLease(b, b.bind(in.Now.UTC().Format("2006-01-02T15:04:05"))) + `)) THEN 1 ELSE 0 END AS reducible,
+					CASE WHEN ` + markerMayName("event_payload", string(core.StageImplement)) + ` THEN 1 ELSE 0 END AS maybe_implement
+				FROM marker_rows LEFT JOIN named_claims ON named_id=id WHERE kind='work_order.claimed'
+			),
+			claim_counts AS (
+				SELECT ` + carry + `,reducible,maybe_implement,
+					ROW_NUMBER() OVER (PARTITION BY task_id,job_id ORDER BY event_at DESC,id DESC) AS claim_rank,
+					SUM(reducible) OVER (PARTITION BY task_id,job_id) AS reducible_total,
+					SUM(reducible*maybe_implement) OVER (PARTITION BY task_id,job_id) AS implement_total
+				FROM claim_facts
+			)` + kept + `
+			SELECT ` + carry + `,CASE WHEN claim_rank=1 THEN reducible_total-reducible ELSE 0 END,
+				CASE WHEN claim_rank=1 THEN implement_total-reducible*maybe_implement ELSE 0 END,0
+			FROM claim_counts WHERE claim_rank=1 OR reducible=0`)
 }
 
-// markerLiveReducible is the claim reduction rule of a page with an open
-// review order: an older claim of a job is left out only when it names no
-// other open review order, its lease key is unambiguous, and it holds no
-// lease after now or is not the job's earliest future claim.
-func markerLiveReducible(b *markerBinder, in store.MarkerFoldInput) string {
-	if in.KeepAllClaims {
-		return "0"
-	}
-	return `CASE WHEN job_id<>'' AND (NOT (` + b.in("task_id", in.LiveReviewTasks) + `) OR (` + markerIdentitySafe(b, in) + ` AND lease_key=1
-					AND (future_lease=0 OR claim_horizon_rank>1)))
-					THEN 1 ELSE 0 END`
-}
-
-// markerIdentitySafe is true for a claim whose payload names no open review
-// order of its task other than the one its job runs: Go matches a lifecycle
-// event to an order by job ID or by a payload id or review_work_order_id
-// string equal to the order ID, and a JSON string equal to an ID made of
-// markerSafeOrderID characters appears in the text as the quoted ID. A task
-// with an order outside that alphabet keeps every claim.
-func markerIdentitySafe(b *markerBinder, in store.MarkerFoldInput) string {
-	var unsafeTasks []string
-	var terms []string
-	for _, order := range in.OpenReviewOrders {
-		if !store.MarkerSafeOrderID(order.ID) {
-			unsafeTasks = append(unsafeTasks, order.TaskID)
+// markerFoldEvents turns the rows of one chunk into fold inputs. The claim
+// read-back has already run on the compact claims. Go then leaves out each
+// bounce and update the folds cannot act on, using the folds' own decoders
+// (store.MarkerEventFoldable), and sends each other payload as its fold keys
+// where a top-level key scan proves Go decodes them the same
+// (markerProjectPayload). Claims keep their whole compact payload.
+func markerFoldEvents(rows []store.MarkerFoldRow) []core.Event {
+	out := make([]core.Event, 0, len(rows))
+	for _, row := range rows {
+		event := row.Event
+		if !store.MarkerEventFoldable(event) {
 			continue
 		}
-		quoted, _ := json.Marshal(order.ID)
-		terms = append(terms, fmt.Sprintf("(task_id=%s AND job_id<>%s AND %s)",
-			b.bind(order.TaskID), b.bind(order.JobID), markerContains(markerText("event_payload"), b.bind(string(quoted)))))
+		event.Payload = markerProjectPayload(event.Kind, event.Payload)
+		out = append(out, event)
 	}
-	safe := "1=1"
-	if len(terms) > 0 {
-		safe = "NOT (" + strings.Join(terms, " OR ") + ")"
-	}
-	if len(unsafeTasks) > 0 {
-		safe += " AND NOT (" + b.in("task_id", unsafeTasks) + ")"
-	}
-	return "(" + safe + ")"
+	return out
 }

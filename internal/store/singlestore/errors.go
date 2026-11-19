@@ -39,6 +39,17 @@ const duplicateEntryError uint16 = 1062
 // omittedDriverMessage replaces every server message the log does not admit.
 const omittedDriverMessage = "server message omitted"
 
+// compilationTimeoutError is the server's error number when compiling a
+// query reaches max_compilation_time_s and the query does not run
+// (ER_COMPILATION_TIMEOUT).
+const compilationTimeoutError uint16 = 2408
+
+// compilationTimeoutMessage is the whole log message for error 2408. The
+// server's own text can quote the statement and its interpolated values, so
+// the log names the condition with this constant instead
+// (component-persistence invariants 11 to 13).
+const compilationTimeoutMessage = "query compilation timed out"
+
 // fixedDriverMessages lists, per error number, the only messages the log admits
 // verbatim, each compared whole. Number 0 holds the driver's own sentinel text,
 // which never comes from the server. Client-side interpolation puts bound values
@@ -134,8 +145,12 @@ func logDriverError(number uint16, state, message string) {
 }
 
 // admittedDriverMessage rebuilds a duplicate-key message around its key name,
-// keeps a message on its number's fixed list, and omits every other message.
+// names a compilation timeout with a fixed phrase, keeps a message on its
+// number's fixed list, and omits every other message.
 func admittedDriverMessage(number uint16, message string) string {
+	if number == compilationTimeoutError {
+		return compilationTimeoutMessage
+	}
 	if number == duplicateEntryError {
 		if name, ok := duplicateKeyName(message); ok {
 			return "Duplicate entry [value omitted] for key '" + name + "'"

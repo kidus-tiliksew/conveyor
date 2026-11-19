@@ -281,6 +281,40 @@ func horizonCases() []horizonCase {
 			return []core.Event{h.claim(0, 1, h.at(3*time.Hour)), h.renew(0, 2, lease), h.renew(0, 3, "")}
 		}})
 	}
+	// The claim fast path: a backend may leave out an older claim of an open
+	// order only when its lease is provably past. Each case gives one order
+	// several claims, so the older ones are reduction candidates, and the
+	// newest claim's lease is far in the future.
+	newest := func(h *horizonSeed, second int) core.Event { return h.claim(0, second, h.at(2*time.Hour)) }
+	cases = append(cases,
+		horizonCase{name: "claim fast path: past claims leave out", orders: oneOpen, horizon: offset(2 * time.Hour), events: func(h *horizonSeed) []core.Event {
+			return []core.Event{h.claim(0, 1, h.at(-2*time.Hour)), h.claim(0, 2, h.at(-time.Hour)), newest(h, 3)}
+		}},
+		horizonCase{name: "claim fast path: same-second lease is kept", orders: oneOpen, horizon: offset(2 * time.Hour), events: func(h *horizonSeed) []core.Event {
+			sameSecond := quoteJSON(h.now.Truncate(time.Second).Format("2006-01-02T15:04:05") + ".000000001Z")
+			return []core.Event{h.claim(0, 1, sameSecond), h.claim(0, 2, h.at(-time.Hour)), newest(h, 3)}
+		}},
+		horizonCase{name: "claim fast path: offset lease after now is kept", orders: oneOpen, horizon: offset(30 * time.Minute), events: func(h *horizonSeed) []core.Event {
+			return []core.Event{h.claim(0, 1, h.zone(30*time.Minute, -10*3600)), h.claim(0, 2, h.at(-time.Hour)), newest(h, 3)}
+		}},
+		// Which of the two keys Go keeps depends on the order a backend
+		// stores them in, so the case sets no horizon of its own; the read
+		// must still equal the Go fold over the stored payload.
+		horizonCase{name: "claim fast path: case-variant lease key hides a future lease", orders: oneOpen, events: func(h *horizonSeed) []core.Event {
+			hidden := h.event(0, "work_order.claimed", 1, fmt.Sprintf(`"id":%q`, h.orders[0].ID), `"stage":"review"`, `"state":"claimed"`,
+				`"lease_expires_at":`+h.at(-time.Hour), `"LEASE_EXPIRES_AT":`+h.at(30*time.Minute))
+			return []core.Event{hidden, h.claim(0, 2, h.at(-time.Hour)), newest(h, 3)}
+		}},
+		horizonCase{name: "claim fast path: escaped identity of another open order is kept", orders: []horizonOrder{{state: core.WorkOrderClaimed}, {state: core.WorkOrderClaimed, separateJob: true}}, events: func(h *horizonSeed) []core.Event {
+			// The older claim of order 0's job names order 1 through an
+			// escaped review_work_order_id, so the review folds read it for
+			// order 1 even though its lease is past.
+			escaped := strings.ReplaceAll(quoteJSON(h.orders[1].ID), "-", `\u002d`)
+			named := h.event(0, "work_order.claimed", 1, fmt.Sprintf(`"id":%q`, h.orders[0].ID), `"review_work_order_id":`+escaped, `"stage":"review"`, `"state":"claimed"`,
+				`"lease_expires_at":`+h.at(-time.Hour))
+			return []core.Event{named, h.claim(0, 2, h.at(-30*time.Minute)), newest(h, 3)}
+		}},
+	)
 	return cases
 }
 
