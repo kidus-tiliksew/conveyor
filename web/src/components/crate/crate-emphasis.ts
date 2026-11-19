@@ -7,23 +7,58 @@ import { useCallback, useState } from 'react'
 // counts sets a group instead, and the branch map emphasizes the lines of the
 // group's served task IDs (AC-2.4). A part added to the page takes the same
 // object, so the page keeps one emphasized task or group.
+//
+// The state holds two targets apart: what the pointer rests on and what holds
+// keyboard focus. The page shows the pointer's target when there is one and
+// the focused target otherwise, so leaving a row, a line, or a count gives the
+// emphasis back to a line or count that still has focus (AC-2.5).
+export type EmphasisTarget = { task: string } | { group: string }
+
 export interface CrateEmphasis {
+  // The shown task and group. At most one of them is set.
   emphasizedId: string | null
-  emphasize: (id: string | null) => void
-  // The key of the pointed-at whereabouts group, or null. The branch map
-  // names each group by its kind and its branch.
   emphasizedGroup: string | null
+  // Set or clear the pointer's target: a task, or a group by its key.
+  // Clearing leaves the focused target in place.
+  emphasize: (id: string | null) => void
   emphasizeGroup: (key: string | null) => void
+  // Set the focused target, or clear it when `target` still holds focus.
+  focus: (target: EmphasisTarget) => void
+  blur: (target: EmphasisTarget) => void
 }
 
-type Target = { id: string | null; group: string | null }
+type Targets = { pointer: EmphasisTarget | null; focus: EmphasisTarget | null }
+
+function same(a: EmphasisTarget | null, b: EmphasisTarget) {
+  if (a === null) return false
+  return 'task' in a ? 'task' in b && a.task === b.task : 'group' in b && a.group === b.group
+}
 
 // The page holds this state once. It starts empty for each crate, because
-// the page is keyed by the crate's ID. A task and a group never hold
-// together: setting one clears the other.
+// the page is keyed by the crate's ID.
 export function useCrateEmphasis(): CrateEmphasis {
-  const [target, setTarget] = useState<Target>({ id: null, group: null })
-  const emphasize = useCallback((id: string | null) => setTarget({ id, group: null }), [])
-  const emphasizeGroup = useCallback((group: string | null) => setTarget({ id: null, group }), [])
-  return { emphasizedId: target.id, emphasize, emphasizedGroup: target.group, emphasizeGroup }
+  const [targets, setTargets] = useState<Targets>({ pointer: null, focus: null })
+  const emphasize = useCallback(
+    (id: string | null) => setTargets((current) => ({ ...current, pointer: id === null ? null : { task: id } })),
+    [],
+  )
+  const emphasizeGroup = useCallback(
+    (key: string | null) => setTargets((current) => ({ ...current, pointer: key === null ? null : { group: key } })),
+    [],
+  )
+  const focus = useCallback((target: EmphasisTarget) => setTargets((current) => ({ ...current, focus: target })), [])
+  const blur = useCallback(
+    (target: EmphasisTarget) =>
+      setTargets((current) => (same(current.focus, target) ? { ...current, focus: null } : current)),
+    [],
+  )
+  const shown = targets.pointer ?? targets.focus
+  return {
+    emphasizedId: shown && 'task' in shown ? shown.task : null,
+    emphasizedGroup: shown && 'group' in shown ? shown.group : null,
+    emphasize,
+    emphasizeGroup,
+    focus,
+    blur,
+  }
 }

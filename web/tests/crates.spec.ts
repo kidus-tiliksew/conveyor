@@ -1523,6 +1523,18 @@ const deliveryInsight: CrateInsight = {
   forecast_days_before_target: 5,
 }
 
+// The line crate with two rounds that asked for changes on the merged task,
+// one hour after its creation and one hour before its merge. On both map
+// widths each falls inside a bend of the line.
+const bendInsight: CrateInsight = {
+  ...deliveryInsight,
+  tasks: deliveryInsight.tasks.map((task) =>
+    task.id === '261115-a01'
+      ? { ...task, changes_requested_at: ['2026-11-10T10:00:00Z', '2026-11-13T08:00:00Z'], review_rounds: 3 }
+      : task,
+  ),
+}
+
 // The x where a line leaves its lane: the first point of its drawn path.
 async function lineStart(page: Page, id: string) {
   const d = await page.locator(`[data-branch-task="${id}"] path`).first().getAttribute('d')
@@ -1709,6 +1721,85 @@ for (const viewport of [
       await map.locator('[data-branch-task="261115-c11"]').focus()
       await page.keyboard.press('Enter')
       await expect(page).toHaveURL(/\/w\/demo\/tasks\/261115-c11$/)
+    })
+
+    // AC-2.3: a round that asked for changes close to the task's creation or
+    // its merge sits inside a bend. Its mark keeps the served x and sits on
+    // the drawn line there, not at the row's height beside the bend.
+    test('a change-request mark near a bend sits on its line at the served time', async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      await serveCrates(page, { insights: { [lineCrate.id]: bendInsight } })
+      await page.goto('/w/demo/crates/crate-line')
+      const map = page.getByRole('region', { name: 'Where the work is' })
+      const merged = map.locator('[data-branch-task="261115-a01"]')
+      await expect(merged.locator('[data-change-mark]')).toHaveCount(2)
+      // Every mark on the map meets its own drawn line.
+      const marks = await map.locator('[data-branch-task]').evaluateAll((lines) =>
+        lines.flatMap((line) => {
+          const path = line.querySelector<SVGPathElement>('[data-line-path]')
+          if (!path) return []
+          const d = path.getAttribute('d') ?? ''
+          const lane = Number(d.match(/^M[-\d.]+,([-\d.]+)/)?.[1])
+          const row = Number(d.match(/ L[-\d.]+,([-\d.]+)/)?.[1])
+          return Array.from(line.querySelectorAll<SVGCircleElement>('[data-change-mark]')).map((mark) => {
+            const x = Number(mark.getAttribute('cx'))
+            const y = Number(mark.getAttribute('cy'))
+            return {
+              id: line.getAttribute('data-branch-task'),
+              onLine: path.isPointInStroke(new DOMPoint(x, y)),
+              x,
+              y,
+              lane,
+              row,
+            }
+          })
+        }),
+      )
+      expect(marks).toHaveLength(3)
+      for (const mark of marks) expect(mark, `the mark of ${mark.id} at x ${mark.x}`).toMatchObject({ onLine: true })
+      // The two marks of the merged task sit inside its bends: below the lane
+      // and above the row, so a mark at the row's height would miss the line.
+      const bent = marks.filter((mark) => mark.id === '261115-a01').sort((a, b) => a.x - b.x)
+      for (const mark of bent) {
+        expect(mark.y).toBeGreaterThan(mark.lane)
+        expect(mark.y).toBeLessThan(mark.row)
+      }
+      // The served times keep their order on the axis: one after creation,
+      // one before the merge mark.
+      const mergeX = Number(await merged.locator('[data-merge-mark]').getAttribute('cx'))
+      expect(bent[0].x).toBeGreaterThan(await lineStart(page, '261115-a01'))
+      expect(bent[1].x).toBeLessThan(mergeX)
+    })
+
+    // AC-2.5: pointing at another task row and moving off it gives the card
+    // and the row mark back to the map line that still has focus.
+    test('a focused line keeps its card and row mark after the pointer leaves another task row', async ({ page }) => {
+      await serveCrates(page, { insights: { [lineCrate.id]: deliveryInsight } })
+      await page.goto('/w/demo/crates/crate-line')
+      const map = page.getByRole('region', { name: 'Where the work is' })
+      const focused = map.locator('[data-branch-task="261115-b02"]')
+      await focused.focus()
+      await expect(map.locator('[data-branch-card="261115-b02"]')).toBeVisible()
+      await expect(page.locator('[data-crate-task="261115-b02"]')).toHaveAttribute('data-emphasized', 'true')
+
+      // The pointer rests on another row: that task takes the emphasis.
+      await page.locator('[data-crate-task="261115-c11"]').hover()
+      await expect(page.locator('[data-crate-task="261115-c11"]')).toHaveAttribute('data-emphasized', 'true')
+      await expect(map.locator('[data-branch-card="261115-c11"]')).toBeVisible()
+
+      // The pointer moves off the row without a click.
+      await page.mouse.move(0, 0)
+      await expect(focused).toBeFocused()
+      await expect(map.locator('[data-branch-card="261115-b02"]')).toBeVisible()
+      await expect(map.locator('[data-branch-card]')).toHaveCount(1)
+      await expect(page.locator('[data-crate-task="261115-b02"]')).toHaveAttribute('data-emphasized', 'true')
+      await expect(page.locator('[data-crate-task="261115-c11"]')).not.toHaveAttribute('data-emphasized', 'true')
+      await expect(focused).toHaveAttribute('data-map-emphasized', 'true')
+
+      // When the line loses focus, nothing stays emphasized.
+      await focused.blur()
+      await expect(map.locator('[data-branch-card]')).toHaveCount(0)
+      await expect(page.locator('[data-emphasized]')).toHaveCount(0)
     })
 
     test('clicking a line opens task detail', async ({ page }) => {

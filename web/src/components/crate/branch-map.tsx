@@ -15,7 +15,7 @@ import { useMediaQuery } from '../../lib/use-media-query'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
 import { Skeleton } from '../ui/skeleton'
-import type { CrateEmphasis } from './crate-emphasis'
+import type { CrateEmphasis, EmphasisTarget } from './crate-emphasis'
 import { phaseMeta } from './line-model'
 
 const DAY = 86_400_000
@@ -31,19 +31,64 @@ const CARD_ROOM = 64
 // The order in which a lane's open lines take rows, nearest the merge first.
 const OPEN_ORDER = ['gate', 'review', 'build', 'plan', 'intake', 'crate', 'aside']
 
-interface Spur {
-  task: CrateInsightTask
-  row: CrateTask | undefined
-  // The x of the task's creation and of its line's end, and the lane's y and
-  // the line's own y.
+// One task line's shape: it leaves the lane (y0) at xs, bends down to its
+// own row (y1) over `bend` px, runs along the row, and for a merged task bends
+// back up to the lane at xe. The path and the marks on it both come from this
+// one shape.
+interface LineShape {
   xs: number
   xe: number
   y0: number
   y1: number
+  bend: number
+  returns: boolean
+}
+
+interface Spur extends LineShape {
+  task: CrateInsightTask
+  row: CrateTask | undefined
   ends: 'merged' | 'closed' | 'open'
   notStarted: boolean
   path: string
-  changes: number[]
+  // Each change-request mark: its served x and the line's y there.
+  changes: Array<{ x: number; y: number }>
+}
+
+// A bend is the cubic curve from (x0, ya) to (x0 + bend, yb) whose control
+// points sit at 0.7 and 0.3 of the bend on the start and end heights. Its x
+// and y, as shares of the bend, at curve parameter t:
+const bendX = (t: number) => 3 * (1 - t) ** 2 * t * 0.7 + 3 * (1 - t) * t ** 2 * 0.3 + t ** 3
+const bendY = (t: number) => 3 * (1 - t) * t ** 2 + t ** 3
+
+export function linePath(shape: LineShape) {
+  const { xs, xe, y0, y1, bend } = shape
+  const out = `M${xs},${y0} C${xs + bend * 0.7},${y0} ${xs + bend * 0.3},${y1} ${xs + bend},${y1}`
+  return shape.returns
+    ? `${out} L${xe - bend},${y1} C${xe - bend * 0.3},${y1} ${xe - bend * 0.7},${y0} ${xe},${y0}`
+    : `${out} L${xe},${y1}`
+}
+
+// The y of the line at x, on the same curves linePath draws. A bend's x
+// grows with t, so t is found by bisection.
+export function lineYAt(shape: LineShape, x: number) {
+  const { xs, xe, y0, y1, bend, returns } = shape
+  const onBend = (from: number, ya: number, yb: number) => {
+    const target = (x - from) / bend
+    let low = 0
+    let high = 1
+    for (let step = 0; step < 32; step += 1) {
+      const mid = (low + high) / 2
+      if (bendX(mid) < target) low = mid
+      else high = mid
+    }
+    return ya + (yb - ya) * bendY((low + high) / 2)
+  }
+  if (bend <= 0) return x <= xs ? y0 : y1
+  if (x <= xs) return y0
+  if (x < xs + bend) return onBend(xs, y0, y1)
+  if (returns && x >= xe) return y0
+  if (returns && x > xe - bend) return onBend(xe - bend, y1, y0)
+  return y1
 }
 
 // A served time in milliseconds, or null when it is absent or unreadable.
@@ -135,11 +180,6 @@ export function BranchMap({
   return <BranchMapChart crate={crate} insight={insight} emphasis={emphasis} onSelect={onSelect} />
 }
 
-// What the pointer rests on and what holds keyboard focus. When one of them
-// leaves, the emphasis goes back to the other, so a line that still has
-// focus keeps its emphasis after the pointer moves away.
-type Target = { task: string } | { group: string } | null
-
 function BranchMapChart({
   crate,
   insight,
@@ -204,24 +244,26 @@ function BranchMapChart({
         if (row < 0) row = rowEnds.length
         rowEnds[row] = ends === 'open' ? Number.POSITIVE_INFINITY : xe
         const y1 = laneY + LANE_HEAD + row * ROW
-        const bend = Math.min(16, (xe - xs) / 2)
-        const out = `M${xs},${laneY} C${xs + bend * 0.7},${laneY} ${xs + bend * 0.3},${y1} ${xs + bend},${y1}`
-        const path =
-          ends === 'merged'
-            ? `${out} L${xe - bend},${y1} C${xe - bend * 0.3},${y1} ${xe - bend * 0.7},${laneY} ${xe},${laneY}`
-            : `${out} L${xe},${y1}`
-        // Each round that asked for changes, at its served time (AC-2.3).
-        const changes = task.changes_requested_at.map(served).flatMap((time) => (time === null ? [] : [x(time)]))
-        spurs.push({
-          task,
-          row: rows.get(task.id),
+        const shape: LineShape = {
           xs,
           xe,
           y0: laneY,
           y1,
+          bend: Math.min(16, (xe - xs) / 2),
+          returns: ends === 'merged',
+        }
+        // Each round that asked for changes, at its served time and on the
+        // line there, also inside a bend (AC-2.3).
+        const changes = task.changes_requested_at
+          .map(served)
+          .flatMap((time) => (time === null ? [] : [{ x: x(time), y: lineYAt(shape, x(time)) }]))
+        spurs.push({
+          ...shape,
+          task,
+          row: rows.get(task.id),
           ends,
           notStarted: ends === 'open' && task.station === 'intake',
-          path,
+          path: linePath(shape),
           changes,
         })
       }
@@ -252,32 +294,14 @@ function BranchMapChart({
 
   // A line with keyboard focus draws a ring, so focus stays visible.
   const [focusedId, setFocusedId] = useState<string | null>(null)
-  const hovered = useRef<Target>(null)
-  const focused = useRef<Target>(null)
-  const apply = (target: Target) => {
-    if (target && 'task' in target) emphasis.emphasize(target.task)
-    else if (target && 'group' in target) emphasis.emphasizeGroup(target.group)
-    else emphasis.emphasize(null)
-  }
-  const holds = (target: Target) =>
-    target !== null &&
-    ('task' in target ? emphasis.emphasizedId === target.task : emphasis.emphasizedGroup === target.group)
-  const enter = (target: Target) => {
-    hovered.current = target
-    apply(target)
-  }
-  const leave = (target: Target) => {
-    hovered.current = null
-    if (holds(target)) apply(focused.current)
-  }
-  const focus = (target: Target) => {
-    focused.current = target
-    apply(target)
-  }
-  const blur = (target: Target) => {
-    focused.current = null
-    if (holds(target)) apply(hovered.current)
-  }
+  // The pointer and focus targets stay apart in the shared emphasis, so
+  // leaving a line or count clears only the pointer's target and a line or
+  // count that still has focus keeps its emphasis (AC-2.5).
+  const enter = (target: EmphasisTarget) =>
+    'task' in target ? emphasis.emphasize(target.task) : emphasis.emphasizeGroup(target.group)
+  const leave = () => emphasis.emphasize(null)
+  const focus = (target: EmphasisTarget) => emphasis.focus(target)
+  const blur = (target: EmphasisTarget) => emphasis.blur(target)
 
   const cardBelow = shown ? shown.y1 + 12 + CARD_ROOM <= model.height : true
   // Below 680 px the map scrolls sideways, so a line that takes keyboard
@@ -307,7 +331,7 @@ function BranchMapChart({
                   data-whereabouts-branch={item.branch ?? undefined}
                   aria-pressed={emphasis.emphasizedGroup === key}
                   onMouseEnter={() => enter(target)}
-                  onMouseLeave={() => leave(target)}
+                  onMouseLeave={leave}
                   onFocus={() => focus(target)}
                   onBlur={() => blur(target)}
                   className={cn(
@@ -439,7 +463,7 @@ function BranchMapChart({
                 opacity={on ? 1 : 0.22}
                 className="cursor-pointer outline-none transition-opacity"
                 onMouseEnter={() => enter(target)}
-                onMouseLeave={() => leave(target)}
+                onMouseLeave={leave}
                 onFocus={(event) => {
                   // Only keyboard focus draws the ring and scrolls the card
                   // into view. A click must not move the line under the
@@ -476,6 +500,7 @@ function BranchMapChart({
                   />
                 )}
                 <path
+                  data-line-path
                   d={spur.path}
                   fill="none"
                   stroke={color}
@@ -497,12 +522,12 @@ function BranchMapChart({
                     easy to point at. */}
                 <path d={spur.path} fill="none" stroke="transparent" strokeWidth={16} />
                 <circle cx={spur.xe} cy={spur.ends === 'merged' ? spur.y0 : spur.y1} r={9} fill="transparent" />
-                {spur.changes.map((cx, at) => (
+                {spur.changes.map((mark, at) => (
                   <circle
                     key={`${task.changes_requested_at[at]}-${at}`}
                     data-change-mark
-                    cx={cx}
-                    cy={spur.y1}
+                    cx={mark.x}
+                    cy={mark.y}
                     r={3.25}
                     fill="var(--color-card)"
                     stroke="var(--color-attention-dot)"
