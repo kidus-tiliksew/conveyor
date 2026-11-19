@@ -4,7 +4,7 @@
 // internal/httpapi/crates.go writes; the dashboard derives none of the
 // counts, the shipped flag, or the next action labels.
 import { expect, type Page, type Route } from '@playwright/test'
-import type { Crate, CrateActivityEvent, CrateDetail } from '../src/lib/types'
+import type { Crate, CrateActivityEvent, CrateDetail, CrateTask } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 
@@ -114,6 +114,30 @@ const billing: CrateDetail = {
   ],
 }
 
+// A member row whose next action label is the one the server states for a
+// task in that state.
+function member(id: string, title: string, state: CrateTask['state'], label: string): CrateTask {
+  const done = state === 'merged' || state === 'closed'
+  return {
+    id,
+    title,
+    state,
+    branch: `conveyor/task-${id}`,
+    pull_request:
+      state === 'closed'
+        ? null
+        : { number: Number.parseInt(id.slice(-3), 16), url: `https://github.com/acme/app/pull/${id}` },
+    next_action: {
+      label,
+      actor: done ? 'none' : 'agent',
+      kind: done ? 'terminal' : 'working',
+      judgment: false,
+      summary: label,
+      deadline: null,
+    },
+  }
+}
+
 const shipped: CrateDetail = {
   ...crateRow({
     id: 'crate-shipped',
@@ -124,18 +148,38 @@ const shipped: CrateDetail = {
     merged_task_count: 2,
     total_task_count: 3,
   }),
-  requirements: [],
+  requirements: [{ id: 'req-onboarding', title: 'New users finish setup in one visit', task_count: 2 }],
   undeclared_requirements: [],
-  tasks: [],
+  tasks: [
+    member('261020-a01', 'Shorten the welcome checklist', 'merged', 'Merged'),
+    member('261020-a02', 'Remember the setup step a user reached', 'merged', 'Merged'),
+    member('261020-a03', 'Send a setup reminder email', 'closed', 'Closed'),
+  ],
 }
 
-const closed: CrateDetail = { ...closedCrates[0], requirements: [], undeclared_requirements: [], tasks: [] }
+const closed: CrateDetail = {
+  ...closedCrates[0],
+  requirements: [],
+  undeclared_requirements: [],
+  tasks: [
+    member('260210-b01', 'Move tasks to the new schema', 'merged', 'Merged'),
+    member('260210-b02', 'Backfill task events', 'merged', 'Merged'),
+    member('260210-b03', 'Drop the old task table', 'closed', 'Closed'),
+  ],
+}
 
 const undated: CrateDetail = {
   ...openCrates[2],
   requirements: [],
   undeclared_requirements: [],
-  tasks: [],
+  tasks: [
+    member('261110-c01', 'Remove the retired shim flags', 'running', 'Agent working'),
+    member('261110-c02', 'Delete unused board styles', 'queued', 'Queued'),
+    member('261110-c03', 'Drop the legacy task list route', 'queued', 'Queued'),
+    member('261110-c04', 'Rename stale test fixtures', 'running', 'Agent working'),
+    member('261110-c05', 'Remove the old map prototype', 'merged', 'Merged'),
+    member('261110-c06', 'Retire the planning bundle page', 'closed', 'Closed'),
+  ],
 }
 
 // Newest first, as the server pages them (AC-5.5).
