@@ -35,9 +35,10 @@ type CrateSiblingTask struct {
 // as they stand: the crate's name and its member tasks, read on every
 // assembly and kept on no order. A task in no crate reads nothing and gets no
 // field (req-crates AC-4.5). The two reads are the lean CrateStore reads, not
-// the crate page read, so no next action or task context is read here. A
-// failed read fails the assembly: an order never shows a member task as a
-// task in no crate (component-crates invariants 1 and 20).
+// the crate page read, so no next action or task context is read here, and
+// the member read is bounded. A failed read fails the assembly: an order
+// never shows a member task as a task in no crate (component-crates
+// invariants 1 and 20).
 func crateContextForTask(ctx context.Context, st store.Store, task core.Task) (*CrateContext, error) {
 	crateID := task.TaskCrateID()
 	if crateID == "" {
@@ -55,21 +56,15 @@ func crateContextForTask(ctx context.Context, st store.Store, task core.Task) (*
 	if !found {
 		return nil, fmt.Errorf("read crate %s of task %s: %w", crateID, task.ID, &store.CrateNotFoundError{ID: crateID})
 	}
-	members, err := crates.ListCrateMembers(ctx, []string{crateID})
+	// The store leaves the task itself out before the limit, so the cap counts
+	// only other members, and it reads at most MaxCrateSiblingTasks plus one
+	// rows whatever the crate's size (DEC-105(4)).
+	members, more, err := crates.ListCrateMembersLimited(ctx, crateID, task.ID, MaxCrateSiblingTasks)
 	if err != nil {
 		return nil, fmt.Errorf("read members of crate %s for task %s: %w", crateID, task.ID, err)
 	}
-	result := &CrateContext{ID: crateID, Name: name, SiblingTasks: []CrateSiblingTask{}}
-	// The store orders members by creation time and then ID. The task itself
-	// is left out before the cap, so the cap counts only other members.
-	for _, member := range members[crateID] {
-		if member.ID == task.ID {
-			continue
-		}
-		if len(result.SiblingTasks) == MaxCrateSiblingTasks {
-			result.SiblingTasksTruncated = true
-			break
-		}
+	result := &CrateContext{ID: crateID, Name: name, SiblingTasks: make([]CrateSiblingTask, 0, len(members)), SiblingTasksTruncated: more}
+	for _, member := range members {
 		result.SiblingTasks = append(result.SiblingTasks, CrateSiblingTask{ID: member.ID, Title: member.Title, State: member.State})
 	}
 	return result, nil

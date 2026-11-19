@@ -1,6 +1,7 @@
 package store
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"slices"
@@ -141,6 +142,82 @@ func (m *memory) ListCrateMembers(ctx context.Context, ids []string) (map[string
 		}
 	}
 	return out, nil
+}
+
+// ListCrateMembersLimited implements CrateStore. It scans the tasks under
+// the read lock and keeps at most limit plus one candidates in a max-heap on
+// (creation time, ID), so a large crate allocates nothing per member.
+func (m *memory) ListCrateMembersLimited(ctx context.Context, crateID, excludeTaskID string, limit int) ([]CrateMemberTask, bool, error) {
+	if err := CheckCrateMemberLimit(limit); err != nil {
+		return nil, false, err
+	}
+	// No crate has an empty ID, and a task in no crate has an empty crate
+	// ID, so an empty crateID must match nothing, as crate_id='' does in SQL.
+	if crateID == "" {
+		return []CrateMemberTask{}, false, nil
+	}
+	workspace := workspaceOrDefault(ctx, "")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	kept := &crateMemberHeap{}
+	for _, task := range m.tasks {
+		if task.Workspace != workspace || task.TaskCrateID() != crateID || task.ID == excludeTaskID {
+			continue
+		}
+		candidate := crateMemberCandidate{createdAt: task.CreatedAt, member: CrateMemberTask{ID: task.ID, Title: task.Title, State: task.State}}
+		if kept.Len() <= limit {
+			heap.Push(kept, candidate)
+		} else if crateMemberBefore(candidate, (*kept)[0]) {
+			(*kept)[0] = candidate
+			heap.Fix(kept, 0)
+		}
+	}
+	ordered := []crateMemberCandidate(*kept)
+	slices.SortFunc(ordered, func(a, b crateMemberCandidate) int {
+		if crateMemberBefore(a, b) {
+			return -1
+		}
+		if crateMemberBefore(b, a) {
+			return 1
+		}
+		return 0
+	})
+	more := len(ordered) > limit
+	if more {
+		ordered = ordered[:limit]
+	}
+	members := make([]CrateMemberTask, len(ordered))
+	for i, candidate := range ordered {
+		members[i] = candidate.member
+	}
+	return members, more, nil
+}
+
+type crateMemberCandidate struct {
+	createdAt time.Time
+	member    CrateMemberTask
+}
+
+func crateMemberBefore(a, b crateMemberCandidate) bool {
+	if n := a.createdAt.Compare(b.createdAt); n != 0 {
+		return n < 0
+	}
+	return a.member.ID < b.member.ID
+}
+
+// crateMemberHeap is a max-heap: its root is the latest kept candidate, the
+// one a earlier candidate replaces.
+type crateMemberHeap []crateMemberCandidate
+
+func (h crateMemberHeap) Len() int           { return len(h) }
+func (h crateMemberHeap) Less(i, j int) bool { return crateMemberBefore(h[j], h[i]) }
+func (h crateMemberHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *crateMemberHeap) Push(x any)        { *h = append(*h, x.(crateMemberCandidate)) }
+func (h *crateMemberHeap) Pop() any {
+	old := *h
+	last := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return last
 }
 
 // ListCrateActivity implements CrateStore: the listed event kinds of the

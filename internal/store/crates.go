@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -144,6 +145,17 @@ type CrateStore interface {
 	// field and the MCP crate list stay lean reads (component-crates
 	// invariants 14 and 20).
 	ListCrateMembers(ctx context.Context, ids []string) (map[string][]CrateMemberTask, error)
+	// ListCrateMembersLimited returns at most limit member tasks of one crate
+	// of the workspace, leaving out excludeTaskID, in the ListCrateMembers
+	// order: creation time and then ID. An empty excludeTaskID leaves every
+	// member eligible. more is true only when another eligible member follows
+	// the returned ones. An empty or unknown crate, an empty crateID, or a
+	// crate of another workspace returns no member and more false. The read fetches at most
+	// limit plus one rows whatever the crate's size, so the work-order crate
+	// field stays bounded (component-crates invariant 20; DEC-105(4)). A
+	// limit below 1, or one whose successor overflows int, is a
+	// CrateFieldError.
+	ListCrateMembersLimited(ctx context.Context, crateID, excludeTaskID string, limit int) (members []CrateMemberTask, more bool, err error)
 	// SetTaskCrate makes the task a member of the open crate crateID only.
 	SetTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, error)
 	// ClearTaskCrate makes the task a member of no crate.
@@ -589,6 +601,16 @@ func DecodeCrateActivityCursor(cursor string) (*CrateActivityCursor, error) {
 		return nil, &CrateFieldError{Field: "cursor", Message: "cursor is not a value a previous page returned"}
 	}
 	return &CrateActivityCursor{At: parsedAt.UTC(), ID: parsedID}, nil
+}
+
+// CheckCrateMemberLimit refuses a ListCrateMembersLimited limit below 1 or
+// one whose successor overflows int, because every backend reads limit plus
+// one rows to learn whether more members exist.
+func CheckCrateMemberLimit(limit int) error {
+	if limit < 1 || limit == math.MaxInt {
+		return &CrateFieldError{Field: "limit", Message: "limit must be at least 1 and less than the largest int"}
+	}
+	return nil
 }
 
 // NormalizeCrateActivityQuery validates the limit and decodes the cursor.

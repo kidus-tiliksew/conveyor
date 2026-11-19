@@ -497,3 +497,111 @@ func TestWorkOrderCrateMembershipLeavesClaimOrder(t *testing.T) {
 		t.Fatalf("served orders = %v, want the claimed order and three queued orders", withCrates)
 	}
 }
+
+// crateBoundedReadStore fails the unbounded member read and records each
+// bounded member read. When err is set, the bounded read fails with it.
+type crateBoundedReadStore struct {
+	crateTestStore
+	err        error
+	fullReads  int
+	boundCalls []crateBoundedReadCall
+}
+
+type crateBoundedReadCall struct {
+	crateID, exclude string
+	limit            int
+	returned         int
+}
+
+func (s *crateBoundedReadStore) ListCrateMembers(context.Context, []string) (map[string][]store.CrateMemberTask, error) {
+	s.fullReads++
+	return nil, errors.New("the order context must not read every crate member")
+}
+
+func (s *crateBoundedReadStore) ListCrateMembersLimited(ctx context.Context, crateID, excludeTaskID string, limit int) ([]store.CrateMemberTask, bool, error) {
+	call := crateBoundedReadCall{crateID: crateID, exclude: excludeTaskID, limit: limit}
+	if s.err != nil {
+		s.boundCalls = append(s.boundCalls, call)
+		return nil, false, s.err
+	}
+	members, more, err := s.crateTestStore.ListCrateMembersLimited(ctx, crateID, excludeTaskID, limit)
+	call.returned = len(members)
+	s.boundCalls = append(s.boundCalls, call)
+	return members, more, err
+}
+
+// TestWorkOrderCrateContextUsesBoundedMemberRead: with 55 other members, the
+// order context reads members only through the bounded read, once, for its
+// crate, leaving out the task itself, with a limit of 50. So a durable store
+// fetches at most 51 rows whatever the crate's size. The field holds the
+// first 50 siblings by creation time and then ID and sets the truncation
+// flag (component-crates invariant 20; DEC-105(4)).
+func TestWorkOrderCrateContextUsesBoundedMemberRead(t *testing.T) {
+	f := newCrateContextFixture(t, core.StageImplement)
+	var siblings []core.Task
+	// 20 siblings before the task and 35 after it, so the task sits inside
+	// the first 50 members and must be left out before the cap.
+	for i := 0; i < 20; i++ {
+		siblings = append(siblings, f.sibling(time.Duration(i)*time.Second, core.TaskQueued))
+	}
+	for i := 0; i < 35; i++ {
+		siblings = append(siblings, f.sibling(31*time.Minute+time.Duration(i)*time.Second, core.TaskMerged))
+	}
+	bounded := &crateBoundedReadStore{crateTestStore: f.st}
+	f.svc.Store = bounded
+	result, fields := f.read()
+	if bounded.fullReads != 0 {
+		t.Fatalf("order assembly called the unbounded member read %d times", bounded.fullReads)
+	}
+	want := crateBoundedReadCall{crateID: f.crate.ID, exclude: f.task.ID, limit: MaxCrateSiblingTasks, returned: MaxCrateSiblingTasks}
+	if len(bounded.boundCalls) != 1 || bounded.boundCalls[0] != want {
+		t.Fatalf("bounded member reads = %+v, want one %+v", bounded.boundCalls, want)
+	}
+	if result.Crate == nil || !result.Crate.SiblingTasksTruncated {
+		t.Fatalf("crate = %+v, want truncated siblings", result.Crate)
+	}
+	if got, wantIDs := siblingIDs(result.Crate.SiblingTasks), siblingIDs(taskSiblings(siblings[:MaxCrateSiblingTasks])); !slices.Equal(got, wantIDs) {
+		t.Fatalf("siblings = %v, want %v", got, wantIDs)
+	}
+	if !slices.Equal(result.Crate.SiblingTasks, taskSiblings(siblings[:MaxCrateSiblingTasks])) {
+		t.Fatalf("sibling projections = %+v", result.Crate.SiblingTasks)
+	}
+	var wire CrateContext
+	if err := json.Unmarshal(fields["crate"], &wire); err != nil || len(wire.SiblingTasks) != MaxCrateSiblingTasks || !wire.SiblingTasksTruncated {
+		t.Fatalf("crate JSON = %s err=%v", fields["crate"], err)
+	}
+}
+
+// TestWorkOrderCrateContextMemberReadFailureFailsTheRead: when the crate name
+// read succeeds and the bounded member read fails, the order read fails with
+// an error that names the crate and the cause. It never returns the order
+// with an empty or missing crate field, and the claim stays live and
+// unchanged (component-crates invariant 20).
+func TestWorkOrderCrateContextMemberReadFailureFailsTheRead(t *testing.T) {
+	f := newCrateContextFixture(t, core.StageImplement)
+	f.sibling(0, core.TaskQueued)
+	before, err := f.st.GetWorkOrder(f.ctx, f.order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := &crateBoundedReadStore{crateTestStore: f.st, err: errors.New("crate member read unavailable")}
+	f.svc.Store = failing
+	_, err = f.svc.Get(f.ctx, f.order, "crate-session")
+	if err == nil || !strings.Contains(err.Error(), f.crate.ID) || !strings.Contains(err.Error(), "crate member read unavailable") {
+		t.Fatalf("order read error = %v, want the member read failure naming %s", err, f.crate.ID)
+	}
+	if len(failing.boundCalls) != 1 || failing.fullReads != 0 {
+		t.Fatalf("member reads: bounded %+v, unbounded %d", failing.boundCalls, failing.fullReads)
+	}
+	after, err := f.st.GetWorkOrder(f.ctx, f.order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != core.WorkOrderClaimed || after.SessionID != before.SessionID || after.AttemptID != before.AttemptID {
+		t.Fatalf("order after a failed member read = %+v, want the same live claim", after)
+	}
+	f.svc.Store = f.st
+	if result, _ := f.read(); result.Crate == nil || len(result.Crate.SiblingTasks) != 1 {
+		t.Fatalf("crate after recovery = %+v", result.Crate)
+	}
+}
