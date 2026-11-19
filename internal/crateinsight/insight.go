@@ -26,6 +26,7 @@ const (
 	verdictChanges        = "changes_requested"
 	crateDateLayout       = "2006-01-02"
 	day                   = 24 * time.Hour
+	secondsPerDay         = 24 * 60 * 60
 	// throughputWindow is the crate's trailing delivery window: the panel
 	// shows tasks merged per week over the trailing 14 days
 	// (req-crate-insights AC-4.1).
@@ -419,6 +420,11 @@ func MemberSteps(member Member, action nextaction.Compact, now time.Time) []Step
 	current := position{PhaseQueued, StationIntake}
 	steps := []Step{{At: task.CreatedAt.UTC(), TaskID: task.ID, Phase: current.phase, Station: current.station}}
 	for _, event := range sortedEvents(member.Events) {
+		// The replay ends at the read instant, so a later event is not yet
+		// history. Events are in time order, so none after it is either.
+		if event.At.After(now) {
+			break
+		}
 		next, ok := replayPosition(event)
 		if !ok || next == current {
 			continue
@@ -530,6 +536,9 @@ func ForecastDaysBeforeTarget(targetDate *string, forecast *insight.Forecast) *i
 	}
 	forecastDay := forecast.Day.UTC()
 	forecastDay = time.Date(forecastDay.Year(), forecastDay.Month(), forecastDay.Day(), 0, 0, 0, 0, time.UTC)
-	days := int(target.Sub(forecastDay) / day)
+	// Both instants are UTC midnights, so their Unix seconds differ by whole
+	// days. Subtracting seconds avoids time.Duration, which saturates near
+	// 292 years.
+	days := int((target.Unix() - forecastDay.Unix()) / secondsPerDay)
 	return &days
 }

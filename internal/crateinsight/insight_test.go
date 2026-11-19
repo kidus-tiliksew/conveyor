@@ -240,6 +240,17 @@ func TestReplayRules(t *testing.T) {
 			want:   []Step{step(created, "f", PhaseQueued, StationIntake)},
 		},
 		{
+			// The replay ends at the read instant: a claim recorded after it
+			// adds no step, and the live position still closes the history.
+			name: "events after the read instant add no step",
+			task: task("l", core.TaskRunning, core.StageReview, created), action: working,
+			events: []Event{claim(1, core.StageSpec, ago(90*hour)), opened(2, now), claim(3, core.StageImplement, now.Add(hour))},
+			want: []Step{
+				step(created, "l", PhaseQueued, StationIntake), step(ago(90*hour), "l", PhasePlanning, StationPlan),
+				step(now, "l", PhaseReview, StationReview),
+			},
+		},
+		{
 			name: "merge reconciled and a later state change repeat no step",
 			task: task("g", core.TaskMerged, "", created), action: terminal,
 			events: []Event{event(1, kindMergeReconciled, ago(10*hour), map[string]any{"result": "merged_outside_conveyor"}), stateChanged(2, core.TaskMerged, ago(9*hour))},
@@ -320,6 +331,9 @@ func TestTaskOrderSharedByBothReads(t *testing.T) {
 		members[len(tasks)-1-i] = Member{Task: tasks[i]}
 	}
 	view := Compute(Inputs{Members: members}, actions, now)
+	if len(view.Tasks) != len(want) {
+		t.Fatalf("insight view holds %d tasks, want %d", len(view.Tasks), len(want))
+	}
 	for i, entry := range view.Tasks {
 		if entry.ID != want[i] {
 			t.Fatalf("insight view order %d = %s, want %s", i, entry.ID, want[i])
@@ -504,7 +518,11 @@ func TestDeliveryNumbers(t *testing.T) {
 	for _, tc := range []struct {
 		target string
 		want   int
-	}{{"2026-12-10", 8}, {"2026-12-02", 0}, {"2026-11-25", -7}} {
+	}{
+		{"2026-12-10", 8}, {"2026-12-02", 0}, {"2026-11-25", -7},
+		// Far dates exceed time.Duration's range of about 292 years.
+		{"2400-01-01", 136265}, {"1000-01-01", -375074},
+	} {
 		target := tc.target
 		inputs.Crate.TargetDate = &target
 		got := Compute(inputs, actions, now).ForecastDaysBeforeTarget
