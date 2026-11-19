@@ -1301,12 +1301,25 @@ for (const viewport of [
         await page.locator(`[data-crate-task="${id}"]`).hover()
         const card = page.locator(`[data-line-card="${id}"]`)
         await expect(card).toBeVisible()
-        const point = await card.evaluate((element) =>
-          (element as HTMLElement).style.transform
-            .match(/translate\(([-\d.]+)px, ([-\d.]+)px\)$/)
-            ?.slice(1)
-            .map(Number),
-        )
+        // The scene moves the card on its next frames, so the first read can
+        // still hold the place of the block emphasized before. Wait until
+        // two reads in a row agree.
+        let transform = ''
+        await expect
+          .poll(
+            async () => {
+              const next = await card.evaluate((element) => (element as HTMLElement).style.transform)
+              const settled = next !== '' && next === transform
+              transform = next
+              return settled
+            },
+            { intervals: [150] },
+          )
+          .toBe(true)
+        const point = transform
+          .match(/translate\(([-\d.]+)px, ([-\d.]+)px\)$/)
+          ?.slice(1)
+          .map(Number)
         if (!point) throw new Error(`the card of ${id} has no place over the scene`)
         return { x: point[0], y: point[1] + 22 }
       }
