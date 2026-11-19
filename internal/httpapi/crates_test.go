@@ -946,7 +946,7 @@ func TestCrateInsightRoute(t *testing.T) {
 	for i, task := range oldest {
 		oldestIDs[i] = task.ID
 	}
-	if got := crateMCPRows(t, readAs(t, f.handler, f.viewer, "get_crate", map[string]any{"workspace_id": "alpha", "crate_id": crate.ID})); len(got) != 1 || !slices.Equal(got[0].TaskIDs, oldestIDs) {
+	if got := crateDetailRows(t, readAs(t, f.handler, f.viewer, "get_crate", map[string]any{"workspace_id": "alpha", "crate_id": crate.ID})); len(got) != 1 || !slices.Equal(got[0].TaskIDs, oldestIDs) || got[0].TaskIDsTruncated {
 		t.Fatalf("MCP get_crate task IDs %+v, want oldest first %v", got, oldestIDs)
 	}
 }
