@@ -14,9 +14,10 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// markerTaskChunk bounds one per-task marker statement. Each chunk statement
-// carries one top-one arm per task, so the arms stay below the statement
-// limit and the read stays proportional to the requested tasks
+// markerTaskChunk is the number of tasks one marker statement reads: the
+// latest-summary read and the fold read each bind fixed-width lists of
+// exactly this many task IDs, so every chunk shares one statement text and
+// the read stays proportional to the requested tasks
 // (component-web-task-surfaces, Activity and list reads).
 var markerTaskChunk = 100
 

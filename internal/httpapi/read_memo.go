@@ -52,15 +52,34 @@ func loadedConfiguration(ctx context.Context, workspaceID string) (loadedRequest
 
 type readMemoHorizonKey struct{}
 
-// readMemoHorizon belongs to one refresh, never to a cached response.
+// readMemoHorizon belongs to one refresh, never to a cached response. until
+// ends the tag's and the entry's validity: the earliest of the memo lifetime
+// and every included instant. deadline is the earliest real projection
+// instant the refresh read: the next UTC minute and every included instant,
+// such as a stated deadline, the review lease horizon, or a readiness
+// expiry. The lifetime never lowers deadline, so a deadline later than the
+// lifetime stays visible to readMemo.get (component-next-action invariant
+// 58).
 type readMemoHorizon struct {
-	now   time.Time
-	until time.Time
+	now      time.Time
+	until    time.Time
+	deadline time.Time
+}
+
+// newReadMemoHorizon starts a memo refresh at now.
+func newReadMemoHorizon(now time.Time) *readMemoHorizon {
+	return &readMemoHorizon{now: now, until: memoReadUntil(now), deadline: now.Truncate(time.Minute).Add(time.Minute)}
 }
 
 func (h *readMemoHorizon) include(until time.Time) {
-	if until.After(h.now) && (h.until.IsZero() || until.Before(h.until)) {
+	if !until.After(h.now) {
+		return
+	}
+	if h.until.IsZero() || until.Before(h.until) {
 		h.until = until
+	}
+	if h.deadline.IsZero() || until.Before(h.deadline) {
+		h.deadline = until
 	}
 }
 
@@ -70,11 +89,31 @@ func memoHorizon(ctx context.Context, until time.Time) {
 	}
 }
 
+// memoEntryHorizon bounds an enclosing read by a memo value it used. The
+// value's validity ends the enclosing tag's validity, but only the value's
+// own real deadline counts as a projection deadline: the memo lifetime that
+// capped the value is not one.
+func memoEntryHorizon(ctx context.Context, value readMemoValue) {
+	h, ok := ctx.Value(readMemoHorizonKey{}).(*readMemoHorizon)
+	if !ok {
+		return
+	}
+	if value.validUntil.After(h.now) && (h.until.IsZero() || value.validUntil.Before(h.until)) {
+		h.until = value.validUntil
+	}
+	if !value.deadline.IsZero() {
+		h.include(value.deadline)
+	}
+}
+
 type readMemoValue struct {
 	body       []byte
 	etag       string
 	validUntil time.Time
-	header     map[string]string
+	// deadline is the build's earliest real projection instant
+	// (readMemoHorizon.deadline). Zero means the build read none.
+	deadline time.Time
+	header   map[string]string
 	// unstored marks a result whose inputs changed during its build: it
 	// answers its own caller once, carries no ETag, and is never stored.
 	unstored bool
@@ -232,7 +271,7 @@ func (m *readMemo) drainLocked() {
 // already authorized scope; errors and results invalidated during a build are
 // never stored. The returned bytes and headers are private to the caller.
 func (m *readMemo) get(ctx context.Context, key string, build func(context.Context, time.Time) (readMemoValue, error)) (readMemoValue, error) {
-	builds, expiredBuilds := 0, 0
+	builds, deadlineBuilds := 0, 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return readMemoValue{}, err
@@ -283,7 +322,9 @@ func (m *readMemo) get(ctx context.Context, key string, build func(context.Conte
 		if value.validUntil.After(now.Add(readMemoLifetime)) {
 			value.validUntil = now.Add(readMemoLifetime)
 		}
-		expired := !m.now().Before(value.validUntil)
+		answered := m.now()
+		expired := !answered.Before(value.validUntil)
+		deadlinePassed := !value.deadline.IsZero() && !answered.Before(value.deadline)
 		if err == nil && !changed && !expired && !value.unstored {
 			m.storeLocked(key, value)
 		}
@@ -299,16 +340,26 @@ func (m *readMemo) get(ctx context.Context, key string, build func(context.Conte
 			value.etag, value.unstored = "", true
 			return value.clone(), nil
 		}
-		// A build that outlived its horizon answers its caller once,
-		// untagged and unstored, as an uncached render does. It builds
-		// again once only when a deadline inside the memo lifetime, and
-		// not the lifetime itself, ended its horizon, so the answer
-		// projects past that deadline. Building again after every expired
-		// build repeated the whole read for as long as each build outlived
-		// the lifetime (component-next-action invariant 58; DEC-140(3)).
+		// A build that outlived its horizon is never stored or tagged. When
+		// only the memo lifetime passed during the build, it answers its
+		// caller once, untagged, projected at the build's start: an uncached
+		// render also projects at the request's start, so this answer
+		// promises no freshness past that instant. When a real projection
+		// deadline passed during the build, such as a review lease or a
+		// stated deadline, even one later than the lifetime, the memo builds
+		// again at a fresh instant, at most readMemoRebuilds times, as a
+		// per-task statement read projects again (statementReadAttempts).
+		// The last such build answers once, untagged. Building again after
+		// every expired build repeated the whole read for as long as each
+		// build outlived the lifetime (component-next-action invariant 58;
+		// DEC-140(3)).
 		if expired && !changed {
-			expiredBuilds++
-			if expiredBuilds > 1 || !value.validUntil.Before(now.Add(readMemoLifetime)) {
+			if !deadlinePassed {
+				value.etag, value.unstored = "", true
+				return value.clone(), nil
+			}
+			deadlineBuilds++
+			if deadlineBuilds >= readMemoRebuilds {
 				value.etag, value.unstored = "", true
 				return value.clone(), nil
 			}

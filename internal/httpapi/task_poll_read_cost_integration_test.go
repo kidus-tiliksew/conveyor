@@ -27,6 +27,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres"
 	"github.com/kidus-tiliksew/conveyor/internal/store/singlestore"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // taskPollTasks is the fixture size: the staging workspace that reported the
@@ -38,14 +39,23 @@ const taskPollTasks = 340
 const taskPollSeedWorkers = 8
 
 // taskPollByteLimits bounds the bytes one cold poll of GET /v1/tasks,
-// GET /v1/work-orders, and GET /v1/next-actions?limit=200&offset=0 receives
-// from each backend on the seeded fixture. Each limit is the poll's measured
-// v0.71.0 total on the same fixture, rounded up to the next 64 KiB: 3,061,719
-// bytes on SingleStore 10.9 and 2,462,367 bytes on PostgreSQL 16. v0.71.0 is
-// the last release whose task list and inbox reads were cheap on SingleStore.
+// GET /v1/work-orders through the work-order service, and
+// GET /v1/next-actions?limit=200&offset=0 receives from each backend on the
+// seeded fixture. Measured on SingleStore 10.9 and PostgreSQL 16 with this
+// test:
+//
+//	backend      v0.71.0    main d7639465
+//	singlestore  3,736,354  2,468,895
+//	postgres     3,246,720  2,194,079
+//
+// The SingleStore limit is the measured v0.71.0 poll, the last release whose
+// task list and inbox reads were cheap on SingleStore. The PostgreSQL limit
+// is the measured main poll plus 1% for the width of generated IDs and
+// timestamps, so it fails on a regression against main as well as against
+// v0.71.0.
 var taskPollByteLimits = map[string]uint64{
-	"postgres":    38 << 16,
-	"singlestore": 47 << 16,
+	"postgres":    2_216_019,
+	"singlestore": 3_736_354,
 }
 
 type taskPollStore interface {
@@ -94,6 +104,9 @@ func TestTaskPollReadCostIntegration(t *testing.T) {
 				s.Workspaces, s.Memberships = membership, membership
 				s.Credentials = staticCredentialVerifier{"reader": {ID: "reader-pat", OwnerUserID: "reader", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}}
 				s.ConfigProvider = func(context.Context) (*config.Config, error) { return cfg, nil }
+				// GET /v1/work-orders runs the work-order service's list and
+				// projection, as conveyord wires it, not the bare store read.
+				s.WorkOrders = &workorder.Service{Store: st, ConfigProvider: s.ConfigProvider}
 				s.nextActionClock = func() time.Time { return now }
 				taskPollMemoClock(s, memoClock)
 				return s
@@ -128,7 +141,7 @@ func TestTaskPollReadCostIntegration(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					digests = append(digests, fmt.Sprintf("%s %d %x %d", path, w.Code, sha256.Sum256(w.Body.Bytes()), w.Body.Len()))
+					digests = append(digests, fmt.Sprintf("%s %d %x %d", path, w.Code, taskPollResponseDigest(w), w.Body.Len()))
 					routes = append(routes, route)
 					total.Bytes += route.Bytes
 					total.Rows += route.Rows
@@ -154,6 +167,7 @@ func TestTaskPollReadCostIntegration(t *testing.T) {
 					measured = max(measured, total.Bytes)
 				}
 			}
+			taskPollConcurrentReproduction(t, backend.name, st, func() *Server { return newServer(func() time.Time { return time.Now().UTC() }) }, paths)
 			limit := taskPollByteLimits[backend.name]
 			if os.Getenv("CONVEYOR_TASK_POLL_REPORT_ONLY") == "1" {
 				t.Logf("report only: a cold poll received at most %d bytes; limit %d", measured, limit)
@@ -496,5 +510,64 @@ func taskPollSlowClock(now time.Time) func() time.Time {
 		at := now.Add(time.Duration(min(readings, 8)) * (readMemoLifetime + time.Second))
 		readings++
 		return at
+	}
+}
+
+// taskPollResponseDigest digests a response's status, body, and the paging
+// and conditional headers a client reads.
+func taskPollResponseDigest(w *httptest.ResponseRecorder) []byte {
+	hash := sha256.New()
+	fmt.Fprintf(hash, "%d\n", w.Code)
+	for _, name := range []string{"Content-Type", "ETag", "Cache-Control", "Vary", "X-Conveyor-Total", "X-Conveyor-Limit", "X-Conveyor-Offset", "X-Conveyor-Cursor"} {
+		fmt.Fprintf(hash, "%s: %s\n", name, w.Header().Get(name))
+	}
+	hash.Write(w.Body.Bytes())
+	return hash.Sum(nil)
+}
+
+// taskPollConcurrentReproduction sends the three poll requests at once, each
+// to a new server whose response memo reads the wall clock, as a client poll
+// meets a daemon. It reports when each request started and ended relative
+// to the first start, the poll's elapsed time, and the bytes, rows, and
+// statements each read label received. The activity and next-action clocks
+// stay at the fixture instant. The reproduction is reported, not bounded.
+func taskPollConcurrentReproduction(t *testing.T, backend string, st taskPollStore, newServer func() *Server, paths []string) {
+	t.Helper()
+	st.ReadStats(0)
+	type timing struct {
+		Path      string  `json:"path"`
+		Status    int     `json:"status"`
+		StartMS   float64 `json:"start_ms"`
+		EndMS     float64 `json:"end_ms"`
+		ElapsedMS float64 `json:"elapsed_ms"`
+	}
+	timings := make([]timing, len(paths))
+	started := time.Now()
+	var wg sync.WaitGroup
+	for i, path := range paths {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := httptest.NewRequest(http.MethodGet, path, nil).WithContext(t.Context())
+			r.Header.Set("Authorization", "Bearer reader")
+			w := httptest.NewRecorder()
+			begin := time.Since(started)
+			newServer().Handler().ServeHTTP(w, r)
+			end := time.Since(started)
+			timings[i] = timing{Path: path, Status: w.Code, StartMS: begin.Seconds() * 1000, EndMS: end.Seconds() * 1000, ElapsedMS: (end - begin).Seconds() * 1000}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(started)
+	reads := st.ReadStats(64)
+	report, err := json.Marshal(map[string]any{"backend": backend, "concurrent_real_clock": true, "elapsed_ms": elapsed.Seconds() * 1000, "requests": timings, "total": reads})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("task poll concurrent reproduction: %s", report)
+	for _, timing := range timings {
+		if timing.Status != http.StatusOK {
+			t.Fatalf("%s answered %d in the concurrent reproduction", timing.Path, timing.Status)
+		}
 	}
 }
