@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -503,5 +504,31 @@ func TestMemoPublicSlowBuildProjectsPastADeadline(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestMemoPublicSlowInboxWithPendingProposalReadsOnce proves a pending
+// document proposal's age second, a display instant, does not make a slow
+// GET /v1/next-actions read its inputs again: the inbox build that outlives
+// it answers once, untagged, with one input read for the whole request.
+func TestMemoPublicSlowInboxWithPendingProposalReadsOnce(t *testing.T) {
+	f := newMemoRouteFixture(t)
+	f.task("memo-proposal-task", core.TaskRunning)
+	if _, _, err := f.base.CreateRequirement(f.ctx, core.Requirement{ID: "req-memo-proposal", Title: "Memo proposal"}, core.RequirementVersion{Content: "# Memo proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Pending."}}}); err != nil {
+		t.Fatal(err)
+	}
+	f.counted.reset()
+	// The inbox's input read takes two seconds, past the proposal's next
+	// age second and inside the memo lifetime.
+	f.counted.duringInputs = func() { f.now = f.now.Add(2 * time.Second) }
+	got := f.read("/v1/next-actions", "")
+	if got.Code != http.StatusOK || got.Header().Get("ETag") != "" {
+		t.Fatalf("slow inbox status=%d tag=%q body=%s", got.Code, got.Header().Get("ETag"), got.Body.String())
+	}
+	if !strings.Contains(got.Body.String(), "req-memo-proposal") {
+		t.Fatalf("inbox lost the pending proposal: %s", got.Body.String())
+	}
+	if reads := f.counted.calls["ReadActivityInputs"]; reads != 1 {
+		t.Fatalf("one request read its inputs %d times, want 1", reads)
 	}
 }

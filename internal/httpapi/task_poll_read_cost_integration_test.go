@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,15 @@ import (
 // regression held about 340 tasks.
 const taskPollTasks = 340
 
+// taskPollNow is the fixture's fixed clock. It is later than every time the
+// stores stamp from the wall clock, such as a document proposal's proposed
+// time, so the pending proposal's age changes each second during a slow
+// build, as on a live daemon.
+var taskPollNow = time.Date(2030, 1, 1, 0, 0, 5, 0, time.UTC)
+
+// taskPollDatabaseName is the shape of a database the test owns.
+var taskPollDatabaseName = regexp.MustCompile(`^[a-z][a-z0-9_]{2,62}_test$`)
+
 // taskPollSeedWorkers writes the fixture tasks concurrently; each task's
 // history stays in one worker, so its event order is fixed.
 const taskPollSeedWorkers = 8
@@ -45,8 +55,8 @@ const taskPollSeedWorkers = 8
 // test:
 //
 //	backend      v0.71.0    main d7639465
-//	singlestore  3,736,354  2,468,895
-//	postgres     3,246,720  2,194,079
+//	singlestore  4,103,424  2,469,148
+//	postgres     3,615,156  2,194,348
 //
 // The SingleStore limit is the measured v0.71.0 poll, the last release whose
 // task list and inbox reads were cheap on SingleStore. The PostgreSQL limit
@@ -54,8 +64,8 @@ const taskPollSeedWorkers = 8
 // timestamps, so it fails on a regression against main as well as against
 // v0.71.0.
 var taskPollByteLimits = map[string]uint64{
-	"postgres":    2_216_019,
-	"singlestore": 3_736_354,
+	"postgres":    2_216_291,
+	"singlestore": 4_103_424,
 }
 
 type taskPollStore interface {
@@ -85,7 +95,7 @@ func TestTaskPollReadCostIntegration(t *testing.T) {
 			const ws = "task-poll"
 			ctx = store.WithWorkspace(ctx, ws)
 			cfg := &config.Config{Workspace: ws, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
-			now := time.Date(2026, 11, 18, 18, 30, 5, 0, time.UTC)
+			now := taskPollNow
 			if !reused {
 				if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 					t.Fatal(err)
@@ -118,6 +128,14 @@ func TestTaskPollReadCostIntegration(t *testing.T) {
 				"/v1/work-orders?workspace_id=" + ws,
 				"/v1/next-actions?workspace_id=" + ws + "&limit=200&offset=0",
 			}
+			// Attribution: the store is opened by this test alone and runs no
+			// dispatcher, worker, or sweep, the requests run one after
+			// another, and the store's read ledger is drained before and
+			// after each request. Each route interval therefore holds only
+			// that request's reads. Bytes received outside a labeled
+			// operation, such as connection setup or a notice listener,
+			// land in the "unlabeled" account; they are reported with the
+			// route and counted in the bounded total.
 			poll := func(memoClock func() func() time.Time) (dbmetrics.ReadInterval, []dbmetrics.ReadInterval, []string) {
 				st.ReadStats(0)
 				var routes []dbmetrics.ReadInterval
@@ -190,6 +208,11 @@ func openTaskPollStore(t *testing.T, ctx context.Context, backend, raw string) (
 	name := reuse
 	if name == "" {
 		name = fmt.Sprintf("conveyor_poll_%d_test", time.Now().UnixNano())
+	}
+	// Only an owned test database is opened, migrated, and seeded
+	// (component-testing-strategy invariant 11).
+	if !taskPollDatabaseName.MatchString(name) {
+		t.Fatalf("task poll database %q is not an owned test database name", name)
 	}
 	keep := reuse != "" || os.Getenv("CONVEYOR_TASK_POLL_KEEP") == "1"
 	if backend == "postgres" {
@@ -356,6 +379,11 @@ func seedTaskPoll(t *testing.T, ctx context.Context, st store.Store, ws string, 
 		for err := range failures {
 			t.Fatal(err)
 		}
+	}
+	// One pending requirement proposal puts a document proposal in the
+	// inbox, whose age the inbox states to the second.
+	if _, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-task-poll", Title: "Task poll proposal"}, core.RequirementVersion{Content: "# Task poll proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "The poll reads once."}}}); err != nil {
+		t.Fatal(err)
 	}
 }
 

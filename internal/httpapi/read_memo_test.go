@@ -415,3 +415,75 @@ func TestReadMemoRetriesADeadlineExpiryAfterANotice(t *testing.T) {
 		t.Fatalf("answered %s from the build at %s, want a build past %s", value.body, starts[2], deadline)
 	}
 }
+
+// TestReadMemoDisplayInstantEndsOnlyTheTag proves an instant recorded with
+// memoExpiry, such as a proposal's next age second, ends the entry and its
+// tag but is no projection deadline: a build it outlives answers once,
+// untagged, and is not built again.
+func TestReadMemoDisplayInstantEndsOnlyTheTag(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 10, 0, time.UTC)
+	now := start
+	m := &readMemo{clock: func() time.Time { return now }}
+	builds := 0
+	build := func(ctx context.Context, at time.Time) (readMemoValue, error) {
+		builds++
+		horizon := newReadMemoHorizon(at)
+		ctx = context.WithValue(ctx, readMemoHorizonKey{}, horizon)
+		memoExpiry(ctx, at.Add(time.Second))
+		now = now.Add(2 * time.Second)
+		return readMemoValue{body: []byte("body"), etag: `"tag"`, validUntil: horizon.until, deadline: horizon.deadline}, nil
+	}
+	value, err := m.get(context.Background(), "key", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != 1 || value.etag != "" || !value.unstored || len(m.entries) != 0 {
+		t.Fatalf("builds=%d etag=%q unstored=%v entries=%d", builds, value.etag, value.unstored, len(m.entries))
+	}
+	// The minute boundary is a tag expiry, not a projection deadline.
+	if horizon := newReadMemoHorizon(start); !horizon.deadline.IsZero() || !horizon.until.Equal(start.Add(readMemoLifetime)) {
+		t.Fatalf("new horizon deadline=%s until=%s", horizon.deadline, horizon.until)
+	}
+}
+
+// TestReadMemoNestedReadsShareOneRebuildBudget proves one request renders a
+// nested memo read at most readMemoRebuilds times for deadlines: an
+// enclosing build and the inner read it makes share one budget, so a real
+// deadline that keeps passing during both builds cannot multiply their
+// rebuilds.
+func TestReadMemoNestedReadsShareOneRebuildBudget(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 10, 0, time.UTC)
+	now := start
+	m := &readMemo{clock: func() time.Time { return now }}
+	inner, outer := 0, 0
+	// Every build takes two seconds and reads a real deadline one second
+	// after its start, so every build crosses a deadline.
+	innerBuild := func(_ context.Context, at time.Time) (readMemoValue, error) {
+		inner++
+		now = now.Add(2 * time.Second)
+		return readMemoValue{body: []byte("inner"), etag: `"inner"`, validUntil: at.Add(time.Second), deadline: at.Add(time.Second)}, nil
+	}
+	outerBuild := func(ctx context.Context, at time.Time) (readMemoValue, error) {
+		outer++
+		horizon := newReadMemoHorizon(at)
+		ctx = context.WithValue(ctx, readMemoHorizonKey{}, horizon)
+		value, err := m.get(ctx, "inner", innerBuild)
+		if err != nil {
+			return readMemoValue{}, err
+		}
+		memoEntryHorizon(ctx, value)
+		return readMemoValue{body: []byte("outer"), etag: `"outer"`, validUntil: horizon.until, deadline: horizon.deadline}, nil
+	}
+	value, err := m.get(context.Background(), "outer", outerBuild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inner > readMemoRebuilds || outer > readMemoRebuilds || value.etag != "" || !value.unstored {
+		t.Fatalf("inner builds=%d outer builds=%d etag=%q unstored=%v", inner, outer, value.etag, value.unstored)
+	}
+	// A second request has its own budget.
+	inner, outer = 0, 0
+	if _, err := m.get(context.Background(), "outer", outerBuild); err != nil || inner > readMemoRebuilds || inner == 0 {
+		t.Fatalf("second request inner builds=%d err=%v", inner, err)
+	}
+}

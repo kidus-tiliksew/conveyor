@@ -229,10 +229,13 @@ func (s *Server) readInboxUncached(ctx context.Context, opts store.NextActionOpt
 		}
 		if item.Proposal != nil && !item.Proposal.ProposedAt.IsZero() {
 			proposed := item.Proposal.ProposedAt
+			// The proposal's age is display text: its next second ends
+			// the tag and the entry but is no projection deadline, so a
+			// slow build is not read again for it.
 			if proposed.After(opts.Now) {
-				memoHorizon(ctx, proposed.Add(time.Second))
+				memoExpiry(ctx, proposed.Add(time.Second))
 			} else {
-				memoHorizon(ctx, proposed.Add((opts.Now.Sub(proposed)/time.Second+1)*time.Second))
+				memoExpiry(ctx, proposed.Add((opts.Now.Sub(proposed)/time.Second+1)*time.Second))
 			}
 		}
 	}
