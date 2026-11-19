@@ -177,9 +177,9 @@ func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []strin
 // selects only these kinds, and of them only the rows a fold can act on
 // (markerFoldQuery): a bounce from user-request-changes, an implement
 // claim or a claim of a task with an open review order, and the review
-// lifecycle kinds of review tasks.
+// lifecycle and review-round kinds of review tasks.
 var (
-	activityMarkerReviewKinds  = []string{"work_order.claimed", "work_order.lease_renewed", "work_order.released", "review.completed", "review.accepted", "task.setup.changed"}
+	activityMarkerReviewKinds  = append([]string{"work_order.claimed", "work_order.lease_renewed", "work_order.released", "review.completed", "review.accepted", "task.setup.changed"}, store.MarkerReviewRoundKinds...)
 	activityMarkerRequestKinds = []string{"pipeline.bounced", "work_order.claimed"}
 	// The forge failure kinds are the ones store.LatestForgeFailure reads;
 	// of work_order.updated the query selects only an update whose payload
