@@ -166,6 +166,10 @@ type Server struct {
 	// requirementInsightLocks serializes headline generation per workspace
 	// and requirement in this process (feature-requirement-insights RI-5).
 	requirementInsightLocks requirementInsightLocks
+	// crateBriefingLocks serializes crate briefing generation per workspace
+	// and crate in this process (component-crates invariant 29). Its keys
+	// name the crate in the requirement field.
+	crateBriefingLocks requirementInsightLocks
 }
 
 type CredentialVerifier interface {
@@ -395,6 +399,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/crates/{id}", s.getCrate)
 			r.Get("/crates/{id}/activity", s.getCrateActivity)
 			r.Get("/crates/{id}/insight", s.getCrateInsight)
+			r.Get("/crates/{id}/briefing", s.getCrateBriefing)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/crates/{id}/briefing", s.generateCrateBriefing)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/crates", s.createCrate)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Patch("/crates/{id}", s.patchCrate)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Put("/tasks/{id}/crate", s.setTaskCrate)
