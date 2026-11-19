@@ -3,7 +3,7 @@
 // bar of merged work. Every number and `shipped` is the server's
 // (component-crates invariant 9).
 import { Archive, CalendarPlus, CircleCheck } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CrateDetail } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
@@ -98,6 +98,17 @@ function MergedBar({ merged, total }: { merged: number; total: number }) {
 // The target date of an open crate and how far off it is, worded as on the
 // crates list.
 function Due({ crate, canAct, onSetDate }: { crate: CrateDetail; canAct: boolean; onSetDate: () => void }) {
+  // When a date is first set, "Set a target date" goes away. If that left
+  // focus on the page body, move it to the new date so keyboard users keep
+  // their place.
+  const dateRef = useRef<HTMLDivElement>(null)
+  const hadDate = useRef(Boolean(crate.target_date))
+  useEffect(() => {
+    const active = document.activeElement
+    if (crate.target_date && !hadDate.current && (!active || active === document.body)) dateRef.current?.focus()
+    hadDate.current = Boolean(crate.target_date)
+  }, [crate.target_date])
+
   if (!crate.target_date)
     return canAct ? (
       <Button variant="ghost" size="sm" onClick={onSetDate} className="-mr-2.5">
@@ -107,7 +118,11 @@ function Due({ crate, canAct, onSetDate }: { crate: CrateDetail; canAct: boolean
     ) : null
   const hint = targetDateHint(crate)
   return (
-    <div className="text-right">
+    <div
+      ref={dateRef}
+      tabIndex={-1}
+      className="rounded-md text-right outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+    >
       <p className="text-xs text-faint">Target date</p>
       <p data-target-date className="text-sm font-medium">
         {formatTargetDate(crate.target_date)}
