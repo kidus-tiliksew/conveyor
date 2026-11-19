@@ -189,7 +189,10 @@ func TestCrateBriefingUnconfigured(t *testing.T) {
 // TestCrateBriefingReplyRefusals walks every refusal of component-crates
 // invariant 32, the sentence limits of req-crate-insights AC-5.1, the
 // identifier rule of AC-5.3 (single-segment design IDs and REQ, AC, and DEC
-// in any letter case included), and a look_first that names one task twice. Each
+// in any letter case included), and a look_first that names one task twice.
+// Round 3 adds sentence ends followed by a Unicode space such as U+00A0,
+// U+2009, or U+3000, the ellipsis U+2026 as a sentence end, and the dated
+// task ID in upper case. Each
 // refusal is ErrCrateBriefingInvalid, returns no briefing, and its error
 // text never holds any part of the reply.
 func TestCrateBriefingReplyRefusals(t *testing.T) {
@@ -260,6 +263,12 @@ func TestCrateBriefingReplyRefusals(t *testing.T) {
 		{"two-sentence headline with an echo", crateBriefingReplyJSON(t, "Work started! "+echo+" follows", crateBriefingAccount), "the headline is not exactly one sentence"},
 		{"four-sentence account", crateBriefingReplyJSON(t, crateBriefingHeadline, "Two tasks merged. One is in review. One waits for an agent. The target "+echo+" looks safe."), "the account holds more than three sentences"},
 		{"four-sentence account with quotes", crateBriefingReplyJSON(t, crateBriefingHeadline, `The review said "ready." The next said "wait!" The third asked (why?) It `+echo+` holds.`), "the account holds more than three sentences"},
+		{"two-sentence headline with non-breaking spaces", crateBriefingReplyJSON(t, "Work started.\u00a0Review follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
+		{"four-sentence account with non-breaking spaces", crateBriefingReplyJSON(t, crateBriefingHeadline, "Work started.\u00a0Review follows.\u00a0The gate opens.\u00a0Delivery starts."), "the account holds more than three sentences"},
+		{"two-sentence headline with a thin space", crateBriefingReplyJSON(t, "Work started.\u2009Review follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
+		{"two-sentence headline with an ideographic space", crateBriefingReplyJSON(t, "Work started.\u3000Review follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
+		{"two-sentence headline ended by an ellipsis", crateBriefingReplyJSON(t, "Work started\u2026 Review follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
+		{"upper-case task ID", crateBriefingReplyJSON(t, crateBriefingHeadline, "It waits on 261119-ABCDEF "+echo+"."), "task, requirement, or document identifier"},
 		{"same look_first task twice", crateBriefingReplyJSON(t, crateBriefingHeadline, crateBriefingAccount, entry(member, "attention", "It waits "+echo+"."), entry(member, "info", "It is late.")), "look_first names the same task twice"},
 		{"reference document ID", crateBriefingReplyJSON(t, crateBriefingHeadline, "It follows ref-260823-f4729f "+echo+"."), "task, requirement, or document identifier"},
 	} {
@@ -272,7 +281,7 @@ func TestCrateBriefingReplyRefusals(t *testing.T) {
 			if !strings.Contains(err.Error(), test.reason) {
 				t.Fatalf("refusal %q, want the reason %q", err, test.reason)
 			}
-			for _, fragment := range []string{echo, member, crateBriefingMembers[1], "export", "On track", "Look", "REQ-5", "crate-insights", "\xff", "Work started", "Review follows", "dec-142", "Req-5", "component-crates", "feature-briefing"} {
+			for _, fragment := range []string{echo, member, crateBriefingMembers[1], "export", "On track", "Look", "REQ-5", "crate-insights", "\xff", "Work started", "Review follows", "dec-142", "Req-5", "component-crates", "feature-briefing", "ABCDEF", "Delivery starts"} {
 				if strings.Contains(err.Error(), fragment) {
 					t.Fatalf("refusal %q echoes the reply fragment %q", err, fragment)
 				}
@@ -314,6 +323,8 @@ func TestCrateBriefingReplyAccepted(t *testing.T) {
 		{"allowlisted design-shaped words", prose("The component-level work is on track.", "The component-based import and the feature-rich editor merged. The feature-complete report is in review.")},
 		{"one-sentence headline and three-sentence account", prose("Work is on track!", "Two tasks merged. One is in review? The last one waits for an agent.")},
 		{"closing quotes and brackets", prose(`The review said "ready."`, `The first task merged (on Nov 18.) The review said "ready." The last task waits.`)},
+		{"feature-flag words", prose("The feature-flag rollout is on track.", "Two feature-flags guard the new report. Both merged on Nov 18.")},
+		{"ellipsis at the end of one sentence", prose("Work continues\u2026", "Two tasks merged. One waits for review\u2026 The target looks safe.")},
 		{"decimal is no sentence end", prose("The crate merges 1.5 tasks a week and finishes on Nov 26.", "Version 2.0 of the export merged. The rate is 0.5 tasks a day.")},
 	} {
 		t.Run(test.name, func(t *testing.T) {

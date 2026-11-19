@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -87,11 +88,12 @@ const crateBriefingLineBreaks = "\r\n\v\f\u0085  "
 
 // crateBriefingIdentifier matches an identifier that req-crate-insights
 // AC-5.3 keeps out of the prose: the dated ID shape of tasks, crates, and
-// reference documents, such as 261119-fbe6d9 in crate-261119-d9973f;
-// REQ-n, AC-n.m, or DEC-n in any letter case, such as dec-142 or Req-5; and
+// reference documents in any letter case, such as 261119-fbe6d9 in
+// crate-261119-d9973f or 261119-ABCDEF; REQ-n, AC-n.m, or DEC-n in any
+// letter case, such as dec-142 or Req-5; and
 // a requirement ID such as req-crate-insights. A hyphenated word such as
 // crate-level is no identifier.
-var crateBriefingIdentifier = regexp.MustCompile(`(?:\b\d{6}-[0-9a-f]{6}\b)|(?i:\b(?:REQ|AC|DEC)-\d+(?:\.\d+)?\b)|(?:\breq-[a-z0-9]+(?:-[a-z0-9]+)*\b)`)
+var crateBriefingIdentifier = regexp.MustCompile(`(?i:\b\d{6}-[0-9a-f]{6}\b)|(?i:\b(?:REQ|AC|DEC)-\d+(?:\.\d+)?\b)|(?:\breq-[a-z0-9]+(?:-[a-z0-9]+)*\b)`)
 
 // crateBriefingDesignID matches a System Design ID such as component-crates
 // or feature-crate-insights, one segment or more after the prefix. Some
@@ -102,19 +104,36 @@ var crateBriefingDesignID = regexp.MustCompile(`\b(?:component|feature)-[a-z0-9]
 
 // crateBriefingDesignWords are the ordinary English words of the design ID
 // shape that a briefing may hold.
-var crateBriefingDesignWords = []string{"component-based", "component-level", "feature-complete", "feature-rich"}
+var crateBriefingDesignWords = []string{"component-based", "component-level", "feature-complete", "feature-flag", "feature-flags", "feature-rich"}
 
-// crateBriefingSentenceEnd matches one sentence end: a run of ".", "!", or
-// "?", an optional closing quote or bracket, then whitespace or the end of
-// the text. A decimal such as 1.5 has no sentence end.
-var crateBriefingSentenceEnd = regexp.MustCompile(`[.!?]+["'\x{201D}\x{2019})\]]?(?:\s+|$)`)
+// crateBriefingSentenceMark matches the mark of a sentence end: a run of
+// ".", "!", "?", or the ellipsis "…", then an optional closing quote or
+// bracket. The mark ends a sentence only when a space or the end of the
+// text follows it, so a decimal such as 1.5 has no sentence end.
+var crateBriefingSentenceMark = regexp.MustCompile(`[.!?\x{2026}]+["'\x{201D}\x{2019})\]]?`)
+
+// crateBriefingSpace reports whether r separates sentences: any rune that
+// unicode.IsSpace accepts or that is in category Zs, such as U+00A0, U+2009,
+// U+202F, or U+3000.
+func crateBriefingSpace(r rune) bool {
+	return unicode.IsSpace(r) || unicode.Is(unicode.Zs, r)
+}
 
 // crateBriefingSentences counts the sentences of trimmed text: each sentence
 // end, plus one for text after the last end.
 func crateBriefingSentences(text string) int {
-	ends := crateBriefingSentenceEnd.FindAllStringIndex(text, -1)
-	count := len(ends)
-	if count == 0 || ends[count-1][1] < len(text) {
+	count, last := 0, 0
+	for _, mark := range crateBriefingSentenceMark.FindAllStringIndex(text, -1) {
+		end := mark[1]
+		if end < len(text) {
+			if next, _ := utf8.DecodeRuneInString(text[end:]); !crateBriefingSpace(next) {
+				continue
+			}
+		}
+		count++
+		last = end
+	}
+	if count == 0 || strings.TrimFunc(text[last:], crateBriefingSpace) != "" {
 		count++
 	}
 	return count
