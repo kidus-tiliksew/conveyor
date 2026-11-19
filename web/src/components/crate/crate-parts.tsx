@@ -3,7 +3,7 @@
 // that creates or edits a crate.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CalendarDays, X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createCrate, fetchRequirements, updateCrate } from '../../lib/api'
 import type { Crate, CrateRequirement } from '../../lib/types'
 import { cn } from '../../lib/utils'
@@ -133,6 +133,13 @@ export function CrateFormDialog({
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [name, setName] = useState(crate?.name ?? '')
+  // Focus the name after the dialog records what had focus, so closing it
+  // returns focus to the control that opened it.
+  const nameRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => nameRef.current?.querySelector('input')?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [])
   const [targetDate, setTargetDate] = useState(crate?.target_date ?? '')
   const [requirementIds, setRequirementIds] = useState<string[]>(declared?.map((item) => item.id) ?? [])
   const requirements = useQuery({
@@ -179,13 +186,12 @@ export function CrateFormDialog({
           </Button>
         </header>
         <div className="space-y-4 px-5 py-4">
-          <div>
+          <div ref={nameRef}>
             <span className="mb-1 block text-xs font-medium text-muted">Name</span>
             <Input
               aria-label="Crate name"
               value={name}
               maxLength={120}
-              autoFocus
               placeholder="Billing v2"
               onChange={(event) => setName(event.target.value)}
             />

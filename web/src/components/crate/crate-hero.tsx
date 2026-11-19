@@ -37,6 +37,7 @@ export function CrateHero({
             <span aria-hidden className="mx-1.5 text-faint">
               ·
             </span>
+            <span className="sr-only">, </span>
             <span data-stat="open" className="tabular-nums">
               {crate.open_task_count}
             </span>{' '}
@@ -46,7 +47,7 @@ export function CrateHero({
         {open && <Due crate={crate} canAct={canAct} onSetDate={onSetDate} />}
       </div>
 
-      {open && total > 0 && <MergedBar merged={crate.merged_task_count} total={total} />}
+      {open && total > 0 && !crate.shipped && <MergedBar merged={crate.merged_task_count} total={total} />}
 
       {crate.shipped ? (
         <p data-shipped-statement className="mt-3 flex items-center gap-1.5 text-sm font-medium text-positive">
@@ -65,7 +66,7 @@ export function CrateHero({
   )
 }
 
-// The merged share, wiping in from the left once when the page opens. Later
+// The merged share, growing in from the left once when the page opens. Later
 // refreshes move it without replaying, and reduced motion shows it at once.
 function MergedBar({ merged, total }: { merged: number; total: number }) {
   const [revealed, setRevealed] = useState(
@@ -87,11 +88,8 @@ function MergedBar({ merged, total }: { merged: number; total: number }) {
   return (
     <div aria-hidden className="mt-4 h-1.5 overflow-hidden rounded-full bg-raised">
       <div
-        className={cn(
-          'h-full origin-left rounded-full bg-positive transition-[transform,width] duration-500 ease-out motion-reduce:transition-none',
-          revealed ? 'scale-x-100' : 'scale-x-0',
-        )}
-        style={{ width: `${(merged / total) * 100}%` }}
+        className="h-full rounded-full bg-positive transition-[width] duration-500 ease-out motion-reduce:transition-none"
+        style={{ width: revealed ? `${(merged / total) * 100}%` : '0%' }}
       />
     </div>
   )
@@ -128,5 +126,5 @@ function Due({ crate, canAct, onSetDate }: { crate: CrateDetail; canAct: boolean
 }
 
 function formatDay(value: string) {
-  return new Date(value).toLocaleDateString('en', { month: 'short', day: 'numeric' })
+  return new Date(value).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })
 }
