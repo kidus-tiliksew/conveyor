@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react'
 import type { CrateDetail } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
-import { daysUntil, formatTargetDate } from './crate-parts'
+import { formatTargetDate, targetDateHint } from './crate-parts'
 
 export function CrateHero({
   crate,
@@ -95,8 +95,8 @@ function MergedBar({ merged, total }: { merged: number; total: number }) {
   )
 }
 
-// The target date of an open crate and how far off it is. Late shows only
-// when the crate has not shipped.
+// The target date of an open crate and how far off it is, worded as on the
+// crates list.
 function Due({ crate, canAct, onSetDate }: { crate: CrateDetail; canAct: boolean; onSetDate: () => void }) {
   if (!crate.target_date)
     return canAct ? (
@@ -105,22 +105,14 @@ function Due({ crate, canAct, onSetDate }: { crate: CrateDetail; canAct: boolean
         Set a target date
       </Button>
     ) : null
-  const days = daysUntil(crate.target_date)
-  const late = !crate.shipped && days < 0
-  const hint = crate.shipped
-    ? null
-    : days === 0
-      ? 'Due today'
-      : days > 0
-        ? `${days} ${days === 1 ? 'day' : 'days'} left`
-        : `${-days} ${days === -1 ? 'day' : 'days'} late`
+  const hint = targetDateHint(crate)
   return (
     <div className="text-right">
       <p className="text-xs text-faint">Target date</p>
       <p data-target-date className="text-sm font-medium">
         {formatTargetDate(crate.target_date)}
       </p>
-      {hint && <p className={cn('text-xs', late ? 'font-medium text-attention' : 'text-muted')}>{hint}</p>}
+      {hint && <p className={cn('text-xs', hint.late ? 'font-medium text-attention' : 'text-muted')}>{hint.text}</p>}
     </div>
   )
 }

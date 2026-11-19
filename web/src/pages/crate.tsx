@@ -97,7 +97,7 @@ function CratesCrumb({ name }: { name?: string }) {
   )
 }
 
-type Panel = 'edit' | 'add' | { remove: CrateTask } | null
+type Panel = 'edit' | 'date' | 'add' | { remove: CrateTask } | null
 
 function CrateView({ crate }: { crate: CrateDetail }) {
   const { workspace } = useWorkspaceSelection()
@@ -160,7 +160,7 @@ function CrateView({ crate }: { crate: CrateDetail }) {
               {setState.error instanceof Error ? setState.error.message : String(setState.error)}
             </p>
           )}
-          <CrateHero crate={crate} canAct={canAct} onSetDate={() => setPanel('edit')} />
+          <CrateHero crate={crate} canAct={canAct} onSetDate={() => setPanel('date')} />
           {/* Requirements sit beside the tasks from lg up, and between the
               tasks and the activity on a narrow screen. */}
           <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
@@ -181,9 +181,10 @@ function CrateView({ crate }: { crate: CrateDetail }) {
           </div>
         </div>
       </div>
-      {panel === 'edit' && (
+      {(panel === 'edit' || panel === 'date') && (
         <CrateFormDialog
           crate={crate}
+          focus={panel === 'date' ? 'date' : 'name'}
           declared={crate.requirements}
           onClose={() => setPanel(null)}
           onSaved={() => setPanel(null)}

@@ -28,15 +28,13 @@ export function daysUntil(value: string, now = new Date()) {
 }
 
 // How far off the date is, in words. Only an open crate that has not shipped
-// can be late.
+// gets a hint, so only it can be late.
 export function targetDateHint(crate: Pick<Crate, 'target_date' | 'state' | 'shipped'>) {
-  if (!crate.target_date || crate.state === 'closed') return null
+  if (!crate.target_date || crate.state === 'closed' || crate.shipped) return null
   const days = daysUntil(crate.target_date)
-  if (days === 0) return { text: 'Today', late: false }
-  if (days === 1) return { text: 'Tomorrow', late: false }
-  if (days > 1) return { text: `In ${days} days`, late: false }
-  const past = -days
-  return { text: past === 1 ? '1 day ago' : `${past} days ago`, late: !crate.shipped }
+  if (days === 0) return { text: 'Due today', late: false }
+  if (days > 0) return { text: `${days} ${days === 1 ? 'day' : 'days'} left`, late: false }
+  return { text: `${-days} ${days === -1 ? 'day' : 'days'} late`, late: true }
 }
 
 export function TargetDate({ crate, className }: { crate: Crate; className?: string }) {
@@ -124,22 +122,26 @@ export function CrateFormDialog({
   declared,
   onClose,
   onSaved,
+  focus = 'name',
 }: {
   crate?: Crate
   declared?: CrateRequirement[]
   onClose: () => void
   onSaved: (crate: Crate) => void
+  // The field to focus first: the date when opened from "Set a target date".
+  focus?: 'name' | 'date'
 }) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [name, setName] = useState(crate?.name ?? '')
-  // Focus the name after the dialog records what had focus, so closing it
+  // Focus a field after the dialog records what had focus, so closing it
   // returns focus to the control that opened it.
-  const nameRef = useRef<HTMLDivElement>(null)
+  const fieldsRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const frame = requestAnimationFrame(() => nameRef.current?.querySelector('input')?.focus())
+    const selector = focus === 'date' ? 'input[type="date"]' : 'input'
+    const frame = requestAnimationFrame(() => fieldsRef.current?.querySelector<HTMLInputElement>(selector)?.focus())
     return () => cancelAnimationFrame(frame)
-  }, [])
+  }, [focus])
   const [targetDate, setTargetDate] = useState(crate?.target_date ?? '')
   const [requirementIds, setRequirementIds] = useState<string[]>(declared?.map((item) => item.id) ?? [])
   const requirements = useQuery({
@@ -185,8 +187,8 @@ export function CrateFormDialog({
             <X />
           </Button>
         </header>
-        <div className="space-y-4 px-5 py-4">
-          <div ref={nameRef}>
+        <div ref={fieldsRef} className="space-y-4 px-5 py-4">
+          <div>
             <span className="mb-1 block text-xs font-medium text-muted">Name</span>
             <Input
               aria-label="Crate name"
