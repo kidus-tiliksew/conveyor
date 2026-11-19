@@ -17,10 +17,10 @@ import (
 )
 
 // runCrates holds every backend to component-crates invariants 2, 4 to 13,
-// and 22: records, membership, the closed-crate refusal, counts, shipped,
-// requirement coverage, list order, activity, and the insight inputs
-// (feature-crates CR-1; feature-crate-insights CI-1; req-crates REQ-1 to
-// REQ-4). Each case starts from a fresh workspace.
+// 22, and 29: records, membership, the closed-crate refusal, counts,
+// shipped, requirement coverage, list order, activity, the insight inputs,
+// and the briefing store (feature-crates CR-1; feature-crate-insights CI-1
+// and CI-2; req-crates REQ-1 to REQ-4). Each case starts from a fresh workspace.
 func runCrates(t *testing.T, factory Factory) {
 	t.Run("CrateCreateRecordsOneEvent", func(t *testing.T) { runCrateCreate(t, factory.fresh(t, nil)) })
 	t.Run("CrateRefusalsRecordNothing", func(t *testing.T) { runCrateRefusals(t, factory.fresh(t, nil)) })
@@ -43,6 +43,7 @@ func runCrates(t *testing.T, factory Factory) {
 	t.Run("CrateInsightInputsMemberLeavesMidRead", func(t *testing.T) {
 		runCrateInsightInputsMemberLeaves(t, factory.fresh(t, nil), factory.ProductionCapable)
 	})
+	runCrateBriefings(t, factory)
 }
 
 func crateText(value string) *string { return &value }

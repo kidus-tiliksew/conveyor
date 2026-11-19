@@ -182,6 +182,8 @@ and a change needs `create_tasks`:
 | `PATCH /v1/crates/{id}` | Any of `name`, `target_date`, `requirement_ids`, and `state`. A `target_date` of `null` removes the date. The crate row |
 | `GET /v1/crates/{id}/activity` | `limit` (1 to 200, default 50) and `cursor`. `events`, newest first, and `next_cursor` when more remain |
 | `GET /v1/crates/{id}/insight` | The insight view: where each member is, its branch history, the branch lanes, the delivery numbers, and the replay of the line |
+| `GET /v1/crates/{id}/briefing` | The briefing view: `briefing` (null, or the stored `headline`, `account`, `look_first`, `model`, `generated_at`, `generated_by`, and `current`), the live `fingerprint`, and `can_generate`. This read never calls the model |
+| `POST /v1/crates/{id}/briefing` | Needs `create_tasks`. Generates a briefing and answers the briefing view. 409 `crate_empty` for a crate with no task, 409 `crate_briefing_current` when the stored briefing is current, 503 `crate_briefing_unconfigured` with no model, and 502 `crate_briefing_failed` with a redacted `detail` |
 | `PUT /v1/tasks/{id}/crate` | `crate_id`. The task with its crate |
 | `DELETE /v1/tasks/{id}/crate` | The task with no crate |
 

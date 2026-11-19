@@ -409,3 +409,43 @@ func (m *memory) ReadCrateInsightInputs(ctx context.Context, id string) (CrateIn
 	}
 	return AssembleCrateInsightInputs(crate, tasks, rows), nil
 }
+
+// GetCrateBriefing implements CrateStore with a copy of the stored row.
+func (m *memory) GetCrateBriefing(ctx context.Context, crateID string) (CrateBriefing, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	briefing, ok := m.crateBriefings[memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: crateID}]
+	if !ok {
+		return CrateBriefing{}, fmt.Errorf("%w: crate briefing %s", ErrNotFound, crateID)
+	}
+	briefing.LookFirst = CloneCrateBriefingEntries(briefing.LookFirst)
+	return briefing, nil
+}
+
+// RecordCrateBriefing implements CrateStore. It compares and replaces under
+// the store mutex, the volatile backend's single serialization point, and
+// copies the entries at the boundary (component-crates invariant 29).
+func (m *memory) RecordCrateBriefing(ctx context.Context, briefing CrateBriefing) (CrateBriefing, error) {
+	if err := ValidateCrateBriefing(briefing); err != nil {
+		return CrateBriefing{}, err
+	}
+	workspace := workspaceOrDefault(ctx, "")
+	if workspace == "" {
+		return CrateBriefing{}, ErrWorkspaceRequired
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := memoryScopedKey{workspace: workspace, id: briefing.CrateID}
+	if stored, ok := m.crateBriefings[key]; ok && stored.Fingerprint == briefing.Fingerprint {
+		return CrateBriefing{}, ErrCrateBriefingCurrent
+	}
+	briefing.WorkspaceID = workspace
+	briefing.GeneratedAt = time.Now().UTC().Truncate(time.Microsecond)
+	briefing.LookFirst = CloneCrateBriefingEntries(briefing.LookFirst)
+	if m.crateBriefings == nil {
+		m.crateBriefings = map[memoryScopedKey]CrateBriefing{}
+	}
+	m.crateBriefings[key] = briefing
+	briefing.LookFirst = CloneCrateBriefingEntries(briefing.LookFirst)
+	return briefing, nil
+}
