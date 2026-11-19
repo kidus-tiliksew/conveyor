@@ -6,8 +6,7 @@ import type { FocusEvent, PointerEvent, ReactNode } from 'react'
 import { RequirementInsightError } from '../../lib/api'
 import type { NextActionActor, RequirementInsightTask, TaskState } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { statusMeta, statusOf } from '../board/map/graph-model'
-import { statusIcon } from '../board/map/task-node'
+import { statusIcon, statusMeta, statusOf } from '../board/map/graph-model'
 
 // Every tab's read is keyed by workspace and requirement, so a workspace
 // switch or a late answer never lands in another requirement's panel.
