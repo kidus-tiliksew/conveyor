@@ -17,7 +17,7 @@ import { PageHeader } from '../components/ui/page-header'
 import { SegmentedControl } from '../components/ui/segmented-control'
 import { Skeleton } from '../components/ui/skeleton'
 import { fetchCrates } from '../lib/api'
-import { cratesQueryKey, sameWorkspacePlaceholder } from '../lib/query-keys'
+import { cratesQueryKey } from '../lib/query-keys'
 import type { Crate } from '../lib/types'
 
 export interface CratesSearch {
@@ -42,8 +42,9 @@ export function CratesPage() {
   const crates = useQuery({
     queryKey: cratesQueryKey(workspace, state),
     queryFn: () => fetchCrates(workspace, state),
+    // No placeholder: the open list must never stand in for the closed one
+    // while the closed list loads, or the reverse.
     enabled: Boolean(workspace),
-    placeholderData: sameWorkspacePlaceholder(workspace),
   })
 
   return (

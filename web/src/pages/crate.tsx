@@ -69,7 +69,9 @@ export function CratePage() {
         />
       </div>
     )
-  return <CrateView crate={crate.data} />
+  // Keyed by the route's crate, so an edit form open on one crate never
+  // carries its fields into another crate the history moves to.
+  return <CrateView key={crateId} crate={crate.data} />
 }
 
 function CratesCrumb({ name }: { name?: string }) {

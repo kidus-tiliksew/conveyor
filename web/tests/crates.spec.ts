@@ -412,6 +412,28 @@ test('crates list keeps the served order and shows closed crates only on request
   await expect(page).toHaveURL(/\/w\/demo\/crates\/crate-closed$/)
 })
 
+// The open list never stands in for the closed list while it loads.
+test('switching to closed crates shows no open crate while the closed list loads', async ({ page }) => {
+  await serveCrates(page)
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.route(/\/v1\/crates\?state=closed/, async (route) => {
+    await held
+    await route.fallback()
+  })
+  await page.goto('/w/demo/crates')
+  await expect(page.locator('[data-crate-row]')).toHaveCount(3)
+  await page.getByRole('group', { name: 'Crate state' }).getByRole('button', { name: 'Closed' }).click()
+  await expect(page).toHaveURL(/show=closed/)
+  await expect(page.locator('[data-crate-row]')).toHaveCount(0)
+  release()
+  await expect(page.getByRole('list', { name: 'Closed crates' }).locator('[data-crate-name]')).toHaveText([
+    'Spring migration',
+  ])
+})
+
 // AC-5.2 to AC-5.5 on one open crate with tasks.
 test('crate page shows the header, requirements with the uncovered mark, verbatim next actions, and activity', async ({
   page,
@@ -530,6 +552,29 @@ test('"Set a target date" opens the form on the date field and focus moves to th
   await expect
     .poll(() => page.evaluate(() => document.activeElement?.querySelector('[data-target-date]') != null))
     .toBe(true)
+})
+
+// The address moves from one loaded crate straight to another, as browser
+// history can. An edit form open on the first never stays open on the second.
+test('moving to another crate closes an open edit form', async ({ page }) => {
+  const { patched } = await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-alpha')
+  await expect(page.getByRole('region', { name: 'Crate summary' })).toContainText('Alpha cleanup')
+  await page.getByRole('link', { name: 'Crates', exact: true }).first().click()
+  await page.locator('[data-crate-row="crate-billing"]').click()
+  await expect(page.getByRole('region', { name: 'Crate summary' })).toContainText('Billing v2')
+  await page.getByRole('button', { name: 'Crate actions' }).click()
+  await page.getByRole('menuitem', { name: 'Edit crate' }).click()
+  await expect(page.getByRole('dialog', { name: 'Edit crate' }).getByLabel('Crate name')).toHaveValue('Billing v2')
+
+  // The router follows a history move to the other, already loaded crate.
+  await page.evaluate(() => {
+    window.history.pushState(window.history.state, '', '/w/demo/crates/crate-alpha')
+    window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
+  })
+  await expect(page.getByRole('region', { name: 'Crate summary' })).toContainText('Alpha cleanup')
+  await expect(page.getByRole('dialog', { name: 'Edit crate' })).toHaveCount(0)
+  expect(patched).toEqual([])
 })
 
 test('the edit form focuses the name field first', async ({ page }) => {
