@@ -167,31 +167,68 @@ func (s *markerCompileSession) stop(ctx context.Context) {
 	s.t.Fatalf("the timed-out statement on connection %d still runs", s.connectionID)
 }
 
-// evict drops every cached plan of the test database and its partition
-// databases on every node. The database is private to this test binary.
-func (s *markerCompileSession) evict(ctx context.Context) {
+// markerPlanMissingError is the server's error number for DROP <plan_id>
+// FROM PLANCACHE ON NODE <node_id> when that node holds no such plan.
+const markerPlanMissingError uint16 = 1885
+
+// markerCompilePlan is one cached plan of the test database on one node.
+type markerCompilePlan struct{ id, node int64 }
+
+// plans lists every cached plan of the test database and its partition
+// databases on every node, aggregator and leaf (MV_PLANCACHE). The listing
+// statement itself runs in the test database and caches its own plan there;
+// it is the only plan left out, so every statement the guard measures is
+// listed.
+func (s *markerCompileSession) plans(ctx context.Context) []markerCompilePlan {
 	s.t.Helper()
-	rows, err := s.conn.QueryContext(ctx, "SELECT PLAN_ID,NODE_ID FROM information_schema.MV_PLANCACHE WHERE DATABASE_NAME=? OR LEFT(DATABASE_NAME,?)=?", s.database, len(s.database)+1, s.database+"_")
+	rows, err := s.conn.QueryContext(ctx, "SELECT PLAN_ID,NODE_ID FROM information_schema.MV_PLANCACHE WHERE (DATABASE_NAME=? OR LEFT(DATABASE_NAME,?)=?) AND INSTR(QUERY_TEXT,'information_schema.MV_PLANCACHE')=0", s.database, len(s.database)+1, s.database+"_")
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	type plan struct{ id, node int64 }
-	var plans []plan
+	defer rows.Close()
+	var plans []markerCompilePlan
 	for rows.Next() {
-		var p plan
+		var p markerCompilePlan
 		if err = rows.Scan(&p.id, &p.node); err != nil {
-			rows.Close()
 			s.t.Fatal(err)
 		}
 		plans = append(plans, p)
 	}
-	rows.Close()
 	if err = rows.Err(); err != nil {
 		s.t.Fatal(err)
 	}
-	for _, p := range plans {
-		// A plan can leave the cache between the read and the drop.
-		_, _ = s.conn.ExecContext(ctx, fmt.Sprintf("DROP %d FROM PLANCACHE ON NODE %d", p.id, p.node))
+	return plans
+}
+
+// evict drops every cached plan of the test database and its partition
+// databases on every node, then proves none remains, so no cold trial can
+// run on a cached plan. The database is private to this test binary. A drop
+// may fail only because the plan left the cache between the read and the
+// drop (error 1885), and only when a fresh read confirms that plan is gone
+// from that node; every other drop error fails the guard.
+func (s *markerCompileSession) evict(ctx context.Context) {
+	s.t.Helper()
+	for pass := 0; ; pass++ {
+		plans := s.plans(ctx)
+		if len(plans) == 0 {
+			return
+		}
+		if pass == 3 {
+			s.t.Fatalf("%d cached plans of %s remain after eviction: %v", len(plans), s.database, plans)
+		}
+		for _, p := range plans {
+			_, err := s.conn.ExecContext(ctx, fmt.Sprintf("DROP %d FROM PLANCACHE ON NODE %d", p.id, p.node))
+			if err == nil {
+				continue
+			}
+			var driverErr *mysql.MySQLError
+			if !errors.As(err, &driverErr) || driverErr.Number != markerPlanMissingError {
+				s.t.Fatalf("drop plan %d on node %d: %v", p.id, p.node, err)
+			}
+			if slices.Contains(s.plans(ctx), p) {
+				s.t.Fatalf("drop plan %d on node %d reported a missing plan, but the plan is still cached", p.id, p.node)
+			}
+		}
 	}
 }
 
