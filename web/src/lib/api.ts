@@ -2128,6 +2128,14 @@ export function fetchCrateActivity(workspace: string, crateId: string, cursor = 
   )
 }
 
+// The crate insight view (component-crates, Insight view): each member's
+// phase and station, the replay steps, and the delivery numbers.
+export function fetchCrateInsight(workspace: string, crateId: string) {
+  return getJSON<import('./types').CrateInsight>(
+    workspaceURL(`/v1/crates/${encodeURIComponent(crateId)}/insight`, workspace),
+  )
+}
+
 export interface CrateInput {
   name?: string
   target_date?: string | null

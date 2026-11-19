@@ -333,6 +333,57 @@ export interface CrateActivityPage {
   next_cursor?: string
 }
 
+// What a member task is doing on the crate insight view (component-crates,
+// Phase). It picks the colour of the task's block on the crate's line.
+export type CratePhase = 'queued' | 'planning' | 'building' | 'review' | 'needs_you' | 'blocked' | 'merged' | 'closed'
+
+// Where a member task sits on the crate's line (component-crates, Station).
+// `aside` holds closed tasks off the line.
+export type CrateStation = 'intake' | 'plan' | 'build' | 'review' | 'gate' | 'crate' | 'aside'
+
+// One member task on `GET /v1/crates/{id}/insight`, in the order the crate
+// read shares (component-crates invariant 28). Times are RFC 3339 UTC.
+export interface CrateInsightTask {
+  id: string
+  phase: CratePhase
+  station: CrateStation
+  base_branch: string
+  created_at: string
+  pull_request_opened_at: string[]
+  changes_requested_at: string[]
+  review_rounds: number
+  merged_at: string | null
+  closed_at: string | null
+}
+
+// One group of the branch map's counts (component-crates invariant 26).
+export interface CrateWhereabouts {
+  key: 'not_started' | 'task_branch' | 'merged'
+  branch: string | null
+  task_ids: string[]
+}
+
+// One change of one member's phase or station (component-crates invariant 25).
+export interface CrateReplayStep {
+  at: string
+  task_id: string
+  phase: CratePhase
+  station: CrateStation
+}
+
+// The crate insight view (component-crates, Insight view). The server
+// computes every value; the page formats them and derives none (invariant 21;
+// DEC-61). With no member, `replay.start` equals `replay.end`.
+export interface CrateInsight {
+  tasks: CrateInsightTask[]
+  branches: string[]
+  whereabouts: CrateWhereabouts[]
+  progress: RequirementInsightProgress
+  first_review: { approved: number; reviewed: number }
+  forecast_days_before_target: number | null
+  replay: { start: string; end: string; steps: CrateReplayStep[] }
+}
+
 // The four plan states a task carries (req-task-plan-state REQ-1).
 export type PlanState = 'not_required' | 'needed' | 'awaiting_approval' | 'completed'
 
