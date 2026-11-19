@@ -1,1 +1,0 @@
-import{i as e}from"./graphlib-Du_6_1l-.js";var t=4;function n(n){return e(n,t)}export{n as t};
