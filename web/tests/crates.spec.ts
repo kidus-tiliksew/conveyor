@@ -1218,34 +1218,61 @@ for (const viewport of [
     })
 
     // AC-1.3 and REQ-3 from the line's side: pointing at a block marks its
-    // row and shows its card, and activating the block opens task detail.
-    // The scene needs WebGL and sits beside the list only from lg, so the
-    // spec runs where both hold.
+    // row, or names the task beside the list control when the collapsed
+    // list hides the row, and shows the block's card. Activating the block
+    // opens task detail. The scene needs WebGL and sits beside the list only
+    // from lg, so the spec runs where both hold.
     test('pointing at a block marks its row, and activating it opens task detail', async ({ page }) => {
       test.skip(viewport.width < 1024, 'the line and the task list share the screen only from lg')
+      await page.setViewportSize({ width: viewport.width, height: 1500 })
       await page.emulateMedia({ reducedMotion: 'reduce' })
       await serveCrates(page)
       await page.goto('/w/demo/crates/crate-line')
       const mode = await page.locator('[data-line-mode]').getAttribute('data-line-mode')
       test.skip(mode !== 'scene', 'this browser has no WebGL')
       await expect(page.locator('[data-station-sign="gate"]')).toBeVisible()
-      // The row's emphasis places the block's card over the block.
-      const row = page.locator('[data-crate-task="261115-f07"]')
-      await row.hover()
-      const card = page.locator('[data-line-card="261115-f07"]')
-      await expect(card).toBeVisible()
-      const anchor = await card.evaluate((element) =>
-        (element as HTMLElement).style.transform
-          .match(/translate\(([-\d.]+)px, ([-\d.]+)px\)$/)
-          ?.slice(1)
-          .map(Number),
+      const scene = page.locator('[data-line-scene]')
+
+      // A row's emphasis places its block's card just above the block, so
+      // the block lies below the card's point.
+      async function blockOffset(id: string) {
+        await page.locator(`[data-crate-task="${id}"]`).hover()
+        const card = page.locator(`[data-line-card="${id}"]`)
+        await expect(card).toBeVisible()
+        const point = await card.evaluate((element) =>
+          (element as HTMLElement).style.transform
+            .match(/translate\(([-\d.]+)px, ([-\d.]+)px\)$/)
+            ?.slice(1)
+            .map(Number),
+        )
+        if (!point) throw new Error(`the card of ${id} has no place over the scene`)
+        return { x: point[0], y: point[1] + 22 }
+      }
+      async function pointAt(offset: { x: number; y: number }) {
+        const box = await scene.boundingBox()
+        if (!box) throw new Error('the scene has no box')
+        const at = { x: box.x + offset.x, y: box.y + offset.y }
+        await page.mouse.move(at.x, at.y)
+        return at
+      }
+
+      // The sixth task's row is hidden while the list is collapsed.
+      const toggle = page.locator('[data-crate-tasks-toggle]')
+      await toggle.click()
+      const hiddenBlock = await blockOffset('261115-d09')
+      await toggle.click()
+      await expect(page.locator('[data-crate-task]')).toHaveCount(5)
+      await pointAt(hiddenBlock)
+      await expect(page.locator('[data-emphasized-hidden="261115-d09"]')).toHaveText(
+        'Show spelling suggestions is in the hidden rows.',
       )
-      const scene = await page.locator('[data-line-scene]').boundingBox()
-      if (!anchor || !scene) throw new Error('the card has no place over the scene')
-      // The card stands just above the block, so the block is below its point.
-      const block = { x: scene.x + anchor[0], y: scene.y + anchor[1] + 22 }
-      await page.mouse.move(block.x, block.y)
+      await expect(page.locator('[data-emphasized]')).toHaveCount(0)
+
+      const row = page.locator('[data-crate-task="261115-f07"]')
+      const block = await pointAt(await blockOffset('261115-f07'))
       await expect(row).toHaveAttribute('data-emphasized', 'true')
+      await expect(page.locator('[data-emphasized-hidden]')).toHaveCount(0)
+      const card = page.locator('[data-line-card="261115-f07"]')
       await expect(card.locator('[data-line-card-label]')).toHaveText('Merge approval waits on you (served)')
       await expect(card).toContainText('Approve the ranking change for merge')
       await expect(card).toContainText('→ develop')

@@ -286,6 +286,12 @@ function MemberTasks({
   const [expanded, setExpanded] = useState(false)
   const shown = expanded ? crate.tasks : crate.tasks.slice(0, COLLAPSED_TASKS)
   const hidden = crate.tasks.length - shown.length
+  // A task pointed at elsewhere on the page whose row the collapsed list
+  // hides gets its mark beside the control that shows every row.
+  const emphasizedHidden =
+    emphasis.emphasizedId != null && !shown.some((task) => task.id === emphasis.emphasizedId)
+      ? crate.tasks.find((task) => task.id === emphasis.emphasizedId)
+      : undefined
   return (
     <SectionCard
       title="Tasks"
@@ -399,6 +405,14 @@ function MemberTasks({
           </ul>
           {crate.tasks.length > COLLAPSED_TASKS && (
             <div className="border-t border-border px-2 py-1.5">
+              {emphasizedHidden && (
+                <p
+                  data-emphasized-hidden={emphasizedHidden.id}
+                  className="mb-1 truncate rounded-md bg-primary-soft/60 px-2 py-1 text-xs text-foreground"
+                >
+                  {emphasizedHidden.title} is in the hidden rows.
+                </p>
+              )}
               <Button
                 variant="ghost"
                 size="sm"

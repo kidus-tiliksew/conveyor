@@ -208,6 +208,7 @@ function Block({
   emphasized,
   dimmed,
   reducedMotion,
+  groups,
   onEmphasize,
   onSelect,
 }: {
@@ -218,10 +219,21 @@ function Block({
   emphasized: boolean
   dimmed: boolean
   reducedMotion: boolean
+  groups: RefObject<Map<string, THREE.Group>>
   onEmphasize: (id: string | null) => void
   onSelect: (id: string) => void
 }) {
   const group = useRef<THREE.Group>(null)
+  // The card of an emphasized block follows where the block is drawn.
+  useEffect(() => {
+    const node = group.current
+    const registry = groups.current
+    if (!node) return
+    registry.set(block.id, node)
+    return () => {
+      if (registry.get(block.id) === node) registry.delete(block.id)
+    }
+  }, [block.id, groups])
   const beacon = useRef<THREE.Mesh>(null)
   const lift = useRef(0)
   // One move at a time: from where the block is to its new place.
@@ -589,32 +601,62 @@ function Pallet({ x, palette }: { x: number; palette: Palette }) {
 
 // Keeps the page's own labels over their places in the scene. The labels are
 // ordinary elements beside the canvas, moved here every frame (DEC-143(4)).
+// The card follows its block where the block is drawn in this frame, so it
+// stays over a block that is still moving, and it stays whole inside the
+// scene.
 interface Anchor {
   id: string
   position: [number, number, number]
 }
 
+const CARD_MARGIN = 4
+
 function Projector({
   anchors,
+  card,
+  groups,
   elements,
 }: {
   anchors: Anchor[]
+  // The emphasized block and the height over its centre where its card
+  // points.
+  card: { id: string; lift: number } | null
+  groups: RefObject<Map<string, THREE.Group>>
   elements: RefObject<Record<string, HTMLElement | null>>
 }) {
   const origin = useRef<THREE.Group>(null)
   const point = useMemo(() => new THREE.Vector3(), [])
   useFrame(({ camera, size }) => {
     if (!origin.current) return
+    // The page position of `point`, a place in the scene's own frame.
+    const project = () => {
+      origin.current?.localToWorld(point).project(camera)
+      return { x: (point.x * 0.5 + 0.5) * size.width, y: (-point.y * 0.5 + 0.5) * size.height }
+    }
     for (const anchor of anchors) {
       const element = elements.current[anchor.id]
       if (!element) continue
       point.set(...anchor.position)
-      origin.current.localToWorld(point).project(camera)
-      const x = (point.x * 0.5 + 0.5) * size.width
-      const y = (-point.y * 0.5 + 0.5) * size.height
+      const { x, y } = project()
       element.style.transform = `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`
       element.style.visibility = 'visible'
     }
+    const element = elements.current.card
+    const node = card ? groups.current.get(card.id) : undefined
+    if (!card || !element || !node) return
+    point.copy(node.position)
+    point.y += card.lift * node.scale.y
+    let { x, y } = project()
+    // The card's box runs from half its width either side of x, and from
+    // its full height above y down to y.
+    const width = element.offsetWidth
+    const height = element.offsetHeight
+    if (size.width >= width + 2 * CARD_MARGIN)
+      x = THREE.MathUtils.clamp(x, width / 2 + CARD_MARGIN, size.width - width / 2 - CARD_MARGIN)
+    if (size.height >= height + 2 * CARD_MARGIN)
+      y = THREE.MathUtils.clamp(y, height + CARD_MARGIN, size.height - CARD_MARGIN)
+    element.style.transform = `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`
+    element.style.visibility = 'visible'
   })
   return <group ref={origin} />
 }
@@ -712,14 +754,21 @@ export default function LineScene({
   const layout = useMemo(() => layoutFor(compact), [compact])
   const places = useMemo(() => place(blocks, layout), [blocks, layout])
   const palette = useMemo(() => readPalette(dark), [dark])
-  const bounds = useMemo(
-    () =>
-      new THREE.Box3(
-        new THREE.Vector3(layout.pallet - 0.95, 0, -1.3),
-        new THREE.Vector3(layout.crate + layout.crateSize / 2 + 0.2, compact ? 4.25 : 2.95, 1.9),
-      ),
-    [layout, compact],
-  )
+  // The camera fits the line and every block on it, so a long row of
+  // closed tasks or a tall stack at a station stays in view.
+  const bounds = useMemo(() => {
+    const box = new THREE.Box3(
+      new THREE.Vector3(layout.pallet - 0.95, 0, -1.3),
+      new THREE.Vector3(layout.crate + layout.crateSize / 2 + 0.2, compact ? 4.25 : 2.95, 1.9),
+    )
+    const corner = new THREE.Vector3()
+    for (const spot of places.values()) {
+      const half = spot.size / 2
+      box.expandByPoint(corner.copy(spot.position).subScalar(half))
+      box.expandByPoint(corner.copy(spot.position).addScalar(half))
+    }
+    return box
+  }, [layout, compact, places])
   // A pointer that leaves with the scene leaves no pointer cursor behind.
   useEffect(
     () => () => {
@@ -772,15 +821,8 @@ export default function LineScene({
   const emphasized = emphasizedId ? blocks.find((block) => block.id === emphasizedId) : undefined
   const emphasizedSpot = emphasized ? places.get(emphasized.id) : undefined
   const anchors: Anchor[] = signs.map((sign) => ({ id: sign.id, position: sign.position }))
-  if (emphasizedSpot)
-    anchors.push({
-      id: 'card',
-      position: [
-        emphasizedSpot.position.x,
-        emphasizedSpot.position.y + emphasizedSpot.size / 2 + 0.2,
-        emphasizedSpot.position.z,
-      ],
-    })
+  const card = emphasized && emphasizedSpot ? { id: emphasized.id, lift: emphasizedSpot.size / 2 + 0.2 } : null
+  const groups = useRef(new Map<string, THREE.Group>())
   const elements = useRef<Record<string, HTMLElement | null>>({})
 
   return (
@@ -834,11 +876,12 @@ export default function LineScene({
                 dimmed={emphasizedId !== null && emphasizedId !== block.id}
                 reducedMotion={reducedMotion}
                 onEmphasize={onEmphasize}
+                groups={groups}
                 onSelect={onSelect}
               />
             )
           })}
-          <Projector anchors={anchors} elements={elements} />
+          <Projector anchors={anchors} card={card} groups={groups} elements={elements} />
           <DrawOnChange blocks={blocks} emphasizedId={emphasizedId} shipped={shipped} closed={closed} dark={dark} />
           <ContactShadows
             position={[0, 0.005, 0]}
