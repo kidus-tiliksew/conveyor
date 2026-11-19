@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import {
   Archive,
   ArchiveRestore,
+  ChartColumn,
   ChevronDown,
   CircleDot,
   CircleSlash,
@@ -20,9 +21,11 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { BranchMap } from '../components/crate/branch-map'
 import { type CrateEmphasis, useCrateEmphasis } from '../components/crate/crate-emphasis'
 import { CrateFormDialog } from '../components/crate/crate-parts'
 import { CrateStage } from '../components/crate/crate-stage'
+import { DeliveryStatsSheet } from '../components/crate/delivery-stats'
 import { TaskRow } from '../components/insights/shared'
 import { Button } from '../components/ui/button'
 import { Dialog } from '../components/ui/dialog'
@@ -47,9 +50,10 @@ import { absoluteTime, cn, relativeTime } from '../lib/utils'
 
 // One crate's page (component-crates invariants 17 and 33; req-crates REQ-5):
 // the header with its counts, shipped statement, and line of stations, then
-// the member tasks' activity, with the crate's declared requirements, the ones
-// its tasks carry beyond them, and its member tasks beside it. Every act
-// renders only for a user with create_tasks; the server checks it again.
+// the branch map, then the member tasks' activity, with the crate's declared
+// requirements, the ones its tasks carry beyond them, and its member tasks
+// beside it. The delivery numbers open in a sheet from the page header. Every
+// act renders only for a user with create_tasks; the server checks it again.
 export function CratePage() {
   const { crateId } = useParams({ strict: false }) as { crateId: string }
   const { workspace } = useWorkspaceSelection()
@@ -102,7 +106,7 @@ function CratesCrumb({ name }: { name?: string }) {
   )
 }
 
-type Panel = 'edit' | 'date' | 'add' | { remove: CrateTask } | null
+type Panel = 'edit' | 'date' | 'add' | 'stats' | { remove: CrateTask } | null
 
 function CrateView({ crate }: { crate: CrateDetail }) {
   const { workspace } = useWorkspaceSelection()
@@ -110,11 +114,13 @@ function CrateView({ crate }: { crate: CrateDetail }) {
   const navigate = useNavigate()
   const canAct = useWorkspaceCapability('create_tasks')
   const [panel, setPanel] = useState<Panel>(null)
-  // The one task the page emphasizes, shared by the line and the task list
-  // (req-crate-insights REQ-3).
+  // The one task or count group the page emphasizes, shared by the line, the
+  // branch map, and the task list (req-crate-insights REQ-3, AC-2.4).
   const emphasis = useCrateEmphasis()
   // The insight view refreshes under the crate prefix with the crate read
-  // (component-crates invariant 18). Its load and failure stay in the header.
+  // (component-crates invariant 18). The line, the branch map, and the stats
+  // sheet each show its load and failure, and the rest of the page never
+  // waits on it.
   const insight = useQuery({
     queryKey: crateInsightQueryKey(workspace, crate.id),
     queryFn: () => fetchCrateInsight(workspace, crate.id),
@@ -132,6 +138,12 @@ function CrateView({ crate }: { crate: CrateDetail }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader title={<CratesCrumb name={crate.name} />}>
+        {/* The delivery numbers open in a sheet for every viewer
+            (req-crate-insights REQ-4; component-crates invariant 33). */}
+        <Button variant="outline" size="sm" onClick={() => setPanel('stats')} data-crate-stats>
+          <ChartColumn />
+          Stats
+        </Button>
         {canAct && open && (
           <Link
             to="/w/$workspaceId/"
@@ -189,6 +201,17 @@ function CrateView({ crate }: { crate: CrateDetail }) {
             emphasis={emphasis}
             onSelect={openTask}
           />
+          {/* The briefing takes its place here, between the header and the
+              branch map (component-crates invariant 33). */}
+          <BranchMap
+            crate={crate}
+            insight={insight.data}
+            insightError={insight.error}
+            retryingInsight={insight.isFetching}
+            onRetryInsight={() => void insight.refetch()}
+            emphasis={emphasis}
+            onSelect={openTask}
+          />
           {/* Activity takes the main column. Requirements and then the tasks
               sit beside it from lg up, and before it on a narrow screen
               (component-crates invariant 33). */}
@@ -217,6 +240,16 @@ function CrateView({ crate }: { crate: CrateDetail }) {
           declared={crate.requirements}
           onClose={() => setPanel(null)}
           onSaved={() => setPanel(null)}
+        />
+      )}
+      {panel === 'stats' && (
+        <DeliveryStatsSheet
+          crate={crate}
+          insight={insight.data}
+          insightError={insight.error}
+          retryingInsight={insight.isFetching}
+          onRetryInsight={() => void insight.refetch()}
+          onClose={() => setPanel(null)}
         />
       )}
       {panel === 'add' && <AddTaskDialog crate={crate} onClose={() => setPanel(null)} />}
