@@ -41,10 +41,11 @@ func markerShapeInput(pages, orders int, keepAll bool) store.MarkerFoldInput {
 // invariant 19). Every statement binds one argument per question mark, names
 // no snapshot body key outside the compact payload, selects the review-round
 // kinds, and carries no per-key JSON proof or projection CASE. No statement
-// selects a work_order.updated event, and none tests a stored payload except
-// to match an open review order's ID against the claims of the bound tasks
-// that have one: the wide reads own every other payload test
-// (TestMarkerWideQueryShape).
+// selects a work_order.updated event. A statement tests a stored payload
+// only in two places: the bounce source test, which follows a kind list that
+// admits no claim, and the match of an open review order's ID against the
+// claims of the bound tasks that have one. The wide reads own every other
+// payload test (TestMarkerWideQueryShape).
 func TestMarkerFoldQueryShape(t *testing.T) {
 	texts := map[string]int{}
 	for _, live := range []bool{false, true} {
@@ -88,17 +89,27 @@ func TestMarkerFoldQueryShape(t *testing.T) {
 					if !live && strings.Contains(query, "'work_order.claimed'") {
 						t.Fatalf("%s: the narrow read selects claims without an open review order", name)
 					}
-					// The only stored-payload test left is the open review
-					// order ID match, and it follows a bound list of the
-					// tasks that have such an order.
-					wantPayloadTests := 0
+					// The bounce source test follows a kind list without
+					// claims; the open review order ID match follows a bound
+					// list of the tasks that have such an order.
+					bounce := strings.Index(query, `INSTR(e.payload_json,'"user-request-changes"')`)
+					if bounce < 0 {
+						t.Fatalf("%s: no bounce source test", name)
+					}
+					kinds := query[:bounce]
+					kinds = kinds[strings.LastIndex(kinds, "e.kind IN ("):]
+					kinds = kinds[:strings.Index(kinds, ")")]
+					if strings.Contains(kinds, "work_order.claimed") || strings.Contains(kinds, "work_order.updated") || !strings.Contains(kinds, "'pipeline.bounced'") {
+						t.Fatalf("%s: the kind list ahead of the bounce test is %s", name, kinds)
+					}
+					wantPayloadTests := 1
 					if live && !keepAll {
-						wantPayloadTests = 1
+						wantPayloadTests = 2
 					}
 					if got := strings.Count(query, "INSTR(e.payload_json"); got != wantPayloadTests {
 						t.Fatalf("%s: %d stored-payload tests, want %d", name, got, wantPayloadTests)
 					}
-					if wantPayloadTests == 1 {
+					if wantPayloadTests == 2 {
 						named := query[strings.Index(query, "named_claims AS ("):]
 						named = named[:strings.Index(named, "INSTR(e.payload_json")]
 						if got := strings.Count(named, "?"); got < markerTaskChunk {

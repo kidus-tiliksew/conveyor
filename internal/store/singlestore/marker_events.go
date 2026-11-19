@@ -484,15 +484,17 @@ func markerPastLease(b *markerBinder, now string) string {
 }
 
 // markerRowsSQL is the marker_rows selection: the compact narrow rows each
-// fold can act on. One arm selects, by kind and task alone, every forge
-// kind, the review lifecycle and review-round kinds of review tasks, and
-// every bounce. Its predicate names no payload, so SingleStore reads a
-// payload only for a row the arm returns. A bounce is small, and Go keeps
-// only a user change request (store.MarkerEventFoldable). With an open
-// review order, a second arm selects the claims and renewals of the tasks
-// that have one, again by kind and bound task list alone. No arm selects a
-// work_order.updated event or a claim of a task without an open review
-// order: markerWideRows reads those, and only for the tasks that need them.
+// fold can act on. One arm selects every forge kind, the review lifecycle
+// and review-round kinds of review tasks, and each bounce that may name
+// user-request-changes. The bounce test reads the stored payload, and it is
+// the arm's only payload test: the kind list ahead of it admits only
+// bounces, review kinds, and forge kinds, whose payloads are small, so no
+// wide payload reaches it. The test is a necessary condition; Go applies
+// the exact one (store.MarkerEventFoldable). With an open review order, a
+// second arm selects the claims and renewals of the tasks that have one, by
+// kind and bound task list alone. No arm selects a work_order.updated event
+// or a claim of a task without an open review order: markerWideRows reads
+// those, and only for the tasks that need them.
 func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput, live bool) string {
 	forge := store.MarkerForgePageKinds()
 	review := append([]string{"work_order.released", "review.completed", "review.accepted", "task.setup.changed"}, store.MarkerReviewRoundKinds...)
@@ -502,7 +504,7 @@ func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput, live bool) string 
 				FROM events_columnstore e
 				WHERE e.workspace_id=` + b.bind(in.Workspace) + ` AND e.task_id IS NOT NULL AND ` + b.fixedIn("e.task_id", in.Page) + `
 				AND e.kind IN (` + markerQuotedSQL(candidates) + `)
-				AND (e.kind='pipeline.bounced'
+				AND ((e.kind='pipeline.bounced' AND ` + markerMayName("e.payload_json", store.UserRequestChangesSource) + `)
 				OR e.kind IN (` + markerQuotedSQL(forge) + `)
 				OR (e.kind IN (` + markerQuotedSQL(review) + `) AND ` + b.flag(in.ReviewTasks) + `=1 AND ` + b.fixedIn("e.task_id", in.ReviewTasks) + `))`
 	if !live {
