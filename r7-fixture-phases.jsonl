@@ -1,0 +1,10 @@
+{"at": 1795079038.6438642, "detail": "", "outcome": "started", "phase": "prepare"}
+{"at": 1795079048.9976492, "detail": "backend=singlestore endpoint=127.0.0.1:3306 database=conveyor_markers_98cb0e2f1719_test client=repository-go-driver free_bytes=43477528576", "outcome": "success", "phase": "prepare"}
+{"at": 1795079048.9980752, "detail": "", "outcome": "started", "phase": "before-snapshot"}
+{"at": 1795079051.0402446, "detail": "", "outcome": "success", "phase": "before-snapshot"}
+{"at": 1795079051.1015623, "detail": "", "outcome": "started", "phase": "gate"}
+{"at": 1795079156.663525, "detail": "exit_status=0", "outcome": "success", "phase": "gate"}
+{"at": 1795079156.7238913, "detail": "", "outcome": "started", "phase": "after-snapshot"}
+{"at": 1795079158.980468, "detail": "", "outcome": "success", "phase": "after-snapshot"}
+{"at": 1795079159.1998873, "detail": "", "outcome": "started", "phase": "teardown"}
+{"at": 1795079160.3782318, "detail": "backend=singlestore database=conveyor_markers_98cb0e2f1719_test", "outcome": "success", "phase": "teardown"}

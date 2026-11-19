@@ -1,0 +1,3 @@
+{"at": 1795078119.3322392, "detail": "", "outcome": "started", "phase": "prepare"}
+{"at": 1795078119.3328044, "detail": "configured database is not a _test parent", "outcome": "safety-refusal", "phase": "prepare"}
+{"at": 1795078119.333406, "detail": "singlestore preparation failed for 127.0.0.1:3306 (client=repository-go-driver tool=go-run timeout=60s): singlestore configured database must end in _test; refusing a production-shaped endpoint", "outcome": "failure", "phase": "prepare"}

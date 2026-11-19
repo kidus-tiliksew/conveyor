@@ -1,0 +1,12 @@
+{"at": 1795078968.9506316, "detail": "", "outcome": "started", "phase": "managed-container"}
+{"at": 1795078971.6264153, "detail": "project=conveyor-test-20261119t090248z-d0888b2f1cf7", "outcome": "success", "phase": "managed-container"}
+{"at": 1795078971.6493647, "detail": "", "outcome": "started", "phase": "prepare"}
+{"at": 1795078980.3322735, "detail": "backend=postgres endpoint=127.0.0.1:39447 database=conveyor_markers_ace0122895c5_test client=repository-go-driver free_bytes=43872182272", "outcome": "success", "phase": "prepare"}
+{"at": 1795078980.332787, "detail": "", "outcome": "started", "phase": "before-snapshot"}
+{"at": 1795078987.7683012, "detail": "", "outcome": "success", "phase": "before-snapshot"}
+{"at": 1795078987.8328059, "detail": "", "outcome": "started", "phase": "gate"}
+{"at": 1795079025.8007898, "detail": "exit_status=0", "outcome": "success", "phase": "gate"}
+{"at": 1795079025.8633852, "detail": "", "outcome": "started", "phase": "after-snapshot"}
+{"at": 1795079030.3740885, "detail": "", "outcome": "success", "phase": "after-snapshot"}
+{"at": 1795079030.5933342, "detail": "", "outcome": "started", "phase": "teardown"}
+{"at": 1795079030.666637, "detail": "backend=postgres database=conveyor_markers_ace0122895c5_test", "outcome": "success", "phase": "teardown"}
