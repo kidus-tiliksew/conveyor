@@ -55,14 +55,26 @@ type MarkerPayloadProjection struct {
 	Keys  []string
 }
 
+// MarkerReviewRoundKinds are the review-round kinds the review recovery folds
+// read: ReviewRecoveryNeeded reads review.round_completed, and
+// AutomaticReviewAct, which ReviewRecoveryNeeded and
+// InterruptedReviewRecoveryNeeded call, reads review.round_retried and
+// review.round_recovered. A marker read selects them for every task with a
+// review order (component-web-task-surfaces invariant 19).
+var MarkerReviewRoundKinds = []string{"review.round_completed", "review.round_retried", "review.round_recovered"}
+
 // MarkerPayloadProjections lists, per group of event kinds, the keys every fold that
 // reads the kinds decodes. Each backend's marker read sends a payload as these
 // keys only when its own SQL proves Go matches the keys exactly
 // (component-web-task-surfaces invariant 19). The decoders are store.UserRequestChangesPending (bounce),
-// store.LatestForgeFailure (forge kinds and the implement submission), and
+// store.LatestForgeFailure (forge kinds and the implement submission),
 // the review folds' reviewLifecycleEventMatches, ReviewVerdictDiagnostics,
 // ActivityReviewLeaseHorizon, completedReviewWorkOrderIDs, and
-// SupersededReviewWorkOrders (review lifecycle kinds). A claim decodes as a
+// SupersededReviewWorkOrders (review lifecycle kinds), and the review
+// recovery folds' ReviewRecoveryNeeded (review.round_completed) and
+// AutomaticReviewAct (review.round_retried and review.round_recovered). Both
+// round decoders keep every key of their payload struct: a key the final
+// condition does not use can still fail json.Unmarshal. A claim decodes as a
 // whole work order: the database would have to prove every typed field of
 // the work order decodes before leaving one out, and that proof made the
 // SingleStore statement too costly to compile, so a claim keeps its compact
@@ -82,6 +94,8 @@ var MarkerPayloadProjections = func() []MarkerPayloadProjection {
 		{[]string{"work_order.released", "review.accepted"}, []string{"id", "review_work_order_id"}},
 		{[]string{"review.completed"}, []string{"id", "review_work_order_id", "review_round"}},
 		{[]string{"task.setup.changed"}, []string{"id", "review_work_order_id", "review_transition"}},
+		{[]string{"review.round_completed"}, []string{"review_round"}},
+		{[]string{"review.round_retried", "review.round_recovered"}, []string{"automatic", "prior_round", "new_round", "review_round"}},
 	}
 }()
 

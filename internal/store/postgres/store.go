@@ -910,7 +910,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	// user-request-changes, an implement order's update to submitted, an
 	// implement claim or a claim of a task with an open review order, the
 	// forge kinds store.LatestForgeFailure reads, and the review lifecycle
-	// kinds of review tasks (component-next-action;
+	// and review-round kinds of review tasks (component-next-action;
 	// component-submission-merge; component-web-task-surfaces invariant 19).
 	foldEvents, err := s.markerFoldRows(ctx, store.MarkerFoldInput{
 		Workspace: workspace(ctx), Page: taskIDs, ReviewTasks: reviewTaskIDs,
@@ -925,8 +925,10 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	for _, event := range foldEvents {
 		// A task's review lifecycle events feed its review folds only when
 		// the task has a review order, as on SingleStore.
-		switch event.Kind {
-		case "work_order.claimed", "work_order.lease_renewed", "work_order.released", "review.completed", "review.accepted", "task.setup.changed":
+		switch {
+		case event.Kind == "work_order.claimed", event.Kind == "work_order.lease_renewed", event.Kind == "work_order.released",
+			event.Kind == "review.completed", event.Kind == "review.accepted", event.Kind == "task.setup.changed",
+			slices.Contains(store.MarkerReviewRoundKinds, event.Kind):
 			if reviewTasks[event.TaskID] {
 				eventsByTask[event.TaskID] = append(eventsByTask[event.TaskID], event)
 			}

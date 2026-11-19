@@ -222,9 +222,6 @@ func (s *Store) markerFoldScan(ctx context.Context, query string, args []any) ([
 // only the pure Go facts the folds read and the claim read-back decision
 // (store.MarkerPayloadProjections, store.MarkerClaimBackfill).
 
-// markerLease decodes lease timestamps with Go's JSON time arithmetic.
-var markerLease = store.SingleStoreLeaseSQL
-
 func markerPlaceholder(int) string { return "?" }
 
 // markerScope is the FROM and WHERE clause of the read: the events of the
@@ -376,12 +373,13 @@ func markerProjectedPayload() string {
 // rows each fold can act on, with their top-level key lists. A bounce only
 // from user-request-changes, an update only for an implement order
 // submitted, a claim only of an implement order or of a task with an open
-// review order, every forge kind, the review lifecycle kinds of review
-// tasks, and renewals of tasks with an open review order. The tests read the
+// review order, every forge kind, the review lifecycle and review-round
+// kinds of review tasks, and renewals of tasks with an open review order. The tests read the
 // payload text, so a row Go might decode as selected is kept.
 func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput) string {
 	forge := store.MarkerForgePageKinds()
-	candidates := append([]string{"pipeline.bounced", "work_order.updated", "work_order.claimed", "work_order.lease_renewed", "work_order.released", "review.completed", "review.accepted", "task.setup.changed"}, forge...)
+	review := append([]string{"work_order.released", "review.completed", "review.accepted", "task.setup.changed"}, store.MarkerReviewRoundKinds...)
+	candidates := append(append([]string{"pipeline.bounced", "work_order.updated", "work_order.claimed", "work_order.lease_renewed"}, review...), forge...)
 	implement := markerMayEqual("stage", string(core.StageImplement))
 	return `scoped_rows AS (
 			SELECT e.id,e.task_id,COALESCE(e.job_id,'') AS job_id,e.kind,` + markerCompact + ` AS event_payload,e.at AS event_at
@@ -396,7 +394,7 @@ func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput) string {
 			OR (kind='work_order.updated' AND ` + implement + ` AND ` + markerMayEqual("state", string(core.WorkOrderSubmitted)) + `)
 			OR (kind='work_order.claimed' AND (` + implement + ` OR ` + b.in("task_id", in.LiveReviewTasks) + `))
 			OR kind IN (` + markerQuotedSQL(forge) + `)
-			OR (kind IN ('work_order.released','review.completed','review.accepted','task.setup.changed') AND ` + b.in("task_id", in.ReviewTasks) + `)
+			OR (kind IN (` + markerQuotedSQL(review) + `) AND ` + b.in("task_id", in.ReviewTasks) + `)
 			OR (kind='work_order.lease_renewed' AND ` + b.in("task_id", in.LiveReviewTasks) + `)
 		)`
 }
@@ -472,10 +470,10 @@ func markerFoldQuery(in store.MarkerFoldInput) (string, []any) {
 		const comma = `[[:space:]]*,[[:space:]]*`
 		const renewalShape = `^[[:space:]]*[{][[:space:]]*(` + attemptField + comma + leaseField + `|` + leaseField + `(` + comma + attemptField + `){0,1})[[:space:]]*[}][[:space:]]*$`
 		leaseString := markerIsString(markerField("event_payload", "lease_expires_at"))
-		instants := markerLease.LeaseInstantSQL(`SELECT `+carry+`,
+		instants := markerLeaseInstantSQL(`SELECT `+carry+`,
 			`+markerFieldText("event_payload", "lease_expires_at")+` AS lease_text,
 			CASE WHEN kind='work_order.claimed' AND `+leaseString+` THEN 1
-				WHEN kind='work_order.lease_renewed' AND `+markerText("event_payload")+` `+markerLease.RegexOp+` '`+renewalShape+`' AND `+leaseString+` THEN 1
+				WHEN kind='work_order.lease_renewed' AND `+markerText("event_payload")+` `+markerRegexOp+` '`+renewalShape+`' AND `+leaseString+` THEN 1
 				ELSE 0 END AS lease_string
 			FROM marker_rows WHERE kind IN ('work_order.lease_renewed','work_order.claimed')`, carry)
 		const future = `(lease_sec>now_sec OR (lease_sec=now_sec AND lease_nanos>now_nanos))`
