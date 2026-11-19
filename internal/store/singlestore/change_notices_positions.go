@@ -40,9 +40,8 @@ import (
 // workspace's first commit, whose update matches no row, adds the counter
 // insert, and a first commit whose insert loses to a concurrent one adds the
 // update again (advanceTaskEventCounter). The ordinary path never reads
-// events_columnstore. (SingleStore
-// leaves the last insert ID at 0 on the ON DUPLICATE KEY UPDATE branch of an
-// upsert, so the counter is not an upsert:
+// events_columnstore. (SingleStore leaves the last insert ID at 0 on the ON
+// DUPLICATE KEY UPDATE branch of an upsert, so the counter is not an upsert:
 // TestSingleStoreTaskEventPositionResultIntegration.) A prune position adds
 // one delete of fixed shape that returns no rows, so it adds no row to the
 // read account of the request that commits (component-persistence invariant
