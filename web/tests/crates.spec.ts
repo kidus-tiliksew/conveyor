@@ -455,7 +455,12 @@ const memberNextAction = {
   deadline: null,
 }
 
-async function serveCrates(page: Page, options: { role?: Role; insight?: 'fail' } = {}) {
+// `insights` replaces the served insight view of the crates it names. A spec
+// may change it between page loads: the fake server reads it per request.
+async function serveCrates(
+  page: Page,
+  options: { role?: Role; insight?: 'fail'; insights?: Record<string, CrateInsight> } = {},
+) {
   const role = options.role ?? 'operator'
   const details: Record<string, CrateDetail> = {
     [billing.id]: structuredClone(billing),
@@ -507,7 +512,8 @@ async function serveCrates(page: Page, options: { role?: Role; insight?: 'fail' 
       const crate = details[id]
       if (!crate) return route.fulfill({ status: 404, json: { error: 'crate_not_found', crate_id: id } })
       if (options.insight === 'fail') return route.fulfill({ status: 500, json: { error: 'internal error' } })
-      return route.fulfill({ json: id === lineCrate.id ? lineInsight : plainInsight(crate) })
+      const served = options.insights?.[id] ?? (id === lineCrate.id ? lineInsight : plainInsight(crate))
+      return route.fulfill({ json: served })
     }
     const one = path.match(/^\/v1\/crates\/([^/]+)$/)
     if (one) {
@@ -634,7 +640,9 @@ async function expectNoHorizontalScroll(page: Page, root = 'body') {
       const style = getComputedStyle(element)
       if (!/(auto|scroll)/.test(style.overflowX)) continue
       // A deliberately scrolling strip, such as a segmented control, is fine.
-      if (element.closest('fieldset')) continue
+      // So is the branch map, which scrolls sideways inside its card below
+      // 680 px (req-crate-insights REQ-2).
+      if (element.closest('fieldset, [data-branch-map-scroll]')) continue
       if (element.scrollWidth > element.clientWidth + 1 && element.clientWidth >= width - 32)
         wide.push(`${element.tagName.toLowerCase()}.${element.className} ${element.scrollWidth}>${element.clientWidth}`)
     }
@@ -1242,6 +1250,10 @@ for (const viewport of [
     // REQ-3: pointing at a row emphasizes the task, and the row keeps its
     // link to task detail.
     test('pointing at a task row marks it and emphasizes its block', async ({ page }) => {
+      // The branch map sits between the line and the task list, so a desktop
+      // page needs the height that keeps the line and the rows in view
+      // together.
+      if (viewport.width >= 1024) await page.setViewportSize({ width: viewport.width, height: 1900 })
       await serveCrates(page)
       await page.goto('/w/demo/crates/crate-line')
       const row = page.locator('[data-crate-task="261115-c11"]')
@@ -1272,7 +1284,9 @@ for (const viewport of [
     // from lg, so the spec runs where both hold.
     test('pointing at a block marks its row, and activating it opens task detail', async ({ page }) => {
       test.skip(viewport.width < 1024, 'the line and the task list share the screen only from lg')
-      await page.setViewportSize({ width: viewport.width, height: 1500 })
+      // Tall enough that the line and every expanded row stay in view with
+      // the branch map between them, so the page never scrolls the line away.
+      await page.setViewportSize({ width: viewport.width, height: 1900 })
       await page.emulateMedia({ reducedMotion: 'reduce' })
       await serveCrates(page)
       await page.goto('/w/demo/crates/crate-line')
@@ -1287,12 +1301,25 @@ for (const viewport of [
         await page.locator(`[data-crate-task="${id}"]`).hover()
         const card = page.locator(`[data-line-card="${id}"]`)
         await expect(card).toBeVisible()
-        const point = await card.evaluate((element) =>
-          (element as HTMLElement).style.transform
-            .match(/translate\(([-\d.]+)px, ([-\d.]+)px\)$/)
-            ?.slice(1)
-            .map(Number),
-        )
+        // The scene moves the card on its next frames, so the first read can
+        // still hold the place of the block emphasized before. Wait until
+        // two reads in a row agree.
+        let transform = ''
+        await expect
+          .poll(
+            async () => {
+              const next = await card.evaluate((element) => (element as HTMLElement).style.transform)
+              const settled = next !== '' && next === transform
+              transform = next
+              return settled
+            },
+            { intervals: [150] },
+          )
+          .toBe(true)
+        const point = transform
+          .match(/translate\(([-\d.]+)px, ([-\d.]+)px\)$/)
+          ?.slice(1)
+          .map(Number)
         if (!point) throw new Error(`the card of ${id} has no place over the scene`)
         return { x: point[0], y: point[1] + 22 }
       }
@@ -1412,4 +1439,589 @@ test.describe('with reduced motion', () => {
         crate: '1',
       })
   })
+})
+
+// The branch map and the delivery numbers (req-crate-insights REQ-2 to
+// REQ-4; component-crates invariants 26, 27, and 33). The fake server serves
+// every lane, time, group, and number; the page places and formats them.
+
+// The billing crate on one branch: one task in review after a round that
+// asked for changes, and one merged task.
+const billingInsight: CrateInsight = {
+  tasks: [
+    insightTask('261101-aaaaaa', 'review', 'review', '2026-11-12T09:00:00Z', {
+      pull_request_opened_at: ['2026-11-13T15:00:00Z'],
+      changes_requested_at: ['2026-11-14T11:00:00Z'],
+      review_rounds: 2,
+    }),
+    insightTask('261101-bbbbbb', 'merged', 'crate', '2026-11-10T09:00:00Z', {
+      pull_request_opened_at: ['2026-11-11T09:00:00Z'],
+      review_rounds: 1,
+      merged_at: '2026-11-12T16:00:00Z',
+    }),
+  ],
+  branches: ['main'],
+  whereabouts: [
+    { key: 'task_branch', branch: null, task_ids: ['261101-aaaaaa'] },
+    { key: 'merged', branch: 'main', task_ids: ['261101-bbbbbb'] },
+  ],
+  progress: { ...emptyProgress(), delivered: 1, total: 2, open: 1 },
+  first_review: { approved: 1, reviewed: 2 },
+  forecast_days_before_target: null,
+  replay: {
+    start: '2026-11-10T09:00:00Z',
+    end: lineNow,
+    steps: [
+      step('2026-11-10T09:00:00Z', '261101-bbbbbb', 'queued', 'intake'),
+      step('2026-11-11T09:00:00Z', '261101-bbbbbb', 'review', 'review'),
+      step('2026-11-12T09:00:00Z', '261101-aaaaaa', 'queued', 'intake'),
+      step('2026-11-12T16:00:00Z', '261101-bbbbbb', 'merged', 'crate'),
+      step('2026-11-13T15:00:00Z', '261101-aaaaaa', 'review', 'review'),
+    ],
+  },
+}
+
+// Ten served days of scope, open, and merged tasks, oldest first.
+const deliveryDaily = Array.from({ length: 10 }, (_, index) => ({
+  day: `2026-11-${String(10 + index).padStart(2, '0')}`,
+  scope: Math.min(7, 2 + index),
+  open: Math.min(7, 2 + index) - (index >= 3 ? 1 : 0),
+  delivered: index >= 3 ? 1 : 0,
+}))
+
+// Eight served ISO weeks, oldest first. The last one is in progress.
+const deliveryWeekly = Array.from({ length: 8 }, (_, index) => {
+  const start = new Date(Date.UTC(2026, 8, 28 + index * 7))
+  return {
+    week_start: start.toISOString().slice(0, 10),
+    iso_year: 2026,
+    iso_week: 40 + index,
+    delivered: [0, 1, 0, 2, 1, 0, 1, 1][index],
+    in_progress: index === 7,
+  }
+})
+
+// The line crate with served delivery numbers and a round that asked for
+// changes: a forecast that falls five days before the target date.
+const deliveryInsight: CrateInsight = {
+  ...lineInsight,
+  tasks: lineInsight.tasks.map((task) =>
+    task.id === '261115-b02' ? { ...task, changes_requested_at: ['2026-11-16T15:00:00Z'], review_rounds: 1 } : task,
+  ),
+  progress: {
+    ...emptyProgress(),
+    daily: deliveryDaily,
+    forecast: { day: '2026-12-01', rate_per_day: 0.5 },
+    weekly: deliveryWeekly,
+    delivered: 1,
+    total: 7,
+    open: 6,
+    throughput_per_week: 0.5,
+    median_cycle_seconds: 172_800,
+  },
+  first_review: { approved: 1, reviewed: 2 },
+  forecast_days_before_target: 5,
+}
+
+// The line crate with two rounds that asked for changes on the merged task,
+// one hour after its creation and one hour before its merge. On both map
+// widths each falls inside a bend of the line.
+const bendInsight: CrateInsight = {
+  ...deliveryInsight,
+  tasks: deliveryInsight.tasks.map((task) =>
+    task.id === '261115-a01'
+      ? { ...task, changes_requested_at: ['2026-11-10T10:00:00Z', '2026-11-13T08:00:00Z'], review_rounds: 3 }
+      : task,
+  ),
+}
+
+// The x where a line leaves its lane: the first point of its drawn path.
+async function lineStart(page: Page, id: string) {
+  const d = await page.locator(`[data-branch-task="${id}"] path`).first().getAttribute('d')
+  const match = d?.match(/^M([-\d.]+),/)
+  if (!match) throw new Error(`the line of ${id} has no path`)
+  return Number(match[1])
+}
+
+for (const viewport of [
+  { name: '375 px', width: 375, height: 812 },
+  { name: 'desktop', width: 1280, height: 900 },
+]) {
+  test.describe(`branch map and delivery numbers at ${viewport.name}`, () => {
+    test.use({ viewport: { width: viewport.width, height: viewport.height } })
+
+    // AC-2.1 to AC-2.4 on a crate whose tasks merge into two branches.
+    test('the branch map shows a lane per served branch, a line per task, and the served counts', async ({ page }) => {
+      await serveCrates(page, { insights: { [lineCrate.id]: deliveryInsight } })
+      await page.goto('/w/demo/crates/crate-line')
+      const map = page.getByRole('region', { name: 'Where the work is' })
+      await expect(map.locator('[data-lane]')).toHaveCount(2)
+      expect(await map.locator('[data-lane]').evaluateAll((lanes) => lanes.map((lane) => lane.dataset.lane))).toEqual([
+        'main',
+        'develop',
+      ])
+      await expect(map.locator('[data-lane-name]')).toHaveText(['main', 'develop'])
+      await expect(map.locator('[data-branch-task]')).toHaveCount(8)
+
+      // Each line ends as its served times say: a merge returns to the lane
+      // with a mark, a close ends with a mark, and an open line ends at the
+      // present with the title and what the task is doing.
+      const line = (id: string) => map.locator(`[data-branch-task="${id}"]`)
+      await expect(line('261115-a01')).toHaveAttribute('data-ends', 'merged')
+      await expect(line('261115-a01').locator('[data-merge-mark]')).toHaveCount(1)
+      await expect(line('261115-g04')).toHaveAttribute('data-ends', 'closed')
+      await expect(line('261115-g04').locator('[data-close-mark]')).toHaveCount(1)
+      for (const id of ['261115-f07', '261115-a03', '261115-c11', '261115-b02', '261115-e05', '261115-d09'])
+        await expect(line(id)).toHaveAttribute('data-ends', 'open')
+      // Below 900 px the label column is narrower and a long title is cut
+      // short. The line's name and card keep the whole title.
+      await expect(line('261115-c11').locator('[data-open-label]')).toHaveText(
+        viewport.width >= 900 ? 'Index product reviews · Building' : 'Index product… · Building',
+      )
+      await expect(line('261115-c11')).toHaveAttribute(
+        'aria-label',
+        /^Index product reviews: Agent building \(served\)/,
+      )
+      await expect(line('261115-f07').locator('[data-open-label]')).toContainText('Waits on a person')
+      // A task whose work has not started is a broken line.
+      await expect(map.locator('[data-not-started]')).toHaveCount(2)
+      await expect(line('261115-e05')).toHaveAttribute('data-not-started', 'true')
+      await expect(line('261115-d09')).toHaveAttribute('data-not-started', 'true')
+      // AC-2.3: one mark for the round that asked for changes.
+      await expect(line('261115-b02').locator('[data-change-mark]')).toHaveCount(1)
+      await expect(map.locator('[data-change-mark]')).toHaveCount(1)
+
+      // The time axis: day ticks and the present.
+      await expect(map.locator('[data-now]')).toHaveText('Now')
+      const ticks = await map.locator('[data-tick]').count()
+      expect(ticks).toBeGreaterThan(0)
+      expect(ticks).toBeLessThanOrEqual(8)
+      // Lines leave their lanes in the order of their served creation times.
+      expect(await lineStart(page, '261115-a01')).toBeLessThan(await lineStart(page, '261115-c11'))
+      expect(await lineStart(page, '261115-c11')).toBeLessThan(await lineStart(page, '261115-b02'))
+      expect(await lineStart(page, '261115-b02')).toBeLessThan(await lineStart(page, '261115-e05'))
+
+      // AC-2.4: the served counts, in the served order.
+      const counts = map.locator('[data-whereabouts]')
+      await expect(counts).toHaveText(['2not started', '4on task branches', '1merged into main'])
+
+      await expect(map.locator('[data-legend]')).toHaveText([
+        'Merged into the branch',
+        'Review asked for changes',
+        'Not started',
+      ])
+      // No release mark or release legend entry.
+      await expect(map.getByText(/released/i)).toHaveCount(0)
+
+      // Below 680 px the map scrolls sideways inside its card, and the page
+      // does not.
+      const scroll = map.locator('[data-branch-map-scroll]')
+      const sizes = await scroll.evaluate((element) => ({ scroll: element.scrollWidth, client: element.clientWidth }))
+      if (viewport.width < 680) expect(sizes.scroll).toBeGreaterThan(sizes.client)
+      else expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
+      await expectNoHorizontalScroll(page)
+    })
+
+    test('a crate on one branch shows one lane with its lines', async ({ page }) => {
+      await serveCrates(page, { insights: { [billing.id]: billingInsight } })
+      await page.goto('/w/demo/crates/crate-billing')
+      const map = page.getByRole('region', { name: 'Where the work is' })
+      await expect(map.locator('[data-lane-name]')).toHaveText(['main'])
+      await expect(map.locator('[data-branch-task]')).toHaveCount(2)
+      await expect(map.locator('[data-branch-task="261101-aaaaaa"] [data-open-label]')).toHaveText(
+        viewport.width >= 900 ? 'Send invoices by email · In review' : 'Send invoice… · In review',
+      )
+      await expect(map.locator('[data-branch-task="261101-bbbbbb"]')).toHaveAttribute('data-ends', 'merged')
+      await expect(map.locator('[data-whereabouts]')).toHaveText(['1on task branches', '1merged into main'])
+    })
+
+    // AC-2.4: pointing at a count emphasizes the lines of its served tasks.
+    test('pointing at a count emphasizes its tasks lines', async ({ page }) => {
+      await serveCrates(page, { insights: { [lineCrate.id]: deliveryInsight } })
+      await page.goto('/w/demo/crates/crate-line')
+      const map = page.getByRole('region', { name: 'Where the work is' })
+      await expect(map.locator('[data-branch-task]')).toHaveCount(8)
+      const lit = () =>
+        map
+          .locator('[data-branch-task]:not([data-dimmed])')
+          .evaluateAll((lines) => lines.map((line) => line.getAttribute('data-branch-task')).sort())
+
+      await map.locator('[data-whereabouts="not_started"]').hover()
+      await expect.poll(lit).toEqual(['261115-d09', '261115-e05'])
+      await page.mouse.move(0, 0)
+      await expect(map.locator('[data-dimmed]')).toHaveCount(0)
+
+      // From the keyboard too, and the group's members come from the served
+      // IDs, not from the lines' own state.
+      await map.locator('[data-whereabouts="merged"]').focus()
+      await expect.poll(lit).toEqual(['261115-a01'])
+      await map.locator('[data-whereabouts="task_branch"]').focus()
+      await expect.poll(lit).toEqual(['261115-a03', '261115-b02', '261115-c11', '261115-f07'])
+      await map.locator('[data-whereabouts="task_branch"]').blur()
+      await expect(map.locator('[data-dimmed]')).toHaveCount(0)
+    })
+
+    // AC-2.5 and REQ-3: focus or pointing shows the card and links the line
+    // with the task list. Enter and Space open task detail.
+    test('a line shows its card on focus, links with the task list, and opens from the keyboard', async ({ page }) => {
+      await serveCrates(page, { insights: { [lineCrate.id]: deliveryInsight } })
+      await page.goto('/w/demo/crates/crate-line')
+      const map = page.getByRole('region', { name: 'Where the work is' })
+      const open = map.locator('[data-branch-task="261115-b02"]')
+      await open.focus()
+      const card = map.locator('[data-branch-card="261115-b02"]')
+      await expect(card).toBeVisible()
+      // The card is in view, also where the map scrolls sideways.
+      await expect
+        .poll(async () => {
+          const box = await card.boundingBox()
+          return box !== null && box.x >= 0 && box.x + box.width <= viewport.width
+        })
+        .toBe(true)
+      await expect(card).toContainText('Score results by freshness')
+      await expect(card.locator('[data-branch-card-label]')).toHaveText('Agent reviewing (served)')
+      await expect(card.locator('[data-branch-card-pull]')).toHaveText(' · #2818')
+      await expect(card.locator('[data-branch-card-rounds]')).toHaveText(' · 1 review round')
+      await expect(card.locator('[data-branch-card-branch]')).toHaveText('conveyor/task-261115-b02 → main')
+      await expect(open).toHaveAttribute('data-map-emphasized', 'true')
+      await expect(map.locator('[data-focus-ring]')).toHaveCount(1)
+      // The line's task is marked in the task list.
+      await expect(page.locator('[data-crate-task="261115-b02"]')).toHaveAttribute('data-emphasized', 'true')
+
+      // Pointing at another line and away again leaves the focused line
+      // emphasized.
+      await map.locator('[data-branch-task="261115-c11"] [data-open-label]').hover()
+      await expect(map.locator('[data-branch-card="261115-c11"]')).toBeVisible()
+      await expect(page.locator('[data-crate-task="261115-c11"]')).toHaveAttribute('data-emphasized', 'true')
+      await page.mouse.move(0, 0)
+      await expect(card).toBeVisible()
+      await expect(page.locator('[data-crate-task="261115-b02"]')).toHaveAttribute('data-emphasized', 'true')
+
+      // A merged task's card names the branch that holds it and the merge.
+      await map.locator('[data-branch-task="261115-a01"]').focus()
+      const merged = map.locator('[data-branch-card="261115-a01"]')
+      await expect(merged.locator('[data-branch-card-branch]')).toContainText('in main since Nov 13')
+      await expect(merged.locator('[data-branch-card-rounds]')).toHaveText(' · 1 review round')
+
+      // Pointing at a row emphasizes its line in the map.
+      await page.locator('[data-crate-task="261115-c11"]').hover()
+      await expect(map.locator('[data-branch-task="261115-c11"]')).toHaveAttribute('data-map-emphasized', 'true')
+      await expect(map.locator('[data-branch-task="261115-b02"]')).toHaveAttribute('data-dimmed', 'true')
+
+      // Space opens task detail and does not scroll the page.
+      const prevented = await map.locator('[data-branch-task="261115-e05"]').evaluate((element) => {
+        const event = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
+        element.dispatchEvent(event)
+        return event.defaultPrevented
+      })
+      expect(prevented).toBe(true)
+      await expect(page).toHaveURL(/\/w\/demo\/tasks\/261115-e05$/)
+
+      await page.goto('/w/demo/crates/crate-line')
+      await map.locator('[data-branch-task="261115-c11"]').focus()
+      await page.keyboard.press('Enter')
+      await expect(page).toHaveURL(/\/w\/demo\/tasks\/261115-c11$/)
+    })
+
+    // AC-2.3: a round that asked for changes close to the task's creation or
+    // its merge sits inside a bend. Its mark keeps the served x and sits on
+    // the drawn line there, not at the row's height beside the bend.
+    test('a change-request mark near a bend sits on its line at the served time', async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      await serveCrates(page, { insights: { [lineCrate.id]: bendInsight } })
+      await page.goto('/w/demo/crates/crate-line')
+      const map = page.getByRole('region', { name: 'Where the work is' })
+      const merged = map.locator('[data-branch-task="261115-a01"]')
+      await expect(merged.locator('[data-change-mark]')).toHaveCount(2)
+      // Every mark on the map meets its own drawn line.
+      const marks = await map.locator('[data-branch-task]').evaluateAll((lines) =>
+        lines.flatMap((line) => {
+          const path = line.querySelector<SVGPathElement>('[data-line-path]')
+          if (!path) return []
+          const d = path.getAttribute('d') ?? ''
+          const lane = Number(d.match(/^M[-\d.]+,([-\d.]+)/)?.[1])
+          const row = Number(d.match(/ L[-\d.]+,([-\d.]+)/)?.[1])
+          return Array.from(line.querySelectorAll<SVGCircleElement>('[data-change-mark]')).map((mark) => {
+            const x = Number(mark.getAttribute('cx'))
+            const y = Number(mark.getAttribute('cy'))
+            return {
+              id: line.getAttribute('data-branch-task'),
+              onLine: path.isPointInStroke(new DOMPoint(x, y)),
+              x,
+              y,
+              lane,
+              row,
+            }
+          })
+        }),
+      )
+      expect(marks).toHaveLength(3)
+      for (const mark of marks) expect(mark, `the mark of ${mark.id} at x ${mark.x}`).toMatchObject({ onLine: true })
+      // The two marks of the merged task sit inside its bends: below the lane
+      // and above the row, so a mark at the row's height would miss the line.
+      const bent = marks.filter((mark) => mark.id === '261115-a01').sort((a, b) => a.x - b.x)
+      for (const mark of bent) {
+        expect(mark.y).toBeGreaterThan(mark.lane)
+        expect(mark.y).toBeLessThan(mark.row)
+      }
+      // The served times keep their order on the axis: one after creation,
+      // one before the merge mark.
+      const mergeX = Number(await merged.locator('[data-merge-mark]').getAttribute('cx'))
+      expect(bent[0].x).toBeGreaterThan(await lineStart(page, '261115-a01'))
+      expect(bent[1].x).toBeLessThan(mergeX)
+    })
+
+    // AC-2.5: pointing at another task row and moving off it gives the card
+    // and the row mark back to the map line that still has focus.
+    test('a focused line keeps its card and row mark after the pointer leaves another task row', async ({ page }) => {
+      await serveCrates(page, { insights: { [lineCrate.id]: deliveryInsight } })
+      await page.goto('/w/demo/crates/crate-line')
+      const map = page.getByRole('region', { name: 'Where the work is' })
+      const focused = map.locator('[data-branch-task="261115-b02"]')
+      await focused.focus()
+      await expect(map.locator('[data-branch-card="261115-b02"]')).toBeVisible()
+      await expect(page.locator('[data-crate-task="261115-b02"]')).toHaveAttribute('data-emphasized', 'true')
+
+      // The pointer rests on another row: that task takes the emphasis.
+      await page.locator('[data-crate-task="261115-c11"]').hover()
+      await expect(page.locator('[data-crate-task="261115-c11"]')).toHaveAttribute('data-emphasized', 'true')
+      await expect(map.locator('[data-branch-card="261115-c11"]')).toBeVisible()
+
+      // The pointer moves off the row without a click.
+      await page.mouse.move(0, 0)
+      await expect(focused).toBeFocused()
+      await expect(map.locator('[data-branch-card="261115-b02"]')).toBeVisible()
+      await expect(map.locator('[data-branch-card]')).toHaveCount(1)
+      await expect(page.locator('[data-crate-task="261115-b02"]')).toHaveAttribute('data-emphasized', 'true')
+      await expect(page.locator('[data-crate-task="261115-c11"]')).not.toHaveAttribute('data-emphasized', 'true')
+      await expect(focused).toHaveAttribute('data-map-emphasized', 'true')
+
+      // When the line loses focus, nothing stays emphasized.
+      await focused.blur()
+      await expect(map.locator('[data-branch-card]')).toHaveCount(0)
+      await expect(page.locator('[data-emphasized]')).toHaveCount(0)
+    })
+
+    // AC-2.5: the pointer rests on one task while keyboard focus moves to
+    // another map line. The focused task takes the card and the row mark
+    // with no pointer movement, and Enter opens that same task.
+    for (const resting of ['a task row', 'a map line'] as const) {
+      test(`keyboard focus that moves to a map line while the pointer rests on ${resting} shows the focused task`, async ({
+        page,
+      }) => {
+        test.skip(resting === 'a map line' && viewport.width < 1024, 'the pointer rests on a map line at desktop width')
+        // Tall enough that the map and every row stay in view, so moving focus
+        // never scrolls the page. A scroll would put another element under the
+        // resting pointer, and the browser would report that as pointer
+        // movement.
+        await page.setViewportSize({ width: viewport.width, height: 2400 })
+        await serveCrates(page, { insights: { [lineCrate.id]: deliveryInsight } })
+        await page.goto('/w/demo/crates/crate-line')
+        const map = page.getByRole('region', { name: 'Where the work is' })
+        await expect(map.locator('[data-branch-task]')).toHaveCount(8)
+        // Every row shows, so each task's row mark can be checked.
+        await page.locator('[data-crate-tasks-toggle]').click()
+        await expect(page.locator('[data-crate-task]')).toHaveCount(8)
+        const card = (id: string) => map.locator(`[data-branch-card="${id}"]`)
+        const row = (id: string) => page.locator(`[data-crate-task="${id}"]`)
+        async function showsOnly(id: string) {
+          await expect(card(id)).toBeVisible()
+          await expect(map.locator('[data-branch-card]')).toHaveCount(1)
+          await expect(row(id)).toHaveAttribute('data-emphasized', 'true')
+          await expect(page.locator('[data-crate-task][data-emphasized]')).toHaveCount(1)
+          await expect(map.locator(`[data-branch-task="${id}"]`)).toHaveAttribute('data-map-emphasized', 'true')
+        }
+
+        // The pointer comes to rest on one task and stays there.
+        if (resting === 'a task row') await row('261115-c11').hover()
+        else await map.locator('[data-branch-task="261115-c11"] [data-open-label]').hover()
+        await showsOnly('261115-c11')
+        const scrolled = () =>
+          page.evaluate(() =>
+            Array.from(document.querySelectorAll('*')).reduce(
+              (sum, element) => sum + element.scrollTop,
+              window.scrollY,
+            ),
+          )
+        const before = await scrolled()
+
+        // Keyboard focus moves to a map line, then on to the next one by Tab.
+        const lines = await map
+          .locator('[data-branch-task]')
+          .evaluateAll((items) => items.map((item) => item.getAttribute('data-branch-task') ?? ''))
+        // A line whose next line in tab order is not the hovered task.
+        const first = lines.find(
+          (id, index) => id !== '261115-c11' && lines[index + 1] && lines[index + 1] !== '261115-c11',
+        ) as string
+        await map.locator(`[data-branch-task="${first}"]`).focus()
+        await showsOnly(first)
+        await page.keyboard.press('Tab')
+        const next = await page.evaluate(() => document.activeElement?.getAttribute('data-branch-task') ?? '')
+        expect(lines).toContain(next)
+        expect(next).not.toBe('261115-c11')
+        await showsOnly(next)
+        // Nothing scrolled, so the pointer still rests where it was.
+        expect(await scrolled()).toBe(before)
+
+        // The pointer then enters another task and leaves it: the focused
+        // line gets the emphasis back (round 2).
+        await row('261115-b02').hover()
+        await showsOnly('261115-b02')
+        await page.mouse.move(0, 0)
+        await showsOnly(next)
+
+        // Enter opens the task the card shows.
+        await page.keyboard.press('Enter')
+        await expect(page).toHaveURL(new RegExp(`/w/demo/tasks/${next}$`))
+      })
+    }
+
+    test('clicking a line opens task detail', async ({ page }) => {
+      await serveCrates(page, { insights: { [lineCrate.id]: deliveryInsight } })
+      await page.goto('/w/demo/crates/crate-line')
+      await page.locator('[data-branch-task="261115-a03"] [data-open-label]').click()
+      await expect(page).toHaveURL(/\/w\/demo\/tasks\/261115-a03$/)
+    })
+
+    // AC-4.1, AC-4.2, AC-4.4, and AC-4.5 in the app's sheet.
+    test('Stats opens the served delivery numbers and charts, and Escape closes the sheet', async ({ page }) => {
+      await serveCrates(page, { role: 'viewer', insights: { [lineCrate.id]: deliveryInsight } })
+      await page.goto('/w/demo/crates/crate-line')
+      await expect(page.locator('[data-branch-task]')).toHaveCount(8)
+      const stats = page.getByRole('button', { name: 'Stats' })
+      await stats.click()
+      const sheet = page.getByRole('dialog', { name: 'Delivery stats' })
+      await expect(sheet).toBeVisible()
+      await expect(sheet.locator('[data-figure="merged"] dd')).toHaveText('1/7')
+      await expect(sheet.locator('[data-figure="open"] dd')).toHaveText('6')
+      await expect(sheet.locator('[data-figure="throughput"] dd')).toHaveText('0.5/wk')
+      await expect(sheet.locator('[data-figure="cycle"] dd')).toHaveText('2d')
+      await expect(sheet.locator('[data-first-review-share]')).toHaveText('50%')
+      await expect(sheet.locator('[data-first-review-count]')).toHaveText('2 tasks have been reviewed.')
+      await expect(sheet.locator('[data-forecast]')).toHaveText(
+        'At this rate the open tasks finish around Dec 1, 2026, 5 days before the target date.',
+      )
+
+      // The burn chart with its burn-down and burn-up choice.
+      const burn = sheet.getByRole('region', { name: 'Burn-down' })
+      await expect(burn).toBeVisible()
+      await burn.getByRole('button', { name: 'Burn-up' }).click()
+      const up = sheet.getByRole('region', { name: 'Burn-up' })
+      await expect(up.getByRole('button', { name: 'Burn-up' })).toHaveAttribute('aria-pressed', 'true')
+      await up.getByText('Table', { exact: true }).click()
+      // One row per served day, then the served forecast day.
+      await expect(up.locator('tbody tr')).toHaveCount(deliveryDaily.length + 1)
+      await expect(up.locator('tbody tr').last()).toContainText('Forecast · Dec 1, 2026')
+
+      // Eight ISO weeks with the current one in progress, and its table.
+      const weekly = sheet.getByRole('region', { name: 'Merged per week' })
+      await expect(weekly.locator('[data-week]')).toHaveCount(8)
+      await expect(weekly.locator('[data-in-progress]')).toHaveCount(1)
+      await weekly.getByText('Table', { exact: true }).click()
+      await expect(weekly.locator('tbody tr')).toHaveCount(8)
+      await expect(weekly.locator('tbody tr').last()).toContainText('2026-W47')
+      await expect(weekly.locator('tbody tr').last()).toContainText('1 (in progress)')
+      await expectNoHorizontalScroll(page, '[role="dialog"]')
+
+      await page.keyboard.press('Escape')
+      await expect(sheet).toHaveCount(0)
+      await expect(stats).toBeFocused()
+    })
+
+    // AC-4.3: every form of the forecast statement, from served values.
+    test('the sheet states the served forecast in each form', async ({ page }) => {
+      const insights: Record<string, CrateInsight> = {}
+      await serveCrates(page, { insights })
+      const cases: Array<{ insight: CrateInsight; text: string }> = [
+        {
+          insight: { ...deliveryInsight, forecast_days_before_target: 1 },
+          text: 'At this rate the open tasks finish around Dec 1, 2026, 1 day before the target date.',
+        },
+        {
+          insight: { ...deliveryInsight, forecast_days_before_target: -3 },
+          text: 'At this rate the open tasks finish around Dec 1, 2026, 3 days after the target date.',
+        },
+        {
+          insight: { ...deliveryInsight, forecast_days_before_target: 0 },
+          text: 'At this rate the open tasks finish around Dec 1, 2026, on the target date.',
+        },
+        {
+          insight: { ...deliveryInsight, forecast_days_before_target: null },
+          text: 'At this rate the open tasks finish around Dec 1, 2026.',
+        },
+        {
+          insight: {
+            ...deliveryInsight,
+            progress: { ...deliveryInsight.progress, forecast: null },
+            forecast_days_before_target: null,
+          },
+          text: 'No forecast: no task in this crate merged in the last 14 days.',
+        },
+        {
+          insight: {
+            ...deliveryInsight,
+            progress: { ...deliveryInsight.progress, forecast: null, open: 0, delivered: 7 },
+            forecast_days_before_target: null,
+          },
+          text: 'Every task is merged or closed.',
+        },
+      ]
+      for (const { insight, text } of cases) {
+        insights[lineCrate.id] = insight
+        await page.goto('/w/demo/crates/crate-line')
+        await expect(page.locator('[data-branch-task]')).toHaveCount(8)
+        await page.getByRole('button', { name: 'Stats' }).click()
+        await expect(page.getByRole('dialog', { name: 'Delivery stats' }).locator('[data-forecast]')).toHaveText(text)
+      }
+    })
+
+    test('an empty crate shows no branch map and its sheet states no open task', async ({ page }) => {
+      await serveCrates(page)
+      await page.goto('/w/demo/crates/crate-empty')
+      await expect.poll(() => stationCounts(page)).toMatchObject({ intake: '0' })
+      await expect(page.locator('[data-branch-map]')).toHaveCount(0)
+      await expect(page.locator('[data-branch-map-loading]')).toHaveCount(0)
+      await page.getByRole('button', { name: 'Stats' }).click()
+      const sheet = page.getByRole('dialog', { name: 'Delivery stats' })
+      await expect(sheet.locator('[data-first-review-share]')).toHaveText('none')
+      await expect(sheet.locator('[data-figure="cycle"] dd')).toHaveText('none')
+      await expect(sheet.locator('[data-forecast]')).toHaveText('Every task is merged or closed.')
+    })
+  })
+}
+
+// Without WebGL the branch map and the sheet still render: neither draws
+// with WebGL.
+test('without WebGL the branch map and the delivery numbers render', async ({ page }) => {
+  await withoutWebGL(page)
+  await serveCrates(page, { insights: { [lineCrate.id]: deliveryInsight } })
+  await page.goto('/w/demo/crates/crate-line')
+  await expect(page.locator('[data-line-mode]')).toHaveAttribute('data-line-mode', 'text')
+  await expect(page.locator('[data-branch-task]')).toHaveCount(8)
+  await page.getByRole('button', { name: 'Stats' }).click()
+  await expect(page.getByRole('dialog', { name: 'Delivery stats' }).locator('[data-figure="open"] dd')).toHaveText('6')
+})
+
+// The map and the sheet read the insight view the line reads. When that read
+// fails, each names the failure, the rest of the page renders, and Try again
+// reads it again.
+test('a failed insight read names the failure in the branch map and the sheet', async ({ page }) => {
+  const { insightRequests } = await serveCrates(page, { insight: 'fail' })
+  await page.goto('/w/demo/crates/crate-billing')
+  const failed = page.locator('[data-branch-map-error]')
+  await expect(failed).toContainText('The branch map did not load.')
+  await expect(failed).toContainText('internal error')
+  await expect(page.locator('[data-crate-task]')).toHaveCount(2)
+  const before = insightRequests.length
+  await failed.getByRole('button', { name: 'Try again' }).click()
+  await expect.poll(() => insightRequests.length).toBeGreaterThan(before)
+
+  await page.getByRole('button', { name: 'Stats' }).click()
+  const sheet = page.getByRole('dialog', { name: 'Delivery stats' })
+  await expect(sheet.locator('[data-stats-error]')).toContainText('The delivery numbers did not load.')
+  const again = insightRequests.length
+  await sheet.getByRole('button', { name: 'Try again' }).click()
+  await expect.poll(() => insightRequests.length).toBeGreaterThan(again)
+  await sheet.getByRole('button', { name: 'Close' }).click()
+  await expect(sheet).toHaveCount(0)
 })
