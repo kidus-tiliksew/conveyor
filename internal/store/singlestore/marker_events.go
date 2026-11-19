@@ -78,45 +78,47 @@ func (s *Store) markerTaskRows(ctx context.Context, taskIDs []string) ([]markerR
 	return out, rows.Err()
 }
 
-// markerLatestSummariesQuery reads, for one chunk of tasks, each task's
-// newest event tuple, newest job stage, and newest claimed order stage in
-// one statement of three grouped reads. Each read groups only the chunk's
-// rows inside the database and returns at most one row per task and part:
-// part e carries the newest (at,id) event tuple, part j the stage of the
-// newest job by (started_at,id), and part c the stage of the newest claimed
-// order by (execution_started_at,created_at,id). Every list binds exactly
-// markerTaskChunk placeholders, so every chunk shares one statement text and
-// SingleStore compiles one plan for the read. A per-task arm for each task
-// in place of the grouped reads ran for minutes per chunk on SingleStore,
-// longer than the response memo lifetime (component-web-task-surfaces,
-// Activity and list reads; DEC-140(3)).
+// markerLatestSummariesQuery reads, for one chunk of tasks, one row per task:
+// its newest (at,id) event tuple, the stage of its newest job by
+// (started_at,id), and the stage of its newest claimed order by
+// (execution_started_at,created_at,id). Each part is one grouped read of the
+// chunk's rows inside the database, joined to the chunk's task rows. Every
+// list binds exactly markerTaskChunk placeholders, so every chunk shares one
+// statement text and SingleStore compiles one plan for the read. One arm per
+// task with three LIMIT 1 subqueries, in place of the grouped reads, ran for
+// minutes per chunk on SingleStore, longer than the response memo lifetime
+// (component-web-task-surfaces, Activity and list reads; DEC-140(3)).
 func markerLatestSummariesQuery(ws string, taskIDs []string) (string, []any) {
 	b := &markerBinder{}
 	events := func(prefix string) string {
 		return prefix + `workspace_id=` + b.bind(ws) + ` AND ` + b.fixedIn(prefix+"event_shard_key", taskIDs) + ` AND ` + b.fixedIn(prefix+"task_id", taskIDs)
 	}
-	query := `SELECT 'e' AS part,newest_event.task_id,newest_event.at,newest_event.id,'' AS stage FROM (
+	query := `SELECT t.id,newest_event.at,newest_event.id,newest_job.stage,newest_claim.stage FROM tasks t
+			LEFT JOIN (
 				SELECT e.task_id,e.at,MAX(e.id) AS id FROM events_columnstore e JOIN (
 					SELECT task_id,MAX(at) AS at FROM events_columnstore WHERE ` + events("") + ` GROUP BY task_id
 				) newest_at ON newest_at.task_id=e.task_id AND newest_at.at=e.at
 				WHERE ` + events("e.") + ` GROUP BY e.task_id,e.at
-			) newest_event
-			UNION ALL
-			SELECT 'j',newest_job.task_id,NULL,NULL,newest_job.stage FROM (
-				SELECT task_id,stage,ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY started_at DESC,id DESC) AS position
-				FROM jobs WHERE workspace_id=` + b.bind(ws) + ` AND ` + b.fixedIn("task_id", taskIDs) + `
-			) newest_job WHERE newest_job.position=1
-			UNION ALL
-			SELECT 'c',newest_claim.task_id,NULL,NULL,newest_claim.stage FROM (
-				SELECT task_id,stage,ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY execution_started_at DESC,created_at DESC,id DESC) AS position
-				FROM work_orders WHERE workspace_id=` + b.bind(ws) + ` AND state='claimed' AND ` + b.fixedIn("task_id", taskIDs) + `
-			) newest_claim WHERE newest_claim.position=1`
+			) newest_event ON newest_event.task_id=t.id
+			LEFT JOIN (
+				SELECT task_id,stage FROM (
+					SELECT task_id,stage,ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY started_at DESC,id DESC) AS position
+					FROM jobs WHERE workspace_id=` + b.bind(ws) + ` AND ` + b.fixedIn("task_id", taskIDs) + `
+				) ranked_jobs WHERE position=1
+			) newest_job ON newest_job.task_id=t.id
+			LEFT JOIN (
+				SELECT task_id,stage FROM (
+					SELECT task_id,stage,ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY execution_started_at DESC,created_at DESC,id DESC) AS position
+					FROM work_orders WHERE workspace_id=` + b.bind(ws) + ` AND state='claimed' AND ` + b.fixedIn("task_id", taskIDs) + `
+				) ranked_claims WHERE position=1
+			) newest_claim ON newest_claim.task_id=t.id
+			WHERE t.workspace_id=` + b.bind(ws) + ` AND ` + b.fixedIn("t.id", taskIDs)
 	return b.finish(query)
 }
 
 // markerLatestSummaries folds the latest claim stage, job stage, and event
-// tuple into the rows. It reads at most three rows per requested task: the
-// database groups each task's history and returns only its newest tuple.
+// tuple into the rows. It reads one row per requested task: the database
+// groups each task's history and returns only its newest tuple.
 func (s *Store) markerLatestSummaries(ctx context.Context, rows []markerRow) error {
 	byTask := make(map[string]*markerRow, len(rows))
 	ids := make([]string, len(rows))
@@ -139,37 +141,29 @@ func (s *Store) markerLatestTuples(ctx context.Context, byTask map[string]*marke
 		return err
 	}
 	defer rows.Close()
-	claimed := make(map[string]bool, len(taskIDs))
 	for rows.Next() {
-		var part, taskID string
+		var taskID string
 		var at sql.NullTime
 		var id sql.NullInt64
-		var stage sql.NullString
-		if err = rows.Scan(&part, &taskID, &at, &id, &stage); err != nil {
+		var jobStage, claimStage sql.NullString
+		if err = rows.Scan(&taskID, &at, &id, &jobStage, &claimStage); err != nil {
 			return err
 		}
 		row := byTask[taskID]
 		if row == nil {
 			continue
 		}
-		switch part {
-		case "e":
-			if at.Valid {
-				row.lastEventAt = at.Time
-			}
-			if id.Valid {
-				row.lastEventID = id.Int64
-			}
-		case "j":
-			// A claimed order's stage wins over the newest job's stage.
-			if stage.Valid && !claimed[taskID] {
-				row.latestStage = stage.String
-			}
-		case "c":
-			if stage.Valid {
-				row.latestStage = stage.String
-				claimed[taskID] = true
-			}
+		if at.Valid {
+			row.lastEventAt = at.Time
+		}
+		if id.Valid {
+			row.lastEventID = id.Int64
+		}
+		if jobStage.Valid {
+			row.latestStage = jobStage.String
+		}
+		if claimStage.Valid {
+			row.latestStage = claimStage.String
 		}
 	}
 	return rows.Err()
