@@ -185,15 +185,16 @@ func TestTaskPollReadCostIntegration(t *testing.T) {
 					measured = max(measured, total.Bytes)
 				}
 			}
-			taskPollConcurrentReproduction(t, backend.name, st, func() *Server { return newServer(func() time.Time { return time.Now().UTC() }) }, paths)
+			// The byte limit is checked before the concurrent reproduction,
+			// whose wall-clock memo can rebuild without end on a memo that
+			// does not bound its rebuilds.
 			limit := taskPollByteLimits[backend.name]
 			if os.Getenv("CONVEYOR_TASK_POLL_REPORT_ONLY") == "1" {
 				t.Logf("report only: a cold poll received at most %d bytes; limit %d", measured, limit)
-				return
-			}
-			if measured > limit {
+			} else if measured > limit {
 				t.Fatalf("one cold poll received %d bytes from %s, above the limit of %d", measured, backend.name, limit)
 			}
+			taskPollConcurrentReproduction(t, backend.name, st, func() *Server { return newServer(func() time.Time { return time.Now().UTC() }) }, paths)
 		})
 	}
 }
@@ -576,7 +577,11 @@ func taskPollConcurrentReproduction(t *testing.T, backend string, st taskPollSto
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r := httptest.NewRequest(http.MethodGet, path, nil).WithContext(t.Context())
+			// A request that has not answered within two minutes is cut
+			// off and reported, so a rebuild loop cannot hang the test.
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
+			r := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
 			r.Header.Set("Authorization", "Bearer reader")
 			w := httptest.NewRecorder()
 			begin := time.Since(started)
