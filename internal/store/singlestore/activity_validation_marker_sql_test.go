@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -31,14 +32,19 @@ func markerShapeInput(pages, orders int, keepAll bool) store.MarkerFoldInput {
 	return in
 }
 
-// TestMarkerFoldQueryShape freezes the SingleStore fold read as four
-// statement texts: without and with an open review order, each with reduced
-// claims or every claim. Page size and the number of open review orders
-// change only bound values, never the text or the number of placeholders,
-// so the engine compiles at most four plans (component-web-task-surfaces
+// TestMarkerFoldQueryShape freezes the SingleStore narrow fold read as three
+// statement texts: one without an open review order, where the claim
+// reduction does not apply, and with one either reduced claims or every
+// claim. Page size and the number of open review orders change only bound
+// values, never the text or the number of placeholders, so the engine
+// compiles at most three plans for it (component-web-task-surfaces
 // invariant 19). Every statement binds one argument per question mark, names
 // no snapshot body key outside the compact payload, selects the review-round
-// kinds, and carries no per-key JSON proof or projection CASE.
+// kinds, and carries no per-key JSON proof or projection CASE. No statement
+// selects a work_order.updated event, and none tests a stored payload except
+// to match an open review order's ID against the claims of the bound tasks
+// that have one: the wide reads own every other payload test
+// (TestMarkerWideQueryShape).
 func TestMarkerFoldQueryShape(t *testing.T) {
 	texts := map[string]int{}
 	for _, live := range []bool{false, true} {
@@ -71,9 +77,32 @@ func TestMarkerFoldQueryShape(t *testing.T) {
 							t.Fatalf("%s: does not select %s", name, kind)
 						}
 					}
-					for _, retired := range []string{"JSON_KEYS", "JSON_BUILD_OBJECT", "k_lower"} {
+					for _, retired := range []string{"JSON_KEYS", "JSON_BUILD_OBJECT", "k_lower", "live_task"} {
 						if strings.Contains(query, retired) {
 							t.Fatalf("%s: still holds %s", name, retired)
+						}
+					}
+					if strings.Contains(query, "'work_order.updated'") {
+						t.Fatalf("%s: the narrow read selects work_order.updated", name)
+					}
+					if !live && strings.Contains(query, "'work_order.claimed'") {
+						t.Fatalf("%s: the narrow read selects claims without an open review order", name)
+					}
+					// The only stored-payload test left is the open review
+					// order ID match, and it follows a bound list of the
+					// tasks that have such an order.
+					wantPayloadTests := 0
+					if live && !keepAll {
+						wantPayloadTests = 1
+					}
+					if got := strings.Count(query, "INSTR(e.payload_json"); got != wantPayloadTests {
+						t.Fatalf("%s: %d stored-payload tests, want %d", name, got, wantPayloadTests)
+					}
+					if wantPayloadTests == 1 {
+						named := query[strings.Index(query, "named_claims AS ("):]
+						named = named[:strings.Index(named, "INSTR(e.payload_json")]
+						if got := strings.Count(named, "?"); got < markerTaskChunk {
+							t.Fatalf("%s: the open review order match binds no task list before its payload test", name)
 						}
 					}
 				}
@@ -82,18 +111,128 @@ func TestMarkerFoldQueryShape(t *testing.T) {
 			if live && !keepAll && !strings.Contains(want, "TABLE(JSON_TO_ARRAY(?))") {
 				t.Fatal("the reduced open-review statement does not bind the open review orders as one JSON array")
 			}
-			if keepAll && strings.Contains(want, "reducible") {
-				t.Fatalf("the every-claim statement (live=%t) still reduces claims", live)
+			if (keepAll || !live) && strings.Contains(want, "reducible") {
+				t.Fatalf("the statement (live=%t keepAll=%t) still reduces claims", live, keepAll)
 			}
 		}
 	}
-	if len(texts) != 4 {
-		t.Fatalf("the fold read produces %d statement texts, want 4", len(texts))
+	if len(texts) != 3 {
+		t.Fatalf("the fold read produces %d statement texts, want 3", len(texts))
 	}
 	// The lease decoder runs once per statement, on renewals only.
 	query, _ := markerFoldQuery(markerShapeInput(100, 5, false))
 	if got := strings.Count(query, "AS lease_ok"); got != 1 {
 		t.Fatalf("the open-review statement decodes leases %d times, want once", got)
+	}
+}
+
+// TestMarkerWideQueryShape freezes the two wide reads as one statement text
+// each, whatever the number of tasks. A wide read is the only statement that
+// tests or carries a work_order.updated payload or a claim payload of a task
+// without an open review order, each 100 KB and more with its snapshots.
+// SingleStore reads such a payload for every row that reaches the predicate
+// naming it, so each wide read must select its rows by plain conjuncts: the
+// workspace, a bound task list, one kind, and for claims the instant. It
+// must hold no disjunction, no subquery, and no join, because each of those
+// makes the engine read the payload of every row of the kind.
+func TestMarkerWideQueryShape(t *testing.T) {
+	since := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	for _, wide := range []struct {
+		name, kind string
+		binds      int
+		build      func(tasks []string) (string, []any)
+	}{
+		{"submissions", "work_order.updated", markerTaskChunk + 1, func(tasks []string) (string, []any) { return markerSubmissionQuery("ws", tasks) }},
+		{"request claims", "work_order.claimed", markerTaskChunk + 2, func(tasks []string) (string, []any) { return markerRequestClaimQuery("ws", tasks, since) }},
+	} {
+		var text string
+		for _, size := range []int{1, 7, markerTaskChunk} {
+			tasks := make([]string, size)
+			for i := range tasks {
+				tasks[i] = fmt.Sprintf("task-%03d", i)
+			}
+			query, args := wide.build(tasks)
+			if text == "" {
+				text = query
+			} else if query != text {
+				t.Fatalf("%s: %d tasks changed the statement text", wide.name, size)
+			}
+			if len(args) != wide.binds || strings.Count(query, "?") != wide.binds {
+				t.Fatalf("%s: %d tasks bind %d arguments and %d placeholders, want %d", wide.name, size, len(args), strings.Count(query, "?"), wide.binds)
+			}
+			if got := args[1+size-1]; got != tasks[size-1] {
+				t.Fatalf("%s: task list does not bind its last task: %v", wide.name, got)
+			}
+			if size < markerTaskChunk && args[markerTaskChunk] != tasks[0] {
+				t.Fatalf("%s: task list is not padded with its first task", wide.name)
+			}
+		}
+		where := text[strings.Index(text, "WHERE"):]
+		for _, banned := range []string{" OR ", "SELECT", "JOIN", "UNION"} {
+			if strings.Contains(where, banned) {
+				t.Fatalf("%s: predicate holds %q; it must be plain conjuncts", wide.name, strings.TrimSpace(banned))
+			}
+		}
+		for _, want := range []string{"e.workspace_id=?", "e.task_id IN (?", "e.kind='" + wide.kind + "'", `INSTR(e.payload_json,'"implement"')>0`} {
+			if !strings.Contains(where, want) {
+				t.Fatalf("%s: predicate does not hold %q", wide.name, want)
+			}
+		}
+		// The bound task list precedes every payload test.
+		if strings.Index(where, "e.task_id IN (?") > strings.Index(where, "INSTR(e.payload_json") {
+			t.Fatalf("%s: a payload test precedes the bound task list", wide.name)
+		}
+		outside := strings.ReplaceAll(text, markerCompact, "")
+		if strings.Contains(outside, "governance_snapshot'") || strings.Contains(outside, "served_requirement_snapshot'") {
+			t.Fatalf("%s: names a snapshot body key outside the compact payload", wide.name)
+		}
+	}
+	submissions, _ := markerSubmissionQuery("ws", []string{"task-000"})
+	if !strings.Contains(submissions, `INSTR(e.payload_json,'"submitted"')>0`) {
+		t.Fatal("the submission read does not test for the submitted state")
+	}
+	claims, args := markerRequestClaimQuery("ws", []string{"task-000"}, since)
+	if !strings.Contains(claims, "e.at>=?") || args[len(args)-1] != since {
+		t.Fatal("the request claim read does not bind its instant")
+	}
+}
+
+// TestMarkerWideNeeds proves which wide rows a chunk reads. A task reads its
+// submissions only when it has a merge failure. A task reads its claims only
+// when a bounce decodes as a user change request, from the instant of its
+// last such request; a bounce that only holds the source text elsewhere, and
+// a task with an open review order, call for no claim read. The claim
+// instant is the earliest of the listed tasks' last requests.
+func TestMarkerWideNeeds(t *testing.T) {
+	at := func(minute int) time.Time { return time.Date(2026, 11, 19, 12, minute, 0, 0, time.UTC) }
+	row := func(task, kind, payload string, minute int) store.MarkerFoldRow {
+		return store.MarkerFoldRow{Event: core.Event{TaskID: task, Kind: kind, Payload: json.RawMessage(payload), At: at(minute)}}
+	}
+	const user = `{"source":"user-request-changes"}`
+	in := store.MarkerFoldInput{Workspace: "ws", Page: []string{"a", "b", "c", "d", "e", "f"}, LiveReviewTasks: []string{"e"}}
+	needs := markerWideNeedsOf(in, []store.MarkerFoldRow{
+		row("a", "merge.failed", `{}`, 1),
+		row("a", "merge.confirmed", `{}`, 2),
+		row("b", "pipeline.bounced", user, 5),
+		row("b", "pipeline.bounced", user, 9),
+		row("b", "pipeline.bounced", `{"source":"review","feedback":"user-request-changes"}`, 30),
+		row("c", "pipeline.bounced", `{"source":"review","feedback":"\"user-request-changes\""}`, 3),
+		row("d", "pipeline.bounced", user, 7),
+		row("d", "merge.failed", `not json`, 8),
+		row("e", "pipeline.bounced", user, 4),
+		row("f", "review.completed", `{}`, 6),
+	})
+	if got := strings.Join(needs.submissionTasks, ","); got != "a,d" {
+		t.Fatalf("submission tasks = %s, want a,d", got)
+	}
+	if got := strings.Join(needs.claimTasks, ","); got != "b,d" {
+		t.Fatalf("claim tasks = %s, want b,d", got)
+	}
+	if !needs.claimsSince.Equal(at(7)) {
+		t.Fatalf("claims since %s, want %s", needs.claimsSince, at(7))
+	}
+	if needs := markerWideNeedsOf(in, nil); needs.submissionTasks != nil || needs.claimTasks != nil || !needs.claimsSince.IsZero() {
+		t.Fatalf("a chunk without narrow rows needs %+v, want nothing", needs)
 	}
 }
 

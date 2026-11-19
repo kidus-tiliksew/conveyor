@@ -364,19 +364,26 @@ func TestMarkerFoldCompileIntegration(t *testing.T) {
 		{name: "95133fd2 no open review", query: prefix["no_live"].Query, args: prefix["no_live"].Args},
 		{name: "95133fd2 open review", query: prefix["live"].Query, args: prefix["live"].Args},
 	}
+	// The read's five statement texts: the narrow read without an open
+	// review order, where the claim reduction does not apply, the narrow
+	// read with one, reduced or with every claim, and the two wide reads.
 	var fixed []*markerCompileShape
 	for _, variant := range []struct {
 		name          string
 		live, keepAll bool
 	}{
-		{"fix no open review, reduced claims", false, false},
-		{"fix no open review, every claim", false, true},
+		{"fix no open review", false, false},
 		{"fix open review, reduced claims", true, false},
 		{"fix open review, every claim", true, true},
 	} {
 		query, args := markerFoldQuery(markerCompileInput(variant.live, variant.keepAll))
 		fixed = append(fixed, &markerCompileShape{name: variant.name, query: query, args: args, fixed: true})
 	}
+	wideTasks := markerCompileInput(false, false).Page[:7]
+	query, args := markerSubmissionQuery("marker-compile", wideTasks)
+	fixed = append(fixed, &markerCompileShape{name: "fix wide submissions", query: query, args: args, fixed: true})
+	query, args = markerRequestClaimQuery("marker-compile", wideTasks, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
+	fixed = append(fixed, &markerCompileShape{name: "fix wide request claims", query: query, args: args, fixed: true})
 	rounds := append(slices.Clone(baselines), fixed...)
 
 	// The first statement on a fresh database pays for loading its tables;
@@ -486,9 +493,10 @@ func TestMarkerFoldCompileIntegration(t *testing.T) {
 	}
 }
 
-// TestMarkerFoldPlanReuseIntegration proves the four statement texts reuse
+// TestMarkerFoldPlanReuseIntegration proves the read's statement texts reuse
 // one engine plan each when the bound values change: page sizes 1, 41, and
-// 100, and one, five, and 250 open review orders. The values travel
+// 100, one, five, and 250 open review orders, and wide reads of 1, 41, and
+// 100 tasks. The values travel
 // interpolated, as in production, so the engine's own parameterization must
 // fold the padded lists, the empty-list flag, and the order array into one
 // plan (component-web-task-surfaces invariant 19).
@@ -502,8 +510,7 @@ func TestMarkerFoldPlanReuseIntegration(t *testing.T) {
 		name          string
 		live, keepAll bool
 	}{
-		{"no open review, reduced claims", false, false},
-		{"no open review, every claim", false, true},
+		{"no open review", false, false},
 		{"open review, reduced claims", true, false},
 		{"open review, every claim", true, true},
 	} {
@@ -534,5 +541,32 @@ func TestMarkerFoldPlanReuseIntegration(t *testing.T) {
 			t.Fatalf("%s: %d runs left %d aggregator plans with %d executions, want one plan run %d times", variant.name, runs, plans, executions, runs)
 		}
 		t.Logf("%s: %d inputs, one plan", variant.name, runs)
+	}
+	for _, wide := range []struct {
+		name  string
+		build func(tasks []string, round int) (string, []any)
+	}{
+		{"wide submissions", func(tasks []string, _ int) (string, []any) { return markerSubmissionQuery("ws", tasks) }},
+		{"wide request claims", func(tasks []string, round int) (string, []any) {
+			return markerRequestClaimQuery("ws", tasks, time.Date(2026, 11, 1+round, 0, 0, 0, 0, time.UTC))
+		}},
+	} {
+		session.evict(ctx)
+		runs := 0
+		for round, size := range []int{1, 41, 100} {
+			query, args := wide.build(markerShapeInput(size, 0, false).Page, round)
+			if _, err := session.run(ctx, query, args); err != nil {
+				t.Fatalf("%s tasks=%d: %v", wide.name, size, err)
+			}
+			runs++
+		}
+		var plans, executions int64
+		if err := session.conn.QueryRowContext(ctx, "SELECT COUNT(*),COALESCE(SUM(COMMITS),0) FROM information_schema.PLANCACHE WHERE DATABASE_NAME=? AND QUERY_TEXT LIKE '%events_columnstore%'", session.database).Scan(&plans, &executions); err != nil {
+			t.Fatal(err)
+		}
+		if plans != 1 || executions != int64(runs) {
+			t.Fatalf("%s: %d runs left %d aggregator plans with %d executions, want one plan run %d times", wide.name, runs, plans, executions, runs)
+		}
+		t.Logf("%s: %d inputs, one plan", wide.name, runs)
 	}
 }

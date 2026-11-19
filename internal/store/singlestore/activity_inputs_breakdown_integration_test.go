@@ -21,7 +21,7 @@ import (
 // page and of the inbox's open tasks once through ReadActivityInputs. It then
 // reads the same inputs step by step, each step under its own read label:
 // the task rows, the latest-summary read, the order read, the dependency
-// read, the first fold read, and the claim backfill fold read. It reports the
+// read, the first fold read, the claim backfill fold read, and the wide reads. It reports the
 // bytes, rows, and statements of each step. It changes no production label
 // and skips unless the database is named.
 func TestActivityInputsBreakdownDiagnostic(t *testing.T) {
@@ -111,9 +111,12 @@ func TestActivityInputsBreakdownDiagnostic(t *testing.T) {
 				backfills++
 				part.KeepAllClaims = true
 				query, args = markerFoldQuery(part)
-				if _, err := st.markerFoldScan(step("claim backfill"), query, args); err != nil {
+				if folded, err = st.markerFoldScan(step("claim backfill"), query, args); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if _, err := st.markerWideRows(step("wide rows"), part, folded); err != nil {
+				t.Fatal(err)
 			}
 		}
 		steps := st.ReadStats(64)
