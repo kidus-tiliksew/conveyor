@@ -1,0 +1,90 @@
+/* PROTOTYPE. Motion for the crate page prototype. Every animation plays once
+   or marks live work, and none runs under reduced motion. */
+
+@keyframes proto-word-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.35em);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+@keyframes proto-draw-in {
+  from {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes proto-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes proto-ping-out {
+  from {
+    r: 5px;
+    opacity: 0.9;
+  }
+  to {
+    r: 13px;
+    opacity: 0;
+  }
+}
+
+@keyframes proto-grow-in {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: none;
+  }
+}
+
+.proto-word {
+  animation: proto-word-in 420ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.proto-draw {
+  animation: proto-draw-in 900ms cubic-bezier(0.3, 0.7, 0.2, 1) both;
+}
+
+.proto-fade {
+  animation: proto-fade-in 600ms ease 500ms both;
+}
+
+.proto-ping {
+  animation: proto-ping-out 1.6s ease-out infinite;
+}
+
+.proto-grow {
+  transform-origin: left;
+  animation: proto-grow-in 700ms cubic-bezier(0.3, 0.7, 0.2, 1) 200ms both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .proto-word,
+  .proto-draw,
+  .proto-fade,
+  .proto-grow {
+    animation: none;
+  }
+
+  .proto-ping,
+  .proto-motion {
+    display: none;
+  }
+}

@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import {
   Archive,
   ArchiveRestore,
+  ChartColumn,
+  ChevronDown,
   CircleDot,
   CircleSlash,
   ExternalLink,
@@ -17,10 +19,17 @@ import {
   Undo2,
   X,
 } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useMemo, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
-import { CrateHero } from '../components/crate/crate-hero'
 import { CrateFormDialog } from '../components/crate/crate-parts'
+import { BranchMap } from '../components/crate/proto/branch-map'
+import { CrateBriefing } from '../components/crate/proto/briefing'
+import { CrateStage } from '../components/crate/proto/crate-stage'
+import { DeliveryStats } from '../components/crate/proto/delivery-stats'
+import '../components/crate/proto/proto.css'
+import { SAMPLE_CRATE_ID, sampleCrate } from '../components/crate/proto/sample'
+import { type SampleData, useCrateInsight } from '../components/crate/proto/use-crate-insight'
+import { type GraphStatus, statusOf } from '../components/board/map/graph-model'
 import { TaskRow } from '../components/insights/shared'
 import { Button } from '../components/ui/button'
 import { Dialog } from '../components/ui/dialog'
@@ -28,6 +37,7 @@ import { DropdownMenu, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import { ErrorState } from '../components/ui/error-state'
 import { Input } from '../components/ui/input'
 import { PageHeader } from '../components/ui/page-header'
+import { Sheet } from '../components/ui/sheet'
 import { Skeleton } from '../components/ui/skeleton'
 import {
   addTaskToCrate,
@@ -50,12 +60,16 @@ import { absoluteTime, cn, relativeTime } from '../lib/utils'
 export function CratePage() {
   const { crateId } = useParams({ strict: false }) as { crateId: string }
   const { workspace } = useWorkspaceSelection()
+  // PROTOTYPE: the sample crate is built in memory and reads no server.
+  const isSample = crateId === SAMPLE_CRATE_ID
+  const sample = useMemo(() => (isSample ? sampleCrate() : undefined), [isSample])
   const crate = useQuery({
     queryKey: crateQueryKey(workspace, crateId),
     queryFn: () => fetchCrate(workspace, crateId),
-    enabled: Boolean(workspace && crateId),
+    enabled: Boolean(workspace && crateId) && !isSample,
   })
 
+  if (sample) return <CrateView key={crateId} crate={sample.crate} sample={sample} />
   if (crate.isPending) return <CratePageSkeleton />
   if (crate.error != null || !crate.data)
     return (
@@ -99,13 +113,24 @@ function CratesCrumb({ name }: { name?: string }) {
   )
 }
 
-type Panel = 'edit' | 'date' | 'add' | { remove: CrateTask } | null
+type Panel = 'edit' | 'date' | 'add' | 'stats' | { remove: CrateTask } | null
 
-function CrateView({ crate }: { crate: CrateDetail }) {
+function CrateView({ crate, sample }: { crate: CrateDetail; sample?: SampleData }) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
-  const canAct = useWorkspaceCapability('create_tasks')
+  const navigate = useNavigate()
+  const mayAct = useWorkspaceCapability('create_tasks')
+  // The sample crate offers no act: nothing on it can be saved.
+  const canAct = mayAct && !sample
   const [panel, setPanel] = useState<Panel>(null)
+  // One pointed-at task lights up in the line, the branch map, the briefing,
+  // and the task list together.
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const { insight, loading } = useCrateInsight(workspace, crate, sample)
+  const openTask = (id: string) => {
+    if (sample) return
+    void navigate({ to: '/w/$workspaceId/tasks/$taskId', params: { workspaceId: workspace, taskId: id } })
+  }
   const open = crate.state === 'open'
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['crates', workspace] })
   const setState = useMutation({
@@ -116,6 +141,17 @@ function CrateView({ crate }: { crate: CrateDetail }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader title={<CratesCrumb name={crate.name} />}>
+        {/* PROTOTYPE: the delivery numbers open in a side sheet. */}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!insight || insight.tracks.length === 0}
+          onClick={() => setPanel('stats')}
+          data-crate-stats
+        >
+          <ChartColumn />
+          Stats
+        </Button>
         {canAct && open && (
           <Link
             to="/w/$workspaceId/"
@@ -162,23 +198,46 @@ function CrateView({ crate }: { crate: CrateDetail }) {
               {setState.error instanceof Error ? setState.error.message : String(setState.error)}
             </p>
           )}
-          <CrateHero crate={crate} canAct={canAct} onSetDate={() => setPanel('date')} />
-          {/* Requirements sit beside the tasks from lg up, and between the
-              tasks and the activity on a narrow screen. */}
-          <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
-            <div className="min-w-0 lg:col-start-1">
+          <PrototypeBar sample={Boolean(sample)} />
+          <CrateStage
+            crate={crate}
+            insight={insight}
+            canAct={canAct}
+            onSetDate={() => setPanel('date')}
+            hoveredId={hoveredId}
+            onHover={setHoveredId}
+            onSelect={openTask}
+          >
+            <CrateBriefing
+              crate={crate}
+              insight={insight}
+              canAct={mayAct}
+              hoveredId={hoveredId}
+              onHover={setHoveredId}
+              onSelect={openTask}
+            />
+          </CrateStage>
+          {loading && <Skeleton className="h-56 w-full" />}
+          {insight && insight.tracks.length > 0 && (
+            <BranchMap insight={insight} hoveredId={hoveredId} onHover={setHoveredId} onSelect={openTask} />
+          )}
+          {/* PROTOTYPE: activity takes the main column. Requirements and the
+              tasks sit beside it from lg up, and above it on a narrow screen. */}
+          <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
+            <div className="min-w-0">
+              <Activity crate={crate} sampleEvents={sample?.events} />
+            </div>
+            <div className="order-first min-w-0 space-y-5 lg:order-none">
+              <Requirements crate={crate} />
               <MemberTasks
                 crate={crate}
                 canAct={canAct}
+                hoveredId={hoveredId}
+                onHover={setHoveredId}
+                onActivate={openTask}
                 onAdd={() => setPanel('add')}
                 onRemove={(task) => setPanel({ remove: task })}
               />
-            </div>
-            <div className="min-w-0 lg:col-start-2 lg:row-span-2 lg:row-start-1">
-              <Requirements crate={crate} />
-            </div>
-            <div className="min-w-0 lg:col-start-1">
-              <Activity crate={crate} />
             </div>
           </div>
         </div>
@@ -192,9 +251,58 @@ function CrateView({ crate }: { crate: CrateDetail }) {
           onSaved={() => setPanel(null)}
         />
       )}
+      {panel === 'stats' && insight && (
+        <Sheet onClose={() => setPanel(null)} label="Delivery stats" width="w-full sm:w-[27rem]">
+          <header className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+            <div className="min-w-0">
+              <h2 className="text-base font-semibold tracking-tight">Delivery stats</h2>
+              <p className="mt-0.5 truncate text-xs text-muted">{crate.name}</p>
+            </div>
+            <Button variant="ghost" size="icon" aria-label="Close" onClick={() => setPanel(null)}>
+              <X />
+            </Button>
+          </header>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+            <DeliveryStats crate={crate} insight={insight} />
+          </div>
+        </Sheet>
+      )}
       {panel === 'add' && <AddTaskDialog crate={crate} onClose={() => setPanel(null)} />}
       {panel && typeof panel === 'object' && (
         <RemoveTaskDialog crate={crate} task={panel.remove} onClose={() => setPanel(null)} />
+      )}
+    </div>
+  )
+}
+
+// PROTOTYPE: says what this page is and switches between a live crate and the
+// sample crate.
+function PrototypeBar({ sample }: { sample: boolean }) {
+  const { workspace } = useWorkspaceSelection()
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-dashed border-edge bg-surface px-3 py-2 text-xs text-muted">
+      <span className="rounded-[5px] bg-foreground px-1.5 py-px text-[11px] font-medium text-card">Prototype</span>
+      {sample ? (
+        <span>A made-up crate that shows a busy delivery on develop and master. Nothing here is saved.</span>
+      ) : (
+        <span>Live data, read-only. The briefing is generated on this machine.</span>
+      )}
+      {sample ? (
+        <Link
+          to="/w/$workspaceId/crates"
+          params={{ workspaceId: workspace }}
+          className="ml-auto font-medium text-primary hover:underline"
+        >
+          Back to live crates
+        </Link>
+      ) : (
+        <Link
+          to="/w/$workspaceId/crates/$crateId"
+          params={{ workspaceId: workspace, crateId: SAMPLE_CRATE_ID }}
+          className="ml-auto font-medium text-primary hover:underline"
+        >
+          Open the sample crate
+        </Link>
       )}
     </div>
   )
@@ -235,17 +343,31 @@ function SectionCard({
 function MemberTasks({
   crate,
   canAct,
+  hoveredId,
+  onHover,
+  onActivate,
   onAdd,
   onRemove,
 }: {
   crate: CrateDetail
   canAct: boolean
+  hoveredId: string | null
+  onHover: (id: string | null) => void
+  onActivate: (id: string) => void
   onAdd: () => void
   onRemove: (task: CrateTask) => void
 }) {
   const { workspace } = useWorkspaceSelection()
-  const navigate = useNavigate()
   const open = crate.state === 'open'
+  // PROTOTYPE: the list opens short, with the tasks that still need work
+  // first, and grows to every task on request.
+  const [expanded, setExpanded] = useState(false)
+  const ordered = useMemo(
+    () => crate.tasks.slice().sort((a, b) => taskRank[statusOf(a)] - taskRank[statusOf(b)]),
+    [crate.tasks],
+  )
+  const shown = expanded ? ordered : ordered.slice(0, COLLAPSED_TASKS)
+  const hidden = ordered.length - shown.length
   return (
     <SectionCard
       title="Tasks"
@@ -289,71 +411,111 @@ function MemberTasks({
           )}
         </div>
       ) : (
-        <ul className="divide-y divide-border">
-          {crate.tasks.map((task) => (
-            <li key={task.id} data-crate-task={task.id} className="flex items-start gap-1 px-2 py-1.5">
-              <div className="min-w-0 flex-1">
-                <TaskRow
-                  task={task}
-                  onActivate={(id) =>
-                    void navigate({
-                      to: '/w/$workspaceId/tasks/$taskId',
-                      params: { workspaceId: workspace, taskId: id },
-                    })
-                  }
-                  details={
-                    <span className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px] text-faint">
-                      <span
-                        data-task-state={task.state}
-                        className={cn(
-                          'shrink-0 rounded-[4px] px-1.5 font-medium leading-[18px]',
-                          stateTone(task.state),
-                        )}
-                      >
-                        {taskStateLabels[task.state] ?? task.state}
-                      </span>
-                      <span className="flex min-w-0 items-center gap-1">
-                        <GitBranch aria-hidden className="size-3 shrink-0" />
-                        <span className="min-w-0 truncate font-mono" data-task-branch>
-                          {task.branch}
+        <>
+          <ul id="crate-task-list" className="divide-y divide-border">
+            {shown.map((task) => (
+              <li
+                key={task.id}
+                data-crate-task={task.id}
+                onMouseEnter={() => onHover(task.id)}
+                onMouseLeave={() => onHover(null)}
+                className={cn(
+                  'flex items-start gap-1 px-2 py-1.5 transition-colors',
+                  hoveredId === task.id && 'bg-primary-soft/60',
+                )}
+              >
+                <div className="min-w-0 flex-1">
+                  <TaskRow
+                    task={task}
+                    onActivate={onActivate}
+                    details={
+                      <span className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px] text-faint">
+                        <span
+                          data-task-state={task.state}
+                          className={cn(
+                            'shrink-0 rounded-[4px] px-1.5 font-medium leading-[18px]',
+                            stateTone(task.state),
+                          )}
+                        >
+                          {taskStateLabels[task.state] ?? task.state}
+                        </span>
+                        <span className="flex min-w-0 items-center gap-1">
+                          <GitBranch aria-hidden className="size-3 shrink-0" />
+                          <span className="min-w-0 truncate font-mono" data-task-branch>
+                            {task.branch}
+                          </span>
                         </span>
                       </span>
-                    </span>
-                  }
-                />
-              </div>
-              <div className="flex shrink-0 items-center gap-0.5 pt-1">
-                {task.pull_request?.url && (
-                  <a
-                    href={task.pull_request.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    title={`Pull request ${pullRequestLabel(task.pull_request)}`}
-                    className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted hover:bg-raised hover:text-foreground"
-                  >
-                    <GitPullRequest aria-hidden className="size-3.5" />
-                    <span className="tabular-nums">{pullRequestLabel(task.pull_request)}</span>
-                  </a>
-                )}
-                {canAct && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7"
-                    aria-label={`Remove ${task.title} from this crate`}
-                    title="Remove from crate"
-                    onClick={() => onRemove(task)}
-                  >
-                    <X />
-                  </Button>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
+                    }
+                  />
+                </div>
+                <div className="flex shrink-0 items-center gap-0.5 pt-1">
+                  {task.pull_request?.url && (
+                    <a
+                      href={task.pull_request.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={`Pull request ${pullRequestLabel(task.pull_request)}`}
+                      className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted hover:bg-raised hover:text-foreground"
+                    >
+                      <GitPullRequest aria-hidden className="size-3.5" />
+                      <span className="tabular-nums">{pullRequestLabel(task.pull_request)}</span>
+                    </a>
+                  )}
+                  {canAct && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-7"
+                      aria-label={`Remove ${task.title} from this crate`}
+                      title="Remove from crate"
+                      onClick={() => onRemove(task)}
+                    >
+                      <X />
+                    </Button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+          {ordered.length > COLLAPSED_TASKS && (
+            <div className="border-t border-border px-2 py-1.5">
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-expanded={expanded}
+                aria-controls="crate-task-list"
+                data-crate-tasks-toggle
+                className="w-full justify-between"
+                onClick={() => setExpanded(!expanded)}
+              >
+                {expanded ? 'Show fewer' : `Show all ${ordered.length} tasks`}
+                <span className="flex items-center gap-1.5 text-xs font-normal text-faint">
+                  {!expanded && `${hidden} more`}
+                  <ChevronDown aria-hidden className={cn('transition-transform', expanded && 'rotate-180')} />
+                </span>
+              </Button>
+            </div>
+          )}
+        </>
       )}
     </SectionCard>
   )
+}
+
+// How many tasks the list shows before it is expanded, and the order it
+// shows them in: what waits on a person, then work in flight, then the rest.
+const COLLAPSED_TASKS = 5
+const taskRank: Record<GraphStatus, number> = {
+  needs_you: 0,
+  plan_gate: 0,
+  merge_gate: 0,
+  running: 1,
+  ready: 2,
+  parked: 3,
+  blocked: 4,
+  merged: 5,
+  closed: 6,
 }
 
 function stateTone(state: CrateTask['state']) {
@@ -444,15 +606,27 @@ function RequirementRow({ requirement, declared }: { requirement: CrateRequireme
 
 // Recorded events of member tasks, newest first (req-crates AC-5.5;
 // component-crates invariant 13). A pull request entry links to it.
-function Activity({ crate }: { crate: CrateDetail }) {
+function Activity({ crate, sampleEvents }: { crate: CrateDetail; sampleEvents?: CrateActivityEvent[] }) {
   const { workspace } = useWorkspaceSelection()
-  const activity = useInfiniteQuery({
+  const [sampleShown, setSampleShown] = useState(12)
+  const live = useInfiniteQuery({
     queryKey: crateActivityQueryKey(workspace, crate.id),
     queryFn: ({ pageParam }) => fetchCrateActivity(workspace, crate.id, pageParam),
     initialPageParam: '',
     getNextPageParam: (page) => page.next_cursor || undefined,
-    enabled: Boolean(workspace),
+    enabled: Boolean(workspace) && !sampleEvents,
   })
+  // PROTOTYPE: the sample crate's events come from memory, paged the same way.
+  const activity = sampleEvents
+    ? {
+        isPending: false,
+        error: null,
+        data: { pages: [{ events: sampleEvents.slice(0, sampleShown) }] },
+        hasNextPage: sampleShown < sampleEvents.length,
+        isFetchingNextPage: false,
+        fetchNextPage: async () => setSampleShown((shown) => shown + 12),
+      }
+    : live
   const events = activity.data?.pages.flatMap((page) => page.events) ?? []
   return (
     <SectionCard title="Activity">
