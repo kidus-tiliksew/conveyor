@@ -192,7 +192,9 @@ func TestCrateBriefingUnconfigured(t *testing.T) {
 // in any letter case included), and a look_first that names one task twice.
 // Round 3 adds sentence ends followed by a Unicode space such as U+00A0,
 // U+2009, or U+3000, the ellipsis U+2026 as a sentence end, and the dated
-// task ID in upper case. Each
+// task ID in upper case. Round 4 counts every run of sentence-end marks as
+// one end whatever follows it, so closing quotes, brackets, Markdown, a
+// missing space, a zero-width space, and full-width marks cannot hide one. Each
 // refusal is ErrCrateBriefingInvalid, returns no briefing, and its error
 // text never holds any part of the reply.
 func TestCrateBriefingReplyRefusals(t *testing.T) {
@@ -269,6 +271,16 @@ func TestCrateBriefingReplyRefusals(t *testing.T) {
 		{"two-sentence headline with an ideographic space", crateBriefingReplyJSON(t, "Work started.\u3000Review follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
 		{"two-sentence headline ended by an ellipsis", crateBriefingReplyJSON(t, "Work started\u2026 Review follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
 		{"upper-case task ID", crateBriefingReplyJSON(t, crateBriefingHeadline, "It waits on 261119-ABCDEF "+echo+"."), "task, requirement, or document identifier"},
+		{"two-sentence headline after two closing quotes", crateBriefingReplyJSON(t, "\u201cThe builder said, \u2018Work started.\u2019\u201d Review follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
+		{"four-sentence account after two closing quotes", crateBriefingReplyJSON(t, crateBriefingHeadline, "\u201cThe builder said, \u2018Work started.\u2019\u201d Review follows. The gate opens. Delivery starts."), "the account holds more than three sentences"},
+		{"two-sentence headline with no space", crateBriefingReplyJSON(t, "Work started.Review follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
+		{"two-sentence headline after a closing bracket", crateBriefingReplyJSON(t, "Work started.) Review follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
+		{"two quoted sentences in a headline", crateBriefingReplyJSON(t, `"Work started!" "Review follows."`, crateBriefingAccount), "the headline is not exactly one sentence"},
+		{"four-sentence account after a quote in brackets", crateBriefingReplyJSON(t, crateBriefingHeadline, `(He said "ready.") Two. Three. Four.`), "the account holds more than three sentences"},
+		{"two-sentence headline in Markdown emphasis", crateBriefingReplyJSON(t, "Work **started.** Review follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
+		{"two-sentence headline with a full stop and a CJK full stop", crateBriefingReplyJSON(t, "Work started.\u3002Review follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
+		{"two-sentence headline with a zero-width space", crateBriefingReplyJSON(t, "Work started.\u200bReview follows.", crateBriefingAccount), "the headline is not exactly one sentence"},
+		{"two-sentence headline with full-width marks", crateBriefingReplyJSON(t, "Work started\uff01Review follows\uff1f", crateBriefingAccount), "the headline is not exactly one sentence"},
 		{"same look_first task twice", crateBriefingReplyJSON(t, crateBriefingHeadline, crateBriefingAccount, entry(member, "attention", "It waits "+echo+"."), entry(member, "info", "It is late.")), "look_first names the same task twice"},
 		{"reference document ID", crateBriefingReplyJSON(t, crateBriefingHeadline, "It follows ref-260823-f4729f "+echo+"."), "task, requirement, or document identifier"},
 	} {
@@ -281,7 +293,7 @@ func TestCrateBriefingReplyRefusals(t *testing.T) {
 			if !strings.Contains(err.Error(), test.reason) {
 				t.Fatalf("refusal %q, want the reason %q", err, test.reason)
 			}
-			for _, fragment := range []string{echo, member, crateBriefingMembers[1], "export", "On track", "Look", "REQ-5", "crate-insights", "\xff", "Work started", "Review follows", "dec-142", "Req-5", "component-crates", "feature-briefing", "ABCDEF", "Delivery starts"} {
+			for _, fragment := range []string{echo, member, crateBriefingMembers[1], "export", "On track", "Look", "REQ-5", "crate-insights", "\xff", "Work started", "Review follows", "dec-142", "Req-5", "component-crates", "feature-briefing", "ABCDEF", "Delivery starts", "builder", "ready"} {
 				if strings.Contains(err.Error(), fragment) {
 					t.Fatalf("refusal %q echoes the reply fragment %q", err, fragment)
 				}

@@ -356,6 +356,9 @@ func TestCrateBriefingRouteFailuresKeepStoredBriefing(t *testing.T) {
 		{"two-sentence headline", insightReply{output: `{"headline":"Work started. ` + echo + ` follows.","account":"A.","look_first":[]}`, model: "served"}, nil, func(detail string) bool {
 			return strings.Contains(detail, "the headline is not exactly one sentence")
 		}},
+		{"double-closing-quote headline", insightReply{output: `{"headline":"\u201cThe builder said, \u2018Work started.\u2019\u201d ` + echo + ` follows.","account":"A.","look_first":[]}`, model: "served"}, nil, func(detail string) bool {
+			return strings.Contains(detail, "the headline is not exactly one sentence")
+		}},
 		{"non-breaking-space headline", insightReply{output: `{"headline":"Work started.\u00a0` + echo + ` follows.","account":"A.","look_first":[]}`, model: "served"}, nil, func(detail string) bool {
 			return strings.Contains(detail, "the headline is not exactly one sentence")
 		}},

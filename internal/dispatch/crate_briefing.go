@@ -106,35 +106,53 @@ var crateBriefingDesignID = regexp.MustCompile(`\b(?:component|feature)-[a-z0-9]
 // shape that a briefing may hold.
 var crateBriefingDesignWords = []string{"component-based", "component-level", "feature-complete", "feature-flag", "feature-flags", "feature-rich"}
 
-// crateBriefingSentenceMark matches the mark of a sentence end: a run of
-// ".", "!", "?", or the ellipsis "…", then an optional closing quote or
-// bracket. The mark ends a sentence only when a space or the end of the
-// text follows it, so a decimal such as 1.5 has no sentence end.
-var crateBriefingSentenceMark = regexp.MustCompile(`[.!?\x{2026}]+["'\x{201D}\x{2019})\]]?`)
-
-// crateBriefingSpace reports whether r separates sentences: any rune that
-// unicode.IsSpace accepts or that is in category Zs, such as U+00A0, U+2009,
-// U+202F, or U+3000.
-func crateBriefingSpace(r rune) bool {
-	return unicode.IsSpace(r) || unicode.Is(unicode.Zs, r)
+// crateBriefingSentenceEndMark reports whether r ends a sentence: ".",
+// "!", "?", the ellipsis U+2026, or the full-width U+3002, U+FF01, or
+// U+FF1F.
+func crateBriefingSentenceEndMark(r rune) bool {
+	switch r {
+	case '.', '!', '?', '\u2026', '\u3002', '\uFF01', '\uFF1F':
+		return true
+	}
+	return false
 }
 
-// crateBriefingSentences counts the sentences of trimmed text: each sentence
-// end, plus one for text after the last end.
+// crateBriefingASCIIDigit reports whether r is one of 0 to 9.
+func crateBriefingASCIIDigit(r rune) bool { return r >= '0' && r <= '9' }
+
+// crateBriefingSentences counts the sentences of text with a rule that can
+// count too many sentences and never too few (req-crate-insights AC-5.1).
+// Every maximal run of sentence-end marks counts as one sentence end,
+// whatever follows it: a space, a quote, a bracket, a letter, or nothing.
+// The one exception is a single "." with an ASCII digit directly on both
+// sides, a decimal such as 1.5. Text after the last counted end that still
+// holds a letter or a digit counts as one more sentence. An abbreviation
+// such as "e.g." therefore counts as a sentence end, and the reply is
+// refused, which stores nothing (AC-5.4).
 func crateBriefingSentences(text string) int {
+	runes := []rune(text)
 	count, last := 0, 0
-	for _, mark := range crateBriefingSentenceMark.FindAllStringIndex(text, -1) {
-		end := mark[1]
-		if end < len(text) {
-			if next, _ := utf8.DecodeRuneInString(text[end:]); !crateBriefingSpace(next) {
-				continue
-			}
+	for i := 0; i < len(runes); {
+		if !crateBriefingSentenceEndMark(runes[i]) {
+			i++
+			continue
 		}
-		count++
-		last = end
+		j := i
+		for j < len(runes) && crateBriefingSentenceEndMark(runes[j]) {
+			j++
+		}
+		decimal := j-i == 1 && runes[i] == '.' && i > 0 && j < len(runes) && crateBriefingASCIIDigit(runes[i-1]) && crateBriefingASCIIDigit(runes[j])
+		if !decimal {
+			count++
+			last = j
+		}
+		i = j
 	}
-	if count == 0 || strings.TrimFunc(text[last:], crateBriefingSpace) != "" {
-		count++
+	for _, r := range runes[last:] {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			count++
+			break
+		}
 	}
 	return count
 }
@@ -238,7 +256,8 @@ func invalidCrateBriefing(reason string) error {
 // look_first, with no other field and nothing after it. The headline and the
 // account must be non-empty, at most 200 and 800 Unicode characters, and
 // free of line breaks, a leading Markdown heading marker, and fences. The
-// headline is exactly one sentence and the account at most three
+// headline is exactly one sentence and the account at most three, as
+// crateBriefingSentences counts them
 // (req-crate-insights AC-5.1). look_first holds at most three entries, each
 // naming a different current member with the tone attention, info, or
 // positive and a non-empty reason of at most 160 characters on one line. No
