@@ -52,6 +52,10 @@ func TestCrateMigrationIntegration(t *testing.T) {
 		}
 	})
 	exec(`DELETE FROM conveyor_singlestore_migrations WHERE version=?`, crateMigrationVersion)
+	// Migration 0047's key covers crate_id. Drop the key and its ledger row
+	// first, so the replay adds the column and then the key again.
+	exec(`DELETE FROM conveyor_singlestore_migrations WHERE version=?`, crateMemberKeyMigrationVersion)
+	exec(`ALTER TABLE tasks DROP KEY ` + crateMemberKey.name)
 	exec(`ALTER TABLE tasks DROP COLUMN crate_id`)
 	exec(`DROP TABLE IF EXISTS crate_requirements`)
 	exec(`DROP TABLE IF EXISTS crates`)
