@@ -299,17 +299,6 @@ func (m *readMemo) get(ctx context.Context, key string, build func(context.Conte
 			value.etag, value.unstored = "", true
 			return value.clone(), nil
 		}
-		// A build that outlived its horizon answers its caller once,
-		// untagged and unstored, as an uncached render does. It builds
-		// again once only when a deadline inside the memo lifetime, and
-		// not the lifetime itself, ended its horizon, so the answer
-		// projects past that deadline. Building again after every expired
-		// build repeated the whole read for as long as each build outlived
-		// the lifetime (component-next-action invariant 58; DEC-140(3)).
-		if expired && !changed && (builds > 1 || !value.validUntil.Before(now.Add(readMemoLifetime))) {
-			value.etag, value.unstored = "", true
-			return value.clone(), nil
-		}
 		if changed || expired {
 			continue
 		}
