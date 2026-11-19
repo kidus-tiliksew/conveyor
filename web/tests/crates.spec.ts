@@ -1802,6 +1802,80 @@ for (const viewport of [
       await expect(page.locator('[data-emphasized]')).toHaveCount(0)
     })
 
+    // AC-2.5: the pointer rests on one task while keyboard focus moves to
+    // another map line. The focused task takes the card and the row mark
+    // with no pointer movement, and Enter opens that same task.
+    for (const resting of ['a task row', 'a map line'] as const) {
+      test(`keyboard focus that moves to a map line while the pointer rests on ${resting} shows the focused task`, async ({
+        page,
+      }) => {
+        test.skip(resting === 'a map line' && viewport.width < 1024, 'the pointer rests on a map line at desktop width')
+        // Tall enough that the map and every row stay in view, so moving focus
+        // never scrolls the page. A scroll would put another element under the
+        // resting pointer, and the browser would report that as pointer
+        // movement.
+        await page.setViewportSize({ width: viewport.width, height: 2400 })
+        await serveCrates(page, { insights: { [lineCrate.id]: deliveryInsight } })
+        await page.goto('/w/demo/crates/crate-line')
+        const map = page.getByRole('region', { name: 'Where the work is' })
+        await expect(map.locator('[data-branch-task]')).toHaveCount(8)
+        // Every row shows, so each task's row mark can be checked.
+        await page.locator('[data-crate-tasks-toggle]').click()
+        await expect(page.locator('[data-crate-task]')).toHaveCount(8)
+        const card = (id: string) => map.locator(`[data-branch-card="${id}"]`)
+        const row = (id: string) => page.locator(`[data-crate-task="${id}"]`)
+        async function showsOnly(id: string) {
+          await expect(card(id)).toBeVisible()
+          await expect(map.locator('[data-branch-card]')).toHaveCount(1)
+          await expect(row(id)).toHaveAttribute('data-emphasized', 'true')
+          await expect(page.locator('[data-crate-task][data-emphasized]')).toHaveCount(1)
+          await expect(map.locator(`[data-branch-task="${id}"]`)).toHaveAttribute('data-map-emphasized', 'true')
+        }
+
+        // The pointer comes to rest on one task and stays there.
+        if (resting === 'a task row') await row('261115-c11').hover()
+        else await map.locator('[data-branch-task="261115-c11"] [data-open-label]').hover()
+        await showsOnly('261115-c11')
+        const scrolled = () =>
+          page.evaluate(() =>
+            Array.from(document.querySelectorAll('*')).reduce(
+              (sum, element) => sum + element.scrollTop,
+              window.scrollY,
+            ),
+          )
+        const before = await scrolled()
+
+        // Keyboard focus moves to a map line, then on to the next one by Tab.
+        const lines = await map
+          .locator('[data-branch-task]')
+          .evaluateAll((items) => items.map((item) => item.getAttribute('data-branch-task') ?? ''))
+        // A line whose next line in tab order is not the hovered task.
+        const first = lines.find(
+          (id, index) => id !== '261115-c11' && lines[index + 1] && lines[index + 1] !== '261115-c11',
+        ) as string
+        await map.locator(`[data-branch-task="${first}"]`).focus()
+        await showsOnly(first)
+        await page.keyboard.press('Tab')
+        const next = await page.evaluate(() => document.activeElement?.getAttribute('data-branch-task') ?? '')
+        expect(lines).toContain(next)
+        expect(next).not.toBe('261115-c11')
+        await showsOnly(next)
+        // Nothing scrolled, so the pointer still rests where it was.
+        expect(await scrolled()).toBe(before)
+
+        // The pointer then enters another task and leaves it: the focused
+        // line gets the emphasis back (round 2).
+        await row('261115-b02').hover()
+        await showsOnly('261115-b02')
+        await page.mouse.move(0, 0)
+        await showsOnly(next)
+
+        // Enter opens the task the card shows.
+        await page.keyboard.press('Enter')
+        await expect(page).toHaveURL(new RegExp(`/w/demo/tasks/${next}$`))
+      })
+    }
+
     test('clicking a line opens task detail', async ({ page }) => {
       await serveCrates(page, { insights: { [lineCrate.id]: deliveryInsight } })
       await page.goto('/w/demo/crates/crate-line')

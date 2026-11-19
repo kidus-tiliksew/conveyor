@@ -9,9 +9,12 @@ import { useCallback, useState } from 'react'
 // object, so the page keeps one emphasized task or group.
 //
 // The state holds two targets apart: what the pointer rests on and what holds
-// keyboard focus. The page shows the pointer's target when there is one and
-// the focused target otherwise, so leaving a row, a line, or a count gives the
-// emphasis back to a line or count that still has focus (AC-2.5).
+// keyboard focus, and which of them was set last. The page shows the target
+// set last. When that target is cleared it shows the other one, if set. So
+// focus that moves to a line shows that line while the pointer rests on
+// another task, the pointer that then enters a task shows that task, and
+// leaving a row, a line, or a count gives the emphasis back to a line or count
+// that still has focus (AC-2.5).
 export type EmphasisTarget = { task: string } | { group: string }
 
 export interface CrateEmphasis {
@@ -27,7 +30,8 @@ export interface CrateEmphasis {
   blur: (target: EmphasisTarget) => void
 }
 
-type Targets = { pointer: EmphasisTarget | null; focus: EmphasisTarget | null }
+// `latest` names the target set last. It is an order of acts, not a time.
+type Targets = { pointer: EmphasisTarget | null; focus: EmphasisTarget | null; latest: 'pointer' | 'focus' }
 
 function same(a: EmphasisTarget | null, b: EmphasisTarget) {
   if (a === null) return false
@@ -37,22 +41,31 @@ function same(a: EmphasisTarget | null, b: EmphasisTarget) {
 // The page holds this state once. It starts empty for each crate, because
 // the page is keyed by the crate's ID.
 export function useCrateEmphasis(): CrateEmphasis {
-  const [targets, setTargets] = useState<Targets>({ pointer: null, focus: null })
-  const emphasize = useCallback(
-    (id: string | null) => setTargets((current) => ({ ...current, pointer: id === null ? null : { task: id } })),
+  const [targets, setTargets] = useState<Targets>({ pointer: null, focus: null, latest: 'pointer' })
+  // Setting a target makes it the latest. Clearing one leaves `latest` as it
+  // is, and the shown target falls back to the other one below.
+  const setPointer = useCallback(
+    (target: EmphasisTarget | null) =>
+      setTargets((current) =>
+        target === null ? { ...current, pointer: null } : { ...current, pointer: target, latest: 'pointer' },
+      ),
     [],
   )
+  const emphasize = useCallback((id: string | null) => setPointer(id === null ? null : { task: id }), [setPointer])
   const emphasizeGroup = useCallback(
-    (key: string | null) => setTargets((current) => ({ ...current, pointer: key === null ? null : { group: key } })),
+    (key: string | null) => setPointer(key === null ? null : { group: key }),
+    [setPointer],
+  )
+  const focus = useCallback(
+    (target: EmphasisTarget) => setTargets((current) => ({ ...current, focus: target, latest: 'focus' })),
     [],
   )
-  const focus = useCallback((target: EmphasisTarget) => setTargets((current) => ({ ...current, focus: target })), [])
   const blur = useCallback(
     (target: EmphasisTarget) =>
       setTargets((current) => (same(current.focus, target) ? { ...current, focus: null } : current)),
     [],
   )
-  const shown = targets.pointer ?? targets.focus
+  const shown = targets.latest === 'focus' ? (targets.focus ?? targets.pointer) : (targets.pointer ?? targets.focus)
   return {
     emphasizedId: shown && 'task' in shown ? shown.task : null,
     emphasizedGroup: shown && 'group' in shown ? shown.group : null,
