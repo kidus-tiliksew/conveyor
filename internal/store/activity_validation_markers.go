@@ -119,6 +119,24 @@ func MarkerForgePageKinds() []string {
 	return forge
 }
 
+// MarkerEventFoldable reports whether the folds can act on a marker row
+// that a backend selected by a necessary text test. A pipeline.bounced row
+// counts only when UserRequestChangesPending reads it as a user change
+// request, and a work_order.updated row only when LatestForgeFailure reads it
+// as an implement order submitted with a head. Both tests call the folds'
+// own decoders, so leaving out a row this reports false changes no marker
+// (component-web-task-surfaces invariant 19). Every other kind is foldable.
+func MarkerEventFoldable(event core.Event) bool {
+	switch event.Kind {
+	case "pipeline.bounced":
+		return userRequestChangesBounce(event)
+	case "work_order.updated":
+		_, _, ok := implementationSubmission(event)
+		return ok
+	}
+	return true
+}
+
 // MarkerClaimPartition names the claims of one task and job.
 type MarkerClaimPartition struct {
 	TaskID string

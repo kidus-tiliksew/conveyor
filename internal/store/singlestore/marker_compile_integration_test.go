@@ -1,0 +1,410 @@
+package singlestore
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/go-sql-driver/mysql"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+)
+
+// The marker fold compile guard measures how long SingleStore takes to
+// compile each statement shape the activity-marker fold read can produce.
+// A statement whose compile reaches max_compilation_time_s fails with error
+// 2408 and is not cached, so every later read compiles it again and fails
+// again; that is how the board reads answered 500 after v0.73.0. Each fixed
+// shape must complete its cold first use within markerCompileCeiling. The
+// v0.72.0 and pre-fix (95133fd2) statements are measured in the same run for
+// the record only; they set no budget.
+//
+// Measurement: a dedicated connection runs with interpreter_mode=compile, so
+// the first execution compiles synchronously instead of interpreting while a
+// background compile runs. Before each trial the guard evicts every cached
+// plan of the test's own private database on every node, aggregator and
+// leaf, with DROP <plan_id> FROM PLANCACHE ON NODE <node_id>. It never runs
+// DROP ALL FROM PLANCACHE, which also clears no leaf plan, and it touches no
+// other database's plans. It then times the statement from send through
+// result drain on an empty event table with the normal schema and the
+// production binding path (client-side interpolation). The cold time is the
+// compile proxy; a warm rerun right after a cold trial is the control. A
+// discarded first round moves every leaf plan the statements share under
+// the private database, so the measured rounds evict them too. Shapes are
+// measured in rounds, so slow drift of the engine affects every shape alike.
+
+// markerCompileCeiling bounds every cold trial of every fixed fold shape.
+const markerCompileCeiling = 15 * time.Second
+
+// markerCompileTrials is the number of cold trials per shape.
+const markerCompileTrials = 3
+
+// markerCompileFixture is one pinned statement with its bound arguments.
+type markerCompileFixture struct {
+	Query string `json:"query"`
+	Args  []any  `json:"args"`
+}
+
+// loadMarkerCompileFixture reads a statement captured at an earlier revision
+// (testdata/marker_fold_*.json): the revision's own markerFoldQuery output
+// for markerCompileInput, with "no_live" and "live" shapes. JSON numbers
+// are the clock arguments and bind as integers.
+func loadMarkerCompileFixture(t testing.TB, name string) map[string]markerCompileFixture {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture map[string]markerCompileFixture
+	if err = json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	for shape, statement := range fixture {
+		for i, arg := range statement.Args {
+			if number, ok := arg.(float64); ok {
+				statement.Args[i] = int64(number)
+			}
+		}
+		if got := strings.Count(statement.Query, "?"); got != len(statement.Args) {
+			t.Fatalf("%s %s holds %d placeholders for %d arguments", name, shape, got, len(statement.Args))
+		}
+		fixture[shape] = statement
+	}
+	return fixture
+}
+
+// markerCompileInput is the page every revision's statement was captured
+// for: 100 tasks, 10 of them review tasks, and for the live shapes 5 live
+// review tasks with one open review order each.
+func markerCompileInput(live, keepAll bool) store.MarkerFoldInput {
+	page := make([]string, 100)
+	for i := range page {
+		page[i] = fmt.Sprintf("marker-compile-task-%03d", i)
+	}
+	in := store.MarkerFoldInput{Workspace: "marker-compile", Page: page, ReviewTasks: page[:10],
+		Now: time.Date(2026, 11, 19, 12, 0, 0, 123456789, time.UTC), KeepAllClaims: keepAll}
+	if live {
+		in.LiveReviewTasks = page[:5]
+		for _, taskID := range page[:5] {
+			in.OpenReviewOrders = append(in.OpenReviewOrders, store.MarkerReviewOrder{TaskID: taskID, ID: taskID + "-review-1", JobID: taskID + "-review-1"})
+		}
+	}
+	return in
+}
+
+type markerCompileShape struct {
+	name    string
+	query   string
+	args    []any
+	fixed   bool // a statement the fold read produces; the ceiling applies
+	cold    []time.Duration
+	timeout []string
+	warm    time.Duration
+}
+
+func (shape *markerCompileShape) median() (time.Duration, bool) {
+	if len(shape.cold) < markerCompileTrials {
+		return 0, false
+	}
+	sorted := slices.Clone(shape.cold)
+	slices.Sort(sorted)
+	return sorted[len(sorted)/2], true
+}
+
+// markerCompileSession is the dedicated connection of the guard.
+type markerCompileSession struct {
+	t        *testing.T
+	st       *Store
+	conn     *sql.Conn
+	database string
+	// connectionID is the server's ID of conn.
+	connectionID int64
+}
+
+func (s *markerCompileSession) open(ctx context.Context) {
+	s.t.Helper()
+	conn, err := s.st.db.Conn(ctx)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	if _, err = conn.ExecContext(ctx, "SET SESSION interpreter_mode = compile"); err != nil {
+		s.t.Fatal(err)
+	}
+	if err = conn.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&s.database); err != nil || !strings.HasSuffix(s.database, "_test") {
+		s.t.Fatalf("compile guard database %q: %v", s.database, err)
+	}
+	if err = conn.QueryRowContext(ctx, "SELECT CONNECTION_ID()").Scan(&s.connectionID); err != nil {
+		s.t.Fatal(err)
+	}
+	s.conn = conn
+}
+
+// stop ends the statement the guard's own connection still runs on the
+// server, after a read timeout, and waits until the server reports it gone.
+func (s *markerCompileSession) stop(ctx context.Context) {
+	s.t.Helper()
+	s.conn.Close()
+	if _, err := s.st.db.ExecContext(ctx, fmt.Sprintf("KILL QUERY %d", s.connectionID)); err != nil {
+		s.t.Logf("stop connection %d: %v", s.connectionID, err)
+	}
+	deadline := time.Now().Add(time.Minute)
+	for time.Now().Before(deadline) {
+		var running int
+		if err := s.st.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID=? AND COMMAND='Query'", s.connectionID).Scan(&running); err != nil {
+			s.t.Fatal(err)
+		}
+		if running == 0 {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	s.t.Fatalf("the timed-out statement on connection %d still runs", s.connectionID)
+}
+
+// evict drops every cached plan of the test database and its partition
+// databases on every node. The database is private to this test binary.
+func (s *markerCompileSession) evict(ctx context.Context) {
+	s.t.Helper()
+	rows, err := s.conn.QueryContext(ctx, "SELECT PLAN_ID,NODE_ID FROM information_schema.MV_PLANCACHE WHERE DATABASE_NAME=? OR LEFT(DATABASE_NAME,?)=?", s.database, len(s.database)+1, s.database+"_")
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	type plan struct{ id, node int64 }
+	var plans []plan
+	for rows.Next() {
+		var p plan
+		if err = rows.Scan(&p.id, &p.node); err != nil {
+			rows.Close()
+			s.t.Fatal(err)
+		}
+		plans = append(plans, p)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		s.t.Fatal(err)
+	}
+	for _, p := range plans {
+		// A plan can leave the cache between the read and the drop.
+		_, _ = s.conn.ExecContext(ctx, fmt.Sprintf("DROP %d FROM PLANCACHE ON NODE %d", p.id, p.node))
+	}
+}
+
+// run times one execution from send through result drain.
+func (s *markerCompileSession) run(ctx context.Context, query string, args []any) (time.Duration, error) {
+	started := time.Now()
+	rows, err := s.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return time.Since(started), err
+	}
+	for rows.Next() {
+	}
+	err = rows.Err()
+	rows.Close()
+	return time.Since(started), err
+}
+
+// warm reruns a shape right after its cold trial, without eviction.
+func (s *markerCompileSession) warm(ctx context.Context, shape *markerCompileShape) time.Duration {
+	s.t.Helper()
+	elapsed, err := s.run(ctx, shape.query, shape.args)
+	if err != nil {
+		s.t.Fatalf("%s warm control failed: %v", shape.name, err)
+	}
+	return elapsed
+}
+
+// markerCompileTimedOut reports an execution that compiled past the
+// engine's limit (error 2408) or past the connection's read timeout.
+func markerCompileTimedOut(err error) (string, bool) {
+	var driverErr *mysql.MySQLError
+	if errors.As(err, &driverErr) && driverErr.Number == compilationTimeoutError {
+		return "error 2408", true
+	}
+	if errors.Is(err, mysql.ErrInvalidConn) || errors.Is(err, sql.ErrConnDone) || errors.Is(err, context.DeadlineExceeded) {
+		return "read timeout", true
+	}
+	return "", false
+}
+
+// TestMarkerFoldCompileIntegration is the compile-time guard. Every fold
+// statement text the read can produce must complete each cold first use
+// within markerCompileCeiling. A fixed shape that fails, times out, exceeds
+// the ceiling, or has fewer than markerCompileTrials measurements fails the
+// guard; a timeout never counts as a measurement. The v0.72.0 and 95133fd2
+// statements are measured for the record, and their timeouts are reported.
+func TestMarkerFoldCompileIntegration(t *testing.T) {
+	st := integrationStore(t)
+	ctx := t.Context()
+	session := &markerCompileSession{t: t, st: st}
+	session.open(ctx)
+	defer func() { session.conn.Close() }()
+
+	tag := loadMarkerCompileFixture(t, "marker_fold_v0.72.0.json")
+	prefix := loadMarkerCompileFixture(t, "marker_fold_95133fd2.json")
+	baselines := []*markerCompileShape{
+		{name: "v0.72.0 no open review", query: tag["no_live"].Query, args: tag["no_live"].Args},
+		{name: "v0.72.0 open review", query: tag["live"].Query, args: tag["live"].Args},
+	}
+	prefixShapes := []*markerCompileShape{
+		{name: "95133fd2 no open review", query: prefix["no_live"].Query, args: prefix["no_live"].Args},
+		{name: "95133fd2 open review", query: prefix["live"].Query, args: prefix["live"].Args},
+	}
+	var fixed []*markerCompileShape
+	for _, variant := range []struct {
+		name          string
+		live, keepAll bool
+	}{
+		{"fix no open review, reduced claims", false, false},
+		{"fix no open review, every claim", false, true},
+		{"fix open review, reduced claims", true, false},
+		{"fix open review, every claim", true, true},
+	} {
+		query, args := markerFoldQuery(markerCompileInput(variant.live, variant.keepAll))
+		fixed = append(fixed, &markerCompileShape{name: variant.name, query: query, args: args, fixed: true})
+	}
+	rounds := append(slices.Clone(baselines), fixed...)
+
+	// The first statement on a fresh database pays for loading its tables;
+	// an unmeasured read takes that cost out of every trial.
+	if _, err := session.run(ctx, "SELECT COUNT(*) FROM events_columnstore", nil); err != nil {
+		t.Fatal(err)
+	}
+	// The v0.72.0 and fixed shapes run in rounds after one discarded round.
+	// The pre-fix shapes run after them, so a compile that times out and
+	// keeps the engine busy cannot slow another measurement; a pre-fix shape
+	// stops at its first timeout, because a plan whose compile does not
+	// finish is not cached and every later trial compiles it again.
+	for round := range markerCompileTrials + 1 {
+		for _, shape := range rounds {
+			session.evict(ctx)
+			elapsed, err := session.run(ctx, shape.query, shape.args)
+			if err != nil {
+				t.Fatalf("%s round %d failed after %s: %v", shape.name, round, elapsed.Round(time.Millisecond), err)
+			}
+			if round == 0 {
+				continue
+			}
+			shape.cold = append(shape.cold, elapsed)
+			if round == markerCompileTrials {
+				shape.warm = session.warm(ctx, shape)
+			}
+		}
+	}
+	for _, shape := range prefixShapes {
+		for range markerCompileTrials {
+			session.evict(ctx)
+			elapsed, err := session.run(ctx, shape.query, shape.args)
+			if err == nil {
+				shape.cold = append(shape.cold, elapsed)
+				continue
+			}
+			reason, timedOut := markerCompileTimedOut(err)
+			if !timedOut {
+				t.Fatalf("%s failed after %s: %v", shape.name, elapsed.Round(time.Millisecond), err)
+			}
+			shape.timeout = append(shape.timeout, fmt.Sprintf("%s after %s", reason, elapsed.Round(time.Millisecond)))
+			// The server keeps compiling after the client's read timeout:
+			// stop this test's own statement, then continue on a fresh
+			// connection.
+			session.stop(ctx)
+			session.open(ctx)
+			break
+		}
+		if len(shape.timeout) == 0 {
+			shape.warm = session.warm(ctx, shape)
+		}
+	}
+
+	var report strings.Builder
+	fmt.Fprintf(&report, "marker fold cold first use (ceiling %s per fixed-shape trial; median of %d cold trials; warm control):\n", markerCompileCeiling, markerCompileTrials)
+	for _, shape := range append(append(slices.Clone(baselines), prefixShapes...), fixed...) {
+		median, measured := shape.median()
+		line := fmt.Sprintf("  %-36s", shape.name)
+		if measured {
+			line += fmt.Sprintf(" median %8s", median.Round(time.Millisecond))
+		} else {
+			line += "  median        -"
+		}
+		cold := make([]string, len(shape.cold))
+		for i, d := range shape.cold {
+			cold[i] = d.Round(time.Millisecond).String()
+		}
+		line += fmt.Sprintf(" cold [%s]", strings.Join(cold, " "))
+		if shape.warm > 0 {
+			line += " warm " + shape.warm.Round(time.Millisecond).String()
+		}
+		if len(shape.timeout) > 0 {
+			line += " timeouts [" + strings.Join(shape.timeout, "; ") + "]"
+		}
+		report.WriteString(line + "\n")
+	}
+	t.Log(report.String())
+
+	for _, shape := range fixed {
+		if len(shape.cold) < markerCompileTrials {
+			t.Fatalf("%s has %d of %d measurements", shape.name, len(shape.cold), markerCompileTrials)
+		}
+		for i, cold := range shape.cold {
+			if cold > markerCompileCeiling {
+				t.Errorf("%s cold trial %d took %s, over the %s ceiling", shape.name, i+1, cold.Round(time.Millisecond), markerCompileCeiling)
+			}
+		}
+	}
+}
+
+// TestMarkerFoldPlanReuseIntegration proves the four statement texts reuse
+// one engine plan each when the bound values change: page sizes 1, 41, and
+// 100, and one, five, and 250 open review orders. The values travel
+// interpolated, as in production, so the engine's own parameterization must
+// fold the padded lists, the empty-list flag, and the order array into one
+// plan (component-web-task-surfaces invariant 19).
+func TestMarkerFoldPlanReuseIntegration(t *testing.T) {
+	st := integrationStore(t)
+	ctx := t.Context()
+	session := &markerCompileSession{t: t, st: st}
+	session.open(ctx)
+	defer func() { session.conn.Close() }()
+	for _, variant := range []struct {
+		name          string
+		live, keepAll bool
+	}{
+		{"no open review, reduced claims", false, false},
+		{"no open review, every claim", false, true},
+		{"open review, reduced claims", true, false},
+		{"open review, every claim", true, true},
+	} {
+		session.evict(ctx)
+		orderCounts := []int{0}
+		if variant.live {
+			orderCounts = []int{1, 5, 250}
+		}
+		runs := 0
+		for _, pages := range []int{1, 41, 100} {
+			for _, orders := range orderCounts {
+				in := markerShapeInput(pages, orders, variant.keepAll)
+				if pages == 1 {
+					in.ReviewTasks = nil
+				}
+				query, args := markerFoldQuery(in)
+				if _, err := session.run(ctx, query, args); err != nil {
+					t.Fatalf("%s pages=%d orders=%d: %v", variant.name, pages, orders, err)
+				}
+				runs++
+			}
+		}
+		var plans, executions int64
+		if err := session.conn.QueryRowContext(ctx, "SELECT COUNT(*),COALESCE(SUM(COMMITS),0) FROM information_schema.PLANCACHE WHERE DATABASE_NAME=? AND QUERY_TEXT LIKE '%events_columnstore%'", session.database).Scan(&plans, &executions); err != nil {
+			t.Fatal(err)
+		}
+		if plans != 1 || executions != int64(runs) {
+			t.Fatalf("%s: %d runs left %d aggregator plans with %d executions, want one plan run %d times", variant.name, runs, plans, executions, runs)
+		}
+		t.Logf("%s: %d inputs, one plan", variant.name, runs)
+	}
+}
