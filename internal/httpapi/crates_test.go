@@ -1039,25 +1039,44 @@ func (s *crateInsightFailingStore) ListWorkOrdersForTasks(ctx context.Context, i
 	return s.crateBackend.ListWorkOrdersForTasks(ctx, ids)
 }
 
-// TestCrateInsightRouteFailsWhole: a failed input read and a failed
-// next-action projection each fail the insight read whole with the generic
-// 500. No part of the view, no member ID, and no store text reaches the
-// response, and the read records nothing (component-crates, State and
-// failure; DEC-105(1)). The crate read fails whole on a projection failure
-// the same way.
+// crateCapabilityFailingMemberships fails the caller capability lookup that
+// the next-action options read for operate_gates. Route admission reads
+// view_workspace, so the request still reaches the handler.
+type crateCapabilityFailingMemberships struct {
+	store.MembershipStore
+	err error
+}
+
+func (m crateCapabilityFailingMemberships) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
+	if capability == core.CapabilityOperateGates {
+		return false, m.err
+	}
+	return m.MembershipStore.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
+}
+
+// TestCrateInsightRouteFailsWhole: a failed input read, a failed caller
+// capability read, and a failed next-action projection each fail the
+// insight read whole with the generic 500. No part of the view, no member
+// ID, and no store text reaches the response, and the read records nothing
+// (component-crates, State and failure; DEC-105(1)). The crate read fails
+// whole on a projection failure the same way.
 func TestCrateInsightRouteFailsWhole(t *testing.T) {
 	const secret = "hunter2hunter2hunter2hunter2"
 	for _, tc := range []struct {
-		name  string
-		store func(crateBackend) *crateInsightFailingStore
-		paths func(crateID string) []string
+		name        string
+		store       func(crateBackend) *crateInsightFailingStore
+		memberships bool
+		paths       func(crateID string) []string
 	}{
 		{"input read", func(inner crateBackend) *crateInsightFailingStore {
 			return &crateInsightFailingStore{crateBackend: inner, failInputs: errors.New("driver refused the insight read password=" + secret)}
-		}, func(id string) []string { return []string{"/v1/crates/" + id + "/insight"} }},
+		}, false, func(id string) []string { return []string{"/v1/crates/" + id + "/insight"} }},
 		{"projection", func(inner crateBackend) *crateInsightFailingStore {
 			return &crateInsightFailingStore{crateBackend: inner, failProjection: errors.New("driver refused the work-order read password=" + secret)}
-		}, func(id string) []string { return []string{"/v1/crates/" + id + "/insight", "/v1/crates/" + id} }},
+		}, false, func(id string) []string { return []string{"/v1/crates/" + id + "/insight", "/v1/crates/" + id} }},
+		{"capability read", func(inner crateBackend) *crateInsightFailingStore {
+			return &crateInsightFailingStore{crateBackend: inner}
+		}, true, func(id string) []string { return []string{"/v1/crates/" + id + "/insight"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCrateFixture(t)
@@ -1065,6 +1084,9 @@ func TestCrateInsightRouteFailsWhole(t *testing.T) {
 			member := f.task(t, crate.ID)
 			before := f.recorded(t)
 			f.server.Store = tc.store(f.store.(crateBackend))
+			if tc.memberships {
+				f.server.Memberships = crateCapabilityFailingMemberships{MembershipStore: f.members, err: errors.New("driver refused the capability read password=" + secret)}
+			}
 			var captured bytes.Buffer
 			previous := log.Writer()
 			log.SetOutput(&captured)
@@ -1082,7 +1104,7 @@ func TestCrateInsightRouteFailsWhole(t *testing.T) {
 			if strings.Contains(captured.String(), secret) || !strings.Contains(captured.String(), "store failure") || !strings.Contains(captured.String(), "driver refused") {
 				t.Fatalf("log %q, want a redacted store failure that names its cause", captured.String())
 			}
-			f.server.Store = f.store
+			f.server.Store, f.server.Memberships = f.store, f.members
 			if after := f.recorded(t); after != before {
 				t.Fatalf("failed reads recorded state:\nbefore %s\nafter  %s", before, after)
 			}
