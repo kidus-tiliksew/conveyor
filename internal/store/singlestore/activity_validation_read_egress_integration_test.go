@@ -40,6 +40,34 @@ func buildActivityMarkers(t testing.TB, ctx context.Context, st *Store) storetes
 		}}
 }
 
+// activityMarkerTagRevision names the release the activity-markers-v0.72.0
+// case compares with.
+const activityMarkerTagRevision = "tag-v0.72.0@db84f10683f6b072e0a6b08e4c374d86d09ebae8"
+
+// buildActivityMarkersTag compares the same fixture with the activity-marker
+// fold of tag v0.72.0. The inline baseline's fold statement is the tag's own:
+// it must reproduce the statements pinned from v0.72.0
+// (testdata/marker_fold_v0.72.0.json) before the case runs, and
+// marker_events.go and document_events.go do not change between 3062eb520
+// and v0.72.0. Task, summary, and order reads are shared by both sides.
+func buildActivityMarkersTag(t testing.TB, ctx context.Context, st *Store) storetest.ReadEgressCase {
+	t.Helper()
+	tag := loadMarkerCompileFixture(t, "marker_fold_v0.72.0.json")
+	for _, shape := range []struct {
+		name string
+		live bool
+	}{{"no_live", false}, {"live", true}} {
+		in := markerCompileInput(shape.live, false)
+		if query, _ := legacyMarkerFoldQuery(in.Workspace, in.Page, in.ReviewTasks, in.LiveReviewTasks, in.Now); query != tag[shape.name].Query {
+			t.Fatalf("the inline baseline fold no longer reproduces the v0.72.0 %s statement", shape.name)
+		}
+	}
+	c := buildActivityMarkers(t, ctx, st)
+	c.Name = "activity-markers-v0.72.0"
+	c.BaselineRevision = activityMarkerTagRevision
+	return c
+}
+
 // legacyListActivityMarkers and the functions below are the activity-marker
 // read at origin/main 3062eb520, the measurement baseline. Do not edit them
 // to follow the store.
