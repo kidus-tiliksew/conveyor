@@ -375,7 +375,8 @@ func TestMCPCrateReadsLargeCrateFitBudget(t *testing.T) {
 	crate := f.createCrate(t, f.editor, map[string]any{"name": "Large"})
 	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	for i := range 3000 {
-		f.crateMemberAt(t, crate.ID, core.NewTaskID(), base.Add(time.Duration(i)*time.Millisecond))
+		// Fixed IDs: 3,000 random task IDs can collide.
+		f.crateMemberAt(t, crate.ID, fmt.Sprintf("large-member-%04d", i), base.Add(time.Duration(i)*time.Millisecond))
 	}
 	before := f.recorded(t)
 	spy := newCrateReadSpy(f)
