@@ -19,6 +19,10 @@ export interface BoardSearch {
   // names (feature-requirement-insights RI-7).
   insight?: RequirementInsightTab
   create?: true
+  // The crate a new task joins: intake opened from a crate's page
+  // (component-crates invariant 17). It means nothing without `create`, and
+  // the Board gains no crate filter from it.
+  crate?: string
   q?: string
   state?: string[]
   repository?: string[]
@@ -68,6 +72,7 @@ export function validateBoardSearch(search: Record<string, unknown>): BoardSearc
     scope,
     insight,
     create: search.create === true || search.create === 'true' ? true : undefined,
+    crate: search.create === true || search.create === 'true' ? text(search.crate) : undefined,
     q: text(search.q),
     state: list(search.state),
     repository: list(search.repository),

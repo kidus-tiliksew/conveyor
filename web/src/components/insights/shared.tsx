@@ -4,7 +4,7 @@
 import { Ban, CircleDashed, Cog, Hand, type LucideIcon, Play } from 'lucide-react'
 import type { FocusEvent, PointerEvent, ReactNode } from 'react'
 import { RequirementInsightError } from '../../lib/api'
-import type { NextActionActor, RequirementInsightTask } from '../../lib/types'
+import type { NextActionActor, RequirementInsightTask, TaskState } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { statusMeta, statusOf } from '../board/map/graph-model'
 import { statusIcon } from '../board/map/task-node'
@@ -89,33 +89,38 @@ export function SectionHeading({ children, count }: { children: ReactNode; count
 
 // One serving task: the map's status icon for its stated next action, its
 // title, and the action's label verbatim (DEC-61). Activating it selects the
-// task on the map (AC-1.4).
+// task on the map (AC-1.4). The crate page reuses it with the task's state, so
+// a merged or closed member shows the map's done icon, and adds the member's
+// branch and pull request as `details` (req-crates AC-5.3).
 export function TaskRow({
   task,
   onHover,
   onActivate,
+  details,
 }: {
-  task: RequirementInsightTask
-  onHover: RowHover
+  task: RequirementInsightTask & { state?: TaskState }
+  onHover?: RowHover
   onActivate: (id: string) => void
+  details?: ReactNode
 }) {
-  const status = statusOf({ next_action: task.next_action })
+  const status = statusOf({ next_action: task.next_action, state: task.state })
   const Icon = statusIcon[status]
   return (
     <button
       type="button"
       data-task-row={task.id}
       onClick={() => onActivate(task.id)}
-      {...hoverProps(onHover, [task.id])}
-      className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-raised focus-visible:bg-raised focus-visible:outline-none"
+      {...(onHover ? hoverProps(onHover, [task.id]) : {})}
+      className="flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-raised focus-visible:bg-raised focus-visible:outline-none"
     >
       <Icon aria-hidden className={cn('mt-0.5 size-3.5 shrink-0', statusMeta[status].tone)} />
       <span className="min-w-0 flex-1">
         <span className="line-clamp-2 text-sm font-medium leading-snug text-foreground">{task.title}</span>
         <span className="mt-0.5 block text-[11px] text-muted">
-          {task.next_action.label}
-          <span className="font-mono text-faint"> · {task.id}</span>
+          <span data-next-action-label>{task.next_action.label}</span>
+          <span className="whitespace-nowrap font-mono text-faint"> · {task.id}</span>
         </span>
+        {details}
       </span>
     </button>
   )

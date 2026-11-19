@@ -1787,6 +1787,9 @@ export interface CreateTaskInput {
   depends_on?: string[]
   requirement_ids?: string[]
   system_design_ids?: string[]
+  // The open crate the task joins at creation. It attaches no requirement by
+  // itself (component-crates invariant 7; req-crates AC-3.1).
+  crate_id?: string
 }
 
 export class TaskIntakeError extends Error {
@@ -2103,4 +2106,57 @@ export async function restartTask(workspace: string, taskId: string, input: Task
     )
   }
   return response.json() as Promise<TaskRestartResult>
+}
+
+// Crates (component-crates, Public surfaces). Reads need view_workspace and
+// every act needs create_tasks; the server checks both.
+export type CrateListState = 'open' | 'closed' | 'all'
+
+export function fetchCrates(workspace: string, state: CrateListState = 'open') {
+  return getJSON<import('./types').Crate[]>(workspaceURL(`/v1/crates?state=${state}`, workspace))
+}
+
+export function fetchCrate(workspace: string, crateId: string) {
+  return getJSON<import('./types').CrateDetail>(workspaceURL(`/v1/crates/${encodeURIComponent(crateId)}`, workspace))
+}
+
+export function fetchCrateActivity(workspace: string, crateId: string, cursor = '') {
+  const params = new URLSearchParams({ limit: '25' })
+  if (cursor) params.set('cursor', cursor)
+  return getJSON<import('./types').CrateActivityPage>(
+    workspaceURL(`/v1/crates/${encodeURIComponent(crateId)}/activity?${params.toString()}`, workspace),
+  )
+}
+
+export interface CrateInput {
+  name?: string
+  target_date?: string | null
+  requirement_ids?: string[]
+  state?: 'open' | 'closed'
+}
+
+async function sendCrateJSON<T>(workspace: string, method: string, path: string, body?: unknown) {
+  const response = await fetch(workspaceURL(path, workspace), {
+    method,
+    headers: mutationHeaders(),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<T>
+}
+
+export function createCrate(workspace: string, input: CrateInput) {
+  return sendCrateJSON<import('./types').Crate>(workspace, 'POST', '/v1/crates', input)
+}
+
+export function updateCrate(workspace: string, crateId: string, input: CrateInput) {
+  return sendCrateJSON<import('./types').Crate>(workspace, 'PATCH', `/v1/crates/${encodeURIComponent(crateId)}`, input)
+}
+
+export function addTaskToCrate(workspace: string, taskId: string, crateId: string) {
+  return sendCrateJSON<Task>(workspace, 'PUT', `/v1/tasks/${encodeURIComponent(taskId)}/crate`, { crate_id: crateId })
+}
+
+export function removeTaskFromCrate(workspace: string, taskId: string) {
+  return sendCrateJSON<Task>(workspace, 'DELETE', `/v1/tasks/${encodeURIComponent(taskId)}/crate`)
 }
