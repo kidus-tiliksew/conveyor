@@ -356,6 +356,9 @@ func TestCrateBriefingRouteFailuresKeepStoredBriefing(t *testing.T) {
 		{"two-sentence headline", insightReply{output: `{"headline":"Work started. ` + echo + ` follows.","account":"A.","look_first":[]}`, model: "served"}, nil, func(detail string) bool {
 			return strings.Contains(detail, "the headline is not exactly one sentence")
 		}},
+		{"headline of only dots", insightReply{output: `{"headline":"...","account":"Work started.","look_first":[]}`, model: "served"}, nil, func(detail string) bool {
+			return strings.Contains(detail, "the headline holds no letter or digit")
+		}},
 		{"double-closing-quote headline", insightReply{output: `{"headline":"\u201cThe builder said, \u2018Work started.\u2019\u201d ` + echo + ` follows.","account":"A.","look_first":[]}`, model: "served"}, nil, func(detail string) bool {
 			return strings.Contains(detail, "the headline is not exactly one sentence")
 		}},
@@ -389,7 +392,7 @@ func TestCrateBriefingRouteFailuresKeepStoredBriefing(t *testing.T) {
 			if status != http.StatusBadGateway || code["error"] != "crate_briefing_failed" || !test.wantDetail(code["detail"]) {
 				t.Fatalf("status=%d body=%s", status, raw)
 			}
-			for _, leaked := range []string{echo, crateBriefingSecret, "261119-ffffff"} {
+			for _, leaked := range []string{echo, crateBriefingSecret, "261119-ffffff", "Work started"} {
 				if strings.Contains(string(raw), leaked) || strings.Contains(captured.String(), leaked) {
 					t.Fatalf("the failure leaks %q: body=%s log=%s", leaked, raw, captured.String())
 				}

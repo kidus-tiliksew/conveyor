@@ -91,30 +91,33 @@ const crateBriefingLineBreaks = "\r\n\v\f\u0085  "
 // reference documents in any letter case, such as 261119-fbe6d9 in
 // crate-261119-d9973f or 261119-ABCDEF; REQ-n, AC-n.m, or DEC-n in any
 // letter case, such as dec-142 or Req-5; and
-// a requirement ID such as req-crate-insights. A hyphenated word such as
+// a requirement ID such as req-crate-insights in any letter case. A hyphenated word such as
 // crate-level is no identifier.
-var crateBriefingIdentifier = regexp.MustCompile(`(?i:\b\d{6}-[0-9a-f]{6}\b)|(?i:\b(?:REQ|AC|DEC)-\d+(?:\.\d+)?\b)|(?:\breq-[a-z0-9]+(?:-[a-z0-9]+)*\b)`)
+var crateBriefingIdentifier = regexp.MustCompile(`(?i:\b\d{6}-[0-9a-f]{6}\b)|(?i:\b(?:REQ|AC|DEC)-\d+(?:\.\d+)?\b)|(?i:\breq-[a-z0-9]+(?:-[a-z0-9]+)*\b)`)
 
 // crateBriefingDesignID matches a System Design ID such as component-crates
-// or feature-crate-insights, one segment or more after the prefix. Some
+// or feature-crate-insights, one segment or more after the prefix, in any
+// letter case, so a capitalized copy such as Component-crates matches. Some
 // ordinary words have the same shape, so crateBriefingDesignWords names the
-// ones a briefing can use, and a match equal to one of them is no
-// identifier.
-var crateBriefingDesignID = regexp.MustCompile(`\b(?:component|feature)-[a-z0-9]+(?:-[a-z0-9]+)*\b`)
+// ones a briefing can use, and a match equal to one of them in lower case,
+// such as Feature-rich, is no identifier.
+var crateBriefingDesignID = regexp.MustCompile(`(?i)\b(?:component|feature)-[a-z0-9]+(?:-[a-z0-9]+)*\b`)
 
 // crateBriefingDesignWords are the ordinary English words of the design ID
 // shape that a briefing may hold.
 var crateBriefingDesignWords = []string{"component-based", "component-level", "feature-complete", "feature-flag", "feature-flags", "feature-rich"}
 
-// crateBriefingSentenceEndMark reports whether r ends a sentence: ".",
-// "!", "?", the ellipsis U+2026, or the full-width U+3002, U+FF01, or
-// U+FF1F.
+// crateBriefingSentenceEndMark reports whether r ends a sentence: any rune
+// of the Unicode Sentence_Terminal property (STerm), such as ".", "!", "?",
+// U+3002, U+203C, U+FF0E, or U+FF61, or the ellipsis U+2026, which that
+// table leaves out.
 func crateBriefingSentenceEndMark(r rune) bool {
-	switch r {
-	case '.', '!', '?', '\u2026', '\u3002', '\uFF01', '\uFF1F':
-		return true
-	}
-	return false
+	return r == '\u2026' || unicode.Is(unicode.Sentence_Terminal, r)
+}
+
+// crateBriefingHasContent reports whether text holds a letter or a digit.
+func crateBriefingHasContent(text string) bool {
+	return strings.IndexFunc(text, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0
 }
 
 // crateBriefingASCIIDigit reports whether r is one of 0 to 9.
@@ -164,7 +167,7 @@ func crateBriefingHoldsIdentifier(text string) bool {
 		return true
 	}
 	for _, match := range crateBriefingDesignID.FindAllString(text, -1) {
-		if !slices.Contains(crateBriefingDesignWords, match) {
+		if !slices.Contains(crateBriefingDesignWords, strings.ToLower(match)) {
 			return true
 		}
 	}
@@ -319,6 +322,8 @@ func ValidateCrateBriefing(output string, memberIDs []string) (CrateBriefing, er
 			return CrateBriefing{}, invalidCrateBriefing(fmt.Sprintf("a look_first reason exceeds %d characters", MaxCrateBriefingReasonCharacters))
 		case strings.ContainsAny(reason, crateBriefingLineBreaks):
 			return CrateBriefing{}, invalidCrateBriefing("a look_first reason contains a line break")
+		case !crateBriefingHasContent(reason):
+			return CrateBriefing{}, invalidCrateBriefing("a look_first reason holds no letter or digit")
 		}
 		briefing.LookFirst = append(briefing.LookFirst, crateinsight.BriefingEntry{TaskID: *entry.TaskID, Tone: *entry.Tone, Reason: reason})
 	}
@@ -341,8 +346,8 @@ func ValidateCrateBriefing(output string, memberIDs []string) (CrateBriefing, er
 }
 
 // crateBriefingProse trims the headline or the account and refuses it when
-// it is empty, longer than limit Unicode characters, or holds a line break,
-// a leading Markdown heading marker, or a fence (component-crates invariant
+// it is empty, longer than limit Unicode characters, holds a line break, a
+// leading Markdown heading marker, or a fence, or holds no letter or digit (component-crates invariant
 // 32). The reasons name the field and never the text.
 func crateBriefingProse(field, value string, limit int) (string, error) {
 	text := strings.TrimSpace(value)
@@ -357,6 +362,8 @@ func crateBriefingProse(field, value string, limit int) (string, error) {
 		return "", invalidCrateBriefing("the " + field + " contains a Markdown heading")
 	case strings.Contains(text, "```") || strings.Contains(text, "~~~"):
 		return "", invalidCrateBriefing("the " + field + " contains a fenced block")
+	case !crateBriefingHasContent(text):
+		return "", invalidCrateBriefing("the " + field + " holds no letter or digit")
 	}
 	return text, nil
 }
