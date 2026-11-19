@@ -4,15 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/crateinsight"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
@@ -730,4 +735,357 @@ func crateRows(t *testing.T, raw []byte) map[string]*core.TaskCrate {
 		out[row.ID] = row.Crate
 	}
 	return out
+}
+
+// insightMember stores one member of crateID with the given lifecycle
+// fields, base branch, and creation time.
+func (f *crateFixture) insightMember(t *testing.T, crateID string, state core.TaskState, stage core.Stage, gate core.GateKind, plan core.PlanState, base string, created time.Time) core.Task {
+	t.Helper()
+	task := core.Task{ID: core.NewTaskID(), Workspace: "alpha", Repo: "api", Title: "Insight " + string(state), Body: "Insight member.", State: state, NextStage: stage,
+		GateKind: gate, PlanState: plan, BaseBranch: base, CreatedAt: created, Crate: &core.TaskCrate{ID: crateID}}
+	task.Branch = "conveyor/task-" + task.ID
+	if err := f.store.CreateTask(f.ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+func (f *crateFixture) appendAt(t *testing.T, taskID, kind string, at time.Time, payload any) {
+	t.Helper()
+	if err := f.store.AppendEvent(f.ctx, core.Event{TaskID: taskID, Kind: kind, At: at.UTC(), Payload: core.JSONPayload(payload)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// crateReadTaskIDs returns the task IDs of GET /v1/crates/{id} in order,
+// with each row's next action.
+func (f *crateFixture) crateReadTasks(t *testing.T, crateID string) ([]string, map[string]nextaction.Compact) {
+	t.Helper()
+	status, raw := f.do(t, f.viewer, http.MethodGet, "/v1/crates/"+crateID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("crate read status=%d body=%s", status, raw)
+	}
+	var detail struct {
+		Tasks []struct {
+			ID         string             `json:"id"`
+			NextAction nextaction.Compact `json:"next_action"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, len(detail.Tasks))
+	actions := map[string]nextaction.Compact{}
+	for i, row := range detail.Tasks {
+		ids[i] = row.ID
+		actions[row.ID] = row.NextAction
+	}
+	return ids, actions
+}
+
+func crateJSONKeys(t *testing.T, raw json.RawMessage) []string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	keys := slices.Collect(maps.Keys(fields))
+	slices.Sort(keys)
+	return keys
+}
+
+func crateSortedStrings(values ...string) []string {
+	slices.Sort(values)
+	return values
+}
+
+// TestCrateInsightRoute serves the insight view of component-crates to a
+// viewer: exactly the documented fields, the values crateinsight.Compute
+// gives for the store's inputs, the projection's next actions, and the
+// read instant, and the member order the crate read shares (invariants 21,
+// 22, and 28; req-crate-insights AC-1.1, AC-1.2, AC-1.4, AC-2.1, AC-2.3,
+// AC-2.4, AC-4.1 to AC-4.4; req-crates AC-5.7). MCP get_crate keeps its
+// oldest-first member IDs (invariant 14).
+func TestCrateInsightRoute(t *testing.T) {
+	f := newCrateFixture(t)
+	readAt := time.Now().UTC().Truncate(time.Second)
+	f.server.nextActionClock = func() time.Time { return readAt }
+	crate := f.createCrate(t, f.editor, map[string]any{"name": "Insight", "target_date": "2027-03-01"})
+	base := readAt.Add(-24 * time.Hour)
+	day := 24 * time.Hour
+
+	merged := f.insightMember(t, crate.ID, core.TaskMerged, "", "", core.PlanNotRequired, "develop", base.Add(-10*day))
+	f.appendAt(t, merged.ID, "pull_request.opened", base.Add(-9*day), map[string]any{"number": 11})
+	f.appendAt(t, merged.ID, "review.round_completed", base.Add(-8*day), map[string]any{"verdict": "approve"})
+	f.appendAt(t, merged.ID, "task.state_changed", base.Add(-5*day), map[string]any{"from": "approved", "to": "merged"})
+	closed := f.insightMember(t, crate.ID, core.TaskClosed, "", "", core.PlanNotRequired, "main", base.Add(-9*day))
+	f.appendAt(t, closed.ID, "task.cancelled", base.Add(-4*day), map[string]any{"reason": "dropped"})
+	f.appendAt(t, closed.ID, "task.state_changed", base.Add(-4*day), map[string]any{"from": "queued", "to": "closed"})
+	building := f.insightMember(t, crate.ID, core.TaskRunning, core.StageImplement, "", core.PlanNotRequired, "main", base)
+	f.appendAt(t, building.ID, "pull_request.opened", base.Add(2*time.Hour), map[string]any{"number": 12})
+	f.appendAt(t, building.ID, "review.round_completed", base.Add(3*time.Hour), map[string]any{"verdict": "changes_requested"})
+	f.appendAt(t, building.ID, "pull_request.opened", base.Add(4*time.Hour), map[string]any{"number": 13})
+	mergeGate := f.insightMember(t, crate.ID, core.TaskAwaiting, core.StageGate, core.GateKindMergeApproval, core.PlanNotRequired, "main", base.Add(30*time.Minute))
+	planGate := f.insightMember(t, crate.ID, core.TaskAwaiting, core.StageImplement, core.GateKindPlanApproval, core.PlanAwaitingApproval, "main", base.Add(time.Hour))
+	tieA := f.insightMember(t, crate.ID, core.TaskQueued, core.StageImplement, "", core.PlanNotRequired, "main", base.Add(5*time.Hour))
+	tieB := f.insightMember(t, crate.ID, core.TaskQueued, core.StageImplement, "", core.PlanNotRequired, "main", base.Add(5*time.Hour))
+	ties := crateSortedStrings(tieA.ID, tieB.ID)
+
+	status, raw := f.do(t, f.viewer, http.MethodGet, "/v1/crates/"+crate.ID+"/insight", nil)
+	if status != http.StatusOK {
+		t.Fatalf("insight status=%d body=%s", status, raw)
+	}
+	if got, want := crateJSONKeys(t, raw), crateSortedStrings("tasks", "branches", "whereabouts", "progress", "first_review", "forecast_days_before_target", "replay"); !slices.Equal(got, want) {
+		t.Fatalf("view keys %v, want %v", got, want)
+	}
+	var view crateinsight.View
+	if err := json.Unmarshal(raw, &view); err != nil {
+		t.Fatal(err)
+	}
+	var shape struct {
+		Tasks       []json.RawMessage `json:"tasks"`
+		Whereabouts []json.RawMessage `json:"whereabouts"`
+		Replay      struct {
+			Steps []json.RawMessage `json:"steps"`
+		} `json:"replay"`
+		ReplayRaw   json.RawMessage `json:"-"`
+		FirstReview json.RawMessage `json:"first_review"`
+		Progress    json.RawMessage `json:"progress"`
+	}
+	if err := json.Unmarshal(raw, &shape); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		name string
+		raw  json.RawMessage
+		want []string
+	}{
+		{"task", shape.Tasks[0], crateSortedStrings("id", "phase", "station", "base_branch", "created_at", "pull_request_opened_at", "changes_requested_at", "review_rounds", "merged_at", "closed_at")},
+		{"whereabouts", shape.Whereabouts[0], crateSortedStrings("key", "branch", "task_ids")},
+		{"step", shape.Replay.Steps[0], crateSortedStrings("at", "task_id", "phase", "station")},
+		{"first_review", shape.FirstReview, crateSortedStrings("approved", "reviewed")},
+		{"progress", shape.Progress, crateSortedStrings("daily", "forecast", "weekly", "delivered", "total", "open", "throughput_per_week", "median_cycle_seconds", "status_mix")},
+	} {
+		if got := crateJSONKeys(t, check.raw); !slices.Equal(got, check.want) {
+			t.Fatalf("%s keys %v, want %v", check.name, got, check.want)
+		}
+	}
+
+	// One order for both REST reads: judgments, then the other open
+	// members, then merged, then closed; creation time and then ID inside
+	// each group.
+	wantOrder := []string{mergeGate.ID, planGate.ID, building.ID, ties[0], ties[1], merged.ID, closed.ID}
+	readOrder, actions := f.crateReadTasks(t, crate.ID)
+	insightOrder := make([]string, len(view.Tasks))
+	for i, entry := range view.Tasks {
+		insightOrder[i] = entry.ID
+	}
+	if !slices.Equal(readOrder, wantOrder) || !slices.Equal(insightOrder, wantOrder) {
+		t.Fatalf("crate read order %v, insight order %v, want %v", readOrder, insightOrder, wantOrder)
+	}
+
+	// The served view is the pure computation over the store's inputs,
+	// the projection's statements, and the read instant.
+	inputs, err := f.store.(store.CrateStore).ReadCrateInsightInputs(f.ctx, crate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(crateinsight.Compute(inputs, actions, readAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !crateJSONEqual(t, raw, want) {
+		t.Fatalf("served view differs from the computation:\n got %s\nwant %s", raw, want)
+	}
+
+	entries := map[string]crateinsight.Task{}
+	for _, entry := range view.Tasks {
+		entries[entry.ID] = entry
+	}
+	if got := entries[merged.ID]; got.Phase != crateinsight.PhaseMerged || got.Station != crateinsight.StationCrate || got.MergedAt == nil || !got.MergedAt.Equal(base.Add(-5*day)) || got.ReviewRounds != 1 || got.BaseBranch != "develop" {
+		t.Fatalf("merged entry %+v", got)
+	}
+	if got := entries[closed.ID]; got.Phase != crateinsight.PhaseClosed || got.Station != crateinsight.StationAside || got.ClosedAt == nil || !got.ClosedAt.Equal(base.Add(-4*day)) {
+		t.Fatalf("closed entry %+v", got)
+	}
+	if got := entries[building.ID]; got.Station != crateinsight.StationBuild || len(got.PullRequestOpenedAt) != 2 || len(got.ChangesRequestedAt) != 1 || !got.ChangesRequestedAt[0].Equal(base.Add(3*time.Hour)) || got.ReviewRounds != 1 {
+		t.Fatalf("building entry %+v", got)
+	}
+	if got := entries[mergeGate.ID]; got.Phase != crateinsight.PhaseNeedsYou || got.Station != crateinsight.StationGate {
+		t.Fatalf("merge gate entry %+v", got)
+	}
+	if got := entries[planGate.ID]; got.Phase != crateinsight.PhaseNeedsYou || got.Station != crateinsight.StationPlan {
+		t.Fatalf("plan gate entry %+v", got)
+	}
+	if !slices.Equal(view.Branches, []string{"main", "develop"}) {
+		t.Fatalf("branches %v", view.Branches)
+	}
+	last := view.Whereabouts[len(view.Whereabouts)-1]
+	if last.Key != crateinsight.WhereaboutsMerged || last.Branch == nil || *last.Branch != "main" || len(last.TaskIDs) != 0 {
+		t.Fatalf("last whereabouts %+v, want an empty main entry", last)
+	}
+	if !view.Replay.End.Equal(readAt) || !view.Replay.Start.Equal(merged.CreatedAt) {
+		t.Fatalf("replay span %s to %s", view.Replay.Start, view.Replay.End)
+	}
+	if view.FirstReview != (crateinsight.FirstReview{Approved: 1, Reviewed: 2}) {
+		t.Fatalf("first review %+v", view.FirstReview)
+	}
+	if view.Progress.Delivered != 1 || view.Progress.Open != 5 || view.Progress.Total != 6 || view.Progress.ThroughputPerWeek != 0.5 || view.Progress.Forecast == nil || view.ForecastDaysBeforeTarget == nil {
+		t.Fatalf("delivery numbers %+v, difference %v", view.Progress, view.ForecastDaysBeforeTarget)
+	}
+
+	// MCP get_crate keeps the oldest-first member IDs of invariant 14.
+	oldest := []core.Task{merged, closed, building, mergeGate, planGate, tieA, tieB}
+	slices.SortFunc(oldest, func(a, b core.Task) int {
+		if n := a.CreatedAt.Compare(b.CreatedAt); n != 0 {
+			return n
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	oldestIDs := make([]string, len(oldest))
+	for i, task := range oldest {
+		oldestIDs[i] = task.ID
+	}
+	if got := crateMCPRows(t, readAs(t, f.handler, f.viewer, "get_crate", map[string]any{"workspace_id": "alpha", "crate_id": crate.ID})); len(got) != 1 || !slices.Equal(got[0].TaskIDs, oldestIDs) {
+		t.Fatalf("MCP get_crate task IDs %+v, want oldest first %v", got, oldestIDs)
+	}
+}
+
+func crateJSONEqual(t *testing.T, a, b []byte) bool {
+	t.Helper()
+	var left, right any
+	if err := json.Unmarshal(a, &left); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &right); err != nil {
+		t.Fatal(err)
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+// TestCrateInsightRouteEmptyCrate serves an empty crate's view with empty
+// lists and a replay span at the read instant.
+func TestCrateInsightRouteEmptyCrate(t *testing.T) {
+	f := newCrateFixture(t)
+	readAt := time.Now().UTC().Truncate(time.Second)
+	f.server.nextActionClock = func() time.Time { return readAt }
+	crate := f.createCrate(t, f.editor, map[string]any{"name": "Empty insight"})
+	status, raw := f.do(t, f.viewer, http.MethodGet, "/v1/crates/"+crate.ID+"/insight", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, raw)
+	}
+	var view crateinsight.View
+	if err := json.Unmarshal(raw, &view); err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Tasks) != 0 || view.Tasks == nil || len(view.Replay.Steps) != 0 || !view.Replay.Start.Equal(readAt) || !view.Replay.End.Equal(readAt) || view.Progress.Forecast != nil {
+		t.Fatalf("empty crate view %s", raw)
+	}
+}
+
+// TestCrateInsightRouteRefusalsAndCapability: a missing crate and another
+// workspace's crate answer 404 crate_not_found, every role that holds
+// view_workspace reads the view, and a caller without view_workspace gets
+// the canonical workspace 404 and no view (component-crates invariant 3).
+func TestCrateInsightRouteRefusalsAndCapability(t *testing.T) {
+	f := newCrateFixture(t)
+	crate := f.createCrate(t, f.editor, map[string]any{"name": "Guarded insight"})
+	f.task(t, crate.ID)
+	foreign := f.createCrate(t, f.foreign, map[string]any{"name": "Beta insight"})
+	before := f.recorded(t)
+	for _, id := range []string{"crate-000000-000000", foreign.ID} {
+		status, raw := f.do(t, f.viewer, http.MethodGet, "/v1/crates/"+id+"/insight", nil)
+		if status != http.StatusNotFound || crateErrorCode(t, raw)["error"] != "crate_not_found" || crateErrorCode(t, raw)["crate_id"] != id {
+			t.Fatalf("insight of %s status=%d body=%s", id, status, raw)
+		}
+	}
+	if status, raw := f.do(t, f.foreign, http.MethodGet, "/v1/crates/"+crate.ID+"/insight", nil); status != http.StatusNotFound || crateErrorCode(t, raw)["error"] != "crate_not_found" {
+		t.Fatalf("beta member read of an alpha crate status=%d body=%s", status, raw)
+	}
+	for _, token := range []string{f.viewer, f.nonMaker, f.editor} {
+		if status, raw := f.do(t, token, http.MethodGet, "/v1/crates/"+crate.ID+"/insight", nil); status != http.StatusOK || !strings.Contains(string(raw), `"replay"`) {
+			t.Fatalf("%s insight status=%d body=%s", token, status, raw)
+		}
+	}
+	status, raw := f.do(t, "pat-unbound", http.MethodGet, "/v1/crates/"+crate.ID+"/insight", nil)
+	if status != http.StatusNotFound || strings.Contains(string(raw), `"replay"`) || strings.Contains(string(raw), crate.ID) {
+		t.Fatalf("unbound insight status=%d body=%s", status, raw)
+	}
+	if after := f.recorded(t); after != before {
+		t.Fatalf("insight reads recorded state:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// crateInsightFailingStore fails the insight input read or the next-action
+// projection's work-order read with an error that carries a secret.
+type crateInsightFailingStore struct {
+	crateBackend
+	failInputs     error
+	failProjection error
+}
+
+func (s *crateInsightFailingStore) ReadCrateInsightInputs(ctx context.Context, id string) (store.CrateInsightInputs, error) {
+	if s.failInputs != nil {
+		return store.CrateInsightInputs{}, s.failInputs
+	}
+	return s.crateBackend.ReadCrateInsightInputs(ctx, id)
+}
+
+// ListWorkOrdersForTasks is the projection's first store read.
+func (s *crateInsightFailingStore) ListWorkOrdersForTasks(ctx context.Context, ids []string) ([]core.WorkOrder, error) {
+	if s.failProjection != nil {
+		return nil, s.failProjection
+	}
+	return s.crateBackend.ListWorkOrdersForTasks(ctx, ids)
+}
+
+// TestCrateInsightRouteFailsWhole: a failed input read and a failed
+// next-action projection each fail the insight read whole with the generic
+// 500. No part of the view, no member ID, and no store text reaches the
+// response, and the read records nothing (component-crates, State and
+// failure; DEC-105(1)). The crate read fails whole on a projection failure
+// the same way.
+func TestCrateInsightRouteFailsWhole(t *testing.T) {
+	const secret = "hunter2hunter2hunter2hunter2"
+	for _, tc := range []struct {
+		name  string
+		store func(crateBackend) *crateInsightFailingStore
+		paths func(crateID string) []string
+	}{
+		{"input read", func(inner crateBackend) *crateInsightFailingStore {
+			return &crateInsightFailingStore{crateBackend: inner, failInputs: errors.New("driver refused the insight read password=" + secret)}
+		}, func(id string) []string { return []string{"/v1/crates/" + id + "/insight"} }},
+		{"projection", func(inner crateBackend) *crateInsightFailingStore {
+			return &crateInsightFailingStore{crateBackend: inner, failProjection: errors.New("driver refused the work-order read password=" + secret)}
+		}, func(id string) []string { return []string{"/v1/crates/" + id + "/insight", "/v1/crates/" + id} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCrateFixture(t)
+			crate := f.createCrate(t, f.editor, map[string]any{"name": "Failing insight"})
+			member := f.task(t, crate.ID)
+			before := f.recorded(t)
+			f.server.Store = tc.store(f.store.(crateBackend))
+			var captured bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&captured)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			for _, path := range tc.paths(crate.ID) {
+				status, raw := f.do(t, f.viewer, http.MethodGet, path, nil)
+				if status != http.StatusInternalServerError || string(raw) != "internal server error\n" {
+					t.Fatalf("%s status=%d body=%q, want the generic 500", path, status, raw)
+				}
+				if strings.Contains(string(raw), member.ID) || strings.Contains(string(raw), secret) {
+					t.Fatalf("%s 500 body carries the view or the store text: %q", path, raw)
+				}
+			}
+			log.SetOutput(previous)
+			if strings.Contains(captured.String(), secret) || !strings.Contains(captured.String(), "store failure") || !strings.Contains(captured.String(), "driver refused") {
+				t.Fatalf("log %q, want a redacted store failure that names its cause", captured.String())
+			}
+			f.server.Store = f.store
+			if after := f.recorded(t); after != before {
+				t.Fatalf("failed reads recorded state:\nbefore %s\nafter  %s", before, after)
+			}
+		})
+	}
 }

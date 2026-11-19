@@ -549,3 +549,67 @@ func nullableTime(value *time.Time) any {
 	}
 	return *value
 }
+
+// crateInsightTaskColumns is the task scanner's column set for the insight
+// read's member rows. The body is read as empty text: no part of the
+// insight view or the next-action projection reads it.
+var crateInsightTaskColumns = strings.Replace(taskColumns, ",body,", ",'' AS body,", 1)
+
+// ReadCrateInsightInputs implements store.CrateStore in three set-based
+// statements without correlated subqueries, whatever the member count: the
+// crate row, the current member rows, and their events of the listed kinds.
+// Each claim's stage comes from the order the claim records, or from the
+// order row the claim names when the recorded payload carries no stage
+// (component-crates invariant 22).
+func (s *Store) ReadCrateInsightInputs(ctx context.Context, id string) (store.CrateInsightInputs, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadCrateInsightInputs")
+	ws, err := workspace(ctx)
+	if err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	id = strings.TrimSpace(id)
+	crate, err := scanCrate(documentRow(ctx, s.db, `SELECT `+crateColumns+` FROM crates WHERE workspace_id=? AND id=?`, ws, id), ws)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.CrateInsightInputs{}, &store.CrateNotFoundError{ID: id}
+	}
+	if err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	tasks, err := s.scanTaskMapRows(ctx, `SELECT `+crateInsightTaskColumns+` FROM tasks WHERE workspace_id=? AND crate_id=? ORDER BY created_at,id`, ws, id)
+	if err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	if len(tasks) == 0 {
+		return store.AssembleCrateInsightInputs(crate, nil, nil), nil
+	}
+	// Events match current members by workspace and task ID, whatever
+	// crate an older membership event names.
+	args := append([]any{ws, id}, taskMapArgs(store.CrateInsightEventKinds)...)
+	rows, err := documentRows(ctx, s.db, `SELECT e.task_id,e.id,e.kind,e.at,
+	CASE WHEN e.kind='work_order.claimed' THEN NULL ELSE e.payload_json END,
+	CASE WHEN e.kind='work_order.claimed' THEN COALESCE(NULLIF(JSON_EXTRACT_STRING(e.payload_json,'stage'),''),w.stage,'') ELSE '' END
+FROM tasks t
+JOIN events_columnstore e ON e.workspace_id=t.workspace_id AND e.task_id=t.id
+LEFT JOIN work_orders w ON e.kind='work_order.claimed' AND w.workspace_id=e.workspace_id AND w.id=JSON_EXTRACT_STRING(e.payload_json,'id')
+WHERE t.workspace_id=? AND t.crate_id=? AND e.kind IN (`+taskMapMarks(len(store.CrateInsightEventKinds))+`)
+ORDER BY e.task_id,e.at,e.id`, args...)
+	if err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	defer rows.Close()
+	var events []store.CrateInsightEventRow
+	for rows.Next() {
+		var row store.CrateInsightEventRow
+		var payload []byte
+		var stage string
+		if err := rows.Scan(&row.TaskID, &row.Event.ID, &row.Event.Kind, &row.Event.At, &payload, &stage); err != nil {
+			return store.CrateInsightInputs{}, err
+		}
+		row.Event.Payload, row.Event.Stage = payload, core.Stage(stage)
+		events = append(events, row)
+	}
+	if err := rows.Err(); err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	return store.AssembleCrateInsightInputs(crate, tasks, events), nil
+}

@@ -394,6 +394,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/crates", s.listCrates)
 			r.Get("/crates/{id}", s.getCrate)
 			r.Get("/crates/{id}/activity", s.getCrateActivity)
+			r.Get("/crates/{id}/insight", s.getCrateInsight)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/crates", s.createCrate)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Patch("/crates/{id}", s.patchCrate)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Put("/tasks/{id}/crate", s.setTaskCrate)

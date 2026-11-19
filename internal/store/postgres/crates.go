@@ -471,3 +471,76 @@ SELECT $1, $2, requirement_id FROM unnest($3::text[]) AS wanted(requirement_id)`
 	}
 	return nil
 }
+
+// crateInsightTaskColumns is db.Task's column set for the insight read's
+// member rows, the scanner the requirement insight read uses. The body is
+// read as empty text: no part of the insight view or the next-action
+// projection reads it.
+var crateInsightTaskColumns = strings.Replace(requirementInsightTaskColumns, "t.body,", "''::text AS body,", 1)
+
+// ReadCrateInsightInputs implements store.CrateStore in four set-based
+// statements whatever the member count: the crate row, the current member
+// rows, their assignees, and their events of the listed kinds. Each claim's
+// stage comes from the order the claim records, or from the order row the
+// claim names when the recorded payload carries no stage (component-crates
+// invariant 22).
+func (s *Store) ReadCrateInsightInputs(ctx context.Context, id string) (store.CrateInsightInputs, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadCrateInsightInputs")
+	workspaceID := workspace(ctx)
+	id = strings.TrimSpace(id)
+	crate, err := scanCrate(s.boundary.QueryRow(ctx, `SELECT `+crateColumns+` FROM crates WHERE workspace_id=$1 AND id=$2`, workspaceID, id), workspaceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.CrateInsightInputs{}, &store.CrateNotFoundError{ID: id}
+	}
+	if err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	taskRows, err := s.boundary.Query(ctx, `SELECT `+crateInsightTaskColumns+`
+FROM tasks t WHERE t.workspace_id=$1 AND t.crate_id=$2 ORDER BY t.created_at, t.id`, workspaceID, id)
+	if err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	persisted, err := pgx.CollectRows(taskRows, pgx.RowToStructByName[db.Task])
+	if err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	if len(persisted) == 0 {
+		return store.AssembleCrateInsightInputs(crate, nil, nil), nil
+	}
+	tasks := make([]core.Task, len(persisted))
+	for i := range persisted {
+		tasks[i] = taskFromDB(persisted[i])
+	}
+	if err = s.hydrateTaskAssignees(ctx, tasks); err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	// Events match current members by workspace and task ID, whatever
+	// crate an older membership event names.
+	eventRows, err := s.boundary.Query(ctx, `SELECT e.task_id, e.id, e.kind, e.at,
+	CASE WHEN e.kind = 'work_order.claimed' THEN NULL ELSE e.payload_json END,
+	CASE WHEN e.kind = 'work_order.claimed' THEN COALESCE(NULLIF(e.payload_json->>'stage', ''), w.stage, '') ELSE '' END
+FROM tasks t
+JOIN events e ON e.workspace_id = t.workspace_id AND e.task_id = t.id
+LEFT JOIN work_orders w ON e.kind = 'work_order.claimed' AND w.workspace_id = e.workspace_id AND w.id = e.payload_json->>'id'
+WHERE t.workspace_id = $1 AND t.crate_id = $2 AND e.kind = ANY($3::text[])
+ORDER BY e.task_id, e.at, e.id`, workspaceID, id, store.CrateInsightEventKinds)
+	if err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	defer eventRows.Close()
+	var events []store.CrateInsightEventRow
+	for eventRows.Next() {
+		var row store.CrateInsightEventRow
+		var payload []byte
+		var stage string
+		if err = eventRows.Scan(&row.TaskID, &row.Event.ID, &row.Event.Kind, &row.Event.At, &payload, &stage); err != nil {
+			return store.CrateInsightInputs{}, err
+		}
+		row.Event.Payload, row.Event.Stage = payload, core.Stage(stage)
+		events = append(events, row)
+	}
+	if err = eventRows.Err(); err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	return store.AssembleCrateInsightInputs(crate, tasks, events), nil
+}

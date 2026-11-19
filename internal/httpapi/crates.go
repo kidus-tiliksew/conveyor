@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/crateinsight"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -194,6 +195,8 @@ func (s *Server) patchCrate(w http.ResponseWriter, r *http.Request) {
 // getCrate serves GET /v1/crates/{id}. Each member row's next_action comes
 // from the projection GET /v1/tasks uses, and a failed projection fails the
 // whole read (component-crates invariant 12, State and failure; DEC-61).
+// tasks follows the order of invariant 28, the order the insight view uses
+// (req-crates AC-5.7). MCP get_crate keeps the order of invariant 14.
 func (s *Server) getCrate(w http.ResponseWriter, r *http.Request) {
 	backend, ok := s.crateStore(w)
 	if !ok {
@@ -224,11 +227,16 @@ func (s *Server) getCrate(w http.ResponseWriter, r *http.Request) {
 		writeStoreFailure(w, r, err)
 		return
 	}
+	actions := make(map[string]nextaction.Compact, len(detail.Tasks))
+	for _, task := range detail.Tasks {
+		actions[task.ID] = nextaction.CompactFrom(projected[task.ID])
+	}
+	crateinsight.SortTasks(detail.Tasks, actions)
 	response := crateDetailResponse{Crate: detail.Crate, Requirements: detail.Requirements, UndeclaredRequirements: detail.UndeclaredRequirements, Tasks: make([]crateTaskRow, 0, len(detail.Tasks))}
 	for _, task := range detail.Tasks {
 		row := crateTaskRow{
 			ID: task.ID, Title: task.Title, State: task.State, Branch: task.Branch,
-			NextAction: nextaction.CompactFrom(projected[task.ID]),
+			NextAction: actions[task.ID],
 		}
 		if event, found := pulls[task.ID]; found {
 			row.PullRequest = cratePullRequestFrom(event.Payload)
@@ -236,6 +244,48 @@ func (s *Server) getCrate(w http.ResponseWriter, r *http.Request) {
 		response.Tasks = append(response.Tasks, row)
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// getCrateInsight serves GET /v1/crates/{id}/insight under view_workspace:
+// the insight view of component-crates, computed by crateinsight.Compute
+// from the store's insight inputs, each member's compact next action from
+// one batch call to the projection GET /v1/tasks uses, and the projection's
+// read instant (invariants 21 and 22; DEC-61). A missing or foreign crate
+// answers 404 crate_not_found. A failure of the input read or of the
+// projection fails the whole read with the generic 500 before any part of
+// the view is written (State and failure; DEC-105(1)).
+func (s *Server) getCrateInsight(w http.ResponseWriter, r *http.Request) {
+	backend, ok := s.crateStore(w)
+	if !ok {
+		return
+	}
+	inputs, err := backend.ReadCrateInsightInputs(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeCrateError(w, r, err)
+		return
+	}
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	opts.CompactOnly = true
+	actions := make(map[string]nextaction.Compact, len(inputs.Members))
+	if len(inputs.Members) > 0 {
+		tasks := make([]core.Task, len(inputs.Members))
+		for i, member := range inputs.Members {
+			tasks[i] = member.Task
+		}
+		projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, opts)
+		if err != nil {
+			writeStoreFailure(w, r, err)
+			return
+		}
+		for _, task := range tasks {
+			actions[task.ID] = nextaction.CompactFrom(projected[task.ID])
+		}
+	}
+	writeJSON(w, http.StatusOK, crateinsight.Compute(inputs, actions, opts.Now))
 }
 
 // getCrateActivity serves GET /v1/crates/{id}/activity: one page of the
