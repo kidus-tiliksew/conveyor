@@ -689,6 +689,19 @@ type CrateInsightEvent = crateinsight.Event
 // (component-crates invariant 22).
 var CrateInsightEventKinds = crateinsight.InsightEventKinds
 
+// CrateInsightMembersReadHook, when set by tests, runs on the SQL backends
+// after the insight read's member-row statement and before its later
+// statements, so a membership change between them can be proved harmless:
+// the later statements read the member IDs that statement returned.
+var CrateInsightMembersReadHook func()
+
+// RunCrateInsightMembersReadHook runs CrateInsightMembersReadHook when set.
+func RunCrateInsightMembersReadHook() {
+	if CrateInsightMembersReadHook != nil {
+		CrateInsightMembersReadHook()
+	}
+}
+
 // CrateInsightEventRow is one member event a backend's set-based read
 // returns, with the task it belongs to.
 type CrateInsightEventRow struct {

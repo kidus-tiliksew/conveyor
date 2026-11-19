@@ -40,6 +40,9 @@ func runCrates(t *testing.T, factory Factory) {
 	t.Run("CrateInsightInputsBoundedStatements", func(t *testing.T) {
 		runCrateInsightInputsBounded(t, factory.fresh(t, nil), factory.ProductionCapable)
 	})
+	t.Run("CrateInsightInputsMemberLeavesMidRead", func(t *testing.T) {
+		runCrateInsightInputsMemberLeaves(t, factory.fresh(t, nil), factory.ProductionCapable)
+	})
 }
 
 func crateText(value string) *string { return &value }
@@ -1295,5 +1298,83 @@ func runCrateInsightInputsBounded(t *testing.T, x Fixture, productionCapable boo
 	}
 	if counts[4] == 0 || counts[4] != counts[60] {
 		t.Fatalf("insight read statements %v, want one equal nonzero count for 4 and 60 members", counts)
+	}
+}
+
+// runCrateInsightInputsMemberLeaves holds invariant 22 when a member leaves
+// the crate between the insight read's member-row statement and its later
+// statements: the read returns that member with every event recorded before
+// the read, because the later statements read the member IDs the first one
+// returned. A read after the move no longer lists the member. The SQL
+// backends run store.CrateInsightMembersReadHook between the statements.
+// The memory backend reads under one lock, so the move cannot interleave
+// and lands after the read.
+func runCrateInsightInputsMemberLeaves(t *testing.T, x Fixture, productionCapable bool) {
+	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Insight member leaves"})
+	requireOK(t, err)
+	base := store.CrateTime(time.Now().Add(-24 * time.Hour))
+	member := func(created time.Time) core.Task {
+		t.Helper()
+		id := fixtureTaskID()
+		task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: "Insight leaver " + id, Body: "Insight leaver.", State: core.TaskRunning, NextStage: core.StageReview,
+			CreatedAt: created, BaseBranch: "main", Branch: "conveyor/task-" + id, Crate: &core.TaskCrate{ID: crate.ID}}
+		requireOK(t, x.Backend.CreateTask(x.Context, task))
+		return task
+	}
+	leaver := member(base)
+	stayer := member(base.Add(time.Second))
+	for _, task := range []core.Task{leaver, stayer} {
+		requireOK(t, x.Backend.AppendEvent(x.Context, core.Event{TaskID: task.ID, Kind: "pull_request.opened", At: base.Add(time.Hour), Payload: core.JSONPayload(map[string]any{"marker": "pull", "number": 3})}))
+		requireOK(t, x.Backend.AppendEvent(x.Context, core.Event{TaskID: task.ID, Kind: "review.round_completed", At: base.Add(2 * time.Hour), Payload: core.JSONPayload(map[string]any{"marker": "round", "verdict": "changes_requested"})}))
+	}
+	moved := false
+	store.CrateInsightMembersReadHook = func() {
+		if moved {
+			return
+		}
+		moved = true
+		if _, err := x.Backend.ClearTaskCrate(x.Context, leaver.ID); err != nil {
+			t.Errorf("move the member out between the insight statements: %v", err)
+		}
+	}
+	inputs, err := x.Backend.ReadCrateInsightInputs(x.Context, crate.ID)
+	store.CrateInsightMembersReadHook = nil
+	requireOK(t, err)
+	if productionCapable && !moved {
+		t.Fatal("a production-capable backend must run CrateInsightMembersReadHook between its member-row statement and its later statements")
+	}
+	recorded := func(m store.CrateInsightMember) []string {
+		out := []string{}
+		for _, event := range m.Events {
+			var payload map[string]any
+			if len(event.Payload) > 0 && json.Unmarshal(event.Payload, &payload) == nil {
+				if marker, ok := payload["marker"].(string); ok {
+					out = append(out, event.Kind+":"+marker)
+				}
+			}
+		}
+		return out
+	}
+	want := []string{"pull_request.opened:pull", "review.round_completed:round"}
+	if len(inputs.Members) != 2 {
+		t.Fatalf("read %d members, want the leaver and the stayer captured by the member-row statement", len(inputs.Members))
+	}
+	for _, got := range inputs.Members {
+		if got.Task.ID != leaver.ID && got.Task.ID != stayer.ID {
+			t.Fatalf("unexpected member %s", got.Task.ID)
+		}
+		if events := recorded(got); !slices.Equal(events, want) {
+			t.Fatalf("member %s (moved mid-read: %t) events %v, want its recorded history %v", got.Task.ID, moved && got.Task.ID == leaver.ID, events, want)
+		}
+	}
+	if !moved {
+		// The memory backend never interleaves: the move lands after the read.
+		_, err = x.Backend.ClearTaskCrate(x.Context, leaver.ID)
+		requireOK(t, err)
+	}
+	after, err := x.Backend.ReadCrateInsightInputs(x.Context, crate.ID)
+	requireOK(t, err)
+	if len(after.Members) != 1 || after.Members[0].Task.ID != stayer.ID || !slices.Equal(recorded(after.Members[0]), want) {
+		t.Fatalf("read after the move holds %d members, want only %s with its history", len(after.Members), stayer.ID)
 	}
 }

@@ -514,7 +514,8 @@ var crateInsightTaskColumns = strings.Replace(requirementInsightTaskColumns, "t.
 
 // ReadCrateInsightInputs implements store.CrateStore in four set-based
 // statements whatever the member count: the crate row, the current member
-// rows, their assignees, and their events of the listed kinds. Each claim's
+// rows, and then the assignees and the events of the listed kinds for the
+// member IDs those rows hold. Each claim's
 // stage comes from the order the claim records, or from the order row the
 // claim names when the recorded payload carries no stage (component-crates
 // invariant 22).
@@ -542,22 +543,26 @@ FROM tasks t WHERE t.workspace_id=$1 AND t.crate_id=$2 ORDER BY t.created_at, t.
 		return store.AssembleCrateInsightInputs(crate, nil, nil), nil
 	}
 	tasks := make([]core.Task, len(persisted))
+	ids := make([]string, len(persisted))
 	for i := range persisted {
 		tasks[i] = taskFromDB(persisted[i])
+		ids[i] = tasks[i].ID
 	}
+	store.RunCrateInsightMembersReadHook()
+	// Every later statement reads the member IDs the member-row statement
+	// returned, scoped by workspace, so a member that leaves the crate
+	// meanwhile keeps its assignee and its events (invariant 22). Events
+	// match by task ID, whatever crate an older membership event names.
 	if err = s.hydrateTaskAssignees(ctx, tasks); err != nil {
 		return store.CrateInsightInputs{}, err
 	}
-	// Events match current members by workspace and task ID, whatever
-	// crate an older membership event names.
 	eventRows, err := s.boundary.Query(ctx, `SELECT e.task_id, e.id, e.kind, e.at,
 	CASE WHEN e.kind = 'work_order.claimed' THEN NULL ELSE e.payload_json END,
 	CASE WHEN e.kind = 'work_order.claimed' THEN COALESCE(NULLIF(e.payload_json->>'stage', ''), w.stage, '') ELSE '' END
-FROM tasks t
-JOIN events e ON e.workspace_id = t.workspace_id AND e.task_id = t.id
+FROM events e
 LEFT JOIN work_orders w ON e.kind = 'work_order.claimed' AND w.workspace_id = e.workspace_id AND w.id = e.payload_json->>'id'
-WHERE t.workspace_id = $1 AND t.crate_id = $2 AND e.kind = ANY($3::text[])
-ORDER BY e.task_id, e.at, e.id`, workspaceID, id, store.CrateInsightEventKinds)
+WHERE e.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND e.kind = ANY($3::text[])
+ORDER BY e.task_id, e.at, e.id`, workspaceID, ids, store.CrateInsightEventKinds)
 	if err != nil {
 		return store.CrateInsightInputs{}, err
 	}

@@ -595,7 +595,8 @@ var crateInsightTaskColumns = strings.Replace(taskColumns, ",body,", ",'' AS bod
 
 // ReadCrateInsightInputs implements store.CrateStore in three set-based
 // statements without correlated subqueries, whatever the member count: the
-// crate row, the current member rows, and their events of the listed kinds.
+// crate row, the current member rows, and the events of the listed kinds
+// for the member IDs those rows hold.
 // Each claim's stage comes from the order the claim records, or from the
 // order row the claim names when the recorded payload carries no stage
 // (component-crates invariant 22).
@@ -620,16 +621,22 @@ func (s *Store) ReadCrateInsightInputs(ctx context.Context, id string) (store.Cr
 	if len(tasks) == 0 {
 		return store.AssembleCrateInsightInputs(crate, nil, nil), nil
 	}
-	// Events match current members by workspace and task ID, whatever
-	// crate an older membership event names.
-	args := append([]any{ws, id}, taskMapArgs(store.CrateInsightEventKinds)...)
+	store.RunCrateInsightMembersReadHook()
+	// The event statement reads the member IDs the member-row statement
+	// returned, scoped by workspace, so a member that leaves the crate
+	// meanwhile keeps its events (invariant 22). Events match by task ID,
+	// whatever crate an older membership event names.
+	ids := make([]string, len(tasks))
+	for i, task := range tasks {
+		ids[i] = task.ID
+	}
+	args := append(append([]any{ws}, taskMapArgs(ids)...), taskMapArgs(store.CrateInsightEventKinds)...)
 	rows, err := documentRows(ctx, s.db, `SELECT e.task_id,e.id,e.kind,e.at,
 	CASE WHEN e.kind='work_order.claimed' THEN NULL ELSE e.payload_json END,
 	CASE WHEN e.kind='work_order.claimed' THEN COALESCE(NULLIF(JSON_EXTRACT_STRING(e.payload_json,'stage'),''),w.stage,'') ELSE '' END
-FROM tasks t
-JOIN events_columnstore e ON e.workspace_id=t.workspace_id AND e.task_id=t.id
+FROM events_columnstore e
 LEFT JOIN work_orders w ON e.kind='work_order.claimed' AND w.workspace_id=e.workspace_id AND w.id=JSON_EXTRACT_STRING(e.payload_json,'id')
-WHERE t.workspace_id=? AND t.crate_id=? AND e.kind IN (`+taskMapMarks(len(store.CrateInsightEventKinds))+`)
+WHERE e.workspace_id=? AND e.task_id IN (`+taskMapMarks(len(ids))+`) AND e.kind IN (`+taskMapMarks(len(store.CrateInsightEventKinds))+`)
 ORDER BY e.task_id,e.at,e.id`, args...)
 	if err != nil {
 		return store.CrateInsightInputs{}, err
