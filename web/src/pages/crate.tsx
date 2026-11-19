@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import {
   Archive,
   ArchiveRestore,
+  ChevronDown,
   CircleDot,
   CircleSlash,
   ExternalLink,
@@ -19,8 +20,9 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
-import { CrateHero } from '../components/crate/crate-hero'
+import { type CrateEmphasis, useCrateEmphasis } from '../components/crate/crate-emphasis'
 import { CrateFormDialog } from '../components/crate/crate-parts'
+import { CrateStage } from '../components/crate/crate-stage'
 import { TaskRow } from '../components/insights/shared'
 import { Button } from '../components/ui/button'
 import { Dialog } from '../components/ui/dialog'
@@ -33,20 +35,21 @@ import {
   addTaskToCrate,
   fetchCrate,
   fetchCrateActivity,
+  fetchCrateInsight,
   fetchOpenTasks,
   removeTaskFromCrate,
   updateCrate,
 } from '../lib/api'
 import { taskStateLabels } from '../lib/contracts'
-import { crateActivityQueryKey, crateQueryKey } from '../lib/query-keys'
+import { crateActivityQueryKey, crateInsightQueryKey, crateQueryKey } from '../lib/query-keys'
 import type { CrateActivityEvent, CrateDetail, CrateRequirement, CrateTask } from '../lib/types'
 import { absoluteTime, cn, relativeTime } from '../lib/utils'
 
-// One crate's page (component-crates invariant 17; req-crates REQ-5): the
-// header with its counts and shipped statement, its declared requirements and
-// the ones its tasks carry beyond them, its member tasks, and their activity.
-// Every act renders only for a user with create_tasks; the server checks it
-// again.
+// One crate's page (component-crates invariants 17 and 33; req-crates REQ-5):
+// the header with its counts, shipped statement, and line of stations, then
+// the member tasks' activity, with the crate's declared requirements, the ones
+// its tasks carry beyond them, and its member tasks beside it. Every act
+// renders only for a user with create_tasks; the server checks it again.
 export function CratePage() {
   const { crateId } = useParams({ strict: false }) as { crateId: string }
   const { workspace } = useWorkspaceSelection()
@@ -104,8 +107,21 @@ type Panel = 'edit' | 'date' | 'add' | { remove: CrateTask } | null
 function CrateView({ crate }: { crate: CrateDetail }) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const canAct = useWorkspaceCapability('create_tasks')
   const [panel, setPanel] = useState<Panel>(null)
+  // The one task the page emphasizes, shared by the line and the task list
+  // (req-crate-insights REQ-3).
+  const emphasis = useCrateEmphasis()
+  // The insight view refreshes under the crate prefix with the crate read
+  // (component-crates invariant 18). Its load and failure stay in the header.
+  const insight = useQuery({
+    queryKey: crateInsightQueryKey(workspace, crate.id),
+    queryFn: () => fetchCrateInsight(workspace, crate.id),
+    enabled: Boolean(workspace),
+  })
+  const openTask = (id: string) =>
+    void navigate({ to: '/w/$workspaceId/tasks/$taskId', params: { workspaceId: workspace, taskId: id } })
   const open = crate.state === 'open'
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['crates', workspace] })
   const setState = useMutation({
@@ -162,23 +178,34 @@ function CrateView({ crate }: { crate: CrateDetail }) {
               {setState.error instanceof Error ? setState.error.message : String(setState.error)}
             </p>
           )}
-          <CrateHero crate={crate} canAct={canAct} onSetDate={() => setPanel('date')} />
-          {/* Requirements sit beside the tasks from lg up, and between the
-              tasks and the activity on a narrow screen. */}
-          <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
-            <div className="min-w-0 lg:col-start-1">
+          <CrateStage
+            crate={crate}
+            insight={insight.data}
+            insightError={insight.error}
+            retryingInsight={insight.isFetching}
+            onRetryInsight={() => void insight.refetch()}
+            canAct={canAct}
+            onSetDate={() => setPanel('date')}
+            emphasis={emphasis}
+            onSelect={openTask}
+          />
+          {/* Activity takes the main column. Requirements and then the tasks
+              sit beside it from lg up, and before it on a narrow screen
+              (component-crates invariant 33). */}
+          <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
+            <div className="min-w-0" data-crate-main>
+              <Activity crate={crate} />
+            </div>
+            <div className="order-first min-w-0 space-y-5 lg:order-none" data-crate-side>
+              <Requirements crate={crate} />
               <MemberTasks
                 crate={crate}
                 canAct={canAct}
+                emphasis={emphasis}
+                onActivate={openTask}
                 onAdd={() => setPanel('add')}
                 onRemove={(task) => setPanel({ remove: task })}
               />
-            </div>
-            <div className="min-w-0 lg:col-start-2 lg:row-span-2 lg:row-start-1">
-              <Requirements crate={crate} />
-            </div>
-            <div className="min-w-0 lg:col-start-1">
-              <Activity crate={crate} />
             </div>
           </div>
         </div>
@@ -229,23 +256,42 @@ function SectionCard({
   )
 }
 
-// Member tasks (req-crates AC-5.3): each row prints the task's next action
-// label verbatim from the server's projection (invariant 12; DEC-61) and
-// links to the task's detail.
+// How many rows the task list shows until the user expands it
+// (req-crates AC-5.7).
+const COLLAPSED_TASKS = 5
+
+// Member tasks (req-crates AC-5.3, AC-5.7): each row prints the task's next
+// action label verbatim from the server's projection (invariant 12; DEC-61)
+// and links to the task's detail. The rows keep the served order of
+// invariant 28, and the list shows the first five until the user expands it.
+// Pointing at a row emphasizes its block on the line, and pointing at a block
+// marks its row (req-crate-insights REQ-3).
 function MemberTasks({
   crate,
   canAct,
+  emphasis,
+  onActivate,
   onAdd,
   onRemove,
 }: {
   crate: CrateDetail
   canAct: boolean
+  emphasis: CrateEmphasis
+  onActivate: (id: string) => void
   onAdd: () => void
   onRemove: (task: CrateTask) => void
 }) {
   const { workspace } = useWorkspaceSelection()
-  const navigate = useNavigate()
   const open = crate.state === 'open'
+  const [expanded, setExpanded] = useState(false)
+  const shown = expanded ? crate.tasks : crate.tasks.slice(0, COLLAPSED_TASKS)
+  const hidden = crate.tasks.length - shown.length
+  // A task pointed at elsewhere on the page whose row the collapsed list
+  // hides gets its mark beside the control that shows every row.
+  const emphasizedHidden =
+    emphasis.emphasizedId != null && !shown.some((task) => task.id === emphasis.emphasizedId)
+      ? crate.tasks.find((task) => task.id === emphasis.emphasizedId)
+      : undefined
   return (
     <SectionCard
       title="Tasks"
@@ -289,68 +335,105 @@ function MemberTasks({
           )}
         </div>
       ) : (
-        <ul className="divide-y divide-border">
-          {crate.tasks.map((task) => (
-            <li key={task.id} data-crate-task={task.id} className="flex items-start gap-1 px-2 py-1.5">
-              <div className="min-w-0 flex-1">
-                <TaskRow
-                  task={task}
-                  onActivate={(id) =>
-                    void navigate({
-                      to: '/w/$workspaceId/tasks/$taskId',
-                      params: { workspaceId: workspace, taskId: id },
-                    })
-                  }
-                  details={
-                    <span className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px] text-faint">
-                      <span
-                        data-task-state={task.state}
-                        className={cn(
-                          'shrink-0 rounded-[4px] px-1.5 font-medium leading-[18px]',
-                          stateTone(task.state),
-                        )}
-                      >
-                        {taskStateLabels[task.state] ?? task.state}
-                      </span>
-                      <span className="flex min-w-0 items-center gap-1">
-                        <GitBranch aria-hidden className="size-3 shrink-0" />
-                        <span className="min-w-0 truncate font-mono" data-task-branch>
-                          {task.branch}
+        <>
+          <ul id="crate-task-list" className="divide-y divide-border">
+            {shown.map((task) => (
+              <li
+                key={task.id}
+                data-crate-task={task.id}
+                data-emphasized={emphasis.emphasizedId === task.id || undefined}
+                onMouseEnter={() => emphasis.emphasize(task.id)}
+                onMouseLeave={() => emphasis.emphasize(null)}
+                className={cn(
+                  'flex items-start gap-1 px-2 py-1.5 transition-colors motion-reduce:transition-none',
+                  emphasis.emphasizedId === task.id && 'bg-primary-soft/60',
+                )}
+              >
+                <div className="min-w-0 flex-1">
+                  <TaskRow
+                    task={task}
+                    onActivate={onActivate}
+                    details={
+                      <span className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px] text-faint">
+                        <span
+                          data-task-state={task.state}
+                          className={cn(
+                            'shrink-0 rounded-[4px] px-1.5 font-medium leading-[18px]',
+                            stateTone(task.state),
+                          )}
+                        >
+                          {taskStateLabels[task.state] ?? task.state}
+                        </span>
+                        <span className="flex min-w-0 items-center gap-1">
+                          <GitBranch aria-hidden className="size-3 shrink-0" />
+                          <span className="min-w-0 truncate font-mono" data-task-branch>
+                            {task.branch}
+                          </span>
                         </span>
                       </span>
-                    </span>
-                  }
-                />
-              </div>
-              <div className="flex shrink-0 items-center gap-0.5 pt-1">
-                {task.pull_request?.url && (
-                  <a
-                    href={task.pull_request.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    title={`Pull request ${pullRequestLabel(task.pull_request)}`}
-                    className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted hover:bg-raised hover:text-foreground"
-                  >
-                    <GitPullRequest aria-hidden className="size-3.5" />
-                    <span className="tabular-nums">{pullRequestLabel(task.pull_request)}</span>
-                  </a>
-                )}
-                {canAct && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7"
-                    aria-label={`Remove ${task.title} from this crate`}
-                    title="Remove from crate"
-                    onClick={() => onRemove(task)}
-                  >
-                    <X />
-                  </Button>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
+                    }
+                  />
+                </div>
+                <div className="flex shrink-0 items-center gap-0.5 pt-1">
+                  {task.pull_request?.url && (
+                    <a
+                      href={task.pull_request.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={`Pull request ${pullRequestLabel(task.pull_request)}`}
+                      className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted hover:bg-raised hover:text-foreground"
+                    >
+                      <GitPullRequest aria-hidden className="size-3.5" />
+                      <span className="tabular-nums">{pullRequestLabel(task.pull_request)}</span>
+                    </a>
+                  )}
+                  {canAct && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-7"
+                      aria-label={`Remove ${task.title} from this crate`}
+                      title="Remove from crate"
+                      onClick={() => onRemove(task)}
+                    >
+                      <X />
+                    </Button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+          {crate.tasks.length > COLLAPSED_TASKS && (
+            <div className="border-t border-border px-2 py-1.5">
+              {emphasizedHidden && (
+                <p
+                  data-emphasized-hidden={emphasizedHidden.id}
+                  className="mb-1 truncate rounded-md bg-primary-soft/60 px-2 py-1 text-xs text-foreground"
+                >
+                  {emphasizedHidden.title} is in the hidden rows.
+                </p>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-expanded={expanded}
+                aria-controls="crate-task-list"
+                data-crate-tasks-toggle
+                className="w-full justify-between"
+                onClick={() => setExpanded(!expanded)}
+              >
+                {expanded ? 'Show fewer tasks' : `Show all ${crate.tasks.length} tasks`}
+                <span className="flex items-center gap-1.5 text-xs font-normal text-faint">
+                  {!expanded && `${hidden} more`}
+                  <ChevronDown
+                    aria-hidden
+                    className={cn('transition-transform motion-reduce:transition-none', expanded && 'rotate-180')}
+                  />
+                </span>
+              </Button>
+            </div>
+          )}
+        </>
       )}
     </SectionCard>
   )

@@ -40,7 +40,8 @@ export function decisionCitationsQueryKey(workspace: string) {
 
 /**
  * Every crate read starts `['crates', workspace]`, so one prefix refreshes
- * the list, each crate, and its activity (component-crates invariant 18).
+ * the list, each crate, its insight view, and its activity (component-crates
+ * invariant 18).
  */
 export function cratesQueryKey(workspace: string, state: 'open' | 'closed' | 'all') {
   return ['crates', workspace, 'list', state] as const
@@ -48,6 +49,10 @@ export function cratesQueryKey(workspace: string, state: 'open' | 'closed' | 'al
 
 export function crateQueryKey(workspace: string, crateId: string) {
   return ['crates', workspace, 'detail', crateId] as const
+}
+
+export function crateInsightQueryKey(workspace: string, crateId: string) {
+  return ['crates', workspace, 'insight', crateId] as const
 }
 
 export function crateActivityQueryKey(workspace: string, crateId: string) {
