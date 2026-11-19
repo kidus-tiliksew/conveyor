@@ -1,4 +1,4 @@
-package store
+package postgres
 
 import (
 	"encoding/json"
@@ -12,7 +12,7 @@ import (
 )
 
 // referenceLeaseInstant is a line-for-line Go port of the arithmetic
-// LeaseSQLDialect.LeaseInstantSQL emits: the same shape gate, field slices,
+// markerLeaseInstantSQL emits: the same shape gate, field slices,
 // calendar checks, shifted-year day count, zone shift, and nine-digit
 // fraction truncation. It is the executable specification the SQL text is
 // written to: the test below proves the arithmetic equals time.Time's
@@ -175,22 +175,23 @@ func TestLeaseInstantArithmeticMatchesGoDecode(t *testing.T) {
 	}
 }
 
+// TestLeaseInstantSQLShape pins the PostgreSQL lease statement: no question
+// mark, no vendor date conversion, and the three result columns.
 func TestLeaseInstantSQLShape(t *testing.T) {
-	for name, dialect := range map[string]LeaseSQLDialect{"singlestore": SingleStoreLeaseSQL, "postgres": PostgresLeaseSQL} {
-		sql := dialect.LeaseInstantSQL("SELECT id,lease_text,lease_string FROM src", "id")
-		// A bind placeholder inside the SQL text would be read as an argument.
-		if strings.ContainsAny(sql, "?") {
-			t.Errorf("%s lease SQL contains a question mark", name)
+	name := "postgres"
+	sql := markerLeaseInstantSQL("SELECT id,lease_text,lease_string FROM src", "id")
+	// A bind placeholder inside the SQL text would be read as an argument.
+	if strings.ContainsAny(sql, "?") {
+		t.Errorf("%s lease SQL contains a question mark", name)
+	}
+	for _, banned := range []string{"STR_TO_DATE", "TO_TIMESTAMP", "::timestamp", "UNIX_TIMESTAMP", "TIMESTAMP(", "CONVERT_TZ"} {
+		if strings.Contains(strings.ToUpper(sql), strings.ToUpper(banned)) {
+			t.Errorf("%s lease SQL uses the vendor date conversion %s", name, banned)
 		}
-		for _, banned := range []string{"STR_TO_DATE", "TO_TIMESTAMP", "::timestamp", "UNIX_TIMESTAMP", "TIMESTAMP(", "CONVERT_TZ"} {
-			if strings.Contains(strings.ToUpper(sql), strings.ToUpper(banned)) {
-				t.Errorf("%s lease SQL uses the vendor date conversion %s", name, banned)
-			}
-		}
-		for _, column := range []string{"AS lease_ok", "AS lease_sec", "AS lease_nanos"} {
-			if !strings.Contains(sql, column) {
-				t.Errorf("%s lease SQL does not expose %s", name, column)
-			}
+	}
+	for _, column := range []string{"AS lease_ok", "AS lease_sec", "AS lease_nanos"} {
+		if !strings.Contains(sql, column) {
+			t.Errorf("%s lease SQL does not expose %s", name, column)
 		}
 	}
 }

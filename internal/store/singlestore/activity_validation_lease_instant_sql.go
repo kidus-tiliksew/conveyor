@@ -1,25 +1,20 @@
-package store
+package singlestore
 
 import "fmt"
 
-// LeaseSQLDialect names the three spellings that differ between the durable
-// backends when the database decodes a lease timestamp. Everything else in
-// LeaseInstantSQL is common SQL.
-type LeaseSQLDialect struct {
-	// RegexOp is the case-matching-by-collation regular expression operator.
-	RegexOp string
-	// IntType is the CAST target that holds a 64-bit integer.
-	IntType string
-	// DivOp is the operator that truncates integer division. Every operand
-	// LeaseInstantSQL divides is non-negative, so truncation equals floor.
-	DivOp string
-}
-
-var (
-	// SingleStoreLeaseSQL is the dialect of the SingleStore backend.
-	SingleStoreLeaseSQL = LeaseSQLDialect{RegexOp: "REGEXP", IntType: "SIGNED", DivOp: " DIV "}
-	// PostgresLeaseSQL is the dialect of the PostgreSQL backend.
-	PostgresLeaseSQL = LeaseSQLDialect{RegexOp: "~", IntType: "bigint", DivOp: " / "}
+// The SingleStore backend owns its lease-instant SQL (component-persistence
+// invariant 2: no SQL layer is shared). These are the SingleStore spellings of
+// the three operations the lease arithmetic needs.
+const (
+	// markerRegexOp is the case-matching-by-collation regular expression
+	// operator.
+	markerRegexOp = "REGEXP"
+	// markerLeaseIntType is the CAST target that holds a 64-bit integer.
+	markerLeaseIntType = "SIGNED"
+	// markerLeaseDivOp truncates integer division. Every operand
+	// markerLeaseInstantSQL divides is non-negative, so truncation equals
+	// floor.
+	markerLeaseDivOp = " DIV "
 )
 
 // leaseRFC3339Shape includes the fallback spellings time.Time.UnmarshalJSON
@@ -35,7 +30,7 @@ const leaseRFC3339Shape = `^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T([0-9]|[0
 // IsZero reports for a decoded lease.
 const leaseZeroUnix = -62135596800
 
-// LeaseInstantSQL decodes a JSON-string lease timestamp inside the database
+// markerLeaseInstantSQL decodes a JSON-string lease timestamp inside the database
 // with the arithmetic of Go's JSON time decoder, never with a vendor
 // date-conversion function.
 //
@@ -60,9 +55,9 @@ const leaseZeroUnix = -62135596800
 // This timestamp parser does not reproduce Go's field-name matching or
 // whole-payload decoding. Callers cannot assume that extracting this field
 // alone has the same semantics as unmarshalling a WorkOrder.
-func (d LeaseSQLDialect) LeaseInstantSQL(inner, carry string) string {
-	i := d.IntType
-	div := func(a, b string) string { return "(" + a + d.DivOp + b + ")" }
+func markerLeaseInstantSQL(inner, carry string) string {
+	i := markerLeaseIntType
+	div := func(a, b string) string { return "(" + a + markerLeaseDivOp + b + ")" }
 	num := func(pos, length string) string {
 		return fmt.Sprintf("CAST(SUBSTRING(t,%s,%s) AS %s)", pos, length, i)
 	}
@@ -75,7 +70,7 @@ func (d LeaseSQLDialect) LeaseInstantSQL(inner, carry string) string {
 			THEN 1 ELSE 0 END AS shaped,
 		CASE WHEN SUBSTRING(t,13,1)=':' THEN 1 ELSE 2 END AS hlen,
 		CASE WHEN ASCII(SUBSTRING(t,CHAR_LENGTH(t),1))=90 THEN 1 ELSE 6 END AS tzlen
-		FROM (SELECT %[1]s, lease_text AS t, lease_string AS is_str FROM (%[4]s) src) named`, carry, d.RegexOp, leaseRFC3339Shape, inner)
+		FROM (SELECT %[1]s, lease_text AS t, lease_string AS is_str FROM (%[4]s) src) named`, carry, markerRegexOp, leaseRFC3339Shape, inner)
 	// Stage 2: fields. nlen is the fraction field's length including its dot.
 	fields := fmt.Sprintf(`SELECT %[1]s, shaped, tzlen,
 		CASE WHEN shaped=1 THEN %[2]s ELSE 0 END AS y,

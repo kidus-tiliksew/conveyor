@@ -60,9 +60,6 @@ func (s *Store) markerFoldScan(ctx context.Context, query string, args []any) ([
 // only the pure Go facts the folds read and the claim read-back decision
 // (store.MarkerPayloadProjections, store.MarkerClaimBackfill).
 
-// markerLease decodes lease timestamps with Go's JSON time arithmetic.
-var markerLease = store.PostgresLeaseSQL
-
 func markerPlaceholder(n int) string { return fmt.Sprintf("$%d", n) }
 
 // markerScope is the FROM and WHERE clause of the read: the events of the
@@ -302,10 +299,10 @@ func markerFoldQuery(in store.MarkerFoldInput) (string, []any) {
 		const comma = `[[:space:]]*,[[:space:]]*`
 		const renewalShape = `^[[:space:]]*[{][[:space:]]*(` + attemptField + comma + leaseField + `|` + leaseField + `(` + comma + attemptField + `){0,1})[[:space:]]*[}][[:space:]]*$`
 		leaseString := markerIsString(markerField("event_payload", "lease_expires_at"))
-		instants := markerLease.LeaseInstantSQL(`SELECT `+carry+`,
+		instants := markerLeaseInstantSQL(`SELECT `+carry+`,
 			`+markerFieldText("event_payload", "lease_expires_at")+` AS lease_text,
 			CASE WHEN kind='work_order.claimed' AND `+leaseString+` THEN 1
-				WHEN kind='work_order.lease_renewed' AND `+markerText("event_payload")+` `+markerLease.RegexOp+` '`+renewalShape+`' AND `+leaseString+` THEN 1
+				WHEN kind='work_order.lease_renewed' AND `+markerText("event_payload")+` `+markerRegexOp+` '`+renewalShape+`' AND `+leaseString+` THEN 1
 				ELSE 0 END AS lease_string
 			FROM marker_rows WHERE kind IN ('work_order.lease_renewed','work_order.claimed')`, carry)
 		const future = `(lease_sec>now_sec OR (lease_sec=now_sec AND lease_nanos>now_nanos))`

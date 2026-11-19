@@ -238,7 +238,7 @@ func legacyBoundedMarkerFoldQuery(query string) string {
 	const comma = `[[:space:]]*,[[:space:]]*`
 	const renewalShape = `^[[:space:]]*[{][[:space:]]*(` + attemptField + comma + leaseField + `|` + leaseField + `(` + comma + attemptField + `){0,1})[[:space:]]*[}][[:space:]]*$`
 	const carry = "id,task_id,job_id,event_payload,event_at"
-	instants := store.PostgresLeaseSQL.LeaseInstantSQL(`SELECT `+carry+`,
+	instants := markerLeaseInstantSQL(`SELECT `+carry+`,
 		event_payload->>'lease_expires_at' AS lease_text,
 		CASE WHEN event_payload::text ~ '`+renewalShape+`'
 			AND jsonb_typeof(event_payload->'lease_expires_at')='string'

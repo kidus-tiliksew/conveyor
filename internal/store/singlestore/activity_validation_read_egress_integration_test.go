@@ -216,7 +216,7 @@ func legacyMarkerFoldQuery(ws string, pageTaskIDs, reviewTaskIDs, liveReviewTask
 	const comma = `[[:space:]]*,[[:space:]]*`
 	const renewalShape = `^[[:space:]]*[{][[:space:]]*(` + attemptField + comma + leaseField + `|` + leaseField + `(` + comma + attemptField + `){0,1})[[:space:]]*[}][[:space:]]*$`
 	const carry = "id,task_id,job_id,event_payload,event_at"
-	instants := store.SingleStoreLeaseSQL.LeaseInstantSQL(`SELECT `+carry+`,
+	instants := markerLeaseInstantSQL(`SELECT `+carry+`,
 		JSON_EXTRACT_STRING(event_payload,'lease_expires_at') AS lease_text,
 		CASE WHEN event_payload REGEXP '`+renewalShape+`'
 			AND JSON_GET_TYPE(JSON_EXTRACT_JSON(event_payload,'lease_expires_at'))='string'
