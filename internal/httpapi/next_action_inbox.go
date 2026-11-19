@@ -153,7 +153,7 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 	value, err := s.readMemo.get(ctx, key, func(ctx context.Context, now time.Time) (readMemoValue, error) {
 		// The entry is dropped by change notices and bounded by its
 		// horizon; it reads no validation state it would not use.
-		horizon := newReadMemoHorizon(now)
+		horizon := &readMemoHorizon{now: now, until: memoReadUntil(now)}
 		reads := &readinessReads{}
 		ctx = context.WithValue(ctx, readMemoHorizonKey{}, horizon)
 		ctx = context.WithValue(ctx, readinessReadsKey{}, reads)
@@ -166,14 +166,14 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 			return readMemoValue{}, err
 		}
 		body, err := json.Marshal(items)
-		return readMemoValue{body: body, validUntil: horizon.until, deadline: horizon.deadline, reads: reads.snapshot()}, err
+		return readMemoValue{body: body, validUntil: horizon.until, reads: reads.snapshot()}, err
 	})
 	if err != nil {
 		return nil, err
 	}
 	// The enclosing read is bounded by this entry's horizon and covers the
 	// readiness values it read, whether built here or held.
-	memoEntryHorizon(ctx, value)
+	memoHorizon(ctx, value.validUntil)
 	if outer, ok := readinessReadsFrom(ctx); ok {
 		outer.addAll(value.reads)
 	}
@@ -229,13 +229,10 @@ func (s *Server) readInboxUncached(ctx context.Context, opts store.NextActionOpt
 		}
 		if item.Proposal != nil && !item.Proposal.ProposedAt.IsZero() {
 			proposed := item.Proposal.ProposedAt
-			// The proposal's age is display text: its next second ends
-			// the tag and the entry but is no projection deadline, so a
-			// slow build is not read again for it.
 			if proposed.After(opts.Now) {
-				memoExpiry(ctx, proposed.Add(time.Second))
+				memoHorizon(ctx, proposed.Add(time.Second))
 			} else {
-				memoExpiry(ctx, proposed.Add((opts.Now.Sub(proposed)/time.Second+1)*time.Second))
+				memoHorizon(ctx, proposed.Add((opts.Now.Sub(proposed)/time.Second+1)*time.Second))
 			}
 		}
 	}
