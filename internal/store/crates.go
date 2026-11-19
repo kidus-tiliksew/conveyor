@@ -149,8 +149,8 @@ type CrateStore interface {
 	// of the workspace, leaving out excludeTaskID, in the ListCrateMembers
 	// order: creation time and then ID. An empty excludeTaskID leaves every
 	// member eligible. more is true only when another eligible member follows
-	// the returned ones. An empty or unknown crate, or a crate of another
-	// workspace, returns no member and more false. The read fetches at most
+	// the returned ones. An empty or unknown crate, an empty crateID, or a
+	// crate of another workspace returns no member and more false. The read fetches at most
 	// limit plus one rows whatever the crate's size, so the work-order crate
 	// field stays bounded (component-crates invariant 20; DEC-105(4)). A
 	// limit below 1, or one whose successor overflows int, is a

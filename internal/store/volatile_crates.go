@@ -151,6 +151,11 @@ func (m *memory) ListCrateMembersLimited(ctx context.Context, crateID, excludeTa
 	if err := CheckCrateMemberLimit(limit); err != nil {
 		return nil, false, err
 	}
+	// No crate has an empty ID, and a task in no crate has an empty crate
+	// ID, so an empty crateID must match nothing, as crate_id='' does in SQL.
+	if crateID == "" {
+		return []CrateMemberTask{}, false, nil
+	}
 	workspace := workspaceOrDefault(ctx, "")
 	m.mu.RLock()
 	defer m.mu.RUnlock()

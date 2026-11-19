@@ -913,8 +913,8 @@ func runCrateMemberRead(t *testing.T, x Fixture) {
 // runCrateMembersLimited holds ListCrateMembersLimited to its contract: at
 // most limit members of one crate in creation time and then ID order, the
 // named task left out before the limit, more true only when another eligible
-// member follows, and no member for an empty, unknown, or foreign crate
-// (component-crates invariant 20; DEC-105(4)). Members are inserted out of
+// member follows, and no member for an empty, unknown, or foreign crate or
+// an empty crate ID (component-crates invariant 20; DEC-105(4)). Members are inserted out of
 // order, two share one creation time, and the excluded task sits inside the
 // ordered prefix. With three eligible members, limits 4, 3, and 2 put the
 // member count one under, exactly at, and one over the limit.
@@ -977,6 +977,8 @@ func runCrateMembersLimited(t *testing.T, x Fixture) {
 
 	check("empty crate", x.Context, empty.ID, "", 10, nil, false)
 	check("unknown crate", x.Context, "crate-000000-000000", "", 10, nil, false)
+	// A task in no crate exists, so an empty crate ID must not match it.
+	check("empty crate ID", x.Context, "", "", 10, nil, false)
 	check("crate of another workspace", store.WithWorkspace(x.Context, "ws-crate-member-limited-other"), crate.ID, "", 10, nil, false)
 
 	for _, limit := range []int{0, -1, math.MaxInt} {
