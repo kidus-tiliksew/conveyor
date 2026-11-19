@@ -259,15 +259,42 @@ func (s *Server) getCrateInsight(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	inputs, err := backend.ReadCrateInsightInputs(r.Context(), chi.URLParam(r, "id"))
+	state, err := s.readCrateInsightState(r, backend, chi.URLParam(r, "id"))
 	if err != nil {
-		writeCrateError(w, r, err)
+		writeCrateInsightFailure(w, r, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, crateinsight.Compute(state.inputs, state.actions, state.now))
+}
+
+// crateInsightState is one consistent observation of a crate's insight
+// inputs: the store read, each member's compact next action, and the
+// projection's read instant (component-crates invariants 21 and 22). The
+// insight view and the briefing document are both computed from it.
+type crateInsightState struct {
+	inputs  crateinsight.Inputs
+	actions map[string]nextaction.Compact
+	now     time.Time
+}
+
+// crateInsightInputsError marks a failure of the insight input read, which
+// writeCrateError answers, apart from a projection failure.
+type crateInsightInputsError struct{ err error }
+
+func (e *crateInsightInputsError) Error() string { return e.err.Error() }
+func (e *crateInsightInputsError) Unwrap() error { return e.err }
+
+// readCrateInsightState reads the store's insight inputs and projects each
+// member's compact next action once through the projection GET /v1/tasks
+// uses (DEC-61).
+func (s *Server) readCrateInsightState(r *http.Request, backend crateBackend, crateID string) (crateInsightState, error) {
+	inputs, err := backend.ReadCrateInsightInputs(r.Context(), crateID)
+	if err != nil {
+		return crateInsightState{}, &crateInsightInputsError{err: err}
 	}
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
+		return crateInsightState{}, err
 	}
 	opts.CompactOnly = true
 	actions := make(map[string]nextaction.Compact, len(inputs.Members))
@@ -278,14 +305,26 @@ func (s *Server) getCrateInsight(w http.ResponseWriter, r *http.Request) {
 		}
 		projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, opts)
 		if err != nil {
-			writeStoreFailure(w, r, err)
-			return
+			return crateInsightState{}, err
 		}
 		for _, task := range tasks {
 			actions[task.ID] = nextaction.CompactFrom(projected[task.ID])
 		}
 	}
-	writeJSON(w, http.StatusOK, crateinsight.Compute(inputs, actions, opts.Now))
+	return crateInsightState{inputs: inputs, actions: actions, now: opts.Now}, nil
+}
+
+// writeCrateInsightFailure answers a failed readCrateInsightState: an input
+// read failure through writeCrateError, so a missing or foreign crate answers
+// 404 crate_not_found, and any other failure with the generic 500
+// (component-crates, State and failure; DEC-105(1)).
+func writeCrateInsightFailure(w http.ResponseWriter, r *http.Request, err error) {
+	var inputs *crateInsightInputsError
+	if errors.As(err, &inputs) {
+		writeCrateError(w, r, inputs.err)
+		return
+	}
+	writeStoreFailure(w, r, err)
 }
 
 // getCrateActivity serves GET /v1/crates/{id}/activity: one page of the

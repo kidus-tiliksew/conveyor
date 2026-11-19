@@ -767,11 +767,14 @@ type memory struct {
 	tasks              map[string]core.Task
 	// crates holds crate records by workspace and crate ID
 	// (component-crates). Membership lives on each task's Crate.
-	crates       map[memoryScopedKey]Crate
-	repositories map[string]map[string]string
-	dependencies map[string]map[string]struct{}
-	jobs         map[string][]core.Job
-	events       map[string][]core.Event
+	crates map[memoryScopedKey]Crate
+	// crateBriefings holds one stored briefing per workspace and crate
+	// (component-crates invariant 29).
+	crateBriefings map[memoryScopedKey]CrateBriefing
+	repositories   map[string]map[string]string
+	dependencies   map[string]map[string]struct{}
+	jobs           map[string][]core.Job
+	events         map[string][]core.Event
 	// timelineReads counts ListEvents copies of a whole task timeline, which
 	// the compact and context reads also make, so a test can prove that a
 	// narrow read never copies one (component-work-orders invariant 24).

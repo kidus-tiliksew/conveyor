@@ -605,3 +605,39 @@ func TestWorkOrderCrateContextMemberReadFailureFailsTheRead(t *testing.T) {
 		t.Fatalf("crate after recovery = %+v", result.Crate)
 	}
 }
+
+// TestWorkOrderCrateBriefingNeverEntersContext: after a briefing of the
+// member's crate is stored, the order's whole outbound context, on every
+// stage, holds no part of it: no headline, account, reason, model, or
+// fingerprint, and no briefing field. No agent receives a briefing
+// (req-crate-insights AC-5.6; DEC-142(2); component-crates invariant 29).
+func TestWorkOrderCrateBriefingNeverEntersContext(t *testing.T) {
+	for _, stage := range []core.Stage{core.StageSpec, core.StageImplement, core.StageReview, core.StageVerify} {
+		t.Run(string(stage), func(t *testing.T) {
+			f := newCrateContextFixture(t, stage)
+			sibling := f.sibling(0, core.TaskQueued)
+			_, before := f.read()
+			briefing := store.CrateBriefing{
+				CrateID: f.crate.ID, Fingerprint: "briefing-fingerprint-sentinel", Headline: "Briefing headline sentinel.",
+				Account: "Briefing account sentinel.", Model: "briefing-model-sentinel", GeneratedBy: "user:briefing-requester-sentinel",
+				LookFirst: []store.CrateBriefingEntry{{TaskID: sibling.ID, Tone: "attention", Reason: "Briefing reason sentinel."}},
+			}
+			if _, err := f.st.RecordCrateBriefing(f.ctx, briefing); err != nil {
+				t.Fatal(err)
+			}
+			_, after := f.read()
+			wire, err := json.Marshal(after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, leaked := range []string{"sentinel", "briefing", "look_first", "headline", "Briefing"} {
+				if strings.Contains(string(wire), leaked) {
+					t.Fatalf("the %s order context carries %q: %s", stage, leaked, wire)
+				}
+			}
+			if string(before["crate"]) != string(after["crate"]) {
+				t.Fatalf("storing a briefing changed the order's crate field:\nbefore %s\nafter  %s", before["crate"], after["crate"])
+			}
+		})
+	}
+}

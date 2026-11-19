@@ -171,6 +171,18 @@ type CrateStore interface {
 	SetTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, error)
 	// ClearTaskCrate makes the task a member of no crate.
 	ClearTaskCrate(ctx context.Context, taskID string) (core.Task, error)
+	// GetCrateBriefing returns the crate's stored briefing in the bound
+	// workspace, or ErrNotFound when it has none (component-crates
+	// invariant 29).
+	GetCrateBriefing(ctx context.Context, crateID string) (CrateBriefing, error)
+	// RecordCrateBriefing inserts or replaces the crate's briefing in one
+	// atomic compare-and-write for the workspace and crate. A stored row with
+	// an equal fingerprint refuses with ErrCrateBriefingCurrent and nothing
+	// changes, so concurrent writers of one fingerprint leave one winner. A
+	// failed write leaves the previous row. It returns the stored row and
+	// appends no event (component-crates invariant 29, through
+	// component-requirement-insights invariants 14 to 16).
+	RecordCrateBriefing(ctx context.Context, briefing CrateBriefing) (CrateBriefing, error)
 }
 
 // CrateMemberTask is one member task of a crate as ListCrateMembers reads
