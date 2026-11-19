@@ -304,3 +304,54 @@ func TestReadMemoBoundsRebuildsAfterUnrelatedNotices(t *testing.T) {
 		t.Fatal("a build a notice discarded was stored")
 	}
 }
+
+// TestReadMemoAnswersAnExpiredBuildOnce proves a build that outlives the
+// memo lifetime is not built again: it answers its caller once, untagged and
+// unstored, so a slow read is not repeated for as long as each build takes
+// longer than the lifetime. A build whose horizon a deadline inside the
+// lifetime ended builds once more, so its answer projects past that
+// deadline, and never more than once.
+func TestReadMemoAnswersAnExpiredBuildOnce(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 10, 0, time.UTC)
+	for _, tc := range []struct {
+		name       string
+		until      time.Duration
+		wantBuilds int
+	}{
+		{"lifetime ended the horizon", readMemoLifetime, 1},
+		{"a deadline ended the horizon", 2 * time.Second, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := start
+			m := &readMemo{clock: func() time.Time { return now }}
+			var instants []time.Time
+			build := func(_ context.Context, at time.Time) (readMemoValue, error) {
+				instants = append(instants, at)
+				// Each build takes longer than the memo lifetime.
+				now = now.Add(readMemoLifetime + time.Second)
+				return readMemoValue{body: []byte("body"), etag: `"tag"`, validUntil: at.Add(tc.until)}, nil
+			}
+			value, err := m.get(context.Background(), "key", build)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(instants) != tc.wantBuilds || string(value.body) != "body" || value.etag != "" || !value.unstored {
+				t.Fatalf("builds=%d body=%q etag=%q unstored=%v", len(instants), value.body, value.etag, value.unstored)
+			}
+			if tc.wantBuilds == 2 && !instants[1].After(instants[0].Add(tc.until)) {
+				t.Fatalf("the second build projected at %s, not past the deadline %s", instants[1], instants[0].Add(tc.until))
+			}
+			if len(m.entries) != 0 {
+				t.Fatal("an expired build was stored")
+			}
+			// A build that finishes inside its horizon is still stored and
+			// tagged.
+			fast := func(_ context.Context, at time.Time) (readMemoValue, error) {
+				return readMemoValue{body: []byte("fresh"), etag: `"fresh"`, validUntil: at.Add(readMemoLifetime)}, nil
+			}
+			if value, err = m.get(context.Background(), "key", fast); err != nil || value.etag != `"fresh"` || len(m.entries) != 1 {
+				t.Fatalf("fast build etag=%q entries=%d err=%v", value.etag, len(m.entries), err)
+			}
+		})
+	}
+}

@@ -78,19 +78,45 @@ func (s *Store) markerTaskRows(ctx context.Context, taskIDs []string) ([]markerR
 	return out, rows.Err()
 }
 
+// markerLatestSummariesQuery reads, for one chunk of tasks, each task's
+// newest event tuple, newest job stage, and newest claimed order stage in
+// one statement of three grouped reads. Each read groups only the chunk's
+// rows inside the database and returns at most one row per task and part:
+// part e carries the newest (at,id) event tuple, part j the stage of the
+// newest job by (started_at,id), and part c the stage of the newest claimed
+// order by (execution_started_at,created_at,id). Every list binds exactly
+// markerTaskChunk placeholders, so every chunk shares one statement text and
+// SingleStore compiles one plan for the read. A per-task arm for each task
+// in place of the grouped reads ran for minutes per chunk on SingleStore,
+// longer than the response memo lifetime (component-web-task-surfaces,
+// Activity and list reads; DEC-140(3)).
 func markerLatestSummariesQuery(ws string, taskIDs []string) (string, []any) {
-	arms := make([]string, 0, len(taskIDs))
-	args := make([]any, 0, len(taskIDs)*8)
-	for _, id := range taskIDs {
-		arms = append(arms, `(SELECT t.task_id,e.at,e.id,j.stage AS job_stage,c.stage AS claim_stage FROM (SELECT ? AS task_id) t LEFT JOIN (SELECT at,id FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=? ORDER BY at DESC,id DESC LIMIT 1) e ON 1=1 LEFT JOIN (SELECT stage FROM jobs WHERE workspace_id=? AND task_id=? ORDER BY started_at DESC,id DESC LIMIT 1) j ON 1=1 LEFT JOIN (SELECT stage FROM work_orders WHERE workspace_id=? AND task_id=? AND state='claimed' ORDER BY execution_started_at DESC,created_at DESC,id DESC LIMIT 1) c ON 1=1)`)
-		args = append(args, id, ws, id, id, ws, id, ws, id)
+	b := &markerBinder{}
+	events := func(prefix string) string {
+		return prefix + `workspace_id=` + b.bind(ws) + ` AND ` + b.fixedIn(prefix+"event_shard_key", taskIDs) + ` AND ` + b.fixedIn(prefix+"task_id", taskIDs)
 	}
-	return `SELECT per_task.task_id,per_task.at,per_task.id,per_task.job_stage,per_task.claim_stage FROM (` + strings.Join(arms, " UNION ALL ") + `) per_task`, args
+	query := `SELECT 'e' AS part,newest_event.task_id,newest_event.at,newest_event.id,'' AS stage FROM (
+				SELECT e.task_id,e.at,MAX(e.id) AS id FROM events_columnstore e JOIN (
+					SELECT task_id,MAX(at) AS at FROM events_columnstore WHERE ` + events("") + ` GROUP BY task_id
+				) newest_at ON newest_at.task_id=e.task_id AND newest_at.at=e.at
+				WHERE ` + events("e.") + ` GROUP BY e.task_id,e.at
+			) newest_event
+			UNION ALL
+			SELECT 'j',newest_job.task_id,NULL,NULL,newest_job.stage FROM (
+				SELECT task_id,stage,ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY started_at DESC,id DESC) AS position
+				FROM jobs WHERE workspace_id=` + b.bind(ws) + ` AND ` + b.fixedIn("task_id", taskIDs) + `
+			) newest_job WHERE newest_job.position=1
+			UNION ALL
+			SELECT 'c',newest_claim.task_id,NULL,NULL,newest_claim.stage FROM (
+				SELECT task_id,stage,ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY execution_started_at DESC,created_at DESC,id DESC) AS position
+				FROM work_orders WHERE workspace_id=` + b.bind(ws) + ` AND state='claimed' AND ` + b.fixedIn("task_id", taskIDs) + `
+			) newest_claim WHERE newest_claim.position=1`
+	return b.finish(query)
 }
 
 // markerLatestSummaries folds the latest claim stage, job stage, and event
-// tuple into the rows. It reads at most one row per requested task and
-// never ranks a task's full history.
+// tuple into the rows. It reads at most three rows per requested task: the
+// database groups each task's history and returns only its newest tuple.
 func (s *Store) markerLatestSummaries(ctx context.Context, rows []markerRow) error {
 	byTask := make(map[string]*markerRow, len(rows))
 	ids := make([]string, len(rows))
@@ -113,29 +139,37 @@ func (s *Store) markerLatestTuples(ctx context.Context, byTask map[string]*marke
 		return err
 	}
 	defer rows.Close()
+	claimed := make(map[string]bool, len(taskIDs))
 	for rows.Next() {
-		var taskID string
+		var part, taskID string
 		var at sql.NullTime
 		var id sql.NullInt64
-		var jobStage, claimStage sql.NullString
-		if err = rows.Scan(&taskID, &at, &id, &jobStage, &claimStage); err != nil {
+		var stage sql.NullString
+		if err = rows.Scan(&part, &taskID, &at, &id, &stage); err != nil {
 			return err
 		}
 		row := byTask[taskID]
 		if row == nil {
 			continue
 		}
-		if at.Valid {
-			row.lastEventAt = at.Time
-		}
-		if id.Valid {
-			row.lastEventID = id.Int64
-		}
-		if jobStage.Valid {
-			row.latestStage = jobStage.String
-		}
-		if claimStage.Valid {
-			row.latestStage = claimStage.String
+		switch part {
+		case "e":
+			if at.Valid {
+				row.lastEventAt = at.Time
+			}
+			if id.Valid {
+				row.lastEventID = id.Int64
+			}
+		case "j":
+			// A claimed order's stage wins over the newest job's stage.
+			if stage.Valid && !claimed[taskID] {
+				row.latestStage = stage.String
+			}
+		case "c":
+			if stage.Valid {
+				row.latestStage = stage.String
+				claimed[taskID] = true
+			}
 		}
 	}
 	return rows.Err()
