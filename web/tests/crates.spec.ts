@@ -473,7 +473,7 @@ function storedBriefing(overrides: Partial<CrateBriefing> = {}): CrateBriefing {
 }
 
 // What the fake server answers to one briefing POST, when a spec sets it.
-type BriefingReply = { status: number; json: unknown }
+type BriefingReply = { status: number; json?: unknown; body?: string; contentType?: string }
 
 // `insights` replaces the served insight view of the crates it names. A spec
 // may change it between page loads: the fake server reads it per request.
@@ -2377,6 +2377,30 @@ for (const viewport of [
       await shoot(page, 'failed-beside-stored')
     })
 
+    // A store failure on the generation route answers the generic plain-text
+    // 500 (DEC-105(1)). The page names it beside the stored briefing, which
+    // does not change, and does not post again.
+    test('a store failure on generation shows its notice and keeps the stored briefing', async ({ page }) => {
+      const server = await serveCrates(page, {
+        briefings: { [lineCrate.id]: storedBriefing({ current: false, look_first: lookFirst }) },
+        briefingPost: () => ({
+          status: 500,
+          contentType: 'text/plain; charset=utf-8',
+          body: 'internal server error\n',
+        }),
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      await section.getByRole('button', { name: 'Regenerate' }).click()
+      await expect(section.getByRole('alert')).toHaveText(
+        'The briefing could not be generated (HTTP 500): internal server error',
+      )
+      await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      await expect(section.locator('[data-briefing-task]')).toHaveCount(2)
+      await expect(section.getByRole('button', { name: 'Regenerate' })).toBeEnabled()
+      expect(server.briefingPosts).toEqual([lineCrate.id])
+    })
+
     // AC-5.5: a user without create_tasks sees a stored briefing and no
     // control, and with none stored learns who can generate one. The page
     // never posts for this user.
@@ -2540,12 +2564,17 @@ test('the briefing and the rest of the page each survive the other failing', asy
   await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
   await expect(section.locator('[data-briefing-task]')).toHaveCount(2)
 
+  // A store failure on the briefing read answers the generic plain-text 500
+  // (DEC-105(1)).
   await page.route(
     (url) => /^\/v1\/crates\/[^/]+\/briefing$/.test(url.pathname),
-    (route) => route.fulfill({ status: 500, json: { error: 'internal error', message: 'internal error' } }),
+    (route) =>
+      route.fulfill({ status: 500, contentType: 'text/plain; charset=utf-8', body: 'internal server error\n' }),
   )
   await page.goto('/w/demo/crates/crate-billing')
-  await expect(briefingSection(page).locator('[data-briefing-read-failed]')).toContainText('The briefing did not load')
+  await expect(briefingSection(page).locator('[data-briefing-read-failed]')).toHaveText(
+    'The briefing did not load: internal server error',
+  )
   await expect(page.locator('[data-crate-task]')).toHaveCount(2)
   await expect(page.getByRole('region', { name: 'Crate summary' })).toBeVisible()
 })
