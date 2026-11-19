@@ -57,7 +57,7 @@ func mcpReadDefinitions() []mcpReadDefinition {
 	return []mcpReadDefinition{
 		{"list_workspaces", "List only your own workspace memberships. Supply a known workspace_id to authorize this bounded discovery read.", nil, nil},
 		{"list_repositories", "List repository names and base branches in the selected workspace; excludes local paths and configuration.", nil, nil},
-		{"list_tasks", "Find active or terminal tasks. An empty work-order list is not evidence that tasks do not exist.", map[string]any{"state": enum("active", "terminal", "all"), "repository": str(), "query": str()}, nil},
+		{"list_tasks", "Find active or terminal tasks. An empty work-order list is not evidence that tasks do not exist. crate_id lists only the member tasks of that crate. A crate that is missing or in another workspace lists no task.", map[string]any{"state": enum("active", "terminal", "all"), "repository": str(), "query": str(), "crate_id": str()}, nil},
 		{"get_board", "Read one board page of open tasks. Continue at offset plus the number of items until reaching total; short pages can have more items. Each page is a separate read.", nil, nil},
 		{"get_task", "Read one task, including terminal tasks, without claiming or reconciling work. next_action carries the server-stated label, actor, kind, judgment, summary, deadline, and blockers; get_task_status returns the full statement. The complete single-item result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"task_id": str()}, []string{"task_id"}},
 		{"list_operator_inbox", "List the operator inbox in server order: decisions first, then tasks blocked by other tasks, then acts needing no judgment. Each item carries its band, task, next action, pull request, served requirements, recommendation, blockers, and deadline; pending document proposals appear among the decisions. Filters match GET /v1/next-actions.", map[string]any{"band": enum("decisions", "blocked", "automatic"), "state": str(), "repository": str(), "serves_requirement": str(), "governing_design": str(), "assignee": str(), "query": str()}, nil},
@@ -460,6 +460,11 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 		if repo := readString(a, "repository"); repo != "" {
 			f.Repositories = []string{repo}
 		}
+		// crate_id narrows the store's task page to one crate's members, so
+		// it intersects state, repository, and query before the candidate
+		// cap. The page stays workspace-scoped, so a missing or foreign crate
+		// lists no task (req-crates AC-6.5; component-crates invariant 14).
+		f.Crate = strings.TrimSpace(readString(a, "crate_id"))
 		// Use the existing bounded task page service, never ListWorkOrders (which reconciles).
 		for offset := 0; offset < mcpReadMaxItems; offset += store.MaxTaskOperationsLimit {
 			page, e := s.Store.ListTaskPage(ctx, store.TaskOperationsQuery{TaskFilter: f, Limit: store.MaxTaskOperationsLimit, Offset: offset})

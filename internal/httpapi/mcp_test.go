@@ -610,6 +610,10 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 			Tools []struct {
 				Name        string `json:"name"`
 				Description string `json:"description"`
+				InputSchema struct {
+					Properties map[string]map[string]any `json:"properties"`
+					Required   []string                  `json:"required"`
+				} `json:"inputSchema"`
 			} `json:"tools"`
 		} `json:"result"`
 	}
@@ -627,6 +631,47 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 		}
 		if strings.Contains(name, "preempt") {
 			t.Fatalf("operator-only preempt leaked into MCP tool %q", name)
+		}
+		// list_tasks publishes an optional crate_id string beside state,
+		// repository, and query (req-crates AC-6.5; component-mcp-protocol
+		// read arguments).
+		if name == "list_tasks" {
+			schema := envelope.Result.Tools[i].InputSchema
+			crateID, found := schema.Properties["crate_id"]
+			if !found || crateID["type"] != "string" || slices.Contains(schema.Required, "crate_id") {
+				t.Fatalf("list_tasks crate_id = %v (required %v), want an optional string", crateID, schema.Required)
+			}
+			for _, argument := range []string{"state", "repository", "query"} {
+				if _, found := schema.Properties[argument]; !found {
+					t.Fatalf("list_tasks schema lacks %s", argument)
+				}
+			}
+			if !strings.Contains(envelope.Result.Tools[i].Description, "crate_id") {
+				t.Fatalf("list_tasks description omits crate_id: %q", envelope.Result.Tools[i].Description)
+			}
+		}
+		// The crate read descriptions state the bounded member IDs
+		// (component-crates invariant 14).
+		if name == "list_crates" && (!strings.Contains(envelope.Result.Tools[i].Description, "no member task IDs") || strings.Contains(envelope.Result.Tools[i].Description, "task_ids")) {
+			t.Fatalf("list_crates description = %q", envelope.Result.Tools[i].Description)
+		}
+		if name == "get_crate" && (!strings.Contains(envelope.Result.Tools[i].Description, "500 oldest member tasks") || !strings.Contains(envelope.Result.Tools[i].Description, "task_ids_truncated")) {
+			t.Fatalf("get_crate description = %q", envelope.Result.Tools[i].Description)
+		}
+		// get_crate states what list_tasks with crate_id returns: active
+		// members by default, state all for merged and closed members, and
+		// the refusal above 1,000 matching tasks. It promises no complete
+		// member list (req-crates AC-6.5).
+		if name == "get_crate" {
+			description := envelope.Result.Tools[i].Description
+			for _, phrase := range []string{"only active member tasks by default", "Set state to all to include merged and closed member tasks", "refuses a read that matches more than 1,000 tasks", "Narrow that read with state, repository, or query"} {
+				if !strings.Contains(description, phrase) {
+					t.Fatalf("get_crate description lacks %q: %q", phrase, description)
+				}
+			}
+			if strings.Contains(description, "every member") {
+				t.Fatalf("get_crate description promises every member task: %q", description)
+			}
 		}
 		if name == "create_task" && !strings.Contains(envelope.Result.Tools[i].Description, "invalid_agent_gate_override") {
 			t.Fatalf("create_task description omits the mistyped gate rule: %q", envelope.Result.Tools[i].Description)
