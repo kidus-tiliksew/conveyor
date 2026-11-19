@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import {
   Archive,
   ArchiveRestore,
-  CircleCheck,
   CircleDot,
   CircleSlash,
   ExternalLink,
@@ -20,13 +19,8 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
-import {
-  CrateFormDialog,
-  CrateProgress,
-  CrateStateBadge,
-  formatTargetDate,
-  targetDateHint,
-} from '../components/crate/crate-parts'
+import { CrateHero } from '../components/crate/crate-hero'
+import { CrateFormDialog } from '../components/crate/crate-parts'
 import { TaskRow } from '../components/insights/shared'
 import { Button } from '../components/ui/button'
 import { Dialog } from '../components/ui/dialog'
@@ -119,7 +113,7 @@ function CrateView({ crate }: { crate: CrateDetail }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader title={<CratesCrumb name={crate.name} />} badge={<CrateStateBadge crate={crate} />}>
+      <PageHeader title={<CratesCrumb name={crate.name} />}>
         {canAct && open && (
           <Link
             to="/w/$workspaceId/"
@@ -166,7 +160,7 @@ function CrateView({ crate }: { crate: CrateDetail }) {
               {setState.error instanceof Error ? setState.error.message : String(setState.error)}
             </p>
           )}
-          <CrateSummary crate={crate} />
+          <CrateHero crate={crate} canAct={canAct} onSetDate={() => setPanel('edit')} />
           {/* Requirements sit beside the tasks from lg up, and between the
               tasks and the activity on a narrow screen. */}
           <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
@@ -199,96 +193,6 @@ function CrateView({ crate }: { crate: CrateDetail }) {
       {panel && typeof panel === 'object' && (
         <RemoveTaskDialog crate={crate} task={panel.remove} onClose={() => setPanel(null)} />
       )}
-    </div>
-  )
-}
-
-// The header: target date, the three counts, the progress bar, and the
-// shipped statement for an open crate whose every member is merged or closed
-// (req-crates AC-5.2). `shipped` is the server's (invariant 9).
-function CrateSummary({ crate }: { crate: CrateDetail }) {
-  const hint = targetDateHint(crate)
-  return (
-    <section aria-label="Crate summary" className="rounded-lg border border-border bg-card">
-      {crate.state === 'open' && crate.shipped && (
-        <p
-          data-shipped-statement
-          className="flex items-center gap-2 rounded-t-lg border-b border-positive/20 bg-positive-soft px-4 py-2.5 text-sm font-medium text-positive"
-        >
-          <CircleCheck aria-hidden className="size-4 shrink-0" />
-          Shipped. Every task in this crate is merged or closed.
-        </p>
-      )}
-      {crate.state === 'closed' && (
-        <p className="flex items-center gap-2 rounded-t-lg border-b border-border bg-surface px-4 py-2.5 text-sm text-muted">
-          <Archive aria-hidden className="size-4 shrink-0" />
-          This crate is closed{crate.closed_at ? ` since ${formatClosed(crate.closed_at)}` : ''}. Its tasks and history
-          stay readable here.
-        </p>
-      )}
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-4 px-4 py-4 sm:grid-cols-4">
-        <Stat label="Target date">
-          {crate.target_date ? (
-            <>
-              <span data-target-date>{formatTargetDate(crate.target_date)}</span>
-              {hint && (
-                <span className={cn('block text-xs font-normal', hint.late ? 'text-attention' : 'text-faint')}>
-                  {hint.text}
-                </span>
-              )}
-            </>
-          ) : (
-            <span className="text-faint">None</span>
-          )}
-        </Stat>
-        <Stat label="Open" count={crate.open_task_count} />
-        <Stat
-          label="Merged"
-          count={crate.merged_task_count}
-          tone={crate.merged_task_count > 0 ? 'positive' : undefined}
-        />
-        <Stat label="Total" count={crate.total_task_count} />
-      </dl>
-      <div className="flex items-center gap-3 border-t border-border px-4 py-3">
-        <CrateProgress crate={crate} className="h-2" />
-        <span className="shrink-0 text-xs tabular-nums text-muted">
-          {crate.total_task_count > 0
-            ? `${Math.round((crate.merged_task_count / crate.total_task_count) * 100)}% merged`
-            : 'No tasks yet'}
-        </span>
-      </div>
-    </section>
-  )
-}
-
-function formatClosed(value: string) {
-  return new Date(value).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })
-}
-
-function Stat({
-  label,
-  count,
-  tone,
-  children,
-}: {
-  label: string
-  count?: number
-  tone?: 'positive'
-  children?: ReactNode
-}) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs text-muted">{label}</dt>
-      <dd
-        data-stat={label.toLowerCase()}
-        className={cn(
-          'mt-1 text-sm font-medium',
-          count !== undefined && 'text-2xl font-semibold tabular-nums tracking-tight',
-          tone === 'positive' && 'text-positive',
-        )}
-      >
-        {count ?? children}
-      </dd>
     </div>
   )
 }
