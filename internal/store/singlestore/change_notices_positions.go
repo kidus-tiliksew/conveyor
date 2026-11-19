@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
-
-	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // Task-event positions and their witnesses (component-persistence, Change
@@ -40,7 +38,9 @@ import (
 // event writes: the counter update, which returns the new position through
 // LAST_INSERT_ID(expr) in its OK packet, and the witness insert. Only a
 // workspace's first commit, whose update matches no row, adds the counter
-// insert. The ordinary path never reads events_columnstore. (SingleStore
+// insert, and a first commit whose insert loses to a concurrent one adds the
+// update again (advanceTaskEventCounter). The ordinary path never reads
+// events_columnstore. (SingleStore
 // leaves the last insert ID at 0 on the ON DUPLICATE KEY UPDATE branch of an
 // upsert, so the counter is not an upsert:
 // TestSingleStoreTaskEventPositionResultIntegration.) A prune position adds
@@ -117,6 +117,11 @@ var observeTaskEventPreparation atomic.Pointer[func(workspaces []string)]
 // two first commits of a workspace race on that insert.
 var observeTaskEventCounterMiss atomic.Pointer[func(ws string)]
 
+// observeTaskEventCounterRecovery, when set by a fixture, receives the
+// server's error for a counter insert that lost to a concurrent first commit,
+// before the transaction runs the counter update again.
+var observeTaskEventCounterRecovery atomic.Pointer[func(ws string, err error)]
+
 // commitTx is the only commit of a store transaction that registered notice
 // state (change_notices_positions_test.go, TestTaskEventCommitSites): withTx,
 // RunVerificationDelivery, the per-key transactions of a verification
@@ -178,40 +183,67 @@ func advanceTaskEventPosition(ctx context.Context, tx *sql.Tx, ws string, witnes
 // advanceTaskEventCounter advances ws's counter and returns the new
 // position. An existing counter takes one update. A workspace without one
 // takes the update and an insert at position 1. Two transactions that both
-// find no row race on that insert; the loser gets the retryable store error
-// and its caller retries the whole operation, whose update then advances the
-// winner's committed row (component-persistence, State and failure).
+// find no row race on that insert: the loser's insert waits on the winner's
+// row and fails with a PRIMARY duplicate key once the winner commits. The
+// winner's row then exists, so the loser runs the update again in the same
+// transaction and takes the next position under that row's lock. No caller
+// sees the race, and the transaction is never replayed. The duplicate key is
+// not a lock timeout or a deadlock, so it is not the retryable store error
+// (component-persistence, Errors, invariant 12); a real lock timeout or
+// deadlock in any of these statements still is.
 func advanceTaskEventCounter(ctx context.Context, tx *sql.Tx, ws string) (int64, error) {
-	result, err := tx.ExecContext(ctx, taskEventPositionUpdateSQL, ws)
+	position, found, err := updateTaskEventCounter(ctx, tx, ws)
+	if err != nil || found {
+		return position, err
+	}
+	if hook := observeTaskEventCounterMiss.Load(); hook != nil {
+		(*hook)(ws)
+	}
+	_, err = tx.ExecContext(ctx, taskEventPositionInsertSQL, ws)
+	if err == nil {
+		return 1, nil
+	}
+	if !isDuplicateKey(err, "PRIMARY") {
+		return 0, err
+	}
+	if hook := observeTaskEventCounterRecovery.Load(); hook != nil {
+		(*hook)(ws, err)
+	}
+	position, found, err = updateTaskEventCounter(ctx, tx, ws)
 	if err != nil {
 		return 0, err
+	}
+	if !found {
+		return 0, fmt.Errorf("task event position of workspace %q: the counter update matched no row after a concurrent first commit created the counter", ws)
+	}
+	return position, nil
+}
+
+// updateTaskEventCounter runs the counter update. It reports the new
+// position, which an existing counter row makes at least 2, or found false
+// when no counter row exists.
+func updateTaskEventCounter(ctx context.Context, tx *sql.Tx, ws string) (position int64, found bool, err error) {
+	result, err := tx.ExecContext(ctx, taskEventPositionUpdateSQL, ws)
+	if err != nil {
+		return 0, false, err
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	switch affected {
+	case 0:
+		return 0, false, nil
 	case 1:
-		position, err := result.LastInsertId()
+		position, err = result.LastInsertId()
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 		if position < 2 {
-			return 0, fmt.Errorf("task event position of workspace %q: the counter update returned position %d", ws, position)
+			return 0, false, fmt.Errorf("task event position of workspace %q: the counter update returned position %d", ws, position)
 		}
-		return position, nil
-	case 0:
-		if hook := observeTaskEventCounterMiss.Load(); hook != nil {
-			(*hook)(ws)
-		}
-		if _, err := tx.ExecContext(ctx, taskEventPositionInsertSQL, ws); err != nil {
-			if isDuplicateKey(err, "PRIMARY") {
-				return 0, fmt.Errorf("task event position of workspace %q: a concurrent first commit created the counter: %w", ws, store.ErrRetryable)
-			}
-			return 0, err
-		}
-		return 1, nil
+		return position, true, nil
 	default:
-		return 0, fmt.Errorf("task event position of workspace %q: the counter update matched %d rows", ws, affected)
+		return 0, false, fmt.Errorf("task event position of workspace %q: the counter update matched %d rows", ws, affected)
 	}
 }

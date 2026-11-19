@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -462,25 +465,355 @@ func TestSingleStoreTaskEventCommitStatementsIntegration(t *testing.T) {
 	requirePreparation(t, "the commit after a prune", preparationStatements(t, sent), counterUpdate, witnessInsert)
 }
 
-// TestSingleStoreTaskEventFirstCommitRaceIntegration: two first commits of a
-// workspace whose counter updates both match no row race on the counter
-// insert. The winner takes position 1. The loser gets the retryable store
-// error, writes nothing, and its retry of the whole operation takes position
-// 2 through the counter update. Each position keeps its own complete witness
-// set. The failed attempt's statements are counted apart from the retry's.
-func TestSingleStoreTaskEventFirstCommitRaceIntegration(t *testing.T) {
-	writer := openOwnedStore(t)
-	firstStore, firstProxy := openProxiedStore(t)
-	secondStore, secondProxy := openProxiedStore(t)
-	ws := "notices-race-" + core.NewTaskID()
+// newCounterlessWorkspace bootstraps a workspace that has no task-event
+// counter yet and returns its context, its ID, and a task constructor.
+func newCounterlessWorkspace(t *testing.T, writer *Store, prefix string) (context.Context, string, func() core.Task) {
+	t.Helper()
+	ws := prefix + core.NewTaskID()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), ws)
 	if _, err := writer.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: ws, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}); err != nil {
 		t.Fatal(err)
+	}
+	if counter, _ := taskEventPosition(t, writer, ws); counter != 0 {
+		t.Fatalf("a bootstrapped workspace has counter %d before its first task event", counter)
 	}
 	newTask := func() core.Task {
 		id := core.NewTaskID()
 		return core.Task{ID: id, Workspace: ws, Repo: "repo", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	}
+	return ctx, ws, newTask
+}
+
+// witnessOwnership returns, for each witnessed position of the workspace,
+// the one task whose events it witnesses. It fails unless each position's
+// witnesses are one transaction's complete set: every witness joins a
+// committed event, a position witnesses the events of one task only, no
+// task's events are split over two positions, no event is witnessed twice,
+// and every committed event of the given tasks is witnessed.
+func witnessOwnership(t *testing.T, st *Store, ws string, tasks []string, what string) map[int64]string {
+	t.Helper()
+	rows, err := st.db.QueryContext(t.Context(), `SELECT w.position,w.event_id,COALESCE(e.task_id,'') FROM task_event_witnesses w LEFT JOIN events_columnstore e ON e.event_shard_key=w.event_shard_key AND e.workspace_id=w.workspace_id AND e.id=w.event_id WHERE w.workspace_id=?`, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners := map[int64]string{}
+	positionOf := map[string]int64{}
+	witnessed := map[int64]bool{}
+	for rows.Next() {
+		var position, id int64
+		var task string
+		if err = rows.Scan(&position, &id, &task); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case task == "":
+			t.Fatalf("%s: the witness of event %d at position %d joins no committed event", what, id, position)
+		case witnessed[id]:
+			t.Fatalf("%s: event %d is witnessed twice", what, id)
+		case owners[position] != "" && owners[position] != task:
+			t.Fatalf("%s: position %d witnesses events of tasks %s and %s", what, position, owners[position], task)
+		case positionOf[task] != 0 && positionOf[task] != position:
+			t.Fatalf("%s: task %s's events are witnessed at positions %d and %d", what, task, positionOf[task], position)
+		}
+		witnessed[id] = true
+		owners[position] = task
+		positionOf[task] = position
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+	for _, task := range tasks {
+		events, err := st.db.QueryContext(t.Context(), `SELECT id FROM events_columnstore WHERE workspace_id=? AND task_id=?`, ws, task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for events.Next() {
+			var id int64
+			if err = events.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			if !witnessed[id] {
+				t.Fatalf("%s: committed event %d of task %s has no witness", what, id, task)
+			}
+			n++
+		}
+		if err = events.Err(); err != nil {
+			t.Fatal(err)
+		}
+		events.Close()
+		if n == 0 {
+			t.Fatalf("%s: task %s has no committed event", what, task)
+		}
+	}
+	return owners
+}
+
+// transactionShape counts the transaction control statements a store sent:
+// a replayed or rolled-back attempt shows up as a second START TRANSACTION
+// or a ROLLBACK.
+func transactionShape(sent []proxyCommand) (begins, commits, rollbacks int) {
+	for _, c := range sent {
+		switch text := strings.ToUpper(strings.TrimSpace(c.text)); {
+		case strings.HasPrefix(text, "START TRANSACTION"):
+			begins++
+		case text == "COMMIT":
+			commits++
+		case text == "ROLLBACK":
+			rollbacks++
+		}
+	}
+	return begins, commits, rollbacks
+}
+
+// requireOneTransaction fails unless the statements hold exactly one
+// transaction, committed, and no rollback.
+func requireOneTransaction(t *testing.T, what string, sent []proxyCommand) {
+	t.Helper()
+	if begins, commits, rollbacks := transactionShape(sent); begins != 1 || commits != 1 || rollbacks != 0 {
+		t.Fatalf("%s: %d transaction starts, %d commits, %d rollbacks, want one committed transaction:\n%s", what, begins, commits, rollbacks, describeCommands(sent[0].at, sent))
+	}
+}
+
+// losingFirstCommit holds the first counter miss of ws until release, so the
+// transaction that misses first loses the counter insert to a later one that
+// commits in the meantime. Every later miss passes. It returns a channel
+// closed at the first miss, the release, and the miss count; the release is
+// also a cleanup, so a failed test never leaves the loser waiting.
+func losingFirstCommit(t *testing.T, ws string) (missed <-chan struct{}, release func(), misses *atomic.Int32) {
+	t.Helper()
+	first := make(chan struct{})
+	released := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(released) }) }
+	misses = &atomic.Int32{}
+	observe := func(missedWS string) {
+		if missedWS != ws || misses.Add(1) != 1 {
+			return
+		}
+		close(first)
+		select {
+		case <-released:
+		case <-time.After(time.Minute):
+		}
+	}
+	observeTaskEventCounterMiss.Store(&observe)
+	t.Cleanup(func() {
+		observeTaskEventCounterMiss.Store(nil)
+		release()
+	})
+	return first, release, misses
+}
+
+// recordCounterRecoveries records each counter insert of ws that lost to a
+// concurrent first commit, with the server's error.
+func recordCounterRecoveries(t *testing.T, ws string) func() []error {
+	t.Helper()
+	var mu sync.Mutex
+	var errs []error
+	observe := func(recoveredWS string, err error) {
+		if recoveredWS != ws {
+			return
+		}
+		mu.Lock()
+		errs = append(errs, err)
+		mu.Unlock()
+	}
+	observeTaskEventCounterRecovery.Store(&observe)
+	t.Cleanup(func() { observeTaskEventCounterRecovery.Store(nil) })
+	return func() []error {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]error(nil), errs...)
+	}
+}
+
+// requireDuplicateCounterKey fails unless every recorded error is the
+// server's PRIMARY duplicate key on the counter insert.
+func requireDuplicateCounterKey(t *testing.T, recovered []error, want int) {
+	t.Helper()
+	if len(recovered) != want {
+		t.Fatalf("%d counter inserts lost to a concurrent first commit, want %d: %v", len(recovered), want, recovered)
+	}
+	for _, err := range recovered {
+		var driverErr *mysql.MySQLError
+		if !errors.As(err, &driverErr) || !isDuplicateKey(err, "PRIMARY") {
+			t.Fatalf("the lost counter insert returned %v, want the server's PRIMARY duplicate key", err)
+		}
+		t.Logf("the lost counter insert's server error: %d %s", driverErr.Number, driverErr.Message)
+	}
+}
+
+// TestSingleStoreTaskEventDuplicateKeyRecoveryIntegration is the server
+// proof for the recovery of a lost first counter insert. Two transactions
+// find no counter for a new workspace. The first to miss waits while the
+// second inserts position 1 and commits. The first's insert then gets the
+// server's real PRIMARY duplicate key, and the same transaction runs the
+// counter update again, takes position 2, writes its witnesses, and commits
+// its task and events: one transaction start, one commit, and no rollback.
+// A recovered transaction that rolls back instead leaves the counter, the
+// witnesses, and its task as the winner left them, and the next commit
+// takes position 2.
+func TestSingleStoreTaskEventDuplicateKeyRecoveryIntegration(t *testing.T) {
+	writer := openOwnedStore(t)
+
+	t.Run("commit", func(t *testing.T) {
+		loserStore, loserProxy := openProxiedStore(t)
+		ctx, ws, newTask := newCounterlessWorkspace(t, writer, "notices-recovery-")
+		missed, release, misses := losingFirstCommit(t, ws)
+		recovered := recordCounterRecoveries(t, ws)
+		loser, winner := newTask(), newTask()
+
+		before := loserProxy.count()
+		loserDone := make(chan error, 1)
+		go func() { loserDone <- loserStore.CreateTask(ctx, loser) }()
+		select {
+		case <-missed:
+		case err := <-loserDone:
+			t.Fatalf("the first commit ended before its counter update missed: %v", err)
+		case <-time.After(time.Minute):
+			t.Fatal("the first commit's counter update did not miss")
+		}
+		// The winner's update also misses; it inserts position 1 and
+		// commits while the loser waits.
+		if err := writer.CreateTask(ctx, winner); err != nil {
+			t.Fatalf("the winning first commit: %v", err)
+		}
+		if counter, _ := taskEventPosition(t, writer, ws); counter != 1 {
+			t.Fatalf("the winner left the counter at %d, want 1", counter)
+		}
+		release()
+		select {
+		case err := <-loserDone:
+			if err != nil {
+				t.Fatalf("the first commit that lost the counter insert failed: %v", err)
+			}
+		case <-time.After(2 * time.Minute):
+			t.Fatal("the first commit that lost the counter insert did not finish")
+		}
+		if got := misses.Load(); got != 2 {
+			t.Fatalf("%d counter updates missed, want both", got)
+		}
+		requireDuplicateCounterKey(t, recovered(), 1)
+
+		sent := loserProxy.since(before)
+		t.Logf("the losing first commit's statements:\n%s", describeCommands(sent[0].at, sent))
+		requireOneTransaction(t, "the losing first commit", sent)
+		requirePreparation(t, "the losing first commit", preparationStatements(t, sent), counterUpdate, counterInsert, counterUpdate, witnessInsert)
+		requireNoEventTableRead(t, sent)
+
+		if counter, _ := taskEventPosition(t, writer, ws); counter != 2 {
+			t.Fatalf("after the recovery the counter is %d, want 2", counter)
+		}
+		owners := witnessOwnership(t, writer, ws, []string{winner.ID, loser.ID}, "after the recovery")
+		if len(owners) != 2 || owners[1] != winner.ID || owners[2] != loser.ID {
+			t.Fatalf("after the recovery the positions are owned by %v, want 1=%s (winner) and 2=%s (recovered)", owners, winner.ID, loser.ID)
+		}
+		for _, task := range []core.Task{winner, loser} {
+			if _, err := writer.GetTask(ctx, task.ID); err != nil {
+				t.Fatalf("task %s after the recovery: %v", task.ID, err)
+			}
+		}
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		ctx, ws, newTask := newCounterlessWorkspace(t, writer, "notices-recovery-rollback-")
+		missed, release, misses := losingFirstCommit(t, ws)
+		recovered := recordCounterRecoveries(t, ws)
+		loser, winner := newTask(), newTask()
+
+		// The loser is a registered store transaction whose commit
+		// preparation runs, and which then rolls back as withTx does when
+		// its commit fails.
+		tx, err := writer.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writer.beginNotices(tx)
+		open := true
+		t.Cleanup(func() {
+			if open {
+				_ = tx.Rollback()
+				finishNotices(tx, false)
+			}
+		})
+		if err = writer.createTaskTx(ctx, tx, loser, nil, store.TaskContextInput{}, nil); err != nil {
+			t.Fatal(err)
+		}
+		prepared := make(chan error, 1)
+		go func() { prepared <- prepareTaskEventPositions(ctx, tx) }()
+		select {
+		case <-missed:
+		case err := <-prepared:
+			t.Fatalf("the preparation ended before its counter update missed: %v", err)
+		case <-time.After(time.Minute):
+			t.Fatal("the preparation's counter update did not miss")
+		}
+		if err = writer.CreateTask(ctx, winner); err != nil {
+			t.Fatalf("the winning first commit: %v", err)
+		}
+		release()
+		select {
+		case err = <-prepared:
+			if err != nil {
+				t.Fatalf("the preparation that lost the counter insert failed: %v", err)
+			}
+		case <-time.After(2 * time.Minute):
+			t.Fatal("the preparation that lost the counter insert did not finish")
+		}
+		if got := misses.Load(); got != 2 {
+			t.Fatalf("%d counter updates missed, want both", got)
+		}
+		requireDuplicateCounterKey(t, recovered(), 1)
+		var inside int64
+		var insideWitnesses int
+		if err = tx.QueryRowContext(ctx, `SELECT position FROM task_event_positions WHERE workspace_id=?`, ws).Scan(&inside); err != nil || inside != 2 {
+			t.Fatalf("inside the recovered transaction the counter is %d (err %v), want 2", inside, err)
+		}
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_event_witnesses WHERE workspace_id=? AND position=2`, ws).Scan(&insideWitnesses); err != nil || insideWitnesses == 0 {
+			t.Fatalf("inside the recovered transaction position 2 has %d witnesses (err %v), want its own", insideWitnesses, err)
+		}
+		if err = tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		finishNotices(tx, false)
+		open = false
+
+		if counter, _ := taskEventPosition(t, writer, ws); counter != 1 {
+			t.Fatalf("the rolled-back recovery left the counter at %d, want the winner's 1", counter)
+		}
+		if owners := witnessOwnership(t, writer, ws, []string{winner.ID}, "after the rollback"); len(owners) != 1 || owners[1] != winner.ID {
+			t.Fatalf("after the rollback the positions are owned by %v, want only 1=%s", owners, winner.ID)
+		}
+		if _, err = writer.GetTask(ctx, loser.ID); err == nil {
+			t.Fatal("the rolled-back transaction's task was written")
+		}
+		// The next commit takes position 2: the rollback left no advance.
+		next := newTask()
+		if err = writer.CreateTask(ctx, next); err != nil {
+			t.Fatal(err)
+		}
+		owners := witnessOwnership(t, writer, ws, []string{winner.ID, next.ID}, "after the next commit")
+		if len(owners) != 2 || owners[1] != winner.ID || owners[2] != next.ID {
+			t.Fatalf("after the next commit the positions are owned by %v, want 1=%s and 2=%s", owners, winner.ID, next.ID)
+		}
+	})
+}
+
+// TestSingleStoreTaskEventFirstCommitRaceIntegration: two first commits of a
+// workspace whose counter updates both match no row race on the counter
+// insert, each through one CreateTask call. The winner takes position 1.
+// The loser's insert gets the duplicate key, and the same transaction runs
+// the counter update again and takes position 2. Both calls succeed with no
+// retry: each store sends one transaction, commits it, and rolls nothing
+// back. Each position holds the complete witness set of its own task's
+// events, and both tasks are written.
+func TestSingleStoreTaskEventFirstCommitRaceIntegration(t *testing.T) {
+	writer := openOwnedStore(t)
+	firstStore, firstProxy := openProxiedStore(t)
+	secondStore, secondProxy := openProxiedStore(t)
+	ctx, ws, newTask := newCounterlessWorkspace(t, writer, "notices-race-")
 
 	// Both updates miss before either insert runs.
 	var mu sync.Mutex
@@ -503,16 +836,19 @@ func TestSingleStoreTaskEventFirstCommitRaceIntegration(t *testing.T) {
 	}
 	observeTaskEventCounterMiss.Store(&observe)
 	t.Cleanup(func() { observeTaskEventCounterMiss.Store(nil) })
+	recovered := recordCounterRecoveries(t, ws)
 
 	type racer struct {
-		st    *Store
-		proxy *statementProxy
-		task  core.Task
-		err   error
+		st     *Store
+		proxy  *statementProxy
+		before int
+		task   core.Task
+		err    error
 	}
 	racers := []*racer{{st: firstStore, proxy: firstProxy, task: newTask()}, {st: secondStore, proxy: secondProxy, task: newTask()}}
 	var wg sync.WaitGroup
 	for _, r := range racers {
+		r.before = r.proxy.count()
 		wg.Add(1)
 		go func(r *racer) {
 			defer wg.Done()
@@ -524,140 +860,133 @@ func TestSingleStoreTaskEventFirstCommitRaceIntegration(t *testing.T) {
 	if misses != 2 {
 		t.Fatalf("%d counter updates missed, want both", misses)
 	}
+	for _, r := range racers {
+		if r.err != nil {
+			t.Fatalf("a racing first commit failed: %v", r.err)
+		}
+	}
+	requireDuplicateCounterKey(t, recovered(), 1)
+
+	// The winner's preparation inserted the counter; the loser's lost the
+	// insert and ran the update again, all in its one transaction.
 	var winner, loser *racer
 	for _, r := range racers {
-		switch {
-		case r.err == nil:
+		sent := r.proxy.since(r.before)
+		t.Logf("a racing store's statements:\n%s", describeCommands(sent[0].at, sent))
+		requireOneTransaction(t, "a racing first commit", sent)
+		requireNoEventTableRead(t, sent)
+		switch prep := preparationStatements(t, sent); len(prep) {
+		case 3:
+			requirePreparation(t, "the winner", prep, counterUpdate, counterInsert, witnessInsert)
 			winner = r
-		case errors.Is(r.err, store.ErrRetryable):
+		case 4:
+			requirePreparation(t, "the loser", prep, counterUpdate, counterInsert, counterUpdate, witnessInsert)
 			loser = r
 		default:
-			t.Fatalf("a racing first commit returned %v, want nil or %v", r.err, store.ErrRetryable)
+			t.Fatalf("a racing first commit's preparation %q, want the winner's three statements or the loser's four", prep)
 		}
 	}
 	if winner == nil || loser == nil {
-		t.Fatalf("first-commit race results %v and %v, want one success and one retryable failure", racers[0].err, racers[1].err)
+		t.Fatal("the race did not have one winner and one loser")
 	}
-	attempt := loser.proxy.since(0)
-	t.Logf("the losing store's statements, its failed attempt last:\n%s", describeCommands(attempt[0].at, attempt))
-	insert := -1
-	for i, c := range attempt {
-		if strings.HasPrefix(c.text, counterInsert) {
-			insert = i
-		}
-	}
-	if insert < 1 || !strings.HasPrefix(attempt[insert-1].text, counterUpdate) {
-		t.Fatalf("the failed attempt did not send the counter update and then the counter insert")
-	}
-	for _, c := range attempt[insert+1:] {
-		if strings.Contains(c.text, "COMMIT") || isMaintenanceStatement(c.text) {
-			t.Fatalf("the failed attempt went on after its refused counter insert: %s", c.text)
-		}
-	}
-	t.Logf("the failed attempt sent %d maintenance statements before its rollback", countMaintenance(attempt[insert-1:]))
-	if _, err := writer.GetTask(ctx, loser.task.ID); err == nil {
-		t.Fatal("the losing first commit's task was written")
-	}
-	if counter, _ := taskEventPosition(t, writer, ws); counter != 1 {
-		t.Fatalf("after the race the counter is %d, want the winner's 1", counter)
-	}
-	if rows := witnessRows(t, writer, ws); len(rows) != 1 || len(rows[1]) == 0 {
-		t.Fatalf("after the race the witnesses are %v, want only the winner's at position 1", rows)
-	}
-	winnerWitnesses := witnessRows(t, writer, ws)[1]
 
-	// The retry of the whole operation advances the winner's committed row.
-	retryBefore := loser.proxy.count()
-	if err := loser.st.CreateTask(ctx, loser.task); err != nil {
-		t.Fatalf("retry of the losing first commit: %v", err)
+	if counter, _ := taskEventPosition(t, writer, ws); counter != 2 {
+		t.Fatalf("after the race the counter is %d, want 2", counter)
 	}
-	retry := loser.proxy.since(retryBefore)
-	requirePreparation(t, "retry", preparationStatements(t, retry), counterUpdate, witnessInsert)
-	if p := requireCounterWitnessed(t, writer, ws, len(winnerWitnesses), "retry"); p != 2 {
-		t.Fatalf("the retry took position %d, want 2", p)
+	owners := witnessOwnership(t, writer, ws, []string{winner.task.ID, loser.task.ID}, "after the race")
+	if len(owners) != 2 || owners[1] != winner.task.ID || owners[2] != loser.task.ID {
+		t.Fatalf("after the race the positions are owned by %v, want 1=%s (winner) and 2=%s (loser)", owners, winner.task.ID, loser.task.ID)
 	}
-	rows := witnessRows(t, writer, ws)
-	if fmt.Sprint(rows[1]) != fmt.Sprint(winnerWitnesses) {
-		t.Fatalf("the retry changed position 1's witnesses: %v -> %v", winnerWitnesses, rows[1])
-	}
-	for _, task := range []core.Task{winner.task, loser.task} {
-		if _, err := writer.GetTask(ctx, task.ID); err != nil {
-			t.Fatalf("task %s after the race and retry: %v", task.ID, err)
+	for _, r := range racers {
+		if _, err := writer.GetTask(ctx, r.task.ID); err != nil {
+			t.Fatalf("task %s after the race: %v", r.task.ID, err)
 		}
-	}
-	// Each committed position's witnesses name its own events.
-	var joined int
-	if err := writer.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM task_event_witnesses w JOIN events_columnstore e ON e.event_shard_key=w.event_shard_key AND e.workspace_id=w.workspace_id AND e.id=w.event_id WHERE w.workspace_id=?`, ws).Scan(&joined); err != nil || joined != countWitnesses(rows) {
-		t.Fatalf("witnesses joining their events=%d err=%v, want all %d", joined, err, countWitnesses(rows))
 	}
 }
 
 // TestSingleStoreTaskEventConcurrentFirstCommitsIntegration: many first
-// task commits of one new workspace run at once. Every lost counter insert
-// returns the retryable store error, the caller retries, and the committed
-// transactions take distinct positions 1..n, each with its own witnesses.
+// task commits of one new workspace run at once, each through one
+// CreateTask call. Every counter update misses before any insert runs. One
+// insert wins, every other insert loses and its transaction runs the
+// counter update again, and every call succeeds with no retry. The
+// committed transactions take positions 1..n, each with the complete
+// witness set of its own task's events, and every task is written.
 func TestSingleStoreTaskEventConcurrentFirstCommitsIntegration(t *testing.T) {
 	writer := openOwnedStore(t)
-	ws := "notices-first-many-" + core.NewTaskID()
-	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), ws)
-	if _, err := writer.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: ws, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}); err != nil {
-		t.Fatal(err)
-	}
+	ctx, ws, newTask := newCounterlessWorkspace(t, writer, "notices-first-many-")
 	const creators = 8
-	var wg sync.WaitGroup
+
+	// Every creator's update misses before any insert runs.
 	var mu sync.Mutex
-	retries := 0
-	errs := make(chan error, creators)
-	start := make(chan struct{})
-	for i := 0; i < creators; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			id := core.NewTaskID()
-			task := core.Task{ID: id, Workspace: ws, Repo: "repo", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, CreatedAt: time.Now().UTC()}
-			<-start
-			for attempt := 0; ; attempt++ {
-				err := writer.CreateTask(ctx, task)
-				if err == nil {
-					return
-				}
-				if !errors.Is(err, store.ErrRetryable) || attempt == 20 {
-					errs <- err
-					return
-				}
-				mu.Lock()
-				retries++
-				mu.Unlock()
-			}
-		}()
+	misses := 0
+	allMissed := make(chan struct{})
+	observe := func(missed string) {
+		if missed != ws {
+			return
+		}
+		mu.Lock()
+		misses++
+		if misses == creators {
+			close(allMissed)
+		}
+		mu.Unlock()
+		select {
+		case <-allMissed:
+		case <-time.After(time.Minute):
+		}
 	}
-	close(start)
+	observeTaskEventCounterMiss.Store(&observe)
+	t.Cleanup(func() { observeTaskEventCounterMiss.Store(nil) })
+	recovered := recordCounterRecoveries(t, ws)
+
+	tasks := make([]core.Task, creators)
+	ids := make([]string, creators)
+	for i := range tasks {
+		tasks[i] = newTask()
+		ids[i] = tasks[i].ID
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, creators)
+	for _, task := range tasks {
+		wg.Add(1)
+		go func(task core.Task) {
+			defer wg.Done()
+			if err := writer.CreateTask(ctx, task); err != nil {
+				errs <- err
+			}
+		}(task)
+	}
 	wg.Wait()
+	observeTaskEventCounterMiss.Store(nil)
 	close(errs)
 	for err := range errs {
-		t.Fatal(err)
+		t.Errorf("a concurrent first commit failed: %v", err)
 	}
-	t.Logf("%d concurrent first commits, %d retryable conflicts retried", creators, retries)
-	counter, _ := taskEventPosition(t, writer, ws)
-	if counter != creators {
+	if t.Failed() {
+		t.FailNow()
+	}
+	if misses != creators {
+		t.Fatalf("%d counter updates missed, want all %d", misses, creators)
+	}
+	requireDuplicateCounterKey(t, recovered(), creators-1)
+	t.Logf("%d concurrent first commits, %d recovered a lost counter insert in their own transaction", creators, creators-1)
+
+	if counter, _ := taskEventPosition(t, writer, ws); counter != creators {
 		t.Fatalf("counter %d after %d task creations, want one position each", counter, creators)
 	}
-	rows := witnessRows(t, writer, ws)
-	ids := map[int64]bool{}
+	owners := witnessOwnership(t, writer, ws, ids, "after the concurrent first commits")
 	for position := int64(1); position <= creators; position++ {
-		if len(rows[position]) == 0 {
-			t.Fatalf("position %d has no witness: %v", position, rows)
-		}
-		for _, id := range rows[position] {
-			if ids[id] {
-				t.Fatalf("event %d is witnessed at two positions", id)
-			}
-			ids[id] = true
+		if owners[position] == "" {
+			t.Fatalf("position %d has no witness: %v", position, owners)
 		}
 	}
-	var events int
-	if err := writer.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=?`, ws).Scan(&events); err != nil || events != len(ids) {
-		t.Fatalf("committed task events=%d err=%v, want one witness each (%d)", events, err, len(ids))
+	if len(owners) != creators {
+		t.Fatalf("positions %v, want exactly 1..%d", owners, creators)
+	}
+	for _, id := range ids {
+		if _, err := writer.GetTask(ctx, id); err != nil {
+			t.Fatalf("task %s after the concurrent first commits: %v", id, err)
+		}
 	}
 }
 
