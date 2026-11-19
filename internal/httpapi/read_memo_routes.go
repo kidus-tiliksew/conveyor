@@ -95,7 +95,7 @@ func (s *Server) memoizedRead(w http.ResponseWriter, r *http.Request, kind strin
 		if err != nil {
 			return readMemoValue{}, err
 		}
-		horizon := &readMemoHorizon{now: now, until: memoReadUntil(now)}
+		horizon := newReadMemoHorizon(now)
 		reads := &readinessReads{}
 		ctx = context.WithValue(ctx, readMemoHorizonKey{}, horizon)
 		ctx = context.WithValue(ctx, readinessReadsKey{}, reads)
@@ -107,7 +107,7 @@ func (s *Server) memoizedRead(w http.ResponseWriter, r *http.Request, kind strin
 		if response.status != http.StatusOK {
 			return readMemoValue{}, response
 		}
-		value := readMemoValue{body: response.body.Bytes(), validUntil: horizon.until, header: map[string]string{}}
+		value := readMemoValue{body: response.body.Bytes(), validUntil: horizon.until, deadline: horizon.deadline, header: map[string]string{}}
 		for key := range response.header {
 			value.header[key] = response.header.Get(key)
 		}

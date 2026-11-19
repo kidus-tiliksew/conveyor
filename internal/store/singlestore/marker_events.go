@@ -14,9 +14,10 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// markerTaskChunk bounds one per-task marker statement. Each chunk statement
-// carries one top-one arm per task, so the arms stay below the statement
-// limit and the read stays proportional to the requested tasks
+// markerTaskChunk is the number of tasks one marker statement reads: the
+// latest-summary read and the fold read each bind fixed-width lists of
+// exactly this many task IDs, so every chunk shares one statement text and
+// the read stays proportional to the requested tasks
 // (component-web-task-surfaces, Activity and list reads).
 var markerTaskChunk = 100
 
@@ -78,19 +79,47 @@ func (s *Store) markerTaskRows(ctx context.Context, taskIDs []string) ([]markerR
 	return out, rows.Err()
 }
 
+// markerLatestSummariesQuery reads, for one chunk of tasks, one row per task:
+// its newest (at,id) event tuple, the stage of its newest job by
+// (started_at,id), and the stage of its newest claimed order by
+// (execution_started_at,created_at,id). Each part is one grouped read of the
+// chunk's rows inside the database, joined to the chunk's task rows. Every
+// list binds exactly markerTaskChunk placeholders, so every chunk shares one
+// statement text and SingleStore compiles one plan for the read. One arm per
+// task with three LIMIT 1 subqueries, in place of the grouped reads, ran for
+// minutes per chunk on SingleStore, longer than the response memo lifetime
+// (component-web-task-surfaces, Activity and list reads; DEC-140(3)).
 func markerLatestSummariesQuery(ws string, taskIDs []string) (string, []any) {
-	arms := make([]string, 0, len(taskIDs))
-	args := make([]any, 0, len(taskIDs)*8)
-	for _, id := range taskIDs {
-		arms = append(arms, `(SELECT t.task_id,e.at,e.id,j.stage AS job_stage,c.stage AS claim_stage FROM (SELECT ? AS task_id) t LEFT JOIN (SELECT at,id FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=? ORDER BY at DESC,id DESC LIMIT 1) e ON 1=1 LEFT JOIN (SELECT stage FROM jobs WHERE workspace_id=? AND task_id=? ORDER BY started_at DESC,id DESC LIMIT 1) j ON 1=1 LEFT JOIN (SELECT stage FROM work_orders WHERE workspace_id=? AND task_id=? AND state='claimed' ORDER BY execution_started_at DESC,created_at DESC,id DESC LIMIT 1) c ON 1=1)`)
-		args = append(args, id, ws, id, id, ws, id, ws, id)
+	b := &markerBinder{}
+	events := func(prefix string) string {
+		return prefix + `workspace_id=` + b.bind(ws) + ` AND ` + b.fixedIn(prefix+"event_shard_key", taskIDs) + ` AND ` + b.fixedIn(prefix+"task_id", taskIDs)
 	}
-	return `SELECT per_task.task_id,per_task.at,per_task.id,per_task.job_stage,per_task.claim_stage FROM (` + strings.Join(arms, " UNION ALL ") + `) per_task`, args
+	query := `SELECT t.id,newest_event.at,newest_event.id,newest_job.stage,newest_claim.stage FROM tasks t
+			LEFT JOIN (
+				SELECT e.task_id,e.at,MAX(e.id) AS id FROM events_columnstore e JOIN (
+					SELECT task_id,MAX(at) AS at FROM events_columnstore WHERE ` + events("") + ` GROUP BY task_id
+				) newest_at ON newest_at.task_id=e.task_id AND newest_at.at=e.at
+				WHERE ` + events("e.") + ` GROUP BY e.task_id,e.at
+			) newest_event ON newest_event.task_id=t.id
+			LEFT JOIN (
+				SELECT task_id,stage FROM (
+					SELECT task_id,stage,ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY started_at DESC,id DESC) AS position
+					FROM jobs WHERE workspace_id=` + b.bind(ws) + ` AND ` + b.fixedIn("task_id", taskIDs) + `
+				) ranked_jobs WHERE position=1
+			) newest_job ON newest_job.task_id=t.id
+			LEFT JOIN (
+				SELECT task_id,stage FROM (
+					SELECT task_id,stage,ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY execution_started_at DESC,created_at DESC,id DESC) AS position
+					FROM work_orders WHERE workspace_id=` + b.bind(ws) + ` AND state='claimed' AND ` + b.fixedIn("task_id", taskIDs) + `
+				) ranked_claims WHERE position=1
+			) newest_claim ON newest_claim.task_id=t.id
+			WHERE t.workspace_id=` + b.bind(ws) + ` AND ` + b.fixedIn("t.id", taskIDs)
+	return b.finish(query)
 }
 
 // markerLatestSummaries folds the latest claim stage, job stage, and event
-// tuple into the rows. It reads at most one row per requested task and
-// never ranks a task's full history.
+// tuple into the rows. It reads one row per requested task: the database
+// groups each task's history and returns only its newest tuple.
 func (s *Store) markerLatestSummaries(ctx context.Context, rows []markerRow) error {
 	byTask := make(map[string]*markerRow, len(rows))
 	ids := make([]string, len(rows))

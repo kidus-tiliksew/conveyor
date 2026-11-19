@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
@@ -52,15 +53,52 @@ func loadedConfiguration(ctx context.Context, workspaceID string) (loadedRequest
 
 type readMemoHorizonKey struct{}
 
-// readMemoHorizon belongs to one refresh, never to a cached response.
+// readMemoHorizon belongs to one refresh, never to a cached response. until
+// ends the tag's and the entry's validity: the earliest of the memo lifetime,
+// the next UTC minute, every display instant such as a proposal's next age
+// second, and every real projection deadline. deadline is the earliest real
+// projection deadline the refresh read, such as a stated deadline, the review
+// lease horizon, an order time, or a readiness expiry: an instant after which
+// a fresh projection can state something different. The lifetime, the minute
+// boundary, and display instants end only the tag and never lower deadline,
+// so a slow build is not read again because one of them passed
+// (component-next-action invariant 58).
 type readMemoHorizon struct {
-	now   time.Time
-	until time.Time
+	now      time.Time
+	until    time.Time
+	deadline time.Time
 }
 
+// newReadMemoHorizon starts a memo refresh at now.
+func newReadMemoHorizon(now time.Time) *readMemoHorizon {
+	return &readMemoHorizon{now: now, until: memoReadUntil(now)}
+}
+
+// include records a real projection deadline: it ends the tag and the entry
+// and can make readMemo.get build again.
 func (h *readMemoHorizon) include(until time.Time) {
+	if !until.After(h.now) {
+		return
+	}
+	h.expire(until)
+	if h.deadline.IsZero() || until.Before(h.deadline) {
+		h.deadline = until
+	}
+}
+
+// expire records an instant that ends only the tag and the entry.
+func (h *readMemoHorizon) expire(until time.Time) {
 	if until.After(h.now) && (h.until.IsZero() || until.Before(h.until)) {
 		h.until = until
+	}
+}
+
+// memoExpiry bounds the enclosing read's tag and memo entry by a display
+// instant, such as a proposal's next age second, without making it a
+// projection deadline.
+func memoExpiry(ctx context.Context, until time.Time) {
+	if h, ok := ctx.Value(readMemoHorizonKey{}).(*readMemoHorizon); ok {
+		h.expire(until)
 	}
 }
 
@@ -70,11 +108,29 @@ func memoHorizon(ctx context.Context, until time.Time) {
 	}
 }
 
+// memoEntryHorizon bounds an enclosing read by a memo value it used. The
+// value's validity ends the enclosing tag's validity, but only the value's
+// own real deadline counts as a projection deadline: the memo lifetime that
+// capped the value is not one.
+func memoEntryHorizon(ctx context.Context, value readMemoValue) {
+	h, ok := ctx.Value(readMemoHorizonKey{}).(*readMemoHorizon)
+	if !ok {
+		return
+	}
+	h.expire(value.validUntil)
+	if !value.deadline.IsZero() {
+		h.include(value.deadline)
+	}
+}
+
 type readMemoValue struct {
 	body       []byte
 	etag       string
 	validUntil time.Time
-	header     map[string]string
+	// deadline is the build's earliest real projection instant
+	// (readMemoHorizon.deadline). Zero means the build read none.
+	deadline time.Time
+	header   map[string]string
 	// unstored marks a result whose inputs changed during its build: it
 	// answers its own caller once, carries no ETag, and is never stored.
 	unstored bool
@@ -140,6 +196,21 @@ func (s *Server) UseReadMemoClock(clock func() time.Time) {
 	if s.readMemo != nil {
 		s.readMemo.clock = clock
 	}
+}
+
+// readMemoBudgetKey carries one request's readMemoBudget.
+type readMemoBudgetKey struct{}
+
+// readMemoBudget counts the deadline rebuilds one request has spent.
+type readMemoBudget struct{ spent atomic.Int32 }
+
+// spend takes one deadline rebuild and reports whether one was left.
+func (b *readMemoBudget) spend() bool {
+	if b.spent.Add(1) > readMemoRebuilds-1 {
+		b.spent.Add(-1)
+		return false
+	}
+	return true
 }
 
 // readMemoRebuilds bounds how many times one caller builds again because a
@@ -232,6 +303,14 @@ func (m *readMemo) drainLocked() {
 // already authorized scope; errors and results invalidated during a build are
 // never stored. The returned bytes and headers are private to the caller.
 func (m *readMemo) get(ctx context.Context, key string, build func(context.Context, time.Time) (readMemoValue, error)) (readMemoValue, error) {
+	// One request shares one budget of deadline rebuilds across every memo
+	// read it nests, so an enclosing build and the inbox read inside it do
+	// not multiply their rebuilds.
+	budget, ok := ctx.Value(readMemoBudgetKey{}).(*readMemoBudget)
+	if !ok {
+		budget = &readMemoBudget{}
+		ctx = context.WithValue(ctx, readMemoBudgetKey{}, budget)
+	}
 	builds := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -283,7 +362,9 @@ func (m *readMemo) get(ctx context.Context, key string, build func(context.Conte
 		if value.validUntil.After(now.Add(readMemoLifetime)) {
 			value.validUntil = now.Add(readMemoLifetime)
 		}
-		expired := !m.now().Before(value.validUntil)
+		answered := m.now()
+		expired := !answered.Before(value.validUntil)
+		deadlinePassed := !value.deadline.IsZero() && !answered.Before(value.deadline)
 		if err == nil && !changed && !expired && !value.unstored {
 			m.storeLocked(key, value)
 		}
@@ -298,6 +379,27 @@ func (m *readMemo) get(ctx context.Context, key string, build func(context.Conte
 		if changed && builds >= readMemoRebuilds {
 			value.etag, value.unstored = "", true
 			return value.clone(), nil
+		}
+		// A build that outlived its horizon is never stored or tagged. When
+		// only the memo lifetime, the minute boundary, or a display instant
+		// passed during the build, it answers its caller once, untagged,
+		// projected at the build's start: an uncached render also projects
+		// at the request's start, so this answer promises no freshness past
+		// that instant. When a real projection deadline passed during the
+		// build, such as a review lease or a stated deadline, even one later
+		// than the lifetime, the memo builds again at a fresh instant. One
+		// request builds again for deadlines at most readMemoRebuilds-1
+		// times in all its nested memo reads, so it renders a memo read at
+		// most readMemoRebuilds times for deadlines, as a per-task statement
+		// read projects at most statementReadAttempts times. The last build
+		// answers once, untagged. Building again after every expired build
+		// repeated the whole read for as long as each build outlived the
+		// lifetime (component-next-action invariant 58; DEC-140(3)).
+		if expired && !changed {
+			if !deadlinePassed || !budget.spend() {
+				value.etag, value.unstored = "", true
+				return value.clone(), nil
+			}
 		}
 		if changed || expired {
 			continue

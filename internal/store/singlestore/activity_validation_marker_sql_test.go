@@ -232,3 +232,37 @@ func TestMarkerProjectPayload(t *testing.T) {
 		}
 	}
 }
+
+// TestMarkerLatestSummariesQueryShape proves the latest-summary read of every
+// chunk size is one statement text with one fixed-width list per task
+// column, so SingleStore compiles one plan for it, and that it groups each
+// table once and joins the groups to the task rows instead of carrying one
+// arm per task.
+func TestMarkerLatestSummariesQueryShape(t *testing.T) {
+	var text string
+	for _, size := range []int{1, 7, markerTaskChunk} {
+		ids := make([]string, size)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("task-%03d", i)
+		}
+		query, args := markerLatestSummariesQuery("ws", ids)
+		if text == "" {
+			text = query
+		} else if query != text {
+			t.Fatalf("chunk of %d tasks changed the statement text", size)
+		}
+		// Four event lists, one job list, one claim list, and one task list,
+		// each with its workspace.
+		if want := 7*markerTaskChunk + 5; len(args) != want || strings.Count(query, "?") != want {
+			t.Fatalf("chunk of %d tasks binds %d arguments and %d placeholders, want %d", size, len(args), strings.Count(query, "?"), want)
+		}
+		for i, arg := range args {
+			if s, ok := arg.(string); ok && s != "ws" && !strings.HasPrefix(s, "task-") {
+				t.Fatalf("argument %d is %q", i, s)
+			}
+		}
+	}
+	if strings.Count(text, "LEFT JOIN") != 3 || strings.Count(text, "GROUP BY") != 2 || strings.Contains(text, "UNION") || strings.Contains(text, "ON 1=1") {
+		t.Fatalf("latest-summary read is not three grouped reads joined to the task rows:\n%s", text)
+	}
+}
