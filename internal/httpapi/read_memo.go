@@ -232,7 +232,7 @@ func (m *readMemo) drainLocked() {
 // already authorized scope; errors and results invalidated during a build are
 // never stored. The returned bytes and headers are private to the caller.
 func (m *readMemo) get(ctx context.Context, key string, build func(context.Context, time.Time) (readMemoValue, error)) (readMemoValue, error) {
-	builds := 0
+	builds, expiredBuilds := 0, 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return readMemoValue{}, err
@@ -306,9 +306,12 @@ func (m *readMemo) get(ctx context.Context, key string, build func(context.Conte
 		// projects past that deadline. Building again after every expired
 		// build repeated the whole read for as long as each build outlived
 		// the lifetime (component-next-action invariant 58; DEC-140(3)).
-		if expired && !changed && (builds > 1 || !value.validUntil.Before(now.Add(readMemoLifetime))) {
-			value.etag, value.unstored = "", true
-			return value.clone(), nil
+		if expired && !changed {
+			expiredBuilds++
+			if expiredBuilds > 1 || !value.validUntil.Before(now.Add(readMemoLifetime)) {
+				value.etag, value.unstored = "", true
+				return value.clone(), nil
+			}
 		}
 		if changed || expired {
 			continue

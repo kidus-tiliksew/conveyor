@@ -305,6 +305,38 @@ func TestReadMemoBoundsRebuildsAfterUnrelatedNotices(t *testing.T) {
 	}
 }
 
+// TestReadMemoRetriesADeadlineExpiryAfterANotice proves a notice-driven
+// rebuild does not use up the one build that projects past a deadline: the
+// first build a notice discards, the second build expires at a deadline
+// inside the lifetime, and the third build projects past that deadline and
+// answers untagged.
+func TestReadMemoRetriesADeadlineExpiryAfterANotice(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 10, 0, time.UTC)
+	m := &readMemo{clock: func() time.Time { return now }}
+	hub := changes.NewHub()
+	m.subscribe(hub)
+	var instants []time.Time
+	build := func(_ context.Context, at time.Time) (readMemoValue, error) {
+		instants = append(instants, at)
+		if len(instants) == 1 {
+			hub.Publish(changes.Notice{Kind: changes.Workspace, Workspace: "another-workspace"})
+		} else {
+			now = now.Add(readMemoLifetime + time.Second)
+		}
+		return readMemoValue{body: []byte("body"), etag: `"tag"`, validUntil: at.Add(2 * time.Second)}, nil
+	}
+	value, err := m.get(context.Background(), "key", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instants) != 3 || value.etag != "" || !value.unstored || len(m.entries) != 0 {
+		t.Fatalf("builds=%d etag=%q unstored=%v entries=%d", len(instants), value.etag, value.unstored, len(m.entries))
+	}
+	if !instants[2].After(instants[1].Add(2 * time.Second)) {
+		t.Fatalf("the last build projected at %s, not past the deadline %s", instants[2], instants[1].Add(2*time.Second))
+	}
+}
+
 // TestReadMemoAnswersAnExpiredBuildOnce proves a build that outlives the
 // memo lifetime is not built again: it answers its caller once, untagged and
 // unstored, so a slow read is not repeated for as long as each build takes
