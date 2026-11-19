@@ -469,6 +469,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"TaskDetailReads", true, runTaskDetailReads},
 		{"ActivityMarkerBounds", true, RunActivityMarkerBoundsConformance},
 		{"ActivityMarkerHorizon", true, RunActivityMarkerHorizonConformance},
+		{"ActivityMarkerReviewRounds", true, RunActivityMarkerReviewRoundsConformance},
 		{"RequirementDetailReads", true, runRequirementDetailReads},
 		{"DocumentVersionSummaries", true, runDocumentVersionSummaries},
 		{"RequirementEventReads", true, RunRequirementEventReads},
