@@ -15,6 +15,9 @@ export type WorkspaceChangeRefreshOptions = {
   refreshActivity: (cold: boolean) => void
   // Whether the route is a Blueprints route, the only place blueprints refresh.
   blueprintsActive: () => boolean
+  // Whether a crates route is open; crate reads refresh only there
+  // (component-crates invariant 18).
+  cratesActive?: () => boolean
 }
 
 type Batch = { connected: boolean; allTasks: boolean; taskIds: Set<string> }
@@ -100,6 +103,8 @@ export function startWorkspaceChangeRefresh(
     refreshQueries(['task-map', workspace])
     // Off the Blueprints routes a task sheet keeps the five-minute slow read.
     if (options.blueprintsActive()) refreshQueries(['blueprints', workspace])
+    // A member task's change moves the crate's counts, rows, and activity.
+    if (options.cratesActive?.()) refreshQueries(['crates', workspace])
     // `['task', workspace]` is the prefix of every taskDetailQueryKey entry.
     if (connected || allTasks) {
       refreshQueries(['task', workspace])

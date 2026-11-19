@@ -246,7 +246,91 @@ export interface Task {
   children?: TaskRelation[]
   context?: TaskContext
   github?: GitHubLifecycle
+  // The crate the task belongs to, with its current name (component-crates,
+  // Public surfaces). Absent when the task is in no crate.
+  crate?: TaskCrate | null
   created_at: string
+}
+
+export interface TaskCrate {
+  id: string
+  name: string
+}
+
+// A crate row from `GET /v1/crates` (component-crates, Public surfaces). The
+// counts and `shipped` are the server's (invariant 9); the page never
+// recomputes them.
+export interface Crate {
+  id: string
+  name: string
+  target_date: string | null
+  state: 'open' | 'closed'
+  shipped: boolean
+  created_by: string
+  created_at: string
+  closed_at: string | null
+  open_task_count: number
+  merged_task_count: number
+  total_task_count: number
+}
+
+// One declared or undeclared requirement on the crate read, with the number
+// of member tasks that carry it (invariant 11).
+export interface CrateRequirement {
+  id: string
+  title: string
+  task_count: number
+}
+
+export interface CratePullRequest {
+  number?: number
+  url?: string
+  repository?: string
+}
+
+// One member task on the crate read (req-crates AC-5.3). `next_action` comes
+// from the projection `GET /v1/tasks` uses and is printed verbatim.
+export interface CrateTask {
+  id: string
+  title: string
+  state: TaskState
+  branch: string
+  pull_request: CratePullRequest | null
+  next_action: NextActionCompact
+}
+
+export interface CrateDetail extends Crate {
+  requirements: CrateRequirement[]
+  undeclared_requirements: CrateRequirement[]
+  tasks: CrateTask[]
+}
+
+export type CrateActivityKind =
+  | 'task.created'
+  | 'task.crate_set'
+  | 'pull_request.opened'
+  | 'review.round_completed'
+  | 'merge.confirmed'
+  | 'merge.reconciled'
+  | 'task.cancelled'
+
+// One member task event on `GET /v1/crates/{id}/activity`, newest first
+// (component-crates invariant 13).
+export interface CrateActivityEvent {
+  id: number
+  kind: CrateActivityKind | string
+  at: string
+  actor_id: string
+  actor_role: string
+  task_id: string
+  task_title: string
+  pull_request?: CratePullRequest
+  verdict?: string
+}
+
+export interface CrateActivityPage {
+  events: CrateActivityEvent[]
+  next_cursor?: string
 }
 
 // The four plan states a task carries (req-task-plan-state REQ-1).

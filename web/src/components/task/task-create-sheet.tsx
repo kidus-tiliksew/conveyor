@@ -1,12 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
-import { Paperclip, X } from 'lucide-react'
+import { useNavigate, useSearch } from '@tanstack/react-router'
+import { Check, Package, Paperclip, Plus, X } from 'lucide-react'
 import { useRef, useState } from 'react'
-import { createTask, fetchOpenTasks, fetchRequirements, fetchSystemDesigns, TaskIntakeError } from '../../lib/api'
+import {
+  createTask,
+  fetchCrate,
+  fetchOpenTasks,
+  fetchRequirements,
+  fetchSystemDesigns,
+  TaskIntakeError,
+} from '../../lib/api'
 import { planStateLabels } from '../../lib/contracts'
-import type { PlanState } from '../../lib/types'
-import { formatBytes } from '../../lib/utils'
+import { crateQueryKey } from '../../lib/query-keys'
+import type { CrateDetail, PlanState } from '../../lib/types'
+import { cn, formatBytes } from '../../lib/utils'
 import { useWorkspace, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import type { BoardSearch } from '../board/board-search'
 import { Button } from '../ui/button'
 import { Input, Select, Textarea } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
@@ -36,6 +45,14 @@ export function TaskCreateSheet() {
   const { data: workspace } = useWorkspace()
   const { workspace: workspaceId } = useWorkspaceSelection()
   const repos = workspace?.repos ?? []
+  // Intake opened from a crate's page names that crate (component-crates
+  // invariant 17; req-crates AC-3.2).
+  const { crate: crateId } = useSearch({ strict: false }) as BoardSearch
+  const crate = useQuery({
+    queryKey: crateQueryKey(workspaceId, crateId ?? ''),
+    queryFn: () => fetchCrate(workspaceId, crateId ?? ''),
+    enabled: Boolean(workspaceId && crateId),
+  })
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const tasks = useQuery({
     queryKey: ['tasks', workspaceId, 'dependency-candidates'],
@@ -102,8 +119,20 @@ export function TaskCreateSheet() {
     : chosenPlanState || defaultPlanState
   // Intake is the Board's `create` parameter, so closing drops it and leaves
   // whichever view the Board was showing.
+  // Opened from a crate, closing returns to that crate's page.
   const close = () =>
-    void navigate({ to: '/w/$workspaceId/', params: { workspaceId }, search: ({ create: _create, ...prev }) => prev })
+    crateId
+      ? void navigate({ to: '/w/$workspaceId/crates/$crateId', params: { workspaceId, crateId } })
+      : void navigate({
+          to: '/w/$workspaceId/',
+          params: { workspaceId },
+          search: ({ create: _create, crate: _crate, ...prev }) => prev,
+        })
+  // A closed crate takes no new task (req-crates AC-2.1), so the form sends no
+  // request that names it. "Not in a crate" creates the task without it.
+  const crateClosed = Boolean(crateId) && crate.data?.state === 'closed'
+  const leaveCrate = () =>
+    void navigate({ to: '/w/$workspaceId/', params: { workspaceId }, search: ({ crate: _crate, ...prev }) => prev })
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -121,6 +150,7 @@ export function TaskCreateSheet() {
           ...(dependsOn.length ? { depends_on: dependsOn } : {}),
           ...(requirementIds.length ? { requirement_ids: requirementIds } : {}),
           ...(systemDesignIds.length ? { system_design_ids: systemDesignIds } : {}),
+          ...(crateId ? { crate_id: crateId } : {}),
         },
         files,
         intakeKey.current,
@@ -129,11 +159,12 @@ export function TaskCreateSheet() {
     },
     onSuccess: (task) => {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
+      if (crateId) void queryClient.invalidateQueries({ queryKey: ['crates', workspaceId] })
       // The new task opens in the Board's sheet over the view intake came from.
       void navigate({
         to: '/w/$workspaceId/tasks/$taskId',
         params: { workspaceId, taskId: task.id },
-        search: ({ create: _create, ...prev }) => prev,
+        search: ({ create: _create, crate: _crate, ...prev }) => prev,
       })
     },
     onError: (error) => {
@@ -152,16 +183,32 @@ export function TaskCreateSheet() {
     })
   }
   // Only confirmed documents are attachable, and the two tiers stay separate
-  // groups so the create payload still carries distinct ID arrays.
+  // groups so the create payload still carries distinct ID arrays. From a
+  // crate, its declared requirements lead as their own group, and none is
+  // selected until the operator picks it (req-crates AC-3.1, AC-3.2).
+  const declared = crate.data?.requirements ?? []
+  const declaredIds = new Set(declared.map((item) => item.id))
   const contextGroups: ContextGroup[] = [
+    ...(declared.length > 0
+      ? [
+          {
+            key: 'crate-requirements',
+            label: `Declared by ${crate.data?.name}`,
+            options: declared.map((item) => ({ id: item.id, title: item.title })),
+            selected: requirementIds.filter((id) => declaredIds.has(id)),
+            onChange: (ids: string[]) =>
+              setRequirementIds([...requirementIds.filter((id) => !declaredIds.has(id)), ...ids]),
+          },
+        ]
+      : []),
     {
       key: 'requirements',
-      label: 'Requirements',
+      label: declared.length > 0 ? 'Other requirements' : 'Requirements',
       options: (requirements.data ?? [])
-        .filter((item) => item.current_version != null)
+        .filter((item) => item.current_version != null && !declaredIds.has(item.requirement.id))
         .map((item) => ({ id: item.requirement.id, title: item.requirement.title })),
-      selected: requirementIds,
-      onChange: setRequirementIds,
+      selected: requirementIds.filter((id) => !declaredIds.has(id)),
+      onChange: (ids: string[]) => setRequirementIds([...requirementIds.filter((id) => declaredIds.has(id)), ...ids]),
     },
     {
       key: 'system-design',
@@ -207,6 +254,21 @@ export function TaskCreateSheet() {
 
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
         <EmptyRepositoryNotice />
+        {crateId && (
+          <CrateIntakeNotice
+            crateId={crateId}
+            crate={crate.data}
+            loading={crate.isPending}
+            failed={crate.error != null}
+            selected={requirementIds}
+            onToggle={(id) =>
+              setRequirementIds((current) =>
+                current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+              )
+            }
+            onLeave={leaveCrate}
+          />
+        )}
         <Field
           label="Description"
           hint="AI generates the task title from this context, which also becomes the triage and plan prompt."
@@ -447,7 +509,14 @@ export function TaskCreateSheet() {
         <div className="flex items-center justify-between gap-3">
           <p className="text-xs text-faint">Dispatches after every attachment is stored.</p>
           <Button
-            disabled={!body.trim() || !repoName || repos.length === 0 || mutation.isPending || baseCommitError !== ''}
+            disabled={
+              !body.trim() ||
+              !repoName ||
+              repos.length === 0 ||
+              mutation.isPending ||
+              baseCommitError !== '' ||
+              crateClosed
+            }
             onClick={() => mutation.mutate()}
           >
             {mutation.isPending ? 'Creating…' : 'Create task'}
@@ -465,5 +534,104 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {children}
       {hint && <span className="mt-1 block text-xs text-faint">{hint}</span>}
     </div>
+  )
+}
+
+// Names the crate a new task joins, and lists the requirements the crate
+// declares so the operator can pick the ones this task serves. None starts
+// picked (req-crates AC-3.2).
+function CrateIntakeNotice({
+  crateId,
+  crate,
+  loading,
+  failed,
+  selected,
+  onToggle,
+  onLeave,
+}: {
+  crateId: string
+  crate?: CrateDetail
+  loading: boolean
+  failed: boolean
+  selected: string[]
+  onToggle: (id: string) => void
+  onLeave: () => void
+}) {
+  const declared = crate?.requirements ?? []
+  return (
+    <section
+      aria-label="Crate"
+      data-intake-crate={crateId}
+      className="rounded-lg border border-primary/25 bg-primary-soft/40 px-3.5 py-3"
+    >
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md bg-primary-soft text-primary">
+          <Package aria-hidden className="size-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-muted">This task joins the crate</p>
+          <p className="truncate text-sm font-medium" data-intake-crate-name>
+            {crate?.name ?? (loading ? 'Loading…' : crateId)}
+          </p>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="-mr-1.5 shrink-0"
+          aria-label="Create this task outside the crate"
+          title="Create this task outside the crate"
+          onClick={onLeave}
+        >
+          <X />
+          <span className="max-sm:sr-only">Not in a crate</span>
+        </Button>
+      </div>
+      {failed && (
+        <p className="mt-2 text-xs text-failure">This crate did not load. The task can still join it by ID.</p>
+      )}
+      {crate?.state === 'closed' && (
+        <p className="mt-2 text-xs text-failure">
+          This crate is closed, so a new task cannot join it. Choose "Not in a crate" to create the task without it.
+        </p>
+      )}
+      {declared.length > 0 && (
+        <div className="mt-3 border-t border-primary/15 pt-2.5">
+          <p className="text-xs text-muted">
+            Pick the crate's requirements this task serves. None is attached unless you pick it.
+          </p>
+          <ul aria-label="Requirements the crate declares" className="mt-2 flex flex-wrap gap-1.5">
+            {declared.map((item) => {
+              const picked = selected.includes(item.id)
+              return (
+                <li key={item.id} className="min-w-0 max-w-full">
+                  <button
+                    type="button"
+                    aria-pressed={picked}
+                    title={item.id}
+                    onClick={() => onToggle(item.id)}
+                    className={cn(
+                      'inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors',
+                      picked
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-border bg-card text-foreground hover:border-edge',
+                    )}
+                  >
+                    {picked ? (
+                      <Check aria-hidden className="size-3 shrink-0" />
+                    ) : (
+                      <Plus aria-hidden className="size-3 shrink-0 text-faint" />
+                    )}
+                    <span className="truncate">{item.title}</span>
+                    {item.task_count === 0 && (
+                      <span className={cn('shrink-0', picked ? 'opacity-80' : 'text-attention')}>· uncovered</span>
+                    )}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+    </section>
   )
 }

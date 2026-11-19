@@ -5,9 +5,9 @@ import { memo } from 'react'
 import type { RequirementInsightTab } from '../../../lib/types'
 import { cn } from '../../../lib/utils'
 import type { GraphStatus } from './graph-model'
-import { statusMeta } from './graph-model'
+import { statusIcon, statusMeta } from './graph-model'
 import { HUB_HEIGHT, HUB_WIDTH } from './layout'
-import { statusIcon, TITLE_ZOOM } from './task-node'
+import { TITLE_ZOOM } from './task-node'
 
 export interface DocStats {
   total: number

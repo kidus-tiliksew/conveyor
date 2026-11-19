@@ -39,6 +39,22 @@ export function decisionCitationsQueryKey(workspace: string) {
 }
 
 /**
+ * Every crate read starts `['crates', workspace]`, so one prefix refreshes
+ * the list, each crate, and its activity (component-crates invariant 18).
+ */
+export function cratesQueryKey(workspace: string, state: 'open' | 'closed' | 'all') {
+  return ['crates', workspace, 'list', state] as const
+}
+
+export function crateQueryKey(workspace: string, crateId: string) {
+  return ['crates', workspace, 'detail', crateId] as const
+}
+
+export function crateActivityQueryKey(workspace: string, crateId: string) {
+  return ['crates', workspace, 'activity', crateId] as const
+}
+
+/**
  * Placeholder data that never crosses workspaces. A query keeps its previous
  * result on screen only when the previous query's key names the same
  * workspace, so after a switch it shows its first-load state instead of the

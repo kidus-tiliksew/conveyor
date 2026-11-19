@@ -27,11 +27,13 @@ export function TaskContextPicker({
   hint,
   loading,
   groups,
+  placeholder = 'Search requirements and system design',
 }: {
   label: string
   hint: string
   loading: boolean
   groups: ContextGroup[]
+  placeholder?: string
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -118,7 +120,7 @@ export function TaskContextPicker({
               className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2 py-1 text-xs"
             >
               <span className="max-w-64 truncate">{option.title}</span>
-              <span className="shrink-0 text-faint">{group.label}</span>
+              {groups.length > 1 && <span className="shrink-0 text-faint">{group.label}</span>}
               <X className="size-3" />
             </button>
           ))}
@@ -135,7 +137,7 @@ export function TaskContextPicker({
           aria-autocomplete="list"
           aria-activedescendant={open && activeIndex >= 0 ? optionId(activeIndex) : undefined}
           value={query}
-          placeholder="Search requirements and system design"
+          placeholder={placeholder}
           onFocus={() => setOpen(true)}
           onClick={() => setOpen(true)}
           onChange={(event) => {

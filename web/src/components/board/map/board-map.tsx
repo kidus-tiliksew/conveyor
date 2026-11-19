@@ -44,6 +44,7 @@ import {
   type StatusGroup,
   statusGroupOf,
   statusGroups,
+  statusIcon,
   statusMeta,
   statusOrder,
   type TaskGraphModel,
@@ -64,7 +65,7 @@ import {
   useMinimapShown,
   WHOLE_OPENING_ZOOM,
 } from './map-view'
-import { DependencyMark, DOT_ZOOM, statusIcon, type TaskFlowNode, TaskNode } from './task-node'
+import { DependencyMark, DOT_ZOOM, type TaskFlowNode, TaskNode } from './task-node'
 
 const nodeTypes = { task: TaskNode, hub: HubNode }
 const UNATTACHED = '__none'

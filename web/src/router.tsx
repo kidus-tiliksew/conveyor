@@ -10,6 +10,8 @@ import { CreateWorkspaceDialog } from './components/workspace/create-workspace-d
 import { LegacyAddress, PageNotFound, WorkspaceLayout } from './components/workspace/workspace-address'
 import { BlueprintDetailPage } from './pages/blueprint-detail'
 import { BlueprintsPage } from './pages/blueprints'
+import { CratePage } from './pages/crate'
+import { CratesPage, validateCratesSearch } from './pages/crates'
 import { DecisionPage, DecisionsPage } from './pages/decisions'
 import { InboxPage } from './pages/inbox'
 import { MonitorPage } from './pages/monitor'
@@ -250,6 +252,19 @@ const planningRoute = createRoute({
   }),
   component: PlanningPage,
 })
+// The crates list and each crate's page (component-crates, Public surfaces;
+// invariant 17).
+const cratesRoute = createRoute({
+  getParentRoute: () => workspaceLayoutRoute,
+  path: '/crates',
+  validateSearch: validateCratesSearch,
+  component: CratesPage,
+})
+const crateRoute = createRoute({
+  getParentRoute: () => workspaceLayoutRoute,
+  path: '/crates/$crateId',
+  component: CratePage,
+})
 const monitorRoute = createRoute({
   getParentRoute: () => workspaceLayoutRoute,
   path: '/monitor',
@@ -269,6 +284,8 @@ const routeTree = rootRoute.addChildren([
     decisionsRoute,
     decisionDetailRoute,
     inboxRoute,
+    cratesRoute,
+    crateRoute,
     pendingProposalsRoute,
     blueprintsRoute,
     blueprintDetailRoute,

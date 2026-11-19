@@ -1,41 +1,17 @@
 // One task on the map. Zoomed in it is a card; zoomed out it collapses to a
 // dot sized by how much work it unblocks.
 import { Handle, type Node, type NodeProps, Position, useStore } from '@xyflow/react'
-import {
-  Ban,
-  Check,
-  CircleDot,
-  Diamond,
-  GitMerge,
-  Hourglass,
-  type LucideIcon,
-  Pause,
-  Play,
-  UserRound,
-  X,
-} from 'lucide-react'
+import { Hourglass } from 'lucide-react'
 import { memo } from 'react'
 import { cn } from '../../../lib/utils'
-import type { GraphStatus, GraphTask } from './graph-model'
-import { labelOf, statusMeta } from './graph-model'
+import type { GraphTask } from './graph-model'
+import { labelOf, statusIcon, statusMeta } from './graph-model'
 import { CARD_HEIGHT, CARD_WIDTH } from './layout'
 
 // Three levels of detail: full cards, then a bold title (status and title
 // are all that read at mid zoom), then dots.
 export const DOT_ZOOM = 0.28
 export const TITLE_ZOOM = 0.62
-
-export const statusIcon: Record<GraphStatus, LucideIcon> = {
-  blocked: Ban,
-  plan_gate: Diamond,
-  merge_gate: GitMerge,
-  needs_you: UserRound,
-  running: Play,
-  ready: CircleDot,
-  parked: Pause,
-  merged: Check,
-  closed: X,
-}
 
 export type TaskNodeData = {
   task: GraphTask

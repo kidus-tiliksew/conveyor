@@ -10,6 +10,7 @@ import {
   GitPullRequest,
   Link2,
   Link2Off,
+  Package,
   RotateCcw,
   Terminal,
   Trash2,
@@ -41,10 +42,10 @@ import { DropdownMenu, DropdownMenuItem } from '../ui/dropdown-menu'
 import { Input, Textarea } from '../ui/input'
 import { MarkdownProse, withoutLeadingTitle } from '../ui/markdown-prose'
 import { AssigneeChip } from './assignee-chip'
+import { RiskTierValue } from './risk-tier'
 import { SectionHeading } from './section-heading'
 import { TaskRestartControl, TaskRestartNotice } from './task-restart-dialog'
 import { useCollapsibleContent } from './use-collapsible-content'
-import { RiskTierValue } from './risk-tier'
 
 // The task-header facts: state badges,
 // the facts a reviewer actually references — where the work lives, where it
@@ -254,6 +255,24 @@ export function TaskFacts({
           }
         />
         <Fact label="Repository" value={item.task.repo} />
+        {/* The crate the task belongs to, linked to its page (req-crates
+            AC-5.6). */}
+        {item.task.crate && (
+          <Fact
+            label="Crate"
+            value={
+              <Link
+                to="/w/$workspaceId/crates/$crateId"
+                params={{ workspaceId: workspace, crateId: item.task.crate.id }}
+                data-task-crate={item.task.crate.id}
+                className="inline-flex max-w-full items-center gap-1.5 hover:text-primary hover:underline"
+              >
+                <Package aria-hidden className="size-3 shrink-0 text-faint" />
+                <span className="truncate">{item.task.crate.name}</span>
+              </Link>
+            }
+          />
+        )}
         <Fact
           label="Branch"
           value={

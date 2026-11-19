@@ -1,6 +1,7 @@
 // The Board map's model (req-board-map; component-web-task-surfaces, Board
 // map), built in the browser from the one task-map read. Every status comes
 // from the stated next action (DEC-61).
+import { Ban, Check, CircleDot, Diamond, GitMerge, type LucideIcon, Pause, Play, UserRound, X } from 'lucide-react'
 import type { TaskMapItem } from '../../../lib/types'
 
 export type GraphStatus =
@@ -251,6 +252,21 @@ export function walk(
     }
   }
   return seen
+}
+
+// Each status's icon. It lives beside the status table, not in the map's
+// node code, so the crate page and the insight rows can show it without
+// loading React Flow or the ELK layout (DEC-76).
+export const statusIcon: Record<GraphStatus, LucideIcon> = {
+  blocked: Ban,
+  plan_gate: Diamond,
+  merge_gate: GitMerge,
+  needs_you: UserRound,
+  running: Play,
+  ready: CircleDot,
+  parked: Pause,
+  merged: Check,
+  closed: X,
 }
 
 export const statusMeta: Record<GraphStatus, { label: string; tone: string; ring: string; dot: string }> = {
