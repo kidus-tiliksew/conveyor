@@ -2136,6 +2136,60 @@ export function fetchCrateInsight(workspace: string, crateId: string) {
   )
 }
 
+// A refused briefing read or generation. It keeps the HTTP status, the
+// server's error code, and its redacted detail, so the page tells a 409 from
+// another failure and names the code and detail in its notice
+// (component-crates invariant 35).
+export class CrateBriefingError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly detail?: string,
+  ) {
+    super(message)
+  }
+}
+
+async function crateBriefingJSON(response: Response): Promise<import('./types').CrateBriefingView> {
+  if (response.ok) return response.json() as Promise<import('./types').CrateBriefingView>
+  const text = await response.text().catch(() => '')
+  let code: string | undefined
+  let detail: string | undefined
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown; detail?: unknown }
+    if (typeof parsed.error === 'string') code = parsed.error
+    if (typeof parsed.detail === 'string') detail = parsed.detail
+  } catch {
+    // A body that is not JSON keeps only the status.
+  }
+  throw new CrateBriefingError(
+    apiErrorMessage(text, response.statusText || `HTTP ${response.status}`),
+    response.status,
+    code,
+    detail,
+  )
+}
+
+function crateBriefingURL(workspace: string, crateId: string) {
+  return workspaceURL(`/v1/crates/${encodeURIComponent(crateId)}/briefing`, workspace)
+}
+
+// The stored briefing (req-crate-insights REQ-5). This read never calls the
+// model.
+export async function fetchCrateBriefing(workspace: string, crateId: string, signal?: AbortSignal) {
+  return crateBriefingJSON(await fetch(crateBriefingURL(workspace, crateId), { signal }))
+}
+
+// Generates and stores a briefing under create_tasks. 409 crate_empty,
+// 409 crate_briefing_current, 502 crate_briefing_failed with its detail, and
+// 503 crate_briefing_unconfigured arrive as CrateBriefingError.
+export async function generateCrateBriefing(workspace: string, crateId: string) {
+  return crateBriefingJSON(
+    await fetch(crateBriefingURL(workspace, crateId), { method: 'POST', headers: mutationHeaders() }),
+  )
+}
+
 export interface CrateInput {
   name?: string
   target_date?: string | null

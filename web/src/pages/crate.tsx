@@ -22,6 +22,7 @@ import {
 import { type ReactNode, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { BranchMap } from '../components/crate/branch-map'
+import { CrateBriefingSection } from '../components/crate/crate-briefing'
 import { type CrateEmphasis, useCrateEmphasis } from '../components/crate/crate-emphasis'
 import { CrateFormDialog } from '../components/crate/crate-parts'
 import { CrateStage } from '../components/crate/crate-stage'
@@ -50,9 +51,9 @@ import { absoluteTime, cn, relativeTime } from '../lib/utils'
 
 // One crate's page (component-crates invariants 17 and 33; req-crates REQ-5):
 // the header with its counts, shipped statement, and line of stations, then
-// the branch map, then the member tasks' activity, with the crate's declared
-// requirements, the ones its tasks carry beyond them, and its member tasks
-// beside it. The delivery numbers open in a sheet from the page header. Every
+// the briefing, then the branch map, then the member tasks' activity, with
+// the crate's declared requirements, the ones its tasks carry beyond them,
+// and its member tasks beside it. The delivery numbers open in a sheet from the page header. Every
 // act renders only for a user with create_tasks; the server checks it again.
 export function CratePage() {
   const { crateId } = useParams({ strict: false }) as { crateId: string }
@@ -201,8 +202,10 @@ function CrateView({ crate }: { crate: CrateDetail }) {
             emphasis={emphasis}
             onSelect={openTask}
           />
-          {/* The briefing takes its place here, between the header and the
-              branch map (component-crates invariant 33). */}
+          {/* The briefing, between the header with the line and the branch
+              map (component-crates invariant 33). It reads and fails apart
+              from the other parts. */}
+          <CrateBriefingSection crate={crate} emphasis={emphasis} onSelect={openTask} />
           <BranchMap
             crate={crate}
             insight={insight.data}

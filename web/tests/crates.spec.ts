@@ -7,6 +7,8 @@ import { expect, type Page, type Route } from '@playwright/test'
 import type {
   Crate,
   CrateActivityEvent,
+  CrateBriefing,
+  CrateBriefingView,
   CrateDetail,
   CrateInsight,
   CrateInsightTask,
@@ -455,13 +457,45 @@ const memberNextAction = {
   deadline: null,
 }
 
+// The stored briefing as internal/httpapi/crate_briefing.go writes it. The
+// page shows none of `model`, `generated_at`, or `generated_by`.
+function storedBriefing(overrides: Partial<CrateBriefing> = {}): CrateBriefing {
+  return {
+    headline: 'Two tasks wait on a person before the crate can ship.',
+    account: 'One task merged this week. Review moves slowly, and the ranking change waits on a merge approval.',
+    look_first: [],
+    model: 'served-model-name',
+    generated_at: '2026-11-19T10:00:00Z',
+    generated_by: 'usr_operator',
+    current: true,
+    ...overrides,
+  }
+}
+
+// What the fake server answers to one briefing POST, when a spec sets it.
+type BriefingReply = { status: number; json: unknown }
+
 // `insights` replaces the served insight view of the crates it names. A spec
 // may change it between page loads: the fake server reads it per request.
+// `briefings` holds the stored briefing of the crates it names, null for none.
+// A crate it leaves out has a current briefing with no task to look at first.
+// The fake server reads and writes the object per request, so a spec can
+// change it while the page is open. `briefingPost` answers a POST in place of
+// the default, which stores a new current briefing.
 async function serveCrates(
   page: Page,
-  options: { role?: Role; insight?: 'fail'; insights?: Record<string, CrateInsight> } = {},
+  options: {
+    role?: Role
+    insight?: 'fail'
+    insights?: Record<string, CrateInsight>
+    briefings?: Record<string, CrateBriefing | null>
+    briefingPost?: (crateId: string, count: number) => Promise<BriefingReply | undefined> | BriefingReply | undefined
+  } = {},
 ) {
   const role = options.role ?? 'operator'
+  const briefings = options.briefings ?? {}
+  const briefingGets: string[] = []
+  const briefingPosts: string[] = []
   const details: Record<string, CrateDetail> = {
     [billing.id]: structuredClone(billing),
     [shipped.id]: structuredClone(shipped),
@@ -514,6 +548,32 @@ async function serveCrates(
       if (options.insight === 'fail') return route.fulfill({ status: 500, json: { error: 'internal error' } })
       const served = options.insights?.[id] ?? (id === lineCrate.id ? lineInsight : plainInsight(crate))
       return route.fulfill({ json: served })
+    }
+    // The briefing routes of component-crates, Public surfaces.
+    const briefing = path.match(/^\/v1\/crates\/([^/]+)\/briefing$/)
+    if (briefing) {
+      const id = decodeURIComponent(briefing[1])
+      const crate = details[id]
+      if (!crate) return route.fulfill({ status: 404, json: { error: 'crate_not_found', crate_id: id } })
+      const view = (): CrateBriefingView => ({
+        briefing: id in briefings ? briefings[id] : storedBriefing(),
+        fingerprint: 'fingerprint-live',
+        can_generate: role !== 'viewer',
+      })
+      if (method === 'POST') {
+        briefingPosts.push(id)
+        const reply = await options.briefingPost?.(id, briefingPosts.length)
+        if (reply) return route.fulfill(reply)
+        if (crate.tasks.length === 0)
+          return route.fulfill({ status: 409, json: { error: 'crate_empty', crate_id: id, message: 'Empty.' } })
+        briefings[id] = storedBriefing({
+          headline: 'A new briefing came back from the server.',
+          generated_at: '2026-11-19T12:00:00Z',
+        })
+        return route.fulfill({ json: view() })
+      }
+      briefingGets.push(id)
+      return route.fulfill({ json: view() })
     }
     const one = path.match(/^\/v1\/crates\/([^/]+)$/)
     if (one) {
@@ -593,7 +653,7 @@ async function serveCrates(
     }
     return route.fulfill({ json: [] })
   })
-  return { listRequests, created, patched, insightRequests }
+  return { listRequests, created, patched, insightRequests, briefingGets, briefingPosts }
 }
 
 // A browser with no WebGL: every WebGL context request answers null, as on a
@@ -2024,4 +2084,468 @@ test('a failed insight read names the failure in the branch map and the sheet', 
   await expect.poll(() => insightRequests.length).toBeGreaterThan(again)
   await sheet.getByRole('button', { name: 'Close' }).click()
   await expect(sheet).toHaveCount(0)
+})
+
+// The briefing (req-crate-insights REQ-5, AC-5.1, AC-5.2, AC-5.4, AC-5.5;
+// component-crates invariants 33 and 35). The fake server counts every
+// briefing GET and POST, so each case proves how many times one opening of
+// the page posts. The screenshots attach to the Playwright report and are
+// also written to CONVEYOR_SCREENSHOT_DIR when it is set.
+const briefingShots = process.env.CONVEYOR_SCREENSHOT_DIR
+
+// Tasks to look at first: two members of the line crate and one task that
+// has left it, which gets no row.
+const lookFirst: CrateBriefing['look_first'] = [
+  { task_id: '261115-c11', tone: 'attention', reason: 'Its build has run for three days.' },
+  { task_id: '261115-gone', tone: 'info', reason: 'A task that left the crate.' },
+  { task_id: '261115-b02', tone: 'positive', reason: 'Review is close to done.' },
+]
+
+// A promise the spec resolves to let a held POST answer.
+function held() {
+  let release = () => {}
+  const promise = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  return { promise, release }
+}
+
+const briefingSection = (page: Page) => page.getByRole('region', { name: 'Briefing' })
+
+for (const viewport of [
+  { name: '375 px', slug: '375', width: 375, height: 812 },
+  { name: 'desktop', slug: 'desktop', width: 1280, height: 900 },
+]) {
+  test.describe(`crate briefing at ${viewport.name}`, () => {
+    test.use({ viewport: { width: viewport.width, height: viewport.height } })
+
+    async function shoot(page: Page, name: string) {
+      const file = `crate-briefing-${name}-${viewport.slug}.png`
+      // The page scrolls inside its own column, so a full-page shot shows
+      // only the viewport. The shot takes a taller viewport at the same
+      // width, which shows the page from the header to the task list.
+      const size = page.viewportSize() ?? { width: viewport.width, height: viewport.height }
+      await page.setViewportSize({ width: size.width, height: Math.max(size.height, 1600) })
+      await page.evaluate(() => document.fonts.ready)
+      const image = await page.screenshot({
+        path: briefingShots ? `${briefingShots}/${file}` : undefined,
+        animations: 'disabled',
+      })
+      await page.setViewportSize(size)
+      await test.info().attach(file, { body: image, contentType: 'image/png' })
+    }
+
+    // Invariant 33: the briefing sits between the header with the line and
+    // the branch map. Invariant 35: no generated marker, model name, or
+    // generation time.
+    test('a stored current briefing shows its text between the header and the branch map', async ({ page }) => {
+      const server = await serveCrates(page, {
+        insights: { [lineCrate.id]: deliveryInsight },
+        briefings: { [lineCrate.id]: storedBriefing({ look_first: lookFirst }) },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      await expect(section.locator('[data-briefing-account]')).toHaveText(storedBriefing().account)
+      await expect(section.getByRole('heading', { name: 'Look at first' })).toBeVisible()
+      // Only current members are rows, in the served order, with the member
+      // title and the served reason.
+      const rows = section.locator('[data-briefing-task]')
+      await expect(rows).toHaveCount(2)
+      expect(await rows.evaluateAll((items) => items.map((item) => item.getAttribute('data-briefing-task')))).toEqual([
+        '261115-c11',
+        '261115-b02',
+      ])
+      await expect(rows.first()).toContainText('Index product reviews')
+      await expect(rows.first()).toContainText('Its build has run for three days.')
+      await expect(rows.first().locator('[data-tone]')).toHaveAttribute('data-tone', 'attention')
+      await expect(section).not.toContainText('A task that left the crate.')
+      // Regenerate shares the heading's row and is disabled for a current
+      // briefing.
+      const regenerate = section.getByRole('button', { name: 'Regenerate' })
+      await expect(regenerate).toBeDisabled()
+      const sameRow = await section
+        .locator('[data-briefing-heading-row]')
+        .evaluate((row) => row.contains(row.querySelector('h3')) && row.contains(row.querySelector('button')))
+      expect(sameRow).toBe(true)
+      // No model name, generation time, or generated marker.
+      await expect(section).not.toContainText('served-model-name')
+      await expect(section).not.toContainText(/generated|2026-11-19/i)
+      await expect(section.locator('time')).toHaveCount(0)
+      // The page order: the header with the line, the briefing, the map.
+      const order = await page.evaluate(() => {
+        const parts = ['[aria-label="Crate summary"]', '[data-crate-briefing]', '[data-branch-map]']
+        const found = parts.map((selector) => document.querySelector(selector))
+        return (
+          found.every(Boolean) &&
+          found.every(
+            (element, index) =>
+              index === 0 ||
+              Boolean(found[index - 1]!.compareDocumentPosition(element!) & Node.DOCUMENT_POSITION_FOLLOWING),
+          )
+        )
+      })
+      expect(order).toBe(true)
+      expect(server.briefingPosts).toEqual([])
+      await expectNoHorizontalScroll(page)
+      await shoot(page, 'stored-current')
+    })
+
+    test('a stored briefing with no task to look at first puts Regenerate alone at the right', async ({ page }) => {
+      const server = await serveCrates(page, {
+        briefings: { [lineCrate.id]: storedBriefing({ current: false }) },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      await expect(section.getByRole('heading', { name: 'Look at first' })).toHaveCount(0)
+      const regenerate = section.getByRole('button', { name: 'Regenerate' })
+      await expect(regenerate).toBeEnabled()
+      // Alone at the right of its row.
+      const edges = await section.locator('[data-briefing-heading-row]').evaluate((row) => {
+        const button = row.querySelector('button') as HTMLElement
+        return { row: row.getBoundingClientRect().right, button: button.getBoundingClientRect().right }
+      })
+      expect(Math.abs(edges.row - edges.button)).toBeLessThan(1)
+      expect(server.briefingPosts).toEqual([])
+      await shoot(page, 'stored-no-look-first')
+    })
+
+    // AC-5.2: the first answered read of an opening posts once for an
+    // eligible crate with no briefing, and the page shows a status while the
+    // request runs.
+    test('a first opening with no briefing posts once and shows the result', async ({ page }) => {
+      const gate = held()
+      const server = await serveCrates(page, {
+        insights: { [lineCrate.id]: deliveryInsight },
+        briefings: { [lineCrate.id]: null },
+        briefingPost: async () => {
+          await gate.promise
+          return undefined
+        },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      const status = section.getByRole('status', { name: 'Writing the briefing' })
+      await expect(status).toBeVisible()
+      await expect(status).toContainText('Reading 8 tasks and their activity')
+      await expect.poll(() => server.briefingPosts).toEqual([lineCrate.id])
+      await shoot(page, 'generating')
+      gate.release()
+      await expect(section.locator('[data-briefing-headline]')).toHaveText('A new briefing came back from the server.')
+      await expect(status).toHaveCount(0)
+      expect(server.briefingPosts).toEqual([lineCrate.id])
+    })
+
+    // Invariant 35: refetches never post again, a failed POST is not tried
+    // again, and only a new opening decides again.
+    test('a failed first post shows its notice, and a refetch in the same opening does not post', async ({ page }) => {
+      const server = await serveCrates(page, {
+        briefings: { [lineCrate.id]: null },
+        briefingPost: () => ({
+          status: 502,
+          json: {
+            error: 'crate_briefing_failed',
+            detail: 'model timed out after 30s',
+            message: 'The briefing could not be generated. The stored briefing did not change.',
+          },
+        }),
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      const notice = section.locator('[data-briefing-failed]')
+      await expect(notice).toHaveText(
+        'The briefing could not be generated (crate_briefing_failed): model timed out after 30s',
+      )
+      await expect(notice).toHaveAttribute('role', 'alert')
+      expect(server.briefingPosts).toEqual([lineCrate.id])
+      await shoot(page, 'failed-none-stored')
+
+      // A workspace refresh refetches every crate read, the briefing too. It
+      // still has no briefing, and the page does not post again.
+      const gets = server.briefingGets.length
+      await page.getByRole('button', { name: 'Crate actions' }).click()
+      await page.getByRole('menuitem', { name: 'Close crate' }).click()
+      await expect.poll(() => server.briefingGets.length).toBeGreaterThan(gets)
+      // Any post would follow the refetch within a frame or two.
+      await page.waitForTimeout(400)
+      expect(server.briefingPosts).toEqual([lineCrate.id])
+
+      // A new opening decides again, on its own read, not on the copy the
+      // last visit left in the cache.
+      await page.getByRole('link', { name: 'Crates', exact: true }).first().click()
+      await expect(page.locator('[data-crate-row]').first()).toBeVisible()
+      const before = server.briefingGets.length
+      await page.goBack()
+      await expect.poll(() => server.briefingPosts.length).toBe(2)
+      expect(server.briefingGets.length).toBeGreaterThan(before)
+    })
+
+    // AC-5.4 and invariant 35: Regenerate is enabled only for a briefing
+    // that is out of date, sends one request, and shows the server's answer.
+    test('Regenerate is enabled only for an out-of-date briefing and posts once', async ({ page }) => {
+      const gate = held()
+      const briefings: Record<string, CrateBriefing | null> = {
+        [lineCrate.id]: storedBriefing({ current: false, look_first: lookFirst }),
+      }
+      const server = await serveCrates(page, {
+        insights: { [lineCrate.id]: deliveryInsight },
+        briefings,
+        briefingPost: async () => {
+          await gate.promise
+          return undefined
+        },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      const regenerate = section.getByRole('button', { name: 'Regenerate' })
+      await expect(regenerate).toBeEnabled()
+      expect(server.briefingPosts).toEqual([])
+      await shoot(page, 'stored-out-of-date')
+
+      // Two quick clicks send one request.
+      await regenerate.dblclick()
+      await expect(regenerate).toBeDisabled()
+      await expect.poll(() => server.briefingPosts).toEqual([lineCrate.id])
+      // The stored text stays while the request runs.
+      await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      await shoot(page, 'regenerating')
+      gate.release()
+      await expect(section.locator('[data-briefing-headline]')).toHaveText('A new briefing came back from the server.')
+      await expect(regenerate).toBeDisabled()
+      expect(server.briefingPosts).toEqual([lineCrate.id])
+    })
+
+    // Invariant 35: a 409 refetches the briefing and shows no notice.
+    test('a 409 answer refetches the briefing without a notice', async ({ page }) => {
+      const briefings: Record<string, CrateBriefing | null> = {
+        [lineCrate.id]: storedBriefing({ current: false }),
+      }
+      const server = await serveCrates(page, {
+        briefings,
+        briefingPost: () => {
+          // Another user generated a briefing first.
+          briefings[lineCrate.id] = storedBriefing({ headline: 'Someone else wrote this briefing first.' })
+          return {
+            status: 409,
+            json: {
+              error: 'crate_briefing_current',
+              crate_id: lineCrate.id,
+              message: 'The stored briefing is current.',
+            },
+          }
+        },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      const gets = server.briefingGets.length
+      await section.getByRole('button', { name: 'Regenerate' }).click()
+      await expect(section.locator('[data-briefing-headline]')).toHaveText('Someone else wrote this briefing first.')
+      expect(server.briefingGets.length).toBeGreaterThan(gets)
+      await expect(section.getByRole('alert')).toHaveCount(0)
+      await expect(section.getByRole('button', { name: 'Regenerate' })).toBeDisabled()
+      expect(server.briefingPosts).toEqual([lineCrate.id])
+    })
+
+    // AC-5.4: a 502 names its code and detail beside the stored briefing,
+    // which does not change.
+    test('a 502 answer shows its code and detail beside the unchanged stored briefing', async ({ page }) => {
+      const server = await serveCrates(page, {
+        insights: { [lineCrate.id]: deliveryInsight },
+        briefings: { [lineCrate.id]: storedBriefing({ current: false, look_first: lookFirst }) },
+        briefingPost: () => ({
+          status: 502,
+          json: {
+            error: 'crate_briefing_failed',
+            detail: 'the reply held a task ID',
+            message: 'The briefing could not be generated. The stored briefing did not change.',
+          },
+        }),
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      await section.getByRole('button', { name: 'Regenerate' }).click()
+      const notice = section.getByRole('alert')
+      await expect(notice).toHaveText(
+        'The briefing could not be generated (crate_briefing_failed): the reply held a task ID',
+      )
+      await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      await expect(section.locator('[data-briefing-task]')).toHaveCount(2)
+      expect(server.briefingPosts).toEqual([lineCrate.id])
+      await expectNoHorizontalScroll(page)
+      await shoot(page, 'failed-beside-stored')
+    })
+
+    // AC-5.5: a user without create_tasks sees a stored briefing and no
+    // control, and with none stored learns who can generate one. The page
+    // never posts for this user.
+    test('a viewer without create_tasks sees the stored briefing and no control', async ({ page }) => {
+      const briefings: Record<string, CrateBriefing | null> = {
+        [lineCrate.id]: storedBriefing({ current: false, look_first: lookFirst }),
+        [billing.id]: null,
+      }
+      const server = await serveCrates(page, { role: 'viewer', briefings })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      await expect(section.locator('[data-briefing-task]')).toHaveCount(2)
+      await expect(section.getByRole('button', { name: 'Regenerate' })).toHaveCount(0)
+      await shoot(page, 'viewer-stored')
+
+      await page.goto('/w/demo/crates/crate-billing')
+      await expect(briefingSection(page).locator('[data-briefing-none]')).toHaveText(
+        'No briefing yet. A user who can create tasks can generate one.',
+      )
+      await expect(briefingSection(page).getByRole('button')).toHaveCount(0)
+      await expect.poll(() => server.briefingGets).toContain(billing.id)
+      await page.waitForTimeout(400)
+      expect(server.briefingPosts).toEqual([])
+      await shoot(page, 'viewer-none')
+    })
+
+    // The feature design's rollout: a crate with no member has no briefing,
+    // and the page neither reads nor posts one.
+    test('an empty crate shows no briefing section and sends no briefing request', async ({ page }) => {
+      const server = await serveCrates(page, { briefings: { [emptyCrate.id]: null } })
+      await page.goto('/w/demo/crates/crate-empty')
+      await expect.poll(() => stationCounts(page)).toMatchObject({ intake: '0' })
+      await expect(page.locator('[data-crate-briefing]')).toHaveCount(0)
+      await page.waitForTimeout(400)
+      expect(server.briefingGets).toEqual([])
+      expect(server.briefingPosts).toEqual([])
+      await shoot(page, 'empty-crate')
+    })
+
+    // Invariant 35: the text renders as plain text, never markup.
+    test('a headline holding markup renders as those characters', async ({ page }) => {
+      const headline = 'Ship <b>now</b> & read <script>alert(1)</script> later'
+      const account = 'An **account** with <i>tags</i> and a [link](https://example.com).'
+      await serveCrates(page, {
+        briefings: {
+          [lineCrate.id]: storedBriefing({
+            headline,
+            account,
+            look_first: [{ task_id: '261115-c11', tone: 'info', reason: 'A <em>reason</em> with tags.' }],
+          }),
+        },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      await expect(section.locator('[data-briefing-headline]')).toHaveText(headline)
+      await expect(section.locator('[data-briefing-account]')).toHaveText(account)
+      await expect(section.locator('[data-briefing-reason]')).toHaveText('A <em>reason</em> with tags.')
+      await expect(section.locator('b, i, em, script, a, strong')).toHaveCount(0)
+    })
+
+    // REQ-3 and AC-5.1: pointing at a row emphasizes its task in the line and
+    // the branch map and marks its row in the task list. Activating the row
+    // opens task detail.
+    test('pointing at a Look at first row emphasizes its task across the page', async ({ page }) => {
+      await page.setViewportSize({ width: viewport.width, height: 2400 })
+      await serveCrates(page, {
+        insights: { [lineCrate.id]: deliveryInsight },
+        briefings: { [lineCrate.id]: storedBriefing({ look_first: lookFirst }) },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const map = page.getByRole('region', { name: 'Where the work is' })
+      await expect(map.locator('[data-branch-task]')).toHaveCount(8)
+      const row = page.locator('[data-briefing-task="261115-c11"]')
+      await row.hover()
+      await expect(row).toHaveAttribute('data-briefing-emphasized', 'true')
+      await expect(map.locator('[data-branch-task="261115-c11"]')).toHaveAttribute('data-map-emphasized', 'true')
+      await expect(map.locator('[data-branch-card="261115-c11"]')).toBeVisible()
+      await expect(page.locator('[data-crate-task="261115-c11"]')).toHaveAttribute('data-emphasized', 'true')
+      await expect(page.locator('[data-crate-task][data-emphasized]')).toHaveCount(1)
+      // Where the scene draws, the line shows the task's card. Without WebGL
+      // the line is text counts and has no card.
+      const mode = await page.locator('[data-line-mode]').getAttribute('data-line-mode')
+      if (mode === 'scene') await expect(page.locator('[data-line-card="261115-c11"]')).toHaveCount(1)
+      await shoot(page, 'row-emphasis')
+
+      await page.mouse.move(0, 0)
+      await expect(page.locator('[data-crate-task][data-emphasized]')).toHaveCount(0)
+      await expect(page.locator('[data-briefing-emphasized]')).toHaveCount(0)
+      await row.click()
+      await expect(page).toHaveURL(/\/w\/demo\/tasks\/261115-c11$/)
+    })
+
+    // The two orders of pointer and focus: a focused row keeps the emphasis
+    // when the pointer leaves another target, and a row that takes focus
+    // wins over a resting pointer. Enter opens the focused row's task.
+    test('keyboard focus on a Look at first row and the pointer share the emphasis in both orders', async ({
+      page,
+    }) => {
+      // Tall enough that moving focus never scrolls the page, which would put
+      // another element under the resting pointer.
+      await page.setViewportSize({ width: viewport.width, height: 2400 })
+      await serveCrates(page, {
+        insights: { [lineCrate.id]: deliveryInsight },
+        briefings: { [lineCrate.id]: storedBriefing({ look_first: lookFirst }) },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const map = page.getByRole('region', { name: 'Where the work is' })
+      await expect(map.locator('[data-branch-task]')).toHaveCount(8)
+      const briefingRow = (id: string) => page.locator(`[data-briefing-task="${id}"]`)
+      const taskRow = (id: string) => page.locator(`[data-crate-task="${id}"]`)
+      async function showsOnly(id: string) {
+        await expect(taskRow(id)).toHaveAttribute('data-emphasized', 'true')
+        await expect(page.locator('[data-crate-task][data-emphasized]')).toHaveCount(1)
+        await expect(map.locator(`[data-branch-task="${id}"]`)).toHaveAttribute('data-map-emphasized', 'true')
+        await expect(map.locator('[data-branch-card]')).toHaveCount(1)
+      }
+
+      // Order 1: the pointer rests on a task row, then focus moves to a
+      // briefing row. The newly focused row wins.
+      await taskRow('261115-f07').hover()
+      await showsOnly('261115-f07')
+      await briefingRow('261115-c11').focus()
+      await showsOnly('261115-c11')
+      await expect(briefingRow('261115-c11')).toHaveAttribute('data-briefing-emphasized', 'true')
+
+      // Order 2: the pointer enters another briefing row and then leaves the
+      // page. The focused row gets the emphasis back.
+      await briefingRow('261115-b02').hover()
+      await showsOnly('261115-b02')
+      await page.mouse.move(0, 0)
+      await expect(briefingRow('261115-c11')).toBeFocused()
+      await showsOnly('261115-c11')
+
+      // Tab moves focus to the next row, which takes the emphasis.
+      await page.keyboard.press('Tab')
+      await expect(briefingRow('261115-b02')).toBeFocused()
+      await showsOnly('261115-b02')
+      // When the row loses focus, nothing stays emphasized.
+      await briefingRow('261115-b02').blur()
+      await expect(page.locator('[data-crate-task][data-emphasized]')).toHaveCount(0)
+
+      // Enter on a focused row opens its task.
+      await briefingRow('261115-c11').focus()
+      await page.keyboard.press('Enter')
+      await expect(page).toHaveURL(/\/w\/demo\/tasks\/261115-c11$/)
+    })
+  })
+}
+
+// Every state the briefing reads still renders when another part of the page
+// fails: a failed insight read leaves the briefing in place, and a failed
+// briefing read leaves the rest of the page.
+test('the briefing and the rest of the page each survive the other failing', async ({ page }) => {
+  await serveCrates(page, {
+    insight: 'fail',
+    briefings: { [lineCrate.id]: storedBriefing({ look_first: lookFirst }) },
+  })
+  await page.goto('/w/demo/crates/crate-line')
+  const section = briefingSection(page)
+  await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+  await expect(section.locator('[data-briefing-task]')).toHaveCount(2)
+
+  await page.route(
+    (url) => /^\/v1\/crates\/[^/]+\/briefing$/.test(url.pathname),
+    (route) => route.fulfill({ status: 500, json: { error: 'internal error', message: 'internal error' } }),
+  )
+  await page.goto('/w/demo/crates/crate-billing')
+  await expect(briefingSection(page).locator('[data-briefing-read-failed]')).toContainText('The briefing did not load')
+  await expect(page.locator('[data-crate-task]')).toHaveCount(2)
+  await expect(page.getByRole('region', { name: 'Crate summary' })).toBeVisible()
 })
