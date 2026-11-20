@@ -2589,6 +2589,37 @@ for (const viewport of [
       await page.keyboard.press('Enter')
       await expect(page).toHaveURL(/\/w\/demo\/tasks\/261115-c11$/)
     })
+
+    // A later opening shows the copy an earlier visit cached while it reads
+    // again. When that read fails, the page keeps the cached text and says
+    // that the read failed, and it does not post.
+    test('a failed read in a later opening shows its notice beside the cached briefing', async ({ page }) => {
+      const server = await serveCrates(page, {
+        briefings: { [lineCrate.id]: storedBriefing({ look_first: lookFirst, current: false }) },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      await expect(section.locator('[data-briefing-read-failed]')).toHaveCount(0)
+
+      await page.getByRole('link', { name: 'Crates', exact: true }).first().click()
+      await expect(page.locator('[data-crate-row]').first()).toBeVisible()
+      // A store failure on the briefing read answers the generic plain-text
+      // 500 (DEC-105(1)).
+      await page.route(
+        (url) => /^\/v1\/crates\/[^/]+\/briefing$/.test(url.pathname),
+        (route) =>
+          route.fulfill({ status: 500, contentType: 'text/plain; charset=utf-8', body: 'internal server error\n' }),
+      )
+      await page.goBack()
+      const notice = section.locator('[data-briefing-read-failed]')
+      await expect(notice).toHaveText('The briefing did not refresh: internal server error')
+      await expect(notice).toHaveAttribute('role', 'alert')
+      await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      await expect(section.locator('[data-briefing-task]')).toHaveCount(2)
+      await shoot(page, 'read-failed-beside-cached')
+      expect(server.briefingPosts).toEqual([])
+    })
   })
 }
 

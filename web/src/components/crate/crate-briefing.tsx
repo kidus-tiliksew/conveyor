@@ -145,7 +145,7 @@ export function CrateBriefingSection({
           data-briefing-read-failed
           className="rounded-md bg-raised px-3 py-2 text-xs leading-5 text-muted"
         >
-          The briefing did not load: {read.error instanceof Error ? read.error.message : String(read.error)}
+          The briefing did not load: {errorMessage(read.error)}
         </p>
       )}
 
@@ -182,11 +182,28 @@ export function CrateBriefingSection({
         />
       )}
 
+      {/* A read that fails after an earlier answer keeps that answer on
+          screen (a copy cached by an earlier visit, or the last refetch).
+          The page still says that this read failed, so the stored text and
+          its Regenerate state are not taken as the crate as it stands now. */}
+      {view && read.error != null && (
+        <p
+          role="alert"
+          data-briefing-read-failed
+          className="mt-3 rounded-md bg-raised px-3 py-2 text-xs leading-5 text-muted"
+        >
+          The briefing did not refresh: {errorMessage(read.error)}
+        </p>
+      )}
+
       {failure && (
         <p
           role="alert"
           data-briefing-failed
-          className={cn('rounded-md bg-raised px-3 py-2 text-xs leading-5 text-muted', briefing && 'mt-3')}
+          className={cn(
+            'rounded-md bg-raised px-3 py-2 text-xs leading-5 text-muted',
+            (briefing || (view && read.error != null)) && 'mt-3',
+          )}
         >
           {failureText(failure)}
         </p>
@@ -329,6 +346,10 @@ function failureText(error: Error) {
     return `The briefing could not be generated (${code}): ${error.detail || error.message}`
   }
   return `The briefing could not be generated: ${error.message}`
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 // The headline's words come in one after another. Under reduced motion they
