@@ -1,0 +1,3 @@
+Retained validation evidence: manifest=/home/user/.local/state/conveyor/261120-64ffa9/attempt-20261120T121923Z-528851-883b8a2add4e/manifest.json log=/home/user/.local/state/conveyor/261120-64ffa9/attempt-20261120T121923Z-528851-883b8a2add4e/command.log outcome=failure
+Invocation inventory: /home/user/.local/state/conveyor/261120-64ffa9/invocations/20261120t121923z-d0c44c57a4b5
+recorder exit=2 finished=2026-11-20T12:21:24Z

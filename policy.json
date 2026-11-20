@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "task": "261120-64ffa9",
+  "layer": "singlestore",
+  "command": [
+    "make",
+    "test-integration-singlestore-ci",
+    "SINGLESTORE_INTEGRATION_SHARD=packages",
+    "SINGLESTORE_INTEGRATION_PACKAGES_packages=./internal/httpapi",
+    "GO_INTEGRATION_FLAGS=-run=^TestTaskPollActivityEngineCostIntegration$"
+  ],
+  "environment": [
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "CONVEYOR_TASK_CACHE",
+    "GOCACHE",
+    "GOTMPDIR",
+    "TMPDIR",
+    "GOFLAGS",
+    "GOENV",
+    "GOPATH",
+    "GOMODCACHE",
+    "GOTOOLCHAIN",
+    "GOPROXY",
+    "GONOSUMDB",
+    "GOPRIVATE",
+    "CGO_ENABLED",
+    "CONVEYOR_TEST_SINGLESTORE_URL",
+    "CONVEYOR_TEST_DATABASE_URL",
+    "CONVEYOR_TASK_POLL_REPORT_ONLY",
+    "CONVEYOR_TEST_EXTERNAL_NETWORK",
+    "CONVEYOR_FIXTURE_STATE",
+    "CONVEYOR_VALIDATION_TMP_ROOT",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "SINGLESTORE_INTEGRATION_SHARD",
+    "GO_INTEGRATION_FLAGS"
+  ],
+  "tools": {
+    "make": [
+      "make",
+      "--version"
+    ],
+    "git": [
+      "git",
+      "--version"
+    ],
+    "python3": [
+      "python3",
+      "--version"
+    ],
+    "sh": [
+      "sh",
+      "-c",
+      "printf POSIX-shell"
+    ],
+    "bash": [
+      "bash",
+      "--version"
+    ],
+    "go": [
+      "go",
+      "version"
+    ]
+  },
+  "external_inputs": [
+    "/usr/local/go",
+    "/home/user/go/pkg/mod"
+  ],
+  "exclude": {},
+  "audit": {
+    "inputs_complete": false,
+    "input_rationale": "Fresh execution record for a focused SingleStore defect proof or its clean control, not a reusable gate. Inventoried: the whole worktree (no exclusions), the /usr/local/go launcher SDK, and the Go module cache, which holds the GOTOOLCHAIN=auto go1.24.0 toolchain and every resolved module. Not inventoried: the Python standard library and system shared libraries used by make, git, bash, and python3, and the SingleStore server, which is the backend probe's subject (pinned image ghcr.io/singlestore-labs/singlestoredb-dev:0.2.90 at sha256:2f181587a74b63a83e7dbd46b02e9dce031b8cacf1f5651bff297b2d8c87df37, 4 CPUs, 4 GiB). So inputs_complete is false and the record must not be reused.",
+    "git_metadata": "dependent",
+    "git_rationale": "The record names the exact HEAD commit it ran at: a one-line proof commit for each defect, or the task branch head for the clean control. Git metadata is treated as an input."
+  },
+  "backend": {
+    "isolation": "disposable-per-run",
+    "probe": [
+      "go",
+      "run",
+      "./scripts/validation-fixture-sql",
+      "--backend",
+      "singlestore",
+      "--action",
+      "probe",
+      "--dsn-env",
+      "CONVEYOR_TEST_SINGLESTORE_URL",
+      "--timeout",
+      "60s"
+    ]
+  },
+  "fixture": {
+    "backend": "singlestore",
+    "url_env": "CONVEYOR_TEST_SINGLESTORE_URL",
+    "prepared_url_env": "CONVEYOR_TEST_SINGLESTORE_URL",
+    "external_network_env": "CONVEYOR_TEST_EXTERNAL_NETWORK",
+    "database_prefix": "conveyor",
+    "minimum_free_bytes": 5368709120,
+    "timeout": "60s"
+  }
+}

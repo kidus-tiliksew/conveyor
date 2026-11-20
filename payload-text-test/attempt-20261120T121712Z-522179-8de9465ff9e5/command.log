@@ -1,0 +1,34 @@
+make[1]: Entering directory '/home/user/conveyor-worktrees/conveyor-task-261120-64ffa9'
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH bash scripts/go-test-require-tests.sh -v -p=1 ./internal/httpapi -skip '^TestSingleStoreConformanceIntegration$|^(TestActivityValidationSeesRowOnlyWritesAndLateCommitsIntegration|TestArtifactHotReadLayoutsIntegration|TestArtifactHotReadRowstoreLayoutsIntegration|TestHotReadActualMixedOriginAndInterruptedBootstrapIntegration|TestHotReadEgressMeasurementIntegration|TestHotReadEventLookupsIntegration|TestHotReadIndexKeyKindMatchesEngine|TestHotReadLayoutDatabaseIntegration|TestHotReadLayoutDiscovery|TestHotReadLayoutFreshDatabaseIntegration|TestHotReadLayoutIncompatibleDatabaseIntegration|TestHotReadLayoutMixedProvenanceIntegration|TestHotReadLayoutOldOperatorEventsIntegration|TestHotReadLookupNamesDigestOnlyWhenKeyIsReady|TestHotReadOperatorScriptEngineVariantsIntegration|TestHotReadPrepareScriptIntegration|TestHotReadResumeWrongExistingObjectFailsBeforeDDLIntegration|TestHotReadRowstoreArtifactLinksStoreReadinessIntegration|TestHotReadTaskLookupsIntegration)$|^(TestActivityValidationTransfersFixedSizeIntegration|TestExistingColumnstoreEventLogPreservedIntegration|TestHistoryMigrationLayoutsIntegration|TestFeatureRetirementPartialDDLRetryIntegration|TestVK10SingleStoreScenarioIntegration)$' -timeout=20m -count=1 -run=^TestTaskPollActivityEngineCostIntegration$
+=== RUN   TestTaskPollActivityEngineCostIntegration
+=== RUN   TestTaskPollActivityEngineCostIntegration/postgres
+    task_poll_activity_engine_cost_integration_test.go:131: CONVEYOR_TEST_DATABASE_URL is unset
+=== RUN   TestTaskPollActivityEngineCostIntegration/singlestore
+=== RUN   TestTaskPollActivityEngineCostIntegration/singlestore/open
+=== RUN   TestTaskPollActivityEngineCostIntegration/singlestore/open/heavy
+=== PAUSE TestTaskPollActivityEngineCostIntegration/singlestore/open/heavy
+=== RUN   TestTaskPollActivityEngineCostIntegration/singlestore/open/light
+=== PAUSE TestTaskPollActivityEngineCostIntegration/singlestore/open/light
+=== CONT  TestTaskPollActivityEngineCostIntegration/singlestore/open/heavy
+=== CONT  TestTaskPollActivityEngineCostIntegration/singlestore/open/light
+2026/11/20 12:18:24 singlestore: database operation failed: operation=Open error=1857 sqlstate=HY000 message="The open transaction was aborted due to being idle during a concurrent DDL operation."
+2026/11/20 12:18:24 singlestore: database operation failed: operation=Open error=1857 sqlstate=HY000 message="The open transaction was aborted due to being idle during a concurrent DDL operation."
+=== NAME  TestTaskPollActivityEngineCostIntegration/singlestore
+    task_poll_activity_engine_cost_integration_test.go:175: opened and migrated the heavy database on singlestore in 41.136s, then seeded it in 18.479s
+    task_poll_activity_engine_cost_integration_test.go:175: opened and migrated the light database on singlestore in 41.133s, then seeded it in 9.062s
+    task_poll_activity_engine_cost_integration_test.go:190: checked both fixtures and their reads in 7.473s
+    task_poll_activity_engine_cost_integration_test.go:250: activity read engine cost: {"backend":"singlestore","factor":2.5,"heavy_snapshot_bytes":102400,"long_renewals":6000,"measure_ms":6544,"median_ratio":3.9597833164302374,"open_heavy_ms":41136,"open_light_ms":41133,"page_tasks":100,"pairs":[{"heavy_first":true,"heavy_ms":506.31631300000004,"light_ms":122.38047300000001,"ratio":4.137231214983129},{"heavy_first":false,"heavy_ms":427.889123,"light_ms":113.84602100000001,"ratio":3.7584899256162845},{"heavy_first":true,"heavy_ms":463.362907,"light_ms":134.300858,"ratio":3.450185753839339},{"heavy_first":false,"heavy_ms":512.6003810000001,"light_ms":129.45162399999998,"ratio":3.9597833164302374},{"heavy_first":true,"heavy_ms":496.636704,"light_ms":113.895194,"ratio":4.360471118737459},{"heavy_first":false,"heavy_ms":456.00637700000004,"light_ms":106.316584,"ratio":4.28913683870806},{"heavy_first":true,"heavy_ms":482.515328,"light_ms":112.48774,"ratio":4.28949259714881},{"heavy_first":false,"heavy_ms":383.135873,"light_ms":109.429805,"ratio":3.5012021907559827},{"heavy_first":true,"heavy_ms":471.484461,"light_ms":120.487032,"ratio":3.913155243130232}],"progress_updates":3,"seed_heavy_ms":18478,"seed_light_ms":9062,"setup_ms":68677,"warm_rounds":2}
+    task_poll_activity_engine_cost_integration_test.go:256: the activity read of the heavy fixture took a median 3.960 times as long as the light fixture's on singlestore, above the factor 2.50
+--- FAIL: TestTaskPollActivityEngineCostIntegration (84.37s)
+    --- SKIP: TestTaskPollActivityEngineCostIntegration/postgres (0.00s)
+    --- FAIL: TestTaskPollActivityEngineCostIntegration/singlestore (84.37s)
+        --- PASS: TestTaskPollActivityEngineCostIntegration/singlestore/open (0.00s)
+            --- PASS: TestTaskPollActivityEngineCostIntegration/singlestore/open/light (41.13s)
+            --- PASS: TestTaskPollActivityEngineCostIntegration/singlestore/open/heavy (41.14s)
+FAIL
+FAIL	github.com/kidus-tiliksew/conveyor/internal/httpapi	84.373s
+FAIL
+make[2]: *** [Makefile:385: _test-singlestore-shard] Error 1
+make[1]: *** [Makefile:381: _test-integration-singlestore] Error 1
+make[1]: Leaving directory '/home/user/conveyor-worktrees/conveyor-task-261120-64ffa9'
+make: *** [Makefile:372: test-integration-singlestore-ci] Error 2
