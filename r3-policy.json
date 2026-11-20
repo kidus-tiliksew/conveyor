@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "task": "261120-db3057",
+  "layer": "local",
+  "command": [
+    "make",
+    "-o",
+    "compose-check",
+    "-o",
+    "dashboard-fresh",
+    "-o",
+    "test-release",
+    "-o",
+    "test-validation",
+    "-o",
+    "test-validation-environment",
+    "-o",
+    "vk10-runtime",
+    "test-go",
+    "RUN_WEB_LINT=:",
+    "RUN_GO_UNIT_TESTS=go test -count=1 -v -run TestRedactJSONBuildsSecretFormsOncePerPass ./internal/redact/"
+  ],
+  "environment": [
+    "PATH",
+    "HOME",
+    "LANG",
+    "GOCACHE",
+    "GOTMPDIR",
+    "TMPDIR"
+  ],
+  "tools": {
+    "make": [
+      "make",
+      "--version"
+    ],
+    "git": [
+      "git",
+      "--version"
+    ],
+    "python3": [
+      "python3",
+      "--version"
+    ],
+    "sh": [
+      "sh",
+      "-c",
+      "printf POSIX-shell"
+    ],
+    "go": [
+      "go",
+      "version"
+    ]
+  },
+  "external_inputs": [
+    "/usr/local/go",
+    "/home/user/go/pkg/mod"
+  ],
+  "exclude": {},
+  "audit": {
+    "inputs_complete": true,
+    "input_rationale": "Allocation guard with the fix. Inputs are the whole task worktree at the reviewed head (hashed, nothing excluded, including the ignored web/node_modules, bin, and scripts/__pycache__ that the command does not read), the Go launcher at /usr/local/go, and the Go module cache at /home/user/go/pkg/mod, which holds the go1.24.0 toolchain that GOTOOLCHAIN=auto selects from go.mod and every resolved module. GOCACHE points at a fresh empty directory for each run, so no earlier build output is reused. The Make command is the repository's test-go target with its Go command overridden through RUN_GO_UNIT_TESTS, as the approved plan's step 5 directs. RUN_WEB_LINT is ':' and the six prerequisite targets are marked with -o, so the run executes only the focused go test command: those targets do not build or test internal/redact, and CI runs all of them at the same head. HOME is inventoried by fingerprint and the command reads no HOME configuration.",
+    "git_metadata": "dependent",
+    "git_rationale": "Treated as Git-metadata dependent by default; these records are fresh executions for review, not reuse candidates."
+  },
+  "backend": null
+}

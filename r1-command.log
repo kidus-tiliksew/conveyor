@@ -1,0 +1,9 @@
+go test -count=1 -overlay=/home/user/.local/state/conveyor/261120-db3057/inputs/overlay.json -v -run TestRedactJSONBuildsSecretFormsOncePerPass ./internal/redact/
+=== RUN   TestRedactJSONBuildsSecretFormsOncePerPass
+    redact_pass_test.go:98: allocations per pass over 1,000 strings: 59126 with three keys, 5028 without
+    redact_pass_test.go:100: three registered keys added 54098 allocations to one pass over 1,000 strings (59126 with keys, 5028 without); want at most 200, so the secret forms are built once per pass and not once per string
+--- FAIL: TestRedactJSONBuildsSecretFormsOncePerPass (0.53s)
+FAIL
+FAIL	github.com/kidus-tiliksew/conveyor/internal/redact	0.537s
+FAIL
+make: *** [Makefile:198: test-go] Error 1

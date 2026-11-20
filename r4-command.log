@@ -1,0 +1,26 @@
+go test -count=1 -run '^$' -bench BenchmarkRedactJSON -benchmem -benchtime=10x -count=3 ./internal/redact/
+goos: linux
+goarch: amd64
+pkg: github.com/kidus-tiliksew/conveyor/internal/redact
+cpu: AMD EPYC 9455 48-Core Processor                
+BenchmarkRedactJSON/secrets=0/pass-4         	      10	    295469 ns/op	  190717 B/op	    3031 allocs/op
+BenchmarkRedactJSON/secrets=0/pass-4         	      10	    268250 ns/op	  190719 B/op	    3031 allocs/op
+BenchmarkRedactJSON/secrets=0/pass-4         	      10	    255368 ns/op	  190717 B/op	    3031 allocs/op
+BenchmarkRedactJSON/secrets=0/reuse-4        	      10	   2526133 ns/op	 1523928 B/op	   24229 allocs/op
+BenchmarkRedactJSON/secrets=0/reuse-4        	      10	   2570154 ns/op	 1575523 B/op	   24245 allocs/op
+BenchmarkRedactJSON/secrets=0/reuse-4        	      10	   2121394 ns/op	 1513704 B/op	   24226 allocs/op
+BenchmarkRedactJSON/secrets=6/pass-4         	      10	    502622 ns/op	  260006 B/op	    3109 allocs/op
+BenchmarkRedactJSON/secrets=6/pass-4         	      10	    421150 ns/op	  253412 B/op	    3107 allocs/op
+BenchmarkRedactJSON/secrets=6/pass-4         	      10	    458406 ns/op	  253412 B/op	    3107 allocs/op
+BenchmarkRedactJSON/secrets=6/reuse-4        	      10	   3301885 ns/op	 1582884 B/op	   24304 allocs/op
+BenchmarkRedactJSON/secrets=6/reuse-4        	      10	   2912436 ns/op	 1562283 B/op	   24298 allocs/op
+BenchmarkRedactJSON/secrets=6/reuse-4        	      10	   2880714 ns/op	 1572585 B/op	   24301 allocs/op
+BenchmarkRedactJSON/secrets=13/pass-4        	      10	    879901 ns/op	  301382 B/op	    3185 allocs/op
+BenchmarkRedactJSON/secrets=13/pass-4        	      10	    559682 ns/op	  301382 B/op	    3185 allocs/op
+BenchmarkRedactJSON/secrets=13/pass-4        	      10	    533194 ns/op	  301382 B/op	    3185 allocs/op
+BenchmarkRedactJSON/secrets=13/reuse-4       	      10	   3625774 ns/op	 1603662 B/op	   24374 allocs/op
+BenchmarkRedactJSON/secrets=13/reuse-4       	      10	   3744916 ns/op	 1614071 B/op	   24377 allocs/op
+BenchmarkRedactJSON/secrets=13/reuse-4       	      10	   3719277 ns/op	 1624372 B/op	   24380 allocs/op
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/redact	0.409s
+:

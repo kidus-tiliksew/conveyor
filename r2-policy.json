@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "task": "261120-db3057",
+  "layer": "local",
+  "command": [
+    "make",
+    "-o",
+    "compose-check",
+    "-o",
+    "dashboard-fresh",
+    "-o",
+    "test-release",
+    "-o",
+    "test-validation",
+    "-o",
+    "test-validation-environment",
+    "-o",
+    "vk10-runtime",
+    "test-go",
+    "RUN_WEB_LINT=:",
+    "RUN_GO_UNIT_TESTS=go test -count=1 -overlay=/home/user/.local/state/conveyor/261120-db3057/inputs/overlay.json -run '^$$' -bench BenchmarkRedactJSON -benchmem -benchtime=10x -count=3 ./internal/redact/"
+  ],
+  "environment": [
+    "PATH",
+    "HOME",
+    "LANG",
+    "GOCACHE",
+    "GOTMPDIR",
+    "TMPDIR"
+  ],
+  "tools": {
+    "make": [
+      "make",
+      "--version"
+    ],
+    "git": [
+      "git",
+      "--version"
+    ],
+    "python3": [
+      "python3",
+      "--version"
+    ],
+    "sh": [
+      "sh",
+      "-c",
+      "printf POSIX-shell"
+    ],
+    "go": [
+      "go",
+      "version"
+    ]
+  },
+  "external_inputs": [
+    "/usr/local/go",
+    "/home/user/go/pkg/mod",
+    "/home/user/.local/state/conveyor/261120-db3057/inputs"
+  ],
+  "exclude": {},
+  "audit": {
+    "inputs_complete": true,
+    "input_rationale": "BenchmarkRedactJSON before the fix (base redact.go through a Go overlay). Inputs are the whole task worktree at the reviewed head (hashed, nothing excluded, including the ignored web/node_modules, bin, and scripts/__pycache__ that the command does not read), the Go launcher at /usr/local/go, and the Go module cache at /home/user/go/pkg/mod, which holds the go1.24.0 toolchain that GOTOOLCHAIN=auto selects from go.mod and every resolved module. GOCACHE points at a fresh empty directory for each run, so no earlier build output is reused. The Make command is the repository's test-go target with its Go command overridden through RUN_GO_UNIT_TESTS, as the approved plan's step 5 directs. RUN_WEB_LINT is ':' and the six prerequisite targets are marked with -o, so the run executes only the focused go test command: those targets do not build or test internal/redact, and CI runs all of them at the same head. HOME is inventoried by fingerprint and the command reads no HOME configuration. The Go overlay at /home/user/.local/state/conveyor/261120-db3057/inputs/overlay.json replaces internal/redact/redact.go with base/redact.go, which is git show dc3fdccca9ce4a0770b0d925f94a20e38f0d059f:internal/redact/redact.go (sha256 d6d91227fba76aa31472bfbed6ba8efad78b6d9acf8f124fe0973f60f0bc3336), and hides internal/redact/redact_cache_test.go, which uses the new clock seam and does not compile against the base file. That directory is an external input.",
+    "git_metadata": "dependent",
+    "git_rationale": "Treated as Git-metadata dependent by default; these records are fresh executions for review, not reuse candidates."
+  },
+  "backend": null
+}

@@ -1,0 +1,117 @@
+{
+ "argv": [
+  "make",
+  "-o",
+  "compose-check",
+  "-o",
+  "dashboard-fresh",
+  "-o",
+  "test-release",
+  "-o",
+  "test-validation",
+  "-o",
+  "test-validation-environment",
+  "-o",
+  "vk10-runtime",
+  "test-go",
+  "RUN_WEB_LINT=:",
+  "RUN_GO_UNIT_TESTS=go test -count=1 -overlay=/home/user/.local/state/conveyor/261120-db3057/inputs/overlay.json -run '^$$' -bench BenchmarkRedactJSON -benchmem -benchtime=10x -count=3 ./internal/redact/"
+ ],
+ "checkout": "/home/user/conveyor-worktrees/conveyor-task-261120-db3057",
+ "cleanup": {
+  "detail": [],
+  "outcome": "success"
+ },
+ "configuration": {
+  "evidence": "/home/user/.local/state/conveyor/261120-db3057/attempt-20261120T084745Z-86930-d6ea4188040d",
+  "layer": "local"
+ },
+ "created_at": 1795164465.2367513,
+ "detached": false,
+ "finished_at": 1795164505.2405207,
+ "host": {
+  "hostname": "box-node-4d2fe1805406352d",
+  "machine": "5f9dd007321314c3ffd4d15d498f1967296dfdabec0b70f09d70083b9518381a"
+ },
+ "invocation": "20261120t084745z-5195438793f9",
+ "kind": "conveyor-validation-invocation",
+ "outcome": "interrupted",
+ "owner": {
+  "birth": {
+   "boot_id": "cbbca45a-86b2-43ed-8b09-e82700e37a13",
+   "start_ticks": 440315
+  },
+  "pid": 86930,
+  "uid": 1000
+ },
+ "references": [
+  "/home/user/.local/state/conveyor/261120-db3057/attempt-20261120T084745Z-86930-d6ea4188040d"
+ ],
+ "resources": [
+  {
+   "detail": "removed disposable path /home/user/.cache/conveyor/261120-db3057/invocations/20261120t084745z-5195438793f9; Disregarded Linux user manager: pid=1144 uid=1000 service=user@1000.service main_pid=1144 start=619 monotonic_usec=6195475 reason=same-user-uninspectable-system-manager-reported-mainpid; Disregarded Linux user manager helper: pid=1165 parent=1144 uid=1000 command=(sd-pam) start=622 parent_start=619 clk_tck=100 reason=same-user-uninspectable-sd-pam-child-of-authenticated-user-manager-within-one-second",
+   "finished_at": 1795164505.2368023,
+   "id": "path-9533fca39556",
+   "identity": {
+    "boot_id": "cbbca45a-86b2-43ed-8b09-e82700e37a13",
+    "created_ticks": 440320,
+    "device": 64769,
+    "inode": 1585569,
+    "path": "/home/user/.cache/conveyor/261120-db3057/invocations/20261120t084745z-5195438793f9"
+   },
+   "kind": "path",
+   "registered_at": 1795164465.2393699,
+   "registered_by": {
+    "birth": {
+     "boot_id": "cbbca45a-86b2-43ed-8b09-e82700e37a13",
+     "start_ticks": 440315
+    },
+    "pid": 86930
+   },
+   "role": "tmp",
+   "sealed_at": 1795164465.240654,
+   "state": "removed"
+  },
+  {
+   "detail": "process group 86988 stopped by SIGTERM",
+   "finished_at": 1795164505.1653566,
+   "id": "process-group-f595296ccc66",
+   "identity": {
+    "argv0": "make",
+    "birth": {
+     "boot_id": "cbbca45a-86b2-43ed-8b09-e82700e37a13",
+     "start_ticks": 440763
+    },
+    "leader": 86988,
+    "pgid": 86988,
+    "uid": 1000
+   },
+   "kind": "process-group",
+   "registered_at": 1795164469.673683,
+   "registered_by": {
+    "birth": {
+     "boot_id": "cbbca45a-86b2-43ed-8b09-e82700e37a13",
+     "start_ticks": 440315
+    },
+    "pid": 86930
+   },
+   "role": "gate",
+   "sealed_at": 1795164469.6756058,
+   "state": "removed"
+  }
+ ],
+ "schema": 1,
+ "state": "completed",
+ "task": "261120-db3057",
+ "tmp": {
+  "GOTMPDIR": "/home/user/.cache/conveyor/261120-db3057/invocations/20261120t084745z-5195438793f9/go-tmp",
+  "TMPDIR": "/home/user/.cache/conveyor/261120-db3057/invocations/20261120t084745z-5195438793f9/tmp"
+ },
+ "tmp_root": {
+  "backing": "disk",
+  "filesystem": "ext4",
+  "override": false,
+  "path": "/home/user/.cache/conveyor/261120-db3057",
+  "warning": null
+ }
+}

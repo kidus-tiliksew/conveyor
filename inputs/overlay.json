@@ -1,0 +1,6 @@
+{
+  "Replace": {
+    "/home/user/conveyor-worktrees/conveyor-task-261120-db3057/internal/redact/redact.go": "/home/user/.local/state/conveyor/261120-db3057/inputs/base/redact.go",
+    "/home/user/conveyor-worktrees/conveyor-task-261120-db3057/internal/redact/redact_cache_test.go": ""
+  }
+}

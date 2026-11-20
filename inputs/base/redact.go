@@ -1,0 +1,287 @@
+// Package redact removes credentials from transcripts before they cross the
+// control-plane persistence boundary.
+package redact
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/url"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+)
+
+// SecretSource resolves recoverable control-plane credentials only for the
+// immediate in-process redaction boundary.
+type SecretSource interface {
+	ListGitHubAppKeysForRedaction(context.Context) ([]string, error)
+}
+
+// Text combines pattern/entropy detection with current exact-match secrets.
+// Source failures are returned so callers can fail persistence closed.
+func Text(ctx context.Context, source SecretSource, value string) (string, Stats, error) {
+	redactor, err := WithSecrets(ctx, source, nil)
+	if err != nil {
+		return "", Stats{}, err
+	}
+	clean, stats := redactor.Redact(value)
+	return clean, stats, nil
+}
+
+// WithSecrets constructs an ephemeral redactor from current stored secrets and
+// any boundary-local values such as a provider credential.
+func WithSecrets(ctx context.Context, source SecretSource, additional []string) (*Redactor, error) {
+	secrets := append([]string(nil), additional...)
+	var err error
+	if source != nil {
+		stored, sourceErr := source.ListGitHubAppKeysForRedaction(ctx)
+		err = sourceErr
+		if err != nil {
+			return nil, err
+		}
+		secrets = append(secrets, stored...)
+	}
+	return New(secrets), nil
+}
+
+const (
+	exactPlaceholder   = "[REDACTED:exact]"
+	encodedPlaceholder = "[REDACTED:encoded]"
+	patternPlaceholder = "[REDACTED:pattern]"
+	entropyPlaceholder = "[REDACTED:entropy]"
+)
+
+// Stats is the wire-level count contract shared with persisted transcripts.
+// It contains only match counts, never values.
+type Stats = core.RedactionStats
+
+type needle struct {
+	value       string
+	placeholder string
+	class       string
+}
+
+// Redactor combines caller-known sensitive values with conservative
+// well-known credential patterns. Values are held in memory only; callers
+// persist only Stats.
+type Redactor struct {
+	needles []needle
+	source  []string
+}
+
+func New(values []string) *Redactor {
+	source := append([]string(nil), values...)
+	values = append(append([]string(nil), values...), liveSecrets()...)
+	byValue := make(map[string]needle)
+	add := func(value, placeholder, class string) {
+		if value == "" {
+			return
+		}
+		if existing, ok := byValue[value]; ok && existing.class == "exact" {
+			return
+		}
+		byValue[value] = needle{value: value, placeholder: placeholder, class: class}
+	}
+	for _, value := range values {
+		add(value, exactPlaceholder, "exact")
+		encoded := []string{
+			base64.StdEncoding.EncodeToString([]byte(value)),
+			base64.RawStdEncoding.EncodeToString([]byte(value)),
+			base64.URLEncoding.EncodeToString([]byte(value)),
+			base64.RawURLEncoding.EncodeToString([]byte(value)),
+			url.QueryEscape(value),
+			url.PathEscape(value),
+			// A value printed with %q or strconv.Quote, such as a quoted
+			// attachment name in an audit transcript, has its escapes applied.
+			quotedForm(value),
+		}
+		for _, candidate := range encoded {
+			if candidate != value {
+				add(candidate, encodedPlaceholder, "encoded")
+			}
+		}
+	}
+	needles := make([]needle, 0, len(byValue))
+	for _, item := range byValue {
+		needles = append(needles, item)
+	}
+	sort.Slice(needles, func(i, j int) bool { return len(needles[i].value) > len(needles[j].value) })
+	return &Redactor{needles: needles, source: source}
+}
+
+// quotedForm is value as strconv.Quote prints it, without the outer quotes.
+func quotedForm(value string) string {
+	quoted := strconv.Quote(value)
+	return quoted[1 : len(quoted)-1]
+}
+
+var credentialPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`),
+	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{20,}\b`),
+	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}\b`),
+	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}\b`),
+	// Fine-grained GitHub tokens and Conveyor's own tokens,
+	// cv_<kind>_<id>_<base64url>, whose base64url tail can end in "-", so no
+	// closing word boundary applies (req-security-boundaries REQ-3).
+	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}`),
+	regexp.MustCompile(`\bcv_(?:pat|agent|session|signin)_[A-Za-z0-9_-]{16,}`),
+	// A bearer credential of any other shape. A 64-hex value stays allowed
+	// alone, because artifact IDs and content digests have that shape.
+	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}`),
+	regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`),
+}
+
+var assignedSecret = regexp.MustCompile(`(?i)((?:token|secret|password|api[_-]?key)\s*[:=]\s*["']?)([A-Za-z0-9+/=_-]{20,})`)
+
+func (r *Redactor) Redact(text string) (string, Stats) {
+	var stats Stats
+	// A long-lived diagnostic writer can predate an installation-token mint.
+	// Rebuild the exact-match snapshot at use so it includes every live token.
+	for _, item := range New(r.source).needles {
+		count := strings.Count(text, item.value)
+		if count == 0 {
+			continue
+		}
+		text = strings.ReplaceAll(text, item.value, item.placeholder)
+		if item.class == "exact" {
+			stats.Exact += int64(count)
+		} else {
+			stats.Encoded += int64(count)
+		}
+	}
+	for _, pattern := range credentialPatterns {
+		matches := pattern.FindAllStringIndex(text, -1)
+		if len(matches) == 0 {
+			continue
+		}
+		stats.Pattern += int64(len(matches))
+		text = pattern.ReplaceAllString(text, patternPlaceholder)
+	}
+	matches := assignedSecret.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) > 0 {
+		stats.Entropy += int64(len(matches))
+		text = assignedSecret.ReplaceAllString(text, `${1}`+entropyPlaceholder)
+	}
+	return text, stats
+}
+
+// RedactJSON walks every JSON string so values containing quotes or control
+// characters are redacted before JSON escaping can obscure the match.
+func (r *Redactor) RedactJSON(data []byte) ([]byte, Stats, error) {
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, Stats{}, err
+	}
+	var stats Stats
+	value = r.walk(value, &stats)
+	out, err := json.Marshal(value)
+	return out, stats, err
+}
+
+func (r *Redactor) walk(value any, stats *Stats) any {
+	switch item := value.(type) {
+	case string:
+		clean, found := r.Redact(item)
+		stats.Add(found)
+		return clean
+	case []any:
+		for i := range item {
+			item[i] = r.walk(item[i], stats)
+		}
+		return item
+	case map[string]any:
+		cleaned := make(map[string]any, len(item))
+		for key, child := range item {
+			cleanKey, found := r.Redact(key)
+			stats.Add(found)
+			cleaned[cleanKey] = r.walk(child, stats)
+		}
+		return cleaned
+	default:
+		return value
+	}
+}
+
+// Writer applies the same boundary to shim diagnostics written to stderr.
+type Writer struct {
+	Destination io.Writer
+	Redactor    *Redactor
+
+	mu      sync.Mutex
+	pending string
+}
+
+func (w *Writer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending += string(p)
+	boundary := strings.LastIndexByte(w.pending, '\n')
+	if boundary < 0 {
+		return len(p), nil
+	}
+	ready := w.pending[:boundary+1]
+	w.pending = w.pending[boundary+1:]
+	clean, _ := w.Redactor.Redact(ready)
+	if _, err := io.WriteString(w.Destination, clean); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// Flush emits a final unterminated line. Callers invoke it only after the
+// source process has stopped writing, so exact values split across writes are
+// still redacted without persisting a buffer of runtime values.
+func (w *Writer) Flush() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.pending == "" {
+		return nil
+	}
+	clean, _ := w.Redactor.Redact(w.pending)
+	w.pending = ""
+	_, err := io.WriteString(w.Destination, clean)
+	return err
+}
+
+// RegisterSecret retains process-local credentials for centralized redaction.
+// Tokens remain registered through expiry, including tokens replaced in cache.
+// Private keys use a zero expiry so older in-flight diagnostics remain scrubbed.
+var processSecrets = struct {
+	sync.Mutex
+	values map[string]time.Time
+}{values: map[string]time.Time{}}
+
+func RegisterSecret(value string, expires time.Time) {
+	if value == "" {
+		return
+	}
+	processSecrets.Lock()
+	defer processSecrets.Unlock()
+	if old, ok := processSecrets.values[value]; ok && (old.IsZero() || (!expires.IsZero() && old.After(expires))) {
+		return
+	}
+	processSecrets.values[value] = expires
+}
+func liveSecrets() []string {
+	processSecrets.Lock()
+	defer processSecrets.Unlock()
+	values := []string{}
+	now := time.Now()
+	for value, expiry := range processSecrets.values {
+		if !expiry.IsZero() && !now.Before(expiry) {
+			delete(processSecrets.values, value)
+			continue
+		}
+		values = append(values, value)
+	}
+	return values
+}

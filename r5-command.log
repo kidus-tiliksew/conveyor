@@ -1,0 +1,199 @@
+go test -count=1 -race -v ./internal/redact/...
+=== RUN   TestRedactMatchesLegacyAlgorithm
+--- PASS: TestRedactMatchesLegacyAlgorithm (0.02s)
+=== RUN   TestRedactJSONKeyCollisionMatchesALegacyOutcome
+--- PASS: TestRedactJSONKeyCollisionMatchesALegacyOutcome (0.01s)
+=== RUN   TestRedactorReusesCompiledListWhileRegistryIsStable
+--- PASS: TestRedactorReusesCompiledListWhileRegistryIsStable (0.00s)
+=== RUN   TestWriterMatchesLegacyAcrossLateRegistration
+--- PASS: TestWriterMatchesLegacyAcrossLateRegistration (0.00s)
+=== RUN   TestRegistryExpiryAndExtension
+--- PASS: TestRegistryExpiryAndExtension (0.00s)
+=== RUN   TestSharedRedactorUnderConcurrentRegistration
+--- PASS: TestSharedRedactorUnderConcurrentRegistration (0.03s)
+=== RUN   TestRedactJSONBuildsSecretFormsOncePerPass
+    redact_pass_test.go:98: allocations per pass over 1,000 strings: 3088 with three keys, 3036 without
+--- PASS: TestRedactJSONBuildsSecretFormsOncePerPass (0.05s)
+=== RUN   TestTextIncludesGitHubAppKeysAndFailsClosed
+--- PASS: TestTextIncludesGitHubAppKeysAndFailsClosed (0.00s)
+=== RUN   TestWriterRedactsExactValuesSplitAcrossWritesAndFlush
+--- PASS: TestWriterRedactsExactValuesSplitAcrossWritesAndFlush (0.00s)
+=== RUN   TestRedactsExactAndEncodedInjectedValues
+--- PASS: TestRedactsExactAndEncodedInjectedValues (0.00s)
+=== RUN   TestRedactsCredentialPatternsAndAssignedEntropy
+--- PASS: TestRedactsCredentialPatternsAndAssignedEntropy (0.00s)
+=== RUN   TestRedactJSONHandlesEscapedSecret
+--- PASS: TestRedactJSONHandlesEscapedSecret (0.00s)
+=== RUN   TestRedactJSONScrubsObjectKeys
+--- PASS: TestRedactJSONScrubsObjectKeys (0.00s)
+=== RUN   TestExactValueWinsOverEquivalentEncoding
+--- PASS: TestExactValueWinsOverEquivalentEncoding (0.00s)
+=== RUN   TestAppSecretsReachExistingDiagnosticWriters
+--- PASS: TestAppSecretsReachExistingDiagnosticWriters (0.00s)
+=== RUN   TestRedactsTokenShapesAndKeepsDigests
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests
+=== RUN   TestRedactsQuotedFormOfKnownValues
+=== PAUSE TestRedactsQuotedFormOfKnownValues
+=== RUN   TestRegisteredBareHexTokenRedactsExactWhileDigestStays
+--- PASS: TestRegisteredBareHexTokenRedactsExactWhileDigestStays (0.00s)
+=== RUN   TestRegisterSecretIgnoresEmptyValue
+--- PASS: TestRegisterSecretIgnoresEmptyValue (0.00s)
+=== CONT  TestRedactsTokenShapesAndKeepsDigests
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/personal_access_token/bare
+=== CONT  TestRedactsQuotedFormOfKnownValues
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/personal_access_token/bare
+=== RUN   TestRedactsQuotedFormOfKnownValues/quote_and_backslash
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/personal_access_token/quoted
+=== PAUSE TestRedactsQuotedFormOfKnownValues/quote_and_backslash
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/personal_access_token/quoted
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/personal_access_token/bearer
+=== RUN   TestRedactsQuotedFormOfKnownValues/newline
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/personal_access_token/bearer
+=== PAUSE TestRedactsQuotedFormOfKnownValues/newline
+=== RUN   TestRedactsQuotedFormOfKnownValues/tab
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/personal_access_token/lowercase_bearer
+=== PAUSE TestRedactsQuotedFormOfKnownValues/tab
+=== RUN   TestRedactsQuotedFormOfKnownValues/nothing_to_escape
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/personal_access_token/lowercase_bearer
+=== PAUSE TestRedactsQuotedFormOfKnownValues/nothing_to_escape
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/bare
+=== CONT  TestRedactsQuotedFormOfKnownValues/nothing_to_escape
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/bare
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/quoted
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/quoted
+=== CONT  TestRedactsQuotedFormOfKnownValues/tab
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/bearer
+=== CONT  TestRedactsQuotedFormOfKnownValues/quote_and_backslash
+=== CONT  TestRedactsQuotedFormOfKnownValues/newline
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/bearer
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/lowercase_bearer
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/lowercase_bearer
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/bare
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/bare
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/quoted
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/quoted
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/bearer
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/bearer
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/lowercase_bearer
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/lowercase_bearer
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/session_token/bare
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/session_token/bare
+--- PASS: TestRedactsQuotedFormOfKnownValues (0.00s)
+    --- PASS: TestRedactsQuotedFormOfKnownValues/nothing_to_escape (0.00s)
+    --- PASS: TestRedactsQuotedFormOfKnownValues/tab (0.00s)
+    --- PASS: TestRedactsQuotedFormOfKnownValues/quote_and_backslash (0.00s)
+    --- PASS: TestRedactsQuotedFormOfKnownValues/newline (0.00s)
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/session_token/quoted
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/session_token/quoted
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/session_token/bearer
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/session_token/bearer
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/session_token/lowercase_bearer
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/session_token/lowercase_bearer
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/sign-in_token/bare
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/sign-in_token/bare
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/sign-in_token/quoted
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/sign-in_token/quoted
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/sign-in_token/bearer
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/sign-in_token/bearer
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/sign-in_token/lowercase_bearer
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/sign-in_token/lowercase_bearer
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/bare
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/bare
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/quoted
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/quoted
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/bearer
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/bearer
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/lowercase_bearer
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/lowercase_bearer
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/assigned_token_counts_once
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/assigned_token_counts_once
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/bearer_value_of_another_shape
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/bearer_value_of_another_shape
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/keeps_bare_artifact_digest
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/keeps_bare_artifact_digest
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/keeps_prefixed_content_digest
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/keeps_prefixed_content_digest
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/keeps_digest_in_a_payload
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/keeps_digest_in_a_payload
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/keeps_digest_in_a_URI
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/keeps_digest_in_a_URI
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/keeps_prefix_named_in_prose
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/keeps_prefix_named_in_prose
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/keeps_short_identifier
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/keeps_short_identifier
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/keeps_bearer_in_prose
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/keeps_bearer_in_prose
+=== RUN   TestRedactsTokenShapesAndKeepsDigests/keeps_github_pat_prefix_alone
+=== PAUSE TestRedactsTokenShapesAndKeepsDigests/keeps_github_pat_prefix_alone
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/personal_access_token/bare
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/sign-in_token/quoted
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/keeps_bare_artifact_digest
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/keeps_short_identifier
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/keeps_github_pat_prefix_alone
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/keeps_prefix_named_in_prose
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/keeps_digest_in_a_payload
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/keeps_digest_in_a_URI
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/keeps_prefixed_content_digest
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/quoted
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/keeps_bearer_in_prose
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/assigned_token_counts_once
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/bearer_value_of_another_shape
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/lowercase_bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/sign-in_token/bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/sign-in_token/lowercase_bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/quoted
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/session_token/lowercase_bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/sign-in_token/bare
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/session_token/quoted
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/session_token/bare
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/session_token/bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/lowercase_bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/lowercase_bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/quoted
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/bare
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/personal_access_token/bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/bare
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/bare
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/personal_access_token/lowercase_bearer
+=== CONT  TestRedactsTokenShapesAndKeepsDigests/personal_access_token/quoted
+--- PASS: TestRedactsTokenShapesAndKeepsDigests (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/personal_access_token/bare (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/keeps_short_identifier (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/keeps_bare_artifact_digest (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/sign-in_token/quoted (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/keeps_github_pat_prefix_alone (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/keeps_prefix_named_in_prose (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/keeps_digest_in_a_URI (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/keeps_bearer_in_prose (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/quoted (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/assigned_token_counts_once (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/keeps_digest_in_a_payload (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/bearer_value_of_another_shape (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/lowercase_bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/sign-in_token/lowercase_bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/sign-in_token/bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/quoted (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/session_token/lowercase_bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/sign-in_token/bare (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/session_token/quoted (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/keeps_prefixed_content_digest (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/session_token/bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/session_token/bare (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/lowercase_bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/lowercase_bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/retired_agent_token/bare (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/quoted (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/personal_access_token/bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/personal_access_token_ending_in_a_dash/bare (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/personal_access_token/lowercase_bearer (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/fine-grained_GitHub_token/bare (0.00s)
+    --- PASS: TestRedactsTokenShapesAndKeepsDigests/personal_access_token/quoted (0.00s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/redact	1.121s
+:
