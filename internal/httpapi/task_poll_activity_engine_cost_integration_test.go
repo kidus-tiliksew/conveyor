@@ -79,7 +79,7 @@ const engineCostOffPageTask = "cost-off"
 // TestTaskPollActivityEngineCostIntegration for the measurements behind each
 // factor.
 var engineCostFactors = map[string]float64{
-	"postgres":    14,
+	"postgres":    18,
 	"singlestore": 2.5,
 }
 
@@ -120,6 +120,9 @@ func TestTaskPollActivityEngineCostIntegration(t *testing.T) {
 			const ws = "engine-cost"
 			now := taskPollNow
 			cfg := &config.Config{Workspace: ws, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
+			// The fixtures are prepared one after the other: on one SingleStore
+			// server, preparing both at once took twice as long as in turn.
+			setup := time.Now()
 			var twins []*engineCostTwin
 			for _, heavy := range []bool{true, false} {
 				label := "light"
@@ -144,6 +147,7 @@ func TestTaskPollActivityEngineCostIntegration(t *testing.T) {
 				t.Logf("opened and migrated the %s database on %s in %s, then seeded it in %s", label, backend.name, twin.open.Round(time.Millisecond), twin.seed.Round(time.Millisecond))
 				twins = append(twins, twin)
 			}
+			setupTime := time.Since(setup)
 			heavy, light := twins[0], twins[1]
 			page := engineCostPage()
 
@@ -207,6 +211,7 @@ func TestTaskPollActivityEngineCostIntegration(t *testing.T) {
 				"open_light_ms":        light.open.Milliseconds(),
 				"seed_heavy_ms":        heavy.seed.Milliseconds(),
 				"seed_light_ms":        light.seed.Milliseconds(),
+				"setup_ms":             setupTime.Milliseconds(),
 				"measure_ms":           time.Since(measuring).Milliseconds(),
 				"pairs":                pairs,
 				"median_ratio":         median,
@@ -702,37 +707,44 @@ func checkEngineCostStorage(t *testing.T, twin *engineCostTwin) {
 	for _, event := range compact {
 		compactByID[event.ID] = event
 	}
-	for _, kind := range []string{"work_order.claimed", "work_order.updated"} {
-		found := false
-		for _, event := range full {
-			if event.Kind != kind {
-				continue
-			}
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal(event.Payload, &fields); err != nil {
-				t.Fatalf("%s %s payload: %v", twin.label, kind, err)
-			}
-			snapshot, ok := fields["governance_snapshot"]
-			if !ok {
-				continue
-			}
-			found = true
-			if twin.heavy && len(snapshot) < engineCostHeavySnapshotBytes {
-				t.Fatalf("heavy %s event %d stores a %d-byte snapshot, want at least %d", kind, event.ID, len(snapshot), engineCostHeavySnapshotBytes)
-			}
-			if !twin.heavy && len(snapshot) >= 4<<10 {
-				t.Fatalf("light %s event %d stores a %d-byte snapshot, want a small one", kind, event.ID, len(snapshot))
-			}
-			read, ok := compactByID[event.ID]
-			if !ok {
-				t.Fatalf("%s compact read has no %s event %d", twin.label, kind, event.ID)
-			}
-			if strings.Contains(string(read.Payload), `"governance_snapshot"`) {
-				t.Fatalf("%s compact read of %s event %d keeps the snapshot", twin.label, kind, event.ID)
-			}
+	// The sample task's history holds two implement claims, each with its
+	// progress updates, and one submission, all written with the snapshot.
+	// Every one of them must store it.
+	want := map[string]int{"work_order.claimed": 2, "work_order.updated": 2*engineCostProgressUpdates + 1}
+	stored := map[string]int{}
+	for _, event := range full {
+		if event.Kind != "work_order.claimed" && event.Kind != "work_order.updated" {
+			continue
 		}
-		if !found {
-			t.Fatalf("%s fixture stores no %s event with a governance snapshot on %s", twin.label, kind, sample)
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(event.Payload, &fields); err != nil {
+			t.Fatalf("%s %s payload: %v", twin.label, event.Kind, err)
+		}
+		snapshot, ok := fields["governance_snapshot"]
+		if !ok {
+			if event.Kind == "work_order.claimed" {
+				t.Fatalf("%s claim event %d stores no governance snapshot", twin.label, event.ID)
+			}
+			continue
+		}
+		stored[event.Kind]++
+		if twin.heavy && len(snapshot) < engineCostHeavySnapshotBytes {
+			t.Fatalf("heavy %s event %d stores a %d-byte snapshot, want at least %d", event.Kind, event.ID, len(snapshot), engineCostHeavySnapshotBytes)
+		}
+		if !twin.heavy && len(snapshot) >= 4<<10 {
+			t.Fatalf("light %s event %d stores a %d-byte snapshot, want a small one", event.Kind, event.ID, len(snapshot))
+		}
+		read, ok := compactByID[event.ID]
+		if !ok {
+			t.Fatalf("%s compact read has no %s event %d", twin.label, event.Kind, event.ID)
+		}
+		if strings.Contains(string(read.Payload), `"governance_snapshot"`) {
+			t.Fatalf("%s compact read of %s event %d keeps the snapshot", twin.label, event.Kind, event.ID)
+		}
+	}
+	for kind, count := range want {
+		if stored[kind] != count {
+			t.Fatalf("%s fixture stores %d %s events with a governance snapshot on %s, want %d", twin.label, stored[kind], kind, sample, count)
 		}
 	}
 
@@ -785,25 +797,42 @@ func checkEngineCostRead(t *testing.T, twin *engineCostTwin, page []string, now 
 		}
 		byTask[marker.TaskID] = marker
 	}
-	openReviews := 0
+	// The read returns exactly the page's orders, each in the state the
+	// fixture left it.
+	orders := map[string]core.WorkOrderState{}
 	for _, order := range inputs.Orders {
-		if !slices.Contains(page, order.TaskID) {
-			t.Fatalf("%s read returned order %s of task %s outside the page", twin.label, order.ID, order.TaskID)
+		if _, seen := orders[order.ID]; seen {
+			t.Fatalf("%s read returned order %s twice", twin.label, order.ID)
 		}
-		if order.Stage == core.StageReview && (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) {
-			openReviews++
+		orders[order.ID] = order.State
+	}
+	want := engineCostExpectedOrders(page)
+	var mismatches []string
+	for id, state := range want {
+		if got, ok := orders[id]; !ok || got != state {
+			mismatches = append(mismatches, fmt.Sprintf("%s is %q, want %q", id, got, state))
 		}
 	}
-	if want := 2 * engineCostPageTasks / 10; openReviews != want {
-		t.Fatalf("%s read returned %d open review orders, want %d", twin.label, openReviews, want)
+	for id, state := range orders {
+		if _, ok := want[id]; !ok {
+			mismatches = append(mismatches, fmt.Sprintf("%s (%s) is not a page order", id, state))
+		}
+	}
+	if len(mismatches) > 0 {
+		sort.Strings(mismatches)
+		t.Fatalf("%s read orders differ from the fixture: %s", twin.label, strings.Join(mismatches, "; "))
 	}
 	if want := engineCostLiveLease(engineCostReviewLive, now); !inputs.ValidUntil.Equal(want) {
 		t.Fatalf("%s read review lease horizon = %s, want the earliest live review lease %s", twin.label, inputs.ValidUntil, want)
 	}
 
 	for _, taskID := range page {
-		got, want := byTask[taskID], engineCostReference(t, ctx, st, taskID, now)
+		got := byTask[taskID]
+		want, last := engineCostReference(t, ctx, st, taskID, now)
 		label := twin.label + " marker " + taskID
+		if got.LastEventID != last.ID || !got.LastEventAt.Equal(last.At) {
+			t.Fatalf("%s newest event = %d at %s, want the stored newest event %d at %s", label, got.LastEventID, got.LastEventAt, last.ID, last.At)
+		}
 		requireEngineCostJSON(t, label+" forge failure", got.ForgeFailure, want.ForgeFailure)
 		requireEngineCostJSON(t, label+" review diagnostics", engineCostUTC(got.ReviewDiagnostics), engineCostUTC(want.ReviewDiagnostics))
 		requireEngineCostJSON(t, label+" review recovery", got.ReviewRecovery, want.ReviewRecovery)
@@ -846,10 +875,38 @@ func checkEngineCostRead(t *testing.T, twin *engineCostTwin, page []string, now 
 	return inputs
 }
 
+// engineCostExpectedOrders is the order selection the fixture leaves for the
+// page: each order's ID and state at the read's instant, from the groups
+// seedEngineCostTask writes. Creating a second implement order cancels the
+// first.
+func engineCostExpectedOrders(page []string) map[string]core.WorkOrderState {
+	ended, open, replaced := core.WorkOrderTimedOut, core.WorkOrderQueued, core.WorkOrderCancelled
+	groups := map[int]map[string]core.WorkOrderState{
+		engineCostMerged:          {"spec-1": ended, "implement-1": ended, "review-1-seat-1": ended},
+		engineCostMergeFailed:     {"implement-1": ended},
+		engineCostResubmitted:     {"implement-1": replaced, "implement-2": ended},
+		engineCostRequestAnswered: {"implement-1": ended},
+		engineCostRequestPending:  {"implement-1": ended},
+		engineCostReviewLapsed:    {"implement-1": ended, "verify-1": ended, "review-1-seat-1": open},
+		engineCostReviewLive:      {"implement-1": ended, "review-1-seat-1": open},
+		engineCostReviewRounds:    {"implement-1": replaced, "review-1-seat-1": ended, "implement-2": ended, "review-2-seat-1": ended},
+		engineCostPlanGate:        {"spec-1": ended},
+		engineCostQueued:          {"implement-1": open},
+	}
+	out := map[string]core.WorkOrderState{}
+	for index, taskID := range page {
+		for suffix, state := range groups[index%10] {
+			out[taskID+"-"+suffix] = state
+		}
+	}
+	return out
+}
+
 // engineCostReference folds one task's markers from its complete compact
-// event list, as the in-memory reference backend does. The folds decode no
-// snapshot body, so the compact list folds as the stored one does.
-func engineCostReference(t *testing.T, ctx context.Context, st store.Store, taskID string, now time.Time) store.ActivityMarker {
+// event list, as the in-memory reference backend does, and returns the
+// task's newest stored event by (at, id). The folds decode no snapshot
+// body, so the compact list folds as the stored one does.
+func engineCostReference(t *testing.T, ctx context.Context, st store.Store, taskID string, now time.Time) (store.ActivityMarker, core.Event) {
 	t.Helper()
 	orders, err := st.ListWorkOrdersForTasks(ctx, []string{taskID})
 	if err != nil {
@@ -878,6 +935,15 @@ func engineCostReference(t *testing.T, ctx context.Context, st store.Store, task
 			orders[index].Claimable = false
 		}
 	}
+	if len(events) == 0 {
+		t.Fatalf("task %s stores no event", taskID)
+	}
+	last := events[0]
+	for _, event := range events[1:] {
+		if event.At.After(last.At) || (event.At.Equal(last.At) && event.ID > last.ID) {
+			last = event
+		}
+	}
 	return store.ActivityMarker{
 		TaskID:                    taskID,
 		ForgeFailure:              store.LatestForgeFailure(events),
@@ -886,11 +952,12 @@ func engineCostReference(t *testing.T, ctx context.Context, st store.Store, task
 		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(task, store.CurrentReviewOrders(orders, events), events),
 		Stalled:                   store.StalledTask(orders),
 		UserChangesRequested:      store.UserRequestChangesPending(events),
-	}
+	}, last
 }
 
 // requireEngineCostTwinsAgree proves both fixtures read the same page: the
-// same markers apart from the newest event's ID, which the stores assign,
+// same markers apart from the newest event's ID, which each store assigns
+// and checkEngineCostRead checks against the fixture's own history,
 // the same orders by identity, state, and lease, and the same review lease
 // horizon.
 func requireEngineCostTwinsAgree(t *testing.T, heavy, light store.ActivityInputs) {
