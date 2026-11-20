@@ -75,9 +75,20 @@ const engineCostLongTask = 5
 const engineCostOffPageTask = "cost-off"
 
 // engineCostFactors bounds the median ratio of the heavy read's elapsed time
-// to the light read's for each backend. See
-// TestTaskPollActivityEngineCostIntegration for the measurements behind each
-// factor.
+// to the light read's for each backend. Medians measured with this test on
+// main dc3fdccc, on SingleStore 10.9 (the CI image) and PostgreSQL 16:
+//
+//	backend      read                          CI runs       local runs
+//	singlestore  main                          1.45 1.41     1.33 to 1.73 (8 runs)
+//	singlestore  payload text test (#1714)     -             3.95 to 4.36 (5 runs)
+//	singlestore  every renewal read (#1715)    -             30.2 to 33.1 (4 runs)
+//	postgres     main                          11.56 11.45   9.2 to 11.0 (6 runs)
+//
+// The SingleStore factor is about 1.45 times the highest clean median and
+// below the lowest median of either restored defect by the same margin. On
+// PostgreSQL the ratio comes from the stored snapshots: with small heavy
+// snapshots it was 1.08. Its factor is about 1.5 times the highest CI
+// median, so it fails when the read's cost grows by half again.
 var engineCostFactors = map[string]float64{
 	"postgres":    18,
 	"singlestore": 2.5,
@@ -87,6 +98,7 @@ var engineCostFactors = map[string]float64{
 type engineCostTwin struct {
 	label string
 	heavy bool
+	name  string
 	st    taskPollStore
 	ctx   context.Context
 	open  time.Duration
@@ -120,32 +132,42 @@ func TestTaskPollActivityEngineCostIntegration(t *testing.T) {
 			const ws = "engine-cost"
 			now := taskPollNow
 			cfg := &config.Config{Workspace: ws, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
-			// The fixtures are prepared one after the other: on one SingleStore
-			// server, preparing both at once took twice as long as in turn.
+			// Both databases are opened and migrated at once, each in its own
+			// subtest, and belong to this test, which reads them after both
+			// subtests end. The fixtures are then seeded one after the other:
+			// on one SingleStore server, seeding both at once took twice as
+			// long as in turn.
 			setup := time.Now()
-			var twins []*engineCostTwin
-			for _, heavy := range []bool{true, false} {
-				label := "light"
-				if heavy {
-					label = "heavy"
+			outer, cleanup := t.Context(), t.Cleanup
+			twins := []*engineCostTwin{{label: "heavy", heavy: true}, {label: "light"}}
+			t.Run("open", func(t *testing.T) {
+				for _, twin := range twins {
+					t.Run(twin.label, func(t *testing.T) {
+						t.Parallel()
+						ctx := store.WithActor(outer, store.SystemActor())
+						twin.name = fmt.Sprintf("conveyor_cost_%s_%d_test", twin.label, time.Now().UnixNano())
+						opening := time.Now()
+						st := openTaskPollDatabase(t, cleanup, ctx, backend.name, raw, twin.name, true, false)
+						ctx = store.WithWorkspace(ctx, ws)
+						if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+							t.Fatal(err)
+						}
+						twin.open = time.Since(opening)
+						twin.st, twin.ctx = st, ctx
+					})
 				}
-				ctx := store.WithActor(t.Context(), store.SystemActor())
-				name := fmt.Sprintf("conveyor_cost_%s_%d_test", label, time.Now().UnixNano())
-				opening := time.Now()
-				st := openTaskPollDatabase(t, ctx, backend.name, raw, name, true, false)
-				ctx = store.WithWorkspace(ctx, ws)
-				if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
-					t.Fatal(err)
+			})
+			for _, twin := range twins {
+				if twin.st == nil {
+					t.Fatalf("the %s fixture database was not opened", twin.label)
 				}
-				opened := time.Since(opening)
 				started := time.Now()
-				seedEngineCost(t, ctx, st, ws, now, heavy)
+				seedEngineCost(t, twin.ctx, twin.st, ws, now, twin.heavy)
 				if backend.name == "singlestore" {
-					settleEngineCostSingleStore(t, ctx, raw, name)
+					settleEngineCostSingleStore(t, twin.ctx, raw, twin.name)
 				}
-				twin := &engineCostTwin{label: label, heavy: heavy, st: st, ctx: ctx, open: opened, seed: time.Since(started)}
-				t.Logf("opened and migrated the %s database on %s in %s, then seeded it in %s", label, backend.name, twin.open.Round(time.Millisecond), twin.seed.Round(time.Millisecond))
-				twins = append(twins, twin)
+				twin.seed = time.Since(started)
+				t.Logf("opened and migrated the %s database on %s in %s, then seeded it in %s", twin.label, backend.name, twin.open.Round(time.Millisecond), twin.seed.Round(time.Millisecond))
 			}
 			setupTime := time.Since(setup)
 			heavy, light := twins[0], twins[1]
