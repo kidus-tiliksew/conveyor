@@ -717,7 +717,7 @@ func markerLifecycleQuery(in store.MarkerFoldInput, jobs []string, kinds markerL
 				WHERE e.workspace_id=` + b.bind(in.Workspace) + ` AND e.task_id IS NOT NULL AND ` + b.fixedIn("e.task_id", in.LiveReviewTasks) + `
 				AND e.kind IN ('work_order.claimed','work_order.lease_renewed')
 				AND ((e.kind='work_order.claimed' AND ` + b.bind(claims) + `=1)
-					OR (e.kind='work_order.lease_renewed' AND ` + b.flag(jobs) + `=1 AND ` + b.fixedIn("e.job_id", jobs) + `))`
+					OR (e.kind='work_order.lease_renewed'))`
 	// Only the simple renewal payload the store writes is eligible for the
 	// renewal reduction; other renewal shapes keep their complete history.
 	const attemptField = `"attempt_id"[[:space:]]*:[[:space:]]*"[^"]*"`
