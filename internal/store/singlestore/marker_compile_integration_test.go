@@ -377,7 +377,8 @@ func TestMarkerFoldCompileIntegration(t *testing.T) {
 		{"fix lifecycle, reduced claims", false},
 		{"fix lifecycle, every claim", true},
 	} {
-		query, args = markerLifecycleQuery(markerCompileInput(true, variant.keepAll))
+		lifecycle := markerCompileInput(true, variant.keepAll)
+		query, args = markerLifecycleQuery(lifecycle, markerShapeJobs(lifecycle), markerClaimsAndRenewals)
 		fixed = append(fixed, &markerCompileShape{name: variant.name, query: query, args: args, fixed: true})
 	}
 	wideTasks := markerCompileInput(false, false).Page[:7]
@@ -500,8 +501,9 @@ func TestMarkerFoldCompileIntegration(t *testing.T) {
 
 // TestMarkerFoldPlanReuseIntegration proves the read's five statement texts
 // reuse one engine plan each when the bound values change: page sizes 1, 41,
-// and 100, one, five, and 250 open review orders, and wide reads of 1, 41,
-// and 100 tasks. The values travel
+// and 100, one, five, and 250 open review orders, each list of their jobs
+// and the empty job list, and wide reads of 1, 41, and 100 tasks. The values
+// travel
 // interpolated, as in production, so the engine's own parameterization must
 // fold the padded lists, the empty-list flag, and the order array into one
 // plan (component-web-task-surfaces invariant 19).
@@ -517,8 +519,8 @@ func TestMarkerFoldPlanReuseIntegration(t *testing.T) {
 		build         func(store.MarkerFoldInput) (string, []any)
 	}{
 		{"narrow", false, false, markerFoldQuery},
-		{"lifecycle, reduced claims", true, false, markerLifecycleQuery},
-		{"lifecycle, every claim", true, true, markerLifecycleQuery},
+		{"lifecycle, reduced claims", true, false, nil},
+		{"lifecycle, every claim", true, true, nil},
 	} {
 		session.evict(ctx)
 		orderCounts := []int{0}
@@ -532,11 +534,28 @@ func TestMarkerFoldPlanReuseIntegration(t *testing.T) {
 				if pages == 1 {
 					in.ReviewTasks = nil
 				}
-				query, args := variant.build(in)
-				if _, err := session.run(ctx, query, args); err != nil {
-					t.Fatalf("%s pages=%d orders=%d: %v", variant.name, pages, orders, err)
+				if variant.build != nil {
+					query, args := variant.build(in)
+					if _, err := session.run(ctx, query, args); err != nil {
+						t.Fatalf("%s pages=%d orders=%d: %v", variant.name, pages, orders, err)
+					}
+					runs++
+					continue
 				}
-				runs++
+				// Every job list of the input, the empty list of open review
+				// orders without a job, and an execution for renewals only
+				// share the plan.
+				for batch, jobs := range append(markerRenewalJobBatches(in.OpenReviewOrders), nil) {
+					kinds := markerClaimsAndRenewals
+					if batch > 0 {
+						kinds = markerRenewalsOnly
+					}
+					query, args := markerLifecycleQuery(in, jobs, kinds)
+					if _, err := session.run(ctx, query, args); err != nil {
+						t.Fatalf("%s pages=%d orders=%d batch=%d: %v", variant.name, pages, orders, batch, err)
+					}
+					runs++
+				}
 			}
 		}
 		var plans, executions int64

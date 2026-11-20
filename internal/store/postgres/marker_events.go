@@ -203,8 +203,10 @@ func markerProjectedPayload() string {
 // from user-request-changes, an update only for an implement order
 // submitted, a claim only of an implement order or of a task with an open
 // review order, every forge kind, the review lifecycle and review-round
-// kinds of review tasks, and renewals of tasks with an open review order. The tests read the
-// payload text, so a row Go might decode as selected is kept.
+// kinds of review tasks, and the renewals recorded on the jobs of the open
+// review orders (store.MarkerReviewRenewalJobs): a renewal belongs to an
+// order only through its job, so no fold reads a renewal of another job. The
+// tests read the payload text, so a row Go might decode as selected is kept.
 func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput) string {
 	forge := store.MarkerForgePageKinds()
 	review := append([]string{"work_order.released", "review.completed", "review.accepted", "task.setup.changed"}, store.MarkerReviewRoundKinds...)
@@ -224,7 +226,7 @@ func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput) string {
 			OR (kind='work_order.claimed' AND (` + implement + ` OR ` + b.in("task_id", in.LiveReviewTasks) + `))
 			OR kind IN (` + markerQuotedSQL(forge) + `)
 			OR (kind IN (` + markerQuotedSQL(review) + `) AND ` + b.in("task_id", in.ReviewTasks) + `)
-			OR (kind='work_order.lease_renewed' AND ` + b.in("task_id", in.LiveReviewTasks) + `)
+			OR (kind='work_order.lease_renewed' AND ` + b.in("task_id", in.LiveReviewTasks) + ` AND ` + b.in("job_id", store.MarkerReviewRenewalJobs(in.OpenReviewOrders)) + `)
 		)`
 }
 

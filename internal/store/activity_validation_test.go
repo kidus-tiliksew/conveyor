@@ -55,6 +55,92 @@ func TestActivityReviewLeaseHorizonDecodesLifecycleLeases(t *testing.T) {
 	}
 }
 
+// TestReviewRenewalBelongsToItsJob proves a lease renewal reaches the review
+// folds only through the job it is recorded on. Every store records a
+// renewal on the job of the order it renews and writes no order ID in its
+// payload, so a renewal on another job, or on none, extends no review order
+// whatever its payload names. A claim still matches by payload, because a
+// claim payload is the work order itself. A backend's marker read relies on
+// this to read only the renewals of the open review orders' jobs
+// (MarkerReviewRenewalJobs).
+func TestReviewRenewalBelongsToItsJob(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	lease := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339Nano) }
+	event := func(id int64, job, kind, payload string) core.Event {
+		return core.Event{ID: id, JobID: job, Kind: kind, At: now.Add(-time.Hour).Add(time.Duration(id) * time.Minute), Payload: json.RawMessage(payload)}
+	}
+	review := core.WorkOrder{ID: "review-1", JobID: "job-review-1", Stage: core.StageReview, State: core.WorkOrderQueued}
+	claim := event(1, "job-review-1", "work_order.claimed", `{"id":"review-1","stage":"review","lease_expires_at":"`+lease(-10*time.Minute)+`"}`)
+	for _, tc := range []struct {
+		name    string
+		renewal core.Event
+		// extends says the renewal's lease, 30 minutes from now, replaces the
+		// lapsed claim's.
+		extends bool
+	}{
+		{"the order's job", event(2, "job-review-1", "work_order.lease_renewed", `{"attempt_id":"a","lease_expires_at":"`+lease(30*time.Minute)+`"}`), true},
+		{"the order's job with another order's id", event(2, "job-review-1", "work_order.lease_renewed", `{"id":"review-9","lease_expires_at":"`+lease(30*time.Minute)+`"}`), true},
+		{"another job", event(2, "job-verify-1", "work_order.lease_renewed", `{"attempt_id":"a","lease_expires_at":"`+lease(30*time.Minute)+`"}`), false},
+		{"another job naming the order by id", event(2, "job-verify-1", "work_order.lease_renewed", `{"id":"review-1","lease_expires_at":"`+lease(30*time.Minute)+`"}`), false},
+		{"another job naming the order by review_work_order_id", event(2, "job-verify-1", "work_order.lease_renewed", `{"review_work_order_id":"review-1","lease_expires_at":"`+lease(30*time.Minute)+`"}`), false},
+		{"no job naming the order by id", event(2, "", "work_order.lease_renewed", `{"id":"review-1","lease_expires_at":"`+lease(30*time.Minute)+`"}`), false},
+		{"no job naming the order by a case-variant id", event(2, "", "work_order.lease_renewed", `{"ID":"review-1","lease_expires_at":"`+lease(30*time.Minute)+`"}`), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []core.Event{claim, tc.renewal}
+			horizon := ActivityReviewLeaseHorizon([]core.WorkOrder{review}, events, now)
+			diagnostics := ReviewVerdictDiagnostics([]core.WorkOrder{review}, events, now)
+			if tc.extends {
+				if !horizon.Equal(now.Add(30*time.Minute)) || len(diagnostics) != 0 {
+					t.Fatalf("horizon = %s diagnostics = %+v, want the renewal's lease and no expired claim", horizon, diagnostics)
+				}
+				return
+			}
+			if !horizon.IsZero() {
+				t.Fatalf("horizon = %s, want zero: the renewal belongs to no open review order", horizon)
+			}
+			if len(diagnostics) != 1 || diagnostics[0].Status != ReviewExpiredWithoutVerdict || !diagnostics[0].LeaseExpiresAt.Equal(now.Add(-10*time.Minute)) {
+				t.Fatalf("diagnostics = %+v, want the claim's lapsed lease", diagnostics)
+			}
+		})
+	}
+	// A claim on another job, or on none, still matches by its payload.
+	for name, named := range map[string]core.Event{
+		"claim by id":                   event(2, "", "work_order.claimed", `{"id":"review-1","lease_expires_at":"`+lease(30*time.Minute)+`"}`),
+		"claim by review_work_order_id": event(2, "job-verify-1", "work_order.claimed", `{"review_work_order_id":"review-1","lease_expires_at":"`+lease(30*time.Minute)+`"}`),
+	} {
+		if got := ActivityReviewLeaseHorizon([]core.WorkOrder{review}, []core.Event{claim, named}, now); !got.Equal(now.Add(30 * time.Minute)) {
+			t.Fatalf("%s: horizon = %s, want the named claim's lease", name, got)
+		}
+	}
+}
+
+// TestMarkerReviewRenewalJobs proves which jobs' renewals a marker read
+// selects: the job of each open review order once, in order, and none for an
+// order without a job.
+func TestMarkerReviewRenewalJobs(t *testing.T) {
+	jobs := MarkerReviewRenewalJobs([]MarkerReviewOrder{
+		{TaskID: "b", ID: "b-1", JobID: "job-b-1"},
+		{TaskID: "a", ID: "a-1", JobID: "job-a-1"},
+		{TaskID: "b", ID: "b-2", JobID: "job-b-1"},
+		{TaskID: "c", ID: "c-1"},
+	})
+	if len(jobs) != 2 || jobs[0] != "job-b-1" || jobs[1] != "job-a-1" {
+		t.Fatalf("renewal jobs = %v, want job-b-1 and job-a-1", jobs)
+	}
+	if jobs := MarkerReviewRenewalJobs(nil); len(jobs) != 0 {
+		t.Fatalf("no open review order gives jobs %v", jobs)
+	}
+	// The selection is the folds' own rule: a renewal on a selected job
+	// matches its order, and one on any other job matches none.
+	order := core.WorkOrder{ID: "b-1", JobID: "job-b-1", Stage: core.StageReview, State: core.WorkOrderClaimed}
+	onJob := core.Event{JobID: "job-b-1", Kind: "work_order.lease_renewed", Payload: json.RawMessage(`{}`)}
+	offJob := core.Event{JobID: "job-b-9", Kind: "work_order.lease_renewed", Payload: json.RawMessage(`{"id":"b-1"}`)}
+	if !reviewLifecycleEventMatches(order, onJob) || reviewLifecycleEventMatches(order, offJob) {
+		t.Fatal("the review folds do not match renewals by job alone")
+	}
+}
+
 func TestPassedWorkOrderDeadlinesCountsEveryTimeField(t *testing.T) {
 	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
 	order := core.WorkOrder{

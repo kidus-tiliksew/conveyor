@@ -727,11 +727,23 @@ func RunRenewalReads(t *testing.T, x Fixture, scale ClaimSessionScale, renew Ren
 		}
 		renewals++
 		var payload struct {
-			LeaseExpiresAt time.Time `json:"lease_expires_at"`
+			ID                string    `json:"id"`
+			ReviewWorkOrderID string    `json:"review_work_order_id"`
+			LeaseExpiresAt    time.Time `json:"lease_expires_at"`
 		}
 		requireOK(t, json.Unmarshal(event.Payload, &payload))
 		if !payload.LeaseExpiresAt.Equal(short.LeaseExpiresAt) {
 			t.Fatalf("renewal event lease %s, want %s", payload.LeaseExpiresAt, short.LeaseExpiresAt)
+		}
+		// The review folds and the marker reads find a renewal by its job
+		// alone (store.MarkerReviewRenewalJobs), so every store must record
+		// it on the job of the order it renews, and its payload names no
+		// order.
+		if live.JobID == "" || event.JobID != live.JobID {
+			t.Fatalf("renewal event job %q, want the renewed order's job %q", event.JobID, live.JobID)
+		}
+		if payload.ID != "" || payload.ReviewWorkOrderID != "" {
+			t.Fatalf("renewal event payload names an order (id %q, review_work_order_id %q); a renewal belongs to its order through its job alone", payload.ID, payload.ReviewWorkOrderID)
 		}
 	}
 	if renewals != 1 {

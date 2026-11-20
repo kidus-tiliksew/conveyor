@@ -108,7 +108,8 @@ func TestActivityInputsBreakdownDiagnostic(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(part.LiveReviewTasks) > 0 {
-				query, args = markerLifecycleQuery(part)
+				jobs := markerRenewalJobBatches(part.OpenReviewOrders)[0]
+				query, args = markerLifecycleQuery(part, jobs, markerClaimsAndRenewals)
 				lifecycle, err := st.markerFoldScan(step("lifecycle rows"), query, args)
 				if err != nil {
 					t.Fatal(err)
@@ -116,7 +117,7 @@ func TestActivityInputsBreakdownDiagnostic(t *testing.T) {
 				if len(store.MarkerClaimBackfill(lifecycle, part.OpenReviewOrders)) > 0 {
 					backfills++
 					part.KeepAllClaims = true
-					query, args = markerLifecycleQuery(part)
+					query, args = markerLifecycleQuery(part, jobs, markerClaimsAndRenewals)
 					if lifecycle, err = st.markerFoldScan(step("claim backfill"), query, args); err != nil {
 						t.Fatal(err)
 					}
