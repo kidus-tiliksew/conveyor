@@ -248,15 +248,17 @@ func openTaskPollStore(t *testing.T, ctx context.Context, backend, raw string) (
 		name = fmt.Sprintf("conveyor_poll_%d_test", time.Now().UnixNano())
 	}
 	keep := reuse != "" || os.Getenv("CONVEYOR_TASK_POLL_KEEP") == "1"
-	return openTaskPollDatabase(t, ctx, backend, raw, name, reuse == "", keep), reuse != ""
+	return openTaskPollDatabase(t, t.Cleanup, ctx, backend, raw, name, reuse == "", keep), reuse != ""
 }
 
 // openTaskPollDatabase opens the backend on database name through its normal
 // startup and migrations. With create, the database is created first, and a
 // new SingleStore database gets the operator-owned event table that a fresh
-// install creates before startup. Without keep, the database is dropped when
-// the test ends.
-func openTaskPollDatabase(t *testing.T, ctx context.Context, backend, raw, name string, create, keep bool) taskPollStore {
+// install creates before startup. cleanup registers the closing of each
+// connection and, without keep, the drop of the database. A caller that
+// opens the database in a subtest passes the cleanup of the test that reads
+// it.
+func openTaskPollDatabase(t *testing.T, cleanup func(func()), ctx context.Context, backend, raw, name string, create, keep bool) taskPollStore {
 	t.Helper()
 	// Only an owned test database is opened, migrated, and seeded
 	// (component-testing-strategy invariant 11).
@@ -268,14 +270,14 @@ func openTaskPollDatabase(t *testing.T, ctx context.Context, backend, raw, name 
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = admin.Close(context.Background()) })
+		cleanup(func() { _ = admin.Close(context.Background()) })
 		if create {
 			if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
 				t.Fatal(err)
 			}
 		}
 		if !keep {
-			t.Cleanup(func() {
+			cleanup(func() {
 				if _, err := admin.Exec(context.Background(), "DROP DATABASE "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)"); err != nil {
 					t.Errorf("drop %s: %v", name, err)
 				}
@@ -292,7 +294,7 @@ func openTaskPollDatabase(t *testing.T, ctx context.Context, backend, raw, name 
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(st.Close)
+		cleanup(st.Close)
 		return st
 	}
 	cfg, err := taskPollSingleStoreConfig(raw)
@@ -304,7 +306,7 @@ func openTaskPollDatabase(t *testing.T, ctx context.Context, backend, raw, name 
 		t.Fatal(err)
 	}
 	admin := sql.OpenDB(connector)
-	t.Cleanup(func() { _ = admin.Close() })
+	cleanup(func() { _ = admin.Close() })
 	cfg.DBName = name
 	if create {
 		if _, err := admin.ExecContext(ctx, "CREATE DATABASE `"+name+"` PARTITIONS 2"); err != nil {
@@ -312,7 +314,7 @@ func openTaskPollDatabase(t *testing.T, ctx context.Context, backend, raw, name 
 		}
 	}
 	if !keep {
-		t.Cleanup(func() {
+		cleanup(func() {
 			if _, err := admin.ExecContext(context.Background(), "DROP DATABASE `"+name+"`"); err != nil {
 				t.Errorf("drop %s: %v", name, err)
 			}
@@ -351,7 +353,7 @@ func openTaskPollDatabase(t *testing.T, ctx context.Context, backend, raw, name 
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(st.Close)
+	cleanup(st.Close)
 	return st
 }
 
