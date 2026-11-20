@@ -32,6 +32,12 @@ func markerShapeInput(pages, orders int, keepAll bool) store.MarkerFoldInput {
 	return in
 }
 
+// markerShapeJobs is the first job list the lifecycle read of the input
+// binds: the jobs of its open review orders, at most markerTaskChunk.
+func markerShapeJobs(in store.MarkerFoldInput) []string {
+	return markerRenewalJobBatches(in.OpenReviewOrders)[0]
+}
+
 // markerTestsNoPayload fails unless the statement names the stored payload
 // only inside the compact payload projection: it tests no payload.
 func markerTestsNoPayload(t *testing.T, name, query string) {
@@ -107,11 +113,21 @@ func TestMarkerFoldQueryShape(t *testing.T) {
 
 // TestMarkerLifecycleQueryShape freezes the lifecycle read, which runs only
 // for a chunk with an open review order, as two statement texts: reduced
-// claims and every claim. The number of tasks with an open review order and
-// the number of orders change only bound values. The statement reads only
-// claims and renewals, and selects them by the bound list of the tasks with
-// an open review order, so its payload tests meet only those rows: both the
-// rows it reduces and the rows it matches against open review order IDs.
+// claims and every claim. The number of tasks with an open review order, the
+// number of orders, and the number of their jobs change only bound values.
+// The statement reads only claims and renewals, and selects them by bound
+// lists on columns, so its payload tests meet only those rows: both the rows
+// it reduces and the rows it matches against open review order IDs.
+//
+// Renewals are the one marker kind whose count follows how long a claim was
+// held: on a production workspace one task held 16,000, all but a few dozen
+// from verify claims. So the statement must select a renewal only when its
+// job is in the bound list of the open review orders' jobs, a test on the
+// job column inside marker_rows, before any payload test can meet the row.
+// With the task list alone the read decoded every renewal of each task with
+// an open review order and took 27 seconds for ten such tasks; a join to the
+// open review orders in place of the bound list still built every renewal's
+// payload first.
 func TestMarkerLifecycleQueryShape(t *testing.T) {
 	texts := map[string]bool{}
 	for _, keepAll := range []bool{false, true} {
@@ -120,15 +136,20 @@ func TestMarkerLifecycleQueryShape(t *testing.T) {
 		for _, pages := range []int{1, 41, 100} {
 			for _, orders := range []int{1, 5, 250} {
 				name := fmt.Sprintf("keepAll=%t pages=%d orders=%d", keepAll, pages, orders)
-				query, args := markerLifecycleQuery(markerShapeInput(pages, orders, keepAll))
-				if got := strings.Count(query, "?"); got != len(args) {
-					t.Fatalf("%s: %d question marks for %d arguments", name, got, len(args))
-				}
-				if want == "" {
-					want, wantArgs = query, len(args)
-				}
-				if query != want || len(args) != wantArgs {
-					t.Fatalf("%s: statement text or argument count differs from the first input of its variant", name)
+				in := markerShapeInput(pages, orders, keepAll)
+				for batch, jobs := range append(markerRenewalJobBatches(in.OpenReviewOrders), nil) {
+					for _, kinds := range []markerLifecycleKinds{markerClaimsAndRenewals, markerRenewalsOnly} {
+						query, args := markerLifecycleQuery(in, jobs, kinds)
+						if got := strings.Count(query, "?"); got != len(args) {
+							t.Fatalf("%s batch %d: %d question marks for %d arguments", name, batch, got, len(args))
+						}
+						if want == "" {
+							want, wantArgs = query, len(args)
+						}
+						if query != want || len(args) != wantArgs {
+							t.Fatalf("%s batch %d: statement text or argument count differs from the first input of its variant", name, batch)
+						}
+					}
 				}
 			}
 		}
@@ -143,17 +164,39 @@ func TestMarkerLifecycleQueryShape(t *testing.T) {
 				t.Fatalf("%s: holds %s", name, absent)
 			}
 		}
-		// marker_rows is one selection by the bound task list and the two
-		// lifecycle kinds.
+		// marker_rows is one selection by the bound task list, the two
+		// lifecycle kinds, and for a renewal the bound job list: the
+		// workspace, the tasks, the claim flag, the job flag, and the jobs.
 		rows := want[strings.Index(want, "marker_rows AS (")+len("marker_rows AS ("):]
 		rows = rows[:strings.Index(rows, "marker_clock AS")]
-		if strings.Count(rows, "FROM events_columnstore e") != 1 || strings.Count(rows, "?") != markerTaskChunk+1 ||
+		if strings.Count(rows, "FROM events_columnstore e") != 1 || strings.Count(rows, "?") != 2*markerTaskChunk+3 ||
 			!strings.Contains(rows, "e.kind IN ('work_order.claimed','work_order.lease_renewed')") || strings.Contains(strings.ReplaceAll(rows, markerCompact, ""), "payload_json") {
-			t.Fatalf("%s: marker_rows is not one selection by task list and lifecycle kind: %s", name, rows)
+			t.Fatalf("%s: marker_rows is not one selection by task list, lifecycle kind, and job list: %s", name, rows)
 		}
-		// The lease decoder runs once, on renewals only.
+		where := rows[strings.Index(rows, "WHERE"):]
+		for _, banned := range []string{"SELECT", "JOIN", "UNION", "INSTR(", "REGEXP", "JSON_"} {
+			if strings.Contains(where, banned) {
+				t.Fatalf("%s: the row predicate of marker_rows holds %q; it must test columns only:\n%s", name, banned, where)
+			}
+		}
+		// The only disjunction admits the claims, when the execution reads
+		// them, and of the renewals the ones on a bound job. A renewal has
+		// no other way in.
+		if flat := strings.Join(strings.Fields(where), " "); strings.Count(flat, " OR ") != 1 ||
+			!strings.Contains(flat, "AND ((e.kind='work_order.claimed' AND ?=1) OR (e.kind='work_order.lease_renewed' AND ?=1 AND e.job_id IN (?") {
+			t.Fatalf("%s: marker_rows does not select renewals by the bound job list alone:\n%s", name, where)
+		}
+		if strings.Contains(want, "JSON_TO_ARRAY(?))) o ON e.task_id=o.order_task AND e.job_id") {
+			t.Fatalf("%s: renewals are selected by a join to the open review orders; the job list must be bound on the job column", name)
+		}
+		// The lease decoder runs once, on renewals only, and both arms read
+		// marker_rows: with the renewal arm alone the statement took more
+		// than 30 seconds to compile (TestMarkerFoldCompileIntegration).
 		if got := strings.Count(want, "AS lease_ok"); got != 1 {
 			t.Fatalf("%s: decodes leases %d times, want once", name, got)
+		}
+		if !strings.Contains(want, "FROM marker_rows WHERE kind='work_order.lease_renewed'") || !strings.Contains(want, "WHERE kind='work_order.claimed'") || strings.Count(want, "UNION ALL") != 1 {
+			t.Fatalf("%s: the statement is not a renewal arm and a claim arm over marker_rows", name)
 		}
 		if keepAll {
 			if strings.Contains(want, "reducible") || strings.Contains(want, "INSTR(e.payload_json") {
@@ -177,6 +220,66 @@ func TestMarkerLifecycleQueryShape(t *testing.T) {
 	}
 	if len(texts) != 2 {
 		t.Fatalf("the lifecycle read produces %d statement texts, want 2", len(texts))
+	}
+}
+
+// TestMarkerRenewalJobBatches proves which jobs the lifecycle read binds for
+// renewals: the job of each open review order once, in order, in lists of at
+// most markerTaskChunk jobs. An open review order without a job matches no
+// renewal, so it gives no job. There is always one list, so the claims are
+// read even when no open review order has a job.
+func TestMarkerRenewalJobBatches(t *testing.T) {
+	for name, orders := range map[string][]store.MarkerReviewOrder{
+		"no open review order":     nil,
+		"an order without a job":   {{TaskID: "a", ID: "a-review"}},
+		"two orders without a job": {{TaskID: "a", ID: "a-review"}, {TaskID: "b", ID: "b-review"}},
+	} {
+		if got := markerRenewalJobBatches(orders); len(got) != 1 || len(got[0]) != 0 {
+			t.Fatalf("%s gives %v, want one empty list", name, got)
+		}
+	}
+	batches := markerRenewalJobBatches([]store.MarkerReviewOrder{
+		{TaskID: "b", ID: "b-1", JobID: "b-job-1"},
+		{TaskID: "a", ID: "a-1", JobID: "a-job-1"},
+		{TaskID: "b", ID: "b-2", JobID: "b-job-2"},
+		// A second order of one job, and an order without a job.
+		{TaskID: "b", ID: "b-3", JobID: "b-job-1"},
+		{TaskID: "c", ID: "c-1"},
+	})
+	if len(batches) != 1 || strings.Join(batches[0], ",") != "b-job-1,a-job-1,b-job-2" {
+		t.Fatalf("batches = %v, want one of b-job-1,a-job-1,b-job-2", batches)
+	}
+	// Three seats per task over a full chunk of tasks: more jobs than one
+	// statement binds.
+	var orders []store.MarkerReviewOrder
+	for task := range markerTaskChunk {
+		for seat := range 3 {
+			id := fmt.Sprintf("task-%03d-review-1-seat-%d", task, seat)
+			orders = append(orders, store.MarkerReviewOrder{TaskID: fmt.Sprintf("task-%03d", task), ID: id, JobID: id})
+		}
+	}
+	batches = markerRenewalJobBatches(orders)
+	if len(batches) != 3 {
+		t.Fatalf("%d jobs give %d lists, want 3", len(orders), len(batches))
+	}
+	seen := map[string]bool{}
+	for index, batch := range batches {
+		if len(batch) != markerTaskChunk {
+			t.Fatalf("list %d holds %d jobs, want %d", index, len(batch), markerTaskChunk)
+		}
+		for _, job := range batch {
+			if seen[job] {
+				t.Fatalf("job %s is bound twice", job)
+			}
+			seen[job] = true
+		}
+	}
+	if len(seen) != len(orders) {
+		t.Fatalf("the lists bind %d jobs, want %d", len(seen), len(orders))
+	}
+	// One more job than a full list leaves a list of one.
+	if batches = markerRenewalJobBatches(orders[:markerTaskChunk+1]); len(batches) != 2 || len(batches[1]) != 1 {
+		t.Fatalf("%d jobs give lists %v, want a full list and a list of one", markerTaskChunk+1, batches)
 	}
 }
 
@@ -337,7 +440,21 @@ func TestMarkerFoldQueryBinds(t *testing.T) {
 
 	in = markerShapeInput(3, 2, false)
 	in.OpenReviewOrders = append(in.OpenReviewOrders, store.MarkerReviewOrder{TaskID: "task-001", ID: `odd"id`, JobID: "job-odd"})
-	_, args = markerLifecycleQuery(in)
+	_, args = markerLifecycleQuery(in, markerShapeJobs(in), markerClaimsAndRenewals)
+	// The claim flag, the job flag, and the job list follow the task list.
+	// The job list pads with its first job, so the padding matches no other
+	// job's renewals.
+	jobs := args[1+markerTaskChunk : 3+2*markerTaskChunk]
+	if jobs[0] != int64(1) || jobs[1] != int64(1) || jobs[2] != "task-000-review-0" || jobs[3] != "task-001-review-1" || jobs[4] != "job-odd" || jobs[5] != "task-000-review-0" || jobs[1+markerTaskChunk] != "task-000-review-0" {
+		t.Fatalf("the lifecycle read binds the claim flag, the job flag, and the job list as %v", jobs[:7])
+	}
+	// Without a job the list binds the empty flag and pads with the empty
+	// string, so the statement selects no renewal. An execution for
+	// renewals only binds the empty claim flag.
+	_, noJobArgs := markerLifecycleQuery(in, nil, markerRenewalsOnly)
+	if noJobs := noJobArgs[1+markerTaskChunk : 3+2*markerTaskChunk]; noJobs[0] != int64(0) || noJobs[1] != int64(0) || noJobs[2] != "" || noJobs[1+markerTaskChunk] != "" {
+		t.Fatalf("an empty job list for renewals only binds %v, want two empty flags and empty strings", noJobs[:4])
+	}
 	var orders []struct {
 		TaskID string `json:"task_id"`
 		JobID  string `json:"job_id"`

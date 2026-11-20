@@ -23,6 +23,10 @@ func reduceLeaseLifecycleEvents(events []core.Event) []core.Event {
 		switch {
 		case event.JobID != "":
 			return event.JobID
+		case event.Kind == "work_order.lease_renewed":
+			// A renewal belongs to an order only through its job
+			// (reviewLifecycleEventMatches); without one it has no order.
+			return ""
 		case payload.ID != "":
 			return payload.ID
 		}
@@ -124,7 +128,9 @@ func TestLeaseLifecycleReductionKeepsReviewDiagnostics(t *testing.T) {
 			}
 			// A trial names its orders by job ID (the payload id optional) or by
 			// payload id alone, never a mix: the backends pair an order's claims
-			// and renewals by one identity per row.
+			// and renewals by one identity per row. In a payload-id trial the
+			// renewals have no job, so they belong to no order and the
+			// reduction leaves them out.
 			if idOnly {
 				event.JobID = ""
 			}
