@@ -378,7 +378,7 @@ func TestMarkerFoldCompileIntegration(t *testing.T) {
 		{"fix lifecycle, every claim", true},
 	} {
 		lifecycle := markerCompileInput(true, variant.keepAll)
-		query, args = markerLifecycleQuery(lifecycle, markerShapeJobs(lifecycle), markerClaimsAndRenewals)
+		query, args = markerLifecycleQuery(lifecycle, markerShapeJobs(lifecycle))
 		fixed = append(fixed, &markerCompileShape{name: variant.name, query: query, args: args, fixed: true})
 	}
 	wideTasks := markerCompileInput(false, false).Page[:7]
@@ -501,12 +501,11 @@ func TestMarkerFoldCompileIntegration(t *testing.T) {
 
 // TestMarkerFoldPlanReuseIntegration proves the read's five statement texts
 // reuse one engine plan each when the bound values change: page sizes 1, 41,
-// and 100, one, five, and 250 open review orders, each list of their jobs
-// and the empty job list, and wide reads of 1, 41, and 100 tasks. The values
-// travel
-// interpolated, as in production, so the engine's own parameterization must
-// fold the padded lists, the empty-list flag, and the order array into one
-// plan (component-web-task-surfaces invariant 19).
+// and 100, one, five, and 250 open review orders, each list of their jobs,
+// and wide reads of 1, 41, and 100 tasks. The values travel interpolated, as
+// in production, so the engine's own parameterization must fold the padded
+// lists and the list flag into one plan (component-web-task-surfaces
+// invariant 19).
 func TestMarkerFoldPlanReuseIntegration(t *testing.T) {
 	st := integrationStore(t)
 	ctx := t.Context()
@@ -542,15 +541,9 @@ func TestMarkerFoldPlanReuseIntegration(t *testing.T) {
 					runs++
 					continue
 				}
-				// Every job list of the input, the empty list of open review
-				// orders without a job, and an execution for renewals only
-				// share the plan.
-				for batch, jobs := range append(markerRenewalJobBatches(in.OpenReviewOrders), nil) {
-					kinds := markerClaimsAndRenewals
-					if batch > 0 {
-						kinds = markerRenewalsOnly
-					}
-					query, args := markerLifecycleQuery(in, jobs, kinds)
+				// Every job list of the input shares the plan.
+				for batch, jobs := range markerReviewJobBatches(in.OpenReviewOrders) {
+					query, args := markerLifecycleQuery(in, jobs)
 					if _, err := session.run(ctx, query, args); err != nil {
 						t.Fatalf("%s pages=%d orders=%d batch=%d: %v", variant.name, pages, orders, batch, err)
 					}

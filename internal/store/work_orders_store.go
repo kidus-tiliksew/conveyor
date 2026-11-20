@@ -144,19 +144,22 @@ func ReviewVerdictDiagnostics(orders []core.WorkOrder, events []core.Event, now 
 }
 
 // reviewLifecycleEventMatches reports whether a review lifecycle event belongs
-// to the order: an event recorded on the order's job, or one whose payload
-// names the order.
+// to the order: an event recorded on the order's job, or, for a release or
+// a review kind, one whose payload names the order.
 //
-// A lease renewal belongs to an order only through its job. Every store
-// records a renewal on the job of the order it renews, and its payload holds
-// only the attempt and the new lease, never an order ID. So the payload of a
-// renewal is not read for an order ID, and a backend may select the renewals
-// of an open review order by job ID alone (MarkerReviewRenewalJobs).
+// A claim and a lease renewal belong to an order only through their job.
+// Every store has always recorded a claim on the job of the order it claims,
+// with that order as the payload, and a renewal on the job of the order it
+// renews, with a payload of the attempt and the new lease and no order ID.
+// No store writes either kind on another job or on no job. So the payload of
+// a claim or a renewal is not read for an order ID, and a backend may select
+// the claims and renewals of an open review order by job ID alone
+// (MarkerReviewJobs; component-web-task-surfaces invariant 19).
 func reviewLifecycleEventMatches(order core.WorkOrder, event core.Event) bool {
 	if event.JobID != "" && event.JobID == order.JobID {
 		return true
 	}
-	if event.Kind == "work_order.lease_renewed" {
+	if event.Kind == "work_order.claimed" || event.Kind == "work_order.lease_renewed" {
 		return false
 	}
 	var payload struct {

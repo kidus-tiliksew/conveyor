@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -201,18 +200,39 @@ func markerProjectedPayload() string {
 // markerRowsSQL is the marker_rows common table expression: the compact
 // rows each fold can act on, with their top-level key lists. A bounce only
 // from user-request-changes, an update only for an implement order
-// submitted, a claim only of an implement order or of a task with an open
-// review order, every forge kind, the review lifecycle and review-round
-// kinds of review tasks, and the renewals recorded on the jobs of the open
-// review orders (store.MarkerReviewRenewalJobs): a renewal belongs to an
-// order only through its job, so no fold reads a renewal of another job. The
-// tests read the payload text, so a row Go might decode as selected is kept.
+// submitted, every forge kind, the review lifecycle and review-round kinds
+// of review tasks, and these claims and renewals:
+//
+//   - A task without an open review order: every claim that may name the
+//     implement stage, for the request fold.
+//   - A task with an open review order: the claims and renewals recorded on
+//     the jobs of the open review orders (store.MarkerReviewJobs), for the
+//     review folds, and the claims that may name the implement stage from
+//     the task's request fence on, for the request fold
+//     (markerRequestFencesSQL). A claim or a renewal belongs to a review
+//     order only through its job, so no review fold reads one of another
+//     job.
+//
+// The tests read the payload text, so a row Go might decode as selected is
+// kept.
 func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput) string {
 	forge := store.MarkerForgePageKinds()
 	review := append([]string{"work_order.released", "review.completed", "review.accepted", "task.setup.changed"}, store.MarkerReviewRoundKinds...)
 	candidates := append(append([]string{"pipeline.bounced", "work_order.updated", "work_order.claimed", "work_order.lease_renewed"}, review...), forge...)
 	implement := markerMayEqual("stage", string(core.StageImplement))
-	return `scoped_rows AS (
+	claims := `(kind='work_order.claimed' AND ` + implement + `)`
+	fences := ""
+	if len(in.LiveReviewTasks) > 0 {
+		reviewJobs := b.in("job_id", store.MarkerReviewJobs(in.OpenReviewOrders))
+		live := b.in("task_id", in.LiveReviewTasks)
+		claims = `(kind='work_order.claimed' AND NOT ` + live + ` AND ` + implement + `)
+			OR (kind='work_order.claimed' AND ` + live + ` AND ` + reviewJobs + `)
+			OR (kind='work_order.claimed' AND ` + live + ` AND ` + implement + `
+				AND EXISTS (SELECT 1 FROM request_fences f WHERE f.task_id=folded_rows.task_id AND folded_rows.event_at>=f.fence))`
+		fences = markerRequestFencesSQL(b, in) + `,
+		`
+	}
+	return fences + `scoped_rows AS (
 			SELECT e.id,e.task_id,COALESCE(e.job_id,'') AS job_id,e.kind,` + markerCompact + ` AS event_payload,e.at AS event_at
 			` + markerScope(b, in.Workspace, in.Page) + `
 			AND e.kind IN (` + markerQuotedSQL(candidates) + `)
@@ -223,10 +243,47 @@ func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput) string {
 			SELECT id,task_id,job_id,kind,event_payload,event_at,k_text,k_lower FROM folded_rows
 			WHERE (kind='pipeline.bounced' AND ` + markerMayEqual("source", store.UserRequestChangesSource) + `)
 			OR (kind='work_order.updated' AND ` + implement + ` AND ` + markerMayEqual("state", string(core.WorkOrderSubmitted)) + `)
-			OR (kind='work_order.claimed' AND (` + implement + ` OR ` + b.in("task_id", in.LiveReviewTasks) + `))
+			OR ` + claims + `
 			OR kind IN (` + markerQuotedSQL(forge) + `)
 			OR (kind IN (` + markerQuotedSQL(review) + `) AND ` + b.in("task_id", in.ReviewTasks) + `)
-			OR (kind='work_order.lease_renewed' AND ` + b.in("task_id", in.LiveReviewTasks) + ` AND ` + b.in("job_id", store.MarkerReviewRenewalJobs(in.OpenReviewOrders)) + `)
+			OR (kind='work_order.lease_renewed' AND ` + b.in("task_id", in.LiveReviewTasks) + ` AND ` + b.in("job_id", store.MarkerReviewJobs(in.OpenReviewOrders)) + `)
+		)`
+}
+
+// markerRequestFencesSQL is the request_fences common table expression: one
+// row per task with an open review order and a bounce that may be a user
+// change request, with the instant from which the request fold can read its
+// claims. store.UserRequestChangesPending is true exactly when no implement
+// claim follows the task's last user change request, so a claim before that
+// request cannot change the answer.
+//
+// The fence is the latest bounce that the database proves Go reads as a user
+// change request: an unambiguous source key whose string value is the
+// source. That bounce is a genuine request, so the last genuine request is
+// at it or later, and a later bounce that is only a candidate does not move
+// the fence. A task whose candidates the database cannot prove takes its
+// earliest candidate, which is at or before any genuine request among them.
+// The bounces themselves still reach the fold (markerRowsSQL), so the fold
+// decides each one, and a claim at the fence instant is read: the fold
+// orders it by (at, id). A task without a candidate has no fence and reads
+// no request claim, because the fold reads no request.
+func markerRequestFencesSQL(b *markerBinder, in store.MarkerFoldInput) string {
+	source := "'" + store.UserRequestChangesSource + "'"
+	proven := "COALESCE(" + markerKeyUnambiguous("source") + " AND " + markerIsString(markerField("event_payload", "source")) +
+		" AND " + markerFieldText("event_payload", "source") + "=" + source + ",false)"
+	return `request_bounces AS (
+			SELECT task_id,event_at,event_payload,k_text,` + markerLower("k_text") + ` AS k_lower FROM (
+				SELECT task_id,event_at,event_payload,` + markerKeys("event_payload") + ` AS k_text FROM (
+					SELECT e.task_id,e.at AS event_at,` + markerCompact + ` AS event_payload
+					` + markerScope(b, in.Workspace, in.Page) + `
+					AND e.kind='pipeline.bounced' AND ` + markerInList(b, "e.task_id", in.LiveReviewTasks) + `
+				) scoped_bounces
+			) keyed_bounces
+		),
+		request_fences AS (
+			SELECT task_id,COALESCE(MAX(CASE WHEN ` + proven + ` THEN event_at END),MIN(event_at)) AS fence
+			FROM request_bounces WHERE ` + markerMayEqual("source", store.UserRequestChangesSource) + `
+			GROUP BY task_id
 		)`
 }
 
@@ -242,10 +299,11 @@ func markerRowsSQL(b *markerBinder, in store.MarkerFoldInput) string {
 //
 // Claims: an older claim of the same task and job is left out when no fold
 // can read it. Without an open review order, the newest claim of the job
-// supersedes it when that claim decodes. With one, the claim must also name
-// no other open review order of the task, have an unambiguous lease key, and
-// either hold no lease after now or not be the job's earliest claim with a
-// lease after now. The newest claim carries dropped, the number left out,
+// supersedes it when that claim decodes. With one, the claim must also have
+// an unambiguous lease key, and either hold no lease after now or not be the
+// job's earliest claim with a lease after now. A claim belongs to a review
+// order only through its job (store.MarkerReviewJobs), so a claim can name
+// no review order of another job. The newest claim carries dropped, the number left out,
 // and dropped_implement, how many of those may name the implement stage; the
 // earliest future claim carries future_dropped, how many claims with a
 // later future lease were left out. The caller decodes those claims and
@@ -369,43 +427,14 @@ func markerReducibleOrNone(in store.MarkerFoldInput, rule string) string {
 }
 
 // markerLiveReducible is the claim reduction rule of a page with an open
-// review order: an older claim of a job is left out only when it names no
-// other open review order, its lease key is unambiguous, and it holds no
-// lease after now or is not the job's earliest future claim.
+// review order: an older claim of a job of a task with one is left out only
+// when its lease key is unambiguous and it holds no lease after now or is
+// not the job's earliest future claim.
 func markerLiveReducible(b *markerBinder, in store.MarkerFoldInput) string {
 	if in.KeepAllClaims {
 		return "0"
 	}
-	return `CASE WHEN job_id<>'' AND (NOT (` + b.in("task_id", in.LiveReviewTasks) + `) OR (` + markerIdentitySafe(b, in) + ` AND lease_key=1
+	return `CASE WHEN job_id<>'' AND (NOT (` + b.in("task_id", in.LiveReviewTasks) + `) OR (lease_key=1
 					AND (future_lease=0 OR claim_horizon_rank>1)))
 					THEN 1 ELSE 0 END`
-}
-
-// markerIdentitySafe is true for a claim whose payload names no open review
-// order of its task other than the one its job runs: Go matches a lifecycle
-// event to an order by job ID or by a payload id or review_work_order_id
-// string equal to the order ID, and a JSON string equal to an ID made of
-// markerSafeOrderID characters appears in the text as the quoted ID. A task
-// with an order outside that alphabet keeps every claim.
-func markerIdentitySafe(b *markerBinder, in store.MarkerFoldInput) string {
-	var unsafeTasks, tasks, jobs, quotedIDs []string
-	for _, order := range in.OpenReviewOrders {
-		if !store.MarkerSafeOrderID(order.ID) {
-			unsafeTasks = append(unsafeTasks, order.TaskID)
-			continue
-		}
-		quoted, _ := json.Marshal(order.ID)
-		tasks, jobs, quotedIDs = append(tasks, order.TaskID), append(jobs, order.JobID), append(quotedIDs, string(quoted))
-	}
-	// The orders are three bound arrays, so the statement's parameter count
-	// does not grow with the number of open review orders.
-	safe := "1=1"
-	if len(tasks) > 0 {
-		safe = "NOT EXISTS (SELECT 1 FROM unnest(" + b.bind(tasks) + "::text[]," + b.bind(jobs) + "::text[]," + b.bind(quotedIDs) + "::text[]) AS open_order(order_task,order_job,order_quoted)" +
-			" WHERE open_order.order_task=task_id AND open_order.order_job<>job_id AND " + markerContains(markerText("event_payload"), "open_order.order_quoted") + ")"
-	}
-	if len(unsafeTasks) > 0 {
-		safe += " AND NOT (" + b.in("task_id", unsafeTasks) + ")"
-	}
-	return "(" + safe + ")"
 }

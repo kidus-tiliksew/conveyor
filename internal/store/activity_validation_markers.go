@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"regexp"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -32,9 +31,10 @@ type MarkerFoldInput struct {
 	// ReviewTasks have at least one review order; their review lifecycle
 	// kinds feed the review folds.
 	ReviewTasks []string
-	// LiveReviewTasks have an open (claimed or queued) review order. The
-	// review folds read their claims, and of their renewals only those
-	// recorded on the job of an open review order (MarkerReviewRenewalJobs).
+	// LiveReviewTasks have an open (claimed or queued) review order. Of
+	// their claims and renewals, the review folds read only those recorded
+	// on the job of an open review order (MarkerReviewJobs). The request
+	// fold reads their claims from the last user change request on.
 	LiveReviewTasks []string
 	// OpenReviewOrders are the open review orders of LiveReviewTasks.
 	OpenReviewOrders []MarkerReviewOrder
@@ -100,14 +100,14 @@ var MarkerPayloadProjections = func() []MarkerPayloadProjection {
 	}
 }()
 
-// MarkerReviewRenewalJobs returns the job IDs whose lease renewals the review
-// folds read: the jobs of the open review orders, each once, in order. A
-// renewal belongs to an order only through its job
-// (reviewLifecycleEventMatches), so a renewal recorded on any other job, or
-// on none, reaches no review fold and a marker read may leave it out
-// (component-web-task-surfaces invariant 19). An order without a job matches
-// no renewal.
-func MarkerReviewRenewalJobs(orders []MarkerReviewOrder) []string {
+// MarkerReviewJobs returns the job IDs whose claims and lease renewals the
+// review folds read: the jobs of the open review orders, each once, in
+// order. A claim or a renewal belongs to an order only through its job
+// (reviewLifecycleEventMatches), so one recorded on any other job, or on
+// none, reaches no review fold, and a marker read may leave it out of what
+// it reads for the review folds (component-web-task-surfaces invariant 19).
+// An order without a job matches no claim and no renewal.
+func MarkerReviewJobs(orders []MarkerReviewOrder) []string {
 	seen := make(map[string]bool, len(orders))
 	jobs := make([]string, 0, len(orders))
 	for _, order := range orders {
@@ -119,13 +119,6 @@ func MarkerReviewRenewalJobs(orders []MarkerReviewOrder) []string {
 	}
 	return jobs
 }
-
-var markerSafeOrderID = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
-
-// MarkerSafeOrderID reports whether an order ID uses only characters whose
-// JSON string text equals the ID between quotes on both backends, so a text
-// search for the quoted ID finds every normalized payload that names it.
-func MarkerSafeOrderID(id string) bool { return markerSafeOrderID.MatchString(id) }
 
 // MarkerForgePageKinds are the forge failure kinds other than
 // work_order.updated, which a marker read selects only for an implement

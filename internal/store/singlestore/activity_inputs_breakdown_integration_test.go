@@ -108,21 +108,23 @@ func TestActivityInputsBreakdownDiagnostic(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(part.LiveReviewTasks) > 0 {
-				jobs := markerRenewalJobBatches(part.OpenReviewOrders)[0]
-				query, args = markerLifecycleQuery(part, jobs, markerClaimsAndRenewals)
-				lifecycle, err := st.markerFoldScan(step("lifecycle rows"), query, args)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(store.MarkerClaimBackfill(lifecycle, part.OpenReviewOrders)) > 0 {
-					backfills++
-					part.KeepAllClaims = true
-					query, args = markerLifecycleQuery(part, jobs, markerClaimsAndRenewals)
-					if lifecycle, err = st.markerFoldScan(step("claim backfill"), query, args); err != nil {
+				for _, jobs := range markerReviewJobBatches(part.OpenReviewOrders) {
+					query, args = markerLifecycleQuery(part, jobs)
+					lifecycle, err := st.markerFoldScan(step("lifecycle rows"), query, args)
+					if err != nil {
 						t.Fatal(err)
 					}
+					if len(store.MarkerClaimBackfill(lifecycle, part.OpenReviewOrders)) > 0 {
+						backfills++
+						full := part
+						full.KeepAllClaims = true
+						query, args = markerLifecycleQuery(full, jobs)
+						if lifecycle, err = st.markerFoldScan(step("claim backfill"), query, args); err != nil {
+							t.Fatal(err)
+						}
+					}
+					folded = append(folded, lifecycle...)
 				}
-				folded = append(folded, lifecycle...)
 			}
 			if _, err := st.markerWideRows(step("wide rows"), part, folded); err != nil {
 				t.Fatal(err)

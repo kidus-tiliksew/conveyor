@@ -3,7 +3,6 @@ package singlestore
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"sort"
 	"strconv"
@@ -176,23 +175,25 @@ func (s *Store) markerLatestTuples(ctx context.Context, byTask map[string]*marke
 //   - The narrow read (markerFoldQuery) selects, by kind and task alone,
 //     the rows whose payloads are small: forge kinds, bounces, and the
 //     review kinds of review tasks.
-//   - The lifecycle read (markerLifecycleQuery) runs only for a chunk with
-//     an open review order. It reads the claims of the tasks that have one
-//     and the renewals recorded on the jobs of the open review orders
-//     (store.MarkerReviewRenewalJobs), and reduces both. It reads no renewal
-//     of any other job, so how long a task's implement or verify claims were
-//     held does not change what it costs. When a kept claim does not
+//   - The lifecycle read (markerLifecycleRows) runs only for a chunk with
+//     an open review order. It reads the claims and the renewals recorded on
+//     the jobs of the open review orders (store.MarkerReviewJobs), and
+//     reduces both. It reads no claim or renewal of any other job, so how
+//     often a task's implement or verify work was claimed, and how long it
+//     was held, does not change what it costs. When a kept claim does not
 //     supersede the claims the reduction left out
-//     (store.MarkerClaimBackfill), the statement is read again without claim
-//     reduction and only that result is used.
+//     (store.MarkerClaimBackfill), that statement is read again without
+//     claim reduction and only that result is used.
 //   - The wide reads (markerWideRows) run only for the tasks the narrow rows
 //     call for: submissions of a task with a merge failure, and claims of a
 //     task with a user change request, from the earliest such request of the
-//     chunk on.
+//     chunk on. A task with an open review order reads its request claims
+//     here too.
 //
-// Go then applies the exact row tests and the payload projection
-// (markerFoldEvents). The page must list its tasks; an empty page issues no
-// statement.
+// A claim can reach Go twice, from the lifecycle read and from the request
+// claim read; Go keeps one copy of each event (markerDistinctRows). Go then
+// applies the exact row tests and the payload projection (markerFoldEvents).
+// The page must list its tasks; an empty page issues no statement.
 func (s *Store) markerFoldRows(ctx context.Context, in store.MarkerFoldInput) ([]core.Event, error) {
 	out := []core.Event{}
 	if in.Page == nil {
@@ -234,7 +235,7 @@ func (s *Store) markerFoldRows(ctx context.Context, in store.MarkerFoldInput) ([
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, markerFoldEvents(append(rows, wide...))...)
+		out = append(out, markerFoldEvents(markerDistinctRows(append(rows, wide...)))...)
 	}
 	// Statements and distributed execution return rows in physical order;
 	// the lifecycle folds require the ledger's (at,id) order.
@@ -247,74 +248,71 @@ func (s *Store) markerFoldRows(ctx context.Context, in store.MarkerFoldInput) ([
 	return out, nil
 }
 
-// markerRenewalJobBatches splits the jobs whose renewals the review folds
-// read (store.MarkerReviewRenewalJobs) into the lists the lifecycle read
-// binds, each of at most markerTaskChunk jobs, in order. It always returns
-// at least one list: open review orders without a job give one empty list,
-// and the lifecycle read then reads claims and no renewal.
-func markerRenewalJobBatches(orders []store.MarkerReviewOrder) [][]string {
-	jobs := store.MarkerReviewRenewalJobs(orders)
-	batches := make([][]string, 0, len(jobs)/markerTaskChunk+1)
+// markerDistinctRows keeps the first row of each task and event ID, in
+// order. The lifecycle read and the request claim read can both select a
+// claim of a task with an open review order; the folds must read it once.
+func markerDistinctRows(rows []store.MarkerFoldRow) []store.MarkerFoldRow {
+	type key struct {
+		taskID string
+		id     int64
+	}
+	seen := make(map[key]bool, len(rows))
+	out := rows[:0:0]
+	for _, row := range rows {
+		k := key{taskID: row.Event.TaskID, id: row.Event.ID}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, row)
+	}
+	return out
+}
+
+// markerReviewJobBatches splits the jobs whose claims and renewals the review
+// folds read (store.MarkerReviewJobs) into the lists the lifecycle read
+// binds, each of at most markerTaskChunk jobs, in order. The lists are
+// disjoint. Open review orders without a job give no list, and the
+// lifecycle read then issues no statement.
+func markerReviewJobBatches(orders []store.MarkerReviewOrder) [][]string {
+	jobs := store.MarkerReviewJobs(orders)
+	batches := make([][]string, 0, (len(jobs)+markerTaskChunk-1)/markerTaskChunk)
 	for start := 0; start < len(jobs); start += markerTaskChunk {
 		batches = append(batches, jobs[start:min(start+markerTaskChunk, len(jobs))])
-	}
-	if len(batches) == 0 {
-		batches = append(batches, nil)
 	}
 	return batches
 }
 
 // markerLifecycleRows reads the claims and renewals of one chunk's tasks
-// that have an open review order. One statement reads the claims and the
-// renewals of the open review orders' jobs. When a kept claim does not
-// supersede the claims the reduction left out (store.MarkerClaimBackfill),
-// the statement is read again without claim reduction, in one statement, so
-// the review folds read one snapshot, and only that result is used.
-//
-// A chunk whose open review orders have more jobs than one statement binds,
-// as a full chunk of rounds with several seats can, reads the renewals of
-// the remaining jobs with further executions of the every-claim statement
-// that select no claim (markerRenewalsOnly), so the claims are read once.
+// that the review folds read: those recorded on the jobs of the open review
+// orders. Each list of jobs (markerReviewJobBatches) is one execution of
+// the reduced statement, which reads the claims and the renewals of those
+// jobs. When a kept claim does not supersede the claims the reduction left
+// out (store.MarkerClaimBackfill), the statement is read again for the same
+// jobs without claim reduction, in one statement, so the review folds read
+// one snapshot of those jobs, and only that result is used. A read-back
+// never reads another list's jobs: the lists are disjoint, and each claim
+// history the read-back decision names belongs to one job.
 func (s *Store) markerLifecycleRows(ctx context.Context, in store.MarkerFoldInput) ([]store.MarkerFoldRow, error) {
-	batches := markerRenewalJobBatches(in.OpenReviewOrders)
-	query, args := markerLifecycleQuery(in, batches[0], markerClaimsAndRenewals)
-	rows, err := s.markerFoldScan(ctx, query, args)
-	if err != nil {
-		return nil, err
-	}
-	if partitions := store.MarkerClaimBackfill(rows, in.OpenReviewOrders); len(partitions) > 0 {
-		in.KeepAllClaims = true
-		query, args = markerLifecycleQuery(in, batches[0], markerClaimsAndRenewals)
-		if rows, err = s.markerFoldScan(ctx, query, args); err != nil {
-			return nil, err
-		}
-	}
-	in.KeepAllClaims = true
-	for _, jobs := range batches[1:] {
-		query, args = markerLifecycleQuery(in, jobs, markerRenewalsOnly)
-		more, err := s.markerFoldScan(ctx, query, args)
+	var out []store.MarkerFoldRow
+	for _, jobs := range markerReviewJobBatches(in.OpenReviewOrders) {
+		query, args := markerLifecycleQuery(in, jobs)
+		rows, err := s.markerFoldScan(ctx, query, args)
 		if err != nil {
 			return nil, err
 		}
-		rows = append(rows, more...)
+		if partitions := store.MarkerClaimBackfill(rows, in.OpenReviewOrders); len(partitions) > 0 && !in.KeepAllClaims {
+			full := in
+			full.KeepAllClaims = true
+			query, args = markerLifecycleQuery(full, jobs)
+			if rows, err = s.markerFoldScan(ctx, query, args); err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, rows...)
 	}
-	return rows, nil
+	return out, nil
 }
-
-// markerLifecycleKinds says which of the two lifecycle kinds one execution of
-// the lifecycle statement selects. It travels as a bound value, so it does
-// not change the statement text.
-type markerLifecycleKinds bool
-
-const (
-	// markerClaimsAndRenewals selects the claims of the bound tasks and the
-	// renewals of the bound jobs.
-	markerClaimsAndRenewals markerLifecycleKinds = true
-	// markerRenewalsOnly selects only the renewals of the bound jobs. It is
-	// for the every-claim statement: the reduced statement matches claims
-	// against open review order IDs in a selection of its own.
-	markerRenewalsOnly markerLifecycleKinds = false
-)
 
 // markerWideNeeds says which wide rows the folds can act on, given the
 // narrow rows of one chunk.
@@ -331,8 +329,10 @@ const (
 // none. A claim at that same instant is read too; the fold orders it by
 // (at, id). The request is tested with the fold's own decoder
 // (store.MarkerEventFoldable), so a bounce that only resembles one never
-// moves the instant later. A task with an open review order is left out: the
-// lifecycle read already carries its claims for the review folds.
+// moves the instant later. A task with an open review order reads its
+// request claims the same way: the lifecycle read carries only the claims of
+// its open review orders' jobs, and the claims of the same span that both
+// reads select reach the folds once (markerDistinctRows).
 type markerWideNeeds struct {
 	submissionTasks []string
 	// claims lists each task that reads claims with the instant of its last
@@ -348,10 +348,6 @@ type markerClaimNeed struct {
 }
 
 func markerWideNeedsOf(in store.MarkerFoldInput, rows []store.MarkerFoldRow) markerWideNeeds {
-	live := make(map[string]bool, len(in.LiveReviewTasks))
-	for _, id := range in.LiveReviewTasks {
-		live[id] = true
-	}
 	failed := map[string]bool{}
 	requested := map[string]time.Time{}
 	for _, row := range rows {
@@ -359,7 +355,7 @@ func markerWideNeedsOf(in store.MarkerFoldInput, rows []store.MarkerFoldRow) mar
 		case "merge.failed":
 			failed[row.Event.TaskID] = true
 		case "pipeline.bounced":
-			if !live[row.Event.TaskID] && store.MarkerEventFoldable(row.Event) && row.Event.At.After(requested[row.Event.TaskID]) {
+			if store.MarkerEventFoldable(row.Event) && row.Event.At.After(requested[row.Event.TaskID]) {
 				requested[row.Event.TaskID] = row.Event.At
 			}
 		}
@@ -428,9 +424,9 @@ func (s *Store) markerFoldScan(ctx context.Context, query string, args []any) ([
 //
 // The read has five statement texts: the narrow read, the lifecycle read
 // with reduced claims or with every claim, and the two wide reads. Each list
-// a statement binds has a fixed width, markerTaskChunk, and the open review
-// orders travel as one JSON array, so neither the page size nor the number
-// of open review orders changes a text. SingleStore compiles one plan per
+// a statement binds, of tasks or of jobs, has a fixed width,
+// markerTaskChunk, so neither the page size nor the number of open review
+// orders changes a text. SingleStore compiles one plan per
 // statement text, so the read compiles at most five plans
 // (component-web-task-surfaces invariant 19).
 //
@@ -456,13 +452,20 @@ func (s *Store) markerFoldScan(ctx context.Context, query string, args []any) ([
 //   - Only the lifecycle read tests payloads, to reduce the claims and
 //     renewals of the tasks with an open review order. Those are few tasks,
 //     and the statement selects their rows by bound lists first: the tasks,
-//     and for renewals the jobs of the open review orders too. Renewals are
-//     the one kind whose count follows how long work ran, not how often it
-//     was claimed: a verify claim held for days leaves thousands, and none
-//     of them belongs to a review order. Decoding every renewal of the tasks
-//     with an open review order took 27 seconds for ten such tasks on that
-//     workspace; decoding the renewals of the review jobs takes a fraction
-//     of a second.
+//     and the jobs of the open review orders. A test on the job column is
+//     what bounds the rows: a claim or a renewal belongs to a review order
+//     only through its job (store.MarkerReviewJobs). Renewals are the kind
+//     whose count follows how long work ran: a verify claim held for days
+//     leaves thousands, and decoding every renewal of the tasks with an open
+//     review order took 27 seconds for ten such tasks on that workspace.
+//     Claims are the kind whose count follows how often work was claimed,
+//     and a stored claim payload of an older release holds a whole work
+//     order with its governance snapshot. Matching every claim of those
+//     tasks against the open review order IDs as text took 0.25 to 0.34
+//     seconds for 193 claims on a staging workspace, and a join of the
+//     claims to the open review orders built every payload before it
+//     filtered. Reading the review jobs' claims and renewals takes a
+//     fraction of that.
 
 func markerPlaceholder(int) string { return "?" }
 
@@ -642,82 +645,51 @@ func markerRequestClaimQuery(ws string, needs []markerClaimNeed) (string, []any)
 			AND e.kind='work_order.claimed' AND e.at>=` + b.bind(since.UTC()))
 }
 
-// markerOpenOrders is the JSON array the reduced lifecycle statement binds:
-// one object per open review order with its task, job, and order ID, and
-// safe=0 for an ID outside the store.MarkerSafeOrderID alphabet.
-func markerOpenOrders(orders []store.MarkerReviewOrder) string {
-	type openOrder struct {
-		TaskID string `json:"task_id"`
-		JobID  string `json:"job_id"`
-		ID     string `json:"id"`
-		Safe   int    `json:"safe"`
-	}
-	out := make([]openOrder, 0, len(orders))
-	for _, order := range orders {
-		safe := 0
-		if store.MarkerSafeOrderID(order.ID) {
-			safe = 1
-		}
-		out = append(out, openOrder{TaskID: order.TaskID, JobID: order.JobID, ID: order.ID, Safe: safe})
-	}
-	encoded, err := json.Marshal(out)
-	if err != nil {
-		panic("marker open review orders do not encode: " + err.Error())
-	}
-	return string(encoded)
-}
-
-// markerLifecycleQuery reads the claims of the chunk's tasks that have an
-// open review order, in.LiveReviewTasks, which must not be empty, and the
-// renewals recorded on the listed jobs, which are jobs of those open review
-// orders (markerRenewalJobBatches). It keeps one claim per job where the
-// folds read only the newest and the renewals the review folds read
+// markerLifecycleQuery reads the claims and renewals that the chunk's tasks
+// with an open review order, in.LiveReviewTasks, recorded on the listed
+// jobs, which are jobs of those open review orders (markerReviewJobBatches).
+// Neither list may be empty. It keeps one claim per job where the folds read
+// only the newest, and the renewals the review folds read
 // (component-web-task-surfaces invariant 19).
+//
+// A claim or a renewal of any other job, or of none, is not selected: each
+// belongs to an order only through its job (store.MarkerReviewJobs), so the
+// review folds over the selected rows equal the review folds over every
+// claim and renewal of the task. The request fold reads the task's claims
+// from the request claim read (markerWideNeeds).
 //
 // Renewals: of each listed job, the last valid renewal for diagnostics and
 // the earliest future renewal for the horizon; only the simple renewal
 // payload the store writes is eligible, and other shapes keep their complete
-// history. The lease decoder reads only renewals. A renewal of any other
-// job, or of none, is not selected: a renewal belongs to an order only
-// through its job (store.MarkerReviewRenewalJobs), so the folds over the
-// selected renewals equal the folds over every renewal of the task. An empty
-// job list selects no renewal, and markerRenewalsOnly selects no claim.
+// history. The lease decoder reads only renewals.
 //
-// Claims: an older claim is left out only when its job ID is not empty, its
-// payload cannot name an open review order of another job of its task, no
-// open review order of the task has an ID outside the safe alphabet, and its
-// lease is provably past (markerPastLease); a future, same-second,
-// uncertain, or missing lease keeps the claim. The newest claim carries
-// dropped, the number left out, and dropped_implement, how many of those may
-// name the implement stage. No claim with a lease that can be future is left
-// out, so future_dropped is always 0. The caller decodes the newest claims
-// and reads the statement again with KeepAllClaims when they do not
-// supersede the claims left out (store.MarkerClaimBackfill).
+// Claims: of each listed job, an older claim is left out only when its lease
+// is provably past (markerPastLease); a future, same-second, uncertain, or
+// missing lease keeps the claim. The newest claim carries dropped, the
+// number left out, and dropped_implement, how many of those may name the
+// implement stage. No claim with a lease that can be future is left out, so
+// future_dropped is always 0. The caller decodes the newest claims and reads
+// the statement again with KeepAllClaims when they do not supersede the
+// claims left out (store.MarkerClaimBackfill).
 //
 // The statement's payload tests meet only the rows marker_rows selects, and
 // marker_rows selects by columns alone: the workspace, the bound task list,
-// the kind, and for a renewal the bound job list. The open review order
-// match selects its claims by the task list too. The task list is what the
-// table's task index reads; the job list is what bounds the renewals.
+// the two kinds, and the bound job list. The task list is what the table's
+// task index reads; the job list is what bounds the rows.
 //
 // Both arms of the statement read marker_rows, the renewals and the claims.
 // That is also what keeps the lease decoder cheap to compile: a statement
 // of the renewal arm alone took more than 30 seconds to compile, because the
 // engine merged the decoder's nested stages into the table read
 // (TestMarkerFoldCompileIntegration).
-func markerLifecycleQuery(in store.MarkerFoldInput, jobs []string, kinds markerLifecycleKinds) (string, []any) {
+func markerLifecycleQuery(in store.MarkerFoldInput, jobs []string) (string, []any) {
 	b := &markerBinder{}
 	const carry = "id,task_id,job_id,kind,event_payload,event_at"
-	claims := int64(0)
-	if kinds == markerClaimsAndRenewals {
-		claims = 1
-	}
 	rows := `SELECT e.id,e.task_id,COALESCE(e.job_id,'') AS job_id,e.kind,` + markerCompact + ` AS event_payload,e.at AS event_at
 				FROM events_columnstore e
 				WHERE e.workspace_id=` + b.bind(in.Workspace) + ` AND e.task_id IS NOT NULL AND ` + b.fixedIn("e.task_id", in.LiveReviewTasks) + `
 				AND e.kind IN ('work_order.claimed','work_order.lease_renewed')
-				AND ((e.kind='work_order.claimed' AND ` + b.bind(claims) + `=1)
-					OR (e.kind='work_order.lease_renewed' AND ` + b.flag(jobs) + `=1 AND ` + b.fixedIn("e.job_id", jobs) + `))`
+				AND ` + b.flag(jobs) + `=1 AND ` + b.fixedIn("e.job_id", jobs)
 	// Only the simple renewal payload the store writes is eligible for the
 	// renewal reduction; other renewal shapes keep their complete history.
 	const attemptField = `"attempt_id"[[:space:]]*:[[:space:]]*"[^"]*"`
@@ -751,20 +723,11 @@ func markerLifecycleQuery(in store.MarkerFoldInput, jobs []string, kinds markerL
 			SELECT ` + carry + `,0,0,0 FROM marker_rows WHERE kind='work_order.claimed'`)
 	}
 	return b.finish(query + `,
-			named_claims AS (
-				SELECT DISTINCT e.id AS named_id
-				FROM events_columnstore e JOIN (
-					SELECT JSON_EXTRACT_STRING(table_col,'task_id') AS order_task,JSON_EXTRACT_STRING(table_col,'job_id') AS order_job,
-						CONCAT('"',JSON_EXTRACT_STRING(table_col,'id'),'"') AS order_needle,JSON_EXTRACT_BIGINT(table_col,'safe') AS order_safe
-					FROM TABLE(JSON_TO_ARRAY(` + b.bind(markerOpenOrders(in.OpenReviewOrders)) + `))) o ON e.task_id=o.order_task
-				WHERE e.workspace_id=` + b.bind(in.Workspace) + ` AND ` + b.fixedIn("e.task_id", in.LiveReviewTasks) + ` AND e.kind='work_order.claimed'
-				AND (o.order_safe<>1 OR (COALESCE(e.job_id,'')<>o.order_job AND INSTR(e.payload_json,o.order_needle)>0))
-			),
 			claim_facts AS (
 				SELECT ` + carry + `,
-					CASE WHEN job_id<>'' AND named_id IS NULL AND ` + markerPastLease(b, b.bind(in.Now.UTC().Format("2006-01-02T15:04:05"))) + ` THEN 1 ELSE 0 END AS reducible,
+					CASE WHEN job_id<>'' AND ` + markerPastLease(b, b.bind(in.Now.UTC().Format("2006-01-02T15:04:05"))) + ` THEN 1 ELSE 0 END AS reducible,
 					CASE WHEN ` + markerMayName("event_payload", string(core.StageImplement)) + ` THEN 1 ELSE 0 END AS maybe_implement
-				FROM marker_rows LEFT JOIN named_claims ON named_id=id WHERE kind='work_order.claimed'
+				FROM marker_rows WHERE kind='work_order.claimed'
 			),
 			claim_counts AS (
 				SELECT ` + carry + `,reducible,maybe_implement,

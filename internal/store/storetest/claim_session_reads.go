@@ -689,6 +689,34 @@ func RunRenewalReads(t *testing.T, x Fixture, scale ClaimSessionScale, renew Ren
 	requireOK(t, err)
 	eventsBefore, err := st.ListEvents(ctx, live.TaskID)
 	requireOK(t, err)
+	// The review folds and the marker reads find a claim by its job alone
+	// (store.MarkerReviewJobs), so every store must record a claim on the
+	// job of the order it claims, with that order as its payload, and name
+	// no other order in it.
+	var liveClaims int
+	for _, event := range eventsBefore {
+		if event.Kind != "work_order.claimed" {
+			continue
+		}
+		var claimed struct {
+			ID                string `json:"id"`
+			JobID             string `json:"job_id"`
+			ReviewWorkOrderID string `json:"review_work_order_id"`
+		}
+		requireOK(t, json.Unmarshal(event.Payload, &claimed))
+		if claimed.ID == "" || event.JobID == "" || event.JobID != claimed.JobID || claimed.ReviewWorkOrderID != "" {
+			t.Fatalf("claim event on job %q names order %q of job %q (review_work_order_id %q); a claim belongs to its order through its job alone", event.JobID, claimed.ID, claimed.JobID, claimed.ReviewWorkOrderID)
+		}
+		if claimed.ID == live.ID {
+			liveClaims++
+			if event.JobID != live.JobID {
+				t.Fatalf("claim event job %q, want the claimed order's job %q", event.JobID, live.JobID)
+			}
+		}
+	}
+	if liveClaims == 0 {
+		t.Fatal("the live order's claim recorded no claim event")
+	}
 	_ = drain()
 	recorder.Reset()
 	short, err := renewThrough(dbmetrics.WithReadLabel(ctx, "renewal-success"), identity(live.SessionID), live.ID, time.Minute)
@@ -736,7 +764,7 @@ func RunRenewalReads(t *testing.T, x Fixture, scale ClaimSessionScale, renew Ren
 			t.Fatalf("renewal event lease %s, want %s", payload.LeaseExpiresAt, short.LeaseExpiresAt)
 		}
 		// The review folds and the marker reads find a renewal by its job
-		// alone (store.MarkerReviewRenewalJobs), so every store must record
+		// alone (store.MarkerReviewJobs), so every store must record
 		// it on the job of the order it renews, and its payload names no
 		// order.
 		if live.JobID == "" || event.JobID != live.JobID {
