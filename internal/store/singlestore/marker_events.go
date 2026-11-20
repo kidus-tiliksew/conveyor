@@ -599,7 +599,7 @@ func markerFoldQuery(in store.MarkerFoldInput) (string, []any) {
 			FROM events_columnstore e
 			WHERE e.workspace_id=` + b.bind(in.Workspace) + ` AND e.task_id IS NOT NULL AND ` + b.fixedIn("e.task_id", in.Page) + `
 			AND e.kind IN (` + markerQuotedSQL(candidates) + `)
-			AND (e.kind='pipeline.bounced'
+			AND ((e.kind='pipeline.bounced' AND (INSTR(e.payload_json,'"user-request-changes"')>0))
 			OR e.kind IN (` + markerQuotedSQL(forge) + `)
 			OR (e.kind IN (` + markerQuotedSQL(review) + `) AND ` + b.flag(in.ReviewTasks) + `=1 AND ` + b.fixedIn("e.task_id", in.ReviewTasks) + `))`)
 }
