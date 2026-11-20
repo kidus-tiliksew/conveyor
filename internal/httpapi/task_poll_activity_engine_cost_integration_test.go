@@ -75,9 +75,20 @@ const engineCostLongTask = 5
 const engineCostOffPageTask = "cost-off"
 
 // engineCostFactors bounds the median ratio of the heavy read's elapsed time
-// to the light read's for each backend. See
-// TestTaskPollActivityEngineCostIntegration for the measurements behind each
-// factor.
+// to the light read's for each backend. Medians measured with this test on
+// main dc3fdccc, on SingleStore 10.9 (the CI image) and PostgreSQL 16:
+//
+//	backend      read                          CI runs       local runs
+//	singlestore  main                          1.45 1.41     1.33 to 1.73 (8 runs)
+//	singlestore  payload text test (#1714)     -             3.95 to 4.36 (5 runs)
+//	singlestore  every renewal read (#1715)    -             30.2 to 33.1 (4 runs)
+//	postgres     main                          11.56 11.45   9.2 to 11.0 (6 runs)
+//
+// The SingleStore factor is about 1.45 times the highest clean median and
+// below the lowest median of either restored defect by the same margin. On
+// PostgreSQL the ratio comes from the stored snapshots: with small heavy
+// snapshots it was 1.08. Its factor is about 1.5 times the highest CI
+// median, so it fails when the read's cost grows by half again.
 var engineCostFactors = map[string]float64{
 	"postgres":    18,
 	"singlestore": 2.5,
