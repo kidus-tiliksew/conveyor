@@ -602,6 +602,14 @@ func seedEngineCostTask(ctx context.Context, st store.Store, ws string, now time
 		submitted.HeadSHA = head
 		appendAt(at, order.JobID, "work_order.updated", legacy(submitted))
 	}
+	// past gives a historical claim's lease, hours after the task's creation.
+	// The last page tasks are created less than four hours before now, so some
+	// of these leases fall at or after the read's fixed instant: cost-097's
+	// second review claim lease, past(4), is now+1h. Each such order is timed
+	// out before the read. The lapsed claims of engineCostReviewLapsed, whose
+	// orders stay open, all end before now, so only the live review leases of
+	// engineCostReviewLive set the read's horizon, which checkEngineCostRead
+	// asserts.
 	past := func(hours int) time.Time { return created.Add(time.Duration(hours) * time.Hour) }
 	head := func(n int) string { return fmt.Sprintf("head-%s-%d", taskID, n) }
 	verdict := func(review core.WorkOrder, round int, outcome string) {
