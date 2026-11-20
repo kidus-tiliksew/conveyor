@@ -216,6 +216,13 @@ func taskPollBackendURL(t *testing.T, backend, variable string) string {
 			t.Fatalf("%s is not a PostgreSQL URL", variable)
 		}
 		database = strings.TrimPrefix(u.Path, "/")
+		// pgx applies these options after the path, so either one would
+		// open a database other than the one checked here.
+		for _, key := range []string{"dbname", "database"} {
+			if u.Query().Has(key) {
+				t.Fatalf("%s must not set the %s query option: it overrides the database the path names", variable, key)
+			}
+		}
 	} else {
 		cfg, err := taskPollSingleStoreConfig(raw)
 		if err != nil {
