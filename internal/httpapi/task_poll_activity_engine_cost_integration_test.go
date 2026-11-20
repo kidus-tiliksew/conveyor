@@ -140,7 +140,7 @@ func TestTaskPollActivityEngineCostIntegration(t *testing.T) {
 			setup := time.Now()
 			outer, owner := t.Context(), t
 			twins := []*engineCostTwin{{label: "heavy", heavy: true}, {label: "light"}}
-			t.Run("open", func(t *testing.T) {
+			opened := t.Run("open", func(t *testing.T) {
 				for _, twin := range twins {
 					t.Run(twin.label, func(t *testing.T) {
 						t.Parallel()
@@ -157,10 +157,15 @@ func TestTaskPollActivityEngineCostIntegration(t *testing.T) {
 					})
 				}
 			})
+			if !opened {
+				return // The opener already reported its failure.
+			}
 			for _, twin := range twins {
 				if twin.st == nil {
-					t.Fatalf("the %s fixture database was not opened", twin.label)
+					t.Skipf("the %s opener was excluded by the test filter", twin.label)
 				}
+			}
+			for _, twin := range twins {
 				started := time.Now()
 				seedEngineCost(t, twin.ctx, twin.st, ws, now, twin.heavy)
 				if backend.name == "singlestore" {
@@ -753,7 +758,7 @@ func checkEngineCostStorage(t *testing.T, twin *engineCostTwin) {
 		if twin.heavy && len(snapshot) < engineCostHeavySnapshotBytes {
 			t.Fatalf("heavy %s event %d stores a %d-byte snapshot, want at least %d", event.Kind, event.ID, len(snapshot), engineCostHeavySnapshotBytes)
 		}
-		if !twin.heavy && len(snapshot) >= 4<<10 {
+		if !twin.heavy && (len(snapshot) < engineCostLightSnapshotBytes || len(snapshot) >= 4<<10) {
 			t.Fatalf("light %s event %d stores a %d-byte snapshot, want a small one", event.Kind, event.ID, len(snapshot))
 		}
 		read, ok := compactByID[event.ID]
