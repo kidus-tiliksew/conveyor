@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -71,14 +72,60 @@ type needle struct {
 // Redactor combines caller-known sensitive values with conservative
 // well-known credential patterns. Values are held in memory only; callers
 // persist only Stats.
+//
+// A redactor compiles the encoded forms of its caller values and the live
+// process secrets once, and reuses that list while the process registry keeps
+// the same revision. Each string lookup reads the registry revision first, so
+// a secret registered after the redactor or a Writer was built, or one that
+// expires, takes effect at the next string (component-identity-membership
+// invariant 46).
 type Redactor struct {
-	needles []needle
-	source  []string
+	source []string
+
+	// refresh serializes rebuilds. compiled holds only a complete, immutable
+	// list; its revision never moves backward.
+	refresh  sync.Mutex
+	compiled atomic.Pointer[compiledSecrets]
+}
+
+// compiledSecrets is one immutable list of exact and encoded forms, built from
+// the registry state that revision names.
+type compiledSecrets struct {
+	revision uint64
+	needles  []needle
 }
 
 func New(values []string) *Redactor {
-	source := append([]string(nil), values...)
-	values = append(append([]string(nil), values...), liveSecrets()...)
+	r := &Redactor{source: append([]string(nil), values...)}
+	revision, live := registrySnapshot()
+	r.compiled.Store(&compiledSecrets{revision: revision, needles: compileNeedles(r.source, live)})
+	return r
+}
+
+// currentNeedles returns the compiled list for the registry state at this
+// lookup. It rebuilds only when the registry revision moved past the cached
+// list, and it never serves a list older than the revision it read.
+func (r *Redactor) currentNeedles() []needle {
+	revision := registryRevision()
+	if cached := r.compiled.Load(); cached != nil && cached.revision >= revision {
+		return cached.needles
+	}
+	r.refresh.Lock()
+	defer r.refresh.Unlock()
+	if cached := r.compiled.Load(); cached != nil && cached.revision >= revision {
+		return cached.needles
+	}
+	revision, live := registrySnapshot()
+	rebuilt := &compiledSecrets{revision: revision, needles: compileNeedles(r.source, live)}
+	r.compiled.Store(rebuilt)
+	return rebuilt.needles
+}
+
+// compileNeedles builds the exact and encoded forms of the caller values and
+// the live process secrets, longest first. An exact form wins over an equal
+// encoded form.
+func compileNeedles(source, live []string) []needle {
+	values := append(append([]string(nil), source...), live...)
 	byValue := make(map[string]needle)
 	add := func(value, placeholder, class string) {
 		if value == "" {
@@ -113,7 +160,7 @@ func New(values []string) *Redactor {
 		needles = append(needles, item)
 	}
 	sort.Slice(needles, func(i, j int) bool { return len(needles[i].value) > len(needles[j].value) })
-	return &Redactor{needles: needles, source: source}
+	return needles
 }
 
 // quotedForm is value as strconv.Quote prints it, without the outer quotes.
@@ -143,8 +190,9 @@ var assignedSecret = regexp.MustCompile(`(?i)((?:token|secret|password|api[_-]?k
 func (r *Redactor) Redact(text string) (string, Stats) {
 	var stats Stats
 	// A long-lived diagnostic writer can predate an installation-token mint.
-	// Rebuild the exact-match snapshot at use so it includes every live token.
-	for _, item := range New(r.source).needles {
+	// The lookup checks the registry revision at use, so the list includes
+	// every live token without a rebuild per string.
+	for _, item := range r.currentNeedles() {
 		count := strings.Count(text, item.value)
 		if count == 0 {
 			continue
@@ -255,10 +303,20 @@ func (w *Writer) Flush() error {
 // RegisterSecret retains process-local credentials for centralized redaction.
 // Tokens remain registered through expiry, including tokens replaced in cache.
 // Private keys use a zero expiry so older in-flight diagnostics remain scrubbed.
+//
+// revision advances on every change to values, by registration or by expiry.
+// nextExpiry is the earliest non-zero expiry in values, or zero when none can
+// expire, so a lookup scans for expired entries only once one is due.
 var processSecrets = struct {
 	sync.Mutex
-	values map[string]time.Time
+	values     map[string]time.Time
+	revision   uint64
+	nextExpiry time.Time
 }{values: map[string]time.Time{}}
+
+// clock is the registry's time source. Tests replace it to cross an expiry
+// without a timer.
+var clock = time.Now
 
 func RegisterSecret(value string, expires time.Time) {
 	if value == "" {
@@ -266,22 +324,65 @@ func RegisterSecret(value string, expires time.Time) {
 	}
 	processSecrets.Lock()
 	defer processSecrets.Unlock()
-	if old, ok := processSecrets.values[value]; ok && (old.IsZero() || (!expires.IsZero() && old.After(expires))) {
+	if old, ok := processSecrets.values[value]; ok && (old.IsZero() || (!expires.IsZero() && !old.Before(expires))) {
 		return
 	}
 	processSecrets.values[value] = expires
+	processSecrets.revision++
+	if !expires.IsZero() && (processSecrets.nextExpiry.IsZero() || expires.Before(processSecrets.nextExpiry)) {
+		processSecrets.nextExpiry = expires
+	}
 }
-func liveSecrets() []string {
+
+// pruneExpiredLocked removes every entry at or past its expiry. The caller
+// holds processSecrets.
+func pruneExpiredLocked(now time.Time) {
+	if processSecrets.nextExpiry.IsZero() || now.Before(processSecrets.nextExpiry) {
+		return
+	}
+	var next time.Time
+	removed := false
+	for value, expiry := range processSecrets.values {
+		if expiry.IsZero() {
+			continue
+		}
+		if !now.Before(expiry) {
+			delete(processSecrets.values, value)
+			removed = true
+			continue
+		}
+		if next.IsZero() || expiry.Before(next) {
+			next = expiry
+		}
+	}
+	processSecrets.nextExpiry = next
+	if removed {
+		processSecrets.revision++
+	}
+}
+
+// registryRevision reads the clock under the registry lock, removes expired
+// entries, and returns the revision without copying any value.
+func registryRevision() uint64 {
 	processSecrets.Lock()
 	defer processSecrets.Unlock()
-	values := []string{}
-	now := time.Now()
+	pruneExpiredLocked(clock())
+	return processSecrets.revision
+}
+
+// registrySnapshot returns the revision and a copy of the live values. Only a
+// redactor build calls it.
+func registrySnapshot() (uint64, []string) {
+	processSecrets.Lock()
+	defer processSecrets.Unlock()
+	now := clock()
+	pruneExpiredLocked(now)
+	values := make([]string, 0, len(processSecrets.values))
 	for value, expiry := range processSecrets.values {
 		if !expiry.IsZero() && !now.Before(expiry) {
-			delete(processSecrets.values, value)
 			continue
 		}
 		values = append(values, value)
 	}
-	return values
+	return processSecrets.revision, values
 }
