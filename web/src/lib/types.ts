@@ -384,6 +384,37 @@ export interface CrateInsight {
   replay: { start: string; end: string; steps: CrateReplayStep[] }
 }
 
+// One task the briefing names to look at first, with the served tone of its
+// mark and the generated reason (component-crates, Briefing view).
+export interface CrateBriefingEntry {
+  task_id: string
+  tone: 'attention' | 'info' | 'positive'
+  reason: string
+}
+
+// The stored briefing, as internal/httpapi/crate_briefing.go writes it.
+// `current` compares the stored fingerprint with the live one on each read.
+// The page shows none of `model`, `generated_at`, or `generated_by`
+// (component-crates invariant 35; DEC-142(7)).
+export interface CrateBriefing {
+  headline: string
+  account: string
+  look_first: CrateBriefingEntry[]
+  model: string
+  generated_at: string
+  generated_by: string
+  current: boolean
+}
+
+// The briefing view of GET and POST /v1/crates/{id}/briefing. `briefing` is
+// null when no briefing is stored, and `can_generate` is the caller's
+// create_tasks capability.
+export interface CrateBriefingView {
+  briefing: CrateBriefing | null
+  fingerprint: string
+  can_generate: boolean
+}
+
 // The four plan states a task carries (req-task-plan-state REQ-1).
 export type PlanState = 'not_required' | 'needed' | 'awaiting_approval' | 'completed'
 

@@ -55,6 +55,10 @@ export function crateInsightQueryKey(workspace: string, crateId: string) {
   return ['crates', workspace, 'insight', crateId] as const
 }
 
+export function crateBriefingQueryKey(workspace: string, crateId: string) {
+  return ['crates', workspace, 'briefing', crateId] as const
+}
+
 export function crateActivityQueryKey(workspace: string, crateId: string) {
   return ['crates', workspace, 'activity', crateId] as const
 }
