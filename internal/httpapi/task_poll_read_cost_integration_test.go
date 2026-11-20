@@ -81,15 +81,9 @@ type taskPollStore interface {
 // If-None-Match and a fixed clock. The test fails when the poll receives more
 // bytes than the backend's limit.
 func TestTaskPollReadCostIntegration(t *testing.T) {
-	for _, backend := range []struct{ name, variable string }{
-		{"postgres", "CONVEYOR_TEST_DATABASE_URL"},
-		{"singlestore", "CONVEYOR_TEST_SINGLESTORE_URL"},
-	} {
+	for _, backend := range taskPollBackends {
 		t.Run(backend.name, func(t *testing.T) {
-			raw := strings.TrimSpace(os.Getenv(backend.variable))
-			if raw == "" {
-				t.Skipf("%s is unset", backend.variable)
-			}
+			raw := taskPollBackendURL(t, backend.name, backend.variable)
 			ctx := store.WithActor(t.Context(), store.SystemActor())
 			st, reused := openTaskPollStore(t, ctx, backend.name, raw)
 			const ws = "task-poll"
@@ -198,6 +192,43 @@ func TestTaskPollReadCostIntegration(t *testing.T) {
 	}
 }
 
+// taskPollBackends are the durable backends the task poll tests read and the
+// variables that name their fixture servers.
+var taskPollBackends = []struct{ name, variable string }{
+	{"postgres", "CONVEYOR_TEST_DATABASE_URL"},
+	{"singlestore", "CONVEYOR_TEST_SINGLESTORE_URL"},
+}
+
+// taskPollBackendURL returns the fixture server address in variable. It
+// skips the test when the variable is unset, and it refuses an address whose
+// database name does not end in _test before any connection is made, as
+// the other integration suites do.
+func taskPollBackendURL(t *testing.T, backend, variable string) string {
+	t.Helper()
+	raw := strings.TrimSpace(os.Getenv(variable))
+	if raw == "" {
+		t.Skipf("%s is unset", variable)
+	}
+	var database string
+	if backend == "postgres" {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("%s is not a PostgreSQL URL", variable)
+		}
+		database = strings.TrimPrefix(u.Path, "/")
+	} else {
+		cfg, err := taskPollSingleStoreConfig(raw)
+		if err != nil {
+			t.Fatalf("%s: %v", variable, err)
+		}
+		database = cfg.DBName
+	}
+	if !strings.HasSuffix(database, "_test") {
+		t.Fatalf("refusing %s database %q: the database name must end in _test", variable, database)
+	}
+	return raw
+}
+
 // openTaskPollStore opens the backend on a new database that the test owns
 // and drops. CONVEYOR_TASK_POLL_DATABASE names an existing seeded database to
 // reuse instead, and CONVEYOR_TASK_POLL_KEEP=1 keeps the new database, so the
@@ -209,19 +240,29 @@ func openTaskPollStore(t *testing.T, ctx context.Context, backend, raw string) (
 	if name == "" {
 		name = fmt.Sprintf("conveyor_poll_%d_test", time.Now().UnixNano())
 	}
+	keep := reuse != "" || os.Getenv("CONVEYOR_TASK_POLL_KEEP") == "1"
+	return openTaskPollDatabase(t, ctx, backend, raw, name, reuse == "", keep), reuse != ""
+}
+
+// openTaskPollDatabase opens the backend on database name through its normal
+// startup and migrations. With create, the database is created first, and a
+// new SingleStore database gets the operator-owned event table that a fresh
+// install creates before startup. Without keep, the database is dropped when
+// the test ends.
+func openTaskPollDatabase(t *testing.T, ctx context.Context, backend, raw, name string, create, keep bool) taskPollStore {
+	t.Helper()
 	// Only an owned test database is opened, migrated, and seeded
 	// (component-testing-strategy invariant 11).
 	if !taskPollDatabaseName.MatchString(name) {
 		t.Fatalf("task poll database %q is not an owned test database name", name)
 	}
-	keep := reuse != "" || os.Getenv("CONVEYOR_TASK_POLL_KEEP") == "1"
 	if backend == "postgres" {
 		admin, err := pgx.Connect(ctx, raw)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = admin.Close(context.Background()) })
-		if reuse == "" {
+		if create {
 			if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
 				t.Fatal(err)
 			}
@@ -245,7 +286,7 @@ func openTaskPollStore(t *testing.T, ctx context.Context, backend, raw string) (
 			t.Fatal(err)
 		}
 		t.Cleanup(st.Close)
-		return st, reuse != ""
+		return st
 	}
 	cfg, err := taskPollSingleStoreConfig(raw)
 	if err != nil {
@@ -258,7 +299,7 @@ func openTaskPollStore(t *testing.T, ctx context.Context, backend, raw string) (
 	admin := sql.OpenDB(connector)
 	t.Cleanup(func() { _ = admin.Close() })
 	cfg.DBName = name
-	if reuse == "" {
+	if create {
 		if _, err := admin.ExecContext(ctx, "CREATE DATABASE `"+name+"` PARTITIONS 2"); err != nil {
 			t.Fatal(err)
 		}
@@ -272,7 +313,7 @@ func openTaskPollStore(t *testing.T, ctx context.Context, backend, raw string) (
 	} else {
 		t.Logf("task poll database %s", name)
 	}
-	if reuse == "" {
+	if create {
 		// A fresh install creates the operator-owned event table before
 		// normal startup.
 		preparationConnector, err := mysql.NewConnector(cfg)
@@ -304,7 +345,7 @@ func openTaskPollStore(t *testing.T, ctx context.Context, backend, raw string) (
 		t.Fatal(err)
 	}
 	t.Cleanup(st.Close)
-	return st, reuse != ""
+	return st
 }
 
 // taskPollSingleStoreConfig reads the SingleStore fixture address in DSN or
