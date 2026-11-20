@@ -2307,8 +2307,10 @@ for (const viewport of [
       await regenerate.dblclick()
       await expect(regenerate).toBeDisabled()
       await expect.poll(() => server.briefingPosts).toEqual([lineCrate.id])
-      // The stored text stays while the request runs.
+      // The stored text stays while the request runs, and a status says
+      // that a new briefing is on its way.
       await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      await expect(section.getByRole('status')).toHaveText('Writing a new briefing…')
       await shoot(page, 'regenerating')
       const getsBefore = server.briefingGets.length
       gate.release()
@@ -2617,9 +2619,47 @@ for (const viewport of [
       await expect(notice).toHaveAttribute('role', 'alert')
       await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
       await expect(section.locator('[data-briefing-task]')).toHaveCount(2)
+      // The cached view said can_generate, but this opening's read failed,
+      // so the briefing offers no control.
+      await expect(section.locator('[data-briefing-regenerate]')).toHaveCount(0)
       await shoot(page, 'read-failed-beside-cached')
       expect(server.briefingPosts).toEqual([])
     })
+
+    // component-web-dashboard invariant 11: Regenerate shows only while a
+    // successful identity read lists create_tasks. A caller who loses it, or
+    // whose identity read then fails, keeps the stored text and loses the
+    // control, and the page sends nothing.
+    for (const change of [
+      { name: 'an identity read without create_tasks', fulfill: { role: 'viewer' as const } },
+      { name: 'a failed identity read', fulfill: { status: 500 } },
+    ]) {
+      test(`Regenerate disappears after ${change.name}`, async ({ page }) => {
+        await page.clock.install({ time: new Date('2026-11-20T09:00:00Z') })
+        const server = await serveCrates(page, {
+          briefings: { [lineCrate.id]: storedBriefing({ look_first: lookFirst, current: false }) },
+        })
+        await page.goto('/w/demo/crates/crate-line')
+        const section = briefingSection(page)
+        await expect(section.getByRole('button', { name: 'Regenerate' })).toBeEnabled()
+
+        await page.route(
+          (url) => url.pathname === '/v1/me',
+          (route, request) =>
+            'status' in change.fulfill
+              ? route.fulfill({ status: change.fulfill.status, json: { error: 'internal' } })
+              : route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: change.fulfill.role }, request) }),
+        )
+        // The identity read stays fresh for five minutes. Past that, the tab
+        // coming back into view reads it again.
+        await page.clock.runFor(5 * 60_000 + 1)
+        await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+        await expect(section.locator('[data-briefing-regenerate]')).toHaveCount(0)
+        await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+        await expect(section.locator('[data-briefing-task]')).toHaveCount(2)
+        expect(server.briefingPosts).toEqual([])
+      })
+    }
   })
 }
 

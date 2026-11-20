@@ -5,7 +5,7 @@ import { CrateBriefingError, fetchCrateBriefing, generateCrateBriefing } from '.
 import { crateBriefingQueryKey } from '../../lib/query-keys'
 import type { CrateBriefingEntry, CrateBriefingView, CrateDetail, CrateTask } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Skeleton } from '../ui/skeleton'
 import type { CrateEmphasis } from './crate-emphasis'
@@ -112,6 +112,16 @@ export function CrateBriefingSection({
     if (view.briefing === null && view.can_generate && members > 0) post()
   }, [answered, view, opening, members])
 
+  // Regenerate is an affordance, so it follows component-web-dashboard
+  // invariant 11: it shows only when a successful identity read lists
+  // create_tasks, and a failed refetch over an earlier success denies. It
+  // also needs this opening's latest briefing read to have succeeded with
+  // can_generate: a copy cached by an earlier visit, or a view that a failed
+  // refetch left on screen, keeps its text but grants no control
+  // (req-crate-insights AC-5.5). The server authorizes the POST again.
+  const mayCreate = useWorkspaceCapability('create_tasks')
+  const canGenerate = answered && mayCreate && view?.can_generate === true
+
   // A crate with no member has no briefing (feature-crate-insights, Rollout
   // and closure).
   if (members === 0) return null
@@ -162,7 +172,7 @@ export function CrateBriefingSection({
             </div>
           ) : failure ? null : (
             <p data-briefing-none className="text-sm text-muted">
-              {view.can_generate
+              {view.can_generate && mayCreate
                 ? 'No briefing yet.'
                 : 'No briefing yet. A user who can create tasks can generate one.'}
             </p>
@@ -174,12 +184,20 @@ export function CrateBriefingSection({
         <BriefingBody
           briefing={briefing}
           byId={byId}
-          canGenerate={view?.can_generate ?? false}
+          canGenerate={canGenerate}
           busy={busy}
           onRegenerate={post}
           emphasis={emphasis}
           onSelect={onSelect}
         />
+      )}
+
+      {/* Regenerating over a stored briefing only dims the text, so a
+          screen reader hears the request through this status. */}
+      {briefing && busy && (
+        <p role="status" className="sr-only" data-briefing-regenerating>
+          Writing a new briefing…
+        </p>
       )}
 
       {/* A read that fails after an earlier answer keeps that answer on
