@@ -1,0 +1,11 @@
+{"at": 1795167796.9581432, "detail": "", "outcome": "started", "phase": "prepare"}
+{"at": 1795167799.7539988, "detail": "backend=singlestore endpoint=127.0.0.1:3306 database=conveyor_dad0d588eee9_test client=repository-go-driver free_bytes=40565956608", "outcome": "success", "phase": "prepare"}
+{"at": 1795167799.7545903, "detail": "", "outcome": "started", "phase": "before-snapshot"}
+{"at": 1795167799.8551264, "detail": "backend=singlestore instance=conveyor_dad0d588eee9_test", "outcome": "success", "phase": "before-snapshot"}
+{"at": 1795167799.8556316, "detail": "argv begins with make", "outcome": "started", "phase": "gate"}
+{"at": 1795167974.836247, "detail": "exit_status=2", "outcome": "failure", "phase": "gate"}
+{"at": 1795167974.8369823, "detail": "", "outcome": "started", "phase": "after-snapshot"}
+{"at": 1795167974.994688, "detail": "backend=singlestore instance=conveyor_dad0d588eee9_test", "outcome": "success", "phase": "after-snapshot"}
+{"at": 1795167974.99531, "detail": "", "outcome": "started", "phase": "teardown"}
+{"at": 1795167975.8679516, "detail": "backend=singlestore database=conveyor_dad0d588eee9_test", "outcome": "success", "phase": "teardown"}
+{"at": 1795167975.8925648, "detail": "", "outcome": "success", "phase": "resource-cleanup"}

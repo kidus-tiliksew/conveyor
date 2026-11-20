@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "task": "261120-64ffa9",
+  "head": "69d5202c6c93a770ee752f1457e7cca78a527d01",
+  "backend": "singlestore",
+  "command": "make test-integration-singlestore-ci SINGLESTORE_INTEGRATION_SHARD=packages GO_INTEGRATION_FLAGS=-run=^TestTaskPollActivityEngineCostIntegration$",
+  "outcome": "expected ratio assertion failure",
+  "files": {
+    "every-renewal-149d77dc.log": "4b7c7e16360a77415f2c4ff9d08d3ecc7498d3fd8e44189006bcc004704065e0",
+    "phases.jsonl": "406940675f9d34924d664d21292f6c8ce742bc98b38d20bda1cc7b3a6b354eee"
+  },
+  "provenance": "Index assembled from retained complete logs and fixture phase records after review; not a validation_evidence.py signed execution manifest and not eligible for reuse. No original signed manifest was retained."
+}

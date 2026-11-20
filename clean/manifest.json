@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "task": "261120-64ffa9",
+  "head": "149d77dcaf189445aab46f7e652b5cbd6c84cce0",
+  "backend": "singlestore",
+  "command": "make test-integration-singlestore-ci SINGLESTORE_INTEGRATION_SHARD=packages GO_INTEGRATION_FLAGS=-run=^TestTaskPollActivityEngineCostIntegration$",
+  "outcome": "pass",
+  "files": {
+    "clean-149d77dc.log": "5baa1949614dbdbea318e44fbae0d804eb8821c8c104d5f008d04e6dd90b6876",
+    "phases.jsonl": "8253cfce0cdcd10942c711da090a4f341b4e099e6089382b28833b08b2e1321c"
+  },
+  "provenance": "Index assembled from retained complete logs and fixture phase records after review; not a validation_evidence.py signed execution manifest and not eligible for reuse. No original signed manifest was retained."
+}
