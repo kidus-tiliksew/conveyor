@@ -184,7 +184,8 @@ func (s *Store) markerLatestTuples(ctx context.Context, byTask map[string]*marke
 //     is used.
 //   - The wide reads (markerWideRows) run only for the tasks the narrow rows
 //     call for: submissions of a task with a merge failure, and claims of a
-//     task from its last user change request on.
+//     task with a user change request, from the earliest such request of the
+//     chunk on.
 //
 // Go then applies the exact row tests and the payload projection
 // (markerFoldEvents). The page must list its tasks; an empty page issues no
@@ -388,8 +389,8 @@ func (s *Store) markerFoldScan(ctx context.Context, query string, args []any) ([
 //     kind, bound task lists, and instants, and Go applies the exact tests
 //     (store.MarkerEventFoldable) and the folds.
 //   - What bounds their rows is which tasks they read: a submission only for
-//     a task with a merge failure, a claim only from a task's last user
-//     change request on.
+//     a task with a merge failure, a claim only of a task with a user change
+//     request and only from the earliest such request of the chunk on.
 //   - Only the lifecycle read tests payloads, to reduce the claims and
 //     renewals of the tasks with an open review order. Those are few tasks,
 //     and the statement selects their rows by a bound task list first.
@@ -546,32 +547,30 @@ func markerSubmissionQuery(ws string, tasks []string) (string, []any) {
 			AND e.kind='work_order.updated'`)
 }
 
-// markerRequestClaimQuery reads, for each listed task, its claims at or
-// after the task's instant (markerWideNeeds). It tests no payload: the fold
-// itself tells an implement claim from any other. It leaves no claim of that
-// span out, so the claim read-back never applies to these rows. The task
-// list selects the rows, and the per-task instants, a fixed number of pairs
-// padded with the first, narrow them. needs must not be empty.
+// markerRequestClaimQuery reads the claims of the listed tasks at or after
+// the earliest of their instants (markerWideNeeds). It tests no payload: the
+// fold itself tells an implement claim from any other. It leaves no claim of
+// that span out, so the claim read-back never applies to these rows.
+//
+// One instant serves every task, so a task whose last user change request is
+// later reads some claims it does not need; the fold ignores them. One bound
+// pair of task and instant per task would read exactly the needed rows, but
+// SingleStore took more than 30 seconds to compile that statement's hundred
+// disjuncts. needs must not be empty.
 func markerRequestClaimQuery(ws string, needs []markerClaimNeed) (string, []any) {
 	b := &markerBinder{}
 	tasks := make([]string, len(needs))
+	since := needs[0].since
 	for i, need := range needs {
 		tasks[i] = need.taskID
-	}
-	list := b.fixedIn("e.task_id", tasks)
-	pairs := make([]string, markerTaskChunk)
-	for i := range pairs {
-		need := needs[0]
-		if i < len(needs) {
-			need = needs[i]
+		if need.since.Before(since) {
+			since = need.since
 		}
-		pairs[i] = `(e.task_id=` + b.bind(need.taskID) + ` AND e.at>=` + b.bind(need.since.UTC()) + `)`
 	}
 	return b.finish(`SELECT ` + markerFoldColumns + `
 			FROM events_columnstore e
-			WHERE e.workspace_id=` + b.bind(ws) + ` AND e.task_id IS NOT NULL AND ` + list + `
-			AND e.kind='work_order.claimed'
-			AND (` + strings.Join(pairs, " OR ") + `)`)
+			WHERE e.workspace_id=` + b.bind(ws) + ` AND e.task_id IS NOT NULL AND ` + b.fixedIn("e.task_id", tasks) + `
+			AND e.kind='work_order.claimed' AND e.at>=` + b.bind(since.UTC()))
 }
 
 // markerOpenOrders is the JSON array the reduced lifecycle statement binds:

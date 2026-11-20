@@ -185,8 +185,8 @@ func TestMarkerLifecycleQueryShape(t *testing.T) {
 // carries a work_order.updated payload or a claim payload of a task without
 // an open review order, each a whole work order. Neither tests a payload:
 // the submission read selects by workspace, bound task list, and kind, and
-// the request claim read narrows its task list by each task's own instant.
-// Go applies the exact tests.
+// the request claim read by workspace, bound task list, kind, and one
+// instant. Go applies the exact tests.
 func TestMarkerWideQueryShape(t *testing.T) {
 	tasksOf := func(size int) []string {
 		tasks := make([]string, size)
@@ -240,45 +240,36 @@ func TestMarkerWideQueryShape(t *testing.T) {
 	var claims string
 	for _, size := range []int{1, 7, markerTaskChunk} {
 		needs := needsOf(size)
+		// The earliest instant is not the first task's.
+		earliest := size / 2
+		needs[earliest].since = since(0).Add(-time.Hour)
 		query, args := markerRequestClaimQuery("ws", needs)
 		if claims == "" {
 			claims = query
 		} else if query != claims {
 			t.Fatalf("request claims: %d tasks changed the statement text", size)
 		}
-		// The workspace, the task list, and one task and instant per pair.
-		if want := 1 + 3*markerTaskChunk; len(args) != want || strings.Count(query, "?") != want {
+		// The workspace, the task list, and the one instant.
+		if want := markerTaskChunk + 2; len(args) != want || strings.Count(query, "?") != want {
 			t.Fatalf("request claims: %d tasks bind %d arguments and %d placeholders, want %d", size, len(args), strings.Count(query, "?"), want)
 		}
-		pairs := args[1+markerTaskChunk:]
-		for i := range markerTaskChunk {
-			want := needs[0]
-			if i < size {
-				want = needs[i]
-			}
-			if pairs[2*i] != want.taskID || pairs[2*i+1] != want.since {
-				t.Fatalf("request claims: %d tasks bind pair %d as %v at %v, want %s at %s", size, i, pairs[2*i], pairs[2*i+1], want.taskID, want.since)
-			}
+		if args[0] != "ws" || args[size] != needs[size-1].taskID || args[len(args)-1] != needs[earliest].since {
+			t.Fatalf("request claims: %d tasks bind %v, want the task list and the earliest instant %s", size, args, needs[earliest].since)
 		}
 	}
 	markerTestsNoPayload(t, "request claims", claims)
 	where = claims[strings.Index(claims, "WHERE"):]
-	for _, banned := range []string{"SELECT", "JOIN", "UNION"} {
+	// Plain conjuncts only: a disjunction of one task and instant pair per
+	// task took SingleStore more than 30 seconds to compile.
+	for _, banned := range []string{" OR ", "SELECT", "JOIN", "UNION"} {
 		if strings.Contains(where, banned) {
-			t.Fatalf("request claims: predicate holds %q", banned)
+			t.Fatalf("request claims: predicate holds %q; it must be plain conjuncts", strings.TrimSpace(banned))
 		}
 	}
-	for _, want := range []string{"e.workspace_id=?", "e.task_id IN (?", "e.kind='work_order.claimed'", "(e.task_id=? AND e.at>=?)"} {
+	for _, want := range []string{"e.workspace_id=?", "e.task_id IN (?", "e.kind='work_order.claimed'", "e.at>=?"} {
 		if !strings.Contains(where, want) {
 			t.Fatalf("request claims: predicate does not hold %q", want)
 		}
-	}
-	if got := strings.Count(where, "(e.task_id=? AND e.at>=?)"); got != markerTaskChunk {
-		t.Fatalf("request claims: %d task and instant pairs, want %d", got, markerTaskChunk)
-	}
-	// Every disjunction is between two pairs.
-	if got := strings.Count(where, " OR "); got != markerTaskChunk-1 || strings.Count(where, ") OR (e.task_id=?") != got {
-		t.Fatalf("request claims: %d disjunctions outside the task and instant pairs", got)
 	}
 }
 
