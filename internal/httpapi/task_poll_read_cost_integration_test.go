@@ -248,7 +248,7 @@ func openTaskPollStore(t *testing.T, ctx context.Context, backend, raw string) (
 		name = fmt.Sprintf("conveyor_poll_%d_test", time.Now().UnixNano())
 	}
 	keep := reuse != "" || os.Getenv("CONVEYOR_TASK_POLL_KEEP") == "1"
-	return openTaskPollDatabase(t, t.Cleanup, ctx, backend, raw, name, reuse == "", keep), reuse != ""
+	return openTaskPollDatabase(t, t, ctx, backend, raw, name, reuse == "", keep), reuse != ""
 }
 
 // openTaskPollDatabase opens the backend on database name through its normal
@@ -256,10 +256,11 @@ func openTaskPollStore(t *testing.T, ctx context.Context, backend, raw string) (
 // new SingleStore database gets the operator-owned event table that a fresh
 // install creates before startup. cleanup registers the closing of each
 // connection and, without keep, the drop of the database. A caller that
-// opens the database in a subtest passes the cleanup of the test that reads
-// it.
-func openTaskPollDatabase(t *testing.T, cleanup func(func()), ctx context.Context, backend, raw, name string, create, keep bool) taskPollStore {
+// opens the database in a subtest passes the live parent test that reads
+// it. Cleanup failures belong to that parent, not the completed opener.
+func openTaskPollDatabase(t, owner *testing.T, ctx context.Context, backend, raw, name string, create, keep bool) taskPollStore {
 	t.Helper()
+	cleanup := owner.Cleanup
 	// Only an owned test database is opened, migrated, and seeded
 	// (component-testing-strategy invariant 11).
 	if !taskPollDatabaseName.MatchString(name) {
@@ -279,7 +280,7 @@ func openTaskPollDatabase(t *testing.T, cleanup func(func()), ctx context.Contex
 		if !keep {
 			cleanup(func() {
 				if _, err := admin.Exec(context.Background(), "DROP DATABASE "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)"); err != nil {
-					t.Errorf("drop %s: %v", name, err)
+					owner.Errorf("drop %s: %v", name, err)
 				}
 			})
 		} else {
@@ -316,7 +317,7 @@ func openTaskPollDatabase(t *testing.T, cleanup func(func()), ctx context.Contex
 	if !keep {
 		cleanup(func() {
 			if _, err := admin.ExecContext(context.Background(), "DROP DATABASE `"+name+"`"); err != nil {
-				t.Errorf("drop %s: %v", name, err)
+				owner.Errorf("drop %s: %v", name, err)
 			}
 		})
 	} else {

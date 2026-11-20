@@ -79,16 +79,16 @@ const engineCostOffPageTask = "cost-off"
 // main dc3fdccc, on SingleStore 10.9 (the CI image) and PostgreSQL 16:
 //
 //	backend      read                          CI runs       local runs
-//	singlestore  main                          1.45 1.41     1.33 to 1.73 (8 runs)
+//	singlestore  main                          1.45 1.41 1.69 1.46  1.33 to 1.73 (8 runs)
 //	singlestore  payload text test (#1714)     -             3.95 to 4.36 (5 runs)
 //	singlestore  every renewal read (#1715)    -             30.2 to 33.1 (4 runs)
-//	postgres     main                          11.56 11.45   9.2 to 11.0 (6 runs)
+//	postgres     main                          11.56 11.45 12.54 11.70  9.2 to 11.0 (6 runs)
 //
 // The SingleStore factor is about 1.45 times the highest clean median and
 // below the lowest median of either restored defect by the same margin. On
 // PostgreSQL the ratio comes from the stored snapshots: with small heavy
-// snapshots it was 1.08. Its factor is about 1.5 times the highest CI
-// median, so it fails when the read's cost grows by half again.
+// snapshots it was 1.08. Its factor is about 1.44 times the highest CI
+// median of 12.54, leaving a noise margin below the factor of 18.
 var engineCostFactors = map[string]float64{
 	"postgres":    18,
 	"singlestore": 2.5,
@@ -138,7 +138,7 @@ func TestTaskPollActivityEngineCostIntegration(t *testing.T) {
 			// on one SingleStore server, seeding both at once took twice as
 			// long as in turn.
 			setup := time.Now()
-			outer, cleanup := t.Context(), t.Cleanup
+			outer, owner := t.Context(), t
 			twins := []*engineCostTwin{{label: "heavy", heavy: true}, {label: "light"}}
 			t.Run("open", func(t *testing.T) {
 				for _, twin := range twins {
@@ -147,7 +147,7 @@ func TestTaskPollActivityEngineCostIntegration(t *testing.T) {
 						ctx := store.WithActor(outer, store.SystemActor())
 						twin.name = fmt.Sprintf("conveyor_cost_%s_%d_test", twin.label, time.Now().UnixNano())
 						opening := time.Now()
-						st := openTaskPollDatabase(t, cleanup, ctx, backend.name, raw, twin.name, true, false)
+						st := openTaskPollDatabase(t, owner, ctx, backend.name, raw, twin.name, true, false)
 						ctx = store.WithWorkspace(ctx, ws)
 						if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 							t.Fatal(err)
