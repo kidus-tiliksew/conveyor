@@ -44,9 +44,15 @@ func TestBoardStatementCountIntegration(t *testing.T) {
 			t.Fatalf("size %d: items=%d total=%d", size, len(board.Items), board.Total)
 		}
 		stats := st.ReadStats(100)
-		wantRows := map[int]uint64{10: 49, 100: 490}
-		if stats.Rows != wantRows[size] || collector.Snapshot().Queries != 24 {
-			t.Errorf("size %d: rows=%d statements=%d, want rows=%d statements=24", size, stats.Rows, collector.Snapshot().Queries, wantRows[size])
+		// One task in ten has an implement claim and no user change
+		// request. The marker read transfers a claim only from a task's last
+		// user change request on, so it reads none of them: 48 rows where
+		// the read that carried each task's newest claim transferred 49.
+		// One task in ten has an open review order, so the page's one
+		// chunk adds the lifecycle statement: 25 statements.
+		wantRows := map[int]uint64{10: 48, 100: 480}
+		if stats.Rows != wantRows[size] || collector.Snapshot().Queries != 25 {
+			t.Errorf("size %d: rows=%d statements=%d, want rows=%d statements=25", size, stats.Rows, collector.Snapshot().Queries, wantRows[size])
 		}
 		labels := make(map[string]bool)
 		for _, entry := range stats.Top {

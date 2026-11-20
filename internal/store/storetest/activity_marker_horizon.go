@@ -177,12 +177,40 @@ func horizonCases() []horizonCase {
 		{name: "order id differs from job id", orders: []horizonOrder{{state: core.WorkOrderClaimed, separateJob: true}}, horizon: offset(8 * time.Minute), events: func(h *horizonSeed) []core.Event {
 			return []core.Event{h.claim(0, 1, h.at(10*time.Minute)), h.renew(0, 2, h.at(8*time.Minute))}
 		}},
-		{name: "events name the order by payload id or review_work_order_id", orders: oneOpen, horizon: offset(2 * time.Minute), events: func(h *horizonSeed) []core.Event {
+		{name: "claims name the order by payload id or review_work_order_id", orders: oneOpen, horizon: offset(2 * time.Minute), events: func(h *horizonSeed) []core.Event {
+			byID := core.Event{Kind: "work_order.claimed", At: h.now.Add(-3 * time.Hour).Add(3 * time.Second).UTC(),
+				Payload: json.RawMessage(fmt.Sprintf(`{"id":%q,"lease_expires_at":%s}`, h.orders[0].ID, h.at(2*time.Minute)))}
+			byReview := core.Event{JobID: h.other, Kind: "work_order.claimed", At: h.now.Add(-3 * time.Hour).Add(4 * time.Second).UTC(),
+				Payload: json.RawMessage(fmt.Sprintf(`{"review_work_order_id":%q,"lease_expires_at":%s}`, h.orders[0].ID, h.at(3*time.Minute)))}
+			return []core.Event{h.claim(0, 1, h.at(time.Hour)), byID, byReview}
+		}},
+		// A renewal belongs to an order only through its job: the stores
+		// record it on the job of the order it renews, with no order ID. One
+		// recorded on another job, or on none, extends no review order,
+		// whatever its payload names.
+		{name: "a renewal without the order's job does not match by payload id or review_work_order_id", orders: oneOpen, horizon: offset(time.Hour), events: func(h *horizonSeed) []core.Event {
 			byID := core.Event{Kind: "work_order.lease_renewed", At: h.now.Add(-3 * time.Hour).Add(3 * time.Second).UTC(),
 				Payload: json.RawMessage(fmt.Sprintf(`{"id":%q,"lease_expires_at":%s}`, h.orders[0].ID, h.at(2*time.Minute)))}
 			byReview := core.Event{JobID: h.other, Kind: "work_order.lease_renewed", At: h.now.Add(-3 * time.Hour).Add(4 * time.Second).UTC(),
 				Payload: json.RawMessage(fmt.Sprintf(`{"review_work_order_id":%q,"lease_expires_at":%s}`, h.orders[0].ID, h.at(3*time.Minute)))}
 			return []core.Event{h.claim(0, 1, h.at(time.Hour)), byID, byReview}
+		}},
+		{name: "a lapsed order is not kept alive by another job's renewal that names it", orders: oneQueued, horizon: zeroHorizon, events: func(h *horizonSeed) []core.Event {
+			named := core.Event{JobID: h.other, Kind: "work_order.lease_renewed", At: h.now.Add(-3 * time.Hour).Add(2 * time.Second).UTC(),
+				Payload: json.RawMessage(fmt.Sprintf(`{"id":%q,"attempt_id":"attempt-1","lease_expires_at":%s}`, h.orders[0].ID, h.at(time.Hour)))}
+			return []core.Event{h.claim(0, 1, h.at(-10*time.Minute)), named}
+		}},
+		{name: "each open order reads the renewals of its own job", orders: []horizonOrder{{state: core.WorkOrderClaimed}, {state: core.WorkOrderQueued, separateJob: true}, {state: core.WorkOrderSubmitted}}, horizon: offset(25 * time.Minute), events: func(h *horizonSeed) []core.Event {
+			// The closed order's job and the task's other job hold the
+			// earliest future leases; neither belongs to an open order.
+			closed := h.renew(2, 6, h.at(5*time.Minute))
+			other := h.renew(0, 7, h.at(time.Minute))
+			other.JobID = h.other
+			return []core.Event{
+				h.claim(0, 1, h.at(50*time.Minute)), h.renew(0, 2, h.at(40*time.Minute)), h.renew(0, 3, h.at(45*time.Minute)),
+				h.claim(1, 4, h.at(30*time.Minute)), h.renew(1, 5, h.at(25*time.Minute)),
+				h.claim(2, 5, h.at(10*time.Minute)), closed, other,
+			}
 		}},
 		{name: "events of another job or a non-string id do not match", orders: oneOpen, horizon: offset(time.Hour), events: func(h *horizonSeed) []core.Event {
 			otherJob := core.Event{JobID: h.other, Kind: "work_order.lease_renewed", At: h.now.Add(-3 * time.Hour).Add(2 * time.Second).UTC(),
@@ -204,7 +232,7 @@ func horizonCases() []horizonCase {
 		{name: "renewal ignores invalid unrelated claim field", orders: oneOpen, horizon: offset(time.Minute), events: func(h *horizonSeed) []core.Event {
 			return []core.Event{h.claim(0, 1, h.at(time.Hour)), h.event(0, "work_order.lease_renewed", 2, `"stage":7`, `"lease_expires_at":`+h.at(time.Minute))}
 		}},
-		{name: "payload id matches despite different job", orders: oneOpen, horizon: offset(time.Minute), events: func(h *horizonSeed) []core.Event {
+		{name: "a renewal of another job does not match by a case-variant payload id", orders: oneOpen, horizon: offset(time.Hour), events: func(h *horizonSeed) []core.Event {
 			e := h.event(0, "work_order.lease_renewed", 2, `"ID":`+quoteJSON(h.orders[0].ID), `"lease_expires_at":`+h.at(time.Minute))
 			e.JobID = h.other
 			return []core.Event{h.claim(0, 1, h.at(time.Hour)), e}

@@ -217,9 +217,10 @@ compose-check:
 # The PostgreSQL gate is the union of its shards. CI runs one shard per job by
 # setting POSTGRES_INTEGRATION_SHARD; an empty value runs every shard in one
 # go test invocation. Only shards that run the VK-10 browser scenario
-# (internal/dispatch) build the CLI and install Chromium.
+# (internal/dispatch) build the CLI and install Chromium. The store shard also
+# runs internal/httpapi, whose task poll read-cost test needs a database.
 POSTGRES_INTEGRATION_SHARDS = store cli daemon
-POSTGRES_INTEGRATION_PACKAGES_store = ./internal/store/postgres
+POSTGRES_INTEGRATION_PACKAGES_store = ./internal/store/postgres ./internal/httpapi
 POSTGRES_INTEGRATION_PACKAGES_cli = ./cmd/conveyor
 POSTGRES_INTEGRATION_PACKAGES_daemon = ./cmd/conveyord ./internal/dispatch
 POSTGRES_INTEGRATION_RUNTIME_daemon = vk10-runtime
@@ -316,7 +317,8 @@ dev: db-up
 # and the migrations shard the DDL-heavy migration and layout tests and the
 # VK-10 browser scenario, each by full test name; the packages shard skips the
 # conformance test and both lists, so together they run exactly the three
-# packages. The commands shard keeps the command and daemon cases. CI runs one
+# store packages. The packages shard also runs internal/httpapi, whose task
+# poll read-cost test needs a SingleStore database. The commands shard keeps the command and daemon cases. CI runs one
 # shard per job through SINGLESTORE_INTEGRATION_SHARD; an empty value runs
 # every shard in order. Only the migrations shard, which runs the VK-10
 # browser scenario, builds the CLI and installs Chromium. RunAll registers
@@ -334,7 +336,7 @@ SINGLESTORE_INTEGRATION_PACKAGES_conformance-2 = ./internal/store/singlestore
 SINGLESTORE_INTEGRATION_RUN_conformance-2 = $(SINGLESTORE_CONFORMANCE_TEST)
 SINGLESTORE_INTEGRATION_SKIP_conformance-2 = $(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)
 SINGLESTORE_INTEGRATION_TIMEOUT_conformance-2 = 20m
-SINGLESTORE_INTEGRATION_PACKAGES_packages = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore
+SINGLESTORE_INTEGRATION_PACKAGES_packages = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore ./internal/httpapi
 SINGLESTORE_INTEGRATION_SKIP_packages = $(SINGLESTORE_CONFORMANCE_TEST)|$(SINGLESTORE_PROOF_TESTS)|$(SINGLESTORE_MIGRATION_TESTS)
 SINGLESTORE_INTEGRATION_TIMEOUT_packages = 20m
 SINGLESTORE_INTEGRATION_PACKAGES_proofs = ./internal/store/singlestore

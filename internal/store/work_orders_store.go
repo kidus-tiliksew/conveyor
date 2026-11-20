@@ -143,9 +143,21 @@ func ReviewVerdictDiagnostics(orders []core.WorkOrder, events []core.Event, now 
 	return diagnostics
 }
 
+// reviewLifecycleEventMatches reports whether a review lifecycle event belongs
+// to the order: an event recorded on the order's job, or one whose payload
+// names the order.
+//
+// A lease renewal belongs to an order only through its job. Every store
+// records a renewal on the job of the order it renews, and its payload holds
+// only the attempt and the new lease, never an order ID. So the payload of a
+// renewal is not read for an order ID, and a backend may select the renewals
+// of an open review order by job ID alone (MarkerReviewRenewalJobs).
 func reviewLifecycleEventMatches(order core.WorkOrder, event core.Event) bool {
 	if event.JobID != "" && event.JobID == order.JobID {
 		return true
+	}
+	if event.Kind == "work_order.lease_renewed" {
+		return false
 	}
 	var payload struct {
 		ID                string `json:"id"`

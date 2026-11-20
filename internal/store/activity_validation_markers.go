@@ -32,8 +32,9 @@ type MarkerFoldInput struct {
 	// ReviewTasks have at least one review order; their review lifecycle
 	// kinds feed the review folds.
 	ReviewTasks []string
-	// LiveReviewTasks have an open (claimed or queued) review order; every
-	// claim and renewal of theirs feeds the review folds.
+	// LiveReviewTasks have an open (claimed or queued) review order. The
+	// review folds read their claims, and of their renewals only those
+	// recorded on the job of an open review order (MarkerReviewRenewalJobs).
 	LiveReviewTasks []string
 	// OpenReviewOrders are the open review orders of LiveReviewTasks.
 	OpenReviewOrders []MarkerReviewOrder
@@ -98,6 +99,26 @@ var MarkerPayloadProjections = func() []MarkerPayloadProjection {
 		{[]string{"review.round_retried", "review.round_recovered"}, []string{"automatic", "prior_round", "new_round", "review_round"}},
 	}
 }()
+
+// MarkerReviewRenewalJobs returns the job IDs whose lease renewals the review
+// folds read: the jobs of the open review orders, each once, in order. A
+// renewal belongs to an order only through its job
+// (reviewLifecycleEventMatches), so a renewal recorded on any other job, or
+// on none, reaches no review fold and a marker read may leave it out
+// (component-web-task-surfaces invariant 19). An order without a job matches
+// no renewal.
+func MarkerReviewRenewalJobs(orders []MarkerReviewOrder) []string {
+	seen := make(map[string]bool, len(orders))
+	jobs := make([]string, 0, len(orders))
+	for _, order := range orders {
+		if order.JobID == "" || seen[order.JobID] {
+			continue
+		}
+		seen[order.JobID] = true
+		jobs = append(jobs, order.JobID)
+	}
+	return jobs
+}
 
 var markerSafeOrderID = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
 

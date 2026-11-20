@@ -74,6 +74,8 @@ func RunActivityMarkerBoundsConformance(t *testing.T, x Fixture) {
 	// The restored selection, the claim reduction, and the payload projection
 	// keep every marker and the review lease horizon of a mixed page.
 	t.Run("predicates", func(t *testing.T) { runActivityMarkerPredicates(t, x, ctx, now) })
+	// Renewals of a task's other jobs reach no review fold and no row.
+	t.Run("other job renewals", func(t *testing.T) { runActivityMarkerOtherJobRenewals(t, x, ctx, now) })
 
 	if x.DrainReadRows == nil {
 		t.Log("factory reports no read rows; the bounded-row assertion is skipped")
@@ -219,6 +221,113 @@ func seedMarkerHistory(t *testing.T, ctx context.Context, st store.Backend, work
 	return taskID
 }
 
+// runActivityMarkerOtherJobRenewals proves a task in review reads the renewals
+// of its open review orders only, however long its other claims were held
+// (component-web-task-surfaces invariant 19). Renewals are the one marker kind
+// whose count follows how long work ran: a verify claim held for days leaves
+// thousands on a task, and a review of that task must not pay for them.
+//
+// Two tasks hold the same open review order with a lapsed claim and one
+// future renewal. Each also has an implement job and a verify job whose
+// renewals name leases earlier than the review order's: per round, one
+// renewal of each job in the payload the stores write and one verify
+// renewal with a further key, a shape a read does not reduce and must keep
+// whole when it selects it. The short task holds 4 rounds and the long one
+// 1500. Two more renewals name the review order in their payloads, one on
+// the verify job and one on no job. No renewal of those jobs may move the
+// review lease horizon or the review diagnostic, and the long task's read
+// may not transfer more rows than the short task's: a read that selected the
+// renewals of every job would transfer one row per round.
+func runActivityMarkerOtherJobRenewals(t *testing.T, x Fixture, ctx context.Context, now time.Time) {
+	st, ws := x.Backend, x.Workspace
+	const renewals = 1500
+	reviewLease := now.Add(40 * time.Minute)
+	seed := func(suffix string, others int) string {
+		p := newPredicateSeed(t, ctx, st, ws, now, "Marker other job renewals "+suffix)
+		implement := p.order("implement-1", core.StageImplement, false)
+		verify := p.order("verify-1", core.StageVerify, false)
+		review := p.order("review-1-seat-1", core.StageReview, false)
+		p.append(implement.JobID, "work_order.claimed", claimPayload(implement, now.Add(-4*time.Hour)))
+		p.append(verify.JobID, "work_order.claimed", claimPayload(verify, now.Add(-4*time.Hour)))
+		p.append(review.JobID, "work_order.claimed", claimPayload(review, now.Add(-2*time.Hour)))
+		p.append(review.JobID, "work_order.lease_renewed", map[string]any{"attempt_id": "attempt-review", "lease_expires_at": reviewLease})
+		for i := range others {
+			// Leases after the read and before the review order's: each
+			// would become the horizon if the read took it for the order's.
+			lease := now.Add(time.Minute + time.Duration(i)*time.Second)
+			p.append(implement.JobID, "work_order.lease_renewed", map[string]any{"attempt_id": "attempt-implement", "lease_expires_at": lease})
+			p.append(verify.JobID, "work_order.lease_renewed", map[string]any{"attempt_id": "attempt-verify", "lease_expires_at": lease})
+			p.append(verify.JobID, "work_order.lease_renewed", map[string]any{"attempt_id": "attempt-verify", "lease_expires_at": lease, "progress": "running"})
+		}
+		// A renewal of another job whose payload names the review order, and
+		// one of no job: neither belongs to it.
+		p.append(verify.JobID, "work_order.lease_renewed", map[string]any{"id": review.ID, "lease_expires_at": now.Add(30 * time.Second)})
+		p.append("", "work_order.lease_renewed", map[string]any{"review_work_order_id": review.ID, "lease_expires_at": now.Add(20 * time.Second)})
+		return p.taskID
+	}
+	short, long := seed("short", 4), seed("long", renewals)
+
+	for _, taskID := range []string{short, long} {
+		inputs, err := st.ReadActivityInputs(ctx, []string{taskID}, now)
+		requireOK(t, err)
+		events, err := st.ListEvents(ctx, taskID)
+		requireOK(t, err)
+		if want := store.ActivityReviewLeaseHorizon(inputs.Orders, events, now); !inputs.ValidUntil.Equal(want) || !want.Equal(reviewLease) {
+			t.Fatalf("task %s review lease horizon = %s, the Go fold reads %s, want the review order's renewal %s", taskID, inputs.ValidUntil, want, reviewLease)
+		}
+		if len(inputs.Markers) != 1 {
+			t.Fatalf("task %s markers = %+v, want one", taskID, inputs.Markers)
+		}
+		want := markerReference(t, ctx, st, taskID, now)
+		got := inputs.Markers[0]
+		requireSameJSON(t, "marker "+taskID+" review diagnostics", utcReviewDiagnostics(got.ReviewDiagnostics), utcReviewDiagnostics(want.ReviewDiagnostics))
+		requireSameJSON(t, "marker "+taskID+" review recovery", got.ReviewRecovery, want.ReviewRecovery)
+		requireSameJSON(t, "marker "+taskID+" interrupted review recovery", got.InterruptedReviewRecovery, want.InterruptedReviewRecovery)
+		requireSameJSON(t, "marker "+taskID+" forge failure", got.ForgeFailure, want.ForgeFailure)
+		requireSameJSON(t, "marker "+taskID+" stalled", got.Stalled, want.Stalled)
+		if got.UserChangesRequested != want.UserChangesRequested {
+			t.Fatalf("marker %s user changes requested = %t, want %t", taskID, got.UserChangesRequested, want.UserChangesRequested)
+		}
+		// The review order's lease is still running, so the order is not an
+		// expired claim.
+		if len(got.ReviewDiagnostics) != 0 {
+			t.Fatalf("task %s review diagnostics = %+v, want none while the review lease runs", taskID, got.ReviewDiagnostics)
+		}
+	}
+	// A minute and a half later every lease of the other jobs is past and
+	// the review order's still runs; an instant after the review lease, the
+	// order is an expired claim with that lease.
+	for _, at := range []time.Time{now.Add(90 * time.Second), reviewLease.Add(time.Second)} {
+		inputs, err := st.ReadActivityInputs(ctx, []string{long}, at)
+		requireOK(t, err)
+		events, err := st.ListEvents(ctx, long)
+		requireOK(t, err)
+		if want := store.ActivityReviewLeaseHorizon(inputs.Orders, events, at); !inputs.ValidUntil.Equal(want) {
+			t.Fatalf("at %s the review lease horizon = %s, want %s", at, inputs.ValidUntil, want)
+		}
+		want := store.ReviewVerdictDiagnostics(inputs.Orders, events, at)
+		requireSameJSON(t, "review diagnostics at "+at.Format(time.RFC3339), utcReviewDiagnostics(inputs.Markers[0].ReviewDiagnostics), utcReviewDiagnostics(want))
+		if expired := at.After(reviewLease); expired != (len(want) == 1 && want[0].Status == store.ReviewExpiredWithoutVerdict && want[0].LeaseExpiresAt.Equal(reviewLease)) {
+			t.Fatalf("at %s the Go fold reads diagnostics %+v, want an expired claim with the review lease exactly after it", at, want)
+		}
+	}
+
+	if x.DrainReadRows == nil {
+		t.Log("factory reports no read rows; the transferred-row assertion is skipped")
+		return
+	}
+	rows := func(taskID string) uint64 {
+		t.Helper()
+		x.DrainReadRows()
+		_, err := st.ListActivityMarkersForTasks(ctx, []string{taskID})
+		requireOK(t, err)
+		return x.DrainReadRows()["ListActivityMarkersForTasks"]
+	}
+	if shortRows, longRows := rows(short), rows(long); shortRows == 0 || longRows == 0 || longRows > shortRows {
+		t.Fatalf("the marker read transferred %d rows with %d rounds of renewals on the other jobs, want at most the %d rows of 4 rounds", longRows, renewals, shortRows)
+	}
+}
+
 // requireSameJSON compares two values by their JSON encoding, so a nil and an
 // empty slice of the same fold stay distinguishable.
 func requireSameJSON(t *testing.T, label string, got, want any) {
@@ -347,9 +456,17 @@ func runActivityMarkerPredicates(t *testing.T, x Fixture, ctx context.Context, n
 		return x.DrainReadRows()["ListActivityMarkersForTasks"]
 	}
 	// Rows no fold can act on, and repeated claims of one implement order,
-	// transfer nothing more than the history without them.
-	if plainRows, excludedRows := rows(plain), rows(excluded); plainRows == 0 || excludedRows == 0 || excludedRows > plainRows {
-		t.Fatalf("marker read rows = %d with %d excluded rows per kind, want at most the %d rows without them", excludedRows, extra, plainRows)
+	// transfer nothing more than the history without them. A backend that
+	// leaves the bounce source and submission tests to Go transfers the
+	// bounces of other sources and the updates that are not submissions,
+	// three rows per round of the excluded history, and still no claim: the
+	// two claims per round come before the task's last user change request.
+	allowed := uint64(0)
+	if x.MarkerReadLeavesRowTestsToGo {
+		allowed = 3 * extra
+	}
+	if plainRows, excludedRows := rows(plain), rows(excluded); plainRows == 0 || excludedRows == 0 || excludedRows > plainRows+allowed {
+		t.Fatalf("marker read rows = %d with %d excluded rows per kind, want at most the %d rows without them plus %d", excludedRows, extra, plainRows, allowed)
 	}
 	// A review order's older claims with past leases transfer as one claim.
 	if shortRows, longRows := rows(shortClaims), rows(longClaims); shortRows == 0 || longRows == 0 || longRows > shortRows {
