@@ -364,25 +364,30 @@ func TestMarkerFoldCompileIntegration(t *testing.T) {
 		{name: "95133fd2 no open review", query: prefix["no_live"].Query, args: prefix["no_live"].Args},
 		{name: "95133fd2 open review", query: prefix["live"].Query, args: prefix["live"].Args},
 	}
-	// The read's five statement texts: the narrow read without an open
-	// review order, where the claim reduction does not apply, the narrow
-	// read with one, reduced or with every claim, and the two wide reads.
+	// The read's five statement texts: the narrow read, the lifecycle read
+	// of a chunk with an open review order, reduced or with every claim, and
+	// the two wide reads.
 	var fixed []*markerCompileShape
+	query, args := markerFoldQuery(markerCompileInput(false, false))
+	fixed = append(fixed, &markerCompileShape{name: "fix narrow", query: query, args: args, fixed: true})
 	for _, variant := range []struct {
-		name          string
-		live, keepAll bool
+		name    string
+		keepAll bool
 	}{
-		{"fix no open review", false, false},
-		{"fix open review, reduced claims", true, false},
-		{"fix open review, every claim", true, true},
+		{"fix lifecycle, reduced claims", false},
+		{"fix lifecycle, every claim", true},
 	} {
-		query, args := markerFoldQuery(markerCompileInput(variant.live, variant.keepAll))
+		query, args = markerLifecycleQuery(markerCompileInput(true, variant.keepAll))
 		fixed = append(fixed, &markerCompileShape{name: variant.name, query: query, args: args, fixed: true})
 	}
 	wideTasks := markerCompileInput(false, false).Page[:7]
-	query, args := markerSubmissionQuery("marker-compile", wideTasks)
+	query, args = markerSubmissionQuery("marker-compile", wideTasks)
 	fixed = append(fixed, &markerCompileShape{name: "fix wide submissions", query: query, args: args, fixed: true})
-	query, args = markerRequestClaimQuery("marker-compile", wideTasks, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
+	wideNeeds := make([]markerClaimNeed, len(wideTasks))
+	for i, taskID := range wideTasks {
+		wideNeeds[i] = markerClaimNeed{taskID: taskID, since: time.Date(2026, 11, 1+i, 0, 0, 0, 0, time.UTC)}
+	}
+	query, args = markerRequestClaimQuery("marker-compile", wideNeeds)
 	fixed = append(fixed, &markerCompileShape{name: "fix wide request claims", query: query, args: args, fixed: true})
 	rounds := append(slices.Clone(baselines), fixed...)
 
@@ -493,10 +498,10 @@ func TestMarkerFoldCompileIntegration(t *testing.T) {
 	}
 }
 
-// TestMarkerFoldPlanReuseIntegration proves the read's statement texts reuse
-// one engine plan each when the bound values change: page sizes 1, 41, and
-// 100, one, five, and 250 open review orders, and wide reads of 1, 41, and
-// 100 tasks. The values travel
+// TestMarkerFoldPlanReuseIntegration proves the read's five statement texts
+// reuse one engine plan each when the bound values change: page sizes 1, 41,
+// and 100, one, five, and 250 open review orders, and wide reads of 1, 41,
+// and 100 tasks. The values travel
 // interpolated, as in production, so the engine's own parameterization must
 // fold the padded lists, the empty-list flag, and the order array into one
 // plan (component-web-task-surfaces invariant 19).
@@ -509,10 +514,11 @@ func TestMarkerFoldPlanReuseIntegration(t *testing.T) {
 	for _, variant := range []struct {
 		name          string
 		live, keepAll bool
+		build         func(store.MarkerFoldInput) (string, []any)
 	}{
-		{"no open review", false, false},
-		{"open review, reduced claims", true, false},
-		{"open review, every claim", true, true},
+		{"narrow", false, false, markerFoldQuery},
+		{"lifecycle, reduced claims", true, false, markerLifecycleQuery},
+		{"lifecycle, every claim", true, true, markerLifecycleQuery},
 	} {
 		session.evict(ctx)
 		orderCounts := []int{0}
@@ -526,7 +532,7 @@ func TestMarkerFoldPlanReuseIntegration(t *testing.T) {
 				if pages == 1 {
 					in.ReviewTasks = nil
 				}
-				query, args := markerFoldQuery(in)
+				query, args := variant.build(in)
 				if _, err := session.run(ctx, query, args); err != nil {
 					t.Fatalf("%s pages=%d orders=%d: %v", variant.name, pages, orders, err)
 				}
@@ -548,7 +554,11 @@ func TestMarkerFoldPlanReuseIntegration(t *testing.T) {
 	}{
 		{"wide submissions", func(tasks []string, _ int) (string, []any) { return markerSubmissionQuery("ws", tasks) }},
 		{"wide request claims", func(tasks []string, round int) (string, []any) {
-			return markerRequestClaimQuery("ws", tasks, time.Date(2026, 11, 1+round, 0, 0, 0, 0, time.UTC))
+			needs := make([]markerClaimNeed, len(tasks))
+			for i, taskID := range tasks {
+				needs[i] = markerClaimNeed{taskID: taskID, since: time.Date(2026, 11, 1+round, 0, i, 0, 0, time.UTC)}
+			}
+			return markerRequestClaimQuery("ws", needs)
 		}},
 	} {
 		session.evict(ctx)

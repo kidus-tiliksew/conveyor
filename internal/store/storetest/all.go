@@ -189,6 +189,14 @@ type Fixture struct {
 	// per read label, so a suite can bound the rows one read transfers. A
 	// backend that transfers no rows leaves it nil.
 	DrainReadRows func() map[string]uint64
+	// MarkerReadLeavesRowTestsToGo is true when the backend's activity-marker
+	// read selects bounces and submissions by kind and task alone and leaves
+	// the source and submission tests to Go: SingleStore, where a text test
+	// on a stored payload costs more than the rows it leaves out. Such a
+	// read still bounds its rows by task: it reads a submission only for a
+	// task with a merge failure and a claim only from a task's last user
+	// change request on (component-web-task-surfaces invariant 19).
+	MarkerReadLeavesRowTestsToGo bool
 	// NestedTaskCommandsInterleave is true when a command started under a
 	// WithTaskSideEffectLock context skips the task-operation lock that the
 	// context already owns, so a second command of that context commits while
