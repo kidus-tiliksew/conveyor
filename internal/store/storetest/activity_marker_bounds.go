@@ -347,9 +347,17 @@ func runActivityMarkerPredicates(t *testing.T, x Fixture, ctx context.Context, n
 		return x.DrainReadRows()["ListActivityMarkersForTasks"]
 	}
 	// Rows no fold can act on, and repeated claims of one implement order,
-	// transfer nothing more than the history without them.
-	if plainRows, excludedRows := rows(plain), rows(excluded); plainRows == 0 || excludedRows == 0 || excludedRows > plainRows {
-		t.Fatalf("marker read rows = %d with %d excluded rows per kind, want at most the %d rows without them", excludedRows, extra, plainRows)
+	// transfer nothing more than the history without them. A backend that
+	// leaves the bounce source and submission tests to Go transfers the
+	// bounces of other sources and the updates that are not submissions,
+	// three rows per round of the excluded history, and still no claim: the
+	// two claims per round come before the task's last user change request.
+	allowed := uint64(0)
+	if x.MarkerReadLeavesRowTestsToGo {
+		allowed = 3 * extra
+	}
+	if plainRows, excludedRows := rows(plain), rows(excluded); plainRows == 0 || excludedRows == 0 || excludedRows > plainRows+allowed {
+		t.Fatalf("marker read rows = %d with %d excluded rows per kind, want at most the %d rows without them plus %d", excludedRows, extra, plainRows, allowed)
 	}
 	// A review order's older claims with past leases transfer as one claim.
 	if shortRows, longRows := rows(shortClaims), rows(longClaims); shortRows == 0 || longRows == 0 || longRows > shortRows {
