@@ -76,6 +76,9 @@ func RunActivityMarkerBoundsConformance(t *testing.T, x Fixture) {
 	t.Run("predicates", func(t *testing.T) { runActivityMarkerPredicates(t, x, ctx, now) })
 	// Renewals of a task's other jobs reach no review fold and no row.
 	t.Run("other job renewals", func(t *testing.T) { runActivityMarkerOtherJobRenewals(t, x, ctx, now) })
+	// Claims of a task's other jobs reach no review fold, and the request
+	// fold reads only those from the last user change request on.
+	t.Run("other job claims", func(t *testing.T) { runActivityMarkerOtherJobClaims(t, x, ctx, now) })
 
 	if x.DrainReadRows == nil {
 		t.Log("factory reports no read rows; the bounded-row assertion is skipped")
@@ -325,6 +328,176 @@ func runActivityMarkerOtherJobRenewals(t *testing.T, x Fixture, ctx context.Cont
 	}
 	if shortRows, longRows := rows(short), rows(long); shortRows == 0 || longRows == 0 || longRows > shortRows {
 		t.Fatalf("the marker read transferred %d rows with %d rounds of renewals on the other jobs, want at most the %d rows of 4 rounds", longRows, renewals, shortRows)
+	}
+}
+
+// MarkerOtherJobClaimsTask is one task of the other-job claims bound
+// (SeedMarkerOtherJobClaims): its open review order and the lease the review
+// lease horizon must read.
+type MarkerOtherJobClaimsTask struct {
+	TaskID      string
+	Review      core.WorkOrder
+	ReviewLease time.Time
+}
+
+// SeedMarkerOtherJobClaims stores one task in review whose implement and
+// verify jobs hold claims other than the review order's, for the bound of
+// runActivityMarkerOtherJobClaims. A backend's own measurement of its
+// lifecycle statement seeds the same tasks.
+//
+// The task has an implement order, a verify order, and an open review order.
+// A user change request comes first. Then come the scaled claims: claims
+// claims, split between the implement job (half, rounded down, at least
+// one) and the verify job, all with future leases. On each job the newest
+// claim has the latest lease and the claim before it the earliest, so the
+// earliest future lease of a job with two or more claims is not on its
+// newest claim. Then the review job holds a lapsed claim, a renewal, and a
+// claim whose lease is the review lease. A last user change request
+// follows. With tie, a claim of a successor implement order at the same
+// instant, stored after the request, clears it; without tie the request
+// stays pending.
+func SeedMarkerOtherJobClaims(t *testing.T, ctx context.Context, st store.Backend, workspace string, now time.Time, title string, claims int, tie bool) MarkerOtherJobClaimsTask {
+	t.Helper()
+	p := newPredicateSeed(t, ctx, st, workspace, now, title)
+	implement := p.order("implement-1", core.StageImplement, false)
+	verify := p.order("verify-1", core.StageVerify, false)
+	review := p.order("review-1-seat-1", core.StageReview, false)
+	successor := p.order("implement-2", core.StageImplement, false)
+	reviewLease := now.Add(40 * time.Minute)
+	p.append("", "pipeline.bounced", map[string]any{"source": store.UserRequestChangesSource})
+	perJob := map[string]int{implement.JobID: max(1, claims/2)}
+	perJob[verify.JobID] = claims - perJob[implement.JobID]
+	seen := map[string]int{}
+	for i := range claims {
+		order := implement
+		if i%2 == 1 && seen[verify.JobID] < perJob[verify.JobID] || seen[implement.JobID] >= perJob[implement.JobID] {
+			order = verify
+		}
+		n, index := perJob[order.JobID], seen[order.JobID]
+		seen[order.JobID]++
+		// Leases after the read and before the review lease, so each could
+		// become the review lease horizon if a read took it for the review
+		// order's. The newest claim of a job holds the latest lease, and the
+		// claim before it the earliest.
+		lease := now.Add(2 * time.Hour)
+		if index < n-1 {
+			lease = now.Add(10*time.Minute + time.Duration(n-2-index)*time.Second)
+		}
+		p.append(order.JobID, "work_order.claimed", claimPayload(order, lease))
+	}
+	p.append(review.JobID, "work_order.claimed", claimPayload(review, now.Add(-time.Hour)))
+	p.append(review.JobID, "work_order.lease_renewed", map[string]any{"attempt_id": "attempt-review", "lease_expires_at": now.Add(-30 * time.Minute)})
+	p.append(review.JobID, "work_order.claimed", claimPayload(review, reviewLease))
+	p.append("", "pipeline.bounced", map[string]any{"source": store.UserRequestChangesSource})
+	if tie {
+		// The same instant as the request: the fold orders the two by ID,
+		// so the claim follows the request and clears it. It is the claim
+		// of the successor implement order, on a job of its own, so the
+		// scaled jobs keep their claim counts.
+		raw := claimPayload(successor, now.Add(3*time.Hour))
+		requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: p.taskID, JobID: successor.JobID, Kind: "work_order.claimed", At: p.at.UTC(), Payload: raw}))
+	}
+	return MarkerOtherJobClaimsTask{TaskID: p.taskID, Review: review, ReviewLease: reviewLease}
+}
+
+// runActivityMarkerOtherJobClaims proves a task in review reads, of its
+// claims, only those of its open review orders' jobs and those from its last
+// user change request on, however often its other jobs were claimed
+// (component-web-task-surfaces invariant 19). A claim belongs to a review
+// order only through its job, and the request fold reads no claim before
+// the last request.
+//
+// Two tasks hold the same review and request events
+// (SeedMarkerOtherJobClaims). The short task has 3 claims on its implement
+// and verify jobs and the long task 120, all before the last request and
+// all with future leases, and the short task's implement job holds one
+// claim. Each task's markers and review lease horizon must
+// equal the Go folds over its complete event list, and the long task's read
+// may not transfer more rows than the short task's: a read that selected the
+// claims of every job would keep more of them. A third task, with no claim
+// at the last request's instant, keeps that request pending.
+func runActivityMarkerOtherJobClaims(t *testing.T, x Fixture, ctx context.Context, now time.Time) {
+	st, ws := x.Backend, x.Workspace
+	const claims = 120
+	short := SeedMarkerOtherJobClaims(t, ctx, st, ws, now, "Marker other job claims short", 3, true)
+	long := SeedMarkerOtherJobClaims(t, ctx, st, ws, now, "Marker other job claims long", claims, true)
+	pending := SeedMarkerOtherJobClaims(t, ctx, st, ws, now, "Marker other job claims pending", 3, false)
+
+	for _, seeded := range []MarkerOtherJobClaimsTask{short, long, pending} {
+		taskID := seeded.TaskID
+		inputs, err := st.ReadActivityInputs(ctx, []string{taskID}, now)
+		requireOK(t, err)
+		events, err := st.ListEvents(ctx, taskID)
+		requireOK(t, err)
+		if want := store.ActivityReviewLeaseHorizon(inputs.Orders, events, now); !inputs.ValidUntil.Equal(want) || !want.Equal(seeded.ReviewLease) {
+			t.Fatalf("task %s review lease horizon = %s, the Go fold reads %s, want the review order's claim lease %s", taskID, inputs.ValidUntil, want, seeded.ReviewLease)
+		}
+		if len(inputs.Markers) != 1 {
+			t.Fatalf("task %s markers = %+v, want one", taskID, inputs.Markers)
+		}
+		want := markerReference(t, ctx, st, taskID, now)
+		got := inputs.Markers[0]
+		requireSameJSON(t, "marker "+taskID+" review diagnostics", utcReviewDiagnostics(got.ReviewDiagnostics), utcReviewDiagnostics(want.ReviewDiagnostics))
+		requireSameJSON(t, "marker "+taskID+" review recovery", got.ReviewRecovery, want.ReviewRecovery)
+		requireSameJSON(t, "marker "+taskID+" interrupted review recovery", got.InterruptedReviewRecovery, want.InterruptedReviewRecovery)
+		requireSameJSON(t, "marker "+taskID+" forge failure", got.ForgeFailure, want.ForgeFailure)
+		requireSameJSON(t, "marker "+taskID+" stalled", got.Stalled, want.Stalled)
+		if got.UserChangesRequested != want.UserChangesRequested {
+			t.Fatalf("marker %s user changes requested = %t, want %t", taskID, got.UserChangesRequested, want.UserChangesRequested)
+		}
+		// The claim at the last request's instant clears it; without that
+		// claim the request stays pending.
+		if wantPending := taskID == pending.TaskID; want.UserChangesRequested != wantPending {
+			t.Fatalf("task %s: the Go fold reads user changes requested %t, want %t", taskID, want.UserChangesRequested, wantPending)
+		}
+		if len(got.ReviewDiagnostics) != 0 {
+			t.Fatalf("task %s review diagnostics = %+v, want none while the review lease runs", taskID, got.ReviewDiagnostics)
+		}
+	}
+	// After every lease of the other jobs' older claims is past, and after
+	// the review lease, the read still equals the Go folds; after the review
+	// lease the order is an expired claim with that lease.
+	for _, at := range []time.Time{now.Add(15 * time.Minute), long.ReviewLease.Add(time.Second)} {
+		inputs, err := st.ReadActivityInputs(ctx, []string{long.TaskID}, at)
+		requireOK(t, err)
+		events, err := st.ListEvents(ctx, long.TaskID)
+		requireOK(t, err)
+		if want := store.ActivityReviewLeaseHorizon(inputs.Orders, events, at); !inputs.ValidUntil.Equal(want) {
+			t.Fatalf("at %s the review lease horizon = %s, want %s", at, inputs.ValidUntil, want)
+		}
+		want := store.ReviewVerdictDiagnostics(inputs.Orders, events, at)
+		requireSameJSON(t, "review diagnostics at "+at.Format(time.RFC3339), utcReviewDiagnostics(inputs.Markers[0].ReviewDiagnostics), utcReviewDiagnostics(want))
+		if expired := at.After(long.ReviewLease); expired != (len(want) == 1 && want[0].Status == store.ReviewExpiredWithoutVerdict && want[0].LeaseExpiresAt.Equal(long.ReviewLease)) {
+			t.Fatalf("at %s the Go fold reads diagnostics %+v, want an expired claim with the review lease exactly after it", at, want)
+		}
+		if inputs.Markers[0].UserChangesRequested != store.UserRequestChangesPending(events) {
+			t.Fatalf("at %s user changes requested = %t, want the Go fold's", at, inputs.Markers[0].UserChangesRequested)
+		}
+	}
+
+	if x.DrainReadRows == nil {
+		t.Log("factory reports no read rows; the transferred-row assertion is skipped")
+		return
+	}
+	read := func(taskID string) (rows, bytes uint64) {
+		t.Helper()
+		x.DrainReadRows()
+		if x.DrainReadBytes != nil {
+			x.DrainReadBytes()
+		}
+		_, err := st.ListActivityMarkersForTasks(ctx, []string{taskID})
+		requireOK(t, err)
+		rows = x.DrainReadRows()["ListActivityMarkersForTasks"]
+		if x.DrainReadBytes != nil {
+			bytes = x.DrainReadBytes()["ListActivityMarkersForTasks"]
+		}
+		return rows, bytes
+	}
+	shortRows, shortBytes := read(short.TaskID)
+	longRows, longBytes := read(long.TaskID)
+	t.Logf("marker read of the other job claims bound: 3 claims %d rows %d bytes, %d claims %d rows %d bytes", shortRows, shortBytes, claims, longRows, longBytes)
+	if shortRows == 0 || longRows == 0 || longRows > shortRows {
+		t.Fatalf("the marker read transferred %d rows with %d claims on the other jobs, want at most the %d rows of 3 claims", longRows, claims, shortRows)
 	}
 }
 

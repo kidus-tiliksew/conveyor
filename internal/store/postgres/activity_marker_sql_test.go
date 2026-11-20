@@ -13,8 +13,9 @@ import (
 // TestMarkerFoldQueryShape pins the PostgreSQL marker statements: the
 // placeholders read $1 to $n in text order, one per argument, no snapshot body
 // key is named outside the compact payload, the review-round kinds are
-// selected, kept for review tasks, and projected, and a task whose open
-// review order ID needs JSON escaping keeps every claim.
+// selected, kept for review tasks, and projected, review claims are selected
+// by job and never by an open review order ID, and the request claims of a
+// task in review start at its request fence.
 func TestMarkerFoldQueryShape(t *testing.T) {
 	in := store.MarkerFoldInput{Workspace: "ws", Page: []string{"task"}, ReviewTasks: []string{"task"}, LiveReviewTasks: []string{"task"},
 		OpenReviewOrders: []store.MarkerReviewOrder{{TaskID: "task", ID: "order-1", JobID: "job-1"}, {TaskID: "task", ID: `odd"id`, JobID: "job-2"}}, Now: time.Unix(10, 5)}
@@ -47,13 +48,52 @@ func TestMarkerFoldQueryShape(t *testing.T) {
 	}
 	query, args := markerFoldQuery(in)
 	check("open review fold", query, args)
-	if !strings.Contains(query, "AND NOT (task_id=ANY(") {
-		t.Fatal("a task with an order ID outside the safe alphabet is not excluded from the claim reduction")
+	// A claim belongs to a review order only through its job
+	// (store.MarkerReviewJobs): the statement matches no claim against an
+	// open review order ID, binds no order ID, and selects a task's review
+	// claims by the jobs of its open review orders.
+	for _, absent := range []string{"unnest(", "order_quoted", "AND NOT (task_id=ANY("} {
+		if strings.Contains(query, absent) {
+			t.Fatalf("the open review fold holds %q; claims match review orders by job alone", absent)
+		}
+	}
+	jobLists := 0
+	for _, arg := range args {
+		switch value := arg.(type) {
+		case string:
+			if value == `odd"id` || value == "order-1" {
+				t.Fatalf("the open review fold binds the order ID %q", value)
+			}
+		case []string:
+			if strings.Join(value, ",") == "job-1,job-2" {
+				jobLists++
+			}
+			for _, id := range value {
+				if id == `odd"id` || id == "order-1" {
+					t.Fatalf("the open review fold binds the order ID %q", id)
+				}
+			}
+		}
+	}
+	// One job list selects the review claims and one the review renewals.
+	if jobLists != 2 {
+		t.Fatalf("the open review fold binds the review job list %d times, want 2", jobLists)
+	}
+	// The request fold of a task in review reads its implement claims from
+	// the request fence on, in the same statement.
+	flat := strings.Join(strings.Fields(query), " ")
+	for _, want := range []string{"request_bounces AS (", "request_fences AS (", "EXISTS (SELECT 1 FROM request_fences f WHERE f.task_id=folded_rows.task_id AND folded_rows.event_at>=f.fence)", "COALESCE(MAX(CASE WHEN"} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("the open review fold does not hold %q", want)
+		}
 	}
 	plain := in
 	plain.LiveReviewTasks, plain.OpenReviewOrders = nil, nil
 	query, args = markerFoldQuery(plain)
 	check("fold", query, args)
+	if strings.Contains(query, "request_fences") {
+		t.Fatal("a page without an open review order reads request fences")
+	}
 	full := in
 	full.KeepAllClaims = true
 	query, args = markerFoldQuery(full)
