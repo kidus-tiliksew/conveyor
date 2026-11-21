@@ -737,13 +737,17 @@ func (client *OpenAI) providerMessage(ctx context.Context, raw []byte) (string, 
 const providerMessageLimit = 300
 
 // documentWireMediaType returns the media type a document's data URL carries.
-// JSON, XML, RTF, and +json or +xml types go out as text/plain because some
-// providers accept only PDF and text/* documents; every other type keeps its
-// recorded value, parameters included (component-triage).
+// A text/* type goes out as its trimmed, lowercase base type without
+// parameters, because a provider refuses a data URL that carries a parameter
+// such as charset. JSON, XML, RTF, and +json or +xml types go out as
+// text/plain because some providers accept only PDF and text/* documents.
+// Every other type keeps its recorded value, parameters included. The result
+// sets only the request's data URL and its audit metadata (component-triage
+// invariant 5).
 func documentWireMediaType(contentType string) string {
 	base := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 	if strings.HasPrefix(base, "text/") {
-		return contentType
+		return base
 	}
 	switch {
 	case base == "application/json", base == "application/xml", base == "application/rtf",
