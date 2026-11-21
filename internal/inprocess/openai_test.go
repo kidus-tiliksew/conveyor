@@ -882,12 +882,68 @@ func TestOpenAIRunSendsTextualDocumentsAsPlainText(t *testing.T) {
 	}
 }
 
+// TestOpenAIRunSendsTextDocumentsAsBaseType pins component-triage invariant 5:
+// a text/* document goes out as its trimmed, lowercase base type without
+// parameters, in both the file_data URL and the audit metadata, while the
+// caller's filename, recorded type, and bytes stay as they were.
+func TestOpenAIRunSendsTextDocumentsAsBaseType(t *testing.T) {
+	t.Parallel()
+	attachments := []Attachment{
+		{ID: "txt-id", Name: "make-test.log", ContentType: "text/plain; charset=utf-8", Content: []byte("ok  \tgithub.com/example/pkg\n")},
+		{ID: "csv-id", Name: "rows.csv", ContentType: "text/csv; header=present", Content: []byte("a,b\n1,2\n")},
+		{ID: "padded-id", Name: "padded.txt", ContentType: "  Text/Plain ; Charset=UTF-8; format=flowed ", Content: []byte("padded body")},
+		{ID: "md-id", Name: "notes.md", ContentType: "text/markdown", Content: []byte("# Notes\n")},
+	}
+	wantTypes := map[string]string{
+		"txt-id":    "text/plain",
+		"csv-id":    "text/csv",
+		"padded-id": "text/plain",
+		"md-id":     "text/markdown",
+	}
+	for i := range attachments {
+		attachments[i].Kind = AttachmentDocument
+	}
+	original := make([]Attachment, len(attachments))
+	for i, attachment := range attachments {
+		original[i] = attachment
+		original[i].Content = append([]byte(nil), attachment.Content...)
+	}
+	files, transcript := runDocuments(t, attachments)
+	for i, attachment := range attachments {
+		if attachment.Name != original[i].Name || attachment.ContentType != original[i].ContentType || !bytes.Equal(attachment.Content, original[i].Content) {
+			t.Fatalf("caller attachment %s changed: %+v", attachment.ID, attachment)
+		}
+		wantType := wantTypes[attachment.ID]
+		file := files[attachment.Name]
+		if file == nil {
+			t.Fatalf("missing input_file for %s", attachment.Name)
+		}
+		if file["filename"] != original[i].Name {
+			t.Fatalf("%s filename = %v, want %s", attachment.ID, file["filename"], original[i].Name)
+		}
+		want := "data:" + wantType + ";base64," + base64.StdEncoding.EncodeToString(original[i].Content)
+		if file["file_data"] != want {
+			t.Fatalf("%s file_data = %v, want %s", attachment.Name, file["file_data"], want)
+		}
+		metadata := fmt.Sprintf("[binary omitted: artifact %s, %s, %d bytes]", attachment.ID, wantType, len(original[i].Content))
+		if !strings.Contains(string(transcript), metadata) {
+			t.Fatalf("audit metadata %q missing from transcript: %s", metadata, transcript)
+		}
+	}
+	var audit struct {
+		Request json.RawMessage `json:"request"`
+	}
+	if err := json.Unmarshal(transcript, &audit); err != nil {
+		t.Fatal(err)
+	}
+	if request := strings.ToLower(string(audit.Request)); strings.Contains(request, "charset") || strings.Contains(request, "header=present") {
+		t.Fatalf("audit request kept a text/* media type parameter: %s", audit.Request)
+	}
+}
+
 func TestOpenAIRunPreservesOtherDocumentMediaTypes(t *testing.T) {
 	t.Parallel()
 	attachments := []Attachment{
-		{ID: "md-id", Name: "notes.md", ContentType: "text/markdown"},
-		{ID: "txt-id", Name: "log.txt", ContentType: "text/plain; charset=utf-8"},
-		{ID: "csv-id", Name: "rows.csv", ContentType: "text/csv; header=present"},
 		{ID: "pdf-id", Name: "file.pdf", ContentType: "application/pdf"},
 		{ID: "doc-id", Name: "file.doc", ContentType: "application/msword"},
 		{ID: "docx-id", Name: "file.docx", ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
