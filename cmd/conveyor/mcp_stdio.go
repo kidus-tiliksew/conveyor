@@ -424,7 +424,9 @@ func mcpStdioDecodeAny(raw json.RawMessage) any {
 // handler's json.Encoder escapes <, >, and & in the echoed ID. Any other ID
 // matches as compact raw JSON, so a numeric ID is never converted to a float
 // and a string never matches a number. A request whose ID is unknown,
-// because the input was not a JSON object, accepts only an absent or null ID.
+// because the input was not a JSON object, accepts only an explicit null ID:
+// a JSON-RPC response always carries an id member, so an answer without one
+// is malformed (invariant 46). A batch array is such an input.
 func mcpStdioIDMatches(object map[string]json.RawMessage, expect mcpStdioRequest) bool {
 	raw, ok := object["id"]
 	var compact bytes.Buffer
@@ -432,7 +434,7 @@ func mcpStdioIDMatches(object map[string]json.RawMessage, expect mcpStdioRequest
 		return false
 	}
 	if !expect.idKnown {
-		return !ok || compact.String() == "null"
+		return ok && compact.String() == "null"
 	}
 	if !ok {
 		return false

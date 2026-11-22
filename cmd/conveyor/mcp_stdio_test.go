@@ -1116,3 +1116,54 @@ func TestMCPStdioMatchesStringIDsThatTheServerEncoderEscapes(t *testing.T) {
 	assertMCPLines(t, session.stdout.String())
 	session.assertNoSecrets()
 }
+
+// TestMCPStdioAnswersInputWithoutAnIDWithANullID covers a line that is JSON
+// but not a JSON-RPC object, such as true or a batch array. The /mcp handler
+// answers it with a parse error that has no id member. That answer is not a
+// valid JSON-RPC response, so the bridge answers with its own error and
+// "id":null. An upstream answer with "id":null passes unchanged.
+func TestMCPStdioAnswersInputWithoutAnIDWithANullID(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		if string(body) == "false" {
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}`)
+			return
+		}
+		// The /mcp handler's parse error: rpcResponse.ID is omitempty.
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","error":{"code":-32700,"message":"parse error"}}`)
+	}))
+	defer server.Close()
+	credentials := isolateMCPStdioTest(t, server.URL)
+	writeMCPStdioCredentials(t, credentials, map[string]string{server.URL: mcpStdioFileToken})
+	session := startMCPStdio(t, "--server", server.URL, "--credentials-file", credentials)
+
+	for _, line := range []string{
+		"true",
+		`[{"jsonrpc":"2.0","id":7,"method":"ping"},{"jsonrpc":"2.0","id":8,"method":"ping"}]`,
+	} {
+		session.send(line)
+		got := decodeRPCLine(t, session.next())
+		if string(got.ID) != "null" || got.Error == nil || got.Error.Code != mcpStdioInvalidResponse {
+			t.Fatalf("answer for %s = id %s error %+v", line, got.ID, got.Error)
+		}
+	}
+	session.send("false")
+	if got := session.next(); got != `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}` {
+		t.Fatalf("answer with an explicit null id = %q", got)
+	}
+	if err, rest := session.finish(); err != nil || len(rest) != 0 {
+		t.Fatalf("exit err=%v rest=%q", err, rest)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 3 {
+		t.Fatalf("server received %d requests, want 3: %q", len(bodies), bodies)
+	}
+	assertMCPLines(t, session.stdout.String())
+	session.assertNoSecrets()
+}
