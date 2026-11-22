@@ -134,6 +134,10 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 				if result.tool == "cursor" || result.tool == "opencode" {
 					source = "stored credential via server-specific environment variable " + identity.tokenEnv
 					fmt.Fprintf(cmd.OutOrStdout(), "export %s=$(%s)\n", identity.tokenEnv, identity.bridge)
+				} else if result.tool == "antigravity" {
+					// The stdio bridge reads the credential file for each
+					// request, so no export line applies (DEC-145).
+					source = "stored credential via the stdio bridge `conveyor mcp stdio`, which reads the credential file for each request"
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Credential source: %s\nParser: %s\n", source, result.validation)
 				if list {
@@ -147,7 +151,7 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 		},
 	}
 	command.Flags().BoolVar(&list, "list", false, "list native registration state without writing")
-	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, cursor, or opencode)")
+	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, cursor, opencode, or antigravity)")
 	command.Flags().StringVar(&selectedName, "name", "", "server-specific registration name (1-63 ASCII letters, digits, underscores or hyphens)")
 	command.Flags().BoolVar(&adopt, "adopt", false, "adopt an unmarked existing Conveyor registration")
 	return command
@@ -207,6 +211,10 @@ func mcpTargets(home string, tools []skillTool) []mcpInstallTarget {
 			targets = append(targets, mcpInstallTarget{tool: tool.name, path: filepath.Join(configRoot, "opencode", "opencode.json")})
 		case "cursor":
 			targets = append(targets, mcpInstallTarget{tool: tool.name, path: filepath.Join(home, ".cursor", "mcp.json")})
+		case "antigravity":
+			// Antigravity reads global MCP servers from this file under
+			// mcpServers (component-cli-onboarding, "Native MCP registrations").
+			targets = append(targets, mcpInstallTarget{tool: tool.name, path: filepath.Join(home, ".gemini", "config", "mcp_config.json")})
 		}
 	}
 	return targets
@@ -268,7 +276,7 @@ func reconcileNamedMCPRegistration(home string, target mcpInstallTarget, identit
 	switch target.tool {
 	case "codex":
 		next, status, name, err = reconcileNamedCodex(prior, identity, adopt)
-	case "claude", "cursor", "opencode":
+	case "claude", "cursor", "opencode", "antigravity":
 		next, status, name, err = reconcileNamedJSON(prior, target.tool, identity, adopt)
 	default:
 		err = fmt.Errorf("unsupported MCP tool %q", target.tool)
@@ -303,6 +311,17 @@ func reconcileNamedMCPRegistration(home string, target mcpInstallTarget, identit
 		} else {
 			validate = func(staged string) error { return validateMCPParser(binary, target.tool, staged, name) }
 			validation = "accepted by " + target.tool + " mcp get (not a native connection check)"
+		}
+	}
+	if target.tool == "antigravity" {
+		binary, lookupErr := lookPath("agy")
+		if lookupErr != nil {
+			validation = "skipped: agy is not on PATH"
+		} else {
+			validate = func(staged string) error {
+				return validateAntigravityMCP(binary, staged, name, 30*time.Second)
+			}
+			validation = "accepted by agy mcp list (not a native connection check)"
 		}
 	}
 	if err = atomicWriteMCPConfigValidated(home, target.path, next, mode, validate); err != nil {

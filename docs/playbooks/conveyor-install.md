@@ -154,10 +154,9 @@ establish each of these (AC-2.1):
    default branch. Conveyor works with GitHub repositories through the
    workspace GitHub App.
 7. **Agent tools.** Which coding-agent tools to connect: Claude Code, Codex,
-   Cursor, OpenCode, or Antigravity. Each gets the skills. Claude Code, Codex,
-   Cursor, and OpenCode also get an MCP registration, and the person works
-   tasks in sessions they start in these tools. `conveyor mcp install` does
-   not register Antigravity.
+   Cursor, OpenCode, or Antigravity. Each gets the skills and an MCP
+   registration, and the person works tasks in sessions they start in these
+   tools.
 
 For a team server, also ask for the public HTTPS URL people will use, and
 whether invitations should be emailed through SMTP or delivered by hand.
@@ -472,13 +471,15 @@ conveyor skills install
 conveyor mcp install --server <server-url> --name <connection-name>
 ```
 
-`--tool claude`, `--tool codex`, `--tool cursor`, or `--tool opencode`
-selects one tool, and `--list` previews without writing. Codex and Claude
-Code read the saved credential through a native helper. Cursor and OpenCode
-read a server-specific environment variable; the installer prints the
-export line, which the person adds to the environment that launches the
-client, because its value is a token. Ask the person to restart each
-client. Naming, migration, and credential details are in the
+`--tool claude`, `--tool codex`, `--tool cursor`, `--tool opencode`, or
+`--tool antigravity` selects one tool, and `--list` previews without writing.
+Codex and Claude Code read the saved credential through a native helper.
+Cursor and OpenCode read a server-specific environment variable. The
+installer prints the export line. The person adds it to the environment that
+launches the client, because its value is a token. Antigravity runs
+the local stdio bridge `conveyor mcp stdio`, which reads the saved
+credential for each request. The installer prints no export line for it.
+Ask the person to restart each client. Naming, migration, and credential details are in the
 [MCP reference](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/mcp.md)
 and in [Authentication](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/auth.md#native-mcp-credentials).
 

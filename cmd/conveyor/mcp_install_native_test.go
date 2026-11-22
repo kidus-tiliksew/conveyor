@@ -304,6 +304,100 @@ func TestMCPNativeClients(t *testing.T) {
 			t.Log("native credential rotation and rejection passed")
 		})
 	}
+	t.Run("antigravity", testMCPNativeAntigravityParser)
+}
+
+// testMCPNativeAntigravityParser checks the installed agy parser only. agy
+// starts no stdio server for `mcp list`, so this subtest proves that agy
+// accepts the registration, not that it connects (component-cli-onboarding
+// invariant 11). It uses a synthetic credential and never a live token.
+func testMCPNativeAntigravityParser(t *testing.T) {
+	binary, err := exec.LookPath("agy")
+	if err != nil {
+		t.Skip("agy unavailable; no native evidence")
+	}
+	version, err := exec.Command(binary, "--version").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("client agy %s", strings.TrimSpace(string(version)))
+	home := t.TempDir()
+	credentialPath := filepath.Join(home, "saved credentials.json")
+	credentialBytes, _ := json.Marshal(localAuthConfig{Servers: map[string]localServerConfig{"https://example.invalid": {Token: "synthetic-native-check"}}})
+	if err := os.WriteFile(credentialPath, credentialBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	helper, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := newMCPIdentity("https://example.invalid", "conveyor-native-check", helper, credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := mcpTargets(home, []skillTool{{name: "antigravity"}})[0]
+	for _, want := range []string{"created", "unchanged"} {
+		result, err := reconcileNamedMCPRegistration(home, target, id, false, true, exec.LookPath)
+		if err != nil || result.status != want {
+			t.Fatalf("native install: result=%+v err=%v", result, err)
+		}
+		t.Logf("antigravity %s: %s", result.status, result.validation)
+	}
+	data, err := os.ReadFile(target.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(target.path); info.Mode().Perm() != 0o600 || bytes.Contains(data, []byte("synthetic-native-check")) {
+		t.Fatalf("native registration mode or token check failed: %o", info.Mode().Perm())
+	}
+	listed := func(dir string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, binary, "mcp", "list")
+		cmd.Env = mcpIsolatedEnvironment(dir)
+		cmd.Dir = dir
+		cmd.Stderr = io.Discard
+		cmd.WaitDelay = time.Second
+		output, err := cmd.Output()
+		return string(output), err
+	}
+	output, err := listed(home)
+	if err != nil || !antigravityListsStdio([]byte(output), id.name) {
+		t.Fatalf("agy mcp list did not list %s as stdio: err=%v\n%s", id.name, err, output)
+	}
+	t.Logf("agy mcp list row: %s", strings.TrimSpace(output[strings.Index(output, id.name):]))
+	// The parser check reads the file and runs no bridge: a command that
+	// would leave a marker file leaves none.
+	sentinel := filepath.Join(home, "bridge-started")
+	script := filepath.Join(home, "bridge")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch '"+sentinel+"'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(home, "staged.json")
+	stagedBytes, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{"sentinel": map[string]any{"command": script, "args": []string{"mcp", "stdio"}}}})
+	if err := os.WriteFile(staged, stagedBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAntigravityMCP(binary, staged, "sentinel", 30*time.Second); err != nil {
+		t.Fatalf("native parser rejected a stdio entry: %v", err)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("agy mcp list started the stdio command: %v", err)
+	}
+	// A rejection or a dropped entry refuses publication.
+	for label, content := range map[string]string{
+		"malformed JSON":  `{"mcpServers":{"sentinel":`,
+		"invalid command": `{"mcpServers":{"sentinel":{"command":5}}}`,
+	} {
+		if err := os.WriteFile(staged, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateAntigravityMCP(binary, staged, "sentinel", 30*time.Second); err == nil {
+			t.Fatalf("native parser accepted %s", label)
+		} else {
+			t.Logf("native parser refused %s: %v", label, err)
+		}
+	}
 }
 
 func runNativeCodexFixture(t *testing.T, ctx context.Context, binary, home string, env, servers []string, expectRejection bool) {

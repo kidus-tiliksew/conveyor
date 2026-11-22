@@ -87,3 +87,59 @@ func mcpIsolatedEnvironment(home string) []string {
 	}
 	return result
 }
+
+// validateAntigravityMCP runs `agy mcp list` against a copy of the staged
+// file in an isolated home before publication (component-cli-onboarding
+// invariant 11). `agy mcp list` parses the file and starts no stdio server,
+// so the check never runs the bridge. A nonzero exit, a timeout, or a list
+// without a stdio row for the exact registration name refuses publication.
+// The client output is withheld, as in validateMCPParser.
+func validateAntigravityMCP(binary, staged, name string, timeout time.Duration) error {
+	content, err := os.ReadFile(staged)
+	if err != nil {
+		return err
+	}
+	isolated, err := os.MkdirTemp(filepath.Dir(staged), ".conveyor-parser-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(isolated)
+	configPath := filepath.Join(isolated, ".gemini", "config", "mcp_config.json")
+	if err = os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		return err
+	}
+	if err = os.WriteFile(configPath, content, 0o600); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "mcp", "list")
+	cmd.Dir = isolated
+	cmd.Env = mcpIsolatedEnvironment(isolated)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = io.Discard
+	cmd.WaitDelay = time.Second
+	if err = cmd.Run(); ctx.Err() != nil {
+		return errors.New("agy mcp list timed out (output withheld)")
+	} else if err != nil {
+		return errors.New("agy mcp list rejected the staged registration (output withheld). Upgrade agy or check its configuration")
+	}
+	if !antigravityListsStdio(output.Bytes(), name) {
+		return fmt.Errorf("agy mcp list did not list registration %s as a stdio server (output withheld)", name)
+	}
+	return nil
+}
+
+// antigravityListsStdio reports whether a row of `agy mcp list` output has
+// the exact registration name in its NAME column and stdio in its TYPE
+// column. A name that only contains the registration name does not match.
+func antigravityListsStdio(output []byte, name string) bool {
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == name && fields[1] == "stdio" {
+			return true
+		}
+	}
+	return false
+}

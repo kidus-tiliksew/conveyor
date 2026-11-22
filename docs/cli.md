@@ -46,7 +46,8 @@ MCP, works in the worktree `conveyor checkout` resolves, and submits with
 `conveyor submit`. You choose the harness and model when you start the
 session. The CLI launches no agent and keeps no execution settings.
 `conveyor skills install` also installs the skills for Antigravity (`agy`).
-`conveyor mcp install` does not register Antigravity.
+`conveyor mcp install` registers Antigravity as a local stdio server that runs
+`conveyor mcp stdio`.
 
 ## auth
 
@@ -534,7 +535,7 @@ itself after its own task merges or closes, still from the primary checkout.
 
 | Command | What it does |
 |---|---|
-| `conveyor mcp install` | Install a named personal connection for the selected saved server. `--server <base>`, `--name <name>`, `--tool claude\|codex\|cursor\|opencode`, read-only `--list`, and endpoint-checked `--adopt` are supported. Codex/Claude use native header helpers; Cursor/OpenCode use distinct server-specific token variables and literal endpoints. OpenCode validates staged config with `debug config`. |
+| `conveyor mcp install` | Install a named personal connection for the selected saved server. `--server <base>`, `--name <name>`, `--tool claude\|codex\|cursor\|opencode\|antigravity`, read-only `--list`, and endpoint-checked `--adopt` are supported. Codex/Claude use native header helpers; Cursor/OpenCode use distinct server-specific token variables and literal endpoints. OpenCode validates staged config with `debug config`. Antigravity gets a stdio entry in `~/.gemini/config/mcp_config.json` that runs `conveyor mcp stdio --server <base> --credentials-file <absolute-path>`, with no token and no export line. `agy mcp list` checks the staged file before the installer writes it. |
 | `conveyor mcp stdio` | Run a local stdio MCP bridge for an agent tool that can neither run a header helper nor expand an environment reference in a header value. `--server <base>` and an absolute `--credentials-file <path>` are required. Before each request, the bridge reads the token for the canonical server from that file, never from `CONVEYOR_API_TOKEN`. It sends each JSON-RPC line from standard input to `<base>/mcp` and writes each answer as one line to standard output. See [stdio bridge](mcp.md#stdio-bridge). |
 | `conveyor skills install` | Install the nine embedded agent skills (`conveyor-work`, `conveyor-plan`, `conveyor-file-tasks`, `conveyor-testing-doc`, `conveyor-kit`, `conveyor-kit-verify`, `conveyor-coordinate`, `conveyor-install`, `conveyor-plain-english`) into the native roots for detected Claude Code, Codex, Cursor, OpenCode, and Antigravity (`agy`) clients. OpenCode uses `~/.config/opencode/skills` globally and `.opencode/skills` with `--project`. Antigravity uses `~/.gemini/config/skills` globally and `.agents/skills` with `--project`. `--tool claude\|codex\|cursor\|opencode\|antigravity` narrows the detected client, and `--force` allows downgrading skills a newer release installed. |
 
