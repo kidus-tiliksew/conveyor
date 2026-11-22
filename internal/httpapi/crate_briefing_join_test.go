@@ -533,3 +533,80 @@ func TestCrateBriefingAfterJoinNeverWaitsWithoutModel(t *testing.T) {
 	waitCrateBriefingJobs(t, h.server)
 	h.requireJoinBriefing(t, fresh.ID)
 }
+
+// crateJoinFailingStore fails the membership write.
+type crateJoinFailingStore struct {
+	crateBackend
+	err error
+}
+
+func (s *crateJoinFailingStore) JoinTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, bool, error) {
+	return core.Task{}, false, s.err
+}
+
+// createTasksFailingMemberships fails only the create_tasks lookup.
+type createTasksFailingMemberships struct {
+	store.MembershipStore
+	err error
+}
+
+func (m createTasksFailingMemberships) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
+	if capability == core.CapabilityCreateTasks {
+		return false, m.err
+	}
+	return m.MembershipStore.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
+}
+
+// TestCrateBriefingAfterJoinChecksFailStartNothing: a failed membership
+// write answers the generic 500 and starts nothing. A failed create_tasks
+// read or configuration read before the start is logged redacted and starts
+// nothing. No briefing is stored and the model is never called.
+func TestCrateBriefingAfterJoinChecksFailStartNothing(t *testing.T) {
+	const secret = "hunter2hunter2hunter2hunter2"
+	t.Run("membership write", func(t *testing.T) {
+		h := newCrateBriefingHarness(t)
+		h.install(h.agent, config.TriageRoute{Model: "triage-model"})
+		fresh := h.createCrate(t, h.editor, map[string]any{"name": "Write fails"})
+		task := h.task(t, "")
+		h.server.Store = &crateJoinFailingStore{crateBackend: h.store.(crateBackend), err: errors.New("driver refused the join password=" + secret)}
+		_, restore := captureCrateLog(t)
+		status, raw := h.do(t, h.editor, http.MethodPut, "/v1/tasks/"+task.ID+"/crate", map[string]any{"crate_id": fresh.ID})
+		restore()
+		h.server.Store = h.store
+		if status != http.StatusInternalServerError || strings.Contains(string(raw), secret) {
+			t.Fatalf("join status=%d body=%s, want the generic 500", status, raw)
+		}
+		waitCrateBriefingJobs(t, h.server)
+		h.requireJobsStarted(t, 0)
+	})
+	for name, configure := range map[string]func(h *crateBriefingHarness){
+		"capability read": func(h *crateBriefingHarness) {
+			h.server.Memberships = createTasksFailingMemberships{MembershipStore: h.server.Memberships, err: errors.New("membership read refused password=" + secret)}
+		},
+		"configuration read": func(h *crateBriefingHarness) {
+			h.server.WorkOrders.Dispatcher.ConfigProvider = func(context.Context) (*config.Config, error) {
+				return nil, errors.New("configuration read refused password=" + secret)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newCrateBriefingHarness(t)
+			h.install(h.agent, config.TriageRoute{Model: "triage-model"})
+			h.server.WorkOrders.RedactionSecrets = insightSecretSource{secrets: []string{secret}}
+			fresh := h.createCrate(t, h.editor, map[string]any{"name": "Check fails"})
+			h.task(t, fresh.ID)
+			configure(h)
+			captured, restore := captureCrateLog(t)
+			h.server.startCrateBriefingAfterJoin(crateJoinContext(t.Context(), core.WorkspaceRoleMaintainer), fresh.ID)
+			restore()
+			waitCrateBriefingJobs(t, h.server)
+			h.requireJobsStarted(t, 0)
+			if logged := captured.String(); strings.Contains(logged, secret) || !strings.Contains(logged, "crate briefing after a join for "+fresh.ID+": "+name+" failed") {
+				t.Fatalf("log %q, want the redacted %s failure", logged, name)
+			}
+			if _, ok := h.storedBriefingFor(t, fresh.ID); ok || h.agent.callCount() != 0 {
+				t.Fatalf("a failed check stored=%t calls=%d", ok, h.agent.callCount())
+			}
+		})
+	}
+}
