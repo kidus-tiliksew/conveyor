@@ -248,6 +248,7 @@ func decodeRPCLine(t *testing.T, line string) rpcLine {
 }
 
 type recordedMCPRequest struct {
+	rpcMethod     string
 	method        string
 	path          string
 	authorization string
@@ -260,14 +261,14 @@ func TestMCPStdioForwardsRequestsUnchangedWithFileCredential(t *testing.T) {
 	var recorded []recordedMCPRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		recorded = append(recorded, recordedMCPRequest{r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Content-Type"), string(body)})
-		mu.Unlock()
 		var request struct {
 			ID     json.RawMessage `json:"id"`
 			Method string          `json:"method"`
 		}
 		_ = json.Unmarshal(body, &request)
+		mu.Lock()
+		recorded = append(recorded, recordedMCPRequest{request.Method, r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Content-Type"), string(body)})
+		mu.Unlock()
 		switch request.Method {
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
@@ -316,24 +317,38 @@ func TestMCPStdioForwardsRequestsUnchangedWithFileCredential(t *testing.T) {
 	if len(rest) != 0 {
 		t.Fatalf("the 202 notification wrote output: %q", rest)
 	}
+	// The bridge forwards each message on its own goroutine, so the server
+	// can receive them in any order. Match each request by its JSON-RPC
+	// method, not by arrival order.
 	mu.Lock()
 	defer mu.Unlock()
-	wantBodies := []string{initialize, initialized, list, call}
+	wantBodies := map[string]string{
+		"initialize":                initialize,
+		"notifications/initialized": initialized,
+		"tools/list":                list,
+		"tools/call":                call,
+	}
 	if len(recorded) != len(wantBodies) {
 		t.Fatalf("requests = %#v", recorded)
 	}
-	for i, request := range recorded {
+	seen := map[string]bool{}
+	for _, request := range recorded {
+		want, ok := wantBodies[request.rpcMethod]
+		if !ok || seen[request.rpcMethod] {
+			t.Fatalf("unexpected or repeated JSON-RPC method %q", request.rpcMethod)
+		}
+		seen[request.rpcMethod] = true
 		if request.method != http.MethodPost || request.path != "/mcp" {
-			t.Fatalf("request %d = %s %s", i, request.method, request.path)
+			t.Fatalf("%s request = %s %s", request.rpcMethod, request.method, request.path)
 		}
 		if request.authorization != "Bearer "+mcpStdioFileToken {
-			t.Fatalf("request %d used another credential", i)
+			t.Fatalf("%s request used another credential", request.rpcMethod)
 		}
 		if request.contentType != "application/json" {
-			t.Fatalf("request %d content type = %q", i, request.contentType)
+			t.Fatalf("%s request content type = %q", request.rpcMethod, request.contentType)
 		}
-		if request.body != wantBodies[i] {
-			t.Fatalf("request %d body = %q, want %q", i, request.body, wantBodies[i])
+		if request.body != want {
+			t.Fatalf("%s request body = %q, want %q", request.rpcMethod, request.body, want)
 		}
 	}
 	assertMCPLines(t, session.stdout.String())
