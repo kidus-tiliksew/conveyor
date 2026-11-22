@@ -403,10 +403,15 @@ func (s *Server) setTaskCrate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Only a committed write that changed the task's crate starts the
-	// background briefing. A same-crate repeat starts nothing
-	// (component-crates invariant 36).
+	// background briefing, and it starts for the crate that write set: the
+	// normalized request destination, which changed proves was written. The
+	// task read after the commit serves only the response, because a later
+	// move can commit before that read. A same-crate repeat starts nothing
+	// (component-crates invariant 36; req-crate-insights AC-5.2).
 	if changed {
-		s.startCrateBriefingAfterJoin(r.Context(), task.TaskCrateID())
+		if destination, err := store.NormalizeJoinCrateID(*crateID); err == nil {
+			s.startCrateBriefingAfterJoin(r.Context(), destination)
+		}
 	}
 	s.writeCrateTask(w, r, task)
 }

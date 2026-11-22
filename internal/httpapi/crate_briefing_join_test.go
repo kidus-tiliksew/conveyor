@@ -616,3 +616,59 @@ func TestCrateBriefingAfterJoinChecksFailStartNothing(t *testing.T) {
 		})
 	}
 }
+
+// crateJoinLaterMoveStore commits the request's join, then lets a second
+// member's move to later commit before the task is read again, as a
+// concurrent PUT can on PostgreSQL and SingleStore.
+type crateJoinLaterMoveStore struct {
+	crateBackend
+	laterCtx context.Context
+	later    string
+}
+
+func (s *crateJoinLaterMoveStore) JoinTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, bool, error) {
+	_, changed, err := s.crateBackend.JoinTaskCrate(ctx, taskID, crateID)
+	if err != nil {
+		return core.Task{}, false, err
+	}
+	if _, _, err := s.crateBackend.JoinTaskCrate(s.laterCtx, taskID, s.later); err != nil {
+		return core.Task{}, false, err
+	}
+	task, err := s.crateBackend.GetTask(ctx, taskID)
+	return task, changed, err
+}
+
+// TestCrateBriefingAfterMembershipChangeUsesCommittedDestination: when a
+// later move commits between the join and the task read after it, the
+// briefing starts only for the crate the join itself set, with the joining
+// member as the acting member. The later destination starts nothing, and
+// the response still shows the task as read (component-crates invariant 36;
+// req-crate-insights AC-5.2).
+func TestCrateBriefingAfterMembershipChangeUsesCommittedDestination(t *testing.T) {
+	h := newCrateBriefingHarness(t)
+	h.install(h.agent, config.TriageRoute{Model: "triage-model"})
+	h.agent.reply = insightReply{output: h.reply(t), model: "served-model"}
+	first := h.createCrate(t, h.editor, map[string]any{"name": "Joined first"})
+	later := h.createCrate(t, h.editor, map[string]any{"name": "Moved to later"})
+	// Another member stays in the first crate after the task moves on.
+	h.task(t, first.ID)
+	task := h.task(t, "")
+	h.server.Store = &crateJoinLaterMoveStore{crateBackend: h.store.(crateBackend), laterCtx: h.ctx, later: later.ID}
+	status, raw := h.do(t, h.editor, http.MethodPut, "/v1/tasks/"+task.ID+"/crate", map[string]any{"crate_id": " " + first.ID + " "})
+	if status != http.StatusOK || !strings.Contains(string(raw), `"crate":{"id":"`+later.ID+`"`) {
+		t.Fatalf("join status=%d body=%s, want the task as read after the later move", status, raw)
+	}
+	waitCrateBriefingJobs(t, h.server)
+	h.server.Store = h.store
+	h.requireJobsStarted(t, 1)
+	stored := h.requireJoinBriefing(t, first.ID)
+	if stored.GeneratedBy != crateJoinActor {
+		t.Fatalf("generated_by=%q, want the joining member %q", stored.GeneratedBy, crateJoinActor)
+	}
+	if _, ok := h.storedBriefingFor(t, later.ID); ok {
+		t.Fatal("the later destination gained a briefing")
+	}
+	if calls := h.agent.callCount(); calls != 1 {
+		t.Fatalf("model calls=%d, want 1", calls)
+	}
+}

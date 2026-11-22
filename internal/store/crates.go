@@ -180,8 +180,10 @@ type CrateStore interface {
 	// SetTaskCrate makes the task a member of the open crate crateID only.
 	SetTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, error)
 	// JoinTaskCrate is SetTaskCrate that also reports whether the committed
-	// write changed the task's crate. A join of the crate the task already
-	// holds changes nothing and reports false. The value comes from the
+	// write changed the task's crate. True means that write set the task's
+	// crate to the normalized crateID. The returned task is read after the
+	// commit, so a later move can already show in it. A join of the crate the
+	// task already holds changes nothing and reports false. The value comes from the
 	// write itself, under the transaction or the store mutex that holds it,
 	// so the post-commit briefing start of component-crates invariant 36
 	// never reads it from a separate read.
