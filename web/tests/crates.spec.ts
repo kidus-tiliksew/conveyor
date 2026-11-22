@@ -544,13 +544,15 @@ type BriefingReply = { status: number; json?: unknown; body?: string; contentTyp
 // A crate it leaves out has a current briefing with no task to look at first.
 // The fake server reads and writes the object per request, so a spec can
 // change it while the page is open. `briefingPost` answers a POST in place of
-// the default, which stores a new current briefing.
+// the default, which stores a new current briefing. `openList` replaces the
+// served open crates list; without it the fake server serves `openCrates`.
 async function serveCrates(
   page: Page,
   options: {
     role?: Role
     insight?: 'fail'
     insights?: Record<string, CrateInsight>
+    openList?: Crate[]
     briefings?: Record<string, CrateBriefing | null>
     briefingPost?: (crateId: string, count: number) => Promise<BriefingReply | undefined> | BriefingReply | undefined
   } = {},
