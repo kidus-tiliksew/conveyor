@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -58,6 +59,12 @@ func mcpStdioCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// normalizeServerURL keeps an empty query marker, as in
+			// https://host/team?. The bridge appends /mcp to the base, so
+			// it refuses that form instead of posting to a query string.
+			if strings.ContainsAny(base, "?#") {
+				return errors.New("server URL must not contain credentials, a query, or a fragment")
+			}
 			if !cmd.Flags().Changed("credentials-file") || strings.TrimSpace(credentialsFile) == "" {
 				return errors.New("mcp stdio requires --credentials-file")
 			}
@@ -76,6 +83,7 @@ type mcpStdioBridge struct {
 	base            string
 	endpoint        string
 	credentialsFile string
+	loginHint       string
 	client          *http.Client
 
 	writeMu sync.Mutex
@@ -89,6 +97,7 @@ func newMCPStdioBridge(base, credentialsFile string, stdout, stderr io.Writer) *
 		base:            base,
 		endpoint:        base + "/mcp",
 		credentialsFile: credentialsFile,
+		loginHint:       mcpStdioLoginHint(base, credentialsFile),
 		// The client has no Timeout: a long tool wait such as await_review
 		// ends only when the server answers (invariant 45). A redirect is
 		// never followed, so the Authorization header goes to no other URL.
@@ -101,6 +110,22 @@ func newMCPStdioBridge(base, credentialsFile string, stdout, stderr io.Writer) *
 		stdout: stdout,
 		stderr: stderr,
 	}
+}
+
+// mcpStdioLoginHint names `conveyor auth login --server <base>`, as
+// invariant 46 requires. That command writes only the default credentials
+// file, so when the bridge reads another file the hint also says how the
+// bridge can see the new credential.
+func mcpStdioLoginHint(base, credentialsFile string) string {
+	hint := fmt.Sprintf("Run `conveyor auth login --server %s`.", base)
+	defaultFile, err := localAuthConfigPath()
+	if err != nil {
+		return hint + fmt.Sprintf(" That command updates the default credentials file, but this bridge reads %s. Point --credentials-file at the default file, or copy the entry for %s into %s.", credentialsFile, base, credentialsFile)
+	}
+	if filepath.Clean(defaultFile) == filepath.Clean(credentialsFile) {
+		return hint
+	}
+	return hint + fmt.Sprintf(" That command updates %s, but this bridge reads %s. Point --credentials-file at %s, or copy the entry for %s into %s.", defaultFile, credentialsFile, defaultFile, base, credentialsFile)
 }
 
 // serve reads one message per line until standard input closes, forwards each
@@ -117,7 +142,10 @@ func (b *mcpStdioBridge) serve(ctx context.Context, input io.Reader) error {
 	var readErr error
 	for {
 		line, err := reader.ReadBytes('\n')
-		if message := bytes.TrimSpace(line); len(message) > 0 {
+		// Remove only the line delimiter, so the POST carries the message
+		// bytes unchanged. A line of only whitespace is not a message.
+		message := bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
+		if len(bytes.TrimSpace(message)) > 0 {
 			inFlight.Add(1)
 			go func(message []byte) {
 				defer inFlight.Done()
@@ -151,22 +179,42 @@ func (b *mcpStdioBridge) handle(ctx context.Context, message []byte) {
 		b.fail(json.RawMessage("null"), true, mcpStdioFailure{code: mcpStdioParseError, message: "Parse error: the input line is not JSON."})
 		return
 	}
-	id, isRequest := mcpStdioMessageID(message)
-	response, failure := b.forward(ctx, message)
+	request := mcpStdioRequestOf(message)
+	response, failure := b.forward(ctx, message, request)
 	if failure != nil {
-		b.fail(id, isRequest, *failure)
+		b.fail(request.id, request.isRequest, *failure)
 		return
 	}
 	if response == nil {
 		return
 	}
-	if !isRequest && response.isError {
-		// A notification has no answer. An error answer to it is a failed
-		// notification, which writes nothing (invariant 46).
-		b.diagnose("the server returned an error for a notification")
+	if !request.isRequest {
+		// A notification has no answer, so nothing reaches standard output.
+		// An error answer to it is a failed notification (invariant 46).
+		if response.isError {
+			b.diagnose("the server returned an error for a notification")
+		}
 		return
 	}
 	b.writeLine(response.line)
+}
+
+// mcpStdioRequest describes one input message: its compact raw ID, whether it
+// is a request, and whether its ID is known.
+type mcpStdioRequest struct {
+	id        json.RawMessage
+	isRequest bool
+	idKnown   bool
+}
+
+func mcpStdioRequestOf(message []byte) mcpStdioRequest {
+	id, isRequest := mcpStdioMessageID(message)
+	var object map[string]json.RawMessage
+	known := isRequest && json.Unmarshal(message, &object) == nil
+	if known {
+		_, known = object["id"]
+	}
+	return mcpStdioRequest{id: id, isRequest: isRequest, idKnown: known}
 }
 
 // mcpStdioMessageID returns the raw ID of a JSON object message and whether
@@ -197,42 +245,52 @@ type mcpStdioResponse struct {
 // forward reads the credential, POSTs the message bytes unchanged, and
 // returns the answer as one compact line. A nil response and nil failure
 // means the server accepted the message with 202 and nothing is written.
-func (b *mcpStdioBridge) forward(ctx context.Context, message []byte) (*mcpStdioResponse, *mcpStdioFailure) {
+func (b *mcpStdioBridge) forward(ctx context.Context, message []byte, expect mcpStdioRequest) (*mcpStdioResponse, *mcpStdioFailure) {
 	token, failure := b.readToken()
 	if failure != nil {
 		return nil, failure
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, b.endpoint, bytes.NewReader(message))
+	request, err := newMCPStdioHTTPRequest(ctx, b.endpoint, message, token)
 	if err != nil {
 		return nil, &mcpStdioFailure{code: mcpStdioUnreachable, message: fmt.Sprintf("The bridge cannot build a request for %s.", b.base)}
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Content-Type", "application/json")
 	answer, err := b.client.Do(request)
 	if err != nil {
 		return nil, mcpStdioTransportFailure(b.base, err)
 	}
+	// Every answer except a 200 is closed unread. A proxy that holds a
+	// discarded body open then cannot delay the error or the exit at EOF.
 	defer answer.Body.Close()
 	switch answer.StatusCode {
 	case http.StatusAccepted:
-		_, _ = io.Copy(io.Discard, answer.Body)
 		return nil, nil
 	case http.StatusUnauthorized:
-		_, _ = io.Copy(io.Discard, answer.Body)
-		return nil, &mcpStdioFailure{code: mcpStdioUnauthorized, message: fmt.Sprintf("The server rejected the stored credential for %s with HTTP 401. Run `conveyor auth login --server %s`.", b.base, b.base)}
+		return nil, &mcpStdioFailure{code: mcpStdioUnauthorized, message: fmt.Sprintf("The server rejected the stored credential for %s with HTTP 401. %s", b.base, b.loginHint)}
 	case http.StatusForbidden:
-		_, _ = io.Copy(io.Discard, answer.Body)
 		return nil, &mcpStdioFailure{code: mcpStdioForbidden, message: fmt.Sprintf("The server refused the request with HTTP 403 for the stored credential of %s.", b.base)}
 	case http.StatusOK:
 	default:
-		_, _ = io.Copy(io.Discard, answer.Body)
 		return nil, &mcpStdioFailure{code: mcpStdioInvalidResponse, message: fmt.Sprintf("The server answered with HTTP %d and no MCP message.", answer.StatusCode)}
 	}
 	body, err := io.ReadAll(answer.Body)
 	if err != nil {
 		return nil, &mcpStdioFailure{code: mcpStdioBrokenConnection, message: "The connection to the server broke before the response was complete."}
 	}
-	return mcpStdioCheckResponse(body, token)
+	return mcpStdioCheckResponse(body, token, expect)
+}
+
+// newMCPStdioHTTPRequest builds the POST for one message. GetBody stays nil,
+// so the transport never sends the request a second time, not even after a
+// reused connection fails before it writes a byte.
+func newMCPStdioHTTPRequest(ctx context.Context, endpoint string, message []byte, token string) (*http.Request, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(message))
+	if err != nil {
+		return nil, err
+	}
+	request.GetBody = nil
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	return request, nil
 }
 
 // readToken reads the credential for the canonical server from the named file
@@ -246,10 +304,10 @@ func (b *mcpStdioBridge) readToken() (string, *mcpStdioFailure) {
 	}
 	token := config.Servers[b.base].Token
 	if token == "" {
-		return "", &mcpStdioFailure{code: mcpStdioMissingCredential, message: fmt.Sprintf("No stored credential for %s in the credentials file. Run `conveyor auth login --server %s`.", b.base, b.base)}
+		return "", &mcpStdioFailure{code: mcpStdioMissingCredential, message: fmt.Sprintf("No stored credential for %s in the credentials file. %s", b.base, b.loginHint)}
 	}
 	if !mcpStdioValidHeaderValue(token) {
-		return "", &mcpStdioFailure{code: mcpStdioMissingCredential, message: fmt.Sprintf("The stored credential for %s is not a valid header value. Run `conveyor auth login --server %s`.", b.base, b.base)}
+		return "", &mcpStdioFailure{code: mcpStdioMissingCredential, message: fmt.Sprintf("The stored credential for %s is not a valid header value. %s", b.base, b.loginHint)}
 	}
 	return token, nil
 }
@@ -283,84 +341,181 @@ func mcpStdioTransportFailure(base string, err error) *mcpStdioFailure {
 	}
 }
 
-// mcpStdioCheckResponse accepts only a JSON-RPC response object and returns it
-// compacted to one line without re-encoding its values. A response that
-// carries the sent token in any form is withheld.
-func mcpStdioCheckResponse(body []byte, token string) (*mcpStdioResponse, *mcpStdioFailure) {
+// mcpStdioCheckResponse accepts only a JSON-RPC response object for the
+// request that produced it and returns it compacted to one line without
+// re-encoding its values. A response that carries the sent token in any form
+// is withheld.
+func mcpStdioCheckResponse(body []byte, token string, expect mcpStdioRequest) (*mcpStdioResponse, *mcpStdioFailure) {
+	notJSON := &mcpStdioFailure{code: mcpStdioInvalidResponse, message: "The server sent a response that is not JSON."}
+	notRPC := &mcpStdioFailure{code: mcpStdioInvalidResponse, message: "The server sent a JSON response that is not a JSON-RPC message."}
 	if !json.Valid(body) {
-		return nil, &mcpStdioFailure{code: mcpStdioInvalidResponse, message: "The server sent a response that is not JSON."}
+		return nil, notJSON
+	}
+	// The token scan reads every member, repeated keys included, before any
+	// map decode can drop one.
+	scan := mcpStdioScan(body, token)
+	if scan.carriesToken {
+		return nil, &mcpStdioFailure{code: mcpStdioInvalidResponse, message: "The server response contained the stored credential, so the bridge withheld it."}
+	}
+	if scan.duplicateKey {
+		return nil, notRPC
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(body, &object); err != nil {
-		return nil, &mcpStdioFailure{code: mcpStdioInvalidResponse, message: "The server sent a JSON response that is not a JSON-RPC message."}
+		return nil, notRPC
 	}
 	var version string
 	_, hasResult := object["result"]
 	rawError, hasError := object["error"]
 	if json.Unmarshal(object["jsonrpc"], &version) != nil || version != "2.0" || hasResult == hasError {
-		return nil, &mcpStdioFailure{code: mcpStdioInvalidResponse, message: "The server sent a JSON response that is not a JSON-RPC message."}
+		return nil, notRPC
 	}
-	if mcpStdioCarriesToken(body, token) {
-		return nil, &mcpStdioFailure{code: mcpStdioInvalidResponse, message: "The server response contained the stored credential, so the bridge withheld it."}
+	if hasError && !mcpStdioValidErrorObject(rawError) {
+		return nil, notRPC
+	}
+	if expect.isRequest && !mcpStdioIDMatches(object, expect) {
+		return nil, &mcpStdioFailure{code: mcpStdioInvalidResponse, message: "The server sent a response whose ID does not match the request."}
 	}
 	var line bytes.Buffer
 	if err := json.Compact(&line, body); err != nil {
-		return nil, &mcpStdioFailure{code: mcpStdioInvalidResponse, message: "The server sent a response that is not JSON."}
+		return nil, notJSON
 	}
-	return &mcpStdioResponse{line: line.Bytes(), isError: hasError && !bytes.Equal(bytes.TrimSpace(rawError), []byte("null"))}, nil
+	return &mcpStdioResponse{line: line.Bytes(), isError: hasError}, nil
 }
 
-// mcpStdioCarriesToken reports whether a JSON body holds the token as raw
-// bytes or inside any decoded string or key, which covers every JSON escape.
-// A string that itself holds JSON, such as a tools/call text result, is
-// searched the same way.
-func mcpStdioCarriesToken(body []byte, token string) bool {
-	if token == "" {
+// mcpStdioValidErrorObject reports whether a JSON-RPC error member is an
+// object with an integer code and a string message.
+func mcpStdioValidErrorObject(raw json.RawMessage) bool {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil || object == nil {
 		return false
 	}
-	if bytes.Contains(body, []byte(token)) {
-		return true
-	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
+	var code json.Number
+	decoder := json.NewDecoder(bytes.NewReader(object["code"]))
 	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
+	if decoder.Decode(&code) != nil {
 		return false
 	}
-	return mcpStdioValueCarriesToken(value, token, 0)
+	if _, err := strconv.ParseInt(code.String(), 10, 64); err != nil {
+		return false
+	}
+	var message string
+	return json.Unmarshal(object["message"], &message) == nil && object["message"] != nil
 }
 
+// mcpStdioIDMatches compares the response ID with the request ID as compact
+// raw JSON, so a numeric ID is never converted to a float. A request whose ID
+// is unknown, because the input was not a JSON object, accepts only an
+// absent or null ID.
+func mcpStdioIDMatches(object map[string]json.RawMessage, expect mcpStdioRequest) bool {
+	raw, ok := object["id"]
+	var compact bytes.Buffer
+	if ok && json.Compact(&compact, raw) != nil {
+		return false
+	}
+	if !expect.idKnown {
+		return !ok || compact.String() == "null"
+	}
+	return ok && bytes.Equal(compact.Bytes(), expect.id)
+}
+
+// mcpStdioNestedJSONDepth bounds how many times the scan decodes JSON held in
+// a string. A string at the limit that still looks like JSON counts as one
+// that carries the token, so the bound never lets a token through.
 const mcpStdioNestedJSONDepth = 8
 
-func mcpStdioValueCarriesToken(value any, token string, depth int) bool {
-	switch typed := value.(type) {
-	case string:
-		if strings.Contains(typed, token) {
-			return true
-		}
-		trimmed := strings.TrimSpace(typed)
-		if depth < mcpStdioNestedJSONDepth && (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, `"`)) {
-			decoder := json.NewDecoder(strings.NewReader(trimmed))
-			decoder.UseNumber()
-			var nested any
-			if decoder.Decode(&nested) == nil {
-				return mcpStdioValueCarriesToken(nested, token, depth+1)
-			}
-		}
-	case map[string]any:
-		for key, item := range typed {
-			if strings.Contains(key, token) || mcpStdioValueCarriesToken(item, token, depth) {
-				return true
-			}
-		}
-	case []any:
-		for _, item := range typed {
-			if mcpStdioValueCarriesToken(item, token, depth) {
-				return true
-			}
-		}
+type mcpStdioScanResult struct {
+	carriesToken bool
+	duplicateKey bool
+}
+
+// mcpStdioScan streams every token of a JSON body. It reports the token in
+// raw bytes or in any decoded string or key, which covers every JSON escape,
+// and it reports a repeated key in any object of the body. A string that
+// itself holds JSON, such as a tools/call text result, is scanned the same
+// way.
+func mcpStdioScan(body []byte, token string) mcpStdioScanResult {
+	var result mcpStdioScanResult
+	if token != "" && bytes.Contains(body, []byte(token)) {
+		result.carriesToken = true
 	}
-	return false
+	scanner := &mcpStdioScanner{token: token, result: &result}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := scanner.value(decoder, 0, true); err != nil {
+		// The body passed json.Valid, so a scan error is unexpected.
+		// Withhold the response rather than print what was not scanned.
+		result.carriesToken = true
+	}
+	return result
+}
+
+type mcpStdioScanner struct {
+	token  string
+	result *mcpStdioScanResult
+}
+
+func (s *mcpStdioScanner) value(decoder *json.Decoder, depth int, outer bool) error {
+	next, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	switch typed := next.(type) {
+	case json.Delim:
+		switch typed {
+		case '{':
+			keys := map[string]bool{}
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				key, _ := keyToken.(string)
+				if outer && keys[key] {
+					s.result.duplicateKey = true
+				}
+				keys[key] = true
+				s.text(key, depth)
+				if err := s.value(decoder, depth, outer); err != nil {
+					return err
+				}
+			}
+		case '[':
+			for decoder.More() {
+				if err := s.value(decoder, depth, outer); err != nil {
+					return err
+				}
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	case string:
+		s.text(typed, depth)
+	}
+	return nil
+}
+
+func (s *mcpStdioScanner) text(value string, depth int) {
+	if s.token != "" && strings.Contains(value, s.token) {
+		s.result.carriesToken = true
+		return
+	}
+	trimmed := strings.TrimSpace(value)
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(trimmed, `"`) {
+		return
+	}
+	if !json.Valid([]byte(trimmed)) {
+		return
+	}
+	if depth >= mcpStdioNestedJSONDepth {
+		s.result.carriesToken = true
+		return
+	}
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	decoder.UseNumber()
+	if err := s.value(decoder, depth+1, false); err != nil {
+		s.result.carriesToken = true
+	}
 }
 
 type mcpStdioErrorLine struct {

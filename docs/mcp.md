@@ -119,11 +119,18 @@ messages, and no output carries the token.
 
 A missing credential, a 401 or 403, a response that is not a JSON-RPC
 message, an unreachable server, or a broken connection gets a JSON-RPC error
-for that request. The missing-credential and 401 errors name
-`conveyor auth login --server <base>`. A failed notification gets no answer,
-and a line that is not JSON gets a parse error with a null ID. The bridge
-continues after each failure and exits with status 0 when standard input
-closes and every request in progress has its answer.
+for that request. A response whose ID is not the request's ID is not a valid
+answer, and the bridge never sends a request a second time. A notification
+gets no answer, and a line that is not JSON gets a parse error with a null
+ID. The bridge continues after each failure and exits with status 0 when
+standard input closes and every request in progress has its answer.
+
+The missing-credential and 401 errors name
+`conveyor auth login --server <base>`. That command writes only the default
+credentials file, `<user config dir>/conveyor/credentials.json`. When
+`--credentials-file` names another file, the error also names both files.
+Point `--credentials-file` at the default file, or copy the server's entry
+into the named file after you log in.
 
 ### Migration and connection checks
 

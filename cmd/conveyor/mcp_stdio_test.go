@@ -292,7 +292,9 @@ func TestMCPStdioForwardsRequestsUnchangedWithFileCredential(t *testing.T) {
 	// The server flag names the endpoint form with a trailing slash; the
 	// bridge uses the canonical base for both the URL and the credential key.
 	session := startMCPStdio(t, "--server", server.URL+"/mcp/", "--credentials-file", credentials)
-	initialize := `{"jsonrpc":"2.0", "id":1.50, "method":"initialize","params":{"protocolVersion":"2025-03-26"}}`
+	// Leading spaces and a trailing tab are part of the message bytes and
+	// reach the server unchanged. Only the line delimiter is removed.
+	initialize := "  " + `{"jsonrpc":"2.0", "id":1.50, "method":"initialize","params":{"protocolVersion":"2025-03-26"}}` + "\t"
 	initialized := `{"jsonrpc":"2.0","method":"notifications/initialized"}`
 	list := `{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}`
 	call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_task","arguments":{"task_id":"task-1"}}}`
@@ -302,7 +304,8 @@ func TestMCPStdioForwardsRequestsUnchangedWithFileCredential(t *testing.T) {
 		t.Fatalf("initialize answer = %q", got)
 	}
 	session.send(initialized)
-	session.send(list)
+	// A CRLF line delimiter is removed as a whole.
+	session.send(list + "\r")
 	if got := session.next(); got != `{"jsonrpc":"2.0","id":"list-1","result":{"tools":[{"name":"get_task"}]}}` {
 		t.Fatalf("tools/list answer = %q", got)
 	}
@@ -477,6 +480,9 @@ func TestMCPStdioSerializesConcurrentAnswers(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < count; i++ {
 		got := decodeRPCLine(t, session.next())
+		if got.Error != nil || got.Result == nil {
+			t.Fatalf("answer for id %s is not a result: %+v", got.ID, got.Error)
+		}
 		seen[string(got.ID)] = true
 	}
 	if err, rest := session.finish(); err != nil || len(rest) != 0 {
@@ -486,6 +492,16 @@ func TestMCPStdioSerializesConcurrentAnswers(t *testing.T) {
 		t.Fatalf("distinct answers = %d", len(seen))
 	}
 	assertMCPLines(t, session.stdout.String())
+}
+
+// mcpStdioEscapeAll writes every character of value as a JSON \\u escape,
+// so the raw token never appears in the response bytes.
+func mcpStdioEscapeAll(value string) string {
+	var escaped strings.Builder
+	for _, char := range value {
+		fmt.Fprintf(&escaped, `\u%04x`, char)
+	}
+	return escaped.String()
 }
 
 // hijackServer answers each request by running fn on the raw connection.
@@ -586,7 +602,7 @@ func TestMCPStdioFailuresAnswerTheRequest(t *testing.T) {
 		},
 		{
 			name:        "malformed JSON-RPC response",
-			server:      echoHandler(http.StatusOK, `{"id":7,"value":"TOKEN"}`),
+			server:      echoHandler(http.StatusOK, `{"id":7,"value":"no jsonrpc member"}`),
 			credentials: fileToken,
 			code:        mcpStdioInvalidResponse,
 			contains:    func(string) []string { return []string{"not a JSON-RPC message"} },
@@ -650,6 +666,105 @@ func TestMCPStdioFailuresAnswerTheRequest(t *testing.T) {
 			credentials: fileToken,
 			code:        mcpStdioInvalidResponse,
 			contains:    func(string) []string { return []string{"HTTP 307"} },
+		},
+		{
+			name:        "response for another request ID",
+			server:      echoHandler(http.StatusOK, `{"jsonrpc":"2.0","id":8,"result":{}}`),
+			credentials: fileToken,
+			code:        mcpStdioInvalidResponse,
+			contains:    func(string) []string { return []string{"ID does not match the request"} },
+		},
+		{
+			name:        "response without an ID",
+			server:      echoHandler(http.StatusOK, `{"jsonrpc":"2.0","result":{}}`),
+			credentials: fileToken,
+			code:        mcpStdioInvalidResponse,
+			contains:    func(string) []string { return []string{"ID does not match the request"} },
+		},
+		{
+			name:        "response with a string ID for a numeric request ID",
+			server:      echoHandler(http.StatusOK, `{"jsonrpc":"2.0","id":"7","result":{}}`),
+			credentials: fileToken,
+			code:        mcpStdioInvalidResponse,
+			contains:    func(string) []string { return []string{"ID does not match the request"} },
+		},
+		{
+			name:        "null error member",
+			server:      echoHandler(http.StatusOK, `{"jsonrpc":"2.0","id":7,"error":null}`),
+			credentials: fileToken,
+			code:        mcpStdioInvalidResponse,
+			contains:    func(string) []string { return []string{"not a JSON-RPC message"} },
+		},
+		{
+			name:        "error member with a non-integer code",
+			server:      echoHandler(http.StatusOK, `{"jsonrpc":"2.0","id":7,"error":{"code":1.5,"message":"x"}}`),
+			credentials: fileToken,
+			code:        mcpStdioInvalidResponse,
+			contains:    func(string) []string { return []string{"not a JSON-RPC message"} },
+		},
+		{
+			name:        "error member without a message",
+			server:      echoHandler(http.StatusOK, `{"jsonrpc":"2.0","id":7,"error":{"code":-32000}}`),
+			credentials: fileToken,
+			code:        mcpStdioInvalidResponse,
+			contains:    func(string) []string { return []string{"not a JSON-RPC message"} },
+		},
+		{
+			name:        "repeated key",
+			server:      echoHandler(http.StatusOK, `{"jsonrpc":"2.0","id":7,"id":7,"result":{}}`),
+			credentials: fileToken,
+			code:        mcpStdioInvalidResponse,
+			contains:    func(string) []string { return []string{"not a JSON-RPC message"} },
+		},
+		{
+			name: "repeated key whose first value holds the escaped token",
+			server: func(t *testing.T) *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.ReadAll(r.Body)
+					fmt.Fprintf(w, `{"jsonrpc":"2.0","id":7,"result":{"echo":"%s","echo":"safe"}}`, mcpStdioEscapeAll(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
+				}))
+			},
+			credentials: fileToken,
+			code:        mcpStdioInvalidResponse,
+			contains:    func(string) []string { return []string{"withheld"} },
+		},
+		{
+			name: "token nested past the JSON depth limit",
+			server: func(t *testing.T) *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.ReadAll(r.Body)
+					inner := `{"token":"` + mcpStdioEscapeAll(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) + `"}`
+					for i := 0; i < mcpStdioNestedJSONDepth+1; i++ {
+						quoted, _ := json.Marshal(inner)
+						inner = `{"nested":` + string(quoted) + `}`
+					}
+					fmt.Fprintf(w, `{"jsonrpc":"2.0","id":7,"result":%s}`, inner)
+				}))
+			},
+			credentials: fileToken,
+			code:        mcpStdioInvalidResponse,
+			contains:    func(string) []string { return []string{"withheld"} },
+		},
+		{
+			name: "401 whose body stays open",
+			server: func(t *testing.T) *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.ReadAll(r.Body)
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = io.WriteString(w, "partial body")
+					w.(http.Flusher).Flush()
+					// Hold the body open until the bridge closes the
+					// connection. A bridge that drains the body never
+					// answers, and the test times out.
+					select {
+					case <-r.Context().Done():
+					case <-time.After(2 * mcpStdioTestTimeout):
+					}
+				}))
+			},
+			credentials: fileToken,
+			code:        mcpStdioUnauthorized,
+			contains:    func(base string) []string { return []string{"HTTP 401", login(base)} },
 		},
 		{
 			name: "unreachable server",
@@ -768,7 +883,13 @@ func TestMCPStdioKeepsServingAfterAFailedRequest(t *testing.T) {
 
 func TestMCPStdioServerErrorForNotificationWritesNothing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.ReadAll(r.Body)
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "notifications/progress") {
+			// A server that answers a notification with a result still
+			// gets no line on standard output.
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","result":{}}`)
+			return
+		}
 		// The /mcp route answers an unknown method with an error that has
 		// no id, also for a notification.
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","error":{"code":-32601,"message":"method not found"}}`)
@@ -778,6 +899,7 @@ func TestMCPStdioServerErrorForNotificationWritesNothing(t *testing.T) {
 	writeMCPStdioCredentials(t, credentials, map[string]string{server.URL: mcpStdioFileToken})
 	session := startMCPStdio(t, "--server", server.URL, "--credentials-file", credentials)
 	session.send(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}`)
+	session.send(`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}`)
 	if err, rest := session.finish(); err != nil || len(rest) != 0 {
 		t.Fatalf("exit err=%v rest=%q", err, rest)
 	}
@@ -795,6 +917,7 @@ func TestMCPStdioRequiresExplicitServerAndAbsoluteCredentialsFile(t *testing.T) 
 		{"missing server", []string{"--credentials-file", absolute}, "requires --server"},
 		{"empty server", []string{"--server", "", "--credentials-file", absolute}, "server URL is required"},
 		{"malformed server", []string{"--server", "ftp://example.test", "--credentials-file", absolute}, "http or https"},
+		{"server with an empty query", []string{"--server", "https://example.test/team?", "--credentials-file", absolute}, "must not contain credentials, a query"},
 		{"server with credentials", []string{"--server", "https://user:" + mcpStdioFileToken + "@example.test", "--credentials-file", absolute}, "must not contain credentials"},
 		{"missing credentials file", []string{"--server", "https://example.test"}, "requires --credentials-file"},
 		{"empty credentials file", []string{"--server", "https://example.test", "--credentials-file", ""}, "requires --credentials-file"},
@@ -841,5 +964,74 @@ func TestMCPStdioIsRegisteredBesideInstall(t *testing.T) {
 	install, _, err := newRootCmd().Find([]string{"mcp", "install"})
 	if err != nil || install.Name() != "install" {
 		t.Fatalf("install = %v err = %v", install, err)
+	}
+}
+
+func TestMCPStdioLoginHintNamesTheFileThatLoginUpdates(t *testing.T) {
+	root := isolateLocalAuthTest(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + listener.Addr().String()
+	_ = listener.Close()
+	defaultFile := filepath.Join(root, "conveyor", "credentials.json")
+	if err := updateLocalServerConfig("https://other.example.test", func(entry *localServerConfig) { entry.Token = mcpStdioDefaultToken }); err != nil {
+		t.Fatal(err)
+	}
+	custom := filepath.Join(t.TempDir(), "agent-credentials.json")
+
+	missing := func(credentials string) string {
+		t.Helper()
+		session := startMCPStdio(t, "--server", base, "--credentials-file", credentials)
+		session.send(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+		got := decodeRPCLine(t, session.next())
+		if err, _ := session.finish(); err != nil {
+			t.Fatal(err)
+		}
+		session.assertNoSecrets()
+		if got.Error == nil || got.Error.Code != mcpStdioMissingCredential {
+			t.Fatalf("answer = %+v", got)
+		}
+		return got.Error.Message
+	}
+
+	// The default file is the file that login updates, so the hint is the
+	// login command alone.
+	want := fmt.Sprintf("No stored credential for %s in the credentials file. Run `conveyor auth login --server %s`.", base, base)
+	if got := missing(defaultFile); got != want {
+		t.Fatalf("default-file hint = %q, want %q", got, want)
+	}
+	// Another file gets the login command and the way to make the bridge
+	// see the new credential.
+	got := missing(custom)
+	for _, part := range []string{
+		"Run `conveyor auth login --server " + base + "`.",
+		"That command updates " + defaultFile + ", but this bridge reads " + custom + ".",
+		"Point --credentials-file at " + defaultFile + ", or copy the entry for " + base + " into " + custom + ".",
+	} {
+		if !strings.Contains(got, part) {
+			t.Fatalf("custom-file hint %q does not contain %q", got, part)
+		}
+	}
+}
+
+func TestMCPStdioRequestIsNeverReplayedByTheTransport(t *testing.T) {
+	message := []byte(" {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\t")
+	request, err := newMCPStdioHTTPRequest(t.Context(), "https://example.test/mcp", message, mcpStdioFileToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// net/http resends a request after a reused connection fails before
+	// it writes a byte only when GetBody is set.
+	if request.GetBody != nil {
+		t.Fatal("request can be replayed: GetBody is set")
+	}
+	if request.Method != http.MethodPost || request.Header.Get("Content-Type") != "application/json" || request.Header.Get("Authorization") != "Bearer "+mcpStdioFileToken {
+		t.Fatalf("request = %s %v", request.Method, request.Header.Get("Content-Type"))
+	}
+	body, err := io.ReadAll(request.Body)
+	if err != nil || !bytes.Equal(body, message) {
+		t.Fatalf("body = %q err = %v", body, err)
 	}
 }
