@@ -312,9 +312,9 @@ const crateBriefingJoinTimeout = 30 * time.Minute
 // a same-crate repeat, a removal, and a refused join start nothing.
 //
 // The checks here run before the response and start nothing when the crate
-// ID is empty, the store keeps no crates, no model is configured, or the
-// acting member does not hold create_tasks. A failed check is logged and
-// starts nothing. The background work never reads the request context: it
+// ID is empty, the store keeps no crates, no model is configured, the acting
+// member does not hold create_tasks, or the crate has a stored briefing. A
+// failed check is logged and starts nothing. The background work never reads the request context: it
 // runs on a new context that holds only the workspace, actor, and credential
 // copied from it, bounded by crateBriefingJoinTimeout. It runs
 // runCrateBriefing in missing-only mode with the acting member as
@@ -341,6 +341,15 @@ func (s *Server) startCrateBriefingAfterJoin(ctx context.Context, crateID string
 		if !errors.Is(err, dispatch.ErrCrateBriefingUnconfigured) {
 			log.Printf("crate briefing after a join for %s: configuration read failed: %s", crateID, s.redactedFailureDetail(ctx, err, crateBriefingFailureWithheld))
 		}
+		return
+	}
+	// A crate with a stored briefing starts nothing. The background work
+	// checks again under the mutex, because another request can store one
+	// between this read and the start.
+	if stored, err := storedCrateBriefing(ctx, backend, crateID); err != nil {
+		log.Printf("crate briefing after a join for %s: briefing read failed: %s", crateID, s.redactedFailureDetail(ctx, err, crateBriefingFailureWithheld))
+		return
+	} else if stored != nil {
 		return
 	}
 	background := store.WithActor(context.Background(), store.ActorFromContext(ctx))

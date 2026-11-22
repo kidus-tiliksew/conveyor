@@ -245,8 +245,8 @@ func TestMCPCreateTaskCrateStartsBriefing(t *testing.T) {
 // TestCrateBriefingAfterMembershipChange: PUT /v1/tasks/{id}/crate starts
 // one generation only when its write changed the task's crate. A same-crate
 // repeat, a removal, and a refused join of a closed crate start none. A join
-// of a crate with a stored briefing calls no model, even when that briefing
-// is out of date.
+// of a crate with a stored briefing starts none and calls no model, even when
+// that briefing is out of date.
 func TestCrateBriefingAfterMembershipChange(t *testing.T) {
 	h := newCrateBriefingHarness(t)
 	h.install(h.agent, config.TriageRoute{Model: "triage-model"})
@@ -287,7 +287,7 @@ func TestCrateBriefingAfterMembershipChange(t *testing.T) {
 	h.requireJobsStarted(t, 1)
 
 	put(h.crate.ID, http.StatusOK)
-	h.requireJobsStarted(t, 2)
+	h.requireJobsStarted(t, 1)
 	if calls := h.agent.callCount(); calls != 1 {
 		t.Fatalf("joining a crate with a stored briefing called the model: calls=%d", calls)
 	}
@@ -296,7 +296,7 @@ func TestCrateBriefingAfterMembershipChange(t *testing.T) {
 	}
 
 	put(second.ID, http.StatusOK)
-	h.requireJobsStarted(t, 3)
+	h.requireJobsStarted(t, 2)
 	h.requireJoinBriefing(t, second.ID)
 	if calls := h.agent.callCount(); calls != 2 {
 		t.Fatalf("model calls=%d, want 2", calls)
@@ -455,26 +455,32 @@ func TestCrateBriefingAfterJoinSkipsClosedCrate(t *testing.T) {
 	}
 }
 
-// TestCrateBriefingAfterJoinStoreFailure: when the background read or write
-// fails, the join's response is unchanged, nothing is stored, the cause is
-// logged redacted, and nothing retries. A failed write follows a model call
-// whose result is dropped.
+// TestCrateBriefingAfterJoinStoreFailure: when the briefing read before the
+// start, or a background read or write, fails, the join's response is
+// unchanged, nothing is stored, the cause is logged redacted, and nothing
+// retries. A failed read before the start starts nothing. A failed write
+// follows a model call whose result is dropped.
 func TestCrateBriefingAfterJoinStoreFailure(t *testing.T) {
 	const secret = "hunter2hunter2hunter2hunter2"
 	for _, test := range []struct {
-		name      string
-		fault     func(*crateBriefingFaultStore)
-		wantCalls int
+		name       string
+		fault      func(*crateBriefingFaultStore)
+		wantStarts int64
+		wantCalls  int
 	}{
-		{"briefing read", func(f *crateBriefingFaultStore) {
+		{"briefing read before the start", func(f *crateBriefingFaultStore) {
 			f.getErr = errors.New("driver refused the briefing read password=" + secret)
-		}, 0},
+		}, 0, 0},
+		{"briefing read under the mutex", func(f *crateBriefingFaultStore) {
+			f.getErr = errors.New("driver refused the briefing read password=" + secret)
+			f.getErrAfter = 1
+		}, 1, 0},
 		{"insight read", func(f *crateBriefingFaultStore) {
 			f.inputsErr = errors.New("driver refused the insight read password=" + secret)
-		}, 0},
+		}, 1, 0},
 		{"briefing write", func(f *crateBriefingFaultStore) {
 			f.recordErr = errors.New("driver refused the briefing write password=" + secret)
-		}, 1},
+		}, 1, 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := newCrateBriefingHarness(t)
@@ -494,7 +500,7 @@ func TestCrateBriefingAfterJoinStoreFailure(t *testing.T) {
 			waitCrateBriefingJobs(t, h.server)
 			restore()
 			h.server.Store = h.store
-			h.requireJobsStarted(t, 1)
+			h.requireJobsStarted(t, test.wantStarts)
 			if logged := captured.String(); strings.Contains(logged, secret) || !strings.Contains(logged, "crate briefing after a join for "+fresh.ID) {
 				t.Fatalf("log %q, want the redacted cause", logged)
 			}
