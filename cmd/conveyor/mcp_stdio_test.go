@@ -1167,3 +1167,94 @@ func TestMCPStdioAnswersInputWithoutAnIDWithANullID(t *testing.T) {
 	assertMCPLines(t, session.stdout.String())
 	session.assertNoSecrets()
 }
+
+// recordingMCPServer answers every request with an empty result for its ID
+// and records each POST body.
+func recordingMCPServer(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.Unmarshal(body, &request)
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{}}`, request.ID)
+	}))
+	return server, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), bodies...)
+	}
+}
+
+// TestMCPStdioForwardsAFinalBareCRUnchanged sends a last message that ends in
+// a CR with no LF after it. Only a CRLF pair is a delimiter, so the CR is part
+// of the message and reaches the server (invariant 45).
+func TestMCPStdioForwardsAFinalBareCRUnchanged(t *testing.T) {
+	server, bodies := recordingMCPServer(t)
+	defer server.Close()
+	credentials := isolateMCPStdioTest(t, server.URL)
+	writeMCPStdioCredentials(t, credentials, map[string]string{server.URL: mcpStdioFileToken})
+	session := startMCPStdio(t, "--server", server.URL, "--credentials-file", credentials)
+
+	message := `{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\r"
+	if _, err := io.WriteString(session.stdin, message); err != nil {
+		t.Fatal(err)
+	}
+	err, rest := session.finish()
+	if err != nil {
+		t.Fatalf("bridge exit: %v", err)
+	}
+	if len(rest) != 1 || rest[0] != `{"jsonrpc":"2.0","id":1,"result":{}}` {
+		t.Fatalf("answers = %q", rest)
+	}
+	if got := bodies(); len(got) != 1 || got[0] != message {
+		t.Fatalf("server bodies = %q, want %q", got, message)
+	}
+	session.assertNoSecrets()
+}
+
+// TestMCPStdioAnswersBlankLinesWithAParseError sends a blank line and a line
+// of only whitespace. Each is a line that is not JSON, so each gets -32700
+// with "id":null and never reaches the server (invariant 46). The request
+// after them gets its normal answer. Input that ends right after a LF ends
+// with an empty read, which is not a line and gets no answer.
+func TestMCPStdioAnswersBlankLinesWithAParseError(t *testing.T) {
+	server, bodies := recordingMCPServer(t)
+	defer server.Close()
+	credentials := isolateMCPStdioTest(t, server.URL)
+	writeMCPStdioCredentials(t, credentials, map[string]string{server.URL: mcpStdioFileToken})
+	session := startMCPStdio(t, "--server", server.URL, "--credentials-file", credentials)
+
+	for _, blank := range []string{"", " \t", "\r"} {
+		session.send(blank)
+		got := decodeRPCLine(t, session.next())
+		if string(got.ID) != "null" || got.Error == nil || got.Error.Code != mcpStdioParseError || got.Result != nil {
+			t.Fatalf("answer for blank line %q = id %s error %+v", blank, got.ID, got.Error)
+		}
+	}
+	request := `{"jsonrpc":"2.0","id":2,"method":"ping"}`
+	session.send(request)
+	if got := session.next(); got != `{"jsonrpc":"2.0","id":2,"result":{}}` {
+		t.Fatalf("request answer = %q", got)
+	}
+	// The last send ended with a LF, so standard input closes right after a
+	// LF and the bridge must write nothing more.
+	err, rest := session.finish()
+	if err != nil {
+		t.Fatalf("bridge exit: %v", err)
+	}
+	if len(rest) != 0 {
+		t.Fatalf("extra answers after the last LF = %q", rest)
+	}
+	if got := bodies(); len(got) != 1 || got[0] != request {
+		t.Fatalf("server bodies = %q, want only the request", got)
+	}
+	assertMCPLines(t, session.stdout.String())
+	session.assertNoSecrets()
+}

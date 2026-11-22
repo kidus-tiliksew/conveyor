@@ -142,10 +142,17 @@ func (b *mcpStdioBridge) serve(ctx context.Context, input io.Reader) error {
 	var readErr error
 	for {
 		line, err := reader.ReadBytes('\n')
-		// Remove only the line delimiter, so the POST carries the message
-		// bytes unchanged. A line of only whitespace is not a message.
-		message := bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
-		if len(bytes.TrimSpace(message)) > 0 {
+		// An empty read at end of input is not a line. Every other read is
+		// a line, a blank one included, and goes to handle, which answers a
+		// line that is not JSON with a parse error (invariant 46). Only the
+		// LF delimiter, or a CRLF delimiter as a whole, is removed, so the
+		// POST carries the message bytes unchanged (invariant 45). A CR at
+		// end of input with no LF after it is part of the message.
+		if len(line) > 0 {
+			message := line
+			if bytes.HasSuffix(message, []byte("\n")) {
+				message = bytes.TrimSuffix(bytes.TrimSuffix(message, []byte("\n")), []byte("\r"))
+			}
 			inFlight.Add(1)
 			go func(message []byte) {
 				defer inFlight.Done()
