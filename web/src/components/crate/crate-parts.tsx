@@ -1,6 +1,6 @@
 // Pieces the crates list and the crate page share (component-crates
-// invariant 17): the target date, the progress bar, the counts, and the form
-// that creates or edits a crate.
+// invariant 17): the target date, the state badge, and the form that creates
+// or edits a crate.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CalendarDays, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
@@ -46,54 +46,6 @@ export function TargetDate({ crate, className }: { crate: Crate; className?: str
         {formatTargetDate(crate.target_date)}
       </span>
       {hint && <span className={cn('text-xs', hint.late ? 'text-attention' : 'text-faint')}>{hint.text}</span>}
-    </span>
-  )
-}
-
-// Merged, then closed without merging, then open: the bar fills as the work
-// lands. The widths come from the server's counts (invariant 9).
-export function CrateProgress({ crate, className }: { crate: Crate; className?: string }) {
-  const total = crate.total_task_count
-  const closed = Math.max(0, total - crate.open_task_count - crate.merged_task_count)
-  const width = (count: number) => (total > 0 ? `${(count / total) * 100}%` : '0%')
-  return (
-    <div
-      role="img"
-      aria-label={
-        total > 0
-          ? `${crate.merged_task_count} of ${total} tasks merged, ${crate.open_task_count} open`
-          : 'No tasks yet'
-      }
-      className={cn('flex h-1.5 w-full overflow-hidden rounded-full bg-raised', className)}
-    >
-      <span className="h-full bg-positive transition-[width]" style={{ width: width(crate.merged_task_count) }} />
-      <span className="h-full bg-edge transition-[width]" style={{ width: width(closed) }} />
-    </div>
-  )
-}
-
-// The three counts in the order the requirement names them (AC-5.1).
-export function CrateCounts({ crate, className }: { crate: Crate; className?: string }) {
-  return (
-    <span className={cn('flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5 text-xs text-muted', className)}>
-      <Count value={crate.open_task_count} label="open" />
-      <Count
-        value={crate.merged_task_count}
-        label="merged"
-        tone={crate.merged_task_count > 0 ? 'positive' : undefined}
-      />
-      <Count value={crate.total_task_count} label="total" />
-    </span>
-  )
-}
-
-function Count({ value, label, tone }: { value: number; label: string; tone?: 'positive' }) {
-  return (
-    <span data-count={label}>
-      <span className={cn('font-medium tabular-nums', tone === 'positive' ? 'text-positive' : 'text-foreground')}>
-        {value}
-      </span>{' '}
-      {label}
     </span>
   )
 }

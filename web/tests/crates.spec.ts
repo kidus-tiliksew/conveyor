@@ -83,6 +83,79 @@ const closedCrates: Crate[] = [
   }),
 ]
 
+// Open crates for the completion pie (component-crates invariants 9 and 17;
+// req-crates AC-5.1). The share is merged over merged and open members, so
+// a closed member counts toward neither. Each total includes closed members
+// that a share over the total would wrongly count.
+const completionCrates: Crate[] = [
+  crateRow({
+    id: 'crate-partial',
+    name: 'Payments cleanup',
+    target_date: dateFromToday(5),
+    open_task_count: 3,
+    merged_task_count: 2,
+    total_task_count: 6,
+  }),
+  crateRow({
+    id: 'crate-full',
+    name: 'Docs refresh',
+    target_date: dateFromToday(9),
+    shipped: true,
+    open_task_count: 0,
+    merged_task_count: 4,
+    total_task_count: 5,
+  }),
+  crateRow({
+    id: 'crate-closed-only',
+    name: 'Legacy sunset',
+    shipped: true,
+    open_task_count: 0,
+    merged_task_count: 0,
+    total_task_count: 2,
+  }),
+  crateRow({ id: 'crate-no-members', name: 'Quiet backlog' }),
+  crateRow({
+    id: 'crate-almost',
+    name: 'Search revamp',
+    open_task_count: 1,
+    merged_task_count: 199,
+    total_task_count: 200,
+  }),
+  crateRow({
+    id: 'crate-barely',
+    name: 'Telemetry cleanup',
+    open_task_count: 200,
+    merged_task_count: 1,
+    total_task_count: 201,
+  }),
+]
+
+// The accessible name and tooltip text the pie of each completion crate
+// states, from the served counts alone.
+const completionLabels: Record<string, string> = {
+  'crate-partial': '40% done · 2 of 5 merged',
+  'crate-full': '100% done · 4 of 4 merged',
+  'crate-closed-only': 'No open or merged tasks',
+  'crate-no-members': 'No open or merged tasks',
+  // Only the label is rounded: 199 of 200 reads 100% and 1 of 201 reads 0%,
+  // while each pie still draws a partial wedge from the unrounded share.
+  'crate-almost': '100% done · 199 of 200 merged',
+  'crate-barely': '0% done · 1 of 201 merged',
+}
+
+const completionFills: Record<string, string> = {
+  'crate-partial': 'partial',
+  'crate-full': 'full',
+  'crate-closed-only': 'empty',
+  'crate-no-members': 'empty',
+  'crate-almost': 'partial',
+  'crate-barely': 'partial',
+}
+
+// No count or percentage reads as row text at rest: the row's rendered text
+// (innerText, which leaves out hidden text) holds none.
+const countText = /\d+\s*(open|merged|total)\b|%/
+
 const nextActionVerbatim = 'Waiting on review seat 2 of 3 (served text)'
 
 const billing: CrateDetail = {
@@ -481,13 +554,15 @@ type BriefingReply = { status: number; json?: unknown; body?: string; contentTyp
 // A crate it leaves out has a current briefing with no task to look at first.
 // The fake server reads and writes the object per request, so a spec can
 // change it while the page is open. `briefingPost` answers a POST in place of
-// the default, which stores a new current briefing.
+// the default, which stores a new current briefing. `openList` replaces the
+// served open crates list; without it the fake server serves `openCrates`.
 async function serveCrates(
   page: Page,
   options: {
     role?: Role
     insight?: 'fail'
     insights?: Record<string, CrateInsight>
+    openList?: Crate[]
     briefings?: Record<string, CrateBriefing | null>
     briefingPost?: (crateId: string, count: number) => Promise<BriefingReply | undefined> | BriefingReply | undefined
   } = {},
@@ -533,7 +608,7 @@ async function serveCrates(
     if (path === '/v1/crates' && method === 'GET') {
       const state = url.searchParams.get('state') ?? 'open'
       listRequests.push(state)
-      return route.fulfill({ json: state === 'closed' ? closedCrates : openCrates })
+      return route.fulfill({ json: state === 'closed' ? closedCrates : (options.openList ?? openCrates) })
     }
     const activity = path.match(/^\/v1\/crates\/([^/]+)\/activity$/)
     if (activity) {
@@ -728,7 +803,7 @@ test('primary navigation opens the crates list directly after Tasks', async ({ p
 })
 
 // AC-5.1: the order the server returns, each open crate's name, target date,
-// and open, merged, and total counts; closed crates only on request.
+// and completion pie with no count text; closed crates only on request.
 test('crates list keeps the served order and shows closed crates only on request', async ({ page }) => {
   const { listRequests } = await serveCrates(page)
   await page.goto('/w/demo/crates')
@@ -736,9 +811,9 @@ test('crates list keeps the served order and shows closed crates only on request
   const open = page.getByRole('list', { name: 'Open crates' })
   await expect(open.locator('[data-crate-name]')).toHaveText(['Zeta rollout', 'Billing v2', 'Alpha cleanup'])
   const row = open.locator('[data-crate-row="crate-billing"]')
-  await expect(row.locator('[data-count="open"]')).toHaveText('2 open')
-  await expect(row.locator('[data-count="merged"]')).toHaveText('3 merged')
-  await expect(row.locator('[data-count="total"]')).toHaveText('5 total')
+  await expect(row.getByRole('img', { name: '60% done · 3 of 5 merged', exact: true })).toBeVisible()
+  await expect(row.locator('[data-count]')).toHaveCount(0)
+  await expect(row).not.toContainText(countText, { useInnerText: true })
   await expect(row.locator('[data-target-date]:visible')).toHaveCount(1)
   await expect(row.getByText('12 days left').first()).toBeAttached()
   await expect(open.locator('[data-crate-row="crate-alpha"]').getByText('No target date').first()).toBeAttached()
@@ -753,6 +828,114 @@ test('crates list keeps the served order and shows closed crates only on request
 
   await closedList.getByRole('link').first().click()
   await expect(page).toHaveURL(/\/w\/demo\/crates\/crate-closed$/)
+})
+
+// The open crates list as the page shows it: the list card and each row.
+function completionList(page: Page) {
+  const list = page.getByRole('list', { name: 'Open crates' })
+  return { list, card: list.locator('..'), row: (id: string) => list.locator(`[data-crate-row="${id}"]`) }
+}
+
+type Box = { x: number; y: number; width: number; height: number }
+
+// True when `inner` lies inside `outer`, allowing half a pixel of rounding.
+function inside(inner: Box | null, outer: Box | null) {
+  if (!inner || !outer) return false
+  return (
+    inner.x >= outer.x - 0.5 &&
+    inner.y >= outer.y - 0.5 &&
+    inner.x + inner.width <= outer.x + outer.width + 0.5 &&
+    inner.y + inner.height <= outer.y + outer.height + 0.5
+  )
+}
+
+// Pointing at a row's pie shows its tooltip with the same text as the pie's
+// accessible name. The tooltip stays inside the list card, which clips its
+// content, and inside the viewport.
+async function expectTooltipOnHover(page: Page, id: string) {
+  const { card, row } = completionList(page)
+  const tooltip = row(id).locator('[data-completion-tooltip]')
+  await expect(tooltip).toBeHidden()
+  await row(id).locator('[data-completion-pie]').hover()
+  await expect(tooltip).toBeVisible()
+  await expect(tooltip).toHaveText(completionLabels[id])
+  const viewport = page.viewportSize()
+  await expect
+    .poll(async () => {
+      const box = await tooltip.boundingBox()
+      return (
+        inside(box, await card.boundingBox()) &&
+        inside(box, viewport && { x: 0, y: 0, width: viewport.width, height: viewport.height })
+      )
+    })
+    .toBe(true)
+}
+
+// AC-5.1; component-crates invariants 9 and 17: the crates list completion
+// pie fills to merged over merged and open members, and its accessible name
+// states the share, the merged count, and the counted tasks. A crate with no
+// counted task shows an empty pie that states it has none.
+test('crates list completion pie names the merged share of partial, full, and closed-only crates', async ({ page }) => {
+  await serveCrates(page, { openList: completionCrates })
+  await page.goto('/w/demo/crates')
+  const { list, row } = completionList(page)
+  await expect(list.locator('[data-crate-name]')).toHaveText(completionCrates.map((crate) => crate.name))
+  for (const crate of completionCrates) {
+    const pie = row(crate.id).locator('[data-completion-pie]')
+    await expect(pie.getByRole('img', { name: completionLabels[crate.id], exact: true })).toBeVisible()
+    await expect(pie).toHaveAttribute('data-completion-pie', completionFills[crate.id])
+    await expect(row(crate.id).locator('[data-completion-tooltip]')).toBeHidden()
+    await expect(row(crate.id).locator('[data-count]')).toHaveCount(0)
+    await expect(row(crate.id)).not.toContainText(countText, { useInnerText: true })
+  }
+  // The full share is a full disc, and a partial share draws one wedge.
+  await expect(row('crate-full').locator('[data-completion-pie] path')).toHaveCount(0)
+  await expect(row('crate-full').locator('[data-completion-pie] circle')).toHaveCount(2)
+  await expect(row('crate-partial').locator('[data-completion-pie] path')).toHaveCount(1)
+  // A share that rounds to 100% or 0% still draws a partial wedge.
+  await expect(row('crate-almost').locator('[data-completion-pie] path')).toHaveCount(1)
+  await expect(row('crate-barely').locator('[data-completion-pie] path')).toHaveCount(1)
+  await expect(row('crate-closed-only').locator('[data-completion-pie] path')).toHaveCount(0)
+  await expect(row('crate-closed-only').locator('[data-completion-pie] circle')).toHaveCount(1)
+  // The column that holds the pie is headed Done.
+  const header = page.locator('[data-crate-list-header] > span', { hasText: /^Done$/ })
+  await expect(header).toBeVisible()
+  await expect(page.locator('[data-crate-list-header] > span', { hasText: /^Tasks$/ })).toHaveCount(0)
+})
+
+test('crates list completion pie shows its share on hover and hides it when the pointer leaves', async ({ page }) => {
+  await serveCrates(page, { openList: completionCrates })
+  await page.goto('/w/demo/crates')
+  const { row } = completionList(page)
+  await expectTooltipOnHover(page, 'crate-partial')
+  // The tooltip is the only place the share reads as text.
+  await expect(row('crate-partial')).toContainText('40% done · 2 of 5 merged', { useInnerText: true })
+  await page.mouse.move(0, 0)
+  await expect(row('crate-partial').locator('[data-completion-tooltip]')).toBeHidden()
+  await expect(row('crate-partial')).not.toContainText(countText, { useInnerText: true })
+  await expectTooltipOnHover(page, 'crate-closed-only')
+  // The last row's tooltip is not cut off at the bottom of the list card.
+  await expectTooltipOnHover(page, 'crate-barely')
+})
+
+test('crates list completion pie sits in the Done column at a desktop width', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await serveCrates(page, { openList: completionCrates })
+  await page.goto('/w/demo/crates')
+  const { row } = completionList(page)
+  const header = page.locator('[data-crate-list-header] > span', { hasText: /^Done$/ })
+  await expect(header).toBeVisible()
+  await expect(row('crate-partial').locator('[data-completion-pie]')).toBeVisible()
+  await expect
+    .poll(async () => {
+      const done = await header.boundingBox()
+      const pie = await row('crate-partial').locator('[data-completion-pie]').boundingBox()
+      return done && pie ? Math.abs(done.x - pie.x) : Number.POSITIVE_INFINITY
+    })
+    .toBeLessThanOrEqual(1)
+  // The desktop date has its own column; the date under the name is hidden.
+  await expect(row('crate-partial').locator('[data-crate-row-main] [data-target-date]')).toBeHidden()
+  await expect(row('crate-partial').locator('[data-target-date]:visible')).toHaveCount(1)
 })
 
 // The open list never stands in for the closed list while it loads.
@@ -1076,6 +1259,39 @@ test.describe('at 375 px', () => {
       'Billing v2',
     )
     await expectNoHorizontalScroll(page, '[role="dialog"]')
+  })
+
+  test('crates list completion pie sits at the right with the date under the name', async ({ page }) => {
+    await serveCrates(page, { openList: completionCrates })
+    await page.goto('/w/demo/crates')
+    const { row } = completionList(page)
+    const partial = row('crate-partial')
+    const main = partial.locator('[data-crate-row-main]')
+    const pie = partial.locator('[data-completion-pie]')
+    await expect(main.locator('svg').first()).toBeVisible()
+    await expect(main.locator('[data-target-date]')).toBeVisible()
+    await expect(pie.getByRole('img', { name: completionLabels['crate-partial'], exact: true })).toBeVisible()
+    await expect
+      .poll(async () => {
+        const name = await partial.locator('[data-crate-name]').boundingBox()
+        const date = await main.locator('[data-target-date]').boundingBox()
+        const piece = await pie.boundingBox()
+        const box = await partial.boundingBox()
+        if (!name || !date || !piece || !box) return 'unmeasured'
+        if (date.y < name.y + name.height - 0.5) return 'date not under the name'
+        if (piece.x < name.x + name.width) return 'pie not right of the name'
+        if (piece.x + piece.width < box.x + box.width * 0.75) return 'pie not at the right'
+        return 'ok'
+      })
+      .toBe('ok')
+    await expect(partial).not.toContainText(countText, { useInnerText: true })
+    await expectNoHorizontalScroll(page)
+  })
+
+  test('crates list completion pie tooltip is not clipped at the right edge', async ({ page }) => {
+    await serveCrates(page, { openList: completionCrates })
+    await page.goto('/w/demo/crates')
+    for (const crate of completionCrates) await expectTooltipOnHover(page, crate.id)
   })
 })
 
