@@ -14,16 +14,17 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
-// TestActivityInputsBreakdownDiagnostic is an opt-in diagnostic for the
-// task poll read cost (internal/httpapi TestTaskPollReadCostIntegration). It
-// opens the database that test seeded and kept, named by
-// CONVEYOR_TASK_POLL_DATABASE, and reads the activity inputs of the task-list
-// page and of the inbox's open tasks once through ReadActivityInputs. It then
-// reads the same inputs step by step, each step under its own read label:
-// the task rows, the latest-summary read, the order read, the dependency
-// read, the narrow fold read, the lifecycle read, its claim backfill read, and the wide reads. It reports the
-// bytes, rows, and statements of each step. It changes no production label
-// and skips unless the database is named.
+// TestActivityInputsBreakdownDiagnostic is an opt-in diagnostic for the task
+// poll read cost. It opens an already seeded database named by
+// CONVEYOR_TASK_POLL_DATABASE. The retired task poll read-cost test seeded
+// and kept that database; the caller now supplies it. The diagnostic reads
+// the activity inputs of the task-list page and of the inbox's open tasks
+// once through ReadActivityInputs. It then reads the same inputs step by
+// step, each step under its own read label: the task rows, the
+// latest-summary read, the order read, the dependency read, the narrow fold
+// read, the lifecycle read, its claim backfill read, and the wide reads. It
+// reports the bytes, rows, and statements of each step. It changes no
+// production label and skips unless the database is named.
 func TestActivityInputsBreakdownDiagnostic(t *testing.T) {
 	name := strings.TrimSpace(os.Getenv("CONVEYOR_TASK_POLL_DATABASE"))
 	raw := strings.TrimSpace(os.Getenv("CONVEYOR_TEST_SINGLESTORE_URL"))

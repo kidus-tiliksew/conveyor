@@ -1,12 +1,15 @@
 package singlestore
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // TestDecisionCitationsIntegration pins the database-membership citation read
@@ -180,4 +183,15 @@ func TestDecisionCitationsBindQuoteAndBackslashIDsIntegration(t *testing.T) {
 	if queries := readAccountingTotals(st.ReadStats(1000))["ListDecisionCitations"].Queries; queries != 2 {
 		t.Fatalf("ListDecisionCitations queries = %d, want the decision list and one batch", queries)
 	}
+}
+
+// documentPlanWorkspace bootstraps workspace ws with one repository and
+// returns a context that acts in it as the system actor.
+func documentPlanWorkspace(t *testing.T, st *Store, ws string) context.Context {
+	t.Helper()
+	ctx := store.WithActor(store.WithWorkspace(t.Context(), ws), store.SystemActor())
+	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: ws, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	return ctx
 }
