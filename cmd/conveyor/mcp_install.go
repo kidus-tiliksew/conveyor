@@ -43,7 +43,7 @@ type mcpInstallResult struct {
 
 func mcpCmd() *cobra.Command {
 	command := &cobra.Command{Use: "mcp", Short: "Manage native MCP client registrations"}
-	command.AddCommand(mcpInstallCmd())
+	command.AddCommand(mcpInstallCmd(), mcpStdioCmd())
 	return command
 }
 
