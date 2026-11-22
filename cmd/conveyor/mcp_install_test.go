@@ -723,3 +723,58 @@ func TestMCPAntigravityRefusesSymlinkedDestination(t *testing.T) {
 		})
 	}
 }
+
+// A failed read of the existing file and a failed write of the parser's
+// staged copy both stop the install before publication. A process that can
+// read or write past file modes, such as one that holds CAP_DAC_OVERRIDE,
+// cannot set up these failures, so the case skips there.
+func TestMCPAntigravityReadAndStagingFailuresPublishNothing(t *testing.T) {
+	t.Run("unreadable existing file", func(t *testing.T) {
+		home := t.TempDir()
+		path := mcpTargets(home, []skillTool{{name: "antigravity"}})[0].path
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		prior := []byte(`{"mcpServers":{"other":{"serverUrl":"https://other.example/mcp"}}}`)
+		if err := os.WriteFile(path, prior, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+		if _, err := os.ReadFile(path); err == nil {
+			t.Skip("this process can read a mode 000 file")
+		}
+		id := testMCPIdentity(t, "https://one.example", "")
+		agy := antigravityListBinary(t, "", id.name)
+		_, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, id, false, true, onlyAgyOnPath(agy))
+		if err == nil || !strings.Contains(err.Error(), "read "+path) {
+			t.Fatalf("unreadable file error=%v", err)
+		}
+		_ = os.Chmod(path, 0o600)
+		after, _ := os.ReadFile(path)
+		if !bytes.Equal(after, prior) {
+			t.Fatalf("read failure changed the file: %s", after)
+		}
+	})
+	t.Run("staged copy cannot be written", func(t *testing.T) {
+		directory := t.TempDir()
+		staged := filepath.Join(directory, "staged.json")
+		if err := os.WriteFile(staged, []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(directory, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(directory, 0o700) })
+		if probe, err := os.MkdirTemp(directory, "probe-*"); err == nil {
+			_ = os.Remove(probe)
+			t.Skip("this process can write to a mode 0500 directory")
+		}
+		agy := antigravityListBinary(t, "touch \"$HOME/../agy-ran\"", "conveyor")
+		if err := validateAntigravityMCP(agy, staged, "conveyor", 30*time.Second); err == nil {
+			t.Fatal("parser check passed without an isolated copy")
+		}
+		if _, err := os.Stat(filepath.Join(directory, "agy-ran")); !os.IsNotExist(err) {
+			t.Fatalf("agy ran without an isolated copy: %v", err)
+		}
+	})
+}
