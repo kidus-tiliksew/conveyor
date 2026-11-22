@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 )
 
 // req-agent-guidance-install AC-2.1 v2, AC-2.4: each supported file form
@@ -176,9 +177,7 @@ func TestRepoInitInstallsCoordinationSkillForEveryTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	destinations := skillDestinations(root, supportedSkillTools, true)
-	if len(destinations) != 4 {
-		t.Fatalf("destinations = %d, want 4", len(destinations))
-	}
+	checkEverySkillDestination(t, root, destinations, true)
 	for _, destination := range destinations {
 		for _, asset := range embeddedSkillManifest {
 			if !strings.HasPrefix(asset.relative, "conveyor-coordinate/") {
@@ -216,9 +215,7 @@ func TestRepoInitInstallsPlainEnglishSkillForEveryTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	destinations := skillDestinations(root, supportedSkillTools, true)
-	if len(destinations) != 4 {
-		t.Fatalf("destinations = %d, want 4", len(destinations))
-	}
+	checkEverySkillDestination(t, root, destinations, true)
 	var assets []embeddedSkillFile
 	for _, asset := range embeddedSkillManifest {
 		if strings.HasPrefix(asset.relative, "conveyor-plain-english/") {
@@ -305,7 +302,7 @@ func TestRepoInitAppendsAndRefusesSkillDowngrade(t *testing.T) {
 
 func TestRepoInitRefusalsLeaveNoPartialFiles(t *testing.T) {
 	section, _ := renderRepoInit("v1.0.0", "example", "main")
-	for _, state := range []string{"unowned skill", "broken symlink", "external symlink", "tool symlink", "skill symlink", "guidance directory", "missing close", "missing open", "multiple spans", "wrong order", "bad version", "unsupported owner"} {
+	for _, state := range []string{"unowned skill", "unowned antigravity skill", "broken symlink", "external symlink", "tool symlink", "skill symlink", "guidance directory", "missing close", "missing open", "multiple spans", "wrong order", "bad version", "unsupported owner"} {
 		t.Run(state, func(t *testing.T) {
 			root, external := t.TempDir(), t.TempDir()
 			writeRepoFixture(t, root, "AGENTS.md", "Keep my rules")
@@ -320,6 +317,11 @@ func TestRepoInitRefusalsLeaveNoPartialFiles(t *testing.T) {
 			case "unowned skill":
 				badPath = filepath.Join(root, ".cursor/skills/conveyor-work/SKILL.md")
 				writeRepoFixture(t, root, ".cursor/skills/conveyor-work/SKILL.md", "Operator skill")
+			case "unowned antigravity skill":
+				// Full mode refuses an unowned file under the Antigravity
+				// project root without adoption or force (AC-2.3).
+				badPath = filepath.Join(root, ".agents/skills/conveyor-work/SKILL.md")
+				writeRepoFixture(t, root, ".agents/skills/conveyor-work/SKILL.md", "Operator skill")
 			case "broken symlink":
 				symlink("missing", badPath)
 			case "external symlink":
@@ -949,6 +951,7 @@ func TestRepoInitGuidanceOnlySourceWrappers(t *testing.T) {
 	if err := os.Chmod(filepath.Join(root, ".claude/skills/conveyor-work/SKILL.md"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	writeRepoFixture(t, root, ".agents/skills/conveyor-work/SKILL.md", "Maintained Antigravity skill\n")
 	before := repoFixtureSnapshot(t, root)
 	if err := prepareRepository(root, "v1", "example", "main", io.Discard); err == nil {
 		t.Fatal("full installation accepted unowned source")
@@ -981,6 +984,14 @@ func TestRepoInitGuidanceOnlySourceWrappers(t *testing.T) {
 		info, err := os.Stat(filepath.Join(root, "CLAUDE.md"))
 		if err != nil || info.Mode().Perm() != 0o640 {
 			t.Fatal("target permissions changed")
+		}
+		// Guidance-only mode leaves the existing Antigravity skill file as it
+		// was and creates no missing one (AC-2.3).
+		if content, err := os.ReadFile(filepath.Join(root, ".agents/skills/conveyor-work/SKILL.md")); err != nil || string(content) != "Maintained Antigravity skill\n" {
+			t.Fatalf("guidance-only changed the Antigravity skill: %q %v", content, err)
+		}
+		if entries, err := os.ReadDir(filepath.Join(root, ".agents/skills")); err != nil || len(entries) != 1 || entries[0].Name() != "conveyor-work" {
+			t.Fatalf("guidance-only created Antigravity skills: %v %v", entries, err)
 		}
 		before = repoFixtureSnapshot(t, root)
 	}
@@ -1258,6 +1269,64 @@ func TestRepoInitGuidanceOnlyAndPlaybooksCarryNoPlanTierRule(t *testing.T) {
 	}
 }
 
+// Full `conveyor repo init` writes every embedded skill under the Antigravity
+// project root .agents/skills even when no `agy` binary is on PATH, and a
+// rerun reports every one unchanged (req-agent-guidance-install AC-2.3,
+// AC-2.4; component-cli-onboarding "Public surfaces").
+func TestRepoInitWritesAntigravityProjectRootWithoutAgy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	mustGit(t, root, "init", "-b", "main")
+	// repo init still runs git, so PATH holds a link to git and no agent
+	// binary.
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git is not installed: %v", err)
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(gitPath, filepath.Join(bin, "git")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	if _, err := exec.LookPath("agy"); err == nil {
+		t.Fatal("agy is still on PATH")
+	}
+	antigravityRoot := filepath.Join(root, ".agents", "skills")
+	for run, status := range []string{"written", "unchanged"} {
+		command := repoCmd()
+		command.SetArgs([]string{"init"})
+		var out bytes.Buffer
+		command.SetOut(&out)
+		command.SetErr(&out)
+		if err := command.Execute(); err != nil {
+			t.Fatalf("repo init run %d: %v\n%s", run+1, err, out.String())
+		}
+		for _, asset := range embeddedSkillManifest {
+			installed := filepath.Join(antigravityRoot, filepath.FromSlash(asset.relative))
+			if strings.Count(out.String(), "antigravity\t"+status+"\t"+installed+"\n") != 1 {
+				t.Errorf("repo init run %d did not report %s %s:\n%s", run+1, installed, status, out.String())
+			}
+			want, err := renderEmbeddedSkill(asset, releaseinfo.Version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(installed)
+			if err != nil || !bytes.Equal(want, got) {
+				t.Fatalf("antigravity %s differs from the embedded skill: %v", asset.relative, err)
+			}
+		}
+	}
+	if entries, err := os.ReadDir(filepath.Join(root, ".agents")); err != nil || len(entries) != 1 || entries[0].Name() != "skills" {
+		t.Fatalf("repo init wrote %v under .agents, want only skills: %v", entries, err)
+	}
+}
+
 // `conveyor repo init` run in an empty repository writes work and
 // coordination playbooks that hold the risk agent rules for every supported
 // tool (req-agent-skills AC-3.16; req-agent-coordination AC-1.2;
@@ -1286,9 +1355,7 @@ func TestRepoInitIntoEmptyDirectoryWritesRiskAgentRules(t *testing.T) {
 		t.Fatalf("repo init: %v\n%s", err, out.String())
 	}
 	destinations := skillDestinations(root, supportedSkillTools, true)
-	if len(destinations) != 4 {
-		t.Fatalf("destinations = %d, want 4", len(destinations))
-	}
+	checkEverySkillDestination(t, root, destinations, true)
 	for _, destination := range destinations {
 		for file := range riskAgentRules {
 			installed := filepath.Join(destination.root, filepath.FromSlash(file))
