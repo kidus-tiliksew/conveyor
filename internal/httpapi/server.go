@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -170,6 +171,12 @@ type Server struct {
 	// and crate in this process (component-crates invariant 29). Its keys
 	// name the crate in the requirement field.
 	crateBriefingLocks requirementInsightLocks
+	// crateBriefingJobs counts the background briefing generations that
+	// startCrateBriefingAfterJoin started and that have not ended
+	// (component-crates invariant 36).
+	crateBriefingJobs sync.WaitGroup
+	// crateBriefingJobsStarted counts those starts.
+	crateBriefingJobsStarted atomic.Int64
 }
 
 type CredentialVerifier interface {

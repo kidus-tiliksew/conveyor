@@ -113,6 +113,27 @@ func (m *memory) ListCrates(ctx context.Context, query CrateListQuery) ([]Crate,
 	return out, nil
 }
 
+// ListCratesWithBriefings implements CrateStore. One pass under the read
+// lock lists the crates and looks up each summary by workspace and crate ID.
+func (m *memory) ListCratesWithBriefings(ctx context.Context, query CrateListQuery) ([]CrateListRow, error) {
+	workspace := workspaceOrDefault(ctx, "")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	crates := []Crate{}
+	summaries := map[string]CrateBriefingSummary{}
+	for key, crate := range m.crates {
+		if key.workspace != workspace || !CrateListMatches(query, crate.State) {
+			continue
+		}
+		crates = append(crates, m.crateWithCountsLocked(crate))
+		if briefing, ok := m.crateBriefings[memoryScopedKey{workspace: workspace, id: crate.ID}]; ok {
+			summaries[crate.ID] = CrateBriefingSummary{Headline: briefing.Headline, GeneratedAt: briefing.GeneratedAt}
+		}
+	}
+	SortCrates(crates)
+	return CrateListRows(crates, summaries), nil
+}
+
 // CrateNames implements CrateStore.
 func (m *memory) CrateNames(ctx context.Context, ids []string) (map[string]string, error) {
 	workspace := workspaceOrDefault(ctx, "")
@@ -261,6 +282,20 @@ func (m *memory) SetTaskCrate(ctx context.Context, taskID, crateID string) (core
 	if err != nil {
 		return core.Task{}, err
 	}
+	task, _, err := m.moveTaskCrate(ctx, taskID, crateID)
+	return task, err
+}
+
+// JoinTaskCrate implements CrateStore. changed is decided under the store
+// mutex that holds the write.
+func (m *memory) JoinTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, false, err
+	}
+	crateID, err := NormalizeJoinCrateID(crateID)
+	if err != nil {
+		return core.Task{}, false, err
+	}
 	return m.moveTaskCrate(ctx, taskID, crateID)
 }
 
@@ -270,30 +305,33 @@ func (m *memory) ClearTaskCrate(ctx context.Context, taskID string) (core.Task, 
 	if _, err := RequireActor(ctx); err != nil {
 		return core.Task{}, err
 	}
-	return m.moveTaskCrate(ctx, taskID, "")
+	task, _, err := m.moveTaskCrate(ctx, taskID, "")
+	return task, err
 }
 
 // moveTaskCrate changes only the task's crate and appends one task event
 // with the actor, the crate joined, and the crate left (component-crates
 // invariants 1 and 8; req-crates AC-2.2, AC-2.3, AC-4.1).
-func (m *memory) moveTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, error) {
+// changed reports whether the task's crate changed.
+func (m *memory) moveTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, bool, error) {
 	if _, err := RequireActor(ctx); err != nil {
-		return core.Task{}, err
+		return core.Task{}, false, err
 	}
 	workspace := workspaceOrDefault(ctx, "")
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[taskID]
 	if !ok || (workspace != "" && task.Workspace != workspace) {
-		return core.Task{}, fmt.Errorf("%w: task %s", ErrNotFound, taskID)
+		return core.Task{}, false, fmt.Errorf("%w: task %s", ErrNotFound, taskID)
 	}
 	if crateID != "" {
 		if err := m.crateJoinableLocked(task.Workspace, crateID); err != nil {
-			return core.Task{}, err
+			return core.Task{}, false, err
 		}
 	}
 	left := task.TaskCrateID()
-	if left != crateID {
+	changed := left != crateID
+	if changed {
 		if crateID == "" {
 			task.Crate = nil
 		} else {
@@ -306,7 +344,7 @@ func (m *memory) moveTaskCrate(ctx context.Context, taskID, crateID string) (cor
 		copy := lifecycle
 		task.GitHub = &copy
 	}
-	return m.hydrateTaskLocked(task), nil
+	return m.hydrateTaskLocked(task), changed, nil
 }
 
 // crateJoinableLocked refuses a crate that is missing, in another workspace,

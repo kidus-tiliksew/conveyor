@@ -301,6 +301,41 @@ func (s *Store) ListCrates(ctx context.Context, query store.CrateListQuery) ([]s
 	return crates, nil
 }
 
+// ListCratesWithBriefings implements store.CrateStore in four set-based
+// statements whatever the number of crates: the three of ListCrates, which
+// run under this read label, and one briefing summary statement that joins
+// on workspace and crate ID with the same state filter.
+func (s *Store) ListCratesWithBriefings(ctx context.Context, query store.CrateListQuery) ([]store.CrateListRow, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListCratesWithBriefings")
+	ws, err := workspace(ctx)
+	if err != nil {
+		return nil, err
+	}
+	crates, err := s.ListCrates(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := documentRows(ctx, s.db, `SELECT b.crate_id,b.headline,b.generated_at FROM crate_briefings b JOIN crates c ON c.workspace_id=b.workspace_id AND c.id=b.crate_id WHERE b.workspace_id=? AND (?='' OR c.state=?)`, ws, string(query.State), string(query.State))
+	if err != nil {
+		return nil, err
+	}
+	summaries := map[string]store.CrateBriefingSummary{}
+	for rows.Next() {
+		var crateID string
+		var summary store.CrateBriefingSummary
+		if err := rows.Scan(&crateID, &summary.Headline, &summary.GeneratedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		summaries[crateID] = summary
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return store.CrateListRows(crates, summaries), nil
+}
+
 // CrateNames implements store.CrateStore.
 func (s *Store) CrateNames(ctx context.Context, ids []string) (map[string]string, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "CrateNames")
@@ -454,13 +489,26 @@ func (s *Store) SetTaskCrate(ctx context.Context, taskID, crateID string) (core.
 	if err != nil {
 		return core.Task{}, err
 	}
+	task, _, err := s.moveTaskCrate(ctx, taskID, crateID)
+	return task, err
+}
+
+// JoinTaskCrate implements store.CrateStore. changed is true only when the
+// committed transaction wrote the task's crate.
+func (s *Store) JoinTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "JoinTaskCrate")
+	crateID, err := store.NormalizeJoinCrateID(crateID)
+	if err != nil {
+		return core.Task{}, false, err
+	}
 	return s.moveTaskCrate(ctx, taskID, crateID)
 }
 
 // ClearTaskCrate implements store.CrateStore.
 func (s *Store) ClearTaskCrate(ctx context.Context, taskID string) (core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ClearTaskCrate")
-	return s.moveTaskCrate(ctx, taskID, "")
+	task, _, err := s.moveTaskCrate(ctx, taskID, "")
+	return task, err
 }
 
 // moveTaskCrate changes only tasks.crate_id under the task's command lock and
@@ -468,15 +516,19 @@ func (s *Store) ClearTaskCrate(ctx context.Context, taskID string) (core.Task, e
 // left. A move to the crate the task already holds records nothing
 // (component-crates invariants 1, 2, and 8; req-crates AC-2.2, AC-2.3,
 // AC-4.1).
-func (s *Store) moveTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, error) {
+// changed is set inside the transaction function and read only after the
+// transaction commits, so a retried or rolled-back attempt never reports it.
+func (s *Store) moveTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, bool, error) {
 	if _, err := store.RequireActor(ctx); err != nil {
-		return core.Task{}, err
+		return core.Task{}, false, err
 	}
 	ws, err := workspace(ctx)
 	if err != nil {
-		return core.Task{}, err
+		return core.Task{}, false, err
 	}
+	changed := false
 	err = s.taskTx(ctx, taskID, func(tx *sql.Tx) error {
+		changed = false
 		var current sql.NullString
 		if err := tx.QueryRowContext(ctx, `SELECT crate_id FROM tasks WHERE workspace_id=? AND id=? FOR UPDATE`, ws, taskID).Scan(&current); err != nil {
 			return notFound(err, "task %s", taskID)
@@ -492,12 +544,20 @@ func (s *Store) moveTaskCrate(ctx context.Context, taskID, crateID string) (core
 		if err := taskWrite(ctx, tx, taskID, map[string]any{"crate_id": nullString(crateID)}); err != nil {
 			return err
 		}
-		return taskEvent(ctx, tx, store.TaskCrateMoveEvent(taskID, crateID, current.String, store.CrateTime(time.Now())))
+		if err := taskEvent(ctx, tx, store.TaskCrateMoveEvent(taskID, crateID, current.String, store.CrateTime(time.Now()))); err != nil {
+			return err
+		}
+		changed = true
+		return nil
 	})
 	if err != nil {
-		return core.Task{}, err
+		return core.Task{}, false, err
 	}
-	return s.GetTask(ctx, taskID)
+	task, err := s.GetTask(ctx, taskID)
+	if err != nil {
+		return core.Task{}, false, err
+	}
+	return task, changed, nil
 }
 
 // lockJoinableCrateTx takes the crate's state claim and refuses a crate that
