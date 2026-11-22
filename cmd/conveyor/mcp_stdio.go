@@ -390,23 +390,41 @@ func mcpStdioValidErrorObject(raw json.RawMessage) bool {
 	if json.Unmarshal(raw, &object) != nil || object == nil {
 		return false
 	}
-	var code json.Number
-	decoder := json.NewDecoder(bytes.NewReader(object["code"]))
-	decoder.UseNumber()
-	if decoder.Decode(&code) != nil {
+	// Decode each member into any, so the JSON type decides: a quoted
+	// number stays a string and null stays nil. Decoding into json.Number
+	// or string would accept both.
+	code, ok := mcpStdioDecodeAny(object["code"]).(json.Number)
+	if !ok {
 		return false
 	}
 	if _, err := strconv.ParseInt(code.String(), 10, 64); err != nil {
 		return false
 	}
-	var message string
-	return json.Unmarshal(object["message"], &message) == nil && object["message"] != nil
+	_, ok = mcpStdioDecodeAny(object["message"]).(string)
+	return ok
 }
 
-// mcpStdioIDMatches compares the response ID with the request ID as compact
-// raw JSON, so a numeric ID is never converted to a float. A request whose ID
-// is unknown, because the input was not a JSON object, accepts only an
-// absent or null ID.
+// mcpStdioDecodeAny decodes one JSON value with numbers kept as json.Number.
+// It returns nil for an absent, null, or invalid value.
+func mcpStdioDecodeAny(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if decoder.Decode(&value) != nil {
+		return nil
+	}
+	return value
+}
+
+// mcpStdioIDMatches compares the response ID with the request ID. Two
+// string IDs match when their decoded strings are equal, because the /mcp
+// handler's json.Encoder escapes <, >, and & in the echoed ID. Any other ID
+// matches as compact raw JSON, so a numeric ID is never converted to a float
+// and a string never matches a number. A request whose ID is unknown,
+// because the input was not a JSON object, accepts only an absent or null ID.
 func mcpStdioIDMatches(object map[string]json.RawMessage, expect mcpStdioRequest) bool {
 	raw, ok := object["id"]
 	var compact bytes.Buffer
@@ -416,7 +434,15 @@ func mcpStdioIDMatches(object map[string]json.RawMessage, expect mcpStdioRequest
 	if !expect.idKnown {
 		return !ok || compact.String() == "null"
 	}
-	return ok && bytes.Equal(compact.Bytes(), expect.id)
+	if !ok {
+		return false
+	}
+	var got, want string
+	if json.Unmarshal(compact.Bytes(), &got) == nil && json.Unmarshal(expect.id, &want) == nil &&
+		bytes.HasPrefix(compact.Bytes(), []byte(`"`)) && bytes.HasPrefix(expect.id, []byte(`"`)) {
+		return got == want
+	}
+	return bytes.Equal(compact.Bytes(), expect.id)
 }
 
 // mcpStdioNestedJSONDepth bounds how many times the scan decodes JSON held in

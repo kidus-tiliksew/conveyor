@@ -710,6 +710,20 @@ func TestMCPStdioFailuresAnswerTheRequest(t *testing.T) {
 			contains:    func(string) []string { return []string{"not a JSON-RPC message"} },
 		},
 		{
+			name:        "error member with a null message",
+			server:      echoHandler(http.StatusOK, `{"jsonrpc":"2.0","id":7,"error":{"code":-32601,"message":null}}`),
+			credentials: fileToken,
+			code:        mcpStdioInvalidResponse,
+			contains:    func(string) []string { return []string{"not a JSON-RPC message"} },
+		},
+		{
+			name:        "error member with a quoted code",
+			server:      echoHandler(http.StatusOK, `{"jsonrpc":"2.0","id":7,"error":{"code":"-32601","message":"method not found"}}`),
+			credentials: fileToken,
+			code:        mcpStdioInvalidResponse,
+			contains:    func(string) []string { return []string{"not a JSON-RPC message"} },
+		},
+		{
 			name:        "repeated key",
 			server:      echoHandler(http.StatusOK, `{"jsonrpc":"2.0","id":7,"id":7,"result":{}}`),
 			credentials: fileToken,
@@ -1034,4 +1048,71 @@ func TestMCPStdioRequestIsNeverReplayedByTheTransport(t *testing.T) {
 	if err != nil || !bytes.Equal(body, message) {
 		t.Fatalf("body = %q err = %v", body, err)
 	}
+}
+
+// TestMCPStdioMatchesStringIDsThatTheServerEncoderEscapes answers through the
+// same path as writeRPC in internal/httpapi/mcp.go: the request ID is kept as
+// json.RawMessage and echoed through json.NewEncoder, which escapes <, >, and
+// & as \u003c, \u003e, and \u0026.
+func TestMCPStdioMatchesStringIDsThatTheServerEncoderEscapes(t *testing.T) {
+	type serverRequest struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params"`
+	}
+	type serverResponse struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id,omitempty"`
+		Result  any             `json:"result,omitempty"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request serverRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		response := serverResponse{JSONRPC: "2.0", ID: request.ID, Result: map[string]any{}}
+		if string(request.ID) == `"wrong<id"` {
+			// A different string ID, escaped the same way, still fails.
+			response.ID = json.RawMessage(`"other<id"`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+	credentials := isolateMCPStdioTest(t, server.URL)
+	writeMCPStdioCredentials(t, credentials, map[string]string{server.URL: mcpStdioFileToken})
+	session := startMCPStdio(t, "--server", server.URL, "--credentials-file", credentials)
+
+	session.send(`{"jsonrpc":"2.0","id":"a<b&c","method":"ping"}`)
+	line := session.next()
+	if line != `{"jsonrpc":"2.0","id":"a\u003cb\u0026c","result":{}}` {
+		t.Fatalf("answer = %q", line)
+	}
+	var echoed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(line), &echoed); err != nil || echoed.ID != "a<b&c" {
+		t.Fatalf("decoded id = %q err = %v", echoed.ID, err)
+	}
+
+	session.send(`{"jsonrpc":"2.0","id":"wrong<id","method":"ping"}`)
+	got := decodeRPCLine(t, session.next())
+	var errorID string
+	if json.Unmarshal(got.ID, &errorID) != nil || errorID != "wrong<id" || got.Error == nil || got.Error.Code != mcpStdioInvalidResponse {
+		t.Fatalf("mismatched string answer = id %s error %+v", got.ID, got.Error)
+	}
+
+	// Numbers still match as raw JSON: 1.50 stays 1.50 through the encoder,
+	// and the string "7" never matches the number 7.
+	session.send(`{"jsonrpc":"2.0","id":1.50,"method":"ping"}`)
+	if line := session.next(); line != `{"jsonrpc":"2.0","id":1.50,"result":{}}` {
+		t.Fatalf("numeric answer = %q", line)
+	}
+	if err, rest := session.finish(); err != nil || len(rest) != 0 {
+		t.Fatalf("exit err=%v rest=%q", err, rest)
+	}
+	assertMCPLines(t, session.stdout.String())
+	session.assertNoSecrets()
 }
