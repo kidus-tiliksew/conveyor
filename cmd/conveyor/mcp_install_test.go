@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -398,5 +401,325 @@ func TestOpenCodeMCPInstalledBinary(t *testing.T) {
 	after, _ := os.ReadFile(invalidPath)
 	if !bytes.Equal(prior, after) {
 		t.Fatalf("native failure changed prior bytes: %s", after)
+	}
+}
+
+// antigravityListBinary writes an `agy` stub for the parser check. It checks
+// the isolated home, reads no standard input, and prints a stdio row for each
+// name whose bridge entry the staged copy holds. extra runs after the rows.
+func antigravityListBinary(t *testing.T, extra string, names ...string) string {
+	t.Helper()
+	body := `
+[ "$*" = 'mcp list' ]
+[ "$HOME" = "$PWD" ]
+[ "$XDG_CONFIG_HOME" = "$HOME/config" ]
+[ "${CONVEYOR_API_TOKEN-unset}" = unset ]
+if read -r ignored; then exit 8; fi
+staged="$HOME/.gemini/config/mcp_config.json"
+[ -f "$staged" ]
+echo 'NAME  TYPE  STATUS  COMMAND/URL'
+`
+	for _, name := range names {
+		body += `if /usr/bin/grep -q '"` + name + `":{"args"' "$staged"; then echo '` + name + `  stdio  enabled  conveyor mcp stdio'; fi` + "\n"
+	}
+	path := filepath.Join(t.TempDir(), "agy")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nset -eu\n"+body+extra+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func onlyAgyOnPath(agy string) func(string) (string, error) {
+	return func(name string) (string, error) {
+		if name == "agy" {
+			return agy, nil
+		}
+		return "", exec.ErrNotFound
+	}
+}
+
+func TestMCPAntigravityInstallCommandCreatesBridgeAndRerunIsUnchanged(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CONVEYOR_API_TOKEN", "ambient-secret")
+	setMCPTestCredentials(t, "https://factory.example", "stored-secret")
+	id := testMCPIdentity(t, "https://factory.example", "")
+	agy := antigravityListBinary(t, "", id.name)
+	path := filepath.Join(home, ".gemini", "config", "mcp_config.json")
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := mcpInstallCmdWithLookPath(onlyAgyOnPath(agy))
+		var output bytes.Buffer
+		cmd.SetOut(&output)
+		cmd.SetErr(&output)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, output.String())
+		}
+		return output.String()
+	}
+	output := run("--tool", "antigravity")
+	for _, want := range []string{
+		"antigravity\tcreated\t" + path + "\n",
+		"Registration: " + id.name + "\n",
+		"Endpoint: https://factory.example/mcp\n",
+		"Credential source: stored credential via the stdio bridge `conveyor mcp stdio`, which reads the credential file for each request\n",
+		"Parser: accepted by agy mcp list (not a native connection check)\n",
+		"Restart: restart the client to load this registration\n",
+		"Native initialize/tools-list: not run; config acceptance is not a connection check\n",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output lacks %q:\n%s", want, output)
+		}
+	}
+	for _, forbidden := range []string{"export ", "stored-secret", "ambient-secret", "CONVEYOR_MCP_TOKEN_", "auth token"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output carries %q:\n%s", forbidden, output)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %o", info.Mode().Perm())
+	}
+	for _, forbidden := range []string{"stored-secret", "ambient-secret", "CONVEYOR_MCP_TOKEN_", "Bearer"} {
+		if bytes.Contains(data, []byte(forbidden)) {
+			t.Fatalf("file carries %q:\n%s", forbidden, data)
+		}
+	}
+	binary, _ := os.Executable()
+	credentials, _ := localAuthConfigPath()
+	var root struct {
+		Servers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &root); err != nil || len(root.Servers) != 1 {
+		t.Fatalf("entries: %v %v", root.Servers, err)
+	}
+	entry := root.Servers[id.name]
+	if len(entry) != 2 || entry["command"] != binary {
+		t.Fatalf("entry: %v", entry)
+	}
+	args, _ := json.Marshal(entry["args"])
+	wantArgs, _ := json.Marshal([]string{"mcp", "stdio", "--server", "https://factory.example", "--credentials-file", credentials})
+	if !bytes.Equal(args, wantArgs) {
+		t.Fatalf("args %s, want %s", args, wantArgs)
+	}
+	output = run("--tool", "antigravity")
+	after, _ := os.ReadFile(path)
+	if !strings.Contains(output, "antigravity\tunchanged\t"+path+"\n") || !bytes.Equal(after, data) {
+		t.Fatalf("rerun changed the file or status:\n%s", output)
+	}
+	output = run("--tool", "antigravity", "--list")
+	if !strings.Contains(output, "antigravity\tunchanged\t") || !strings.Contains(output, "Restart: not requested (read-only listing)") {
+		t.Fatalf("list output:\n%s", output)
+	}
+}
+
+func TestMCPAntigravityDetectionAndToolSelection(t *testing.T) {
+	t.Run("detected", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		setMCPTestCredentials(t, "https://factory.example", "stored-secret")
+		agy := antigravityListBinary(t, "", testMCPIdentity(t, "https://factory.example", "").name)
+		cmd := mcpInstallCmdWithLookPath(onlyAgyOnPath(agy))
+		var output bytes.Buffer
+		cmd.SetOut(&output)
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(output.String(), "antigravity\tcreated\t") || strings.Contains(output.String(), "unsupported") {
+			t.Fatalf("detected agy was not registered:\n%s", output.String())
+		}
+	})
+	t.Run("selected among detected tools", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+		setMCPTestCredentials(t, "https://factory.example", "stored-secret")
+		agy := antigravityListBinary(t, "", testMCPIdentity(t, "https://factory.example", "").name)
+		// Every other tool is detected, so --tool alone narrows the target.
+		cmd := mcpInstallCmdWithLookPath(func(name string) (string, error) {
+			if name == "agy" {
+				return agy, nil
+			}
+			return "/tools/" + name, nil
+		})
+		cmd.SetOut(io.Discard)
+		cmd.SetArgs([]string{"--tool", "antigravity"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		for _, other := range []string{".claude.json", ".codex", ".cursor", filepath.Join("config", "opencode")} {
+			if _, err := os.Stat(filepath.Join(home, other)); !os.IsNotExist(err) {
+				t.Fatalf("selected Antigravity install touched %s: %v", other, err)
+			}
+		}
+	})
+	t.Run("selected without agy", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		setMCPTestCredentials(t, "https://factory.example", "stored-secret")
+		cmd := mcpInstallCmdWithLookPath(func(string) (string, error) { return "", exec.ErrNotFound })
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{"--tool", "antigravity"})
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "not available on PATH") {
+			t.Fatalf("selected Antigravity without agy: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(home, ".gemini")); !os.IsNotExist(err) {
+			t.Fatalf("refusal created files: %v", err)
+		}
+	})
+}
+
+func TestMCPAntigravityParserRefusalPublishesNothing(t *testing.T) {
+	id := testMCPIdentity(t, "https://one.example", "")
+	cases := map[string]string{
+		"nonzero exit":             "exit 7",
+		"no row":                   "exit 0",
+		"name inside another name": "echo 'x" + id.name + "  stdio  enabled  conveyor'",
+		"name in another column":   "echo 'other  stdio  enabled  /bin/" + id.name + "'",
+		"http row":                 "echo '" + id.name + "  http  enabled  https://one.example/mcp'",
+		"type before name":         "echo 'stdio  " + id.name + "  enabled'",
+	}
+	for label, behavior := range cases {
+		for _, exists := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/exists=%t", label, exists), func(t *testing.T) {
+				home := t.TempDir()
+				path := mcpTargets(home, []skillTool{{name: "antigravity"}})[0].path
+				prior := []byte(`{"mcpServers":{"other":{"serverUrl":"https://other.example/mcp"}}}`)
+				if exists {
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, prior, 0o640); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// The stub prints its rows only for the "no row" case, so
+				// each refusal comes from the case's own output or exit.
+				body := "echo 'parser-output-marker' >&2\n"
+				if label == "nonzero exit" {
+					body += "echo '" + id.name + "  stdio  enabled  conveyor'\n"
+				}
+				agy := antigravityListBinary(t, body+behavior)
+				result, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, id, false, true, onlyAgyOnPath(agy))
+				if err == nil {
+					t.Fatalf("parser refusal published: %+v", result)
+				}
+				if strings.Contains(err.Error(), "parser-output-marker") || !strings.Contains(err.Error(), "output withheld") {
+					t.Fatalf("error does not withhold output: %v", err)
+				}
+				want := "agy mcp list did not list registration " + id.name + " as a stdio server"
+				if label == "nonzero exit" {
+					want = "agy mcp list rejected the staged registration"
+				}
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("refusal for the wrong reason: %v", err)
+				}
+				after, readErr := os.ReadFile(path)
+				if exists {
+					info, _ := os.Stat(path)
+					if readErr != nil || !bytes.Equal(after, prior) || info.Mode().Perm() != 0o640 {
+						t.Fatalf("refusal changed the prior file: %s %v", after, readErr)
+					}
+				} else if !os.IsNotExist(readErr) {
+					t.Fatalf("refusal created a file: %v", readErr)
+				}
+				if leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".conveyor-*")); len(leftovers) != 0 {
+					t.Fatalf("staging leftovers: %v", leftovers)
+				}
+			})
+		}
+	}
+}
+
+func TestMCPAntigravityParserTimeoutAndMissingClient(t *testing.T) {
+	home := t.TempDir()
+	staged := filepath.Join(home, "staged.json")
+	if err := os.WriteFile(staged, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agy := antigravityListBinary(t, "while :; do :; done")
+	start := time.Now()
+	err := validateAntigravityMCP(agy, staged, "conveyor", 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timed out") || time.Since(start) > 3*time.Second {
+		t.Fatalf("timeout=%v elapsed=%s", err, time.Since(start))
+	}
+	// A missing client reports the check skipped and still publishes, as
+	// invariant 11 states for every client.
+	id := testMCPIdentity(t, "https://one.example", "")
+	path := mcpTargets(home, []skillTool{{name: "antigravity"}})[0].path
+	result, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, id, false, true, func(string) (string, error) { return "", exec.ErrNotFound })
+	if err != nil || result.status != "created" || result.validation != "skipped: agy is not on PATH" {
+		t.Fatalf("missing client result=%+v err=%v", result, err)
+	}
+}
+
+func TestMCPAntigravityListRunsNoParserAndWritesNothing(t *testing.T) {
+	home := t.TempDir()
+	path := mcpTargets(home, []skillTool{{name: "antigravity"}})[0].path
+	id := testMCPIdentity(t, "https://one.example", "")
+	lookup := func(string) (string, error) { t.Fatal("list looked up the parser"); return "", nil }
+	result, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, id, false, false, lookup)
+	if err != nil || result.status != "created" || result.validation != "not run (no write)" {
+		t.Fatalf("list result=%+v err=%v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".gemini")); !os.IsNotExist(err) {
+		t.Fatalf("list wrote files: %v", err)
+	}
+}
+
+func TestMCPAntigravityRefusesSymlinkedDestination(t *testing.T) {
+	for _, kind := range []string{"file", "config directory", "gemini directory"} {
+		t.Run(kind, func(t *testing.T) {
+			home := t.TempDir()
+			path := mcpTargets(home, []skillTool{{name: "antigravity"}})[0].path
+			outside := t.TempDir()
+			original := filepath.Join(outside, "mcp_config.json")
+			if err := os.WriteFile(original, []byte("original"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "file":
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(original, path); err != nil {
+					t.Fatal(err)
+				}
+			case "config directory":
+				if err := os.MkdirAll(filepath.Join(home, ".gemini"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(home, ".gemini", "config")); err != nil {
+					t.Fatal(err)
+				}
+			case "gemini directory":
+				if err := os.MkdirAll(filepath.Join(outside, "config"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(home, ".gemini")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			id := testMCPIdentity(t, "https://one.example", "")
+			agy := antigravityListBinary(t, "", id.name)
+			for _, write := range []bool{false, true} {
+				_, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, id, true, write, onlyAgyOnPath(agy))
+				if err == nil || !strings.Contains(err.Error(), "refusing") {
+					t.Fatalf("write=%t symlinked destination accepted: %v", write, err)
+				}
+			}
+			if got, _ := os.ReadFile(original); string(got) != "original" {
+				t.Fatal("modified the symlink target")
+			}
+			if entries, _ := os.ReadDir(outside); len(entries) > 2 {
+				t.Fatalf("wrote through the symlink: %v", entries)
+			}
+		})
 	}
 }

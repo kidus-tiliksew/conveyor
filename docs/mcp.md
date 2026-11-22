@@ -8,8 +8,10 @@ launches no agent and has no worker or run-order plane (DEC-97(1)).
 `conveyor mcp install`
 creates a named personal connection for each saved server. Codex and Claude
 retrieve the saved credential through native header helpers; Cursor and OpenCode
-use separate server-specific token variables. Endpoints are literal canonical
-URLs. [Personal connections](#personal-connections) describes naming,
+use separate server-specific token variables. Antigravity runs the local
+[stdio bridge](#stdio-bridge), which reads the saved credential for each
+request. The four remote registrations use literal canonical endpoint URLs.
+[Personal connections](#personal-connections) describes naming,
 two-server installation, migration, restart, and native connection
 troubleshooting. Config/parser acceptance is separate from native
 initialization and tools-list results.
@@ -41,7 +43,7 @@ inventory.
 documents or operate Conveyor through MCP. The
 [setup playbook](playbooks/conveyor-install.md) runs it after
 `conveyor auth login` and `conveyor skills install`. `--tool
-codex|claude|cursor|opencode` selects one client. `--list` reports planned
+codex|claude|cursor|opencode|antigravity` selects one client. `--list` reports planned
 registration changes without writing files, running helpers, or opening
 connections. OpenCode can be selected before its binary is installed; the
 output then reports parser validation as skipped. Skills and MCP registrations
@@ -80,8 +82,10 @@ name.
 | Claude Code | `~/.claude.json` | Native `headersHelper` command |
 | Cursor | `~/.cursor/mcp.json` | `Bearer ${env:CONVEYOR_MCP_TOKEN_<HASH>}` |
 | OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`, default `~/.config/opencode/opencode.json` | `Bearer {env:CONVEYOR_MCP_TOKEN_<HASH>}` with `oauth: false` |
+| Antigravity (`agy`) | `~/.gemini/config/mcp_config.json`, under `mcpServers` | Stdio entry: `command` and `args` run `conveyor mcp stdio` |
 
-All registrations use a literal canonical endpoint. `<HASH>` in the table is
+The Codex, Claude Code, Cursor, and OpenCode registrations use a literal
+canonical endpoint. `<HASH>` in the table is
 the full uppercase SHA-256 of the canonical server URL; the installer prints
 the actual variable and export. Cursor and OpenCode require their individual
 variables in the environment that launches the client. A desktop application
@@ -95,6 +99,20 @@ pipe. It reads the saved credential afresh and never substitutes the ambient
 there is no helper script or token copy. The explicit credential-file
 reference also supports a nondefault configuration directory on desktop
 launches.
+
+Antigravity sends a header value literally and has no header helper, so its
+registration is a local stdio entry (DEC-145). `command` is the absolute path
+of the installed Conveyor executable. `args` is `mcp`, `stdio`, `--server`,
+`<base>`, `--credentials-file`, and the absolute credential file. The entry has
+no `env`, `url`, `serverUrl`, or `headers`, and it holds no token. The
+installer prints no export line for Antigravity. The root
+`_conveyor_mcp_install` key marks the entry, as it does for Claude Code.
+
+An entry that `agy mcp add <name> <base>/mcp` writes is a manual registration.
+The installer refuses it unless you run `--name <name> --adopt`. Adoption
+replaces its `url`, `serverUrl`, and `headers` with the bridge and keeps its
+other fields. The installer refuses an entry with a foreign `Authorization`
+header, with `env`, or with a `command` and `args` that are not this bridge.
 
 The ordinary `auth token` form remains explicit raw-token output for command
 substitution. Neither output form belongs in a config, log, or transcript.
@@ -152,7 +170,12 @@ inside each entry and refuses comments it cannot preserve.
 Installation reports the name, endpoint, credential source, file result,
 parser result, restart requirement, and native connection result separately.
 A client loads a new registration after a restart. Codex and Claude parser
-checks and OpenCode's staged `debug config` check do not initialize MCP. The
+checks and OpenCode's staged `debug config` check do not initialize MCP.
+Before it writes the Antigravity file, the installer runs `agy mcp list` on a
+copy in an isolated home. It publishes the file only when `agy` exits with
+status 0 and lists the exact name as a `stdio` server. `agy mcp list` does not
+start the bridge. When `agy` is not on `PATH`, the output reports the check as
+skipped. The
 installer reports native initialize and tools-list as **not run**; the named
 connection in the client shows the native result. The controlled repository
 checks exercise actual native initialization and `tools/list` without
@@ -162,7 +185,9 @@ shared-token fallback.
 After rotation, log in again for that server. Codex caches helper headers for
 a connection and can refresh once after an authentication rejection; Claude
 reads its helper at connection and reconnection. Cursor and OpenCode need
-their individual exports refreshed and the client restarted. A missing saved
+their individual exports refreshed and the client restarted. The Antigravity
+bridge reads the credential file again for each request, so it needs no
+restart. A missing saved
 credential produces a non-secret login instruction. A revoked credential is
 rejected by the server on use; a native 401 or 403 means the selected server's
 saved credential or export needs checking, without switching tokens.

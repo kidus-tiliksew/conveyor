@@ -21,7 +21,11 @@ import (
 // req-cli-authentication REQ-4/AC-4.2 and AC-4.3.
 type mcpIdentity struct {
 	server, endpoint, name, tokenEnv, bridge string
-	explicit                                 bool
+	// binary and credentials are the absolute paths that the bridge names.
+	// Antigravity's stdio entry stores them as separate JSON strings
+	// (component-cli-onboarding invariant 6; DEC-145).
+	binary, credentials string
+	explicit            bool
 }
 
 var mcpNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
@@ -60,7 +64,100 @@ func newMCPIdentity(server, name, binary, credentials string) (mcpIdentity, erro
 		return mcpIdentity{}, errors.New("MCP credential bridge requires absolute executable and credential file paths")
 	}
 	bridge := shellQuoteMCP(binary) + " auth token --server " + shellQuoteMCP(canonical) + " --credentials-file " + shellQuoteMCP(credentials)
-	return mcpIdentity{server: canonical, endpoint: canonical + "/mcp", name: name, tokenEnv: "CONVEYOR_MCP_TOKEN_" + strings.ToUpper(hash), bridge: bridge, explicit: explicit}, nil
+	return mcpIdentity{server: canonical, endpoint: canonical + "/mcp", name: name, tokenEnv: "CONVEYOR_MCP_TOKEN_" + strings.ToUpper(hash), bridge: bridge, binary: binary, credentials: credentials, explicit: explicit}, nil
+}
+
+// antigravityBridgeArgs is the argument list of Antigravity's stdio entry.
+// The entry runs `conveyor mcp stdio` with the canonical server and the
+// absolute credential file, and it carries no token
+// (component-cli-onboarding invariant 6; req-cli-authentication AC-4.2;
+// DEC-145).
+func (id mcpIdentity) antigravityBridgeArgs() []any {
+	return []any{"mcp", "stdio", "--server", id.server, "--credentials-file", id.credentials}
+}
+
+// antigravityBridgeMatches reports whether an entry's command and args are
+// exactly the bridge that this identity writes. Only that pair is exempt
+// from the command and args refusal (component-cli-onboarding invariant 9).
+func antigravityBridgeMatches(fields map[string]any, id mcpIdentity) bool {
+	command, ok := fields["command"].(string)
+	return ok && command == id.binary && reflect.DeepEqual(fields["args"], id.antigravityBridgeArgs())
+}
+
+// antigravityBridgeServer returns the --server value of an entry whose
+// command is a string and whose args have the bridge shape.
+func antigravityBridgeServer(fields map[string]any) (string, bool) {
+	if _, ok := fields["command"].(string); !ok {
+		return "", false
+	}
+	args, ok := fields["args"].([]any)
+	if !ok || len(args) != 6 {
+		return "", false
+	}
+	shape := []string{"mcp", "stdio", "--server", "", "--credentials-file", ""}
+	values := make([]string, len(args))
+	for i, arg := range args {
+		value, ok := arg.(string)
+		if !ok || (shape[i] != "" && value != shape[i]) {
+			return "", false
+		}
+		values[i] = value
+	}
+	return values[3], true
+}
+
+func antigravityLegacyEnvAddress(value any) bool {
+	return value == "${env:CONVEYOR_ADDR}" || value == "{env:CONVEYOR_ADDR}"
+}
+
+// antigravityEntryAddresses lists the endpoint that each address field of an
+// Antigravity entry names: url, serverUrl, and the bridge --server. An
+// unreadable address is listed as "", which equals no endpoint. An address
+// that references CONVEYOR_ADDR resolves only under --adopt, as on the other
+// JSON clients (component-cli-onboarding invariants 8 and 9).
+func antigravityEntryAddresses(fields map[string]any, adopt bool) []string {
+	var addresses []string
+	for _, key := range []string{"url", "serverUrl"} {
+		value, ok := fields[key]
+		if !ok {
+			continue
+		}
+		raw, _ := value.(string)
+		if antigravityLegacyEnvAddress(value) {
+			raw = ""
+			if adopt {
+				raw = os.Getenv(mcpAddressEnv)
+			}
+		}
+		addresses = append(addresses, canonicalMCPEndpoint(raw))
+	}
+	if server, ok := antigravityBridgeServer(fields); ok {
+		addresses = append(addresses, canonicalMCPEndpoint(server))
+	}
+	return addresses
+}
+
+// antigravityEntryEndpoint returns the one endpoint that every address of an
+// entry names, or "" when the entry names none, several, or an unreadable one.
+func antigravityEntryEndpoint(fields map[string]any) string {
+	addresses := antigravityEntryAddresses(fields, false)
+	if len(addresses) == 0 {
+		return ""
+	}
+	for _, address := range addresses[1:] {
+		if address != addresses[0] {
+			return ""
+		}
+	}
+	return addresses[0]
+}
+
+func canonicalMCPEndpoint(raw string) string {
+	canonical, err := normalizeServerURL(raw)
+	if err != nil {
+		return ""
+	}
+	return canonical + "/mcp"
 }
 
 func shellQuoteMCP(s string) string   { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
@@ -73,6 +170,9 @@ type mcpOwnedEndpoint struct {
 type mcpEntry struct {
 	fields           map[string]any
 	owned, legacyEnv bool
+	// antigravity selects the Antigravity address rule of
+	// component-cli-onboarding invariant 9.
+	antigravity bool
 }
 
 // A shared environment attachment may belong to a worker. Only explicit
@@ -92,10 +192,26 @@ func mcpEntryEndpoint(entry mcpEntry, adopt bool) string {
 	return canonical + "/mcp"
 }
 
+// mcpEntryMatches reports whether an entry addresses the endpoint. An
+// Antigravity entry addresses it when its url, its serverUrl, or its bridge
+// --server names it (component-cli-onboarding invariant 9). Every other
+// entry uses its single endpoint.
+func mcpEntryMatches(entry mcpEntry, adopt bool, endpoint string) bool {
+	if !entry.antigravity {
+		return mcpEntryEndpoint(entry, adopt) == endpoint
+	}
+	for _, address := range antigravityEntryAddresses(entry.fields, adopt) {
+		if address == endpoint {
+			return true
+		}
+	}
+	return false
+}
+
 func selectMCPEntry(entries map[string]mcpEntry, id mcpIdentity, adopt bool) (name, source string, err error) {
 	matches := []string{}
 	for key, entry := range entries {
-		if entry.owned && mcpEntryEndpoint(entry, adopt) == id.endpoint {
+		if entry.owned && mcpEntryMatches(entry, adopt, id.endpoint) {
 			matches = append(matches, key)
 		}
 	}
@@ -108,7 +224,7 @@ func selectMCPEntry(entries map[string]mcpEntry, id mcpIdentity, adopt bool) (na
 		return "", "", errors.New("multiple owned registrations match this server; remove the duplicate explicitly before reinstalling")
 	}
 	if entry, ok := entries[name]; ok {
-		if mcpEntryEndpoint(entry, adopt) != id.endpoint {
+		if !mcpEntryMatches(entry, adopt, id.endpoint) {
 			return "", "", fmt.Errorf("registration %s has a different or unresolved endpoint; refusing to repoint it", name)
 		}
 		if !entry.owned && !adopt {
@@ -127,12 +243,12 @@ func selectMCPEntry(entries map[string]mcpEntry, id mcpIdentity, adopt bool) (na
 	}
 	// --adopt addresses an explicit name, or the legacy conveyor entry only.
 	if adopt && !id.explicit {
-		if entry, ok := entries["conveyor"]; ok && mcpEntryEndpoint(entry, true) == id.endpoint {
+		if entry, ok := entries["conveyor"]; ok && mcpEntryMatches(entry, true, id.endpoint) {
 			return name, "conveyor", nil
 		}
 	}
 	for key, entry := range entries {
-		if !entry.owned && !entry.legacyEnv && mcpEntryEndpoint(entry, false) == id.endpoint {
+		if !entry.owned && !entry.legacyEnv && mcpEntryMatches(entry, false, id.endpoint) {
 			return "", "", fmt.Errorf("server already has manual registration %s; use --name %s --adopt instead of creating a duplicate", key, key)
 		}
 	}
@@ -146,7 +262,7 @@ func updateMCPFields(entry mcpEntry, tool string, id mcpIdentity, adopt bool) (m
 	}
 	legacy := entry.owned || adopt
 	for _, key := range []string{"command", "args", "env", "env_vars", "oauth", "auth"} {
-		if value, ok := f[key]; ok && !(tool == "opencode" && key == "oauth" && value == false) {
+		if value, ok := f[key]; ok && !(tool == "opencode" && key == "oauth" && value == false) && !(tool == "antigravity" && (key == "command" || key == "args") && antigravityBridgeMatches(f, id)) {
 			return nil, fmt.Errorf("conflicting %s configuration; remove it explicitly before installing", key)
 		}
 	}
@@ -185,6 +301,22 @@ func updateMCPFields(entry mcpEntry, tool string, id mcpIdentity, adopt bool) (m
 		if v, ok := f[key]; ok && v != id.helper() {
 			return nil, errors.New("conflicting credential helper; remove it explicitly before installing")
 		}
+	}
+	if tool == "antigravity" {
+		// Every address must name this endpoint, so adoption never repoints
+		// another server's entry. The bridge then replaces the remote fields
+		// (component-cli-onboarding invariants 6 and 9; DEC-145).
+		for _, address := range antigravityEntryAddresses(f, adopt) {
+			if address != id.endpoint {
+				return nil, errors.New("registration names a different or unresolved endpoint, and the installer does not repoint it")
+			}
+		}
+		delete(f, "url")
+		delete(f, "serverUrl")
+		delete(f, "headers")
+		f["command"] = id.binary
+		f["args"] = id.antigravityBridgeArgs()
+		return f, nil
 	}
 	f["url"] = id.endpoint
 	switch tool {
@@ -280,7 +412,13 @@ func reconcileNamedJSON(prior []byte, tool string, id mcpIdentity, adopt bool) (
 		endpoint, _ := fields["url"].(string)
 		owner := owners[name]
 		owned := owner.Owner == "v2" && owner.Endpoint == endpoint
-		if tool == "opencode" {
+		legacyEnv := endpoint == "${env:CONVEYOR_ADDR}" || endpoint == "{env:CONVEYOR_ADDR}"
+		if tool == "antigravity" {
+			// The root marker counts only when the entry still names the
+			// marked endpoint, so a marker alone never grants ownership.
+			owned = owner.Owner == "v2" && owner.Endpoint != "" && antigravityEntryEndpoint(fields) == owner.Endpoint
+			legacyEnv = antigravityLegacyEnvAddress(fields["url"]) || antigravityLegacyEnvAddress(fields["serverUrl"])
+		} else if tool == "opencode" {
 			var marker mcpOwnedEndpoint
 			b, _ := json.Marshal(fields[claudeOwnerKey])
 			_ = json.Unmarshal(b, &marker)
@@ -288,7 +426,7 @@ func reconcileNamedJSON(prior []byte, tool string, id mcpIdentity, adopt bool) (
 		} else if name == "conveyor" && legacyOwner == claudeOwnerValue {
 			owned = true
 		}
-		entries[name] = mcpEntry{fields: fields, owned: owned, legacyEnv: endpoint == "${env:CONVEYOR_ADDR}" || endpoint == "{env:CONVEYOR_ADDR}"}
+		entries[name] = mcpEntry{fields: fields, owned: owned, legacyEnv: legacyEnv, antigravity: tool == "antigravity"}
 	}
 	name, source, err := selectMCPEntry(entries, id, adopt)
 	if err != nil {
@@ -325,7 +463,8 @@ func reconcileNamedJSON(prior []byte, tool string, id mcpIdentity, adopt bool) (
 	}
 	if tool != "opencode" {
 		// Preserve ownership of the remaining legacy entry when adding another server.
-		if legacyOwner == claudeOwnerValue && source != "conveyor" {
+		// Antigravity has no legacy marker, so a string marker grants nothing.
+		if tool != "antigravity" && legacyOwner == claudeOwnerValue && source != "conveyor" {
 			if entry, ok := entries["conveyor"]; ok {
 				endpoint, _ := entry.fields["url"].(string)
 				owners["conveyor"] = mcpOwnedEndpoint{Owner: "v2", Endpoint: endpoint}
