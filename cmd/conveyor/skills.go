@@ -194,12 +194,15 @@ type skillInstallReport struct {
 }
 
 // supportedSkillTools maps each detected agent binary to its native skill
-// destination (req-agent-guidance-install AC-1.5, AC-1.6).
+// destination (req-agent-guidance-install AC-1.5, AC-1.6). The user and
+// project roots are the ones component-cli-onboarding "Public surfaces"
+// lists.
 var supportedSkillTools = []skillTool{
 	{name: "claude", binary: "claude", root: ".claude/skills"},
 	{name: "codex", binary: "codex", root: ".codex/skills", legacyPath: ".codex/plugins/cache/personal/conveyor/0.1.0"},
 	{name: "cursor", binary: "cursor-agent", root: ".cursor/skills"},
 	{name: "opencode", binary: "opencode", root: ".config/opencode/skills", projectRoot: ".opencode/skills"},
+	{name: "antigravity", binary: "agy", root: ".gemini/config/skills", projectRoot: ".agents/skills"},
 }
 
 func skillsCmd() *cobra.Command {
@@ -247,7 +250,7 @@ func skillsInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.
 	}
 	command.Flags().BoolVar(&project, "project", false, "install under each tool's project skills directory instead of the user-global directory")
 	command.Flags().BoolVar(&list, "list", false, "list embedded files and their installed state without writing")
-	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, cursor, or opencode)")
+	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, cursor, opencode, or antigravity)")
 	command.Flags().BoolVar(&adopt, "adopt", false, "adopt unmarked skill files in a selected native destination")
 	command.Flags().BoolVar(&force, "force", false, "allow replacing managed skills installed by a newer Conveyor release")
 	return command
@@ -299,10 +302,10 @@ func selectSkillTools(selected string, lookPath func(string) (string, error)) ([
 		}
 	}
 	if selected != "" && !known {
-		return nil, fmt.Errorf("unsupported tool %q; supported tools: claude, codex, cursor, opencode", selected)
+		return nil, fmt.Errorf("unsupported tool %q; supported tools: claude, codex, cursor, opencode, antigravity", selected)
 	}
 	if len(tools) == 0 {
-		return nil, fmt.Errorf("no supported agent tooling detected on PATH (looked for claude, codex, cursor, and opencode)")
+		return nil, fmt.Errorf("no supported agent tooling detected on PATH (looked for claude, codex, cursor, opencode, and agy)")
 	}
 	return tools, nil
 }
