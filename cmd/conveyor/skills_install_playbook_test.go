@@ -116,9 +116,7 @@ func TestConveyorInstallSkillInstallsForEveryTool(t *testing.T) {
 			t.Fatal(err)
 		}
 		destinations := skillDestinations(base, supportedSkillTools, scope.name == "project")
-		if len(destinations) != 4 {
-			t.Fatalf("%s destinations = %d, want 4", scope.name, len(destinations))
-		}
+		checkEverySkillDestination(t, base, destinations, scope.name == "project")
 		for _, destination := range destinations {
 			root := filepath.Join(destination.root, "conveyor-install")
 			for _, name := range []string{"SKILL.md", "conveyor-install.md"} {
@@ -170,9 +168,7 @@ func TestRepoInitInstallsSetupSkillForEveryTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	destinations := skillDestinations(root, supportedSkillTools, true)
-	if len(destinations) != 4 {
-		t.Fatalf("destinations = %d, want 4", len(destinations))
-	}
+	checkEverySkillDestination(t, root, destinations, true)
 	installed := 0
 	for _, destination := range destinations {
 		for _, asset := range embeddedSkillManifest {

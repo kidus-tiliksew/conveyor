@@ -96,10 +96,10 @@ later sessions load this playbook natively as the `conveyor-install` skill:
 conveyor skills install
 ```
 
-The command detects Claude Code, Codex, Cursor, and OpenCode on `PATH`,
-writes user-global skills for each, and reports one line per file. It
-refuses to overwrite a file it did not write. `--tool` narrows it to one
-tool. Restart the agent session to load new skills.
+The command detects Claude Code, Codex, Cursor, OpenCode, and Antigravity
+(`agy`) on `PATH`, writes user-global skills for each, and reports one line
+per file. It refuses to overwrite a file it did not write. `--tool` narrows
+it to one tool. Restart the agent session to load new skills.
 
 ## 2. Read the machine before asking
 
@@ -107,7 +107,7 @@ Read observable state first, without changing it. For each answer you can
 determine, state what you found and ask the person to confirm it (AC-2.2).
 
 ```sh
-command -v conveyor conveyord git docker claude codex cursor-agent opencode
+command -v conveyor conveyord git docker claude codex cursor-agent opencode agy
 conveyor --version
 conveyord status
 conveyor auth status
@@ -154,8 +154,10 @@ establish each of these (AC-2.1):
    default branch. Conveyor works with GitHub repositories through the
    workspace GitHub App.
 7. **Agent tools.** Which coding-agent tools to connect: Claude Code, Codex,
-   Cursor, or OpenCode. Each gets the skills and an MCP registration, and the
-   person works tasks in sessions they start in these tools.
+   Cursor, OpenCode, or Antigravity. Each gets the skills. Claude Code, Codex,
+   Cursor, and OpenCode also get an MCP registration, and the person works
+   tasks in sessions they start in these tools. `conveyor mcp install` does
+   not register Antigravity.
 
 For a team server, also ask for the public HTTPS URL people will use, and
 whether invitations should be emailed through SMTP or delivered by hand.
