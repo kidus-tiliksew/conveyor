@@ -121,6 +121,13 @@ const completionCrates: Crate[] = [
     merged_task_count: 199,
     total_task_count: 200,
   }),
+  crateRow({
+    id: 'crate-barely',
+    name: 'Telemetry cleanup',
+    open_task_count: 200,
+    merged_task_count: 1,
+    total_task_count: 201,
+  }),
 ]
 
 // The accessible name and tooltip text the pie of each completion crate
@@ -130,8 +137,10 @@ const completionLabels: Record<string, string> = {
   'crate-full': '100% done · 4 of 4 merged',
   'crate-closed-only': 'No open or merged tasks',
   'crate-no-members': 'No open or merged tasks',
-  // 199 of 200 rounds to 100%, but a partial share never reads as done.
-  'crate-almost': '99% done · 199 of 200 merged',
+  // Only the label is rounded: 199 of 200 reads 100% and 1 of 201 reads 0%,
+  // while each pie still draws a partial wedge from the unrounded share.
+  'crate-almost': '100% done · 199 of 200 merged',
+  'crate-barely': '0% done · 1 of 201 merged',
 }
 
 const completionFills: Record<string, string> = {
@@ -140,6 +149,7 @@ const completionFills: Record<string, string> = {
   'crate-closed-only': 'empty',
   'crate-no-members': 'empty',
   'crate-almost': 'partial',
+  'crate-barely': 'partial',
 }
 
 // No count or percentage reads as row text at rest: the row's rendered text
@@ -882,6 +892,9 @@ test('crates list completion pie names the merged share of partial, full, and cl
   await expect(row('crate-full').locator('[data-completion-pie] path')).toHaveCount(0)
   await expect(row('crate-full').locator('[data-completion-pie] circle')).toHaveCount(2)
   await expect(row('crate-partial').locator('[data-completion-pie] path')).toHaveCount(1)
+  // A share that rounds to 100% or 0% still draws a partial wedge.
+  await expect(row('crate-almost').locator('[data-completion-pie] path')).toHaveCount(1)
+  await expect(row('crate-barely').locator('[data-completion-pie] path')).toHaveCount(1)
   await expect(row('crate-closed-only').locator('[data-completion-pie] path')).toHaveCount(0)
   await expect(row('crate-closed-only').locator('[data-completion-pie] circle')).toHaveCount(1)
   // The column that holds the pie is headed Done.
@@ -902,7 +915,7 @@ test('crates list completion pie shows its share on hover and hides it when the 
   await expect(row('crate-partial')).not.toContainText(countText, { useInnerText: true })
   await expectTooltipOnHover(page, 'crate-closed-only')
   // The last row's tooltip is not cut off at the bottom of the list card.
-  await expectTooltipOnHover(page, 'crate-almost')
+  await expectTooltipOnHover(page, 'crate-barely')
 })
 
 test('crates list completion pie sits in the Done column at a desktop width', async ({ page }) => {

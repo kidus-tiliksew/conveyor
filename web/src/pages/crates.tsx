@@ -181,14 +181,9 @@ function crateCompletion(crate: Pick<Crate, 'merged_task_count' | 'open_task_cou
   const counted = merged + crate.open_task_count
   if (counted <= 0) return { share: null, label: 'No open or merged tasks' }
   const share = merged / counted
-  // Only the stated percentage is rounded. A partial share never reads as
-  // 0% or 100%, so the text agrees with the wedge.
-  const percent = merged === 0 || merged === counted ? Math.round(share * 100) : clamp(Math.round(share * 100), 1, 99)
-  return { share, label: `${percent}% done · ${merged} of ${counted} merged` }
-}
-
-function clamp(value: number, low: number, high: number) {
-  return Math.min(high, Math.max(low, value))
+  // Only the stated percentage is rounded. The wedge and the empty and full
+  // discs use the unrounded share.
+  return { share, label: `${Math.round(share * 100)}% done · ${merged} of ${counted} merged` }
 }
 
 // A small disc whose filled wedge is the completion share (component-crates
