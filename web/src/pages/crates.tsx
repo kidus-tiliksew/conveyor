@@ -213,8 +213,16 @@ async function requestListBriefings(
   run: { cancelled: boolean },
 ) {
   let next = 0
+  // The original list refetches even when a filter change left it inactive,
+  // so the next view of it shows the new headline. A closed view or a
+  // workspace change cancels the run and refetches nothing.
   const refetch = () => {
-    if (!run.cancelled) void queryClient.invalidateQueries({ queryKey: cratesQueryKey(workspace, state), exact: true })
+    if (!run.cancelled)
+      void queryClient.invalidateQueries({
+        queryKey: cratesQueryKey(workspace, state),
+        exact: true,
+        refetchType: 'all',
+      })
   }
   const worker = async () => {
     while (!run.cancelled && next < ids.length) {

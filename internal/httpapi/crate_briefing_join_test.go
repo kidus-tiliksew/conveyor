@@ -672,3 +672,63 @@ func TestCrateBriefingAfterMembershipChangeUsesCommittedDestination(t *testing.T
 		t.Fatalf("model calls=%d, want 1", calls)
 	}
 }
+
+// crateJoinReadFailsStore commits the request's join, then fails the task
+// read that serves the response, as a post-commit GetTask failure does on
+// PostgreSQL and SingleStore. It reports the committed change beside the
+// read's error, as JoinTaskCrate's contract states.
+type crateJoinReadFailsStore struct {
+	crateBackend
+	readErr error
+}
+
+func (s *crateJoinReadFailsStore) JoinTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, bool, error) {
+	_, changed, err := s.crateBackend.JoinTaskCrate(ctx, taskID, crateID)
+	if err != nil {
+		return core.Task{}, false, err
+	}
+	return core.Task{}, changed, s.readErr
+}
+
+// TestCrateBriefingAfterMembershipChangeStartsWhenResponseReadFails: a join
+// commits, then the read that serves the response fails. The route keeps its
+// generic 500 and still starts exactly one briefing for the committed
+// destination, with the joining member as the acting member. A same-crate
+// retry after it starts nothing more (component-crates invariant 36;
+// req-crate-insights AC-5.2).
+func TestCrateBriefingAfterMembershipChangeStartsWhenResponseReadFails(t *testing.T) {
+	const secret = "hunter2hunter2hunter2hunter2"
+	h := newCrateBriefingHarness(t)
+	h.install(h.agent, config.TriageRoute{Model: "triage-model"})
+	h.agent.reply = insightReply{output: h.reply(t), model: "served-model"}
+	fresh := h.createCrate(t, h.editor, map[string]any{"name": "Read fails after join"})
+	task := h.task(t, "")
+	h.server.Store = &crateJoinReadFailsStore{crateBackend: h.store.(crateBackend), readErr: errors.New("driver refused the task read password=" + secret)}
+	captured, restore := captureCrateLog(t)
+	status, raw := h.do(t, h.editor, http.MethodPut, "/v1/tasks/"+task.ID+"/crate", map[string]any{"crate_id": " " + fresh.ID + " "})
+	if status != http.StatusInternalServerError || string(raw) != "internal server error\n" {
+		t.Fatalf("join status=%d body=%q, want the generic 500", status, raw)
+	}
+	waitCrateBriefingJobs(t, h.server)
+	restore()
+	if strings.Contains(captured.String(), secret) {
+		t.Fatalf("log leaks the read error: %s", captured.String())
+	}
+	h.server.Store = h.store
+	h.requireJobsStarted(t, 1)
+	stored := h.requireJoinBriefing(t, fresh.ID)
+	if stored.GeneratedBy != crateJoinActor {
+		t.Fatalf("generated_by=%q, want the joining member %q", stored.GeneratedBy, crateJoinActor)
+	}
+	if committed, err := h.store.GetTask(h.ctx, task.ID); err != nil || committed.TaskCrateID() != fresh.ID {
+		t.Fatalf("committed crate=%q err=%v, want %s", committed.TaskCrateID(), err, fresh.ID)
+	}
+	if status, raw := h.do(t, h.editor, http.MethodPut, "/v1/tasks/"+task.ID+"/crate", map[string]any{"crate_id": fresh.ID}); status != http.StatusOK {
+		t.Fatalf("retry status=%d body=%s", status, raw)
+	}
+	waitCrateBriefingJobs(t, h.server)
+	h.requireJobsStarted(t, 1)
+	if calls := h.agent.callCount(); calls != 1 {
+		t.Fatalf("model calls=%d, want 1", calls)
+	}
+}

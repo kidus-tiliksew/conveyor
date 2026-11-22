@@ -3254,6 +3254,64 @@ test('crates list posts once for each missing or old briefing, two at a time, an
   expect(server.briefingPosts).toHaveLength(5)
 })
 
+// Invariant 35: each success refetches the list of the state that decided,
+// and a 409 refetches it silently. A request that finishes after the user
+// switched to Closed still refetches the Open list, which is then inactive,
+// and starts no new batch.
+for (const outcome of ['success', '409'] as const) {
+  test(`crates list refetches the original list after a filter change when a held request ends in ${outcome}`, async ({
+    page,
+  }) => {
+    await controlWorkspaceChanges(page)
+    await page.clock.setFixedTime(listReadTime)
+    const served: CrateListRow[] = [
+      {
+        ...crateRow({ id: 'crate-held', name: 'Held request', open_task_count: 1, total_task_count: 1 }),
+        briefing: null,
+      },
+      {
+        ...crateRow({ id: 'crate-fresh', name: 'Fresh briefing', open_task_count: 1, total_task_count: 1 }),
+        briefing: listSummary('A headline from five minutes before the read.', 5),
+      },
+    ]
+    const gate = held()
+    const server = await serveCrates(page, {
+      openList: served,
+      briefingPost: async (id) => {
+        await gate.promise
+        if (outcome === '409') return { status: 409, json: { error: 'crate_briefing_current', crate_id: id } }
+        const row = served.find((crate) => crate.id === id)
+        if (row)
+          row.briefing = { headline: 'A new headline after the switch.', generated_at: listReadTime.toISOString() }
+        return { status: 200, json: generatedView('A new headline after the switch.') }
+      },
+    })
+    const openReads = () => server.listRequests.filter((state) => state === 'open').length
+    await page.goto('/w/demo/crates')
+    await expect(page.getByRole('list', { name: 'Open crates' }).locator('[data-crate-row]')).toHaveCount(2)
+    await expect.poll(() => server.briefingPosts).toEqual(['crate-held'])
+
+    await page.getByRole('group', { name: 'Crate state' }).getByRole('button', { name: 'Closed' }).click()
+    await expect(page.getByRole('list', { name: 'Closed crates' }).locator('[data-crate-row]')).toHaveCount(1)
+    const before = openReads()
+    gate.release()
+    await expect.poll(openReads).toBeGreaterThan(before)
+    await page.waitForTimeout(400)
+    expect(server.briefingPosts).toEqual(['crate-held'])
+    await expect(page.getByRole('list', { name: 'Closed crates' })).toBeVisible()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+
+    await page.getByRole('group', { name: 'Crate state' }).getByRole('button', { name: 'Open' }).click()
+    const heldRow = page.getByRole('list', { name: 'Open crates' }).locator('[data-crate-row="crate-held"]')
+    await expect(heldRow).toBeVisible()
+    if (outcome === 'success')
+      await expect(heldRow.locator('[data-crate-headline]')).toHaveText('A new headline after the switch.')
+    else await expect(heldRow.locator('[data-crate-headline]')).toHaveCount(0)
+    await page.waitForTimeout(400)
+    expect(server.briefingPosts).toEqual(['crate-held'])
+  })
+}
+
 // Invariant 35: only a user with create_tasks posts, and only for an open
 // crate. An opening that first reads the closed list decides there.
 test('crates list posts nothing for a viewer', async ({ page }) => {

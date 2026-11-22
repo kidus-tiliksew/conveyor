@@ -182,7 +182,9 @@ type CrateStore interface {
 	// JoinTaskCrate is SetTaskCrate that also reports whether the committed
 	// write changed the task's crate. True means that write set the task's
 	// crate to the normalized crateID. The returned task is read after the
-	// commit, so a later move can already show in it. A join of the crate the
+	// commit, so a later move can already show in it. When that read fails
+	// after a committed change, changed is still true beside the read's error.
+	// A refused or failed write reports false. A join of the crate the
 	// task already holds changes nothing and reports false. The value comes from the
 	// write itself, under the transaction or the store mutex that holds it,
 	// so the post-commit briefing start of component-crates invariant 36

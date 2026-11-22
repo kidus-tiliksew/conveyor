@@ -553,9 +553,12 @@ func (s *Store) moveTaskCrate(ctx context.Context, taskID, crateID string) (core
 	if err != nil {
 		return core.Task{}, false, err
 	}
+	// The commit result stays apart from the response read: a failed read
+	// still reports a committed change, so the caller can start the briefing
+	// for the crate this write set (component-crates invariant 36).
 	task, err := s.GetTask(ctx, taskID)
 	if err != nil {
-		return core.Task{}, false, err
+		return core.Task{}, changed, err
 	}
 	return task, changed, nil
 }

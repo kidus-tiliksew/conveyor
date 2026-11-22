@@ -398,20 +398,22 @@ func (s *Server) setTaskCrate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task, changed, err := backend.JoinTaskCrate(r.Context(), chi.URLParam(r, "id"), *crateID)
-	if err != nil {
-		writeCrateError(w, r, err)
-		return
-	}
 	// Only a committed write that changed the task's crate starts the
 	// background briefing, and it starts for the crate that write set: the
 	// normalized request destination, which changed proves was written. The
 	// task read after the commit serves only the response, because a later
-	// move can commit before that read. A same-crate repeat starts nothing
-	// (component-crates invariant 36; req-crate-insights AC-5.2).
+	// move can commit before that read. When only that read failed, changed
+	// still reports the commit, so the start happens before the error answer;
+	// a same-crate retry could not start it later. A same-crate repeat starts
+	// nothing (component-crates invariant 36; req-crate-insights AC-5.2).
 	if changed {
-		if destination, err := store.NormalizeJoinCrateID(*crateID); err == nil {
+		if destination, normalizeErr := store.NormalizeJoinCrateID(*crateID); normalizeErr == nil {
 			s.startCrateBriefingAfterJoin(r.Context(), destination)
 		}
+	}
+	if err != nil {
+		writeCrateError(w, r, err)
+		return
 	}
 	s.writeCrateTask(w, r, task)
 }
