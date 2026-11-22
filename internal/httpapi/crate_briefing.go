@@ -300,7 +300,7 @@ func (s *Server) runCrateBriefing(ctx context.Context, backend crateBackend, cra
 }
 
 // crateBriefingJoinTimeout bounds one background generation after a join:
-// its reads, its model call, and its write. The model call keeps the triage
+// its checks before the start, its reads, its model call, and its write. The model call keeps the triage
 // route's own timeout inside this bound.
 const crateBriefingJoinTimeout = 30 * time.Minute
 
@@ -314,12 +314,15 @@ const crateBriefingJoinTimeout = 30 * time.Minute
 // The checks here run before the response and start nothing when the crate
 // ID is empty, the store keeps no crates, no model is configured, the acting
 // member does not hold create_tasks, or the crate has a stored briefing. A
-// failed check is logged and starts nothing. The background work never reads the request context: it
-// runs on a new context that holds only the workspace, actor, and credential
-// copied from it, bounded by crateBriefingJoinTimeout. It runs
-// runCrateBriefing in missing-only mode with the acting member as
-// generated_by. A failure stores nothing, is logged with the redaction of
-// invariant 29, and schedules no retry.
+// failed check is logged and starts nothing. Only the authenticated
+// workspace, actor, and credential are read from the request context. They
+// are copied first into a new context.Background() child bounded by
+// crateBriefingJoinTimeout, and the checks and the background work all run
+// on that context. A request cancelled after the commit therefore cannot
+// fail the checks, and the request context is never read after the
+// response. The background work runs runCrateBriefing in missing-only mode
+// with the acting member as generated_by. A failure stores nothing, is
+// logged with the redaction of invariant 29, and schedules no retry.
 func (s *Server) startCrateBriefingAfterJoin(ctx context.Context, crateID string) {
 	crateID = strings.TrimSpace(crateID)
 	if crateID == "" {
@@ -329,41 +332,48 @@ func (s *Server) startCrateBriefingAfterJoin(ctx context.Context, crateID string
 	if !ok || s.WorkOrders == nil || s.WorkOrders.Dispatcher == nil {
 		return
 	}
-	allowed, err := s.callerCapability(ctx, core.CapabilityCreateTasks)
+	detached := store.WithActor(context.Background(), store.ActorFromContext(ctx))
+	if workspace, scoped := store.WorkspaceFromContext(ctx); scoped {
+		detached = store.WithWorkspace(detached, workspace)
+	}
+	if credential, ok := store.CredentialFromContext(ctx); ok {
+		detached = store.WithCredential(detached, credential)
+	}
+	jobCtx, cancel := context.WithTimeout(detached, crateBriefingJoinTimeout)
+	started := false
+	defer func() {
+		if !started {
+			cancel()
+		}
+	}()
+	allowed, err := s.callerCapability(jobCtx, core.CapabilityCreateTasks)
 	if err != nil {
-		log.Printf("crate briefing after a join for %s: capability read failed: %s", crateID, s.redactedFailureDetail(ctx, err, crateBriefingFailureWithheld))
+		log.Printf("crate briefing after a join for %s: capability read failed: %s", crateID, s.redactedFailureDetail(jobCtx, err, crateBriefingFailureWithheld))
 		return
 	}
 	if !allowed {
 		return
 	}
-	if err := s.WorkOrders.Dispatcher.CrateBriefingConfigured(ctx); err != nil {
+	if err := s.WorkOrders.Dispatcher.CrateBriefingConfigured(jobCtx); err != nil {
 		if !errors.Is(err, dispatch.ErrCrateBriefingUnconfigured) {
-			log.Printf("crate briefing after a join for %s: configuration read failed: %s", crateID, s.redactedFailureDetail(ctx, err, crateBriefingFailureWithheld))
+			log.Printf("crate briefing after a join for %s: configuration read failed: %s", crateID, s.redactedFailureDetail(jobCtx, err, crateBriefingFailureWithheld))
 		}
 		return
 	}
 	// A crate with a stored briefing starts nothing. The background work
 	// checks again under the mutex, because another request can store one
 	// between this read and the start.
-	if stored, err := storedCrateBriefing(ctx, backend, crateID); err != nil {
-		log.Printf("crate briefing after a join for %s: briefing read failed: %s", crateID, s.redactedFailureDetail(ctx, err, crateBriefingFailureWithheld))
+	if stored, err := storedCrateBriefing(jobCtx, backend, crateID); err != nil {
+		log.Printf("crate briefing after a join for %s: briefing read failed: %s", crateID, s.redactedFailureDetail(jobCtx, err, crateBriefingFailureWithheld))
 		return
 	} else if stored != nil {
 		return
 	}
-	background := store.WithActor(context.Background(), store.ActorFromContext(ctx))
-	if workspace, scoped := store.WorkspaceFromContext(ctx); scoped {
-		background = store.WithWorkspace(background, workspace)
-	}
-	if credential, ok := store.CredentialFromContext(ctx); ok {
-		background = store.WithCredential(background, credential)
-	}
+	started = true
 	s.crateBriefingJobs.Add(1)
 	s.crateBriefingJobsStarted.Add(1)
 	go func() {
 		defer s.crateBriefingJobs.Done()
-		jobCtx, cancel := context.WithTimeout(background, crateBriefingJoinTimeout)
 		defer cancel()
 		if _, err := s.runCrateBriefing(jobCtx, backend, crateID, true, nil); err != nil {
 			log.Printf("crate briefing after a join for %s: %s", crateID, s.redactedFailureDetail(jobCtx, err, crateBriefingFailureWithheld))

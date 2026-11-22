@@ -732,3 +732,97 @@ func TestCrateBriefingAfterMembershipChangeStartsWhenResponseReadFails(t *testin
 		t.Fatalf("model calls=%d, want 1", calls)
 	}
 }
+
+// crateJoinCancelledStore commits the request's join, then cancels the
+// request, as a client that goes away after the SQL transaction commits.
+// The response read then fails with the cancellation and the committed
+// change. Every briefing and insight read honors its context's
+// cancellation, as the SQL stores do.
+type crateJoinCancelledStore struct {
+	crateBackend
+	cancelRequest context.CancelFunc
+}
+
+func (s *crateJoinCancelledStore) JoinTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, bool, error) {
+	_, changed, err := s.crateBackend.JoinTaskCrate(ctx, taskID, crateID)
+	if err != nil {
+		return core.Task{}, false, err
+	}
+	s.cancelRequest()
+	return core.Task{}, changed, ctx.Err()
+}
+
+func (s *crateJoinCancelledStore) GetCrateBriefing(ctx context.Context, id string) (store.CrateBriefing, error) {
+	if err := ctx.Err(); err != nil {
+		return store.CrateBriefing{}, err
+	}
+	return s.crateBackend.GetCrateBriefing(ctx, id)
+}
+
+func (s *crateJoinCancelledStore) ReadCrateInsightInputs(ctx context.Context, id string) (store.CrateInsightInputs, error) {
+	if err := ctx.Err(); err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	return s.crateBackend.ReadCrateInsightInputs(ctx, id)
+}
+
+// cancellationMemberships fails a capability read on a cancelled context.
+type cancellationMemberships struct{ store.MembershipStore }
+
+func (m cancellationMemberships) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return m.MembershipStore.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
+}
+
+// TestCrateBriefingAfterMembershipChangeStartsWhenRequestCancelledAfterCommit:
+// the client cancels after the join commits and before the response read
+// completes. The capability, configuration, and stored-briefing checks run
+// on the detached context, not the cancelled request, so exactly one
+// generation runs for the committed destination with the joining member as
+// generated_by (component-crates invariant 36; req-crate-insights AC-5.2).
+func TestCrateBriefingAfterMembershipChangeStartsWhenRequestCancelledAfterCommit(t *testing.T) {
+	h := newCrateBriefingHarness(t)
+	h.install(h.agent, config.TriageRoute{Model: "triage-model"})
+	h.agent.reply = insightReply{output: h.reply(t), model: "served-model"}
+	dispatcher := h.server.WorkOrders.Dispatcher
+	routeConfig := dispatcher.Cfg
+	dispatcher.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return routeConfig, nil
+	}
+	h.server.Memberships = cancellationMemberships{MembershipStore: h.server.Memberships}
+	fresh := h.createCrate(t, h.editor, map[string]any{"name": "Cancelled after commit"})
+	task := h.task(t, "")
+
+	requestCtx, cancelRequest := context.WithCancel(t.Context())
+	defer cancelRequest()
+	h.server.Store = &crateJoinCancelledStore{crateBackend: h.store.(crateBackend), cancelRequest: cancelRequest}
+	body, _ := json.Marshal(map[string]any{"crate_id": fresh.ID})
+	request := httptest.NewRequestWithContext(requestCtx, http.MethodPut, "/v1/tasks/"+task.ID+"/crate?workspace_id=alpha", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+h.editor)
+	request.Header.Set("Content-Type", "application/json")
+	_, restore := captureCrateLog(t)
+	response := httptest.NewRecorder()
+	h.handler.ServeHTTP(response, request)
+	waitCrateBriefingJobs(t, h.server)
+	restore()
+	if requestCtx.Err() == nil {
+		t.Fatal("the request context was not cancelled after the commit")
+	}
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("join status=%d body=%s, want the generic 500 for the failed read", response.Code, response.Body.String())
+	}
+	h.server.Store = h.store
+	h.requireJobsStarted(t, 1)
+	stored := h.requireJoinBriefing(t, fresh.ID)
+	if stored.GeneratedBy != crateJoinActor {
+		t.Fatalf("generated_by=%q, want the joining member %q", stored.GeneratedBy, crateJoinActor)
+	}
+	if calls := h.agent.callCount(); calls != 1 {
+		t.Fatalf("model calls=%d, want 1", calls)
+	}
+}
