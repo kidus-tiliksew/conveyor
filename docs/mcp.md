@@ -100,6 +100,38 @@ The ordinary `auth token` form remains explicit raw-token output for command
 substitution. Neither output form belongs in a config, log, or transcript.
 The CLI's normal server-bound environment precedence is unchanged.
 
+### Stdio bridge
+
+`conveyor mcp stdio --server <base> --credentials-file <absolute-path>` is a
+local stdio MCP server for an agent tool that can neither run a header helper
+nor expand an environment reference in a header value (DEC-145). The tool
+starts the command, and the command forwards each JSON-RPC line from its
+standard input to `<base>/mcp`. Both flags are required, and the file path
+must be absolute.
+
+Before each request, the bridge reads the token for the canonical server from
+the named file, as `auth token --credentials-file` does. It never reads
+`CONVEYOR_API_TOKEN`, so a token that you rotate with `conveyor auth login`
+applies to the next request. A request does not wait for the answer to an
+earlier request, and the bridge sets no time limit of its own. It writes each answer as one line to standard
+output and writes nothing for a 202. Standard output carries only MCP
+messages, and no output carries the token.
+
+A missing credential, a 401 or 403, a response that is not a JSON-RPC
+message, an unreachable server, or a broken connection gets a JSON-RPC error
+for that request. A response whose ID is not the request's ID is not a valid
+answer, and the bridge never sends a request a second time. A notification
+gets no answer, and a line that is not JSON gets a parse error with a null
+ID. The bridge continues after each failure and exits with status 0 when
+standard input closes and every request in progress has its answer.
+
+The missing-credential and 401 errors name
+`conveyor auth login --server <base>`. That command writes only the default
+credentials file, `<user config dir>/conveyor/credentials.json`. When
+`--credentials-file` names another file, the error also names both files.
+Point `--credentials-file` at the default file, or copy the server's entry
+into the named file after you log in.
+
 ### Migration and connection checks
 
 Only installer-marked registrations are migrated automatically. A matching
