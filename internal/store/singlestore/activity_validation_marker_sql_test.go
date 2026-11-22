@@ -190,7 +190,7 @@ func TestMarkerLifecycleQueryShape(t *testing.T) {
 		}
 		// The lease decoder runs once, on renewals only, and both arms read
 		// marker_rows: with the renewal arm alone the statement took more
-		// than 30 seconds to compile (TestMarkerFoldCompileIntegration).
+		// than 30 seconds to compile.
 		if got := strings.Count(want, "AS lease_ok"); got != 1 {
 			t.Fatalf("%s: decodes leases %d times, want once", name, got)
 		}
@@ -488,30 +488,6 @@ func TestMarkerPastLeaseFastPath(t *testing.T) {
 	}
 	if strings.Contains(markerUTCLeaseShape, "?") {
 		t.Fatal("the lease shape holds a question mark, which the driver reads as a placeholder")
-	}
-}
-
-// TestMarkerFoldFixturesMatchSource checks the pinned v0.72.0 statement
-// against its source: the activity-marker read at 3062eb520 kept in the
-// egress baseline emits the same text as tag v0.72.0. The pre-fix fixture
-// was captured by running markerFoldQuery at 95133fd2 on markerCompileInput.
-func TestMarkerFoldFixturesMatchSource(t *testing.T) {
-	fixture := loadMarkerCompileFixture(t, "marker_fold_v0.72.0.json")
-	for _, shape := range []struct {
-		name string
-		live bool
-	}{{"no_live", false}, {"live", true}} {
-		in := markerCompileInput(shape.live, false)
-		query, args := legacyMarkerFoldQuery(in.Workspace, in.Page, in.ReviewTasks, in.LiveReviewTasks, in.Now)
-		if query != fixture[shape.name].Query || len(args) != len(fixture[shape.name].Args) {
-			t.Fatalf("the v0.72.0 %s fixture differs from its source", shape.name)
-		}
-	}
-	prefix := loadMarkerCompileFixture(t, "marker_fold_95133fd2.json")
-	for _, shape := range []string{"no_live", "live"} {
-		if !strings.Contains(prefix[shape].Query, "JSON_KEYS(") {
-			t.Fatalf("the pre-fix %s fixture is not the per-key statement", shape)
-		}
 	}
 }
 

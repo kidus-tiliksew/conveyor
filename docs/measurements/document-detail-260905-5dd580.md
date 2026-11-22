@@ -37,12 +37,17 @@ without changing the task checkout. Both measurements used the same fixture and
 an empty test database. Workspace query values were isolated fixture ids:
 `phase61-260905-1fa82d` before and `phase61-260905-a96814` after.
 
-## Reproduction
+## Reproduction (historical)
 
-Run `GOFLAGS=-v make test-integration` from the task checkout. The
-`TestDocumentDetailMeasurementIntegration` output includes `MEASUREMENT postgres`
-lines for both endpoints. `TestDocumentDetailMeasurement` supplies the memory
-handler equivalent in the ordinary Go suite.
+These instructions are historical. Task 261122-3691f1 removed
+`TestDocumentDetailMeasurementIntegration` and `TestDocumentDetailMeasurement`
+from the repository, so the steps below no longer run. The recorded results
+above stay as measured.
+
+At the time of measurement, `GOFLAGS=-v make test-integration` ran from the
+task checkout. The `TestDocumentDetailMeasurementIntegration` output included
+`MEASUREMENT postgres` lines for both endpoints. `TestDocumentDetailMeasurement`
+supplied the memory handler equivalent in the ordinary Go suite.
 
 For the historical baseline, write the two handler files from the base commit
 above into the task's disk-backed scratch directory using `git show`. Supply a

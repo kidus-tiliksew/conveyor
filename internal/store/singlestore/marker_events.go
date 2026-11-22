@@ -680,8 +680,7 @@ func markerRequestClaimQuery(ws string, needs []markerClaimNeed) (string, []any)
 // Both arms of the statement read marker_rows, the renewals and the claims.
 // That is also what keeps the lease decoder cheap to compile: a statement
 // of the renewal arm alone took more than 30 seconds to compile, because the
-// engine merged the decoder's nested stages into the table read
-// (TestMarkerFoldCompileIntegration).
+// engine merged the decoder's nested stages into the table read.
 func markerLifecycleQuery(in store.MarkerFoldInput, jobs []string) (string, []any) {
 	b := &markerBinder{}
 	const carry = "id,task_id,job_id,kind,event_payload,event_at"

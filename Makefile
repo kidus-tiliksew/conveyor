@@ -217,10 +217,9 @@ compose-check:
 # The PostgreSQL gate is the union of its shards. CI runs one shard per job by
 # setting POSTGRES_INTEGRATION_SHARD; an empty value runs every shard in one
 # go test invocation. Only shards that run the VK-10 browser scenario
-# (internal/dispatch) build the CLI and install Chromium. The store shard also
-# runs internal/httpapi, whose task poll read-cost test needs a database.
+# (internal/dispatch) build the CLI and install Chromium.
 POSTGRES_INTEGRATION_SHARDS = store cli daemon
-POSTGRES_INTEGRATION_PACKAGES_store = ./internal/store/postgres ./internal/httpapi
+POSTGRES_INTEGRATION_PACKAGES_store = ./internal/store/postgres
 POSTGRES_INTEGRATION_PACKAGES_cli = ./cmd/conveyor
 POSTGRES_INTEGRATION_PACKAGES_daemon = ./cmd/conveyord ./internal/dispatch
 POSTGRES_INTEGRATION_RUNTIME_daemon = vk10-runtime
@@ -313,21 +312,18 @@ dev: db-up
 # built from the shard's packages, -run and -skip patterns, and timeout.
 # The two conformance shards select complementary subtests of
 # TestSingleStoreConformanceIntegration through one shared pattern. The
-# proofs shard runs the heavy artifact-hot-read, hot-read and activity proofs,
-# and the migrations shard the DDL-heavy migration and layout tests and the
+# migrations shard runs the DDL-heavy migration and layout tests and the
 # VK-10 browser scenario, each by full test name; the packages shard skips the
-# conformance test and both lists, so together they run exactly the three
-# store packages. The packages shard also runs internal/httpapi, whose task
-# poll read-cost test needs a SingleStore database. The commands shard keeps the command and daemon cases. CI runs one
-# shard per job through SINGLESTORE_INTEGRATION_SHARD; an empty value runs
-# every shard in order. Only the migrations shard, which runs the VK-10
+# conformance test and that list, so together they run exactly the three
+# store packages. The commands shard keeps the command and daemon cases. CI
+# runs one shard per job through SINGLESTORE_INTEGRATION_SHARD; an empty value
+# runs every shard in order. Only the migrations shard, which runs the VK-10
 # browser scenario, builds the CLI and installs Chromium. RunAll registers
 # every suite in each conformance shard, so its registration audit runs in
 # both. make singlestore-shard-union-check proves the union.
-SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages proofs migrations commands
+SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages migrations commands
 SINGLESTORE_CONFORMANCE_TEST = ^TestSingleStoreConformanceIntegration$$
 SINGLESTORE_CONFORMANCE_FIRST = ^(Verification|Requirements|NextAction|Lineage|AutomaticRecovery|ListPages|ActivityMarkerBounds|SystemDesignDrift)$$
-SINGLESTORE_PROOF_TESTS = ^(TestActivityValidationSeesRowOnlyWritesAndLateCommitsIntegration|TestArtifactHotReadLayoutsIntegration|TestArtifactHotReadRowstoreLayoutsIntegration|TestHotReadActualMixedOriginAndInterruptedBootstrapIntegration|TestHotReadEgressMeasurementIntegration|TestHotReadEventLookupsIntegration|TestHotReadIndexKeyKindMatchesEngine|TestHotReadLayoutDatabaseIntegration|TestHotReadLayoutDiscovery|TestHotReadLayoutFreshDatabaseIntegration|TestHotReadLayoutIncompatibleDatabaseIntegration|TestHotReadLayoutMixedProvenanceIntegration|TestHotReadLayoutOldOperatorEventsIntegration|TestHotReadLookupNamesDigestOnlyWhenKeyIsReady|TestHotReadOperatorScriptEngineVariantsIntegration|TestHotReadPrepareScriptIntegration|TestHotReadResumeWrongExistingObjectFailsBeforeDDLIntegration|TestHotReadRowstoreArtifactLinksStoreReadinessIntegration|TestHotReadTaskLookupsIntegration)$$
 SINGLESTORE_MIGRATION_TESTS = ^(TestActivityValidationTransfersFixedSizeIntegration|TestExistingColumnstoreEventLogPreservedIntegration|TestHistoryMigrationLayoutsIntegration|TestFeatureRetirementPartialDDLRetryIntegration|TestVK10SingleStoreScenarioIntegration)$$
 SINGLESTORE_INTEGRATION_PACKAGES_conformance-1 = ./internal/store/singlestore
 SINGLESTORE_INTEGRATION_RUN_conformance-1 = $(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)
@@ -336,25 +332,22 @@ SINGLESTORE_INTEGRATION_PACKAGES_conformance-2 = ./internal/store/singlestore
 SINGLESTORE_INTEGRATION_RUN_conformance-2 = $(SINGLESTORE_CONFORMANCE_TEST)
 SINGLESTORE_INTEGRATION_SKIP_conformance-2 = $(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)
 SINGLESTORE_INTEGRATION_TIMEOUT_conformance-2 = 20m
-SINGLESTORE_INTEGRATION_PACKAGES_packages = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore ./internal/httpapi
-SINGLESTORE_INTEGRATION_SKIP_packages = $(SINGLESTORE_CONFORMANCE_TEST)|$(SINGLESTORE_PROOF_TESTS)|$(SINGLESTORE_MIGRATION_TESTS)
+SINGLESTORE_INTEGRATION_PACKAGES_packages = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore
+SINGLESTORE_INTEGRATION_SKIP_packages = $(SINGLESTORE_CONFORMANCE_TEST)|$(SINGLESTORE_MIGRATION_TESTS)
 SINGLESTORE_INTEGRATION_TIMEOUT_packages = 20m
-SINGLESTORE_INTEGRATION_PACKAGES_proofs = ./internal/store/singlestore
-SINGLESTORE_INTEGRATION_RUN_proofs = $(SINGLESTORE_PROOF_TESTS)
-SINGLESTORE_INTEGRATION_TIMEOUT_proofs = 20m
 SINGLESTORE_INTEGRATION_PACKAGES_migrations = ./internal/store/singlestore
 SINGLESTORE_INTEGRATION_RUN_migrations = $(SINGLESTORE_MIGRATION_TESTS)
 SINGLESTORE_INTEGRATION_TIMEOUT_migrations = 20m
 SINGLESTORE_INTEGRATION_RUNTIME_migrations = vk10-runtime
 SINGLESTORE_INTEGRATION_PACKAGES_commands = ./cmd/conveyor ./cmd/conveyord
-SINGLESTORE_INTEGRATION_RUN_commands = TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration|TestConveyordIdleRuntimeIntegration
+SINGLESTORE_INTEGRATION_RUN_commands = TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration
 SINGLESTORE_INTEGRATION_TIMEOUT_commands = 10m
 # The three packages the gate runs whole; the commands shard adds its cases
 # from the command packages.
 SINGLESTORE_INTEGRATION_WHOLE_PACKAGES = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore
 # The command cases the gate requires, as package:test; the union check fails
 # unless exactly one shard runs each.
-SINGLESTORE_INTEGRATION_REQUIRED_CASES = ./cmd/conveyor:TestSingleStoreInitAndUserIntegration ./cmd/conveyord:TestConveyordDurableStartupIntegration ./cmd/conveyord:TestConveyordIdleRuntimeIntegration
+SINGLESTORE_INTEGRATION_REQUIRED_CASES = ./cmd/conveyor:TestSingleStoreInitAndUserIntegration ./cmd/conveyord:TestConveyordDurableStartupIntegration
 singlestore_integration_args = $(SINGLESTORE_INTEGRATION_PACKAGES_$(1))$(if $(SINGLESTORE_INTEGRATION_RUN_$(1)), -run '$(SINGLESTORE_INTEGRATION_RUN_$(1))')$(if $(SINGLESTORE_INTEGRATION_SKIP_$(1)), -skip '$(SINGLESTORE_INTEGRATION_SKIP_$(1))') -timeout=$(SINGLESTORE_INTEGRATION_TIMEOUT_$(1))
 SINGLESTORE_INTEGRATION_SHARD ?=
 singlestore_integration_selected = $(or $(SINGLESTORE_INTEGRATION_SHARD),$(SINGLESTORE_INTEGRATION_SHARDS))
@@ -527,101 +520,10 @@ test-github-apps:
 test-task-start-over:
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/core ./internal/taskops ./internal/store ./internal/store/storetest ./internal/store/postgres ./internal/store/singlestore ./internal/httpapi -run 'TestTaskStartOver|TestStartOver|TestMemoryConformance|TestBackendCoverage|TestEmbeddedMigrationVersionsAreUnique'
 
-.PHONY: test-document-events test-document-event-plans test-document-event-plans-singlestore _test-document-event-plans-singlestore
+.PHONY: test-document-events
 # Focused iteration; the full local and configured backend gates remain required.
 test-document-events:
 	go test -v ./internal/store ./internal/httpapi ./internal/store/postgres ./internal/store/singlestore -run 'TestMemoryConformance/Requirements/.*document|TestPostgresConformanceIntegration/Requirements/.*document|TestSingleStoreConformanceIntegration/Requirements/.*document|TestDocumentEvent|TestSystemDesignEventLookupIndexIntegration' -count=1
-
-# Supply the Make-managed disposable database through CONVEYOR_TEST_DATABASE_URL.
-test-document-event-plans:
-	@test -n "$$CONVEYOR_TEST_DATABASE_URL" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
-	CONVEYOR_DOCUMENT_EVENT_MEASUREMENT=370000 go test -v ./internal/store/postgres -run '^TestDocumentEventQueryPlansIntegration$$' -count=1 -timeout=15m
-
-# Supply a SingleStore server whose configured database ends in _test through
-# CONVEYOR_TEST_SINGLESTORE_URL. The fixture lifecycle creates and removes one
-# owned database. DOCUMENT_EVENT_MEASUREMENT=0 checks results and plans only.
-DOCUMENT_EVENT_MEASUREMENT ?= 200000
-test-document-event-plans-singlestore: _singlestore-integration-url-check
-	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) --no-print-directory _test-document-event-plans-singlestore; else \
-		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/singlestore-document-plans-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
-		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend singlestore --url-env CONVEYOR_TEST_SINGLESTORE_URL --prepared-url-env CONVEYOR_TEST_SINGLESTORE_URL --state "$$state" -- $(MAKE) --no-print-directory _test-document-event-plans-singlestore; \
-	fi
-
-_test-document-event-plans-singlestore:
-	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "SingleStore fixture was not prepared" >&2; exit 1)
-	CONVEYOR_DOCUMENT_EVENT_MEASUREMENT=$(DOCUMENT_EVENT_MEASUREMENT) $(GO_TEST_REQUIRE_TESTS) -v ./internal/store/singlestore -run '^TestDocumentEventQueryPlansIntegration$$' -count=1 -timeout=45m
-
-# Focused hot-read egress measurements: warmup, then five interleaved
-# baseline/candidate trials per registered case, recorded from the store's
-# driver read statistics. Standard output carries only the machine-readable
-# READ_EGRESS_MEASUREMENT lines; capture it into the task validation evidence
-# directory. A missing URL, fixture failure, skipped or unselected test, or
-# missing measurement fails the target. These are focused measurements, not a
-# substitute for the CI gates. Registered cases are listed in
-# internal/store/{postgres,singlestore}/read_egress_measurement_integration_test.go.
-.PHONY: measure-hot-read-egress-singlestore measure-hot-read-egress-postgres _measure-hot-read-egress-singlestore _measure-hot-read-egress-postgres _hot-read-egress-run
-measure-hot-read-egress-singlestore: _singlestore-integration-url-check
-	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) --no-print-directory _measure-hot-read-egress-singlestore; else \
-		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/singlestore-hot-read-egress-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
-		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend singlestore --url-env CONVEYOR_TEST_SINGLESTORE_URL --prepared-url-env CONVEYOR_TEST_SINGLESTORE_URL --state "$$state" -- $(MAKE) --no-print-directory _measure-hot-read-egress-singlestore; \
-	fi
-
-_measure-hot-read-egress-singlestore:
-	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "SingleStore fixture was not prepared" >&2; exit 1)
-	@$(MAKE) --no-print-directory _hot-read-egress-run HOT_READ_EGRESS_PKG=singlestore
-
-measure-hot-read-egress-postgres:
-	@test -n "$$CONVEYOR_TEST_DATABASE_URL" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
-	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) --no-print-directory _measure-hot-read-egress-postgres; else \
-		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/postgres-hot-read-egress-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
-		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend postgres --url-env CONVEYOR_TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) --no-print-directory _measure-hot-read-egress-postgres; \
-	fi
-
-_measure-hot-read-egress-postgres:
-	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "PostgreSQL fixture was not prepared" >&2; exit 1)
-	@$(MAKE) --no-print-directory _hot-read-egress-run HOT_READ_EGRESS_PKG=postgres
-
-# Runs the focused measurement test, prints only its measurement lines to
-# standard output and the test log to standard error, and fails when the test
-# fails, is skipped, or emits no measurement.
-# Override with ./internal/httpapi to measure memo routes on the same owned
-# backend fixture; CONVEYOR_READ_EGRESS_MEMO_BACKEND selects that backend.
-HOT_READ_EGRESS_PACKAGE ?= ./internal/store/$(HOT_READ_EGRESS_PKG)
-_hot-read-egress-run:
-	@test -n "$(HOT_READ_EGRESS_PKG)" || (echo "HOT_READ_EGRESS_PKG is required" >&2; exit 1)
-	@out=$$(mktemp "$${TMPDIR:-/tmp}/hot-read-egress.XXXXXX") && trap 'rm -f "$$out"' EXIT && \
-	if ! CONVEYOR_READ_EGRESS_MEASUREMENT=1 $(GO_TEST_REQUIRE_TESTS) -v $(HOT_READ_EGRESS_PACKAGE) -run '^TestHotReadEgressMeasurementIntegration$$' -count=1 -timeout=45m >"$$out" 2>&1; then \
-		cat "$$out" >&2; echo "hot-read egress measurement test failed" >&2; exit 1; \
-	fi && \
-	if ! grep -q '^READ_EGRESS_MEASUREMENT ' "$$out" || grep -q -- '--- SKIP' "$$out"; then \
-		cat "$$out" >&2; echo "no hot-read egress measurement was recorded (test skipped or unselected)" >&2; exit 1; \
-	fi && \
-	grep -v '^READ_EGRESS_MEASUREMENT ' "$$out" >&2 && grep '^READ_EGRESS_MEASUREMENT ' "$$out"
-
-# SingleStore protocol compression measurement: every registered hot-read
-# egress case and the claim session, renewal, and verification read-volume
-# labels, with compression requested and disabled on one service. Standard
-# output carries only the COMPRESSION_MEASUREMENT lines; the test log, with
-# the comparison table, goes to standard error. A missing URL, fixture
-# failure, skipped test, or missing measurement fails the target. CI runs it
-# in the SingleStore proofs shard, so the job log keeps the numbers.
-.PHONY: measure-singlestore-compression _measure-singlestore-compression
-measure-singlestore-compression: _singlestore-integration-url-check
-	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) --no-print-directory _measure-singlestore-compression; else \
-		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/singlestore-compression-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
-		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend singlestore --url-env CONVEYOR_TEST_SINGLESTORE_URL --prepared-url-env CONVEYOR_TEST_SINGLESTORE_URL --state "$$state" -- $(MAKE) --no-print-directory _measure-singlestore-compression; \
-	fi
-
-_measure-singlestore-compression:
-	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "SingleStore fixture was not prepared" >&2; exit 1)
-	@out=$$(mktemp "$${TMPDIR:-/tmp}/singlestore-compression.XXXXXX") && trap 'rm -f "$$out"' EXIT && \
-	if ! CONVEYOR_COMPRESSION_MEASUREMENT=1 $(GO_TEST_REQUIRE_TESTS) -v ./internal/store/singlestore -run '^TestHotReadCompressionMeasurementIntegration$$' -count=1 -timeout=45m >"$$out" 2>&1; then \
-		cat "$$out" >&2; echo "SingleStore compression measurement test failed" >&2; exit 1; \
-	fi && \
-	if ! grep -q '^COMPRESSION_MEASUREMENT ' "$$out" || grep -q -- '--- SKIP: TestHotReadCompressionMeasurementIntegration ' "$$out"; then \
-		cat "$$out" >&2; echo "no SingleStore compression measurement was recorded (test skipped or unselected)" >&2; exit 1; \
-	fi && \
-	grep -v '^COMPRESSION_MEASUREMENT ' "$$out" >&2 && grep '^COMPRESSION_MEASUREMENT ' "$$out"
 
 # Focused context-entry and corpus regressions; full validation remains make test.
 .PHONY: test-context-eligibility
