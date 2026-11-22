@@ -3,13 +3,7 @@ import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { ChevronRight, Package, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
-import {
-  CrateCounts,
-  CrateFormDialog,
-  CrateProgress,
-  CrateStateBadge,
-  TargetDate,
-} from '../components/crate/crate-parts'
+import { CrateFormDialog, CrateStateBadge, TargetDate } from '../components/crate/crate-parts'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { ErrorState } from '../components/ui/error-state'
@@ -19,6 +13,7 @@ import { Skeleton } from '../components/ui/skeleton'
 import { fetchCrates } from '../lib/api'
 import { cratesQueryKey } from '../lib/query-keys'
 import type { Crate } from '../lib/types'
+import { cn } from '../lib/utils'
 
 export interface CratesSearch {
   // Closed crates show only on request (req-crates AC-5.1).
@@ -30,8 +25,8 @@ export function validateCratesSearch(search: Record<string, unknown>): CratesSea
 }
 
 // The crates list (component-crates invariant 17; req-crates AC-5.1): each
-// crate's name, target date, and open, merged, and total counts, in the order
-// the server returns them. The page never re-sorts.
+// crate's name, target date, and completion pie, in the order the server
+// returns them. The page never re-sorts.
 export function CratesPage() {
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
@@ -98,12 +93,15 @@ export function CratesPage() {
             <div className="overflow-hidden rounded-lg border border-border bg-card">
               <div
                 aria-hidden
-                className="hidden grid-cols-[minmax(0,1fr)_10rem_minmax(10rem,14rem)_1rem] gap-x-6 border-b border-border px-4 py-2 text-xs font-medium text-faint md:grid"
+                data-crate-list-header
+                className={cn(
+                  'hidden gap-x-6 border-b border-border px-4 py-2 text-xs font-medium text-faint md:grid',
+                  rowColumns,
+                )}
               >
                 <span>Crate</span>
                 <span>Target date</span>
-                <span>Tasks</span>
-                <span />
+                <span>Done</span>
               </div>
               <ul aria-label={state === 'closed' ? 'Closed crates' : 'Open crates'} className="divide-y divide-border">
                 {crates.data.map((crate) => (
@@ -132,6 +130,13 @@ export function CratesPage() {
   )
 }
 
+// The header and every row share these desktop tracks: the crate, the target
+// date, and the completion pie with the chevron.
+const rowColumns = 'md:grid-cols-[minmax(0,1fr)_10rem_4.5rem]'
+
+// One crate row. The left cell holds the icon tile, the name, and, below
+// 768 px, the target date. The right cell holds the completion pie and the
+// chevron. The row link is the row's only control.
 function CrateListRow({ crate }: { crate: Crate }) {
   const { workspace } = useWorkspaceSelection()
   return (
@@ -139,9 +144,12 @@ function CrateListRow({ crate }: { crate: Crate }) {
       to="/w/$workspaceId/crates/$crateId"
       params={{ workspaceId: workspace, crateId: crate.id }}
       data-crate-row={crate.id}
-      className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-4 py-3.5 transition-colors hover:bg-surface focus-visible:bg-surface focus-visible:outline-none md:grid-cols-[minmax(0,1fr)_10rem_minmax(10rem,14rem)_1rem] md:gap-x-6"
+      className={cn(
+        'group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 px-4 py-3.5 transition-colors hover:bg-surface focus-visible:bg-surface focus-visible:outline-none md:gap-x-6',
+        rowColumns,
+      )}
     >
-      <span className="flex min-w-0 items-center gap-3">
+      <span className="flex min-w-0 items-center gap-3" data-crate-row-main>
         <span className="grid size-8 shrink-0 place-items-center rounded-md bg-primary-soft text-primary">
           <Package aria-hidden className="size-4" />
         </span>
@@ -155,18 +163,67 @@ function CrateListRow({ crate }: { crate: Crate }) {
           <TargetDate crate={crate} className="mt-0.5 text-xs md:hidden" />
         </span>
       </span>
-      <ChevronRight aria-hidden className="size-4 text-faint transition-colors group-hover:text-muted md:hidden" />
       <TargetDate crate={crate} className="hidden text-sm md:inline-flex" />
-      <span className="col-span-2 flex min-w-0 flex-col gap-1.5 pl-11 md:col-span-1 md:pl-0">
-        <CrateProgress crate={crate} />
-        <CrateCounts crate={crate} />
+      <span className="flex items-center justify-end gap-3 md:justify-between" data-crate-row-end>
+        <CompletionPie crate={crate} />
+        <ChevronRight aria-hidden className="size-4 shrink-0 text-faint transition-colors group-hover:text-muted" />
       </span>
-      <ChevronRight
-        aria-hidden
-        className="hidden size-4 text-faint transition-colors group-hover:text-muted md:block"
-      />
     </Link>
   )
+}
+
+// The completion share of component-crates invariant 9: merged members over
+// merged and open members. A closed member counts toward neither, and with
+// no counted member there is no share. The page formats the served counts
+// and derives nothing else (invariant 21).
+function crateCompletion(crate: Pick<Crate, 'merged_task_count' | 'open_task_count'>) {
+  const merged = crate.merged_task_count
+  const counted = merged + crate.open_task_count
+  if (counted <= 0) return { share: null, label: 'No open or merged tasks' }
+  const share = merged / counted
+  // Only the stated percentage is rounded. A partial share never reads as
+  // 0% or 100%, so the text agrees with the wedge.
+  const percent = merged === 0 || merged === counted ? Math.round(share * 100) : clamp(Math.round(share * 100), 1, 99)
+  return { share, label: `${percent}% done · ${merged} of ${counted} merged` }
+}
+
+function clamp(value: number, low: number, high: number) {
+  return Math.min(high, Math.max(low, value))
+}
+
+// A small disc whose filled wedge is the completion share (component-crates
+// invariant 17; req-crates AC-5.1). Pointing at it shows the share as text.
+// The same text is its accessible name. At rest the row shows no count or
+// percentage text.
+function CompletionPie({ crate }: { crate: Crate }) {
+  const { share, label } = crateCompletion(crate)
+  const fill = share == null || share <= 0 ? 'empty' : share >= 1 ? 'full' : 'partial'
+  return (
+    <span className="group/pie relative inline-flex shrink-0" data-completion-pie={fill}>
+      <svg role="img" aria-label={label} viewBox="0 0 20 20" className="size-5">
+        <circle cx="10" cy="10" r="9.5" className="fill-raised stroke-edge" strokeWidth="1" />
+        {fill === 'full' && <circle cx="10" cy="10" r="10" className="fill-positive" />}
+        {fill === 'partial' && share != null && <path d={wedgePath(share)} className="fill-positive" />}
+      </svg>
+      <span
+        aria-hidden="true"
+        data-completion-tooltip
+        className="pointer-events-none invisible absolute top-1/2 right-full z-20 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md border border-edge bg-card px-2.5 py-1.5 text-xs leading-4 text-foreground shadow-md group-focus-visible:visible group-hover/pie:visible"
+      >
+        {label}
+      </span>
+    </span>
+  )
+}
+
+// The wedge from twelve o'clock, clockwise, for a share strictly between 0
+// and 1, on a disc of radius 10 centred at (10, 10).
+function wedgePath(share: number) {
+  const angle = share * 2 * Math.PI
+  const x = 10 + 10 * Math.sin(angle)
+  const y = 10 - 10 * Math.cos(angle)
+  const large = share > 0.5 ? 1 : 0
+  return `M10 10 L10 0 A10 10 0 ${large} 1 ${x.toFixed(3)} ${y.toFixed(3)} Z`
 }
 
 function EmptyCrates({ closed, canCreate, onCreate }: { closed: boolean; canCreate: boolean; onCreate: () => void }) {
