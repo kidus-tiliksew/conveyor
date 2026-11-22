@@ -248,7 +248,12 @@ func selectMCPEntry(entries map[string]mcpEntry, id mcpIdentity, adopt bool) (na
 		}
 	}
 	for key, entry := range entries {
-		if !entry.owned && !entry.legacyEnv && mcpEntryMatches(entry, false, id.endpoint) {
+		// An Antigravity entry can hold a literal address beside a
+		// CONVEYOR_ADDR reference. Its literal address still counts as a
+		// manual registration. Without adoption, the reference resolves to
+		// no endpoint, so an entry with only references stays outside this
+		// check (component-cli-onboarding invariants 8 and 9).
+		if !entry.owned && (!entry.legacyEnv || entry.antigravity) && mcpEntryMatches(entry, false, id.endpoint) {
 			return "", "", fmt.Errorf("server already has manual registration %s; use --name %s --adopt instead of creating a duplicate", key, key)
 		}
 	}

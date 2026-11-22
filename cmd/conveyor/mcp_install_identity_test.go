@@ -726,3 +726,91 @@ func TestMCPAntigravityMarkerAloneGrantsNoOwnership(t *testing.T) {
 		t.Fatalf("adoption did not bind the marker to this endpoint:\n%s", next)
 	}
 }
+
+// A manual entry can hold one literal address and one CONVEYOR_ADDR
+// reference. Its literal address makes it a manual registration for the
+// server, so an install without --adopt must refuse instead of adding a
+// duplicate (component-cli-onboarding invariants 8 and 9; AC-4.3).
+func TestMCPAntigravityMixedLiteralAndEnvironmentAddress(t *testing.T) {
+	orders := map[string]string{
+		"url literal, serverUrl reference": `{"theme" : "dark","mcpServers":{"manual":{"url":"https://one.example/mcp","serverUrl":"${env:CONVEYOR_ADDR}","disabled":false}}}`,
+		"serverUrl literal, url reference": `{"theme" : "dark","mcpServers":{"manual":{"url":"${env:CONVEYOR_ADDR}","serverUrl":"https://one.example/mcp","disabled":false}}}`,
+	}
+	for label, prior := range orders {
+		t.Run(label, func(t *testing.T) {
+			setup := func(t *testing.T) (string, string) {
+				t.Helper()
+				home := t.TempDir()
+				path := mcpTargets(home, []skillTool{{name: "antigravity"}})[0].path
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(prior), 0o640); err != nil {
+					t.Fatal(err)
+				}
+				return home, path
+			}
+			unchanged := func(t *testing.T, path string) {
+				t.Helper()
+				after, _ := os.ReadFile(path)
+				info, _ := os.Stat(path)
+				if string(after) != prior || info.Mode().Perm() != 0o640 {
+					t.Fatalf("refusal changed bytes or mode: %o %s", info.Mode().Perm(), after)
+				}
+				if leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".conveyor-*")); len(leftovers) != 0 {
+					t.Fatalf("staging leftovers: %v", leftovers)
+				}
+			}
+			unnamed := testMCPIdentity(t, "https://one.example", "")
+			named := testMCPIdentity(t, "https://one.example", "manual")
+			agy := antigravityListBinary(t, "", unnamed.name, named.name)
+			// Without --adopt the install refuses, whatever CONVEYOR_ADDR names.
+			for _, address := range []string{"", "https://one.example/mcp", "https://other.example/mcp"} {
+				t.Setenv(mcpAddressEnv, address)
+				for _, id := range []mcpIdentity{unnamed, named} {
+					home, path := setup(t)
+					_, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, id, false, true, onlyAgyOnPath(agy))
+					if err == nil {
+						t.Fatalf("CONVEYOR_ADDR=%q name=%s: install without --adopt accepted the entry", address, id.name)
+					}
+					if !id.explicit && !strings.Contains(err.Error(), "server already has manual registration manual; use --name manual --adopt") {
+						t.Fatalf("unnamed install did not name the manual entry: %v", err)
+					}
+					unchanged(t, path)
+				}
+			}
+			// --name manual --adopt adopts the entry when CONVEYOR_ADDR names
+			// the selected server, as invariant 8 binds the reference.
+			t.Setenv(mcpAddressEnv, "https://one.example/mcp")
+			home, path := setup(t)
+			result, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, named, true, true, onlyAgyOnPath(agy))
+			if err != nil || result.status != "refreshed" || result.name != "manual" {
+				t.Fatalf("adoption result=%+v err=%v", result, err)
+			}
+			data, _ := os.ReadFile(path)
+			entry := testAntigravityEntry(t, data, "manual")
+			checkAntigravityBridgeEntry(t, entry, named)
+			if entry["disabled"] != false || len(testMCPEntries(t, "antigravity", data)) != 1 || !bytes.Contains(data, []byte(`"theme" : "dark"`)) {
+				t.Fatalf("adoption changed other fields or added an entry:\n%s", data)
+			}
+			if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+				t.Fatalf("adopted file mode %o", info.Mode().Perm())
+			}
+			t.Setenv(mcpAddressEnv, "")
+			again, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, unnamed, false, true, onlyAgyOnPath(agy))
+			if after, _ := os.ReadFile(path); err != nil || again.status != "unchanged" || !bytes.Equal(after, data) {
+				t.Fatalf("adopted entry is not reused: result=%+v err=%v", again, err)
+			}
+			// The reference must name the selected server. Adoption refuses
+			// when it names another server or nothing.
+			for _, address := range []string{"https://other.example/mcp", ""} {
+				t.Setenv(mcpAddressEnv, address)
+				home, path := setup(t)
+				if _, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, named, true, true, onlyAgyOnPath(agy)); err == nil {
+					t.Fatalf("CONVEYOR_ADDR=%q: adoption repointed the reference", address)
+				}
+				unchanged(t, path)
+			}
+		})
+	}
+}
