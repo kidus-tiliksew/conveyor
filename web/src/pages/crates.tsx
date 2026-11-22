@@ -1,8 +1,9 @@
-import { useQuery } from '@tanstack/react-query'
+import { type QueryClient, type UseQueryResult, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { ChevronRight, Package, Plus } from 'lucide-react'
-import { useState } from 'react'
-import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { useEffect, useRef, useState } from 'react'
+import { callerIdentityQueryOptions, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { briefingOlderThanLimit } from '../components/crate/crate-briefing'
 import { CrateFormDialog, CrateStateBadge, TargetDate } from '../components/crate/crate-parts'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -10,9 +11,9 @@ import { ErrorState } from '../components/ui/error-state'
 import { PageHeader } from '../components/ui/page-header'
 import { SegmentedControl } from '../components/ui/segmented-control'
 import { Skeleton } from '../components/ui/skeleton'
-import { fetchCrates } from '../lib/api'
+import { CrateBriefingError, fetchCrates, generateCrateBriefing } from '../lib/api'
 import { cratesQueryKey } from '../lib/query-keys'
-import type { Crate } from '../lib/types'
+import type { Crate, CrateListRow as CrateListItem } from '../lib/types'
 import { cn } from '../lib/utils'
 
 export interface CratesSearch {
@@ -25,8 +26,9 @@ export function validateCratesSearch(search: Record<string, unknown>): CratesSea
 }
 
 // The crates list (component-crates invariant 17; req-crates AC-5.1): each
-// crate's name, target date, and completion pie, in the order the server
-// returns them. The page never re-sorts.
+// crate's name, the headline of its stored briefing, its target date, and
+// its completion pie, in the order the server returns them. The page never
+// re-sorts.
 export function CratesPage() {
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
@@ -40,7 +42,12 @@ export function CratesPage() {
     // No placeholder: the open list must never stand in for the closed one
     // while the closed list loads, or the reverse.
     enabled: Boolean(workspace),
+    // Each opening reads the list again even when a fresh copy is cached,
+    // because the briefing request decision waits for an answer that arrives
+    // in this opening (component-crates invariant 35).
+    refetchOnMount: 'always',
   })
+  useListBriefingRequests(workspace, state, crates)
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -130,14 +137,111 @@ export function CratesPage() {
   )
 }
 
+// At most this many briefing requests from one list opening are in flight
+// at once (component-crates invariant 35).
+const listBriefingRequestLimit = 2
+
+// Whether the list asks for a briefing for this row: an open crate with a
+// member whose briefing is missing or was generated more than 30 minutes
+// before the list read (component-crates invariant 35; req-crate-insights
+// AC-5.2). The server's fingerprint check still decides whether the model
+// runs.
+export function listBriefingWanted(crate: CrateListItem, readAt: number) {
+  if (crate.state !== 'open' || crate.total_task_count <= 0) return false
+  return crate.briefing == null || briefingOlderThanLimit(crate.briefing.generated_at, readAt)
+}
+
+// The briefing requests of one list opening (component-crates invariant 35;
+// req-crate-insights AC-5.2; DEC-144(4)(c)). The opening decides once per
+// workspace, from its first successful list read answered after the page
+// mounted and that read's time: a copy cached by an earlier visit does not
+// count. When that read answers before the identity read, the decision waits
+// for the identity read and still uses the first read. Only a user whose
+// identity read lists create_tasks posts. The eligible crates and the read
+// time are fixed before the first request. A filter change, a refetch, and
+// a workspace change stream update never decide again. A new visit or
+// another workspace decides afresh.
+function useListBriefingRequests(workspace: string, state: 'open' | 'closed', crates: UseQueryResult<CrateListItem[]>) {
+  const queryClient = useQueryClient()
+  const mayCreate = useWorkspaceCapability('create_tasks')
+  const identity = useQuery({ ...callerIdentityQueryOptions(workspace), enabled: Boolean(workspace) })
+  const decided = useRef<string | null>(null)
+  const firstRead = useRef<{
+    workspace: string
+    state: 'open' | 'closed'
+    rows: CrateListItem[]
+    readAt: number
+  } | null>(null)
+  const queue = useRef<{ cancelled: boolean } | null>(null)
+  const answered = crates.isFetchedAfterMount && crates.status === 'success'
+  useEffect(() => {
+    if (!workspace || decided.current === workspace) return
+    if (answered && crates.data && firstRead.current?.workspace !== workspace)
+      firstRead.current = { workspace, state, rows: crates.data, readAt: crates.dataUpdatedAt }
+    const first = firstRead.current
+    if (!first || first.workspace !== workspace || identity.status === 'pending') return
+    decided.current = workspace
+    if (!mayCreate) return
+    const ids = first.rows.filter((crate) => listBriefingWanted(crate, first.readAt)).map((crate) => crate.id)
+    if (ids.length === 0) return
+    const run = { cancelled: false }
+    queue.current = run
+    void requestListBriefings(queryClient, first.workspace, first.state, ids, run)
+  }, [workspace, state, answered, crates.data, crates.dataUpdatedAt, identity.status, mayCreate, queryClient])
+  // Queued requests end with their view: leaving the page or switching the
+  // workspace discards every request not yet sent and every refetch not yet
+  // asked for.
+  useEffect(
+    () => () => {
+      if (queue.current) queue.current.cancelled = true
+      queue.current = null
+    },
+    [workspace],
+  )
+}
+
+// Posts one briefing request per crate, with at most two in flight. Each
+// success refetches the list of the workspace and state that decided. A 409
+// means the server has nothing to do, so the list refetches without a notice.
+// Any other failure shows nothing and keeps the stored headline. No request
+// is tried again.
+async function requestListBriefings(
+  queryClient: QueryClient,
+  workspace: string,
+  state: 'open' | 'closed',
+  ids: string[],
+  run: { cancelled: boolean },
+) {
+  let next = 0
+  const refetch = () => {
+    if (!run.cancelled) void queryClient.invalidateQueries({ queryKey: cratesQueryKey(workspace, state), exact: true })
+  }
+  const worker = async () => {
+    while (!run.cancelled && next < ids.length) {
+      const crateId = ids[next]
+      next += 1
+      try {
+        await generateCrateBriefing(workspace, crateId)
+        refetch()
+      } catch (error) {
+        if (error instanceof CrateBriefingError && error.status === 409) refetch()
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(listBriefingRequestLimit, ids.length) }, worker))
+}
+
 // The header and every row share these desktop tracks: the crate, the target
 // date, and the completion pie with the chevron.
 const rowColumns = 'md:grid-cols-[minmax(0,1fr)_10rem_4.5rem]'
 
-// One crate row. The left cell holds the icon tile, the name, and, below
-// 768 px, the target date. The right cell holds the completion pie and the
+// One crate row. The left cell holds the icon tile, the name, the headline of
+// the stored briefing cut to two lines, and, below 768 px, the target date.
+// The headline is plain text with no generated marker, model name, or time,
+// and a crate with no briefing shows no line for it (component-crates
+// invariant 17; DEC-144(7)). The right cell holds the completion pie and the
 // chevron. The row link is the row's only control.
-function CrateListRow({ crate }: { crate: Crate }) {
+function CrateListRow({ crate }: { crate: CrateListItem }) {
   const { workspace } = useWorkspaceSelection()
   return (
     <Link
@@ -160,6 +264,11 @@ function CrateListRow({ crate }: { crate: Crate }) {
             </span>
             <CrateStateBadge crate={crate} />
           </span>
+          {crate.briefing && (
+            <span className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted" data-crate-headline>
+              {crate.briefing.headline}
+            </span>
+          )}
           <TargetDate crate={crate} className="mt-0.5 text-xs md:hidden" />
         </span>
       </span>

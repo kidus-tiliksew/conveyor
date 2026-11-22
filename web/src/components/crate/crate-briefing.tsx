@@ -5,24 +5,38 @@ import { CrateBriefingError, fetchCrateBriefing, generateCrateBriefing } from '.
 import { crateBriefingQueryKey } from '../../lib/query-keys'
 import type { CrateBriefingEntry, CrateBriefingView, CrateDetail, CrateTask } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { callerIdentityQueryOptions, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Skeleton } from '../ui/skeleton'
 import type { CrateEmphasis } from './crate-emphasis'
 
 // The crate briefing (req-crate-insights REQ-5; component-crates invariants
-// 33 and 35; DEC-142): one headline, a short account of where the delivery
+// 33 and 35; DEC-144): one headline, a short account of where the delivery
 // stands, and the tasks to look at first. It sits between the header with
 // the line and the branch map. The server writes and stores the text and
 // says whether it is current. The page shows it as plain text, with no
-// generated marker, model name, or generation time (DEC-142(7)).
+// generated marker, model name, or generation time (DEC-144(7)).
 //
 // The page asks for a briefing only as invariant 35 states: each opening
-// decides once, on its first answered read, and posts only when no briefing
-// is stored, the crate has a member, and the user may generate one.
-// Refetches never post again.
+// decides once, on its first answered read, and posts only when the crate
+// has a member, the user may generate one, and either no briefing is stored
+// or the stored one is out of date and was generated more than 30 minutes
+// before that read. Refetches never post again.
 
 type Target = { workspace: string; crateId: string }
+
+// A stored briefing is old once its generation time is more than this
+// before the read that decides (component-crates invariant 35;
+// req-crate-insights AC-5.2; DEC-144(4)(b), (c)).
+export const briefingStaleAfterMs = 30 * 60 * 1000
+
+// Whether a briefing generated at `generatedAt` is old at `readAt`, a time
+// in milliseconds. Exactly 30 minutes is not old. An unreadable time is not
+// old, so it never starts a request.
+export function briefingOlderThanLimit(generatedAt: string, readAt: number) {
+  const generated = Date.parse(generatedAt)
+  return Number.isFinite(generated) && Number.isFinite(readAt) && readAt - generated > briefingStaleAfterMs
+}
 
 // A refused read is not tried again: a 4xx answer does not change on retry.
 function briefingRetry(count: number, error: unknown) {
@@ -97,21 +111,6 @@ export function CrateBriefingSection({
     generation.mutate({ workspace, crateId: crate.id })
   }
 
-  // The decision of this opening, keyed by workspace and crate. It is taken
-  // once, on the first successful read answered after the section mounted:
-  // a copy cached by an earlier visit does not count. It is used up before
-  // any request, so later refetches, a 409, a failed request, and
-  // StrictMode's repeated effects never post again.
-  const decided = useRef<string | null>(null)
-  const opening = `${workspace}\n${crate.id}`
-  const view = read.data
-  const answered = read.isFetchedAfterMount && read.status === 'success'
-  useEffect(() => {
-    if (!answered || !view || decided.current === opening) return
-    decided.current = opening
-    if (view.briefing === null && view.can_generate && members > 0) post()
-  }, [answered, view, opening, members])
-
   // Regenerate is an affordance, so it follows component-web-dashboard
   // invariant 11: it shows only when a successful identity read lists
   // create_tasks, and a failed refetch over an earlier success denies. It
@@ -120,7 +119,34 @@ export function CrateBriefingSection({
   // refetch left on screen, keeps its text but grants no control
   // (req-crate-insights AC-5.5). The server authorizes the POST again.
   const mayCreate = useWorkspaceCapability('create_tasks')
+  const identity = useQuery({ ...callerIdentityQueryOptions(workspace), enabled: Boolean(workspace) })
+  const view = read.data
+  const answered = read.isFetchedAfterMount && read.status === 'success'
   const canGenerate = answered && mayCreate && view?.can_generate === true
+
+  // The decision of this opening, keyed by workspace and crate. It is taken
+  // once, from the first successful read answered after the section mounted
+  // and that read's time: a copy cached by an earlier visit does not count.
+  // When that read answers before the identity read, the decision waits for
+  // the identity read and still uses the first read. It is used up before any
+  // request, so later refetches, a 409, a failed request, and StrictMode's
+  // repeated effects never post again. An automatic request needs both the
+  // identity read's create_tasks and the view's can_generate.
+  const decided = useRef<string | null>(null)
+  const firstRead = useRef<{ opening: string; view: CrateBriefingView; readAt: number } | null>(null)
+  const opening = `${workspace}\n${crate.id}`
+  useEffect(() => {
+    if (decided.current === opening) return
+    if (answered && view && firstRead.current?.opening !== opening)
+      firstRead.current = { opening, view, readAt: read.dataUpdatedAt }
+    const first = firstRead.current
+    if (!first || first.opening !== opening || identity.status === 'pending') return
+    decided.current = opening
+    const stored = first.view.briefing
+    const wanted =
+      stored === null || (stored.current === false && briefingOlderThanLimit(stored.generated_at, first.readAt))
+    if (wanted && first.view.can_generate && mayCreate && members > 0) post()
+  }, [answered, view, read.dataUpdatedAt, opening, members, identity.status, mayCreate])
 
   // A crate with no member has no briefing (feature-crate-insights, Rollout
   // and closure).
