@@ -171,11 +171,12 @@ Installation reports the name, endpoint, credential source, file result,
 parser result, restart requirement, and native connection result separately.
 A client loads a new registration after a restart. Codex and Claude parser
 checks and OpenCode's staged `debug config` check do not initialize MCP.
-Before it writes the Antigravity file, the installer runs `agy mcp list` on a
-copy in an isolated home. It publishes the file only when `agy` exits with
-status 0 and lists the exact name as a `stdio` server. `agy mcp list` does not
-start the bridge. When `agy` is not on `PATH`, the output reports the check as
-skipped. The
+When `agy` is on `PATH`, the installer runs `agy mcp list` on a copy in an
+isolated home before it writes the Antigravity file. It then publishes the
+file only when `agy` exits with status 0 and lists the exact name as a
+`stdio` server. `agy mcp list` does not start the bridge. When `agy` is not on
+`PATH`, the installer runs no parser check. It reports
+`skipped: agy is not on PATH` and publishes the file without that check. The
 installer reports native initialize and tools-list as **not run**; the named
 connection in the client shows the native result. The controlled repository
 checks exercise actual native initialization and `tools/list` without
