@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	embeddedpack "github.com/kidus-tiliksew/conveyor/pack"
 )
 
@@ -149,9 +151,7 @@ func TestConveyorCoordinateSkillInstallsForEveryTool(t *testing.T) {
 			t.Fatal(err)
 		}
 		destinations := skillDestinations(base, supportedSkillTools, scope.name == "project")
-		if len(destinations) != 4 {
-			t.Fatalf("%s destinations = %d, want 4", scope.name, len(destinations))
-		}
+		checkEverySkillDestination(t, base, destinations, scope.name == "project")
 		for _, destination := range destinations {
 			for relative, source := range files {
 				installed := filepath.Join(destination.root, filepath.FromSlash(relative))
@@ -337,9 +337,7 @@ func TestConveyorPlainEnglishSkillListsAndInstallsForEveryTool(t *testing.T) {
 			t.Fatal(err)
 		}
 		destinations := skillDestinations(base, supportedSkillTools, scope.name == "project")
-		if len(destinations) != 4 {
-			t.Fatalf("%s destinations = %d, want 4", scope.name, len(destinations))
-		}
+		checkEverySkillDestination(t, base, destinations, scope.name == "project")
 		for _, destination := range destinations {
 			for relative, source := range files {
 				installed := filepath.Join(destination.root, filepath.FromSlash(relative))
@@ -1111,6 +1109,279 @@ func resolvedTempDir(t *testing.T) string {
 	return dir
 }
 
+// wantSkillRoots maps each supported tool to its user root and its project
+// root, as component-cli-onboarding "Public surfaces" lists them.
+var wantSkillRoots = map[string][2]string{
+	"claude":      {".claude/skills", ".claude/skills"},
+	"codex":       {".codex/skills", ".codex/skills"},
+	"cursor":      {".cursor/skills", ".cursor/skills"},
+	"opencode":    {".config/opencode/skills", ".opencode/skills"},
+	"antigravity": {".gemini/config/skills", ".agents/skills"},
+}
+
+// checkEverySkillDestination fails unless destinations hold exactly one entry
+// for each of the five supported tools, at that tool's documented root under
+// base (req-agent-guidance-install AC-1.2, AC-1.5, AC-2.3).
+func checkEverySkillDestination(t *testing.T, base string, destinations []skillDestination, project bool) {
+	t.Helper()
+	if len(destinations) != 5 || len(wantSkillRoots) != 5 {
+		t.Fatalf("destinations = %d, want 5", len(destinations))
+	}
+	seen := map[string]bool{}
+	for _, destination := range destinations {
+		roots, ok := wantSkillRoots[destination.tool.name]
+		if !ok || seen[destination.tool.name] {
+			t.Fatalf("unexpected or repeated destination tool %q", destination.tool.name)
+		}
+		seen[destination.tool.name] = true
+		want := roots[0]
+		if project {
+			want = roots[1]
+		}
+		if destination.root != filepath.Join(base, filepath.FromSlash(want)) {
+			t.Fatalf("%s root = %s, want %s under %s", destination.tool.name, destination.root, want, base)
+		}
+	}
+}
+
+// skillToolNamed returns the supported tool with the given name.
+func skillToolNamed(t *testing.T, name string) skillTool {
+	t.Helper()
+	for _, tool := range supportedSkillTools {
+		if tool.name == name {
+			return tool
+		}
+	}
+	t.Fatalf("no supported skill tool named %q", name)
+	return skillTool{}
+}
+
+// installToolStubs writes an executable stub for each named binary into a new
+// directory and makes that directory the whole PATH, so the command detects
+// exactly those binaries through exec.LookPath.
+func installToolStubs(t *testing.T, binaries ...string) {
+	t.Helper()
+	bin := t.TempDir()
+	for _, binary := range binaries {
+		if err := os.WriteFile(filepath.Join(bin, binary), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+}
+
+// runSkillsInstall runs `conveyor skills install` with the real PATH lookup
+// and returns its output.
+func runSkillsInstall(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	command := skillsInstallCmd()
+	command.SetArgs(args)
+	var output bytes.Buffer
+	command.SetOut(&output)
+	command.SetErr(&output)
+	err := command.Execute()
+	return output.String(), err
+}
+
+// checkAntigravityReports fails unless output holds exactly one antigravity
+// line with the given status for each embedded skill file under root, and no
+// line for another tool.
+func checkAntigravityReports(t *testing.T, output, status, root string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != len(embeddedSkillManifest) {
+		t.Fatalf("report lines = %d, want %d:\n%s", len(lines), len(embeddedSkillManifest), output)
+	}
+	for _, asset := range embeddedSkillManifest {
+		line := "antigravity\t" + status + "\t" + filepath.Join(root, filepath.FromSlash(asset.relative)) + "\n"
+		if strings.Count(output, line) != 1 {
+			t.Fatalf("missing report %q:\n%s", line, output)
+		}
+	}
+}
+
+// checkAntigravitySkills fails unless every embedded skill file under root
+// matches the running binary's rendered copy, with its ownership marker
+// (req-agent-guidance-install AC-1.1).
+func checkAntigravitySkills(t *testing.T, root string) {
+	t.Helper()
+	for _, asset := range embeddedSkillManifest {
+		want, err := renderEmbeddedSkill(asset, releaseinfo.Version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(asset.relative)))
+		if err != nil {
+			t.Fatalf("antigravity skill %s: %v", asset.relative, err)
+		}
+		if !bytes.Equal(want, got) {
+			t.Fatalf("antigravity skill %s differs from the embedded skill", asset.relative)
+		}
+		if _, owned := managedSkillVersion(got, asset.sourcePath); !owned {
+			t.Fatalf("antigravity skill %s has no ownership marker", asset.relative)
+		}
+	}
+}
+
+// An executable `agy` on PATH makes `conveyor skills install` detect
+// Antigravity. `--tool antigravity` installs every embedded skill under
+// ~/.gemini/config/skills, or under .agents/skills with --project, for
+// Antigravity alone, and a rerun reports every file unchanged
+// (req-agent-guidance-install AC-1.1, AC-1.2, AC-1.4, AC-1.5, AC-1.6;
+// component-cli-onboarding invariants 13 and 14).
+func TestSkillsInstallAntigravityDetectsAgyAndInstallsBothScopes(t *testing.T) {
+	t.Run("detection", func(t *testing.T) {
+		home := resolvedTempDir(t)
+		t.Setenv("HOME", home)
+		installToolStubs(t, "agy")
+		output, err := runSkillsInstall(t)
+		if err != nil {
+			t.Fatalf("install: %v\n%s", err, output)
+		}
+		root := filepath.Join(home, ".gemini", "config", "skills")
+		checkAntigravityReports(t, output, "created", root)
+		checkAntigravitySkills(t, root)
+		if entries, err := os.ReadDir(home); err != nil || len(entries) != 1 || entries[0].Name() != ".gemini" {
+			t.Fatalf("detected install wrote %v, want only .gemini: %v", entries, err)
+		}
+	})
+
+	t.Run("explicit user and project", func(t *testing.T) {
+		home := resolvedTempDir(t)
+		t.Setenv("HOME", home)
+		installToolStubs(t, "claude", "codex", "cursor-agent", "opencode", "agy")
+		root := filepath.Join(home, ".gemini", "config", "skills")
+
+		output, err := runSkillsInstall(t, "--list", "--tool", "antigravity")
+		if err != nil {
+			t.Fatalf("list: %v\n%s", err, output)
+		}
+		if strings.Count(output, "antigravity\t") != len(embeddedSkillManifest) || !strings.Contains(output, root) {
+			t.Fatalf("antigravity list output:\n%s", output)
+		}
+		if entries, err := os.ReadDir(home); err != nil || len(entries) != 0 {
+			t.Fatalf("antigravity list wrote home: %v %v", entries, err)
+		}
+
+		output, err = runSkillsInstall(t, "--tool", "antigravity")
+		if err != nil {
+			t.Fatalf("install: %v\n%s", err, output)
+		}
+		checkAntigravityReports(t, output, "created", root)
+		checkAntigravitySkills(t, root)
+		output, err = runSkillsInstall(t, "--tool", "antigravity")
+		if err != nil {
+			t.Fatalf("rerun: %v\n%s", err, output)
+		}
+		checkAntigravityReports(t, output, "unchanged", root)
+		checkAntigravitySkills(t, root)
+		// The other detected tools stay out of the selection, and the
+		// installer writes nothing beside skills under ~/.gemini/config.
+		if entries, err := os.ReadDir(home); err != nil || len(entries) != 1 || entries[0].Name() != ".gemini" {
+			t.Fatalf("explicit install wrote %v, want only .gemini: %v", entries, err)
+		}
+		if entries, err := os.ReadDir(filepath.Join(home, ".gemini", "config")); err != nil || len(entries) != 1 || entries[0].Name() != "skills" {
+			t.Fatalf("explicit install wrote %v under .gemini/config, want only skills: %v", entries, err)
+		}
+
+		project := resolvedTempDir(t)
+		t.Chdir(project)
+		projectRoot := filepath.Join(project, ".agents", "skills")
+		output, err = runSkillsInstall(t, "--project", "--tool", "antigravity")
+		if err != nil {
+			t.Fatalf("project install: %v\n%s", err, output)
+		}
+		checkAntigravityReports(t, output, "created", projectRoot)
+		checkAntigravitySkills(t, projectRoot)
+		output, err = runSkillsInstall(t, "--project", "--tool", "antigravity")
+		if err != nil {
+			t.Fatalf("project rerun: %v\n%s", err, output)
+		}
+		checkAntigravityReports(t, output, "unchanged", projectRoot)
+		if entries, err := os.ReadDir(project); err != nil || len(entries) != 1 || entries[0].Name() != ".agents" {
+			t.Fatalf("project install wrote %v, want only .agents: %v", entries, err)
+		}
+		if entries, err := os.ReadDir(filepath.Join(project, ".agents")); err != nil || len(entries) != 1 || entries[0].Name() != "skills" {
+			t.Fatalf("project install wrote %v under .agents, want only skills: %v", entries, err)
+		}
+	})
+
+	t.Run("agy absent", func(t *testing.T) {
+		home := resolvedTempDir(t)
+		t.Setenv("HOME", home)
+		installToolStubs(t, "claude")
+		if output, err := runSkillsInstall(t, "--tool", "antigravity"); err == nil || !strings.Contains(err.Error(), `selected tool "antigravity" is not available on PATH`) {
+			t.Fatalf("missing agy error = %v\n%s", err, output)
+		}
+		if entries, err := os.ReadDir(home); err != nil || len(entries) != 0 {
+			t.Fatalf("missing agy wrote home: %v %v", entries, err)
+		}
+	})
+}
+
+// Under both Antigravity roots, `conveyor skills install --tool antigravity`
+// refuses a file it did not write and a symlink below the root, and writes
+// nothing (req-agent-guidance-install AC-1.3; component-cli-onboarding
+// invariants 13 and 14).
+func TestAntigravityDestinationRefusesUnsafeFiles(t *testing.T) {
+	for _, scope := range []struct {
+		name string
+		args []string
+		root string
+	}{
+		{name: "user", args: []string{"--tool", "antigravity"}, root: ".gemini/config/skills"},
+		{name: "project", args: []string{"--project", "--tool", "antigravity"}, root: ".agents/skills"},
+	} {
+		t.Run(scope.name+"/unmarked file", func(t *testing.T) {
+			base := resolvedTempDir(t)
+			t.Setenv("HOME", base)
+			t.Chdir(base)
+			installToolStubs(t, "agy")
+			collision := filepath.Join(base, filepath.FromSlash(scope.root), "conveyor-plan", "SKILL.md")
+			if err := os.MkdirAll(filepath.Dir(collision), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(collision, []byte("operator content\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			before := repoFixtureSnapshot(t, base)
+			output, err := runSkillsInstall(t, scope.args...)
+			if err == nil || !strings.Contains(err.Error(), "not owned by Conveyor") || !strings.Contains(err.Error(), collision) {
+				t.Fatalf("antigravity collision error = %v\n%s", err, output)
+			}
+			if after := repoFixtureSnapshot(t, base); !reflect.DeepEqual(before, after) {
+				t.Fatalf("antigravity collision refusal changed files: %v -> %v", before, after)
+			}
+		})
+
+		t.Run(scope.name+"/symlink below root", func(t *testing.T) {
+			base := resolvedTempDir(t)
+			t.Setenv("HOME", base)
+			t.Chdir(base)
+			installToolStubs(t, "agy")
+			root := filepath.Join(base, filepath.FromSlash(scope.root))
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			outside := resolvedTempDir(t)
+			if err := os.Symlink(outside, filepath.Join(root, "conveyor-plan")); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			before := repoFixtureSnapshot(t, base)
+			output, err := runSkillsInstall(t, scope.args...)
+			if err == nil || !strings.Contains(err.Error(), "refusing symlink") {
+				t.Fatalf("antigravity symlink error = %v\n%s", err, output)
+			}
+			if after := repoFixtureSnapshot(t, base); !reflect.DeepEqual(before, after) {
+				t.Fatalf("antigravity symlink refusal changed files: %v -> %v", before, after)
+			}
+			if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+				t.Fatalf("antigravity symlink refusal wrote through the link: %v %v", entries, err)
+			}
+		})
+	}
+}
+
 func TestInstallEmbeddedSkillsResolvesEditorSymlinkAndRejectsNestedSymlink(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
@@ -1249,7 +1520,8 @@ func TestSkillsInstallDetectsEveryToolAndSupportsNarrowing(t *testing.T) {
 	if strings.Count(output.String(), "claude\tcreated\t") != len(embeddedSkillManifest) ||
 		strings.Count(output.String(), "codex\tcreated\t") != len(embeddedSkillManifest) ||
 		strings.Count(output.String(), "cursor\tcreated\t") != len(embeddedSkillManifest) ||
-		strings.Count(output.String(), "opencode\tcreated\t") != len(embeddedSkillManifest) {
+		strings.Count(output.String(), "opencode\tcreated\t") != len(embeddedSkillManifest) ||
+		strings.Count(output.String(), "antigravity\tcreated\t") != len(embeddedSkillManifest) {
 		t.Fatalf("per-tool output missing:\n%s", output.String())
 	}
 	for _, asset := range embeddedSkillManifest {
@@ -1269,7 +1541,11 @@ func TestSkillsInstallDetectsEveryToolAndSupportsNarrowing(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(claude, codex) || !bytes.Equal(claude, cursor) || !bytes.Equal(claude, opencode) {
+		antigravity, err := os.ReadFile(filepath.Join(home, ".gemini", "config", "skills", filepath.FromSlash(asset.relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(claude, codex) || !bytes.Equal(claude, cursor) || !bytes.Equal(claude, opencode) || !bytes.Equal(claude, antigravity) {
 			t.Fatalf("%s differs across editor roots", asset.relative)
 		}
 	}
@@ -1292,6 +1568,9 @@ func TestSkillsInstallDetectsEveryToolAndSupportsNarrowing(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(narrowedHome, ".config", "opencode")); !os.IsNotExist(err) {
 		t.Fatalf("narrowed install touched opencode: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(narrowedHome, ".gemini")); !os.IsNotExist(err) {
+		t.Fatalf("narrowed install touched antigravity: %v", err)
 	}
 }
 
@@ -1378,7 +1657,7 @@ func TestSkillsInstallOpenCodeOnlyListAndProjectScopes(t *testing.T) {
 }
 
 func TestOpenCodeDestinationRefusesUnsafeFiles(t *testing.T) {
-	opencode := supportedSkillTools[len(supportedSkillTools)-1]
+	opencode := skillToolNamed(t, "opencode")
 
 	t.Run("unowned collision", func(t *testing.T) {
 		base := t.TempDir()
@@ -1503,12 +1782,15 @@ func TestSkillsInstallDetectionErrorsAreReadOnly(t *testing.T) {
 	missing := func(name string) (string, error) { return "", fs.ErrNotExist }
 
 	command := skillsInstallCmdWithLookPath(missing)
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "looked for claude, codex, cursor, and opencode") {
+	if usage := command.Flags().Lookup("tool").Usage; !strings.Contains(usage, "(claude, codex, cursor, opencode, or antigravity)") {
+		t.Fatalf("--tool help = %q", usage)
+	}
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "looked for claude, codex, cursor, opencode, and agy)") {
 		t.Fatalf("no-tool error = %v", err)
 	}
 	command = skillsInstallCmdWithLookPath(func(name string) (string, error) { return "/tools/" + name, nil })
 	command.SetArgs([]string{"--tool", "unknown"})
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "supported tools: claude, codex, cursor, opencode") {
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "supported tools: claude, codex, cursor, opencode, antigravity") {
 		t.Fatalf("unknown-tool error = %v", err)
 	}
 	command = skillsInstallCmdWithLookPath(missing)
@@ -1838,9 +2120,7 @@ func TestExecutionPlaybooksShipOutOfBandGateRules(t *testing.T) {
 	for _, project := range []bool{false, true} {
 		base := t.TempDir()
 		destinations := skillDestinations(base, supportedSkillTools, project)
-		if len(destinations) != 4 {
-			t.Fatalf("destinations = %d, want 4", len(destinations))
-		}
+		checkEverySkillDestination(t, base, destinations, project)
 		if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
 			t.Fatal(err)
 		}
@@ -2172,9 +2452,7 @@ func TestWorkAndCoordinateSkillsShipRiskAgentRules(t *testing.T) {
 	for _, project := range []bool{false, true} {
 		base := t.TempDir()
 		destinations := skillDestinations(base, supportedSkillTools, project)
-		if len(destinations) != 4 {
-			t.Fatalf("destinations = %d, want 4", len(destinations))
-		}
+		checkEverySkillDestination(t, base, destinations, project)
 		if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
 			t.Fatal(err)
 		}
