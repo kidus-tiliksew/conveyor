@@ -2113,7 +2113,7 @@ export async function restartTask(workspace: string, taskId: string, input: Task
 export type CrateListState = 'open' | 'closed' | 'all'
 
 export function fetchCrates(workspace: string, state: CrateListState = 'open') {
-  return getJSON<import('./types').Crate[]>(workspaceURL(`/v1/crates?state=${state}`, workspace))
+  return getJSON<import('./types').CrateListRow[]>(workspaceURL(`/v1/crates?state=${state}`, workspace))
 }
 
 export function fetchCrate(workspace: string, crateId: string) {

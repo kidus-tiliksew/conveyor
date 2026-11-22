@@ -12,6 +12,7 @@ import type {
   CrateDetail,
   CrateInsight,
   CrateInsightTask,
+  CrateListRow,
   CratePhase,
   CrateReplayStep,
   CrateStation,
@@ -19,6 +20,7 @@ import type {
 } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
+import { controlWorkspaceChanges } from './helpers/workspace-changes'
 
 const createdAt = '2026-10-01T09:00:00Z'
 
@@ -545,6 +547,14 @@ function storedBriefing(overrides: Partial<CrateBriefing> = {}): CrateBriefing {
   }
 }
 
+// Ten minutes after storedBriefing's generation time. At a read at this
+// time an out-of-date stored briefing is not yet old, so the page's opening
+// posts nothing and only Regenerate asks (component-crates invariant 35).
+const youngBriefingReadTime = new Date('2026-11-19T10:10:00Z')
+
+// The headline the fake list serves for a row that states no briefing.
+const listHeadline = 'The crate moves as planned.'
+
 // What the fake server answers to one briefing POST, when a spec sets it.
 type BriefingReply = { status: number; json?: unknown; body?: string; contentType?: string }
 
@@ -556,6 +566,9 @@ type BriefingReply = { status: number; json?: unknown; body?: string; contentTyp
 // change it while the page is open. `briefingPost` answers a POST in place of
 // the default, which stores a new current briefing. `openList` replaces the
 // served open crates list; without it the fake server serves `openCrates`.
+// `closedList` does the same for the closed list and `closedCrates`.
+// A served row that states no `briefing` carries one generated as the list
+// is read.
 async function serveCrates(
   page: Page,
   options: {
@@ -563,6 +576,7 @@ async function serveCrates(
     insight?: 'fail'
     insights?: Record<string, CrateInsight>
     openList?: Crate[]
+    closedList?: Crate[]
     briefings?: Record<string, CrateBriefing | null>
     briefingPost?: (crateId: string, count: number) => Promise<BriefingReply | undefined> | BriefingReply | undefined
   } = {},
@@ -608,7 +622,17 @@ async function serveCrates(
     if (path === '/v1/crates' && method === 'GET') {
       const state = url.searchParams.get('state') ?? 'open'
       listRequests.push(state)
-      return route.fulfill({ json: state === 'closed' ? closedCrates : (options.openList ?? openCrates) })
+      const rows: Crate[] = state === 'closed' ? (options.closedList ?? closedCrates) : (options.openList ?? openCrates)
+      // A row that states no briefing carries one generated as the list is
+      // read, so the list asks for none (component-crates invariant 35).
+      return route.fulfill({
+        json: rows.map(
+          (row): CrateListRow => ({
+            briefing: { headline: listHeadline, generated_at: new Date().toISOString() },
+            ...row,
+          }),
+        ),
+      })
     }
     const activity = path.match(/^\/v1\/crates\/([^/]+)\/activity$/)
     if (activity) {
@@ -628,6 +652,15 @@ async function serveCrates(
     const briefing = path.match(/^\/v1\/crates\/([^/]+)\/briefing$/)
     if (briefing) {
       const id = decodeURIComponent(briefing[1])
+      // `briefingPost` answers first, so it can answer for a crate that only
+      // a list serves.
+      let posted = false
+      if (method === 'POST') {
+        briefingPosts.push(id)
+        posted = true
+        const reply = await options.briefingPost?.(id, briefingPosts.length)
+        if (reply) return route.fulfill(reply)
+      }
       const crate = details[id]
       if (!crate) return route.fulfill({ status: 404, json: { error: 'crate_not_found', crate_id: id } })
       const view = (): CrateBriefingView => ({
@@ -635,10 +668,7 @@ async function serveCrates(
         fingerprint: 'fingerprint-live',
         can_generate: role !== 'viewer',
       })
-      if (method === 'POST') {
-        briefingPosts.push(id)
-        const reply = await options.briefingPost?.(id, briefingPosts.length)
-        if (reply) return route.fulfill(reply)
+      if (posted) {
         if (crate.tasks.length === 0)
           return route.fulfill({ status: 409, json: { error: 'crate_empty', crate_id: id, message: 'Empty.' } })
         briefings[id] = storedBriefing({
@@ -2408,6 +2438,7 @@ for (const viewport of [
     })
 
     test('a stored briefing with no task to look at first puts Regenerate alone at the right', async ({ page }) => {
+      await page.clock.setFixedTime(youngBriefingReadTime)
       const server = await serveCrates(page, {
         briefings: { [lineCrate.id]: storedBriefing({ current: false }) },
       })
@@ -2500,6 +2531,7 @@ for (const viewport of [
     // AC-5.4 and invariant 35: Regenerate is enabled only for a briefing
     // that is out of date, sends one request, and shows the server's answer.
     test('Regenerate is enabled only for an out-of-date briefing and posts once', async ({ page }) => {
+      await page.clock.setFixedTime(youngBriefingReadTime)
       const gate = held()
       const briefings: Record<string, CrateBriefing | null> = {
         [lineCrate.id]: storedBriefing({ current: false, look_first: lookFirst }),
@@ -2543,6 +2575,7 @@ for (const viewport of [
     // model runs, the read that follows the answer shows the briefing is out
     // of date, and Regenerate is enabled again.
     test('a crate change during generation leaves the new briefing out of date', async ({ page }) => {
+      await page.clock.setFixedTime(youngBriefingReadTime)
       const gate = held()
       const briefings: Record<string, CrateBriefing | null> = {
         [lineCrate.id]: storedBriefing({ current: false }),
@@ -2577,6 +2610,7 @@ for (const viewport of [
 
     // Invariant 35: a 409 refetches the briefing and shows no notice.
     test('a 409 answer refetches the briefing without a notice', async ({ page }) => {
+      await page.clock.setFixedTime(youngBriefingReadTime)
       const briefings: Record<string, CrateBriefing | null> = {
         [lineCrate.id]: storedBriefing({ current: false }),
       }
@@ -2610,6 +2644,7 @@ for (const viewport of [
     // AC-5.4: a 502 names its code and detail beside the stored briefing,
     // which does not change.
     test('a 502 answer shows its code and detail beside the unchanged stored briefing', async ({ page }) => {
+      await page.clock.setFixedTime(youngBriefingReadTime)
       const server = await serveCrates(page, {
         insights: { [lineCrate.id]: deliveryInsight },
         briefings: { [lineCrate.id]: storedBriefing({ current: false, look_first: lookFirst }) },
@@ -2640,6 +2675,7 @@ for (const viewport of [
     // 500 (DEC-105(1)). The page names it beside the stored briefing, which
     // does not change, and does not post again.
     test('a store failure on generation shows its notice and keeps the stored briefing', async ({ page }) => {
+      await page.clock.setFixedTime(youngBriefingReadTime)
       const server = await serveCrates(page, {
         briefings: { [lineCrate.id]: storedBriefing({ current: false, look_first: lookFirst }) },
         briefingPost: () => ({
@@ -2812,6 +2848,7 @@ for (const viewport of [
     // again. When that read fails, the page keeps the cached text and says
     // that the read failed, and it does not post.
     test('a failed read in a later opening shows its notice beside the cached briefing', async ({ page }) => {
+      await page.clock.setFixedTime(youngBriefingReadTime)
       const server = await serveCrates(page, {
         briefings: { [lineCrate.id]: storedBriefing({ look_first: lookFirst, current: false }) },
       })
@@ -2842,6 +2879,56 @@ for (const viewport of [
       expect(server.briefingPosts).toEqual([])
     })
 
+    // Invariant 35: the opening also posts when the stored briefing is out
+    // of date and was generated more than 30 minutes before the read. The
+    // fixed clock puts the read 30 minutes and one second, then 29 minutes
+    // and 59 seconds, after storedBriefing's generation time.
+    test('the opening posts for an out-of-date briefing generated more than 30 minutes before the read', async ({
+      page,
+    }) => {
+      await page.clock.setFixedTime(new Date('2026-11-19T10:30:01Z'))
+      const server = await serveCrates(page, {
+        briefings: { [lineCrate.id]: storedBriefing({ current: false, look_first: lookFirst }) },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      await expect.poll(() => server.briefingPosts).toEqual([lineCrate.id])
+      await expect(section.locator('[data-briefing-headline]')).toHaveText('A new briefing came back from the server.')
+      await page.waitForTimeout(400)
+      expect(server.briefingPosts).toEqual([lineCrate.id])
+    })
+
+    test('the opening posts nothing for an out-of-date briefing generated under 30 minutes before the read', async ({
+      page,
+    }) => {
+      await page.clock.setFixedTime(new Date('2026-11-19T10:29:59Z'))
+      const server = await serveCrates(page, {
+        briefings: { [lineCrate.id]: storedBriefing({ current: false, look_first: lookFirst }) },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      const section = briefingSection(page)
+      await expect(section.locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      await expect(section.getByRole('button', { name: 'Regenerate' })).toBeEnabled()
+      await expect.poll(() => server.briefingGets).toContain(lineCrate.id)
+      // Any post would follow the answered read within a frame or two.
+      await page.waitForTimeout(400)
+      expect(server.briefingPosts).toEqual([])
+      await shoot(page, 'stale-under-30-minutes')
+    })
+
+    // A current briefing never posts on opening, however old it is.
+    test('the opening posts nothing for a current briefing generated hours before the read', async ({ page }) => {
+      await page.clock.setFixedTime(new Date('2026-11-19T16:00:00Z'))
+      const server = await serveCrates(page, {
+        briefings: { [lineCrate.id]: storedBriefing({ look_first: lookFirst }) },
+      })
+      await page.goto('/w/demo/crates/crate-line')
+      await expect(briefingSection(page).locator('[data-briefing-headline]')).toHaveText(storedBriefing().headline)
+      await expect.poll(() => server.briefingGets).toContain(lineCrate.id)
+      await page.waitForTimeout(400)
+      expect(server.briefingPosts).toEqual([])
+    })
+
     // component-web-dashboard invariant 11: Regenerate shows only while a
     // successful identity read lists create_tasks. A caller who loses it, or
     // whose identity read then fails, keeps the stored text and loses the
@@ -2851,7 +2938,7 @@ for (const viewport of [
       { name: 'a failed identity read', fulfill: { status: 500 } },
     ]) {
       test(`Regenerate disappears after ${change.name}`, async ({ page }) => {
-        await page.clock.install({ time: new Date('2026-11-20T09:00:00Z') })
+        await page.clock.install({ time: youngBriefingReadTime })
         const server = await serveCrates(page, {
           briefings: { [lineCrate.id]: storedBriefing({ look_first: lookFirst, current: false }) },
         })
@@ -2905,4 +2992,399 @@ test('the briefing and the rest of the page each survive the other failing', asy
   )
   await expect(page.locator('[data-crate-task]')).toHaveCount(2)
   await expect(page.getByRole('region', { name: 'Crate summary' })).toBeVisible()
+})
+
+// The crates list headline and its briefing requests (component-crates
+// invariants 17 and 35; req-crates AC-5.1; req-crate-insights AC-5.2;
+// DEC-144(4)(c), (7)). A fixed clock reads the list at listReadTime.
+const listReadTime = new Date('2026-11-22T12:00:00Z')
+
+// A served briefing summary generated `minutes` and `seconds` before
+// listReadTime.
+function listSummary(headline: string, minutes: number, seconds = 0) {
+  return { headline, generated_at: new Date(listReadTime.getTime() - (minutes * 60 + seconds) * 1000).toISOString() }
+}
+
+const shortHeadline = 'Two tasks wait for review before the export can ship.'
+// Longer than the server's 200-character bound, so that the row cuts it at
+// two lines at a desktop width too. The markup must show as text.
+const longHeadline =
+  'Three tasks wait for review, one waits on a merge approval, and the search ranking change waits for the schema task, so the crate can miss its target date unless the review queue moves this week. <em>Nothing</em> here is markup, and the row cuts this text after its second line.'
+
+const headlineCrates: CrateListRow[] = [
+  {
+    ...crateRow({
+      id: 'crate-short',
+      name: 'Export pipeline',
+      target_date: '2026-11-26',
+      open_task_count: 2,
+      merged_task_count: 1,
+      total_task_count: 3,
+    }),
+    briefing: listSummary(shortHeadline, 5),
+  },
+  {
+    ...crateRow({
+      id: 'crate-long',
+      name: 'Search ranking',
+      target_date: '2026-12-02',
+      open_task_count: 3,
+      merged_task_count: 2,
+      total_task_count: 5,
+    }),
+    briefing: listSummary(longHeadline, 10),
+  },
+  { ...crateRow({ id: 'crate-unbriefed', name: 'Quiet backlog', target_date: '2026-12-09' }), briefing: null },
+]
+
+async function shootList(page: Page, file: string) {
+  await page.evaluate(() => document.fonts.ready)
+  const image = await page.screenshot({
+    path: briefingShots ? `${briefingShots}/${file}` : undefined,
+    animations: 'disabled',
+  })
+  await test.info().attach(file, { body: image, contentType: 'image/png' })
+}
+
+// The rendered line count of one headline, and whether the clamp cut it.
+async function headlineLines(page: Page, id: string) {
+  return page.locator(`[data-crate-row="${id}"] [data-crate-headline]`).evaluate((element) => {
+    const style = getComputedStyle(element)
+    const line = Number.parseFloat(style.lineHeight)
+    return {
+      lines: Math.round(element.clientHeight / line),
+      cut: element.scrollHeight > element.clientHeight + 1,
+      clamp: style.webkitLineClamp,
+    }
+  })
+}
+
+for (const viewport of [
+  { name: '375 px', slug: '375', width: 375, height: 812 },
+  { name: 'desktop', slug: 'desktop', width: 1280, height: 900 },
+]) {
+  test.describe(`crates list headlines at ${viewport.name}`, () => {
+    test.use({ viewport: { width: viewport.width, height: viewport.height } })
+
+    // Invariant 17: the headline sits under the name as plain text, cut to
+    // two lines, with no generated marker, model name, or time. A crate
+    // with no briefing shows no line for it.
+    test('each row shows its briefing headline under the name, cut to two lines', async ({ page }) => {
+      await controlWorkspaceChanges(page)
+      await page.clock.setFixedTime(listReadTime)
+      const server = await serveCrates(page, { openList: headlineCrates })
+      await page.goto('/w/demo/crates')
+      const list = page.getByRole('list', { name: 'Open crates' })
+      const row = (id: string) => list.locator(`[data-crate-row="${id}"]`)
+      await expect(row('crate-short').locator('[data-crate-headline]')).toHaveText(shortHeadline)
+      await expect(row('crate-long').locator('[data-crate-headline]')).toHaveText(longHeadline)
+      await expect(row('crate-unbriefed').locator('[data-crate-headline]')).toHaveCount(0)
+      // Plain text: the markup in the served text renders as characters.
+      await expect(row('crate-long').locator('[data-crate-headline] *')).toHaveCount(0)
+
+      await expect.poll(() => headlineLines(page, 'crate-long')).toEqual({ lines: 2, cut: true, clamp: '2' })
+      await expect.poll(async () => (await headlineLines(page, 'crate-short')).cut).toBe(false)
+
+      // Under the name, inside the left cell, and above the date under 768 px.
+      await expect
+        .poll(async () => {
+          const main = row('crate-long').locator('[data-crate-row-main]')
+          const name = await main.locator('[data-crate-name]').boundingBox()
+          const headline = await main.locator('[data-crate-headline]').boundingBox()
+          const cell = await main.boundingBox()
+          const pie = await row('crate-long').locator('[data-completion-pie]').boundingBox()
+          if (!name || !headline || !cell || !pie) return 'unmeasured'
+          if (headline.y < name.y + name.height - 0.5) return 'headline not under the name'
+          if (headline.x + headline.width > cell.x + cell.width + 0.5) return 'headline outside the left cell'
+          if (headline.x + headline.width > pie.x) return 'headline reaches the pie'
+          if (viewport.width < 768) {
+            const date = await main.locator('[data-target-date]').boundingBox()
+            if (!date) return 'unmeasured'
+            if (date.y < headline.y + headline.height - 0.5) return 'date not under the headline'
+          }
+          return 'ok'
+        })
+        .toBe('ok')
+
+      // No line is kept for a crate with no headline.
+      const heights = await Promise.all(
+        ['crate-short', 'crate-unbriefed'].map(async (id) => (await row(id).boundingBox())?.height ?? 0),
+      )
+      expect(heights[1]).toBeLessThan(heights[0] - 8)
+      for (const id of ['crate-short', 'crate-long']) {
+        await expect(row(id)).not.toContainText(/generated|served-model|\bAI\b|\d{1,2}:\d{2}|ago\b/i, {
+          useInnerText: true,
+        })
+      }
+      await expectNoHorizontalScroll(page)
+      await page.waitForTimeout(400)
+      expect(server.briefingPosts).toEqual([])
+      await shootList(page, `crates-list-headlines-${viewport.slug}.png`)
+    })
+  })
+}
+
+// The rows of the request specs, in served order. Four rows want a
+// briefing: two with none, one generated 30 minutes and one second before
+// the read, and a shipped crate with none. One generated 29 minutes and 59
+// seconds before the read and one with no member want none.
+function requestCrates(): CrateListRow[] {
+  return [
+    {
+      ...crateRow({ id: 'crate-missing-1', name: 'Alpha missing', open_task_count: 1, total_task_count: 1 }),
+      briefing: null,
+    },
+    {
+      ...crateRow({ id: 'crate-old', name: 'Bravo old', open_task_count: 2, total_task_count: 2 }),
+      briefing: listSummary('An old headline stays until a new one arrives.', 30, 1),
+    },
+    {
+      ...crateRow({ id: 'crate-young', name: 'Charlie young', open_task_count: 1, total_task_count: 1 }),
+      briefing: listSummary('A headline from just under 30 minutes before the read.', 29, 59),
+    },
+    { ...crateRow({ id: 'crate-no-member', name: 'Delta empty' }), briefing: null },
+    {
+      ...crateRow({ id: 'crate-missing-2', name: 'Echo missing', open_task_count: 3, total_task_count: 3 }),
+      briefing: null,
+    },
+    {
+      ...crateRow({
+        id: 'crate-missing-3',
+        name: 'Foxtrot missing',
+        shipped: true,
+        merged_task_count: 1,
+        total_task_count: 1,
+      }),
+      briefing: null,
+    },
+  ]
+}
+const wantedCrates = ['crate-missing-1', 'crate-missing-2', 'crate-missing-3', 'crate-old']
+
+function generatedView(headline: string): CrateBriefingView {
+  return {
+    briefing: storedBriefing({ headline, generated_at: listReadTime.toISOString() }),
+    fingerprint: 'fingerprint-live',
+    can_generate: true,
+  }
+}
+
+// Invariant 35: one opening posts once for each open crate it shows with a
+// member and a missing or old briefing, at most two at a time, and
+// refetches the list after each success. Refetches from the workspace change
+// stream and filter changes never post again. A new visit decides again.
+test('crates list posts once for each missing or old briefing, two at a time, and refetches after each success', async ({
+  page,
+}) => {
+  const changes = await controlWorkspaceChanges(page)
+  await page.clock.setFixedTime(listReadTime)
+  const served = requestCrates()
+  const gates = new Map<string, () => void>()
+  let inFlight = 0
+  let maxInFlight = 0
+  const server = await serveCrates(page, {
+    openList: served,
+    briefingPost: async (id) => {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      const gate = held()
+      gates.set(id, gate.release)
+      await gate.promise
+      inFlight -= 1
+      const row = served.find((crate) => crate.id === id)
+      const headline = `A new headline for ${row?.name ?? id}.`
+      if (row) row.briefing = { headline, generated_at: listReadTime.toISOString() }
+      return { status: 200, json: generatedView(headline) }
+    },
+  })
+  await page.goto('/w/demo/crates')
+  const list = page.getByRole('list', { name: 'Open crates' })
+  await expect(list.locator('[data-crate-row]')).toHaveCount(6)
+
+  await expect.poll(() => server.briefingPosts.length).toBe(2)
+  await page.waitForTimeout(400)
+  expect(server.briefingPosts).toHaveLength(2)
+  expect(inFlight).toBe(2)
+
+  const before = server.listRequests.length
+  gates.get(server.briefingPosts[0])?.()
+  await expect.poll(() => server.listRequests.length).toBeGreaterThan(before)
+  await expect.poll(() => server.briefingPosts.length).toBe(3)
+  gates.get(server.briefingPosts[1])?.()
+  await expect.poll(() => server.briefingPosts.length).toBe(4)
+  gates.get(server.briefingPosts[2])?.()
+  gates.get(server.briefingPosts[3])?.()
+  await expect.poll(() => inFlight).toBe(0)
+  expect([...server.briefingPosts].sort()).toEqual(wantedCrates)
+  expect(maxInFlight).toBe(2)
+  for (const id of wantedCrates) {
+    const name = served.find((crate) => crate.id === id)?.name
+    await expect(list.locator(`[data-crate-row="${id}"] [data-crate-headline]`)).toHaveText(
+      `A new headline for ${name}.`,
+    )
+  }
+
+  // Refetches from the change stream post nothing more.
+  const reads = server.listRequests.length
+  await changes.ready()
+  await expect.poll(() => server.listRequests.length).toBeGreaterThan(reads)
+  await changes.activity('task-in-a-crate')
+  await expect.poll(() => server.listRequests.length).toBeGreaterThan(reads + 1)
+  // A filter change and back post nothing more either.
+  await page.getByRole('group', { name: 'Crate state' }).getByRole('button', { name: 'Closed' }).click()
+  await expect(page.getByRole('list', { name: 'Closed crates' })).toBeVisible()
+  await page.getByRole('group', { name: 'Crate state' }).getByRole('button', { name: 'Open' }).click()
+  await expect(list.locator('[data-crate-row]')).toHaveCount(6)
+  await page.waitForTimeout(400)
+  expect(server.briefingPosts).toHaveLength(4)
+
+  // A new visit decides again on its own read.
+  const young = served.find((crate) => crate.id === 'crate-young')
+  if (young) young.briefing = null
+  await page.getByRole('link', { name: 'Tasks', exact: true }).first().click()
+  await expect(page).not.toHaveURL(/crates/)
+  await page.goBack()
+  await expect.poll(() => server.briefingPosts.length).toBe(5)
+  expect(server.briefingPosts[4]).toBe('crate-young')
+  gates.get('crate-young')?.()
+  await expect(list.locator('[data-crate-row="crate-young"] [data-crate-headline]')).toHaveText(
+    'A new headline for Charlie young.',
+  )
+  await page.waitForTimeout(400)
+  expect(server.briefingPosts).toHaveLength(5)
+})
+
+// Invariant 35: each success refetches the list of the state that decided,
+// and a 409 refetches it silently. A request that finishes after the user
+// switched to Closed still refetches the Open list, which is then inactive,
+// and starts no new batch.
+for (const outcome of ['success', '409'] as const) {
+  test(`crates list refetches the original list after a filter change when a held request ends in ${outcome}`, async ({
+    page,
+  }) => {
+    await controlWorkspaceChanges(page)
+    await page.clock.setFixedTime(listReadTime)
+    const served: CrateListRow[] = [
+      {
+        ...crateRow({ id: 'crate-held', name: 'Held request', open_task_count: 1, total_task_count: 1 }),
+        briefing: null,
+      },
+      {
+        ...crateRow({ id: 'crate-fresh', name: 'Fresh briefing', open_task_count: 1, total_task_count: 1 }),
+        briefing: listSummary('A headline from five minutes before the read.', 5),
+      },
+    ]
+    const gate = held()
+    const server = await serveCrates(page, {
+      openList: served,
+      briefingPost: async (id) => {
+        await gate.promise
+        if (outcome === '409') return { status: 409, json: { error: 'crate_briefing_current', crate_id: id } }
+        const row = served.find((crate) => crate.id === id)
+        if (row)
+          row.briefing = { headline: 'A new headline after the switch.', generated_at: listReadTime.toISOString() }
+        return { status: 200, json: generatedView('A new headline after the switch.') }
+      },
+    })
+    const openReads = () => server.listRequests.filter((state) => state === 'open').length
+    await page.goto('/w/demo/crates')
+    await expect(page.getByRole('list', { name: 'Open crates' }).locator('[data-crate-row]')).toHaveCount(2)
+    await expect.poll(() => server.briefingPosts).toEqual(['crate-held'])
+
+    await page.getByRole('group', { name: 'Crate state' }).getByRole('button', { name: 'Closed' }).click()
+    await expect(page.getByRole('list', { name: 'Closed crates' }).locator('[data-crate-row]')).toHaveCount(1)
+    const before = openReads()
+    gate.release()
+    await expect.poll(openReads).toBeGreaterThan(before)
+    await page.waitForTimeout(400)
+    expect(server.briefingPosts).toEqual(['crate-held'])
+    await expect(page.getByRole('list', { name: 'Closed crates' })).toBeVisible()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+
+    await page.getByRole('group', { name: 'Crate state' }).getByRole('button', { name: 'Open' }).click()
+    const heldRow = page.getByRole('list', { name: 'Open crates' }).locator('[data-crate-row="crate-held"]')
+    await expect(heldRow).toBeVisible()
+    if (outcome === 'success')
+      await expect(heldRow.locator('[data-crate-headline]')).toHaveText('A new headline after the switch.')
+    else await expect(heldRow.locator('[data-crate-headline]')).toHaveCount(0)
+    await page.waitForTimeout(400)
+    expect(server.briefingPosts).toEqual(['crate-held'])
+  })
+}
+
+// Invariant 35: only a user with create_tasks posts, and only for an open
+// crate. An opening that first reads the closed list decides there.
+test('crates list posts nothing for a viewer', async ({ page }) => {
+  await controlWorkspaceChanges(page)
+  await page.clock.setFixedTime(listReadTime)
+  const viewer = await serveCrates(page, { role: 'viewer', openList: requestCrates() })
+  await page.goto('/w/demo/crates')
+  await expect(page.locator('[data-crate-row]')).toHaveCount(6)
+  await expect.poll(() => viewer.listRequests.length).toBeGreaterThan(0)
+  await page.waitForTimeout(400)
+  expect(viewer.briefingPosts).toEqual([])
+})
+
+test('crates list posts nothing for closed crates, also after a switch to open crates', async ({ page }) => {
+  await controlWorkspaceChanges(page)
+  await page.clock.setFixedTime(listReadTime)
+  const closedRows: CrateListRow[] = [
+    {
+      ...crateRow({
+        id: 'crate-closed-unbriefed',
+        name: 'Closed without briefing',
+        state: 'closed',
+        closed_at: '2026-11-01T12:00:00Z',
+        open_task_count: 1,
+        total_task_count: 2,
+      }),
+      briefing: null,
+    },
+  ]
+  const server = await serveCrates(page, { openList: requestCrates(), closedList: closedRows })
+  await page.goto('/w/demo/crates?show=closed')
+  await expect(page.getByRole('list', { name: 'Closed crates' }).locator('[data-crate-row]')).toHaveCount(1)
+  await page.waitForTimeout(400)
+  expect(server.briefingPosts).toEqual([])
+  // The opening decided on its first read, the closed list.
+  await page.getByRole('group', { name: 'Crate state' }).getByRole('button', { name: 'Open' }).click()
+  await expect(page.getByRole('list', { name: 'Open crates' }).locator('[data-crate-row]')).toHaveCount(6)
+  await page.waitForTimeout(400)
+  expect(server.briefingPosts).toEqual([])
+})
+
+// Invariant 35: a 409 refetches the list with no notice. Any other failure
+// shows nothing and keeps the stored headline. No request is tried again.
+test('crates list refetches after a 409, shows nothing for a failure, and tries no request again', async ({ page }) => {
+  await controlWorkspaceChanges(page)
+  await page.clock.setFixedTime(listReadTime)
+  const answers: Record<string, BriefingReply> = {
+    'crate-missing-1': { status: 409, json: { error: 'crate_briefing_current', crate_id: 'crate-missing-1' } },
+    'crate-old': {
+      status: 502,
+      json: {
+        error: 'crate_briefing_failed',
+        detail: 'model timed out after 30s',
+        message: 'The briefing could not be generated.',
+      },
+    },
+    'crate-missing-2': { status: 500, body: 'internal server error\n', contentType: 'text/plain' },
+    'crate-missing-3': { status: 503, json: { error: 'crate_briefing_unconfigured', message: 'No model.' } },
+  }
+  const server = await serveCrates(page, {
+    openList: requestCrates(),
+    briefingPost: (id) => answers[id],
+  })
+  await page.goto('/w/demo/crates')
+  await expect.poll(() => [...server.briefingPosts].sort()).toEqual(wantedCrates)
+  // The 409 refetches the list once. The failures refetch nothing.
+  await expect.poll(() => server.listRequests.length).toBe(2)
+  await page.waitForTimeout(500)
+  expect(server.listRequests).toHaveLength(2)
+  expect(server.briefingPosts).toHaveLength(4)
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(page.getByText(/could not|failed|crate_briefing/i)).toHaveCount(0)
+  await expect(page.locator('[data-crate-row="crate-old"] [data-crate-headline]')).toHaveText(
+    'An old headline stays until a new one arrives.',
+  )
 })

@@ -167,8 +167,29 @@ type CrateStore interface {
 	// limit below 1, or one whose successor overflows int, is a
 	// CrateFieldError.
 	ListCrateMembersLimited(ctx context.Context, crateID, excludeTaskID string, limit int) (members []CrateMemberTask, more bool, err error)
+	// ListCratesWithBriefings returns the rows ListCrates returns for the
+	// same query, each with the summary of its stored briefing or nil. The
+	// summary is read by workspace and crate ID, so a crate never carries
+	// another workspace's briefing. On PostgreSQL and SingleStore it runs a
+	// fixed number of set-based statements whatever the number of crates.
+	// It reads no insight input and computes no fingerprint. Only GET
+	// /v1/crates reads it: MCP crate reads, the crate read, and work-order
+	// context use ListCrates and GetCrate (component-crates invariants 14
+	// and 17, Public surfaces; req-crates AC-5.1; DEC-144(2)).
+	ListCratesWithBriefings(ctx context.Context, query CrateListQuery) ([]CrateListRow, error)
 	// SetTaskCrate makes the task a member of the open crate crateID only.
 	SetTaskCrate(ctx context.Context, taskID, crateID string) (core.Task, error)
+	// JoinTaskCrate is SetTaskCrate that also reports whether the committed
+	// write changed the task's crate. True means that write set the task's
+	// crate to the normalized crateID. The returned task is read after the
+	// commit, so a later move can already show in it. When that read fails
+	// after a committed change, changed is still true beside the read's error.
+	// A refused or failed write reports false. A join of the crate the
+	// task already holds changes nothing and reports false. The value comes from the
+	// write itself, under the transaction or the store mutex that holds it,
+	// so the post-commit briefing start of component-crates invariant 36
+	// never reads it from a separate read.
+	JoinTaskCrate(ctx context.Context, taskID, crateID string) (task core.Task, changed bool, err error)
 	// ClearTaskCrate makes the task a member of no crate.
 	ClearTaskCrate(ctx context.Context, taskID string) (core.Task, error)
 	// GetCrateBriefing returns the crate's stored briefing in the bound
@@ -183,6 +204,36 @@ type CrateStore interface {
 	// appends no event (component-crates invariant 29, through
 	// component-requirement-insights invariants 14 to 16).
 	RecordCrateBriefing(ctx context.Context, briefing CrateBriefing) (CrateBriefing, error)
+}
+
+// CrateBriefingSummary is the part of a stored briefing the crates list
+// serves: its headline and its generation time (component-crates Public
+// surfaces, GET /v1/crates).
+type CrateBriefingSummary struct {
+	Headline    string    `json:"headline"`
+	GeneratedAt time.Time `json:"generated_at"`
+}
+
+// CrateListRow is one GET /v1/crates row: the crate row plus briefing, null
+// when the crate has no stored briefing. It is a list-only projection: no
+// other read serves it (component-crates invariant 14; DEC-144(2)).
+type CrateListRow struct {
+	Crate
+	Briefing *CrateBriefingSummary `json:"briefing"`
+}
+
+// CrateListRows pairs each crate with the summary that summaries holds for
+// its ID, or nil. The crates keep their order.
+func CrateListRows(crates []Crate, summaries map[string]CrateBriefingSummary) []CrateListRow {
+	rows := make([]CrateListRow, len(crates))
+	for i, crate := range crates {
+		rows[i] = CrateListRow{Crate: crate}
+		if summary, ok := summaries[crate.ID]; ok {
+			summary.GeneratedAt = summary.GeneratedAt.UTC()
+			rows[i].Briefing = &summary
+		}
+	}
+	return rows
 }
 
 // CrateMemberTask is one member task of a crate as ListCrateMembers reads

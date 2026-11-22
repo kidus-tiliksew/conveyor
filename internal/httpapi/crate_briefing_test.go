@@ -421,6 +421,9 @@ func sameStoredCrateBriefing(a, b store.CrateBriefing) bool {
 type crateBriefingFaultStore struct {
 	crateBackend
 	inputsErr, getErr, recordErr error
+	// getErrAfter lets that many briefing reads pass before getErr applies.
+	getErrAfter int
+	getCalls    int
 	// winner, when set, is recorded through the inner store just before the
 	// handler's own write, as a second conveyord process would.
 	winner func(store.CrateBriefing) store.CrateBriefing
@@ -434,7 +437,8 @@ func (f *crateBriefingFaultStore) ReadCrateInsightInputs(ctx context.Context, id
 }
 
 func (f *crateBriefingFaultStore) GetCrateBriefing(ctx context.Context, id string) (store.CrateBriefing, error) {
-	if f.getErr != nil {
+	f.getCalls++
+	if f.getErr != nil && f.getCalls > f.getErrAfter {
 		return store.CrateBriefing{}, f.getErr
 	}
 	return f.crateBackend.GetCrateBriefing(ctx, id)

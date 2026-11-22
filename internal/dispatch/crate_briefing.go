@@ -184,16 +184,9 @@ func crateBriefingHoldsIdentifier(text string) bool {
 // positive timeout bounds the call. The reply passes ValidateCrateBriefing
 // before it is returned, so a refused reply is never stored.
 func (d *Dispatcher) GenerateCrateBriefing(ctx context.Context, input CrateBriefingInput) (CrateBriefing, error) {
-	if d.Agent == nil {
-		return CrateBriefing{}, fmt.Errorf("%w: in-process agent is not configured", ErrCrateBriefingUnconfigured)
-	}
-	cfg, err := d.currentConfig(ctx)
+	route, err := d.crateBriefingRoute(ctx)
 	if err != nil {
 		return CrateBriefing{}, err
-	}
-	route := cfg.Routing.Triage
-	if strings.TrimSpace(route.Model) == "" {
-		return CrateBriefing{}, fmt.Errorf("%w: triage route with a model is not configured", ErrCrateBriefingUnconfigured)
 	}
 	prompt, err := CrateBriefingPrompt(input.Document)
 	if err != nil {
@@ -216,6 +209,34 @@ func (d *Dispatcher) GenerateCrateBriefing(ctx context.Context, input CrateBrief
 	}
 	briefing.Model, briefing.TokensIn, briefing.TokensOut = result.Model, result.TokensIn, result.TokensOut
 	return briefing, nil
+}
+
+// CrateBriefingConfigured runs the configuration checks of
+// GenerateCrateBriefing without a model call. It returns nil when a
+// generation has a model to call, an error that wraps
+// ErrCrateBriefingUnconfigured when it has none, and the configuration read's
+// error when that read fails. The start after a join calls it, so an
+// unconfigured deployment starts nothing (component-crates invariant 36).
+func (d *Dispatcher) CrateBriefingConfigured(ctx context.Context) error {
+	_, err := d.crateBriefingRoute(ctx)
+	return err
+}
+
+// crateBriefingRoute resolves the triage route that generation uses: a nil
+// agent or a route without a model is ErrCrateBriefingUnconfigured.
+func (d *Dispatcher) crateBriefingRoute(ctx context.Context) (config.TriageRoute, error) {
+	if d.Agent == nil {
+		return config.TriageRoute{}, fmt.Errorf("%w: in-process agent is not configured", ErrCrateBriefingUnconfigured)
+	}
+	cfg, err := d.currentConfig(ctx)
+	if err != nil {
+		return config.TriageRoute{}, err
+	}
+	route := cfg.Routing.Triage
+	if strings.TrimSpace(route.Model) == "" {
+		return config.TriageRoute{}, fmt.Errorf("%w: triage route with a model is not configured", ErrCrateBriefingUnconfigured)
+	}
+	return route, nil
 }
 
 // CrateBriefingPrompt renders the fixed instructions followed by the one

@@ -24,3 +24,9 @@ ON CONFLICT (workspace_id, crate_id) DO UPDATE SET
   generated_at = EXCLUDED.generated_at
 WHERE crate_briefings.fingerprint <> EXCLUDED.fingerprint
 RETURNING workspace_id, crate_id, fingerprint, headline, account, look_first, model, tokens_in, tokens_out, generated_by, generated_at;
+
+-- name: ListCrateBriefingSummaries :many
+SELECT b.crate_id, b.headline, b.generated_at
+FROM crate_briefings b
+JOIN crates c ON c.workspace_id = b.workspace_id AND c.id = b.crate_id
+WHERE b.workspace_id = $1 AND ($2::text = '' OR c.state = $2::text);

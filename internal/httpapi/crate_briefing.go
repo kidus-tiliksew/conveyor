@@ -1,17 +1,20 @@
 package httpapi
 
 // Crate briefing routes (feature-crate-insights CI-2; component-crates
-// invariants 29 to 32, Public surfaces; req-crate-insights REQ-5, AC-5.2,
-// AC-5.4, AC-5.6; DEC-142). GET reads the stored briefing and never calls
-// the model. Only POST calls it, and it writes only the stored briefing row:
+// invariants 29 to 32 and 36, Public surfaces; req-crate-insights REQ-5,
+// AC-5.2, AC-5.4, AC-5.6; DEC-144). GET reads the stored briefing and never
+// calls the model. Only POST and the start after a join call it, and each
+// writes only the stored briefing row:
 // no task, work order, gate, document, crate field, or event changes, and
 // the briefing never enters work-order or agent context (DEC-142(2), (4)).
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -59,8 +62,8 @@ type crateBriefingState struct {
 	fingerprint string
 }
 
-func (s *Server) readCrateBriefingState(r *http.Request, backend crateBackend, crateID string) (crateBriefingState, error) {
-	state, err := s.readCrateInsightState(r, backend, crateID)
+func (s *Server) readCrateBriefingState(ctx context.Context, backend crateBackend, crateID string) (crateBriefingState, error) {
+	state, err := s.readCrateInsightState(ctx, backend, crateID)
 	if err != nil {
 		return crateBriefingState{}, err
 	}
@@ -106,7 +109,7 @@ func (s *Server) getCrateBriefing(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	crateID := chi.URLParam(r, "id")
-	state, err := s.readCrateBriefingState(r, backend, crateID)
+	state, err := s.readCrateBriefingState(ctx, backend, crateID)
 	if err != nil {
 		writeCrateInsightFailure(w, r, err)
 		return
@@ -126,14 +129,11 @@ func (s *Server) getCrateBriefing(w http.ResponseWriter, r *http.Request) {
 
 // generateCrateBriefing serves POST /v1/crates/{id}/briefing under
 // create_tasks (component-crates invariant 29; req-crate-insights AC-5.2,
-// AC-5.4; DEC-142(4), (6)). Under the workspace and crate mutex it reads the
-// inputs and the stored row, so a request that waited sees its
-// predecessor's result before it calls the model. A crate with no member
-// answers 409 crate_empty and a stored row with the live fingerprint answers
-// 409 crate_briefing_current, each before any model call. The row records
-// the fingerprint of the document actually sent, so a change during
-// generation reads as out of date on the next read. Every failure leaves the
-// stored row unchanged and the reply is never echoed.
+// AC-5.4; DEC-144(4), (6)). runCrateBriefing does the work under the
+// workspace and crate mutex. A crate with no member answers 409 crate_empty
+// and a stored row with the live fingerprint answers 409
+// crate_briefing_current, each before any model call. Every failure leaves
+// the stored row unchanged and the reply is never echoed.
 func (s *Server) generateCrateBriefing(w http.ResponseWriter, r *http.Request) {
 	backend, ok := s.crateStore(w)
 	if !ok {
@@ -141,36 +141,126 @@ func (s *Server) generateCrateBriefing(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	crateID := chi.URLParam(r, "id")
-	workspace, _ := store.WorkspaceFromContext(ctx)
-	unlock := s.crateBriefingLocks.lock(requirementInsightKey{workspace: workspace, requirement: crateID})
-	defer unlock()
-
-	state, err := s.readCrateBriefingState(r, backend, crateID)
+	var canGenerate bool
+	result, err := s.runCrateBriefing(ctx, backend, crateID, false, func() (err error) {
+		canGenerate, err = s.callerCapability(ctx, core.CapabilityCreateTasks)
+		return err
+	})
 	if err != nil {
 		writeCrateInsightFailure(w, r, err)
 		return
 	}
-	if len(state.insight.inputs.Members) == 0 {
+	switch result.outcome {
+	case crateBriefingEmpty:
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "crate_empty", "crate_id": crateID, "message": "The crate has no task. Add a task to the crate before you generate a briefing."})
-		return
-	}
-	stored, err := storedCrateBriefing(ctx, backend, crateID)
-	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
-	}
-	if stored != nil && stored.Fingerprint == state.fingerprint {
+	case crateBriefingCurrent:
 		writeCrateBriefingCurrent(w, crateID)
-		return
+	case crateBriefingUnconfigured:
+		writeCrateBriefingUnconfigured(w)
+	case crateBriefingFailed:
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "crate_briefing_failed", "detail": result.detail, "message": "The briefing could not be generated. The stored briefing did not change."})
+	case crateBriefingStored:
+		writeJSON(w, http.StatusOK, crateBriefingViewOf(result.fingerprint, &result.recorded, canGenerate))
+	default:
+		// Only the missing-only mode of a start after a join skips.
+		writeStoreFailure(w, r, fmt.Errorf("crate briefing outcome %d is not served", result.outcome))
 	}
-	canGenerate, err := s.callerCapability(ctx, core.CapabilityCreateTasks)
+}
+
+// crateBriefingOutcome is how one generation attempt ended.
+type crateBriefingOutcome int
+
+const (
+	// crateBriefingStored: the model answered and the row was written.
+	crateBriefingStored crateBriefingOutcome = iota
+	// crateBriefingEmpty: the crate has no member. No model call.
+	crateBriefingEmpty
+	// crateBriefingCurrent: the stored row has the live fingerprint, or a
+	// concurrent writer stored that fingerprint first.
+	crateBriefingCurrent
+	// crateBriefingUnconfigured: no model is configured. No model call.
+	crateBriefingUnconfigured
+	// crateBriefingFailed: the model call or its reply failed. Nothing
+	// was stored, and detail holds the redacted cause.
+	crateBriefingFailed
+	// crateBriefingExists: missing-only mode found a stored row. No model
+	// call.
+	crateBriefingExists
+	// crateBriefingClosed: missing-only mode found the crate closed. No
+	// model call.
+	crateBriefingClosed
+)
+
+// crateBriefingResult is one generation attempt's outcome, the live
+// fingerprint it read, the row it stored, and a failure's redacted detail.
+type crateBriefingResult struct {
+	outcome     crateBriefingOutcome
+	fingerprint string
+	recorded    store.CrateBriefing
+	detail      string
+}
+
+// runCrateBriefing is the generation core that POST and the start after a
+// join share (component-crates invariants 29 and 36). Under the workspace and
+// crate mutex it reads the inputs and the stored row, so a caller that waited
+// sees its predecessor's result before it calls the model. The row records
+// the fingerprint of the document actually sent, so a change during
+// generation reads as out of date on the next read, and the compare-and-write
+// leaves one winner across processes. generated_by is the context's actor.
+//
+// missingOnly is the mode of the start after a join: it first checks for a
+// stored row and skips when one exists, even when it is out of date, and it
+// skips a closed crate. Both checks run under the mutex before any input read
+// or model call. beforeModel, when set, runs after the empty and current
+// checks and before the configuration check; POST reads the caller's
+// capability there. A returned error is an input, store, projection, or
+// beforeModel failure. A model failure is the crateBriefingFailed outcome,
+// logged here with its redacted detail.
+func (s *Server) runCrateBriefing(ctx context.Context, backend crateBackend, crateID string, missingOnly bool, beforeModel func() error) (crateBriefingResult, error) {
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	unlock := s.crateBriefingLocks.lock(requirementInsightKey{workspace: workspace, requirement: crateID})
+	defer unlock()
+
+	if missingOnly {
+		stored, err := storedCrateBriefing(ctx, backend, crateID)
+		if err != nil {
+			return crateBriefingResult{}, err
+		}
+		if stored != nil {
+			return crateBriefingResult{outcome: crateBriefingExists}, nil
+		}
+	}
+	state, err := s.readCrateBriefingState(ctx, backend, crateID)
 	if err != nil {
-		writeStoreFailure(w, r, err)
-		return
+		return crateBriefingResult{}, err
+	}
+	result := crateBriefingResult{fingerprint: state.fingerprint}
+	if missingOnly && state.insight.inputs.Crate.State != string(store.CrateOpen) {
+		result.outcome = crateBriefingClosed
+		return result, nil
+	}
+	if len(state.insight.inputs.Members) == 0 {
+		result.outcome = crateBriefingEmpty
+		return result, nil
+	}
+	if !missingOnly {
+		stored, err := storedCrateBriefing(ctx, backend, crateID)
+		if err != nil {
+			return crateBriefingResult{}, err
+		}
+		if stored != nil && stored.Fingerprint == state.fingerprint {
+			result.outcome = crateBriefingCurrent
+			return result, nil
+		}
+	}
+	if beforeModel != nil {
+		if err := beforeModel(); err != nil {
+			return crateBriefingResult{}, err
+		}
 	}
 	if s.WorkOrders == nil || s.WorkOrders.Dispatcher == nil {
-		writeCrateBriefingUnconfigured(w)
-		return
+		result.outcome = crateBriefingUnconfigured
+		return result, nil
 	}
 	memberIDs := make([]string, len(state.insight.inputs.Members))
 	for i, member := range state.insight.inputs.Members {
@@ -178,14 +268,14 @@ func (s *Server) generateCrateBriefing(w http.ResponseWriter, r *http.Request) {
 	}
 	generated, err := s.WorkOrders.Dispatcher.GenerateCrateBriefing(ctx, dispatch.CrateBriefingInput{Document: state.document, MemberIDs: memberIDs})
 	if errors.Is(err, dispatch.ErrCrateBriefingUnconfigured) {
-		writeCrateBriefingUnconfigured(w)
-		return
+		result.outcome = crateBriefingUnconfigured
+		return result, nil
 	}
 	if err != nil {
-		detail := s.redactedFailureDetail(ctx, err, crateBriefingFailureWithheld)
-		log.Printf("crate briefing generation for %s: %s", crateID, detail)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "crate_briefing_failed", "detail": detail, "message": "The briefing could not be generated. The stored briefing did not change."})
-		return
+		result.outcome = crateBriefingFailed
+		result.detail = s.redactedFailureDetail(ctx, err, crateBriefingFailureWithheld)
+		log.Printf("crate briefing generation for %s: %s", crateID, result.detail)
+		return result, nil
 	}
 	recorded, err := backend.RecordCrateBriefing(ctx, store.CrateBriefing{
 		CrateID:     crateID,
@@ -199,14 +289,96 @@ func (s *Server) generateCrateBriefing(w http.ResponseWriter, r *http.Request) {
 		GeneratedBy: store.ActorFromContext(ctx).ID,
 	})
 	if errors.Is(err, store.ErrCrateBriefingCurrent) {
-		writeCrateBriefingCurrent(w, crateID)
-		return
+		result.outcome = crateBriefingCurrent
+		return result, nil
 	}
 	if err != nil {
-		writeStoreFailure(w, r, err)
+		return crateBriefingResult{}, err
+	}
+	result.outcome, result.recorded = crateBriefingStored, recorded
+	return result, nil
+}
+
+// crateBriefingJoinTimeout bounds one background generation after a join:
+// its checks before the start, its reads, its model call, and its write. The model call keeps the triage
+// route's own timeout inside this bound.
+const crateBriefingJoinTimeout = 30 * time.Minute
+
+// startCrateBriefingAfterJoin starts one background generation after the
+// transaction that put a task in crateID committed (component-crates
+// invariant 36; req-crate-insights AC-5.2; DEC-144(4)(a), (6)). Intake calls
+// it only for a task it created, never for a replayed create, and the
+// membership route calls it only when its write changed the task's crate, so
+// a same-crate repeat, a removal, and a refused join start nothing.
+//
+// The checks here run before the response and start nothing when the crate
+// ID is empty, the store keeps no crates, no model is configured, the acting
+// member does not hold create_tasks, or the crate has a stored briefing. A
+// failed check is logged and starts nothing. Only the authenticated
+// workspace, actor, and credential are read from the request context. They
+// are copied first into a new context.Background() child bounded by
+// crateBriefingJoinTimeout, and the checks and the background work all run
+// on that context. A request cancelled after the commit therefore cannot
+// fail the checks, and the request context is never read after the
+// response. The background work runs runCrateBriefing in missing-only mode
+// with the acting member as generated_by. A failure stores nothing, is
+// logged with the redaction of invariant 29, and schedules no retry.
+func (s *Server) startCrateBriefingAfterJoin(ctx context.Context, crateID string) {
+	crateID = strings.TrimSpace(crateID)
+	if crateID == "" {
 		return
 	}
-	writeJSON(w, http.StatusOK, crateBriefingViewOf(state.fingerprint, &recorded, canGenerate))
+	backend, ok := s.Store.(crateBackend)
+	if !ok || s.WorkOrders == nil || s.WorkOrders.Dispatcher == nil {
+		return
+	}
+	detached := store.WithActor(context.Background(), store.ActorFromContext(ctx))
+	if workspace, scoped := store.WorkspaceFromContext(ctx); scoped {
+		detached = store.WithWorkspace(detached, workspace)
+	}
+	if credential, ok := store.CredentialFromContext(ctx); ok {
+		detached = store.WithCredential(detached, credential)
+	}
+	jobCtx, cancel := context.WithTimeout(detached, crateBriefingJoinTimeout)
+	started := false
+	defer func() {
+		if !started {
+			cancel()
+		}
+	}()
+	allowed, err := s.callerCapability(jobCtx, core.CapabilityCreateTasks)
+	if err != nil {
+		log.Printf("crate briefing after a join for %s: capability read failed: %s", crateID, s.redactedFailureDetail(jobCtx, err, crateBriefingFailureWithheld))
+		return
+	}
+	if !allowed {
+		return
+	}
+	if err := s.WorkOrders.Dispatcher.CrateBriefingConfigured(jobCtx); err != nil {
+		if !errors.Is(err, dispatch.ErrCrateBriefingUnconfigured) {
+			log.Printf("crate briefing after a join for %s: configuration read failed: %s", crateID, s.redactedFailureDetail(jobCtx, err, crateBriefingFailureWithheld))
+		}
+		return
+	}
+	// A crate with a stored briefing starts nothing. The background work
+	// checks again under the mutex, because another request can store one
+	// between this read and the start.
+	if stored, err := storedCrateBriefing(jobCtx, backend, crateID); err != nil {
+		log.Printf("crate briefing after a join for %s: briefing read failed: %s", crateID, s.redactedFailureDetail(jobCtx, err, crateBriefingFailureWithheld))
+		return
+	} else if stored != nil {
+		return
+	}
+	started = true
+	s.crateBriefingJobs.Add(1)
+	s.crateBriefingJobsStarted.Add(1)
+	go func() {
+		defer s.crateBriefingJobs.Done()
+		defer cancel()
+		if _, err := s.runCrateBriefing(jobCtx, backend, crateID, true, nil); err != nil {
+			log.Printf("crate briefing after a join for %s: %s", crateID, s.redactedFailureDetail(jobCtx, err, crateBriefingFailureWithheld))
+		}
+	}()
 }
 
 func writeCrateBriefingCurrent(w http.ResponseWriter, crateID string) {

@@ -283,6 +283,12 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	if initialState == core.TaskQueued && s.OnCreate != nil {
 		s.OnCreate(ctx, id)
 	}
+	// The creation committed. A task created in a crate starts the
+	// background briefing when the crate has none. Only this path, never an
+	// idempotent replay above, reaches it (component-crates invariant 36).
+	if req.CrateID != "" {
+		s.startCrateBriefingAfterJoin(ctx, req.CrateID)
+	}
 	task.Context, _ = store.TaskContextForTask(ctx, s.Store, task.ID)
 	return taskCreateResult{Task: task, Created: true}, nil
 }

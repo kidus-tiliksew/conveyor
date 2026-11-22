@@ -274,6 +274,19 @@ export interface Crate {
   total_task_count: number
 }
 
+// The part of a stored briefing that GET /v1/crates serves: its headline and
+// its generation time (component-crates, Public surfaces).
+export interface CrateBriefingSummary {
+  headline: string
+  generated_at: string
+}
+
+// One GET /v1/crates row: the crate row plus `briefing`, null when the crate
+// has no stored briefing. Only the crates list reads it (invariants 14 and 17).
+export interface CrateListRow extends Crate {
+  briefing: CrateBriefingSummary | null
+}
+
 // One declared or undeclared requirement on the crate read, with the number
 // of member tasks that carry it (invariant 11).
 export interface CrateRequirement {

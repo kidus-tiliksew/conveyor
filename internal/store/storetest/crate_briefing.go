@@ -9,9 +9,11 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +29,11 @@ func runCrateBriefings(t *testing.T, factory Factory) {
 	t.Run("CrateBriefingWorkspaceIsolation", func(t *testing.T) { runCrateBriefingWorkspaceIsolation(t, factory.fresh(t, nil)) })
 	t.Run("CrateBriefingConcurrentSameFingerprint", func(t *testing.T) { runCrateBriefingConcurrent(t, factory.fresh(t, nil)) })
 	t.Run("CrateBriefingWritesNoEventsOrControlState", func(t *testing.T) { runCrateBriefingControlState(t, factory.fresh(t, nil)) })
+	t.Run("CrateListBriefingSummaries", func(t *testing.T) { runCrateListBriefingSummaries(t, factory.fresh(t, nil)) })
+	t.Run("CrateListBriefingsBoundedStatements", func(t *testing.T) {
+		runCrateListBriefingsBounded(t, factory.fresh(t, nil), factory.ProductionCapable)
+	})
+	t.Run("CrateJoinReportsChange", func(t *testing.T) { runCrateJoinReportsChange(t, factory.fresh(t, nil)) })
 }
 
 func crateBriefingRow(crateID, fingerprint, headline string, entries ...store.CrateBriefingEntry) store.CrateBriefing {
@@ -269,5 +276,231 @@ func runCrateBriefingControlState(t *testing.T, x Fixture) {
 	}
 	if after := snapshot(); !reflect.DeepEqual(after, before) {
 		t.Fatalf("a briefing write changed recorded state:\nbefore %+v\nafter  %+v", before, after)
+	}
+}
+
+// crateListSummaries maps each listed crate ID to its briefing summary, or
+// to nil. It fails on a listed ID that appears twice.
+func crateListSummaries(t *testing.T, rows []store.CrateListRow) map[string]*store.CrateBriefingSummary {
+	t.Helper()
+	out := make(map[string]*store.CrateBriefingSummary, len(rows))
+	for _, row := range rows {
+		if _, dup := out[row.ID]; dup {
+			t.Fatalf("crate %s listed twice", row.ID)
+		}
+		out[row.ID] = row.Briefing
+	}
+	return out
+}
+
+// requireCrateListMatches holds the list projection to ListCrates for the
+// same query: the same crates, fields, and order.
+func requireCrateListMatches(t *testing.T, x Fixture, ctx context.Context, query store.CrateListQuery, rows []store.CrateListRow) {
+	t.Helper()
+	crates, err := x.Backend.ListCrates(ctx, query)
+	requireOK(t, err)
+	if len(crates) != len(rows) {
+		t.Fatalf("state %q: list rows %d, ListCrates %d", query.State, len(rows), len(crates))
+	}
+	for i := range crates {
+		if !reflect.DeepEqual(rows[i].Crate, crates[i]) {
+			t.Fatalf("state %q row %d: %+v, want the ListCrates row %+v", query.State, i, rows[i].Crate, crates[i])
+		}
+	}
+}
+
+func requireCrateSummary(t *testing.T, label string, got *store.CrateBriefingSummary, want store.CrateBriefing) {
+	t.Helper()
+	if got == nil || got.Headline != want.Headline || !got.GeneratedAt.Equal(want.GeneratedAt) || got.GeneratedAt.Location() != time.UTC {
+		t.Fatalf("%s summary %+v, want headline %q generated at %s UTC", label, got, want.Headline, want.GeneratedAt)
+	}
+}
+
+// runCrateListBriefingSummaries holds the GET /v1/crates projection on every
+// backend: each listed crate carries the headline and generation time of its
+// own stored briefing or nil, under the same state filter, fields, and order
+// as ListCrates. Two workspaces hold a crate with the same name, and the
+// other workspace also holds a briefing under this workspace's crate ID:
+// neither list carries the other workspace's headline (component-crates
+// invariant 17, Public surfaces; req-crates AC-5.1).
+func runCrateListBriefingSummaries(t *testing.T, x Fixture) {
+	shared := briefingCrate(t, x, "Shared name")
+	bare := briefingCrate(t, x, "Without briefing")
+	shut := briefingCrate(t, x, "Closed with briefing")
+	crateTask(t, x, core.TaskRunning, shared.ID)
+	homeShared, err := x.Backend.RecordCrateBriefing(x.Context, crateBriefingRow(shared.ID, "fp-list-home", "Home headline."))
+	requireOK(t, err)
+	homeShut, err := x.Backend.RecordCrateBriefing(x.Context, crateBriefingRow(shut.ID, "fp-list-shut", "Closed headline."))
+	requireOK(t, err)
+	closed := store.CrateClosed
+	_, err = x.Backend.UpdateCrate(x.Context, shut.ID, store.CratePatch{State: &closed})
+	requireOK(t, err)
+
+	foreign, _ := foreignBriefingContext(t, x)
+	twin, err := x.Backend.CreateCrate(foreign, store.CrateInput{Name: "Shared name"})
+	requireOK(t, err)
+	foreignTwin, err := x.Backend.RecordCrateBriefing(foreign, crateBriefingRow(twin.ID, "fp-list-twin", "Foreign twin headline."))
+	requireOK(t, err)
+	if _, err := x.Backend.RecordCrateBriefing(foreign, crateBriefingRow(shared.ID, "fp-list-same-id", "Foreign headline under the home crate ID.")); err != nil {
+		t.Fatalf("foreign briefing under the home crate ID: %v", err)
+	}
+
+	for _, query := range []store.CrateListQuery{{State: store.CrateOpen}, {State: store.CrateClosed}, {}} {
+		rows, err := x.Backend.ListCratesWithBriefings(x.Context, query)
+		requireOK(t, err)
+		requireCrateListMatches(t, x, x.Context, query, rows)
+		summaries := crateListSummaries(t, rows)
+		if query.State != store.CrateClosed {
+			requireCrateSummary(t, "home shared", summaries[shared.ID], homeShared)
+			if got, listed := summaries[bare.ID]; !listed || got != nil {
+				t.Fatalf("state %q: crate without briefing listed=%t summary=%+v, want listed with nil", query.State, listed, got)
+			}
+		}
+		if query.State != store.CrateOpen {
+			requireCrateSummary(t, "home closed", summaries[shut.ID], homeShut)
+		} else if _, listed := summaries[shut.ID]; listed {
+			t.Fatal("the open list carries the closed crate")
+		}
+		if _, listed := summaries[twin.ID]; listed {
+			t.Fatalf("state %q: the home list carries the other workspace's crate", query.State)
+		}
+	}
+
+	foreignRows, err := x.Backend.ListCratesWithBriefings(foreign, store.CrateListQuery{})
+	requireOK(t, err)
+	requireCrateListMatches(t, x, foreign, store.CrateListQuery{}, foreignRows)
+	if len(foreignRows) != 1 || foreignRows[0].ID != twin.ID {
+		t.Fatalf("foreign list %+v, want only its own crate", foreignRows)
+	}
+	requireCrateSummary(t, "foreign twin", foreignRows[0].Briefing, foreignTwin)
+
+	replaced, err := x.Backend.RecordCrateBriefing(x.Context, crateBriefingRow(shared.ID, "fp-list-home-two", "Replaced headline."))
+	requireOK(t, err)
+	rows, err := x.Backend.ListCratesWithBriefings(x.Context, store.CrateListQuery{State: store.CrateOpen})
+	requireOK(t, err)
+	requireCrateSummary(t, "replaced", crateListSummaries(t, rows)[shared.ID], replaced)
+
+	// The JSON row is the crate row plus briefing: null, or exactly headline
+	// and generated_at (component-crates Public surfaces).
+	raw, err := json.Marshal(rows)
+	requireOK(t, err)
+	var decoded []map[string]json.RawMessage
+	requireOK(t, json.Unmarshal(raw, &decoded))
+	for _, row := range decoded {
+		var id string
+		requireOK(t, json.Unmarshal(row["id"], &id))
+		briefing, found := row["briefing"]
+		if !found {
+			t.Fatalf("row %s lacks briefing: %s", id, raw)
+		}
+		if id == bare.ID {
+			if string(briefing) != "null" {
+				t.Fatalf("crate without briefing serves %s", briefing)
+			}
+			continue
+		}
+		var fields map[string]json.RawMessage
+		requireOK(t, json.Unmarshal(briefing, &fields))
+		if len(fields) != 2 || fields["headline"] == nil || fields["generated_at"] == nil {
+			t.Fatalf("briefing summary %s, want exactly headline and generated_at", briefing)
+		}
+	}
+}
+
+// runCrateListBriefingsBounded holds the list projection to a fixed number
+// of statements on the SQL backends: listing 3 crates and listing 30, each
+// with a member and a stored briefing, issue the same nonzero number of
+// statements under the read's label. Fixture setup runs under other labels
+// and is drained before each read.
+func runCrateListBriefingsBounded(t *testing.T, x Fixture, productionCapable bool) {
+	if x.DrainReadQueries == nil {
+		if productionCapable {
+			t.Fatal("production-capable conformance fixture must provide DrainReadQueries")
+		}
+		t.Skip("the memory backend runs no SQL statements")
+	}
+	counts := map[int]uint64{}
+	seeded := 0
+	for _, size := range []int{3, 30} {
+		for ; seeded < size; seeded++ {
+			crate := briefingCrate(t, x, fmt.Sprintf("Bounded crate %02d", seeded))
+			crateTask(t, x, core.TaskRunning, crate.ID)
+			_, err := x.Backend.RecordCrateBriefing(x.Context, crateBriefingRow(crate.ID, fmt.Sprintf("fp-bounded-%02d", seeded), fmt.Sprintf("Headline %02d.", seeded)))
+			requireOK(t, err)
+		}
+		x.DrainReadQueries()
+		rows, err := x.Backend.ListCratesWithBriefings(x.Context, store.CrateListQuery{State: store.CrateOpen})
+		statements := x.DrainReadQueries()["ListCratesWithBriefings"]
+		requireOK(t, err)
+		if len(rows) != size {
+			t.Fatalf("size %d: listed %d crates", size, len(rows))
+		}
+		for _, row := range rows {
+			if row.Briefing == nil || row.TotalTaskCount != 1 {
+				t.Fatalf("size %d: row %+v lacks its briefing or member", size, row)
+			}
+		}
+		counts[size] = statements
+		t.Logf("crate list with briefings: %d crates, %d statements", size, statements)
+	}
+	if counts[3] == 0 || counts[3] != counts[30] {
+		t.Fatalf("list statements %v, want one equal nonzero count for 3 and 30 crates", counts)
+	}
+}
+
+// runCrateJoinReportsChange: JoinTaskCrate reports true only for a write
+// that changed the task's crate: a first join and a move. A join of the
+// crate the task holds reports false and records nothing, and a refused join
+// reports false (component-crates invariant 36).
+func runCrateJoinReportsChange(t *testing.T, x Fixture) {
+	first := briefingCrate(t, x, "Join first")
+	second := briefingCrate(t, x, "Join second")
+	shut := briefingCrate(t, x, "Join closed")
+	closed := store.CrateClosed
+	_, err := x.Backend.UpdateCrate(x.Context, shut.ID, store.CratePatch{State: &closed})
+	requireOK(t, err)
+	task := crateTask(t, x, core.TaskQueued, "")
+	moves := func() int {
+		t.Helper()
+		events, err := x.Backend.ListEvents(x.Context, task.ID)
+		requireOK(t, err)
+		count := 0
+		for _, event := range events {
+			if event.Kind == store.TaskCrateSetEvent || event.Kind == store.TaskCrateClearedEvent {
+				count++
+			}
+		}
+		return count
+	}
+	for _, step := range []struct {
+		label   string
+		crateID string
+		changed bool
+		moves   int
+	}{
+		{"first join", first.ID, true, 1},
+		{"same crate", first.ID, false, 1},
+		{"same crate with spaces", "  " + first.ID + " ", false, 1},
+		{"move", second.ID, true, 2},
+	} {
+		joined, changed, err := x.Backend.JoinTaskCrate(x.Context, task.ID, step.crateID)
+		requireOK(t, err)
+		if changed != step.changed || joined.TaskCrateID() != strings.TrimSpace(step.crateID) {
+			t.Fatalf("%s: changed=%t crate=%q, want changed=%t", step.label, changed, joined.TaskCrateID(), step.changed)
+		}
+		if got := moves(); got != step.moves {
+			t.Fatalf("%s: membership events=%d, want %d", step.label, got, step.moves)
+		}
+	}
+	if _, changed, err := x.Backend.JoinTaskCrate(x.Context, task.ID, shut.ID); err == nil || changed {
+		t.Fatalf("closed crate join changed=%t err=%v, want a refusal", changed, err)
+	}
+	if _, changed, err := x.Backend.JoinTaskCrate(x.Context, "missing-task", first.ID); !errors.Is(err, store.ErrNotFound) || changed {
+		t.Fatalf("missing task join changed=%t err=%v", changed, err)
+	}
+	_, err = x.Backend.ClearTaskCrate(x.Context, task.ID)
+	requireOK(t, err)
+	if _, changed, err := x.Backend.JoinTaskCrate(x.Context, task.ID, first.ID); err != nil || !changed {
+		t.Fatalf("rejoin after leaving changed=%t err=%v", changed, err)
 	}
 }

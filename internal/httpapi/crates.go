@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -100,7 +101,10 @@ func (s *Server) listCrates(w http.ResponseWriter, r *http.Request) {
 		writeCrateError(w, r, &store.CrateFieldError{Field: "state", Message: "state must be open, closed, or all"})
 		return
 	}
-	crates, err := backend.ListCrates(r.Context(), query)
+	// Each row carries briefing: null, or the stored headline and its
+	// generation time. The read computes no fingerprint and calls no model
+	// (component-crates invariants 17 and 29, Public surfaces; DEC-144(2)).
+	crates, err := backend.ListCratesWithBriefings(r.Context(), query)
 	if err != nil {
 		writeCrateError(w, r, err)
 		return
@@ -259,7 +263,7 @@ func (s *Server) getCrateInsight(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	state, err := s.readCrateInsightState(r, backend, chi.URLParam(r, "id"))
+	state, err := s.readCrateInsightState(r.Context(), backend, chi.URLParam(r, "id"))
 	if err != nil {
 		writeCrateInsightFailure(w, r, err)
 		return
@@ -287,12 +291,15 @@ func (e *crateInsightInputsError) Unwrap() error { return e.err }
 // readCrateInsightState reads the store's insight inputs and projects each
 // member's compact next action once through the projection GET /v1/tasks
 // uses (DEC-61).
-func (s *Server) readCrateInsightState(r *http.Request, backend crateBackend, crateID string) (crateInsightState, error) {
-	inputs, err := backend.ReadCrateInsightInputs(r.Context(), crateID)
+// It reads only the context, never a request, so the background generation
+// after a join reads exactly what a POST reads (component-crates invariant
+// 36).
+func (s *Server) readCrateInsightState(ctx context.Context, backend crateBackend, crateID string) (crateInsightState, error) {
+	inputs, err := backend.ReadCrateInsightInputs(ctx, crateID)
 	if err != nil {
 		return crateInsightState{}, &crateInsightInputsError{err: err}
 	}
-	opts, err := s.nextActionOptions(r)
+	opts, err := s.nextActionOptionsFor(ctx)
 	if err != nil {
 		return crateInsightState{}, err
 	}
@@ -303,7 +310,7 @@ func (s *Server) readCrateInsightState(r *http.Request, backend crateBackend, cr
 		for i, member := range inputs.Members {
 			tasks[i] = member.Task
 		}
-		projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, opts)
+		projected, err := store.ReadNextActions(ctx, s.Store, tasks, opts)
 		if err != nil {
 			return crateInsightState{}, err
 		}
@@ -390,7 +397,20 @@ func (s *Server) setTaskCrate(w http.ResponseWriter, r *http.Request) {
 		writeCrateError(w, r, err)
 		return
 	}
-	task, err := backend.SetTaskCrate(r.Context(), chi.URLParam(r, "id"), *crateID)
+	task, changed, err := backend.JoinTaskCrate(r.Context(), chi.URLParam(r, "id"), *crateID)
+	// Only a committed write that changed the task's crate starts the
+	// background briefing, and it starts for the crate that write set: the
+	// normalized request destination, which changed proves was written. The
+	// task read after the commit serves only the response, because a later
+	// move can commit before that read. When only that read failed, changed
+	// still reports the commit, so the start happens before the error answer;
+	// a same-crate retry could not start it later. A same-crate repeat starts
+	// nothing (component-crates invariant 36; req-crate-insights AC-5.2).
+	if changed {
+		if destination, normalizeErr := store.NormalizeJoinCrateID(*crateID); normalizeErr == nil {
+			s.startCrateBriefingAfterJoin(r.Context(), destination)
+		}
+	}
 	if err != nil {
 		writeCrateError(w, r, err)
 		return
