@@ -855,6 +855,11 @@ export type TimelineEntry =
       // Set when the summary text was cut at 16,384 bytes: the event whose
       // audit read returns the full text.
       summaryEventId?: string
+      // A live job's current progress report, set only when the card's body
+      // does not already print it: a running job whose claimed order reported
+      // progress beside a distinct summary, or a Verify job, whose card shows
+      // no summary.
+      progress?: string
       model: string
       tone: 'default' | 'warning'
       order?: WorkOrder
@@ -870,7 +875,6 @@ export type TimelineEntry =
       title: string
       detail?: string
       failureDetail?: string
-      fullProgress?: string
       href?: string
       alarm?: boolean
       // A selected event whose payload the server omitted: the note is titled
@@ -1096,22 +1100,25 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
   return index
 }
 
-// The progress report a seat row prints: the order's report without harness
-// run-mode lines, trimmed.
-function reviewSeatProgress(progress?: string) {
-  return progress
-    ?.split('\n')
-    .filter((line) => !/^\s*conveyor run mode\s*:/i.test(line))
-    .join('\n')
-    .trim()
+// The progress report a live card prints: the order's report without harness
+// run-mode lines, trimmed. An absent, blank, or run-mode-only report is no
+// report. Deliberating review seats, claimed jobless orders, claimed unrated
+// risk orders, and running jobs all read this one rule, and each prints the
+// report inside its own card (component-web-task-surfaces invariant 72).
+export function liveProgressReport(progress?: string): string | undefined {
+  return (
+    progress
+      ?.split('\n')
+      .filter((line) => !/^\s*conveyor run mode\s*:/i.test(line))
+      .join('\n')
+      .trim() || undefined
+  )
 }
 
 // A deliberating seat prints its order's progress report in its panel row.
-// The seat row and the timeline's agent-activity suppression both read this
-// one rule, so the report is printed exactly once (component-web-task-surfaces).
 export function deliberatingSeatProgress(seat: PanelSeat): string | undefined {
   if (seat.status !== 'deliberating') return undefined
-  return reviewSeatProgress(seat.order.progress) || undefined
+  return liveProgressReport(seat.order.progress)
 }
 
 function seatStatus(order: WorkOrder, job: Job | undefined, review?: PanelSeatReview): PanelSeatStatus {
@@ -1613,7 +1620,9 @@ const genericSummaries = new Set([
 // Work orders fold into the timeline instead of a separate
 // block: narration and attribution enrich the matching stage entry, and only
 // states a job entry cannot carry — stale, timed out, or claimed without a
-// job — become entries of their own. A queued order adds no entry: the
+// job — become entries of their own. An order's progress report prints inside
+// its own entry, never as a separate note, and the rail avatar alone names the
+// person who claimed it. A queued order adds no entry: the
 // next-action card alone states that the task waits for an agent, so the
 // timeline repeats no current-state summary (component-web-task-surfaces,
 // Presenting the statement invariant 2; req-operator-next-action AC-1.7).
@@ -1632,12 +1641,13 @@ function orderEntry(
   switch (order.state) {
     case 'claimed':
       // A claimed order normally has a running job entry carrying the story.
+      // Without one, the order's own progress report is its detail.
       if (hasJobEntry) return undefined
       return {
         ...base,
         tone: 'active',
         badge: { label: 'In progress', variant: 'accent' },
-        detail: [order.claimed_by, order.agent, order.model].filter(Boolean).join(' · ') || undefined,
+        detail: liveProgressReport(order.progress),
       }
     case 'stale':
     case 'timed_out':
@@ -1740,7 +1750,8 @@ export function riskSubjectText(subject: RiskOrderSubject | undefined): string |
 // A risk order runs beside the task's serial stage and can wait while another
 // stage works, so each of its states is an entry: queued and in progress name
 // the order, a rated order shows its own tier chip, and a cancelled order
-// says so. The entry renders as a card with its job's footer, and the job
+// says so. An unrated order in progress takes its own progress report as its
+// state detail, and with no report it has no body. The entry renders as a card with its job's footer, and the job
 // adds no entry of its own (component-web-task-surfaces invariants 72 and 73;
 // DEC-138(5); req-risk-based-review AC-1.6).
 function riskOrderEntry(
@@ -1770,7 +1781,7 @@ function riskOrderEntry(
         at: order.execution_started_at ?? order.queue_entered_at,
         tone: 'active',
         badge: { label: 'In progress', variant: 'accent' },
-        detail: [order.claimed_by, order.agent, order.model].filter(Boolean).join(' · ') || undefined,
+        detail: liveProgressReport(order.progress),
       }
     case 'stale':
     case 'timed_out':
@@ -1806,57 +1817,6 @@ export function jobTimelineAt(job: Job): string | undefined {
 
 function finishedJobEntry(entry: TimelineEntry): boolean {
   return entry.type === 'job' && entry.job.ended_at !== undefined && entry.at === entry.job.ended_at
-}
-
-// Attempt bookkeeping the server can report as an order's last agent activity
-// (agentActivityLabel in internal/httpapi/server.go). Technical activity keeps
-// the events; the human timeline tells no story with them.
-const bookkeepingActivityLabels = new Set([
-  'Work order claimed',
-  'Claim lease renewed',
-  'Attempt worktree checkpointed',
-  'Usage telemetry reported',
-  'Usage and rate-limit telemetry reported',
-  'Transcript uploaded',
-])
-
-const finishedOrderStates = new Set<WorkOrder['state']>(['submitted', 'completed', 'cancelled'])
-
-// A later order for the same stage and seat replaced this one.
-function supersededOrder(order: WorkOrder, orders: WorkOrder[]): boolean {
-  // Each risk order rates its own subject, so a later one replaces none.
-  if (order.stage === 'risk') return false
-  const entered = Date.parse(order.queue_entered_at)
-  return orders.some(
-    (other) =>
-      other.id !== order.id &&
-      other.stage === order.stage &&
-      (other.review_seat ?? 0) === (order.review_seat ?? 0) &&
-      Date.parse(other.queue_entered_at) > entered,
-  )
-}
-
-// Only a live order's own reports read as agent activity. A finished or
-// superseded order's job or order entry already tells its story, and a
-// progress report already printed as the order's job entry summary or in its
-// deliberating review seat's row is not repeated (component-web-task-surfaces).
-function agentActivityNote(
-  order: WorkOrder,
-  orders: WorkOrder[],
-  progressShown: Set<string>,
-): Extract<TimelineEntry, { type: 'note' }> | undefined {
-  const label = order.last_agent_activity_label
-  if (!order.last_agent_activity_at || !label) return undefined
-  if (bookkeepingActivityLabels.has(label) || finishedOrderStates.has(order.state)) return undefined
-  if (supersededOrder(order, orders)) return undefined
-  if (label.startsWith('Progress:') && progressShown.has(order.id)) return undefined
-  return {
-    type: 'note',
-    at: order.last_agent_activity_at,
-    key: `agent-activity-${order.id}`,
-    title: `Agent activity — ${label}`,
-    fullProgress: order.progress && label.startsWith('Progress:') ? order.progress : undefined,
-  }
 }
 
 // The events and interventions the plan cycles' steps name. None renders as
@@ -1908,14 +1868,6 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
   const attempts = implementationAttempts(item)
   const deliveries = implementationDeliveries(item)
-  // Orders whose progress report is printed as a job entry's summary or in a
-  // deliberating review seat's row.
-  const progressShown = new Set<string>()
-  for (const panel of panels.panels) {
-    for (const seat of panel.seats) {
-      if (deliberatingSeatProgress(seat)) progressShown.add(seat.order.id)
-    }
-  }
   for (const job of item.jobs) {
     if (!job.started_at || panels.jobIds.has(job.id)) continue
     const order = orderByJob.get(job.id)
@@ -1924,10 +1876,13 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
     const results = item.summaries?.job_results?.[job.id]
     const text = jobSummary(job, results)
     let summary = text.text
-    if (order?.progress && genericSummaries.has(summary)) {
-      summary = order.progress
-      progressShown.add(order.id)
-    }
+    if (order?.progress && genericSummaries.has(summary)) summary = order.progress
+    // A running job's live report stays in its own card. It prints beside a
+    // distinct summary, and on a Verify card, which shows no summary, but
+    // never twice. The body and the report pass the same filter before they
+    // are compared, so a body that matches the filtered report hides it.
+    const live = job.state === 'running' && order?.state === 'claimed' ? liveProgressReport(order.progress) : undefined
+    const progress = live && (job.stage === 'verify' || liveProgressReport(summary) !== live) ? live : undefined
     const model = jobCardModel(job, order)
     const tone = rejectedOutput(job, results) ? 'warning' : 'default'
     entries.push({
@@ -1936,6 +1891,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
       job,
       summary,
       summaryEventId: summary === text.text ? text.truncatedEventId : undefined,
+      progress,
       model,
       tone,
       order,
@@ -1943,10 +1899,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
       delivery: deliveries.get(job.id),
     })
   }
-  const orders = item.work_orders ?? []
-  for (const order of orders) {
-    const activity = agentActivityNote(order, orders, progressShown)
-    if (activity) entries.push(activity)
+  for (const order of item.work_orders ?? []) {
     if (panels.orderIds.has(order.id)) continue
     const entry = orderEntry(order, startedJobs.has(order.job_id), item.risk, jobById.get(order.job_id))
     if (entry) entries.push(entry)

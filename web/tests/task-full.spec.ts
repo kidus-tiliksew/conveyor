@@ -1,4 +1,5 @@
 import { expect, type Page, type Route } from '@playwright/test'
+import { buildTimeline, type TimelineEntry } from '../src/lib/activity'
 import type { ActivityItem, TaskReviewSeatMetadata, TaskSummaries, WorkOrder } from '../src/lib/types'
 import { boundedView, type CompleteActivity, test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
@@ -2165,6 +2166,489 @@ test('checkpoint recovery requires and submits operator direction', async ({ pag
   await expect.poll(() => recoveryRequest).not.toBe('')
   await expect.poll(() => JSON.parse(recoveryRequest).direction).toBe('Proceed with the accepted amendment.')
 })
+
+// A released checkpoint order's report reads in its recovery card. The
+// timeline adds no separate agent activity note for it, and its lifecycle
+// note stays (component-web-task-surfaces invariant 72; req-operator-next-action
+// AC-7.3).
+test('task timeline adds no agent activity note and the checkpoint card keeps the report', async ({ page }) => {
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
+  const checkpointMessage = page.getByText('Agent checkpoint message').locator('..')
+  await expect(checkpointMessage.getByText(checkpointProgress, { exact: true })).toBeVisible()
+  const timeline = page.getByLabel('Execution event timeline')
+  await expect(timeline.locator('li').first()).toBeVisible()
+  await expect(timeline.getByText(/Agent activity/)).toHaveCount(0)
+  await expect(timeline.getByText('Show full progress report')).toHaveCount(0)
+  await expect(page.getByText(checkpointProgress, { exact: true })).toHaveCount(1)
+})
+
+// Each live progress report prints inside its own card, once: a claimed risk
+// order, a claimed order without a started job, a running Implementation with
+// its own summary, a running Verify job, and a deliberating review seat. No
+// card prints the claimant, agent, and model line, and no timeline note
+// repeats a report (component-web-task-surfaces invariants 72 and 73;
+// DEC-138(5); req-risk-based-review AC-5.6; req-operator-next-action AC-7.3).
+const liveTask = 'live-progress'
+const liveAt = (minute: number) => `2026-07-15T12:${String(minute).padStart(2, '0')}:00Z`
+const liveReports = {
+  risk: 'I read the plan and the matched path rules.\n\nNext, I will rate the plan version.',
+  plan: 'I am drafting the plan from the attached designs.',
+  implement: 'Round 1 fixes are pushed. Next, I will wait for exact-head CI.',
+  verify: 'The verifier is running the selected kits against the head.',
+  review: 'I am reading the diff against the governing design.',
+  stale: 'An old report from an order that lost its lease.',
+  rated: 'A report from the risk agent before it rated the head.',
+}
+const liveRatedReason = 'Only the dashboard copy changes.'
+const liveHead = 'c'.repeat(40)
+const liveBase = 'b'.repeat(40)
+
+function liveJob(id: string, stage: string, state: string, startedMinute?: number) {
+  return {
+    id,
+    task_id: liveTask,
+    stage,
+    harness: 'external-mcp',
+    model_tier: 'operator-owned',
+    runner: 'external',
+    confinement: 'none',
+    tokens_in: 0,
+    tokens_out: 0,
+    state,
+    started_at: startedMinute === undefined ? undefined : liveAt(startedMinute),
+    ended_at: state === 'done' ? liveAt((startedMinute ?? 0) + 1) : undefined,
+  }
+}
+
+function liveOrder(id: string, stage: string, state: string, extra: Partial<WorkOrder> = {}): WorkOrder {
+  return {
+    id,
+    task_id: liveTask,
+    job_id: id,
+    stage,
+    state,
+    claimable: false,
+    queue_entered_at: liveAt(1),
+    updated_at: liveAt(2),
+    redispatch_count: 0,
+    tokens_in: 0,
+    tokens_out: 0,
+    usage_reported: false,
+    self_reported: true,
+    claimed_by: 'run:usr_operator',
+    agent: 'claude-code',
+    model: 'claude-opus-5-5',
+    last_agent_activity_at: liveAt(5),
+    last_agent_activity_label: 'Progress: a short report',
+    ...extra,
+  } as WorkOrder
+}
+
+function liveProgressItem(options: { riskProgress?: string } = {}): ActivityItem {
+  const item = activity(liveTask, false) as unknown as CompleteActivity
+  item.task = { ...item.task, state: 'running' as ActivityItem['task']['state'] }
+  item.events = []
+  item.jobs = [
+    liveJob(`${liveTask}-risk-1`, 'risk', 'running', 3),
+    liveJob(`${liveTask}-risk-3`, 'risk', 'done', 3),
+    liveJob(`${liveTask}-implement-1`, 'implement', 'running', 4),
+    liveJob(`${liveTask}-review-1-seat-1`, 'review', 'running', 6),
+  ] as unknown as ActivityItem['jobs']
+  item.work_orders = [
+    liveOrder(`${liveTask}-risk-1`, 'risk', 'claimed', {
+      progress: options.riskProgress ?? liveReports.risk,
+      execution_started_at: liveAt(3),
+      risk_subject: { plan_version: 2 },
+    }),
+    liveOrder(`${liveTask}-risk-2`, 'risk', 'claimed', {
+      execution_started_at: liveAt(3),
+      risk_subject: { head_sha: liveHead, base_sha: liveBase },
+    }),
+    liveOrder(`${liveTask}-risk-3`, 'risk', 'completed', {
+      progress: liveReports.rated,
+      risk_subject: { head_sha: liveHead, base_sha: liveBase },
+    }),
+    liveOrder(`${liveTask}-risk-4`, 'risk', 'stale', {
+      progress: liveReports.stale,
+      risk_subject: { plan_version: 1 },
+    }),
+    liveOrder(`${liveTask}-risk-5`, 'risk', 'timed_out', {
+      progress: liveReports.stale,
+      execution_deadline: liveAt(9),
+      risk_subject: { plan_version: 1 },
+    }),
+    liveOrder(`${liveTask}-spec-1`, 'spec', 'claimed', {
+      progress: `conveyor run mode: self-claimed\n${liveReports.plan}`,
+    }),
+    liveOrder(`${liveTask}-implement-1`, 'implement', 'claimed', { progress: liveReports.implement }),
+    liveOrder(`${liveTask}-review-1-seat-1`, 'review', 'claimed', {
+      review_round: 1,
+      review_seat: 1,
+      progress: liveReports.review,
+    }),
+  ]
+  item.risk = {
+    mode: 'record',
+    tier: 'low',
+    source: 'risk_agent',
+    reason: liveRatedReason,
+    required_agent_reviews: 1,
+    required_human_approvals: 0,
+    calculated_agent_reviews: 1,
+    calculated_human_approvals: 0,
+    recorded_approvals: 0,
+    author_approval_needed: false,
+    ratings: [
+      {
+        seq: 1,
+        key: `risk_agent:${liveTask}-risk-3`,
+        source: 'risk_agent',
+        tier: 'low',
+        head_sha: liveHead,
+        base_sha: liveBase,
+        reason: liveRatedReason,
+        matched_rules: [],
+        risk_work_order_id: `${liveTask}-risk-3`,
+        risk_model: 'claude-sonnet-5-5',
+        created_at: liveAt(4),
+      } as NonNullable<ActivityItem['risk']>['ratings'][number],
+    ],
+  }
+  const bounded = boundedView(item, liveTask)
+  bounded.summaries = {
+    ...bounded.summaries,
+    job_results: {
+      [`${liveTask}-implement-1`]: { summary: { text: 'The harness narrated the attempt.' } },
+    } as TaskSummaries['job_results'],
+  }
+  return bounded
+}
+
+// The timeline builder adds no separate agent activity note for any order,
+// whatever its stage, state, or last activity label. Each live report stays
+// in its own card, and lifecycle notes from events stay.
+function liveTimeline(extra: Partial<ActivityItem>): TimelineEntry[] {
+  const item = activity(liveTask, false) as unknown as ActivityItem
+  return buildTimeline({
+    ...item,
+    jobs: [],
+    events: [],
+    work_orders: [],
+    interventions: [],
+    risk: undefined,
+    summaries: {},
+    ...extra,
+  } as ActivityItem)
+}
+
+const agentActivityNotes = (entries: TimelineEntry[]) =>
+  entries.filter(
+    (entry) => entry.type === 'note' && (entry.title.startsWith('Agent activity') || entry.key.startsWith('agent-')),
+  )
+
+test('no order adds a separate agent activity note in any stage or state', () => {
+  const labels = ['Progress: wiring the timeline', 'Branch pushed', 'Work order claimed', 'Claim lease renewed']
+  const states = ['queued', 'claimed', 'stale', 'timed_out', 'submitted', 'completed', 'cancelled']
+  for (const stage of ['spec', 'implement', 'verify', 'review', 'risk']) {
+    for (const state of states) {
+      for (const label of labels) {
+        for (const withJob of [false, true]) {
+          const id = `${liveTask}-${stage}-1`
+          const entries = liveTimeline({
+            jobs: withJob
+              ? ([liveJob(id, stage, state === 'claimed' ? 'running' : 'done', 3)] as unknown as ActivityItem['jobs'])
+              : [],
+            work_orders: [
+              liveOrder(id, stage, state, {
+                review_round: stage === 'review' ? 1 : undefined,
+                review_seat: stage === 'review' ? 1 : undefined,
+                last_agent_activity_label: label,
+                progress: liveReports.implement,
+              }),
+            ],
+          })
+          expect(agentActivityNotes(entries), `${stage} ${state} ${label} ${withJob}`).toEqual([])
+        }
+      }
+    }
+  }
+  // An event note still renders beside a live order.
+  const parked = liveTimeline({
+    work_orders: [liveOrder(`${liveTask}-implement-1`, 'implement', 'claimed')],
+    events: [
+      {
+        id: 1,
+        task_id: liveTask,
+        kind: 'task.state_changed',
+        actor_id: 'system',
+        actor_role: 'system',
+        payload: { to: 'parked', command: 'triage.park' },
+        at: liveAt(8),
+      },
+    ] as unknown as ActivityItem['events'],
+  })
+  expect(parked.filter((entry) => entry.type === 'note').map((entry) => 'title' in entry && entry.title)).toEqual([
+    'Parked',
+  ])
+})
+
+test('the timeline builder keeps each live report in its own card, once', () => {
+  const id = `${liveTask}-implement-1`
+  const narration = { job_results: { [id]: { summary: { text: 'The harness narrated the attempt.' } } } }
+  const jobEntry = (entries: TimelineEntry[]) => entries.find((entry) => entry.type === 'job')
+  const orderEntryOf = (entries: TimelineEntry[]) => entries.find((entry) => entry.type === 'order')
+  const running = [liveJob(id, 'implement', 'running', 3)] as unknown as ActivityItem['jobs']
+  const report = liveOrder(id, 'implement', 'claimed', { progress: liveReports.implement })
+  // A generic summary is replaced by the report, which then is not repeated.
+  const generic = jobEntry(liveTimeline({ jobs: running, work_orders: [report] }))
+  expect(generic).toMatchObject({ summary: liveReports.implement })
+  expect(generic).not.toHaveProperty('progress', expect.anything())
+  // A distinct summary keeps its text, and the report prints beside it.
+  expect(jobEntry(liveTimeline({ jobs: running, work_orders: [report], summaries: narration }))).toMatchObject({
+    summary: 'The harness narrated the attempt.',
+    progress: liveReports.implement,
+  })
+  // A Verify card shows no summary, so it always takes the report.
+  const verifyId = `${liveTask}-verify-1`
+  expect(
+    jobEntry(
+      liveTimeline({
+        jobs: [liveJob(verifyId, 'verify', 'running', 3)] as unknown as ActivityItem['jobs'],
+        work_orders: [liveOrder(verifyId, 'verify', 'claimed', { progress: liveReports.verify })],
+      }),
+    ),
+  ).toMatchObject({ progress: liveReports.verify })
+  // Only a running job under a claimed order takes the report.
+  for (const [orderState, jobState] of [
+    ['submitted', 'running'],
+    ['claimed', 'done'],
+  ] as const) {
+    const entry = jobEntry(
+      liveTimeline({
+        jobs: [liveJob(id, 'implement', jobState, 3)] as unknown as ActivityItem['jobs'],
+        work_orders: [{ ...report, state: orderState }],
+        summaries: narration,
+      }),
+    )
+    expect(entry, `${orderState} ${jobState}`).not.toHaveProperty('progress', expect.anything())
+  }
+  // A claimed order without a started job, or with a pending one, shows the
+  // report as its detail. A queued order adds no entry.
+  expect(orderEntryOf(liveTimeline({ work_orders: [report] }))).toMatchObject({ detail: liveReports.implement })
+  const pending = [liveJob(id, 'implement', 'pending')] as unknown as ActivityItem['jobs']
+  expect(orderEntryOf(liveTimeline({ jobs: pending, work_orders: [report] }))).toMatchObject({
+    detail: liveReports.implement,
+  })
+  expect(liveTimeline({ work_orders: [{ ...report, state: 'queued' }] })).toEqual([])
+  // A blank or run-mode-only report is no report, and run-mode lines drop out.
+  for (const progress of ['conveyor run mode: self-claimed', '  \n ', undefined]) {
+    const order = { ...report, progress }
+    expect(orderEntryOf(liveTimeline({ work_orders: [order] })), String(progress)).not.toHaveProperty(
+      'detail',
+      expect.anything(),
+    )
+    expect(
+      jobEntry(liveTimeline({ jobs: running, work_orders: [order], summaries: narration })),
+      String(progress),
+    ).not.toHaveProperty('progress', expect.anything())
+  }
+  expect(
+    orderEntryOf(
+      liveTimeline({ work_orders: [{ ...report, progress: `conveyor run mode: self-claimed\n${liveReports.plan}` }] }),
+    ),
+  ).toMatchObject({ detail: liveReports.plan })
+  // A panel absorbs a seat's order in every status, so no other entry shows
+  // its report.
+  const seatId = `${liveTask}-review-1-seat-1`
+  for (const [state, jobState] of [
+    ['claimed', 'running'],
+    ['queued', 'running'],
+    ['stale', 'running'],
+    ['timed_out', 'running'],
+    ['claimed', 'failed'],
+  ] as const) {
+    const entries = liveTimeline({
+      jobs: [liveJob(seatId, 'review', jobState, 3)] as unknown as ActivityItem['jobs'],
+      work_orders: [
+        liveOrder(seatId, 'review', state, { review_round: 1, review_seat: 1, progress: liveReports.review }),
+      ],
+    })
+    expect(
+      entries.map((entry) => entry.type),
+      `${state} ${jobState}`,
+    ).toEqual(['panel'])
+  }
+})
+
+// A running job's body and its live report pass the same run-mode filter
+// before the timeline compares them. A body that matches the filtered report
+// prints once, and the summary keeps its audit link. A Verify card shows no
+// summary, so it still takes the report.
+const matchedBody = 'The unit tests passed.'
+const matchedReport = `conveyor run mode: self-claimed\n${matchedBody}`
+
+function matchedBodyItem(stage: 'implement' | 'verify'): ActivityItem {
+  const id = `${liveTask}-${stage}-1`
+  const item = liveProgressItem()
+  item.jobs = [liveJob(id, stage, 'running', 3)] as unknown as ActivityItem['jobs']
+  item.work_orders = [liveOrder(id, stage, 'claimed', { progress: matchedReport })]
+  item.risk = undefined
+  item.summaries = {
+    ...item.summaries,
+    job_results: {
+      [id]: { summary: { text: matchedBody, truncated: true, event_id: '77' } },
+    } as TaskSummaries['job_results'],
+  }
+  return item
+}
+
+test('a running job body that matches the filtered report prints it once', async ({ page }) => {
+  const implementation = liveTimeline(matchedBodyItem('implement')).find((entry) => entry.type === 'job')
+  expect(implementation).toMatchObject({ summary: matchedBody, summaryEventId: '77' })
+  expect(implementation).not.toHaveProperty('progress', expect.anything())
+  // The body also matches after trimming.
+  const padded = matchedBodyItem('implement')
+  padded.summaries = {
+    ...padded.summaries,
+    job_results: {
+      [`${liveTask}-implement-1`]: { summary: { text: `  ${matchedBody}\n` } },
+    } as TaskSummaries['job_results'],
+  }
+  expect(liveTimeline(padded).find((entry) => entry.type === 'job')).not.toHaveProperty('progress', expect.anything())
+  expect(liveTimeline(matchedBodyItem('verify')).find((entry) => entry.type === 'job')).toMatchObject({
+    progress: matchedBody,
+  })
+
+  await page.route(`**/v1/tasks/${liveTask}/activity*`, (route) =>
+    route.fulfill({ json: matchedBodyItem('implement') }),
+  )
+  await page.goto(`/w/demo/tasks/${liveTask}/full`)
+  const card = page.getByLabel('Execution event timeline').locator('article[data-implementation-entry]')
+  await expect(card.getByText(matchedBody, { exact: true })).toHaveCount(1)
+  await expect(card.locator('[data-job-progress]')).toHaveCount(0)
+  await expect(card.getByText(/conveyor run mode/i)).toHaveCount(0)
+  await expect(card.getByText('Full text (shortened here)')).toBeVisible()
+})
+
+const liveRiskCard = (page: Page, n: number) =>
+  page.locator(`li[data-order-stage="risk"][data-order-id="${liveTask}-risk-${n}"] article[data-risk-order-card]`)
+
+test('live progress reads once inside each card and no card prints the claimant line', async ({ page }) => {
+  await page.route(`**/v1/tasks/${liveTask}/activity*`, (route) => route.fulfill({ json: liveProgressItem() }))
+  await page.goto(`/w/demo/tasks/${liveTask}/full`)
+  const timeline = page.getByLabel('Execution event timeline')
+
+  // A claimed unrated risk order's report is its body, prose like a job's.
+  const claimed = liveRiskCard(page, 1)
+  const paragraphs = claimed.locator('[data-risk-order-body="progress"] p')
+  await expect(paragraphs).toHaveText(liveReports.risk.split('\n\n'))
+  await expect(claimed.locator('header')).toContainText('In progress')
+  await expect(claimed.locator('footer[data-job-footer] [data-job-model]')).toContainText('claude-opus-5-5')
+  // Without a report, the claimed card has no body and the header keeps its
+  // bottom padding.
+  const empty = liveRiskCard(page, 2)
+  await expect(empty.locator('header')).toContainText('In progress')
+  await expect(empty.locator('[data-risk-order-body]')).toHaveCount(0)
+  await expect(empty.locator('header')).toHaveClass(/pb-3/)
+  await expect(empty.locator('header [data-risk-order-time]')).toBeVisible()
+  // A rated order keeps its reason, and an expired order keeps its state
+  // detail, even when the order reported progress.
+  await expect(liveRiskCard(page, 3).locator('[data-risk-order-body="reason"]')).toHaveText(liveRatedReason)
+  await expect(liveRiskCard(page, 4).locator('[data-risk-order-body="detail"]')).toContainText(
+    'No agent claimed it before queue retention elapsed.',
+  )
+  await expect(liveRiskCard(page, 5).locator('[data-risk-order-body="detail"]')).toContainText(
+    'The execution deadline elapsed before the agent finished',
+  )
+  await expect(timeline.getByText(liveReports.rated)).toHaveCount(0)
+  await expect(timeline.getByText(liveReports.stale)).toHaveCount(0)
+
+  // A claimed order without a started job shows its filtered report.
+  const plan = timeline.locator(`li[data-order-id="${liveTask}-spec-1"]`)
+  await expect(plan.locator('[data-order-detail]')).toHaveText(liveReports.plan)
+  await expect(timeline.getByText(/conveyor run mode/i)).toHaveCount(0)
+
+  // A running Implementation keeps its own summary and shows the report
+  // beside it, inside the same card.
+  const implementation = timeline.locator('article[data-implementation-entry]')
+  await expect(implementation).toContainText('The harness narrated the attempt.')
+  await expect(implementation.locator('[data-job-progress]')).toContainText(liveReports.implement)
+
+  // A deliberating seat keeps its report in its row.
+  await expect(timeline.locator('[data-seat-progress]')).toHaveText(liveReports.review)
+
+  // Each report reads once, and no note or card prints the claimant line.
+  for (const report of [liveReports.plan, liveReports.implement, liveReports.review])
+    await expect(timeline.getByText(report, { exact: true })).toHaveCount(1)
+  await expect(timeline.getByText(/run:usr_operator/)).toHaveCount(0)
+  await expect(timeline.getByText(/claude-code · claude-opus-5-5/)).toHaveCount(0)
+  await expect(timeline.getByText(/Agent activity/)).toHaveCount(0)
+})
+
+test('a claimed risk card with a blank or run-mode-only report has no body', async ({ page }) => {
+  for (const riskProgress of ['  \n ', 'conveyor run mode: self-claimed']) {
+    await page.route(`**/v1/tasks/${liveTask}/activity*`, (route) =>
+      route.fulfill({ json: liveProgressItem({ riskProgress }) }),
+    )
+    await page.goto(`/w/demo/tasks/${liveTask}/full`)
+    const claimed = liveRiskCard(page, 1)
+    await expect(claimed.locator('header')).toContainText('In progress')
+    await expect(claimed.locator('[data-risk-order-body]')).toHaveCount(0)
+    await expect(claimed.locator('header')).toHaveClass(/pb-3/)
+    await page.unroute(`**/v1/tasks/${liveTask}/activity*`)
+  }
+})
+
+test('a running Verify card shows its live report beside its evidence', async ({ page }) => {
+  const verifyId = `${liveTask}-verify-1`
+  const item = liveProgressItem()
+  item.jobs = [liveJob(verifyId, 'verify', 'running', 7)] as unknown as ActivityItem['jobs']
+  item.work_orders = [liveOrder(verifyId, 'verify', 'claimed', { progress: liveReports.verify })]
+  item.risk = undefined
+  item.summaries = { ...item.summaries, job_results: {} }
+  await page.route(`**/v1/tasks/${liveTask}/activity*`, (route) => route.fulfill({ json: item }))
+  await page.route(`**/v1/tasks/${liveTask}/verification*`, (route) =>
+    route.fulfill({
+      json: { head_sha: '', current_context_id: '', contexts: { items: [], next_cursor: '' }, overview: {} },
+    }),
+  )
+  await page.goto(`/w/demo/tasks/${liveTask}/full`)
+  const card = page.getByRole('article', { name: 'Verification' })
+  await expect(card.locator('[data-job-progress]')).toContainText(liveReports.verify)
+  const timeline = page.getByLabel('Execution event timeline')
+  await expect(timeline.getByText(liveReports.verify, { exact: true })).toHaveCount(1)
+  await expect(timeline.getByText(/Agent activity/)).toHaveCount(0)
+})
+
+// Visual record for the pull request: a claimed risk card with a progress
+// report and one without, a claimed order without a job, and a running
+// Implementation with its live report, at 375 px and a desktop width. The task scratch
+// directory named by CONVEYOR_SCREENSHOT_DIR keeps a local copy, and the
+// Playwright report carries each attachment.
+for (const width of [375, 1280]) {
+  test(`claimed risk card screenshots at ${width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 1000 })
+    await page.route(`**/v1/tasks/${liveTask}/activity*`, (route) => route.fulfill({ json: liveProgressItem() }))
+    await page.goto(`/w/demo/tasks/${liveTask}/full`)
+    await expect(liveRiskCard(page, 1).locator('[data-risk-order-body="progress"]')).toBeVisible()
+    await page.evaluate(() => document.fonts.ready)
+    if (width === 375) expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375)
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    for (const [selector, name] of [
+      [`li[data-order-id="${liveTask}-risk-1"]`, 'risk-card-claimed-progress'],
+      [`li[data-order-id="${liveTask}-risk-2"]`, 'risk-card-claimed-empty'],
+      [`li[data-order-id="${liveTask}-spec-1"]`, 'jobless-order-progress'],
+      ['li:has(> article[data-implementation-entry])', 'implementation-live-progress'],
+    ] as const) {
+      const item = page.locator(selector)
+      const size = await item.evaluate((element) => [element.scrollWidth, element.clientWidth])
+      expect(size[0]).toBeLessThanOrEqual(size[1])
+      const file = `${name}-${width}.png`
+      const image = await item.screenshot({ path: shots ? `${shots}/${file}` : undefined })
+      await testInfo.attach(file, { body: image, contentType: 'image/png' })
+    }
+  })
+}
 
 // The checkpoint shape of task 261015-3721c6: seven citations across four
 // System Design documents, each with one pending task-authored proposal
