@@ -2,9 +2,11 @@
 
 Conveyor has one identity model and several credential planes. A person has
 one account; how they prove it depends on where they are: a session cookie in
-the browser, and a personal access token in the CLI and in the MCP
-registrations of the agent sessions the person starts. Conveyor launches no
-agent and mints no credential for one (DEC-97(1)).
+the browser, a personal access token in the CLI and in the MCP
+registrations of the agent sessions the person starts, and an OAuth access
+token that an MCP client obtains for `/mcp` only (see
+[MCP OAuth 2.1](#mcp-oauth-21)). Conveyor launches no agent and mints no
+credential for one (DEC-97(1)).
 
 ## The two human credential methods
 
@@ -36,6 +38,10 @@ Deliberate asymmetries between the two methods:
   leaked PAT cannot take over the account.
 - Claiming and working a task over MCP requires a bearer token, not a
   session, so a browser cannot be tricked into claiming work.
+- An MCP OAuth access token works only on `/mcp`. Every other route,
+  including the claim-bound `/v1/work-orders/*` delivery routes that
+  `conveyor submit` uses, refuses it with 401, so the CLI keeps using your
+  personal access token.
   The one gate action carved back out for the browser is request-changes,
   which stays session-accessible behind the CSRF proof.
 
@@ -216,6 +222,183 @@ and rejects disagreements between them. The CLI resolves it from `--workspace`,
 workspace entirely is compatible only when you belong to exactly one; with
 zero the server says to create one first, with several it demands explicit
 context.
+
+## MCP OAuth 2.1
+
+`conveyord` hosts an OAuth 2.1 authorization server for `/mcp` (DEC-146;
+`req-mcp-oauth`). An MCP client such as Claude Code, Codex, Cursor, OpenCode,
+or Antigravity discovers it, signs you in through the dashboard, and receives
+an access token that works only on `/mcp`. The token is yours: every MCP call
+it makes runs with your live account status and workspace roles and is
+recorded as your act.
+
+### Enabling it
+
+OAuth is on only when `CONVEYOR_PUBLIC_URL` is a canonical origin:
+
+- `https://<host>` or `https://<host>:<port>`, in lowercase, with no path,
+  query, fragment, or user information and no default port; or
+- for local development, `http://127.0.0.1`, `http://[::1]`, or
+  `http://localhost`, with an optional port.
+
+A trailing slash is removed when the setting is read. When the setting is
+unset or is not such an origin, the discovery documents and every OAuth
+endpoint answer `404` with `{"error":"oauth_unavailable"}`, and `/mcp`
+challenges with a bare `WWW-Authenticate: Bearer`. The server never derives
+an issuer from a request's `Host` or forwarded headers.
+
+`CONVEYOR_TRUSTED_PROXIES` is an optional comma-separated list of proxy IP
+addresses or CIDR prefixes. Client registration is rate limited per source
+address. The source is the connection's peer address, or, when the peer is a
+listed proxy, the nearest `X-Forwarded-For` address that is not a listed
+proxy, read from the right. A malformed `X-Forwarded-For` chain is ignored. An
+invalid setting is logged at startup and trusts no proxy. Password sign-in
+keeps its own limiter, which reads only the peer address.
+
+### Discovery
+
+| Route | Answer |
+| --- | --- |
+| `GET /.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp` | RFC 9728 metadata: `resource` `<public-url>/mcp`, `authorization_servers` `[<public-url>]`, `bearer_methods_supported` `["header"]` |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata: `issuer` `<public-url>`, `authorization_endpoint` `<public-url>/oauth/authorize`, `token_endpoint`, `revocation_endpoint`, `registration_endpoint`, `response_types_supported` `["code"]`, `grant_types_supported` `["authorization_code","refresh_token"]`, `code_challenge_methods_supported` `["S256"]`, `token_endpoint_auth_methods_supported` `["none"]`, and `client_id_metadata_document_supported` `true` |
+
+Other `/.well-known/*` paths answer a JSON 404. A request to `/mcp` with no
+valid bearer answers 401 with
+`WWW-Authenticate: Bearer resource_metadata="<public-url>/.well-known/oauth-protected-resource/mcp"`.
+
+### Clients
+
+Every client is public: it holds no secret and proves itself with PKCE `S256`.
+A client identifies itself in one of two ways.
+
+- **Client ID Metadata Document.** The `client_id` is an `https://` URL with a
+  path, at most 2,048 bytes, with no fragment, user information, or dot
+  segments. Conveyor fetches the JSON document at that URL when you open the
+  consent page and again when the client exchanges its code. The document must
+  name the same `client_id`, set `token_endpoint_auth_method` to `none`, allow
+  only the `authorization_code` and `refresh_token` grants, and list 1 to 16
+  redirect URIs. The fetch uses no proxy. It resolves the host, refuses the
+  fetch when any address is private, loopback, link-local, unspecified,
+  multicast, or another special-purpose range, and connects to the checked
+  address while still verifying TLS for the host name. Each redirect is
+  checked the same way. A fetch follows at most 3 redirects, takes at most 5
+  seconds, and reads at most 64 KiB. A verified document is reused for up to
+  5 minutes, at most 256 documents per process.
+- **Dynamic Client Registration.** `POST /oauth/register` (RFC 7591) takes a
+  JSON body of at most 16 KiB. It needs `token_endpoint_auth_method` `none`
+  and 1 to 8 `redirect_uris`. `grant_types` may hold `authorization_code` and
+  `refresh_token` and defaults to `authorization_code`. `response_types` may
+  hold only `code`. `client_name` is optional, at most 256 bytes. Other RFC
+  7591 fields are ignored. Each source address may register 10 clients per
+  minute; more answer `429` with `Retry-After`. Invalid input answers `400`
+  `invalid_client_metadata` or `invalid_redirect_uri` and stores nothing. A
+  client that has not received a grant within 24 hours expires, and
+  registration removes expired clients at most once every 10 minutes per
+  process. Removal never touches a client that has a grant.
+
+A redirect URI must be `https://`, or `http://` on `127.0.0.1`, `[::1]`, or
+`localhost`, with no fragment or user information. Conveyor compares redirect
+URIs as exact strings. Client metadata that holds a credential-shaped value is
+refused.
+
+### Consent
+
+The `authorization_endpoint` is the dashboard page `/oauth/authorize`. It
+reads the session-only consent API under `/v1`, so the `conveyor_session`
+cookie stays at `Path=/v1` and `SameSite=Strict`. A personal access token or
+OAuth token is refused on this API with 401.
+
+`GET /v1/oauth/authorize?<the client's authorization query>` checks the
+request and changes nothing. The query takes `response_type` (`code`),
+`client_id`, `redirect_uri`, `code_challenge`, `code_challenge_method`
+(`S256`), an optional `state` of at most 2,048 bytes, and an optional
+`resource` that must equal `<public-url>/mcp` when present. A parameter given
+twice is refused. A valid request answers:
+
+```json
+{
+  "client": {"client_id": "...", "client_name": "...", "kind": "metadata_document", "origin": "https://client.example"},
+  "redirect_host": "127.0.0.1:33418",
+  "user": {"id": "usr_...", "email": "you@example.com", "display_name": "You"},
+  "resource": "https://conveyor.example/mcp"
+}
+```
+
+`kind` is `metadata_document` or `dynamic_registration`, and only a
+metadata-document client has an `origin`.
+
+`POST /v1/oauth/authorize` records your decision. It needs the session's
+`X-Conveyor-CSRF: 1` header and `Origin`. Its JSON body repeats the same
+request fields and adds `decision`, which is `approve` or `deny`. The server
+checks the whole request again. Approval mints an authorization code
+(`cv_oac_...`) that is single use, expires after 60 seconds, and is bound to
+you, the client, the exact redirect URI, the resource, and the code
+challenge. Both decisions answer `200` with `{"redirect_to": "..."}`: the
+redirect URI with `code` and `state` added on approval, or with
+`error=access_denied` and `state` on denial. The redirect URI's other query
+parameters are kept as written, and any stale `code`, `state`, `error`,
+`error_description`, `error_uri`, or `iss` parameter is removed.
+
+An error answers JSON with `error` and `error_description`. When the client
+or its redirect URI could not be verified (`invalid_client`,
+`invalid_redirect_uri`, or a malformed request), the answer has no
+`redirect_to`, and the page shows the error itself. When both were verified
+and another parameter is wrong (`unsupported_response_type`,
+`invalid_request`, or `invalid_target`), the answer also carries a
+`redirect_to` that returns the error and `state` to the client.
+
+Consent, token, revocation, and grant responses send
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`, errors
+included. The access log records OAuth paths without their query strings.
+
+### Tokens
+
+`POST /oauth/token` takes an `application/x-www-form-urlencoded` body of at
+most 16 KiB. Parameters in the query string, or given twice, are refused.
+
+- `grant_type=authorization_code` needs `code`, `client_id`, `redirect_uri`,
+  `code_verifier` (43 to 128 characters), and `resource` set to
+  `<public-url>/mcp`. The code must match every binding and the verifier.
+  Exactly one exchange of a code can succeed. A refused exchange consumes
+  nothing.
+- `grant_type=refresh_token` needs `refresh_token`, `client_id`, and
+  `resource` set to `<public-url>/mcp`.
+
+Both answer `{"access_token","token_type":"Bearer","expires_in","refresh_token"}`.
+The access token (`cv_oat_...`) lives 1 hour and the refresh token
+(`cv_ort_...`) lives 30 days. Each refresh returns a new pair and retires the
+refresh token it used. Conveyor stores every code and token only as a SHA-256
+hash.
+
+A refresh token that was already used is refused with `invalid_grant`, and
+the whole grant is revoked at once, including the newest pair. This also
+happens when a client retries a refresh after a network failure, or sends two
+refreshes of one token at the same time: the client must send you through
+sign-in again. Other refusals are `invalid_grant` without detail (an unknown,
+expired, revoked, or mismatched code or token), `invalid_target` (a wrong or
+missing `resource`), `invalid_client`, `invalid_request`, and
+`unsupported_grant_type`. A brief storage conflict answers `503`
+`temporarily_unavailable` with `Retry-After`, and the same request can be sent
+again.
+
+### Revoking access
+
+- **From the client.** `POST /oauth/revoke` (RFC 7009) takes form fields
+  `token` and `client_id`. An access or refresh token of that client revokes
+  its whole grant. The answer is `200` with an empty body whether or not the
+  token was known, belonged to that client, or was already revoked.
+- **From Settings.** `GET /v1/oauth/grants` lists your own active grants with
+  `id`, `client_id`, `client_name`, `resource`, `created_at`, and
+  `last_used_at`. `last_used_at` changes at most once a minute. No token value
+  or hash appears. `DELETE /v1/oauth/grants/{grant_id}` revokes one of your
+  grants and answers it; any other ID answers 404. Both routes accept a
+  session or a personal access token, and a session `DELETE` needs the CSRF
+  proof.
+- **By deactivation.** When the instance administrator deactivates an
+  account, all of its OAuth tokens are refused at their next use.
+
+A revoked token is refused at its next request. A workspace role change
+applies to the next MCP call.
 
 ## Native MCP credentials
 
