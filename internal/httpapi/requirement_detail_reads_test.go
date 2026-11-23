@@ -198,6 +198,7 @@ func TestRequirementDetailTaskFieldsAreCompact(t *testing.T) {
 func TestRequirementDetailStoreCallsDoNotGrowWithTasks(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	inner := store.NewMemory()
+	// Both fixtures stay below the 256-link probe of each serves read.
 	small := storetest.SeedRequirementDetail(t, inner, ctx, "small", 2, 1)
 	large := storetest.SeedRequirementDetail(t, inner, ctx, "large", 40, 10)
 	// Each requirement has its own artifacts, and its serving tasks have
@@ -273,7 +274,7 @@ func TestRequirementDetailStoreCallsDoNotGrowWithTasks(t *testing.T) {
 	// neighborhood walk, no lineage artifact read, and no whole-workspace
 	// scan (component-lineage; component-artifacts).
 	for method, want := range map[string]int{"ListLineageNeighborhood": 0, "ListArtifactsForLineage": 0, "ListLineageLinks": 0, "ListArtifacts": 0,
-		"ListLineageKindLinks": 1, "ListArtifactsForOwners": 1, "ListRequirementDeliveryLineage": 1, "ListRequirementDeliveryEventsForTasks": 1} {
+		"ListLineageKindLinks": 2, "ListArtifactsForOwners": 1, "ListRequirementDeliveryLineage": 1, "ListRequirementDeliveryEventsForTasks": 1} {
 		if smallCalls[method] != want {
 			t.Fatalf("detail called %s %d times, want %d: %v", method, smallCalls[method], want, smallCalls)
 		}
@@ -612,20 +613,22 @@ func TestRequirementDetailDirectReadsMatchNeighborhoodWalk(t *testing.T) {
 	if view.Staleness.PartialEvaluation || view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 0 {
 		t.Fatalf("staleness = %+v", view.Staleness)
 	}
-	// One bounded inbound read names only the requirement.
-	if len(st.kindQueries) != 1 {
+	// One bounded read per direction names only the requirement.
+	if len(st.kindQueries) != 2 {
 		t.Fatalf("kind-link reads = %+v", st.kindQueries)
 	}
-	if got := st.kindQueries[0]; !reflect.DeepEqual(got.Nodes, []core.LineageNode{root}) || got.Kind != "serves" || !got.Inbound ||
-		got.FarType != core.LineageTask || got.Limit != requirementDetailServingTaskLimit+1 || got.Newest {
-		t.Fatalf("inbound read = %+v", got)
+	for index, got := range st.kindQueries {
+		if !reflect.DeepEqual(got.Nodes, []core.LineageNode{root}) || got.Kind != "serves" || got.Inbound != (index == 1) ||
+			got.FarType != core.LineageTask || got.Limit != requirementDetailServesReadLimit || got.Newest {
+			t.Fatalf("serves read %d = %+v", index, got)
+		}
 	}
 }
 
 // The detail lists at most 255 serving tasks. At 255 it matches the
-// neighborhood walk exactly. Above 255 it lists 255 of the tasks the walk
-// listed, in task-ID order, with the same response shape, and the cut sets
-// no marker: staleness.partial_evaluation still reports only delivery
+// neighborhood walk exactly. Above 255 it lists the first 255 eligible task
+// IDs in task-ID order, with the same response shape, and the cut sets no
+// marker: staleness.partial_evaluation still reports only delivery
 // truncation.
 func TestRequirementDetailCapsServingTasksAt255(t *testing.T) {
 	var shape []string
@@ -664,17 +667,12 @@ func TestRequirementDetailCapsServingTasksAt255(t *testing.T) {
 				return
 			}
 			ids := servingTaskIDs(view.ServingTasks)
-			if len(ids) != requirementDetailServingTaskLimit || !sort.StringsAreSorted(ids) {
-				t.Fatalf("capped serving tasks = %d sorted=%t", len(ids), sort.StringsAreSorted(ids))
+			want := make([]string, 0, requirementDetailServingTaskLimit)
+			for index := 0; index < requirementDetailServingTaskLimit; index++ {
+				want = append(want, fmt.Sprintf("cap-%03d", index))
 			}
-			legacy := map[string]bool{}
-			for _, id := range servingTaskIDs(legacyServing) {
-				legacy[id] = true
-			}
-			for _, id := range ids {
-				if !legacy[id] {
-					t.Fatalf("capped list names %s, which the walk did not list", id)
-				}
+			if !reflect.DeepEqual(ids, want) {
+				t.Fatalf("capped serving tasks = %d %v, want the first %d eligible IDs", len(ids), ids, requirementDetailServingTaskLimit)
 			}
 			t.Logf("serving tasks: walk listed %d, detail lists %d", len(legacyServing), len(ids))
 		})
@@ -761,4 +759,130 @@ func (c *requirementOwnerCountingStore) takeOwners() []store.ArtifactOwners {
 	out := c.owners
 	c.owners = nil
 	return out
+}
+
+// A confirmed requirement link adds a requirement -serves-> blueprint link
+// beside the task link, and those links took slots in the old walk's ranked
+// prefix. With 120 attached and 130 linked tasks, 250 tasks are eligible
+// and the walk listed only 188. The detail lists all 250, so it never omits
+// a task the walk listed (review round 1; plan v3).
+func TestRequirementDetailListsEveryEligibleTaskBesideBlueprintLinks(t *testing.T) {
+	st := store.NewMemory()
+	f := newRequirementDisplayFixture(t, st, "req-blueprint-heavy")
+	eligible := []string{}
+	for index := 0; index < 250; index++ {
+		id := fmt.Sprintf("bp-%03d", index)
+		f.task(id, "")
+		if index < 120 {
+			f.attach(id)
+		} else {
+			f.link(id, true)
+		}
+		eligible = append(eligible, id)
+	}
+	view, _ := readRequirementDetail(t, st, f.requirement.ID)
+	legacyServing, _ := legacyRequirementDisplay(t, st, f.ctx, f.requirement.ID)
+	if len(legacyServing) != 188 {
+		t.Fatalf("the walk listed %d tasks, want the 188 the review measured", len(legacyServing))
+	}
+	got := servingTaskIDs(view.ServingTasks)
+	if !reflect.DeepEqual(got, eligible) {
+		t.Fatalf("serving tasks = %d, want all %d eligible tasks in task-ID order", len(got), len(eligible))
+	}
+	listed := map[string]bool{}
+	for _, id := range got {
+		listed[id] = true
+	}
+	for _, id := range servingTaskIDs(legacyServing) {
+		if !listed[id] {
+			t.Fatalf("the detail omits %s, which the walk listed", id)
+		}
+	}
+	if len(view.ServingBlueprints) != 130 || len(view.RequirementLinks) != 130 {
+		t.Fatalf("blueprints = %d, links = %d", len(view.ServingBlueprints), len(view.RequirementLinks))
+	}
+}
+
+// Each serves read returns a prefix in event-ID order. When the first
+// 256-link probe fills, the detail reads again with a larger bound, so a
+// link beyond the probe cannot hide an eligible task or an earlier task ID.
+// The fixtures attach tasks in reverse task-ID order, so the earliest IDs
+// have the newest links (component-lineage).
+func TestRequirementDetailServesReadsDoNotStopAtTheProbe(t *testing.T) {
+	assertReads := func(t *testing.T, queries []core.LineageKindLinkQuery, inbound bool) {
+		t.Helper()
+		limits := []int{}
+		for _, query := range queries {
+			if query.Inbound == inbound {
+				limits = append(limits, query.Limit)
+			}
+		}
+		if !reflect.DeepEqual(limits, []int{requirementDetailServesReadLimit, 2 * requirementDetailServesReadLimit}) {
+			t.Fatalf("inbound=%t read limits = %v", inbound, limits)
+		}
+	}
+	firstIDs := func(prefix string, count int) []string {
+		ids := make([]string, 0, count)
+		for index := 0; index < count; index++ {
+			ids = append(ids, fmt.Sprintf("%s-%03d", prefix, index))
+		}
+		return ids
+	}
+	t.Run("outbound earliest IDs beyond the probe", func(t *testing.T) {
+		inner := store.NewMemory()
+		f := newRequirementDisplayFixture(t, inner, "req-outbound-overflow")
+		for index := 299; index >= 0; index-- {
+			id := fmt.Sprintf("out-%03d", index)
+			f.task(id, "")
+			f.attach(id)
+		}
+		st := &requirementDisplayLinkStore{Store: inner}
+		view, _ := readRequirementDetail(t, st, f.requirement.ID)
+		if got, want := servingTaskIDs(view.ServingTasks), firstIDs("out", requirementDetailServingTaskLimit); !reflect.DeepEqual(got, want) {
+			t.Fatalf("serving tasks = %v, want the first %d task IDs", got, requirementDetailServingTaskLimit)
+		}
+		assertReads(t, st.kindQueries, false)
+	})
+	t.Run("outbound eligible tasks beyond the probe", func(t *testing.T) {
+		// The 100 newest links of the probe name tasks with children, so
+		// the probe holds 156 eligible tasks and 44 more lie beyond it.
+		inner := store.NewMemory()
+		f := newRequirementDisplayFixture(t, inner, "req-outbound-parents")
+		eligible := []string{}
+		for index := 299; index >= 0; index-- {
+			id := fmt.Sprintf("out-%03d", index)
+			f.task(id, "")
+			f.attach(id)
+			if index >= 200 {
+				f.task(id+"-child", id)
+				continue
+			}
+			eligible = append(eligible, id)
+		}
+		sort.Strings(eligible)
+		st := &requirementDisplayLinkStore{Store: inner}
+		view, _ := readRequirementDetail(t, st, f.requirement.ID)
+		if got := servingTaskIDs(view.ServingTasks); !reflect.DeepEqual(got, eligible) {
+			t.Fatalf("serving tasks = %d, want all %d eligible tasks", len(got), len(eligible))
+		}
+		assertReads(t, st.kindQueries, false)
+	})
+	t.Run("inbound earliest IDs beyond the probe", func(t *testing.T) {
+		inner := store.NewMemory()
+		f := newRequirementDisplayFixture(t, inner, "req-inbound-overflow")
+		st := &requirementDisplayLinkStore{Store: inner}
+		for index := 299; index >= 0; index-- {
+			id := fmt.Sprintf("in-%03d", index)
+			f.task(id, "")
+			st.extra = append(st.extra, f.inbound(id))
+		}
+		view, _ := readRequirementDetail(t, st, f.requirement.ID)
+		if got, want := servingTaskIDs(view.ServingTasks), firstIDs("in", requirementDetailServingTaskLimit); !reflect.DeepEqual(got, want) {
+			t.Fatalf("serving tasks = %v, want the first %d task IDs", got, requirementDetailServingTaskLimit)
+		}
+		assertReads(t, st.kindQueries, true)
+		if view.Staleness.PartialEvaluation {
+			t.Fatalf("a display overflow set partial_evaluation: %+v", view.Staleness)
+		}
+	})
 }

@@ -556,9 +556,10 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 		t.Fatalf("detail requirement view=%+v", view)
 	}
 	assertDetailHasNoDocumentEvents(t, detail.Body.Bytes())
-	// The detail reads only the requirement's own artifacts and its legacy
-	// inbound serves links: no neighborhood walk, no lineage artifact read,
-	// and no whole-workspace scan (component-lineage; component-artifacts).
+	// The detail reads only the requirement's own artifacts and its direct
+	// serves links in both directions: no neighborhood walk, no lineage
+	// artifact read, and no whole-workspace scan (component-lineage;
+	// component-artifacts).
 	if guard.neighborhood != 0 || guard.scopedArtifacts != 0 || guard.fullLineage != 0 || guard.fullArtifacts != 0 {
 		t.Fatalf("detail queries neighborhood=%d scoped_artifacts=%d full_lineage=%d full_artifacts=%d", guard.neighborhood, guard.scopedArtifacts, guard.fullLineage, guard.fullArtifacts)
 	}
@@ -566,9 +567,10 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 		t.Fatalf("detail artifact owner reads=%d owners=%+v", guard.ownerArtifacts, guard.ownerReads)
 	}
 	root := core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}
-	if guard.kindLinks != 1 || !reflect.DeepEqual(guard.kindQueries, []core.LineageKindLinkQuery{{
-		Nodes: []core.LineageNode{root}, Kind: "serves", Inbound: true, FarType: core.LineageTask, Limit: requirementDetailServingTaskLimit + 1,
-	}}) {
+	if guard.kindLinks != 2 || !reflect.DeepEqual(guard.kindQueries, []core.LineageKindLinkQuery{
+		{Nodes: []core.LineageNode{root}, Kind: "serves", FarType: core.LineageTask, Limit: requirementDetailServesReadLimit},
+		{Nodes: []core.LineageNode{root}, Kind: "serves", Inbound: true, FarType: core.LineageTask, Limit: requirementDetailServesReadLimit},
+	}) {
 		t.Fatalf("detail kind-link reads=%d queries=%+v", guard.kindLinks, guard.kindQueries)
 	}
 	if guard.singleVersions != 1 || guard.singleEvents != 1 || guard.singleDelivery != 1 || guard.eventPages != 0 {
@@ -1687,7 +1689,9 @@ func TestRequirementStalenessSurfacesTruncatedDeliveryEvaluation(t *testing.T) {
 	if !view.Staleness.PartialEvaluation || view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 0 {
 		t.Fatalf("partial staleness = %+v", view.Staleness)
 	}
-	if len(view.ServingTasks) != requirementDetailServingTaskLimit {
+	// The display reads serves links directly, and this stub adds delivery
+	// links only, so the detail lists no serving task.
+	if len(view.ServingTasks) != 0 {
 		t.Fatalf("serving tasks = %d", len(view.ServingTasks))
 	}
 }

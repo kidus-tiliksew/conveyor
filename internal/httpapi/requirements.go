@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -592,7 +593,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		}
 		deliveryGraphs[root.ID] = deliveryGraph
 		if includeDetail {
-			displayServing, displayErr := s.requirementDisplayServingTaskIDs(r.Context(), root, deliveryGraph)
+			displayServing, displayErr := s.requirementDisplayServingTaskIDs(r.Context(), root)
 			if displayErr != nil {
 				return nil, displayErr
 			}
@@ -874,36 +875,56 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 }
 
 // requirementDetailServingTaskLimit caps the detail's serving_tasks list.
-// The forward delivery graph counts the requirement within its 256-node
-// budget, so it names at most 255 directly serving tasks. The detail keeps
-// the first 255 eligible tasks in task-ID order. A requirement with 256 or
-// more serves links can therefore list fewer tasks than it has.
+// The detail lists every eligible serving task in task-ID order and keeps
+// the first 255. A requirement with more eligible tasks lists 255 of them.
 const requirementDetailServingTaskLimit = 255
 
+// requirementDetailServesReadLimit is the first bound of each direct serves
+// read: the display cap plus one overflow probe.
+const requirementDetailServesReadLimit = requirementDetailServingTaskLimit + 1
+
 // requirementDisplayServingTaskIDs names the tasks the detail lists as
-// serving the requirement: the direct requirement -serves-> task links of
-// the forward delivery graph, and the legacy task -serves-> requirement
-// links that a bounded inbound read returns. The inbound links are for
-// display only. They never enter the delivery graph, the delivery event
-// batch, reachability, or classification (component-lineage;
+// serving the requirement: its direct requirement -serves-> task links and
+// its legacy task -serves-> requirement links. Both are read directly, so
+// blueprint nodes in the delivery graph cannot take their place. The links
+// are for display only. They never enter the delivery graph, the delivery
+// event batch, reachability, or classification (component-lineage;
 // req-260811-228be6 REQ-1).
-func (s *Server) requirementDisplayServingTaskIDs(ctx context.Context, root core.LineageNode, deliveryGraph core.LineageTraversal) (map[string]bool, error) {
-	taskIDs := directServingTaskIDs(deliveryGraph.Links, root.ID)
-	// The read asks for one link more than the display cap. A read that
-	// returns that many links is incomplete: it does not prove that no other
-	// inbound link exists. Such a requirement has 256 or more serves links,
-	// so the display cap above already applies to it.
-	inbound, err := s.Store.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{
-		Nodes: []core.LineageNode{root}, Kind: "serves", Inbound: true, FarType: core.LineageTask,
-		Limit: requirementDetailServingTaskLimit + 1,
-	})
-	if err != nil {
-		return nil, err
-	}
-	for taskID := range directServingTaskIDs(inbound, root.ID) {
-		taskIDs[taskID] = true
+func (s *Server) requirementDisplayServingTaskIDs(ctx context.Context, root core.LineageNode) (map[string]bool, error) {
+	taskIDs := map[string]bool{}
+	for _, inbound := range []bool{false, true} {
+		links, err := s.requirementServesTaskLinks(ctx, root, inbound)
+		if err != nil {
+			return nil, err
+		}
+		for taskID := range directServingTaskIDs(links, root.ID) {
+			taskIDs[taskID] = true
+		}
 	}
 	return taskIDs, nil
+}
+
+// requirementServesTaskLinks reads every serves link between the
+// requirement and a task in one direction. The store returns a prefix in
+// event-ID order, not task-ID order, so a full prefix can hide an eligible
+// task or an earlier task ID. A read that fills its bound is therefore read
+// again with a larger bound until the store returns fewer links than the
+// bound (component-lineage).
+func (s *Server) requirementServesTaskLinks(ctx context.Context, root core.LineageNode, inbound bool) ([]core.LineageLink, error) {
+	for limit := requirementDetailServesReadLimit; ; limit *= 2 {
+		links, err := s.Store.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{
+			Nodes: []core.LineageNode{root}, Kind: "serves", Inbound: inbound, FarType: core.LineageTask, Limit: limit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(links) < limit {
+			return links, nil
+		}
+		if limit > math.MaxInt32 {
+			return nil, fmt.Errorf("requirement %s has more than %d serves links in one direction", root.ID, limit)
+		}
+	}
 }
 
 // requirementDetailTaskIDs names every task the detail reads: the tasks of
