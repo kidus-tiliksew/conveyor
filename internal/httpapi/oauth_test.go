@@ -1378,13 +1378,25 @@ func (f failingCallerIdentities) GetCallerIdentity(context.Context, string, stri
 	return core.CallerIdentity{}, f.err
 }
 
+// failingDashboardSessions fails the dashboard session check that runs in
+// front of the consent and grant handlers.
+type failingDashboardSessions struct {
+	store.InvitationSessionStore
+	err error
+}
+
+func (f failingDashboardSessions) VerifyDashboardSession(context.Context, string) (core.AuthenticatedCredential, error) {
+	return core.AuthenticatedCredential{}, f.err
+}
+
 // TestOAuthStoreFailuresAreGeneric injects a store failure into every
 // store-backed OAuth route, once as an ordinary error that carries a
 // credential and once as store.ErrRetryable. Each answer is the generic 500
 // with no internal detail, and the log holds the redacted cause with the
 // request ID (DEC-105(1), (5); component-http-api invariant 16). /mcp
-// admission answers the 500 "credential verification failed" that
-// component-http-api invariant 4 names, with the same log.
+// admission and the dashboard session check in front of the consent and
+// grant handlers keep the 500 "credential verification failed" of the shared
+// credential path (component-http-api invariant 4), with the same log.
 func TestOAuthStoreFailuresAreGeneric(t *testing.T) {
 	h := newOAuthHarness(t)
 	clientID, pair := h.grant()
@@ -1401,6 +1413,7 @@ func TestOAuthStoreFailuresAreGeneric(t *testing.T) {
 		request      func() oauthRequest
 		mcp          bool
 		identities   bool
+		sessions     bool
 	}
 	routes := []route{
 		{name: "registration", method: "RegisterOAuthClient", request: func() oauthRequest {
@@ -1439,6 +1452,18 @@ func TestOAuthStoreFailuresAreGeneric(t *testing.T) {
 		{name: "grant delete", method: "RevokeOwnOAuthGrant", request: func() oauthRequest {
 			return oauthRequest{method: http.MethodDelete, path: "/v1/oauth/grants/" + grantID, session: h.memberSession, proof: true}
 		}},
+		{name: "consent GET session check", sessions: true, request: func() oauthRequest {
+			return oauthRequest{method: http.MethodGet, path: query, session: h.memberSession}
+		}},
+		{name: "consent POST session check", sessions: true, request: func() oauthRequest {
+			return oauthRequest{method: http.MethodPost, path: "/v1/oauth/authorize", body: oauthDecisionBody("approve", clientID, oauthTestRedirect, "s"), contentType: "application/json", session: h.memberSession, proof: true}
+		}},
+		{name: "grant list session check", sessions: true, request: func() oauthRequest {
+			return oauthRequest{method: http.MethodGet, path: "/v1/oauth/grants", session: h.memberSession}
+		}},
+		{name: "grant delete session check", sessions: true, request: func() oauthRequest {
+			return oauthRequest{method: http.MethodDelete, path: "/v1/oauth/grants/" + grantID, session: h.memberSession, proof: true}
+		}},
 		{name: "mcp token verification", method: "VerifyOAuthAccessToken", mcp: true},
 		{name: "mcp grant audience read", method: "ListOwnOAuthGrants", mcp: true},
 	}
@@ -1455,9 +1480,14 @@ func TestOAuthStoreFailuresAreGeneric(t *testing.T) {
 				if tc.identities {
 					h.server.CallerIdentities = failingCallerIdentities{err: injected}
 				}
+				sessions := h.server.InvitationSessions
+				if tc.sessions {
+					h.server.InvitationSessions = failingDashboardSessions{InvitationSessionStore: sessions, err: injected}
+				}
 				t.Cleanup(func() {
 					h.server.OAuth = h.oauth
 					h.server.CallerIdentities = identities
+					h.server.InvitationSessions = sessions
 				})
 				requestID := "req-" + strings.ReplaceAll(tc.name, " ", "-") + "-" + strings.ReplaceAll(errName, " ", "-")
 				var status int
@@ -1478,8 +1508,12 @@ func TestOAuthStoreFailuresAreGeneric(t *testing.T) {
 					request.header = map[string]string{"X-Request-Id": requestID}
 					response := h.do(request)
 					status, body, header = response.Code, response.Body.String(), response.Header()
-					if strings.TrimSpace(body) != "internal server error" {
-						t.Fatalf("body=%q", body)
+					want := "internal server error"
+					if tc.sessions {
+						want = "credential verification failed"
+					}
+					if strings.TrimSpace(body) != want || header.Get("WWW-Authenticate") != "" {
+						t.Fatalf("body=%q challenge=%q", body, header.Get("WWW-Authenticate"))
 					}
 					expectNoStore(t, response)
 				}
@@ -1499,6 +1533,21 @@ func TestOAuthStoreFailuresAreGeneric(t *testing.T) {
 				}
 			})
 		}
+	}
+	// An unknown session is still a refused credential: 401 with the bearer
+	// challenge on all four session mounts, and no failure log.
+	for _, request := range []oauthRequest{
+		{method: http.MethodGet, path: query, session: "unknown-session"},
+		{method: http.MethodPost, path: "/v1/oauth/authorize", body: oauthDecisionBody("approve", clientID, oauthTestRedirect, "s"), contentType: "application/json", session: "unknown-session", proof: true},
+		{method: http.MethodGet, path: "/v1/oauth/grants", session: "unknown-session"},
+		{method: http.MethodDelete, path: "/v1/oauth/grants/" + grantID, session: "unknown-session", proof: true},
+	} {
+		logs := captureOAuthLogs(t)
+		response := h.do(request)
+		if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") != "Bearer" || strings.Contains(logs.String(), "credential verification failed") {
+			t.Fatalf("%s %s with an unknown session: status=%d challenge=%q log=%s", request.method, request.path, response.Code, response.Header().Get("WWW-Authenticate"), logs.String())
+		}
+		expectNoStore(t, response)
 	}
 	// Nothing changed: the grant and its pair still work, and the code still
 	// exchanges once.

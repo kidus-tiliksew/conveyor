@@ -745,11 +745,18 @@ func (s *Server) withHumanCredential(w http.ResponseWriter, r *http.Request) (*h
 // requireSelfServiceCredential authenticates the human credential that owns a
 // self-service request. It never resolves a workspace and never consults a
 // capability bundle: the caller's authority over the resource is the fact that
-// the resource is theirs.
+// the resource is theirs. A verification failure that is not a refused
+// credential, such as a store failure while a dashboard session is checked,
+// is logged redacted with the request ID before the unchanged generic 500,
+// because the rule for store failures applies before the handler too
+// (DEC-105(1), (5); component-http-api invariant 16).
 func (s *Server) requireSelfServiceCredential(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		credential, err := s.authenticateHumanCredential(w, r)
 		if err != nil {
+			if !errors.Is(err, core.ErrInvalidCredential) {
+				log.Printf("httpapi: credential verification failed: request_id=%q method=%s path=%q error=%q", middleware.GetReqID(r.Context()), r.Method, r.URL.Path, redactedErrorLogText(err))
+			}
 			writeCredentialVerificationError(w, err)
 			return
 		}
