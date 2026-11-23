@@ -48,6 +48,58 @@ async function openDialog(page: Page) {
   return { dialog, trigger }
 }
 
+// Every use of the word `conveyor` that names the MCP registration and not the
+// CLI. Any other use counts as a command, so a new command cannot escape the
+// check below by its form.
+const registrationNames = [
+  /"conveyor": \{/g,
+  /\[mcp_servers\.conveyor\]/g,
+  /cursor-agent mcp list-tools conveyor\b/g,
+  /codex mcp login conveyor\b/g,
+  /The conveyor line must read connected/g,
+  /Select conveyor and approve/g,
+]
+
+/** Each `conveyor` command in the text: its subcommand and its --server values. */
+function conveyorCommands(text: string) {
+  const commands = registrationNames.reduce((rest, name) => rest.replace(name, ''), text)
+  return [...commands.matchAll(/\bconveyor\b((?: [a-z]+)*)((?: --[a-z-]+(?: [^\s,)]+)?)*)/g)].map((match) => ({
+    subcommand: match[1].trim(),
+    servers: [...match[2].matchAll(/ --server ([^\s,)]+)/g)].map((server) => server[1].replace(/\.$/, '')),
+  }))
+}
+
+// Each client and mode, with the commands its instructions and snippet show.
+const shownCommands: Array<[mode: 'Browser sign-in' | 'Access token', client: string, commands: string[]]> = [
+  ['Browser sign-in', 'Cursor', ['mcp install']],
+  ['Browser sign-in', 'OpenCode', ['mcp install']],
+  ['Browser sign-in', 'Claude Code', ['mcp install']],
+  ['Browser sign-in', 'Codex', ['mcp install']],
+  ['Browser sign-in', 'Other', []],
+  ['Access token', 'Cursor', ['auth login', 'mcp install', 'auth token']],
+  ['Access token', 'OpenCode', ['auth login', 'mcp install', 'auth token']],
+  ['Access token', 'Claude Code', ['auth login', 'mcp install']],
+  ['Access token', 'Codex', ['auth login', 'mcp install', 'auth token']],
+  ['Access token', 'Other', ['mcp stdio']],
+]
+
+test('every command in the setup dialog names the server of the displayed endpoint', async ({ page }) => {
+  const { dialog } = await openDialog(page)
+  const endpoint = await dialog.getByTestId('mcp-endpoint').innerText()
+  const server = new URL(endpoint).origin
+  // The table covers every client in both modes.
+  expect(shownCommands).toHaveLength((await dialog.getByRole('tab').count()) * 2)
+  for (const [mode, client, commands] of shownCommands) {
+    await dialog.getByRole('button', { name: mode }).click()
+    await dialog.getByRole('tab', { name: client }).click()
+    const panel = dialog.getByRole('tabpanel')
+    await expect(panel.locator('pre')).toContainText(endpoint)
+    expect(conveyorCommands(await panel.innerText()), `${mode}, ${client}`).toEqual(
+      commands.map((subcommand) => ({ subcommand, servers: [server] })),
+    )
+  }
+})
+
 test('the setup dialog defaults to browser sign-in with no credential in any client setup', async ({ page }) => {
   const { dialog } = await openDialog(page)
   const endpoint = new URL('/mcp', page.url()).toString()
@@ -105,7 +157,11 @@ test('the access token option uses the released CLI and holds only placeholders'
     expect(stepText.join('\n')).not.toContain('--auth')
     // A file edited by hand gets a placeholder or an environment reference.
     expect(stepText[2]).toMatch(/^To edit the file yourself, /)
-    expect(stepText[2]).toMatch(/replace the placeholder|export CONVEYOR_API_TOKEN=\$\(conveyor auth token\)/)
+    expect(stepText[2]).toContain(
+      client === 'Claude Code'
+        ? 'replace the placeholder with one of your access tokens'
+        : `export CONVEYOR_API_TOKEN=$(conveyor auth token --server ${server})`,
+    )
     await expect(tab.getByTestId('mcp-installer-note')).toHaveText(
       'With a Conveyor CLI version that supports --auth, add --auth pat to the install command. Without it, that version installs browser sign-in.',
     )
@@ -160,6 +216,10 @@ test('the Settings connection row shows the endpoint setup first and the token o
     `run conveyor auth login --server ${server}, then conveyor mcp install --server ${server}. The current CLI installs an access token entry. With a CLI version that supports --auth, add --auth pat.`,
   )
   await expect(tokenOption).not.toContainText('install --auth')
+  expect(conveyorCommands(await region.innerText())).toEqual([
+    { subcommand: 'auth login', servers: [server] },
+    { subcommand: 'mcp install', servers: [server] },
+  ])
   await expect(tokenOption.locator('pre')).toContainText('Bearer <CONVEYOR_API_TOKEN>')
   await expect(settingsRowHeader(page, 'Connect a coding agent')).toHaveAttribute('aria-expanded', 'true')
 })

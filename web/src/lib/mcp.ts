@@ -159,6 +159,10 @@ url = "${endpoint}"`,
 function tokenClientSetups(endpoint: string): MCPClientSetup[] {
   const server = serverBase(endpoint)
   const login = `Run conveyor auth login --server ${server} to save an access token.`
+  // `auth login` saves a token and selects no server for later commands, so
+  // every command names the server of the endpoint beside it. Without it,
+  // `auth token` reads the token of CONVEYOR_ADDR or of the CLI default.
+  const exportToken = `export CONVEYOR_API_TOKEN=$(conveyor auth token --server ${server})`
   const installerNote =
     'With a Conveyor CLI version that supports --auth, add --auth pat to the install command. Without it, that version installs browser sign-in.'
   return [
@@ -169,7 +173,7 @@ function tokenClientSetups(endpoint: string): MCPClientSetup[] {
       steps: [
         login,
         `Run conveyor mcp install --tool cursor --server ${server}, then run the export line that it prints in the shell that launches Cursor.`,
-        'To edit the file yourself, merge the configuration below and run export CONVEYOR_API_TOKEN=$(conveyor auth token) in the shell that launches Cursor.',
+        `To edit the file yourself, merge the configuration below and run ${exportToken} in the shell that launches Cursor.`,
         'Verify with cursor-agent mcp list-tools conveyor.',
       ],
       snippetLabel: '~/.cursor/mcp.json',
@@ -190,7 +194,7 @@ function tokenClientSetups(endpoint: string): MCPClientSetup[] {
       steps: [
         login,
         `Run conveyor mcp install --tool opencode --server ${server}, then run the export line that it prints in the shell that launches OpenCode.`,
-        'To edit the file yourself, merge the configuration below and run export CONVEYOR_API_TOKEN=$(conveyor auth token) in the shell that launches OpenCode.',
+        `To edit the file yourself, merge the configuration below and run ${exportToken} in the shell that launches OpenCode.`,
         'Verify with opencode mcp list. The conveyor line must read connected.',
       ],
       snippetLabel: '~/.config/opencode/opencode.json',
@@ -235,7 +239,7 @@ function tokenClientSetups(endpoint: string): MCPClientSetup[] {
       steps: [
         login,
         `Run conveyor mcp install --tool codex --server ${server}. It adds a header helper that reads your saved token.`,
-        'To edit the file yourself, add the configuration below and run export CONVEYOR_API_TOKEN=$(conveyor auth token) where Codex starts.',
+        `To edit the file yourself, add the configuration below and run ${exportToken} where Codex starts.`,
         'Start a new Codex session and verify that the Conveyor tools are available.',
       ],
       snippetLabel: '~/.codex/config.toml',

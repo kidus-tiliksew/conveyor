@@ -170,6 +170,14 @@ for (const width of widths) {
     await capture(page, 'mcp-setup-pat-cursor', width)
     await dialog.evaluate((panel) => panel.scrollTo(0, panel.scrollHeight))
     await capture(page, 'mcp-setup-pat-cursor-end', width)
+    for (const client of ['OpenCode', 'Codex']) {
+      await dialog.evaluate((panel) => panel.scrollTo(0, 0))
+      await dialog.getByRole('tab', { name: client }).click()
+      await page.mouse.move(0, 0)
+      await capture(page, `mcp-setup-pat-${client.toLowerCase()}`, width)
+      await dialog.evaluate((panel) => panel.scrollTo(0, panel.scrollHeight))
+      await capture(page, `mcp-setup-pat-${client.toLowerCase()}-end`, width)
+    }
     await dialog.evaluate((panel) => panel.scrollTo(0, 0))
     await dialog.getByRole('tab', { name: 'Other' }).click()
     await page.mouse.move(0, 0)

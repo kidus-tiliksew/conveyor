@@ -10,19 +10,21 @@ import { mockSettingsPage, openSettingsRow, settingsRowHeader } from './helpers/
 
 const redirectURI = 'http://127.0.0.1:33418/callback'
 const metadataClientID = 'https://client.example/mcp/client.json'
+const state = '12345678901234567891'
 const challenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM'
 
-// An authorization query as a client writes it. `state` holds an encoded
-// slash and plus sign and a JSON-like number, `~` stays raw, and the order is
-// the client's own. The router would rewrite each of these in its own search
-// encoding, so the page must send this string unchanged.
+// An authorization query as a client writes it. `state` is a JSON number with
+// more digits than a double holds, so parsing it as JSON changes its value.
+// `scope` holds an encoded slash and plus sign and a raw `~`. The page must
+// send this string unchanged.
 const consentQuery = [
   'response_type=code',
   `client_id=${encodeURIComponent(metadataClientID)}`,
   `redirect_uri=${encodeURIComponent(redirectURI)}`,
   `code_challenge=${challenge}`,
   'code_challenge_method=S256',
-  'state=1e3~a%2Fb%2Bc',
+  `state=${state}`,
+  'scope=a%2Fb%2Bc~d',
 ].join('&')
 const consentPath = `/oauth/authorize?${consentQuery}`
 
@@ -45,8 +47,8 @@ const dynamicView = {
   resource: 'http://127.0.0.1/mcp',
 }
 
-const approvedRedirect = `${redirectURI}?code=cv_oac_synthetic-code&state=1e3~a%2Fb%2Bc`
-const deniedRedirect = `${redirectURI}?error=access_denied&state=1e3~a%2Fb%2Bc`
+const approvedRedirect = `${redirectURI}?code=cv_oac_synthetic-code&state=${state}`
+const deniedRedirect = `${redirectURI}?error=access_denied&state=${state}`
 
 interface RecordedRequest {
   method: string
@@ -191,7 +193,8 @@ const expectedDecisionFields = {
   redirect_uri: redirectURI,
   code_challenge: challenge,
   code_challenge_method: 'S256',
-  state: '1e3~a/b+c',
+  state,
+  scope: 'a/b+c~d',
 }
 
 test.describe('OAuth consent page', () => {
@@ -294,7 +297,7 @@ test.describe('OAuth consent page', () => {
     await page.goto(consentPath)
     await expect(page.getByTestId('oauth-client-name')).toBeVisible()
     const before = await browserStorage(page)
-    for (const secret of ['cv_oac_', '1e3~a', '127.0.0.1:33418', challenge]) expect(before).not.toContain(secret)
+    for (const secret of ['cv_oac_', state, '127.0.0.1:33418', challenge]) expect(before).not.toContain(secret)
   })
 
   // req-mcp-oauth AC-3.4: every refusal of the consent read stays on
@@ -451,7 +454,7 @@ test.describe('OAuth consent page', () => {
 // 12,000 characters. The decoded decision body stays far under its 16 KiB
 // limit, so the return path must keep this request whole (req-mcp-oauth
 // AC-3.1).
-const longQuery = `${consentQuery.replace('state=1e3~a%2Fb%2Bc', `state=${'%2F'.repeat(2_000)}`)}&client_note=${'x'.repeat(12_000)}`
+const longQuery = `${consentQuery.replace(`state=${state}`, `state=${'%2F'.repeat(2_000)}`)}&client_note=${'x'.repeat(12_000)}`
 
 // Node's HTTP parser, which the Vite dev server uses, refuses a request line
 // over 16 KiB. The browser keeps the long address, and this route answers its
