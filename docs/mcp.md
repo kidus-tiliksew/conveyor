@@ -222,10 +222,11 @@ only when all of these are true:
 
 The installer never runs or resolves the old command. The PAT mode then writes
 the current paths, and the OAuth mode removes the helper or bridge. An entry
-without the marker needs `--adopt` and the exact current helper or bridge. The
-OAuth mode does not resolve the current executable, so it removes a helper or
-bridge only when its file name is `conveyor` or `conveyor.exe`. Remove any
-other one by hand.
+without the marker needs `--adopt` and the exact current helper or bridge, so
+only `--auth pat` can adopt it. The OAuth mode does not resolve the current
+executable. It removes an owned helper or bridge only when the file name is
+`conveyor` or `conveyor.exe`. For any other entry, run `--auth pat` first, or
+remove the helper or bridge by hand.
 
 Only installer-marked registrations are migrated automatically. A matching
 legacy `conveyor` registration moves to the selected name while nested tool

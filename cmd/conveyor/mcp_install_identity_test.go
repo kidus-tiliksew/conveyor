@@ -79,147 +79,167 @@ func TestMCPIdentityNaming(t *testing.T) {
 }
 
 func TestMCPNamedCoexistenceReinstallAndRename(t *testing.T) {
-	for _, tool := range []string{"codex", "claude", "cursor", "opencode", "antigravity"} {
-		t.Run(tool, func(t *testing.T) {
-			first := testMCPIdentity(t, "https://one.example/base:part", "first-conveyor")
-			second := testMCPIdentity(t, "https://two.example:443/other", "")
-			data, status, name, err := testMCPReconcile(tool, nil, first, false)
-			if err != nil || status != "created" || name != first.name {
-				t.Fatalf("create %s %s %v", status, name, err)
-			}
-			data, _, _, err = testMCPReconcile(tool, data, second, false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, id := range []mcpIdentity{first, second, second, first} {
-				next, status, _, err := testMCPReconcile(tool, data, id, false)
-				if err != nil || status != "unchanged" || !bytes.Equal(data, next) {
-					t.Fatalf("reinstall status=%s err=%v", status, err)
-				}
-			}
-			entries := testMCPEntries(t, tool, data)
-			if len(entries) != 2 {
-				t.Fatal("lost/duplicated server")
-			}
-			other, _ := json.Marshal(entries[second.name])
-			inferred := testMCPIdentity(t, first.server, "")
-			next, status, name, err := testMCPReconcile(tool, data, inferred, false)
-			if err != nil || name != first.name || status != "unchanged" || !bytes.Equal(data, next) {
-				t.Fatalf("custom name reuse %s %v", name, err)
-			}
-			renamed := testMCPIdentity(t, first.server, "renamed-conveyor")
-			next, _, name, err = testMCPReconcile(tool, data, renamed, false)
-			if err != nil || name != renamed.name {
-				t.Fatal(err)
-			}
-			entries = testMCPEntries(t, tool, next)
-			if len(entries) != 2 || entries[first.name] != nil {
-				t.Fatal("rename duplicated registration")
-			}
-			after, _ := json.Marshal(entries[second.name])
-			if !bytes.Equal(other, after) {
-				t.Fatal("rename changed other server")
-			}
-			conflict := testMCPIdentity(t, second.server, renamed.name)
-			if _, _, _, err = testMCPReconcile(tool, next, conflict, true); err == nil {
-				t.Fatal("repointed named registration")
-			}
-			if bytes.Contains(data, []byte(mcpTokenEnv)) {
-				t.Fatal("shared token in personal registration")
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			for _, tool := range []string{"codex", "claude", "cursor", "opencode", "antigravity"} {
+				t.Run(tool, func(t *testing.T) {
+					first := testMCPModeIdentity(t, mode, "https://one.example/base:part", "first-conveyor")
+					second := testMCPModeIdentity(t, mode, "https://two.example:443/other", "")
+					data, status, name, err := testMCPReconcile(tool, nil, first, false)
+					if err != nil || status != "created" || name != first.name {
+						t.Fatalf("create %s %s %v", status, name, err)
+					}
+					data, _, _, err = testMCPReconcile(tool, data, second, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, id := range []mcpIdentity{first, second, second, first} {
+						next, status, _, err := testMCPReconcile(tool, data, id, false)
+						if err != nil || status != "unchanged" || !bytes.Equal(data, next) {
+							t.Fatalf("reinstall status=%s err=%v", status, err)
+						}
+					}
+					entries := testMCPEntries(t, tool, data)
+					if len(entries) != 2 {
+						t.Fatal("lost/duplicated server")
+					}
+					other, _ := json.Marshal(entries[second.name])
+					inferred := testMCPModeIdentity(t, mode, first.server, "")
+					next, status, name, err := testMCPReconcile(tool, data, inferred, false)
+					if err != nil || name != first.name || status != "unchanged" || !bytes.Equal(data, next) {
+						t.Fatalf("custom name reuse %s %v", name, err)
+					}
+					renamed := testMCPModeIdentity(t, mode, first.server, "renamed-conveyor")
+					next, _, name, err = testMCPReconcile(tool, data, renamed, false)
+					if err != nil || name != renamed.name {
+						t.Fatal(err)
+					}
+					entries = testMCPEntries(t, tool, next)
+					if len(entries) != 2 || entries[first.name] != nil {
+						t.Fatal("rename duplicated registration")
+					}
+					after, _ := json.Marshal(entries[second.name])
+					if !bytes.Equal(other, after) {
+						t.Fatal("rename changed other server")
+					}
+					conflict := testMCPModeIdentity(t, mode, second.server, renamed.name)
+					if _, _, _, err = testMCPReconcile(tool, next, conflict, true); err == nil {
+						t.Fatal("repointed named registration")
+					}
+					if bytes.Contains(data, []byte(mcpTokenEnv)) {
+						t.Fatal("shared token in personal registration")
+					}
+				})
 			}
 		})
 	}
 }
 
 func TestMCPMigrationPreservesNestedPolicies(t *testing.T) {
-	fixtures := map[string]string{
-		"codex":    "model = 'test'\n" + codexOwnerMarker + "\n[mcp_servers.conveyor]\nurl = 'https://one.example/mcp'\nbearer_token_env_var = 'CONVEYOR_API_TOKEN'\nenabled = false\nstartup_timeout_sec = 30\n[mcp_servers.other]\nurl='https://other.example/mcp'\n[mcp_servers.conveyor.tools.create_task]\napproval_mode='prompt'\noutput_token_limit=300\n",
-		"claude":   `{"theme" : "dark","_conveyor_mcp_install":"owner=v1","mcpServers":{"conveyor":{"type":"http","url":"https://one.example/mcp","headers":{"Authorization":"Bearer ${CONVEYOR_API_TOKEN}","X-Other":"value"},"tools":{"create_task":{"approval_mode":"prompt"}},"timeout":30},"manual":{"url":"https://manual.example/mcp"}}}`,
-		"cursor":   `{"_conveyor_mcp_install":"owner=v1","mcpServers":{"conveyor":{"url":"${env:CONVEYOR_ADDR}","headers":{"Authorization":"Bearer ${env:CONVEYOR_API_TOKEN}"},"tools":{"create_task":{"approval_mode":"prompt"}}}}}`,
-		"opencode": `{"mcp":{"conveyor":{"_conveyor_mcp_install":"owner=v1","type":"remote","url":"{env:CONVEYOR_ADDR}","headers":{"Authorization":"Bearer {env:CONVEYOR_API_TOKEN}"},"enabled":false,"timeout":30,"tools":{"create_task":{"approval_mode":"prompt"}}}}}`,
-	}
-	for tool, fixture := range fixtures {
-		t.Run(tool, func(t *testing.T) {
-			id := testMCPIdentity(t, "https://one.example", "")
-			t.Setenv(mcpAddressEnv, "https://one.example/mcp")
-			data, _, name, err := testMCPReconcile(tool, []byte(fixture), id, true)
-			if err != nil {
-				t.Fatal(err)
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			fixtures := map[string]string{
+				"codex":    "model = 'test'\n" + codexOwnerMarker + "\n[mcp_servers.conveyor]\nurl = 'https://one.example/mcp'\nbearer_token_env_var = 'CONVEYOR_API_TOKEN'\nenabled = false\nstartup_timeout_sec = 30\n[mcp_servers.other]\nurl='https://other.example/mcp'\n[mcp_servers.conveyor.tools.create_task]\napproval_mode='prompt'\noutput_token_limit=300\n",
+				"claude":   `{"theme" : "dark","_conveyor_mcp_install":"owner=v1","mcpServers":{"conveyor":{"type":"http","url":"https://one.example/mcp","headers":{"Authorization":"Bearer ${CONVEYOR_API_TOKEN}","X-Other":"value"},"tools":{"create_task":{"approval_mode":"prompt"}},"timeout":30},"manual":{"url":"https://manual.example/mcp"}}}`,
+				"cursor":   `{"_conveyor_mcp_install":"owner=v1","mcpServers":{"conveyor":{"url":"${env:CONVEYOR_ADDR}","headers":{"Authorization":"Bearer ${env:CONVEYOR_API_TOKEN}"},"tools":{"create_task":{"approval_mode":"prompt"}}}}}`,
+				"opencode": `{"mcp":{"conveyor":{"_conveyor_mcp_install":"owner=v1","type":"remote","url":"{env:CONVEYOR_ADDR}","headers":{"Authorization":"Bearer {env:CONVEYOR_API_TOKEN}"},"enabled":false,"timeout":30,"tools":{"create_task":{"approval_mode":"prompt"}}}}}`,
 			}
-			entries := testMCPEntries(t, tool, data)
-			if name != id.name || entries["conveyor"] != nil {
-				t.Fatal("migration did not rename")
-			}
-			entry := entries[name].(map[string]any)
-			policy := entry["tools"].(map[string]any)["create_task"].(map[string]any)
-			if policy["approval_mode"] != "prompt" {
-				t.Fatal("lost nested policy")
-			}
-			again, status, _, err := testMCPReconcile(tool, data, id, false)
-			if err != nil || status != "unchanged" || !bytes.Equal(again, data) {
-				t.Fatalf("migration not idempotent %s %v", status, err)
-			}
-			if tool == "codex" && !bytes.Contains(data, []byte("[mcp_servers.other]\nurl='https://other.example/mcp'")) {
-				t.Fatal("other TOML bytes changed")
-			}
-			if tool == "claude" && !bytes.Contains(data, []byte(`"theme" : "dark"`)) {
-				t.Fatal("other JSON bytes changed")
+			for tool, fixture := range fixtures {
+				t.Run(tool, func(t *testing.T) {
+					id := testMCPModeIdentity(t, mode, "https://one.example", "")
+					t.Setenv(mcpAddressEnv, "https://one.example/mcp")
+					data, _, name, err := testMCPReconcile(tool, []byte(fixture), id, true)
+					if err != nil {
+						t.Fatal(err)
+					}
+					entries := testMCPEntries(t, tool, data)
+					if name != id.name || entries["conveyor"] != nil {
+						t.Fatal("migration did not rename")
+					}
+					entry := entries[name].(map[string]any)
+					policy := entry["tools"].(map[string]any)["create_task"].(map[string]any)
+					if policy["approval_mode"] != "prompt" {
+						t.Fatal("lost nested policy")
+					}
+					again, status, _, err := testMCPReconcile(tool, data, id, false)
+					if err != nil || status != "unchanged" || !bytes.Equal(again, data) {
+						t.Fatalf("migration not idempotent %s %v", status, err)
+					}
+					if tool == "codex" && !bytes.Contains(data, []byte("[mcp_servers.other]\nurl='https://other.example/mcp'")) {
+						t.Fatal("other TOML bytes changed")
+					}
+					if tool == "claude" && !bytes.Contains(data, []byte(`"theme" : "dark"`)) {
+						t.Fatal("other JSON bytes changed")
+					}
+				})
 			}
 		})
 	}
 }
 
 func TestMCPRefusesManualAuthAndAdoptionRepoint(t *testing.T) {
-	for _, tool := range []string{"codex", "claude", "cursor", "opencode", "antigravity"} {
-		t.Run(tool, func(t *testing.T) {
-			id := testMCPIdentity(t, "https://one.example", "manual")
-			var prior []byte
-			if tool == "codex" {
-				prior = []byte("[mcp_servers.manual]\nurl='https://one.example/mcp'\nhttp_headers={Authorization='Bearer fixture-secret'}\n")
-			} else {
-				key := "mcpServers"
-				if tool == "opencode" {
-					key = "mcp"
-				}
-				prior = []byte(fmt.Sprintf(`{"%s":{"manual":{"url":"https://one.example/mcp","headers":{"Authorization":"Bearer fixture-secret"}}}}`, key))
-			}
-			for _, adopt := range []bool{false, true} {
-				_, _, _, err := testMCPReconcile(tool, prior, id, adopt)
-				if err == nil || strings.Contains(err.Error(), "fixture-secret") {
-					t.Fatal("manual auth not refused safely")
-				}
-			}
-			other := testMCPIdentity(t, "https://two.example", "manual")
-			if _, _, _, err := testMCPReconcile(tool, prior, other, true); err == nil {
-				t.Fatal("adopt repointed manual server")
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			for _, tool := range []string{"codex", "claude", "cursor", "opencode", "antigravity"} {
+				t.Run(tool, func(t *testing.T) {
+					id := testMCPModeIdentity(t, mode, "https://one.example", "manual")
+					var prior []byte
+					if tool == "codex" {
+						prior = []byte("[mcp_servers.manual]\nurl='https://one.example/mcp'\nhttp_headers={Authorization='Bearer fixture-secret'}\n")
+					} else {
+						key := "mcpServers"
+						if tool == "opencode" {
+							key = "mcp"
+						}
+						prior = []byte(fmt.Sprintf(`{"%s":{"manual":{"url":"https://one.example/mcp","headers":{"Authorization":"Bearer fixture-secret"}}}}`, key))
+					}
+					for _, adopt := range []bool{false, true} {
+						_, _, _, err := testMCPReconcile(tool, prior, id, adopt)
+						if err == nil || strings.Contains(err.Error(), "fixture-secret") {
+							t.Fatal("manual auth not refused safely")
+						}
+					}
+					other := testMCPModeIdentity(t, mode, "https://two.example", "manual")
+					if _, _, _, err := testMCPReconcile(tool, prior, other, true); err == nil {
+						t.Fatal("adopt repointed manual server")
+					}
+				})
 			}
 		})
 	}
 }
 
 func TestMCPSharedWorkerAttachmentNeedsExplicitAdoption(t *testing.T) {
-	for _, tool := range []string{"cursor", "opencode"} {
-		t.Run(tool, func(t *testing.T) {
-			key, endpoint := "mcpServers", "${env:CONVEYOR_ADDR}"
-			if tool == "opencode" {
-				key, endpoint = "mcp", "{env:CONVEYOR_ADDR}"
-			}
-			fixture := []byte(fmt.Sprintf(`{"_conveyor_mcp_install":"owner=v1","%s":{"conveyor":{"_conveyor_mcp_install":"owner=v1","url":%q}}}`, key, endpoint))
-			id := testMCPIdentity(t, "https://one.example", "")
-			t.Setenv(mcpAddressEnv, "https://one.example/mcp")
-			next, _, _, err := testMCPReconcile(tool, fixture, id, false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			entry := testMCPEntries(t, tool, next)["conveyor"].(map[string]any)
-			if entry["url"] != endpoint {
-				t.Fatal("changed worker attachment")
-			}
-			id.explicit = true
-			id.name = "conveyor"
-			t.Setenv(mcpAddressEnv, "https://other.example/mcp")
-			if _, _, _, err := testMCPReconcile(tool, fixture, id, true); err == nil {
-				t.Fatal("adopted ambiguous worker endpoint")
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			for _, tool := range []string{"cursor", "opencode"} {
+				t.Run(tool, func(t *testing.T) {
+					key, endpoint := "mcpServers", "${env:CONVEYOR_ADDR}"
+					if tool == "opencode" {
+						key, endpoint = "mcp", "{env:CONVEYOR_ADDR}"
+					}
+					fixture := []byte(fmt.Sprintf(`{"_conveyor_mcp_install":"owner=v1","%s":{"conveyor":{"_conveyor_mcp_install":"owner=v1","url":%q}}}`, key, endpoint))
+					id := testMCPModeIdentity(t, mode, "https://one.example", "")
+					t.Setenv(mcpAddressEnv, "https://one.example/mcp")
+					next, _, _, err := testMCPReconcile(tool, fixture, id, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					entry := testMCPEntries(t, tool, next)["conveyor"].(map[string]any)
+					if entry["url"] != endpoint {
+						t.Fatal("changed worker attachment")
+					}
+					id.explicit = true
+					id.name = "conveyor"
+					t.Setenv(mcpAddressEnv, "https://other.example/mcp")
+					if _, _, _, err := testMCPReconcile(tool, fixture, id, true); err == nil {
+						t.Fatal("adopted ambiguous worker endpoint")
+					}
+				})
 			}
 		})
 	}
@@ -294,93 +314,113 @@ func testMCPCommandTwoCredentialsAndList(t *testing.T, tool, mode string) {
 }
 
 func TestMCPReinstallPreservesOtherCodexOwnership(t *testing.T) {
-	first := testMCPIdentity(t, "https://one.example", "one")
-	second := testMCPIdentity(t, "https://two.example", "two")
-	data, _, _, err := reconcileNamedCodex(nil, first, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, _, _, err = reconcileNamedCodex(data, second, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Rename the first block, whose next block has an ownership comment.
-	first.name = "renamed"
-	data, _, _, err = reconcileNamedCodex(data, first, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second.explicit = false
-	_, status, name, err := reconcileNamedCodex(data, second, false)
-	if err != nil || status != "unchanged" || name != "two" {
-		t.Fatalf("lost other owner: status=%s name=%s err=%v", status, name, err)
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			first := testMCPModeIdentity(t, mode, "https://one.example", "one")
+			second := testMCPModeIdentity(t, mode, "https://two.example", "two")
+			data, _, _, err := reconcileNamedCodex(nil, first, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, _, _, err = reconcileNamedCodex(data, second, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Rename the first block, whose next block has an ownership comment.
+			first.name = "renamed"
+			data, _, _, err = reconcileNamedCodex(data, first, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second.explicit = false
+			_, status, name, err := reconcileNamedCodex(data, second, false)
+			if err != nil || status != "unchanged" || name != "two" {
+				t.Fatalf("lost other owner: status=%s name=%s err=%v", status, name, err)
+			}
+		})
 	}
 }
 
 func TestMCPRefusesAmbiguousOrUnsupportedConfigBeforeWrite(t *testing.T) {
-	cases := []struct{ tool, prior string }{
-		{"codex", "[mcp_servers.one]\nurl='https://one.example/mcp'\n[mcp_servers.one]\nurl='https://one.example/mcp'\n"},
-		{"codex", "mcp_servers={one={url='https://one.example/mcp'}}\n"},
-		{"claude", `{"mcpServers":{"one":{"url":"https://one.example/mcp","url":"https://two.example/mcp"}}}`},
-		{"cursor", `{"mcpServers":{"one":{"url":"https://one.example/mcp","oauth":{"clientId":"custom"}}}}`},
-		{"opencode", `{"mcp":{"one":{"url":"https://one.example/mcp","oauth":true}}}`},
-		{"antigravity", `{"mcpServers":{"one":{"serverUrl":"https://one.example/mcp","serverUrl":"https://two.example/mcp"}}}`},
-		{"antigravity", `{"mcpServers":{"one":{"serverUrl":"https://one.example/mcp","env":{"A":"b"}}}}`},
-		{"antigravity", `{"mcpServers":{"one":{"command":"/usr/bin/other","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json"]}},"_conveyor_mcp_install":{"one":{"owner":"v2","endpoint":"https://one.example/mcp"}}}`},
-		{"antigravity", "{\"mcpServers\":{\n// keep my comment\n}}"},
-	}
-	for _, c := range cases {
-		t.Run(c.tool+c.prior[:8], func(t *testing.T) {
-			home := t.TempDir()
-			path := filepath.Join(home, "config")
-			prior := []byte(c.prior)
-			if err := os.WriteFile(path, prior, 0o640); err != nil {
-				t.Fatal(err)
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			cases := []struct{ tool, prior string }{
+				{"codex", "[mcp_servers.one]\nurl='https://one.example/mcp'\n[mcp_servers.one]\nurl='https://one.example/mcp'\n"},
+				{"codex", "mcp_servers={one={url='https://one.example/mcp'}}\n"},
+				{"claude", `{"mcpServers":{"one":{"url":"https://one.example/mcp","url":"https://two.example/mcp"}}}`},
+				{"cursor", `{"mcpServers":{"one":{"url":"https://one.example/mcp","oauth":{"clientId":"custom"}}}}`},
+				{"opencode", `{"mcp":{"one":{"url":"https://one.example/mcp","oauth":true}}}`},
+				{"antigravity", `{"mcpServers":{"one":{"serverUrl":"https://one.example/mcp","serverUrl":"https://two.example/mcp"}}}`},
+				{"antigravity", `{"mcpServers":{"one":{"serverUrl":"https://one.example/mcp","env":{"A":"b"}}}}`},
+				{"antigravity", `{"mcpServers":{"one":{"command":"/usr/bin/other","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json"]}},"_conveyor_mcp_install":{"one":{"owner":"v2","endpoint":"https://one.example/mcp"}}}`},
+				{"antigravity", "{\"mcpServers\":{\n// keep my comment\n}}"},
 			}
-			id := testMCPIdentity(t, "https://one.example", "one")
-			if _, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: c.tool, path: path}, id, true, true, noOpenCodeOnPath); err == nil {
-				t.Fatal("accepted ambiguous config")
-			}
-			after, _ := os.ReadFile(path)
-			info, _ := os.Stat(path)
-			if !bytes.Equal(prior, after) || info.Mode().Perm() != 0o640 {
-				t.Fatal("failure changed bytes or permissions")
+			for _, c := range cases {
+				t.Run(c.tool+c.prior[:8], func(t *testing.T) {
+					home := t.TempDir()
+					path := filepath.Join(home, "config")
+					prior := []byte(c.prior)
+					if err := os.WriteFile(path, prior, 0o640); err != nil {
+						t.Fatal(err)
+					}
+					id := testMCPModeIdentity(t, mode, "https://one.example", "one")
+					if _, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: c.tool, path: path}, id, true, true, noOpenCodeOnPath); err == nil {
+						t.Fatal("accepted ambiguous config")
+					}
+					after, _ := os.ReadFile(path)
+					info, _ := os.Stat(path)
+					if !bytes.Equal(prior, after) || info.Mode().Perm() != 0o640 {
+						t.Fatal("failure changed bytes or permissions")
+					}
+				})
 			}
 		})
 	}
 }
 
 func TestMCPListDoesNotExecuteParserAndInstallSecuresExistingFile(t *testing.T) {
-	home := t.TempDir()
-	path := filepath.Join(home, "config.json")
-	id := testMCPIdentity(t, "https://one.example", "")
-	data, _, _, err := reconcileNamedJSON(nil, "cursor", id, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o640); err != nil {
-		t.Fatal(err)
-	}
-	lookup := func(string) (string, error) { t.Fatal("list executed native parser lookup"); return "", nil }
-	if _, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "cursor", path: path}, id, false, false, lookup); err != nil {
-		t.Fatal(err)
-	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o640 {
-		t.Fatal("list changed permissions")
-	}
-	result, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "cursor", path: path}, id, false, true, noOpenCodeOnPath)
-	info, _ = os.Stat(path)
-	if err != nil || result.status != "secured" || info.Mode().Perm() != 0o600 {
-		t.Fatal("reinstall did not secure file")
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			home := t.TempDir()
+			path := filepath.Join(home, "config.json")
+			id := testMCPModeIdentity(t, mode, "https://one.example", "")
+			data, _, _, err := reconcileNamedJSON(nil, "cursor", id, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			lookup := func(string) (string, error) { t.Fatal("list executed native parser lookup"); return "", nil }
+			if _, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "cursor", path: path}, id, false, false, lookup); err != nil {
+				t.Fatal(err)
+			}
+			info, _ := os.Stat(path)
+			if info.Mode().Perm() != 0o640 {
+				t.Fatal("list changed permissions")
+			}
+			result, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "cursor", path: path}, id, false, true, noOpenCodeOnPath)
+			info, _ = os.Stat(path)
+			if err != nil || result.status != "secured" || info.Mode().Perm() != 0o600 {
+				t.Fatal("reinstall did not secure file")
+			}
+		})
 	}
 }
 
 func TestMCPCodexMultilineTableTextCannotChangeUnrelatedValues(t *testing.T) {
-	prior := []byte("note = '''\n" + codexOwnerMarker + "\n[mcp_servers.one]\ntext inside a multiline string\n'''\n[mcp_servers.one]\nurl='https://one.example/mcp'\n")
-	id := testMCPIdentity(t, "https://one.example", "one")
-	if _, _, _, err := reconcileNamedCodex(prior, id, true); err == nil {
-		t.Fatal("accepted unsafe multiline table layout")
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			prior := []byte("note = '''\n" + codexOwnerMarker + "\n[mcp_servers.one]\ntext inside a multiline string\n'''\n[mcp_servers.one]\nurl='https://one.example/mcp'\n")
+			id := testMCPModeIdentity(t, mode, "https://one.example", "one")
+			if _, _, _, err := reconcileNamedCodex(prior, id, true); err == nil {
+				t.Fatal("accepted unsafe multiline table layout")
+			}
+		})
 	}
 }
 
@@ -404,28 +444,33 @@ func TestMCPParserRejectsMissingOrNullNativeHelper(t *testing.T) {
 }
 
 func TestMCPManualMatchingEndpointRequiresExplicitAdoption(t *testing.T) {
-	for _, tool := range []string{"codex", "claude", "cursor", "opencode", "antigravity"} {
-		t.Run(tool, func(t *testing.T) {
-			id := testMCPIdentity(t, "https://one.example", "")
-			prior := []byte("[mcp_servers.manual]\nurl='https://one.example/mcp'\nstartup_timeout_sec=30\n")
-			if tool != "codex" {
-				key := "mcpServers"
-				if tool == "opencode" {
-					key = "mcp"
-				}
-				prior = []byte(fmt.Sprintf(`{"%s":{"manual":{"url":"https://one.example/mcp","timeout":30}}}`, key))
-			}
-			if _, _, _, err := testMCPReconcile(tool, prior, id, false); err == nil {
-				t.Fatal("duplicated manual endpoint")
-			}
-			id = testMCPIdentity(t, id.server, "manual")
-			next, _, name, err := testMCPReconcile(tool, prior, id, true)
-			if err != nil || name != "manual" {
-				t.Fatalf("explicit adoption failed: %v", err)
-			}
-			entries := testMCPEntries(t, tool, next)
-			if len(entries) != 1 {
-				t.Fatal("adoption created duplicate")
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			for _, tool := range []string{"codex", "claude", "cursor", "opencode", "antigravity"} {
+				t.Run(tool, func(t *testing.T) {
+					id := testMCPModeIdentity(t, mode, "https://one.example", "")
+					prior := []byte("[mcp_servers.manual]\nurl='https://one.example/mcp'\nstartup_timeout_sec=30\n")
+					if tool != "codex" {
+						key := "mcpServers"
+						if tool == "opencode" {
+							key = "mcp"
+						}
+						prior = []byte(fmt.Sprintf(`{"%s":{"manual":{"url":"https://one.example/mcp","timeout":30}}}`, key))
+					}
+					if _, _, _, err := testMCPReconcile(tool, prior, id, false); err == nil {
+						t.Fatal("duplicated manual endpoint")
+					}
+					id = testMCPModeIdentity(t, mode, id.server, "manual")
+					next, _, name, err := testMCPReconcile(tool, prior, id, true)
+					if err != nil || name != "manual" {
+						t.Fatalf("explicit adoption failed: %v", err)
+					}
+					entries := testMCPEntries(t, tool, next)
+					if len(entries) != 1 {
+						t.Fatal("adoption created duplicate")
+					}
+				})
 			}
 		})
 	}
@@ -497,6 +542,25 @@ func checkAntigravityBridgeEntry(t *testing.T, entry map[string]any, id mcpIdent
 	}
 }
 
+// checkAntigravityModeEntry holds an entry to its mode: the bridge under
+// --auth pat, or only serverUrl under --auth oauth, with no env, url,
+// headers, command, or args (component-cli-onboarding invariant 6).
+func checkAntigravityModeEntry(t *testing.T, entry map[string]any, id mcpIdentity) {
+	t.Helper()
+	if !id.oauth() {
+		checkAntigravityBridgeEntry(t, entry, id)
+		return
+	}
+	if entry["serverUrl"] != id.endpoint {
+		t.Fatalf("entry does not name the endpoint: %v", entry)
+	}
+	for _, key := range []string{"env", "url", "headers", "command", "args"} {
+		if _, ok := entry[key]; ok {
+			t.Fatalf("OAuth entry keeps %s: %v", key, entry)
+		}
+	}
+}
+
 func TestMCPAntigravityCreateWritesOnlyTheBridgeEntry(t *testing.T) {
 	id := testMCPIdentity(t, "https://one.example/base", "")
 	data, status, name, err := reconcileNamedJSON(nil, "antigravity", id, false)
@@ -537,118 +601,139 @@ func TestMCPAntigravityCreateWritesOnlyTheBridgeEntry(t *testing.T) {
 }
 
 func TestMCPAntigravityRenamePreservesPolicyAndOtherEntries(t *testing.T) {
-	id := testMCPIdentity(t, "https://one.example", "")
-	prior := []byte(`{"theme" : "dark","mcpServers":{"other":{"serverUrl":"https://other.example/mcp"}}}`)
-	data, _, _, err := reconcileNamedJSON(prior, "antigravity", id, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// agy writes "disabled" on its own entries; the installer keeps it.
-	data = bytes.Replace(data, []byte(`{"args"`), []byte(`{"disabled":true,"args"`), 1)
-	renamed := testMCPIdentity(t, id.server, "renamed-conveyor")
-	next, status, name, err := reconcileNamedJSON(data, "antigravity", renamed, false)
-	if err != nil || status != "refreshed" || name != "renamed-conveyor" {
-		t.Fatalf("rename status=%s name=%s err=%v", status, name, err)
-	}
-	entries := testMCPEntries(t, "antigravity", next)
-	if len(entries) != 2 || entries[id.name] != nil {
-		t.Fatalf("rename duplicated or lost entries: %v", entries)
-	}
-	entry := testAntigravityEntry(t, next, name)
-	checkAntigravityBridgeEntry(t, entry, renamed)
-	if entry["disabled"] != true {
-		t.Fatal("rename lost the disabled policy")
-	}
-	if !bytes.Contains(next, []byte(`"theme" : "dark"`)) || !bytes.Contains(next, []byte(`"other":{"serverUrl":"https://other.example/mcp"}`)) {
-		t.Fatalf("rename changed unrelated bytes:\n%s", next)
-	}
-	var root struct {
-		Owners map[string]mcpOwnedEndpoint `json:"_conveyor_mcp_install"`
-	}
-	if err := json.Unmarshal(next, &root); err != nil {
-		t.Fatal(err)
-	}
-	if len(root.Owners) != 1 || root.Owners[name] != (mcpOwnedEndpoint{Owner: "v2", Endpoint: renamed.endpoint}) {
-		t.Fatalf("rename did not move the ownership marker: %v", root.Owners)
-	}
-	again, status, _, err := reconcileNamedJSON(next, "antigravity", testMCPIdentity(t, id.server, ""), false)
-	if err != nil || status != "unchanged" || !bytes.Equal(again, next) {
-		t.Fatalf("renamed entry is not reused: status=%s err=%v", status, err)
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			id := testMCPModeIdentity(t, mode, "https://one.example", "")
+			prior := []byte(`{"theme" : "dark","mcpServers":{"other":{"serverUrl":"https://other.example/mcp"}}}`)
+			data, _, _, err := reconcileNamedJSON(prior, "antigravity", id, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// agy writes "disabled" on its own entries; the installer keeps it.
+			data = bytes.Replace(data, []byte(`"`+id.name+`":{`), []byte(`"`+id.name+`":{"disabled":true,`), 1)
+			renamed := testMCPModeIdentity(t, mode, id.server, "renamed-conveyor")
+			next, status, name, err := reconcileNamedJSON(data, "antigravity", renamed, false)
+			if err != nil || status != "refreshed" || name != "renamed-conveyor" {
+				t.Fatalf("rename status=%s name=%s err=%v", status, name, err)
+			}
+			entries := testMCPEntries(t, "antigravity", next)
+			if len(entries) != 2 || entries[id.name] != nil {
+				t.Fatalf("rename duplicated or lost entries: %v", entries)
+			}
+			entry := testAntigravityEntry(t, next, name)
+			checkAntigravityModeEntry(t, entry, renamed)
+			if entry["disabled"] != true {
+				t.Fatal("rename lost the disabled policy")
+			}
+			if !bytes.Contains(next, []byte(`"theme" : "dark"`)) || !bytes.Contains(next, []byte(`"other":{"serverUrl":"https://other.example/mcp"}`)) {
+				t.Fatalf("rename changed unrelated bytes:\n%s", next)
+			}
+			var root struct {
+				Owners map[string]mcpOwnedEndpoint `json:"_conveyor_mcp_install"`
+			}
+			if err := json.Unmarshal(next, &root); err != nil {
+				t.Fatal(err)
+			}
+			if len(root.Owners) != 1 || root.Owners[name] != (mcpOwnedEndpoint{Owner: "v2", Endpoint: renamed.endpoint}) {
+				t.Fatalf("rename did not move the ownership marker: %v", root.Owners)
+			}
+			again, status, _, err := reconcileNamedJSON(next, "antigravity", testMCPModeIdentity(t, mode, id.server, ""), false)
+			if err != nil || status != "unchanged" || !bytes.Equal(again, next) {
+				t.Fatalf("renamed entry is not reused: status=%s err=%v", status, err)
+			}
+		})
 	}
 }
 
 func TestMCPAntigravityAdoptsAgyAddEntry(t *testing.T) {
-	for _, field := range []string{"serverUrl", "url"} {
-		t.Run(field, func(t *testing.T) {
-			// `agy mcp add manual https://one.example/mcp` writes serverUrl
-			// and disabled. A hand-written entry can use url.
-			prior := []byte(fmt.Sprintf(`{"theme":"dark","mcpServers":{"manual":{"disabled":false,%q:"https://one.example/mcp","headers":{"X-Trace":"1"}},"other":{"serverUrl":"https://other.example/mcp"}}}`, field))
-			for _, id := range []mcpIdentity{testMCPIdentity(t, "https://one.example", ""), testMCPIdentity(t, "https://one.example", "manual")} {
-				_, _, _, err := reconcileNamedJSON(prior, "antigravity", id, false)
-				if err == nil || !strings.Contains(err.Error(), "--name manual --adopt") {
-					t.Fatalf("unowned entry accepted without adoption: %v", err)
-				}
-			}
-			if _, _, _, err := reconcileNamedJSON(prior, "antigravity", testMCPIdentity(t, "https://one.example", ""), true); err == nil {
-				t.Fatal("--adopt without --name adopted an arbitrary name")
-			}
-			id := testMCPIdentity(t, "https://one.example", "manual")
-			next, status, name, err := reconcileNamedJSON(prior, "antigravity", id, true)
-			if err != nil || status != "refreshed" || name != "manual" {
-				t.Fatalf("adoption status=%s name=%s err=%v", status, name, err)
-			}
-			entry := testAntigravityEntry(t, next, "manual")
-			checkAntigravityBridgeEntry(t, entry, id)
-			if entry["disabled"] != false || len(entry) != 3 {
-				t.Fatalf("adoption changed unrelated entry fields: %v", entry)
-			}
-			if !bytes.Contains(next, []byte(`"other":{"serverUrl":"https://other.example/mcp"}`)) || !bytes.Contains(next, []byte(`"theme":"dark"`)) {
-				t.Fatalf("adoption changed other bytes:\n%s", next)
-			}
-			again, status, _, err := reconcileNamedJSON(next, "antigravity", testMCPIdentity(t, id.server, ""), false)
-			if err != nil || status != "unchanged" || !bytes.Equal(again, next) {
-				t.Fatalf("adopted entry is not owned: status=%s err=%v", status, err)
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			for _, field := range []string{"serverUrl", "url"} {
+				t.Run(field, func(t *testing.T) {
+					// `agy mcp add manual https://one.example/mcp` writes serverUrl
+					// and disabled. A hand-written entry can use url.
+					prior := []byte(fmt.Sprintf(`{"theme":"dark","mcpServers":{"manual":{"disabled":false,%q:"https://one.example/mcp","headers":{"X-Trace":"1"}},"other":{"serverUrl":"https://other.example/mcp"}}}`, field))
+					for _, id := range []mcpIdentity{testMCPModeIdentity(t, mode, "https://one.example", ""), testMCPModeIdentity(t, mode, "https://one.example", "manual")} {
+						_, _, _, err := reconcileNamedJSON(prior, "antigravity", id, false)
+						if err == nil || !strings.Contains(err.Error(), "--name manual --adopt") {
+							t.Fatalf("unowned entry accepted without adoption: %v", err)
+						}
+					}
+					if _, _, _, err := reconcileNamedJSON(prior, "antigravity", testMCPModeIdentity(t, mode, "https://one.example", ""), true); err == nil {
+						t.Fatal("--adopt without --name adopted an arbitrary name")
+					}
+					id := testMCPModeIdentity(t, mode, "https://one.example", "manual")
+					next, status, name, err := reconcileNamedJSON(prior, "antigravity", id, true)
+					if err != nil || status != "refreshed" || name != "manual" {
+						t.Fatalf("adoption status=%s name=%s err=%v", status, name, err)
+					}
+					entry := testAntigravityEntry(t, next, "manual")
+					checkAntigravityModeEntry(t, entry, id)
+					// The bridge has command and args. OAuth has only serverUrl.
+					if want := map[bool]int{false: 3, true: 2}[id.oauth()]; entry["disabled"] != false || len(entry) != want {
+						t.Fatalf("adoption changed unrelated entry fields: %v", entry)
+					}
+					if !bytes.Contains(next, []byte(`"other":{"serverUrl":"https://other.example/mcp"}`)) || !bytes.Contains(next, []byte(`"theme":"dark"`)) {
+						t.Fatalf("adoption changed other bytes:\n%s", next)
+					}
+					again, status, _, err := reconcileNamedJSON(next, "antigravity", testMCPModeIdentity(t, mode, id.server, ""), false)
+					if err != nil || status != "unchanged" || !bytes.Equal(again, next) {
+						t.Fatalf("adopted entry is not owned: status=%s err=%v", status, err)
+					}
+				})
 			}
 		})
 	}
 }
 
 func TestMCPAntigravityAdoptionReplacesLegacyTokenReference(t *testing.T) {
-	prior := []byte(`{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","headers":{"Authorization":"Bearer ${CONVEYOR_API_TOKEN}"}}}}`)
-	id := testMCPIdentity(t, "https://one.example", "manual")
-	if _, _, _, err := reconcileNamedJSON(prior, "antigravity", id, false); err == nil {
-		t.Fatal("legacy reference replaced without adoption")
-	}
-	next, _, _, err := reconcileNamedJSON(prior, "antigravity", id, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkAntigravityBridgeEntry(t, testAntigravityEntry(t, next, "manual"), id)
-	if bytes.Contains(next, []byte(mcpTokenEnv)) {
-		t.Fatal("legacy token reference remains")
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			prior := []byte(`{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","headers":{"Authorization":"Bearer ${CONVEYOR_API_TOKEN}"}}}}`)
+			id := testMCPModeIdentity(t, mode, "https://one.example", "manual")
+			if _, _, _, err := reconcileNamedJSON(prior, "antigravity", id, false); err == nil {
+				t.Fatal("legacy reference replaced without adoption")
+			}
+			next, _, _, err := reconcileNamedJSON(prior, "antigravity", id, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkAntigravityModeEntry(t, testAntigravityEntry(t, next, "manual"), id)
+			if bytes.Contains(next, []byte(mcpTokenEnv)) {
+				t.Fatal("legacy token reference remains")
+			}
+		})
 	}
 }
 
 func TestMCPAntigravityEnvironmentAddressBindsOnlyUnderAdoption(t *testing.T) {
-	prior := []byte(`{"mcpServers":{"conveyor":{"serverUrl":"${env:CONVEYOR_ADDR}"}}}`)
-	id := testMCPIdentity(t, "https://one.example", "")
-	t.Setenv(mcpAddressEnv, "https://one.example/mcp")
-	next, status, _, err := reconcileNamedJSON(prior, "antigravity", id, false)
-	if err != nil || status != "created" {
-		t.Fatalf("create beside environment entry: status=%s err=%v", status, err)
-	}
-	if testAntigravityEntry(t, next, "conveyor")["serverUrl"] != "${env:CONVEYOR_ADDR}" {
-		t.Fatal("changed the environment entry without adoption")
-	}
-	adopted, _, name, err := reconcileNamedJSON(prior, "antigravity", id, true)
-	if err != nil || name != id.name {
-		t.Fatalf("adopt matching environment entry: name=%s err=%v", name, err)
-	}
-	checkAntigravityBridgeEntry(t, testAntigravityEntry(t, adopted, id.name), id)
-	t.Setenv(mcpAddressEnv, "https://other.example/mcp")
-	named := testMCPIdentity(t, id.server, "conveyor")
-	if _, _, _, err := reconcileNamedJSON(prior, "antigravity", named, true); err == nil {
-		t.Fatal("adopted an environment entry for another server")
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			prior := []byte(`{"mcpServers":{"conveyor":{"serverUrl":"${env:CONVEYOR_ADDR}"}}}`)
+			id := testMCPModeIdentity(t, mode, "https://one.example", "")
+			t.Setenv(mcpAddressEnv, "https://one.example/mcp")
+			next, status, _, err := reconcileNamedJSON(prior, "antigravity", id, false)
+			if err != nil || status != "created" {
+				t.Fatalf("create beside environment entry: status=%s err=%v", status, err)
+			}
+			if testAntigravityEntry(t, next, "conveyor")["serverUrl"] != "${env:CONVEYOR_ADDR}" {
+				t.Fatal("changed the environment entry without adoption")
+			}
+			adopted, _, name, err := reconcileNamedJSON(prior, "antigravity", id, true)
+			if err != nil || name != id.name {
+				t.Fatalf("adopt matching environment entry: name=%s err=%v", name, err)
+			}
+			checkAntigravityModeEntry(t, testAntigravityEntry(t, adopted, id.name), id)
+			t.Setenv(mcpAddressEnv, "https://other.example/mcp")
+			named := testMCPModeIdentity(t, mode, id.server, "conveyor")
+			if _, _, _, err := reconcileNamedJSON(prior, "antigravity", named, true); err == nil {
+				t.Fatal("adopted an environment entry for another server")
+			}
+		})
 	}
 }
 
@@ -710,25 +795,39 @@ func TestMCPAntigravityRefusesForeignFieldsBeforeWrite(t *testing.T) {
 }
 
 func TestMCPAntigravityMarkerAloneGrantsNoOwnership(t *testing.T) {
-	// The root marker names another server, so the bridge entry for this
-	// server is unowned. Only explicit adoption takes it over.
-	prior := []byte(`{"mcpServers":{"manual":{"command":"/opt/Conveyor's tools/conveyor","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json"]}},"_conveyor_mcp_install":{"manual":{"owner":"v2","endpoint":"https://two.example/mcp"}}}`)
-	for _, id := range []mcpIdentity{testMCPIdentity(t, "https://one.example", ""), testMCPIdentity(t, "https://one.example", "manual")} {
-		if _, _, _, err := reconcileNamedJSON(prior, "antigravity", id, false); err == nil {
-			t.Fatal("a marker for another server granted ownership")
-		}
-	}
-	if _, _, _, err := reconcileNamedJSON(prior, "antigravity", testMCPIdentity(t, "https://two.example", "manual"), true); err == nil {
-		t.Fatal("the marked server repointed the bridge entry")
-	}
-	id := testMCPIdentity(t, "https://one.example", "manual")
-	next, status, _, err := reconcileNamedJSON(prior, "antigravity", id, true)
-	if err != nil || status != "refreshed" {
-		t.Fatalf("adoption status=%s err=%v", status, err)
-	}
-	checkAntigravityBridgeEntry(t, testAntigravityEntry(t, next, "manual"), id)
-	if !bytes.Contains(next, []byte(`"manual":{"owner":"v2","endpoint":"https://one.example/mcp"}`)) {
-		t.Fatalf("adoption did not bind the marker to this endpoint:\n%s", next)
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			// The root marker names another server, so the bridge entry for this
+			// server is unowned. Only explicit adoption takes it over.
+			prior := []byte(`{"mcpServers":{"manual":{"command":"/opt/Conveyor's tools/conveyor","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json"]}},"_conveyor_mcp_install":{"manual":{"owner":"v2","endpoint":"https://two.example/mcp"}}}`)
+			for _, id := range []mcpIdentity{testMCPModeIdentity(t, mode, "https://one.example", ""), testMCPModeIdentity(t, mode, "https://one.example", "manual")} {
+				if _, _, _, err := reconcileNamedJSON(prior, "antigravity", id, false); err == nil {
+					t.Fatal("a marker for another server granted ownership")
+				}
+			}
+			if _, _, _, err := reconcileNamedJSON(prior, "antigravity", testMCPModeIdentity(t, mode, "https://two.example", "manual"), true); err == nil {
+				t.Fatal("the marked server repointed the bridge entry")
+			}
+			id := testMCPModeIdentity(t, mode, "https://one.example", "manual")
+			next, status, _, err := reconcileNamedJSON(prior, "antigravity", id, true)
+			if id.oauth() {
+				// An unowned entry needs the exact current bridge for adoption.
+				// OAuth does not resolve the current executable, so it refuses,
+				// and --auth pat adopts it (component-cli-onboarding invariant 9).
+				if err == nil {
+					t.Fatal("OAuth adopted an unowned bridge entry")
+				}
+				return
+			}
+			if err != nil || status != "refreshed" {
+				t.Fatalf("adoption status=%s err=%v", status, err)
+			}
+			checkAntigravityModeEntry(t, testAntigravityEntry(t, next, "manual"), id)
+			if !bytes.Contains(next, []byte(`"manual":{"owner":"v2","endpoint":"https://one.example/mcp"}`)) {
+				t.Fatalf("adoption did not bind the marker to this endpoint:\n%s", next)
+			}
+		})
 	}
 }
 
@@ -737,84 +836,89 @@ func TestMCPAntigravityMarkerAloneGrantsNoOwnership(t *testing.T) {
 // server, so an install without --adopt must refuse instead of adding a
 // duplicate (component-cli-onboarding invariants 8 and 9; AC-4.3).
 func TestMCPAntigravityMixedLiteralAndEnvironmentAddress(t *testing.T) {
-	orders := map[string]string{
-		"url literal, serverUrl reference": `{"theme" : "dark","mcpServers":{"manual":{"url":"https://one.example/mcp","serverUrl":"${env:CONVEYOR_ADDR}","disabled":false}}}`,
-		"serverUrl literal, url reference": `{"theme" : "dark","mcpServers":{"manual":{"url":"${env:CONVEYOR_ADDR}","serverUrl":"https://one.example/mcp","disabled":false}}}`,
-	}
-	for label, prior := range orders {
-		t.Run(label, func(t *testing.T) {
-			setup := func(t *testing.T) (string, string) {
-				t.Helper()
-				home := t.TempDir()
-				path := mcpTargets(home, []skillTool{{name: "antigravity"}})[0].path
-				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, []byte(prior), 0o640); err != nil {
-					t.Fatal(err)
-				}
-				return home, path
+	// Both auth modes (req-mcp-oauth AC-5.1 to AC-5.3).
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run(mode, func(t *testing.T) {
+			orders := map[string]string{
+				"url literal, serverUrl reference": `{"theme" : "dark","mcpServers":{"manual":{"url":"https://one.example/mcp","serverUrl":"${env:CONVEYOR_ADDR}","disabled":false}}}`,
+				"serverUrl literal, url reference": `{"theme" : "dark","mcpServers":{"manual":{"url":"${env:CONVEYOR_ADDR}","serverUrl":"https://one.example/mcp","disabled":false}}}`,
 			}
-			unchanged := func(t *testing.T, path string) {
-				t.Helper()
-				after, _ := os.ReadFile(path)
-				info, _ := os.Stat(path)
-				if string(after) != prior || info.Mode().Perm() != 0o640 {
-					t.Fatalf("refusal changed bytes or mode: %o %s", info.Mode().Perm(), after)
-				}
-				if leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".conveyor-*")); len(leftovers) != 0 {
-					t.Fatalf("staging leftovers: %v", leftovers)
-				}
-			}
-			unnamed := testMCPIdentity(t, "https://one.example", "")
-			named := testMCPIdentity(t, "https://one.example", "manual")
-			agy := antigravityListBinary(t, "", unnamed.name, named.name)
-			// Without --adopt the install refuses, whatever CONVEYOR_ADDR names.
-			for _, address := range []string{"", "https://one.example/mcp", "https://other.example/mcp"} {
-				t.Setenv(mcpAddressEnv, address)
-				for _, id := range []mcpIdentity{unnamed, named} {
+			for label, prior := range orders {
+				t.Run(label, func(t *testing.T) {
+					setup := func(t *testing.T) (string, string) {
+						t.Helper()
+						home := t.TempDir()
+						path := mcpTargets(home, []skillTool{{name: "antigravity"}})[0].path
+						if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(path, []byte(prior), 0o640); err != nil {
+							t.Fatal(err)
+						}
+						return home, path
+					}
+					unchanged := func(t *testing.T, path string) {
+						t.Helper()
+						after, _ := os.ReadFile(path)
+						info, _ := os.Stat(path)
+						if string(after) != prior || info.Mode().Perm() != 0o640 {
+							t.Fatalf("refusal changed bytes or mode: %o %s", info.Mode().Perm(), after)
+						}
+						if leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".conveyor-*")); len(leftovers) != 0 {
+							t.Fatalf("staging leftovers: %v", leftovers)
+						}
+					}
+					unnamed := testMCPModeIdentity(t, mode, "https://one.example", "")
+					named := testMCPModeIdentity(t, mode, "https://one.example", "manual")
+					agy := antigravityListBinary(t, "", unnamed.name, named.name)
+					// Without --adopt the install refuses, whatever CONVEYOR_ADDR names.
+					for _, address := range []string{"", "https://one.example/mcp", "https://other.example/mcp"} {
+						t.Setenv(mcpAddressEnv, address)
+						for _, id := range []mcpIdentity{unnamed, named} {
+							home, path := setup(t)
+							_, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, id, false, true, onlyAgyOnPath(agy))
+							if err == nil {
+								t.Fatalf("CONVEYOR_ADDR=%q name=%s: install without --adopt accepted the entry", address, id.name)
+							}
+							if !id.explicit && !strings.Contains(err.Error(), "server already has manual registration manual; use --name manual --adopt") {
+								t.Fatalf("unnamed install did not name the manual entry: %v", err)
+							}
+							unchanged(t, path)
+						}
+					}
+					// --name manual --adopt adopts the entry when CONVEYOR_ADDR names
+					// the selected server, as invariant 8 binds the reference.
+					t.Setenv(mcpAddressEnv, "https://one.example/mcp")
 					home, path := setup(t)
-					_, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, id, false, true, onlyAgyOnPath(agy))
-					if err == nil {
-						t.Fatalf("CONVEYOR_ADDR=%q name=%s: install without --adopt accepted the entry", address, id.name)
+					result, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, named, true, true, onlyAgyOnPath(agy))
+					if err != nil || result.status != "refreshed" || result.name != "manual" {
+						t.Fatalf("adoption result=%+v err=%v", result, err)
 					}
-					if !id.explicit && !strings.Contains(err.Error(), "server already has manual registration manual; use --name manual --adopt") {
-						t.Fatalf("unnamed install did not name the manual entry: %v", err)
+					data, _ := os.ReadFile(path)
+					entry := testAntigravityEntry(t, data, "manual")
+					checkAntigravityModeEntry(t, entry, named)
+					if entry["disabled"] != false || len(testMCPEntries(t, "antigravity", data)) != 1 || !bytes.Contains(data, []byte(`"theme" : "dark"`)) {
+						t.Fatalf("adoption changed other fields or added an entry:\n%s", data)
 					}
-					unchanged(t, path)
-				}
-			}
-			// --name manual --adopt adopts the entry when CONVEYOR_ADDR names
-			// the selected server, as invariant 8 binds the reference.
-			t.Setenv(mcpAddressEnv, "https://one.example/mcp")
-			home, path := setup(t)
-			result, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, named, true, true, onlyAgyOnPath(agy))
-			if err != nil || result.status != "refreshed" || result.name != "manual" {
-				t.Fatalf("adoption result=%+v err=%v", result, err)
-			}
-			data, _ := os.ReadFile(path)
-			entry := testAntigravityEntry(t, data, "manual")
-			checkAntigravityBridgeEntry(t, entry, named)
-			if entry["disabled"] != false || len(testMCPEntries(t, "antigravity", data)) != 1 || !bytes.Contains(data, []byte(`"theme" : "dark"`)) {
-				t.Fatalf("adoption changed other fields or added an entry:\n%s", data)
-			}
-			if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
-				t.Fatalf("adopted file mode %o", info.Mode().Perm())
-			}
-			t.Setenv(mcpAddressEnv, "")
-			again, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, unnamed, false, true, onlyAgyOnPath(agy))
-			if after, _ := os.ReadFile(path); err != nil || again.status != "unchanged" || !bytes.Equal(after, data) {
-				t.Fatalf("adopted entry is not reused: result=%+v err=%v", again, err)
-			}
-			// The reference must name the selected server. Adoption refuses
-			// when it names another server or nothing.
-			for _, address := range []string{"https://other.example/mcp", ""} {
-				t.Setenv(mcpAddressEnv, address)
-				home, path := setup(t)
-				if _, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, named, true, true, onlyAgyOnPath(agy)); err == nil {
-					t.Fatalf("CONVEYOR_ADDR=%q: adoption repointed the reference", address)
-				}
-				unchanged(t, path)
+					if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+						t.Fatalf("adopted file mode %o", info.Mode().Perm())
+					}
+					t.Setenv(mcpAddressEnv, "")
+					again, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, unnamed, false, true, onlyAgyOnPath(agy))
+					if after, _ := os.ReadFile(path); err != nil || again.status != "unchanged" || !bytes.Equal(after, data) {
+						t.Fatalf("adopted entry is not reused: result=%+v err=%v", again, err)
+					}
+					// The reference must name the selected server. Adoption refuses
+					// when it names another server or nothing.
+					for _, address := range []string{"https://other.example/mcp", ""} {
+						t.Setenv(mcpAddressEnv, address)
+						home, path := setup(t)
+						if _, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "antigravity", path: path}, named, true, true, onlyAgyOnPath(agy)); err == nil {
+							t.Fatalf("CONVEYOR_ADDR=%q: adoption repointed the reference", address)
+						}
+						unchanged(t, path)
+					}
+				})
 			}
 		})
 	}

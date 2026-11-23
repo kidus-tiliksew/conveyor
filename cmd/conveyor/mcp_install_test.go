@@ -423,7 +423,7 @@ echo 'NAME  TYPE  STATUS  COMMAND/URL'
 `
 	for _, name := range names {
 		body += `if /usr/bin/grep -q '"` + name + `":{"args"' "$staged"; then echo '` + name + `  stdio  enabled  conveyor mcp stdio'; fi` + "\n"
-		body += `if /usr/bin/grep -q '"` + name + `":{"serverUrl"' "$staged"; then echo '` + name + `  http  enabled  remote'; fi` + "\n"
+		body += `if /usr/bin/grep -qE '"` + name + `":\{[^{}]*"serverUrl"' "$staged"; then echo '` + name + `  http  enabled  remote'; fi` + "\n"
 	}
 	path := filepath.Join(t.TempDir(), "agy")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nset -eu\n"+body+extra+"\n"), 0o700); err != nil {
