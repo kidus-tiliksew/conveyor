@@ -43,7 +43,7 @@ Discover another repository's surfaces instead of copying these rows.
 | --- | --- | --- |
 | Build and static analysis | `make build`, `make vet`, `make fmt-check` | The Go binaries and dashboard build; Go vet; Go formatting. The dashboard build performs TypeScript checking and Vite compilation. |
 | Ordinary tests | `make test` | Its prerequisites (`compose-check`, `dashboard-fresh`, `test-release`, `test-validation`, `test-validation-environment`, `vk10-runtime`), then Go tests with both database URLs empty, Biome lint/format checks, and Playwright browser scenarios. |
-| CI split of ordinary tests | `make test-go`, `make test-playwright-shard PLAYWRIGHT_SHARD=<i>` | `make test-go` runs the same prerequisites, the Go tests, and Biome lint. The four Playwright shards together run the Playwright suite. |
+| CI split of ordinary tests | `make test-go`, `make test-playwright-shard PLAYWRIGHT_SHARD=<i>` | `make test-go` runs the same prerequisites, the Go tests, and Biome lint. The one Playwright shard, `1`, runs the Playwright suite. |
 | Focused web checks | `make test-web` and `web/package.json` | Explicit TypeScript typechecking, Biome lint/format checking, and Playwright end-to-end tests. These checks do not establish database behavior. |
 | PostgreSQL integration | `make test-integration`, `make test-integration-ci`, `POSTGRES_INTEGRATION_SHARD` | The PostgreSQL suites in two shards: `store` (all of `internal/store/postgres`) and `runtime` (only the tests with `Integration` in their names in `cmd/conveyor`, `cmd/conveyord`, and `internal/dispatch`). `make test-integration` runs them against a container one managed validation invocation creates, seals in a durable inventory, and removes by ID. `make test-integration-ci` runs them against the database URL and service CI supplies and rejects a missing URL. |
 | SingleStore integration | `make test-integration-singlestore-ci`, `SINGLESTORE_INTEGRATION_SHARD` | The SingleStore suites in four shards against a configured SingleStore server: `conformance-1` and `conformance-2` (complementary halves of the `internal/store/singlestore` conformance test), `packages` (`internal/eventlog/s2log`, `internal/store/storetest`, and the rest of `internal/store/singlestore`), and `commands` (the SingleStore command tests in `cmd/conveyor` and `cmd/conveyord`). The target rejects a missing URL. |
@@ -62,7 +62,7 @@ its own job record.
 | Build, vet, and formatting (`build-and-static`) | None | `make build`, `make vet`, `make fmt-check` |
 | Plan CI shards (`plan`) | None | `make ci-shard-matrix` |
 | Go tests and web lint (`go-test`) | None | `make test-go` |
-| Playwright tests (`playwright`) | Shards `1` to `4` | `make test-playwright-shard` |
+| Playwright tests (`playwright`) | Shard `1` | `make test-playwright-shard` |
 | PostgreSQL integration tests (`postgres-integration`) | `store`, `runtime` | `make test-integration-ci` for the shard |
 | SingleStore integration tests (`singlestore-integration`) | `conformance-1`, `conformance-2`, `packages`, `commands` | `make test-integration-singlestore-ci` for the shard |
 
