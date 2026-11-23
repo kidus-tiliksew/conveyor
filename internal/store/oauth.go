@@ -27,6 +27,16 @@ var (
 	// again. A store returns it only after the revocation of the whole grant
 	// and its reuse audit event have committed (req-mcp-oauth AC-4.2).
 	ErrOAuthRefreshTokenReused = errors.New("oauth refresh token reused")
+	// ErrOAuthClientMetadataRefused refuses a client registration, an
+	// authorization code, or a grant whose client ID or client name the
+	// shared redactor would change. The store writes nothing. The HTTP server
+	// maps it to invalid_client. It is also a store.ErrRefusal.
+	ErrOAuthClientMetadataRefused = Refuse(errors.New("oauth client ID or name holds a secret-shaped value"))
+	// ErrOAuthRedirectURIRefused refuses the same writes when a redirect URI
+	// holds a value the shared redactor would change. The store writes
+	// nothing. The HTTP server maps it to invalid_redirect_uri. It is also a
+	// store.ErrRefusal.
+	ErrOAuthRedirectURIRefused = Refuse(errors.New("oauth redirect URI holds a secret-shaped value"))
 )
 
 // OAuthClientRegistration is the verified input of one dynamic client
@@ -165,6 +175,26 @@ func ValidateOAuthClientRegistration(registration OAuthClientRegistration) error
 			return Refuse(errors.New("an OAuth redirect URI must not be empty"))
 		}
 	}
+	return refuseSecretShapedOAuthMetadata("", registration.Name, registration.RedirectURIs...)
+}
+
+// refuseSecretShapedOAuthMetadata refuses client metadata that the shared
+// redactor would change, before any write. Clean values are stored exactly,
+// so binding checks keep exact equality, and no stored row, listing, or audit
+// event can carry a secret-shaped client value (req-security-boundaries
+// REQ-3; component-identity-membership invariant 45).
+func refuseSecretShapedOAuthMetadata(clientID, clientName string, redirectURIs ...string) error {
+	redactor := redact.New(nil)
+	for _, value := range []string{clientID, clientName} {
+		if clean, _ := redactor.Redact(value); clean != value {
+			return ErrOAuthClientMetadataRefused
+		}
+	}
+	for _, uri := range redirectURIs {
+		if clean, _ := redactor.Redact(uri); clean != uri {
+			return ErrOAuthRedirectURIRefused
+		}
+	}
 	return nil
 }
 
@@ -177,7 +207,14 @@ func ValidateOAuthCodeRequest(request OAuthCodeRequest) error {
 	if len(request.CodeChallenge) != 43 || strings.Trim(request.CodeChallenge, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") != "" {
 		return Refuse(errors.New("an OAuth authorization code needs an S256 code challenge"))
 	}
-	return nil
+	return refuseSecretShapedOAuthMetadata(request.ClientID, request.ClientName, request.RedirectURI)
+}
+
+// ValidateOAuthCodeExchange refuses, before any write, a grant whose client
+// ID or redirect URI the shared redactor would change. A grant takes its
+// client name from the stored code, which issuance already checked.
+func ValidateOAuthCodeExchange(exchange OAuthCodeExchange) error {
+	return refuseSecretShapedOAuthMetadata(exchange.ClientID, "", exchange.RedirectURI)
 }
 
 // OAuthCodeBindingsMatch reports whether an exchange matches every binding of

@@ -767,23 +767,57 @@ func runOAuthSecretFree(t *testing.T, c *oauthCase) {
 	revoked := c.grant(t, c.owner.ID, client.ID, client.Name)
 	_, err = c.st.RevokeOwnOAuthGrant(c.ctx, c.owner.ID, revoked.GrantID)
 	requireOK(t, err)
-	c.code(t, c.owner.ID, client.ID, client.Name)
-	// Untrusted client metadata that carries secret-shaped values keeps its
-	// exact identity for binding checks, and the audit payload carries it
-	// only after the shared redaction (req-security-boundaries REQ-3;
-	// component-identity-membership invariants 36 and 45).
+	_, cleanCode := c.code(t, c.owner.ID, client.ID, client.Name)
+	// Untrusted client metadata that the shared redactor would change is
+	// refused before any write, so no stored row, grant listing, or audit
+	// event can carry it (req-security-boundaries REQ-3;
+	// component-identity-membership invariants 36 and 45). Clean values keep
+	// exact-equality binding, which the other cases prove.
 	const (
 		leakedGitHub = "ghp_ConformanceLeak0123456789abcdefABCDEF"
 		leakedKey    = "sk-conformance-leak-0123456789"
 	)
 	leakyID := "https://client.example.test/" + leakedGitHub + "/client.json"
 	leakyName := "Leaky " + leakedKey
-	leaky := c.grant(t, c.owner.ID, leakyID, leakyName)
-	if grant, ok := c.grantOf(t, c.owner.ID, leaky.GrantID); !ok || grant.ClientID != leakyID || grant.ClientName != leakyName {
-		t.Fatalf("grant with secret-shaped metadata=%+v listed=%t, want the exact client identity", grant, ok)
+	leakyRedirect := oauthRedirect + "?k=" + leakedGitHub
+	rowsBefore := len(c.hooks.rows(t, c.ctx))
+	eventsBefore := len(c.hooks.events(t, c.ctx))
+	requireRefused := func(t *testing.T, err, want error, what string) {
+		t.Helper()
+		if !errors.Is(err, want) || !errors.Is(err, store.ErrRefusal) {
+			t.Fatalf("%s err=%v, want %v as a refusal", what, err, want)
+		}
 	}
-	if rotated, err := c.refresh(c.ctx, leaky); err != nil || rotated.ClientID != leakyID {
-		t.Fatalf("refresh with the exact secret-shaped client ID=%+v err=%v", rotated.OAuthTokenPair, err)
+	_, err = c.st.RegisterOAuthClient(c.ctx, store.OAuthClientRegistration{Name: leakyName, RedirectURIs: []string{oauthRedirect}})
+	requireRefused(t, err, store.ErrOAuthClientMetadataRefused, "registration with a secret-shaped name")
+	_, err = c.st.RegisterOAuthClient(c.ctx, store.OAuthClientRegistration{Name: "Clean", RedirectURIs: []string{oauthRedirect, leakyRedirect}})
+	requireRefused(t, err, store.ErrOAuthRedirectURIRefused, "registration with a secret-shaped redirect URI")
+	for _, refused := range []struct {
+		name    string
+		request store.OAuthCodeRequest
+		want    error
+	}{
+		{"code with a secret-shaped client ID", store.OAuthCodeRequest{ClientID: leakyID, ClientName: "Clean", RedirectURI: oauthRedirect}, store.ErrOAuthClientMetadataRefused},
+		{"code with a secret-shaped client name", store.OAuthCodeRequest{ClientID: oauthCIMD, ClientName: leakyName, RedirectURI: oauthRedirect}, store.ErrOAuthClientMetadataRefused},
+		{"code with a secret-shaped redirect URI", store.OAuthCodeRequest{ClientID: oauthCIMD, ClientName: "Clean", RedirectURI: leakyRedirect}, store.ErrOAuthRedirectURIRefused},
+	} {
+		refused.request.UserID, refused.request.Resource, refused.request.CodeChallenge = c.owner.ID, oauthResource, core.OAuthS256Challenge(oauthVerifier)
+		_, _, err = c.st.IssueOAuthAuthorizationCode(c.ctx, refused.request)
+		requireRefused(t, err, refused.want, refused.name)
+	}
+	_, err = c.st.ExchangeOAuthAuthorizationCode(c.ctx, oauthExchange(cleanCode, leakyID))
+	requireRefused(t, err, store.ErrOAuthClientMetadataRefused, "grant with a secret-shaped client ID")
+	_, err = c.st.ExchangeOAuthAuthorizationCode(c.ctx, store.OAuthCodeExchange{Code: cleanCode, ClientID: client.ID, RedirectURI: leakyRedirect, Resource: oauthResource, CodeVerifier: oauthVerifier})
+	requireRefused(t, err, store.ErrOAuthRedirectURIRefused, "grant with a secret-shaped redirect URI")
+	if rows, events := len(c.hooks.rows(t, c.ctx)), len(c.hooks.events(t, c.ctx)); rows != rowsBefore || events != eventsBefore {
+		t.Fatalf("refusals changed stored rows from %d to %d and events from %d to %d", rowsBefore, rows, eventsBefore, events)
+	}
+	listed, err := c.st.ListOwnOAuthGrants(c.ctx, c.owner.ID)
+	requireOK(t, err)
+	for _, grant := range listed {
+		if strings.Contains(grant.ClientID+grant.ClientName, leakedGitHub) || strings.Contains(grant.ClientID+grant.ClientName, leakedKey) {
+			t.Fatalf("grant listing carries secret-shaped client metadata: %+v", grant)
+		}
 	}
 
 	digests := map[string]bool{}
@@ -804,9 +838,12 @@ func runOAuthSecretFree(t *testing.T, c *oauthCase) {
 			}
 		}
 		requireSecretFree(t, c, string(row.Table)+" row "+row.ID, row.Text)
+		if strings.Contains(row.Text, leakedGitHub) || strings.Contains(row.Text, leakedKey) {
+			t.Fatalf("%s row %s stores secret-shaped client metadata", row.Table, row.ID)
+		}
 	}
-	if stored[OAuthClientsTable] != 1 || stored[OAuthAuthorizationCodesTable] != 4 || stored[OAuthGrantsTable] != 3 || stored[OAuthTokensTable] != 10 {
-		t.Fatalf("stored rows=%v, want 1 client, 4 codes, 3 grants, and 10 tokens", stored)
+	if stored[OAuthClientsTable] != 1 || stored[OAuthAuthorizationCodesTable] != 3 || stored[OAuthGrantsTable] != 2 || stored[OAuthTokensTable] != 6 {
+		t.Fatalf("stored rows=%v, want 1 client, 3 codes, 2 grants, and 6 tokens", stored)
 	}
 	allowed := []string{"client_id", "client_name", "grant_id", "user_id"}
 	kinds := map[string]int{}
@@ -826,13 +863,12 @@ func runOAuthSecretFree(t *testing.T, c *oauthCase) {
 		if strings.Contains(string(raw), leakedGitHub) || strings.Contains(string(raw), leakedKey) {
 			t.Fatalf("%s carries a secret-shaped value from client metadata", event.Kind)
 		}
-		if payload := eventPayload(t, event); payload["grant_id"] == leaky.GrantID {
-			if id, _ := payload["client_id"].(string); !strings.HasPrefix(id, "https://client.example.test/") || id == leakyID {
-				t.Fatalf("%s client_id=%q, want the redacted client ID", event.Kind, id)
-			}
-		}
 	}
-	if kinds[store.OAuthEventGrantCreated] != 3 || kinds[store.OAuthEventRefreshReuseDetected] != 1 || kinds[store.OAuthEventGrantRevoked] != 1 || len(kinds) != 3 {
+	// The clean code the refused exchanges named was never consumed.
+	if _, err := c.st.ExchangeOAuthAuthorizationCode(c.ctx, oauthExchange(cleanCode, client.ID)); err != nil {
+		t.Fatalf("the clean code after the refused exchanges: %v", err)
+	}
+	if kinds[store.OAuthEventGrantCreated] != 2 || kinds[store.OAuthEventRefreshReuseDetected] != 1 || kinds[store.OAuthEventGrantRevoked] != 1 || len(kinds) != 3 {
 		t.Fatalf("OAuth audit kinds=%v", kinds)
 	}
 }

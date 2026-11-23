@@ -241,6 +241,9 @@ func (s *Store) ExchangeOAuthAuthorizationCode(ctx context.Context, exchange sto
 	if _, err := store.RequireActor(ctx); err != nil {
 		return core.IssuedOAuthTokenPair{}, err
 	}
+	if err := store.ValidateOAuthCodeExchange(exchange); err != nil {
+		return core.IssuedOAuthTokenPair{}, err
+	}
 	grantID, err := store.NewOAuthGrantID()
 	if err != nil {
 		return core.IssuedOAuthTokenPair{}, err

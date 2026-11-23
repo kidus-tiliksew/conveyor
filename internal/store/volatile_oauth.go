@@ -207,6 +207,9 @@ func (m *volatileMemory) ExchangeOAuthAuthorizationCode(ctx context.Context, exc
 	if err != nil {
 		return core.IssuedOAuthTokenPair{}, err
 	}
+	if err := ValidateOAuthCodeExchange(exchange); err != nil {
+		return core.IssuedOAuthTokenPair{}, err
+	}
 	grantID, err := NewOAuthGrantID()
 	if err != nil {
 		return core.IssuedOAuthTokenPair{}, err
