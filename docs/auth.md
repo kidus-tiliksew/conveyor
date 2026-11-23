@@ -238,7 +238,9 @@ OAuth is on only when `CONVEYOR_PUBLIC_URL` is a canonical origin:
 
 - `https://<host>` or `https://<host>:<port>`, in lowercase, with no path,
   query, fragment, or user information and no default port. A bracketed host
-  must be an IPv6 literal without a zone, such as `[2001:db8::1]`; or
+  must be an IPv6 literal without a zone, such as `[2001:db8::1]`. An IPv6
+  address must be bracketed, so `http://::1:8080` is refused. A host that ends
+  in a dot is refused; or
 - for local development, `http://127.0.0.1`, `http://[::1]`, or
   `http://localhost`, with an optional port.
 
@@ -424,9 +426,10 @@ again.
     `offset` without `limit`, answers `400`.
 
   `DELETE /v1/oauth/grants/{grant_id}` revokes one of your
-  grants and answers it; any other ID answers 404. Both routes accept a
-  session or a personal access token, and a session `DELETE` needs the CSRF
-  proof.
+  grants and answers it; any other ID answers 404. Both routes accept only a
+  dashboard session, like consent. A personal access token or an OAuth token
+  is refused with 401, also when it comes with a valid session cookie. A
+  `DELETE` needs the session's CSRF proof.
 - **By deactivation.** When the instance administrator deactivates an
   account, all of its OAuth tokens are refused at their next use.
 

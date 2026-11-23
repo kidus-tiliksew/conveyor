@@ -96,12 +96,18 @@ func oauthIssuerFromPublicURL(publicURL string) (string, bool) {
 		return "", false
 	}
 	// A bracketed authority must hold an IPv6 literal without a zone; Go's
-	// URL parser accepts any bracketed text, such as [conveyor.example].
+	// URL parser accepts any bracketed text, such as [conveyor.example]. An
+	// unbracketed host must hold no colon: Go splits http://::1:8080 into
+	// host ::1 and port 8080, which is not a valid origin. A host that ends
+	// in a dot is a different origin from the same name without it, so it is
+	// not canonical either.
 	if strings.HasPrefix(parsed.Host, "[") {
 		literal, literalErr := netip.ParseAddr(host)
 		if literalErr != nil || !literal.Is6() || literal.Zone() != "" {
 			return "", false
 		}
+	} else if strings.Contains(host, ":") || strings.HasSuffix(host, ".") {
+		return "", false
 	}
 	if port := parsed.Port(); port != "" {
 		number, portErr := strconv.Atoi(port)
@@ -355,9 +361,9 @@ func (o oauthServer) requireGrantAudience(ctx context.Context, credential core.A
 }
 
 // requireDashboardSession admits only a dashboard session, after
-// requireSelfServiceCredential authenticated it, so consent never accepts a
-// personal access token or an OAuth token (component-identity-membership
-// invariant 52).
+// requireSelfServiceCredential authenticated it, so consent and grant
+// management never accept a personal access token or an OAuth token
+// (component-identity-membership invariants 52 and 54).
 func requireDashboardSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		credential, ok := store.CredentialFromContext(r.Context())

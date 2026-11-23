@@ -412,6 +412,8 @@ func TestOAuthIssuerAcceptsOnlyCanonicalOrigins(t *testing.T) {
 		"https://conveyor.example:", "http://[::1]:", "http://localhost:",
 		// A bracketed authority must be an IPv6 literal without a zone.
 		"https://[conveyor.example]", "https://[conveyor.example]:8443", "http://[localhost]:8080", "https://[10.0.0.1]", "https://[fe80::1%25eth0]",
+		// An unbracketed IPv6 host, an empty host, and a trailing dot.
+		"http://::1:8080", "http://::1", "https://2001:db8::1", "https://2001:db8::1:8443", "https://:8443", "https://conveyor.example.", "http://localhost.:8080",
 	}
 	for _, value := range invalid {
 		if issuer, ok := oauthIssuerFromPublicURL(value); ok {
@@ -475,10 +477,15 @@ func TestOAuthMCPChallengeNamesResourceMetadataOnlyWhileEnabled(t *testing.T) {
 
 func TestOAuthDisabledRefusesDiscoveryAndEndpointsWithoutHTML(t *testing.T) {
 	for name, configure := range map[string]func(*Server){
-		"unset public URL":    func(s *Server) { s.InvitationDelivery.PublicURL = "" },
-		"insecure public URL": func(s *Server) { s.InvitationDelivery.PublicURL = "http://conveyor.example" },
-		"public URL path":     func(s *Server) { s.InvitationDelivery.PublicURL = "https://conveyor.example/base" },
-		"bracketed DNS name":  func(s *Server) { s.InvitationDelivery.PublicURL = "https://[conveyor.example]" },
+		"unset public URL":           func(s *Server) { s.InvitationDelivery.PublicURL = "" },
+		"insecure public URL":        func(s *Server) { s.InvitationDelivery.PublicURL = "http://conveyor.example" },
+		"public URL path":            func(s *Server) { s.InvitationDelivery.PublicURL = "https://conveyor.example/base" },
+		"bracketed DNS name":         func(s *Server) { s.InvitationDelivery.PublicURL = "https://[conveyor.example]" },
+		"unbracketed IPv6 with port": func(s *Server) { s.InvitationDelivery.PublicURL = "http://::1:8080" },
+		"unbracketed IPv6":           func(s *Server) { s.InvitationDelivery.PublicURL = "https://2001:db8::1" },
+		"user information":           func(s *Server) { s.InvitationDelivery.PublicURL = "https://user@conveyor.example" },
+		"empty host":                 func(s *Server) { s.InvitationDelivery.PublicURL = "https://:8443" },
+		"trailing dot":               func(s *Server) { s.InvitationDelivery.PublicURL = "https://conveyor.example." },
 		"backend without OAuth": func(s *Server) {
 			s.OAuth = nil
 		},
@@ -508,6 +515,24 @@ func TestOAuthDisabledRefusesDiscoveryAndEndpointsWithoutHTML(t *testing.T) {
 				t.Fatalf("/mcp status=%d challenge=%q", result.status, result.header.Get("WWW-Authenticate"))
 			}
 		})
+	}
+}
+
+// TestOAuthCanonicalOriginsEnableDiscovery proves through the router that
+// the valid origin forms stay enabled: a DNS name over HTTPS and a bracketed
+// IPv6 loopback over HTTP (req-mcp-oauth AC-1.1).
+func TestOAuthCanonicalOriginsEnableDiscovery(t *testing.T) {
+	for _, origin := range []string{"https://conveyor.example", "http://[::1]:8080"} {
+		h := newOAuthHarness(t)
+		h.server.InvitationDelivery.PublicURL = origin
+		response := h.do(oauthRequest{method: http.MethodGet, path: "/.well-known/oauth-protected-resource/mcp"})
+		if response.Code != http.StatusOK || decodeOAuthJSON(t, response)["resource"] != origin+"/mcp" {
+			t.Fatalf("%s: discovery status=%d body=%s", origin, response.Code, response.Body.String())
+		}
+		result := h.mcp("", getStagePreferencesTool, map[string]any{"workspace_id": "alpha"})
+		if want := `Bearer resource_metadata="` + origin + `/.well-known/oauth-protected-resource/mcp"`; result.status != http.StatusUnauthorized || result.header.Get("WWW-Authenticate") != want {
+			t.Fatalf("%s: challenge=%q", origin, result.header.Get("WWW-Authenticate"))
+		}
 	}
 }
 
@@ -1332,8 +1357,7 @@ func TestOAuthGrantManagementIsOwnerScopedAndHashFree(t *testing.T) {
 		t.Fatalf("mcp: %+v", result)
 	}
 	for name, request := range map[string]oauthRequest{
-		"session":               {method: http.MethodGet, path: "/v1/oauth/grants", session: h.memberSession},
-		"personal access token": {method: http.MethodGet, path: "/v1/oauth/grants", bearer: h.memberPAT},
+		"session": {method: http.MethodGet, path: "/v1/oauth/grants", session: h.memberSession},
 	} {
 		response := h.do(request)
 		if response.Code != http.StatusOK {
@@ -1360,6 +1384,26 @@ func TestOAuthGrantManagementIsOwnerScopedAndHashFree(t *testing.T) {
 		t.Fatal(grants, err)
 	}
 	grantID := grants[0].ID
+	// Grant management is dashboard-session only: a personal access token is
+	// refused on both routes, also beside a valid session cookie, and
+	// revokes nothing.
+	for name, request := range map[string]oauthRequest{
+		"list with token":               {method: http.MethodGet, path: "/v1/oauth/grants", bearer: h.memberPAT},
+		"list with token and session":   {method: http.MethodGet, path: "/v1/oauth/grants", bearer: h.memberPAT, session: h.memberSession},
+		"revoke with token":             {method: http.MethodDelete, path: "/v1/oauth/grants/" + grantID, bearer: h.memberPAT},
+		"revoke with token and session": {method: http.MethodDelete, path: "/v1/oauth/grants/" + grantID, bearer: h.memberPAT, session: h.memberSession, proof: true},
+		"list with access token":        {method: http.MethodGet, path: "/v1/oauth/grants", bearer: pair.AccessToken, session: h.memberSession},
+		"revoke with access token":      {method: http.MethodDelete, path: "/v1/oauth/grants/" + grantID, bearer: pair.AccessToken, session: h.memberSession, proof: true},
+	} {
+		response := h.do(request)
+		if response.Code != http.StatusUnauthorized || strings.Contains(response.Body.String(), grantID) {
+			t.Fatalf("%s: status=%d body=%s", name, response.Code, response.Body.String())
+		}
+		expectNoStore(t, response)
+	}
+	if result := h.mcp(pair.AccessToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); result.status != http.StatusOK {
+		t.Fatalf("token after refused token revocations: %+v", result)
+	}
 	// Another person sees no grant and cannot revoke this one.
 	if response := h.do(oauthRequest{method: http.MethodGet, path: "/v1/oauth/grants", session: h.otherSession}); response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
 		t.Fatalf("other listing status=%d body=%s", response.Code, response.Body.String())
@@ -1383,7 +1427,7 @@ func TestOAuthGrantManagementIsOwnerScopedAndHashFree(t *testing.T) {
 		t.Fatalf("access token after Settings revocation: %+v", result)
 	}
 	expectOAuthError(t, h.token(refreshForm(pair.RefreshToken, clientID)), http.StatusBadRequest, "invalid_grant")
-	if response := h.do(oauthRequest{method: http.MethodDelete, path: "/v1/oauth/grants/ogr_missing", bearer: h.memberPAT}); response.Code != http.StatusNotFound {
+	if response := h.do(oauthRequest{method: http.MethodDelete, path: "/v1/oauth/grants/ogr_missing", session: h.memberSession, proof: true}); response.Code != http.StatusNotFound {
 		t.Fatalf("missing grant status=%d", response.Code)
 	}
 }
