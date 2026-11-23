@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 )
 
 // OAuth sentinels. The HTTP server maps each to its OAuth error; none carries
@@ -122,11 +123,25 @@ const (
 	OAuthEventRefreshReuseDetected = "identity.oauth_refresh_reuse_detected"
 )
 
+// IdentityHookOAuthAudit is the identity test-hook stage each backend runs
+// immediately before it appends an OAuth audit event, after the state change
+// in the same transaction or critical section. A hook error fails the append,
+// so a test proves that the state change rolls back and no event commits
+// (component-persistence invariant 5). No production caller sets a hook.
+const IdentityHookOAuthAudit = "oauth_audit"
+
 // OAuthGrantEventPayload is the complete payload of every OAuth audit event:
 // IDs and the client name, never a value or digest
-// (component-identity-membership invariant 36).
+// (component-identity-membership invariant 36). The client ID and name are
+// untrusted client metadata, so the shared redactor removes every
+// secret-shaped value from them before they reach the deployment ledger
+// (req-security-boundaries REQ-3; component-identity-membership invariant
+// 45). The grant row keeps the exact client ID for binding checks.
 func OAuthGrantEventPayload(grant core.OAuthGrant) map[string]any {
-	return map[string]any{"grant_id": grant.ID, "user_id": grant.UserID, "client_id": grant.ClientID, "client_name": grant.ClientName}
+	redactor := redact.New(nil)
+	clientID, _ := redactor.Redact(grant.ClientID)
+	clientName, _ := redactor.Redact(grant.ClientName)
+	return map[string]any{"grant_id": grant.ID, "user_id": grant.UserID, "client_id": clientID, "client_name": clientName}
 }
 
 // OAuthCredential is the identity an access token resolves to: its grant and

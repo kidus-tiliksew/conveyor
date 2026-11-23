@@ -212,6 +212,8 @@ func runOAuth(t *testing.T, factory Factory) {
 	t.Run("OwnerGrants", func(t *testing.T) { runOAuthOwnerGrants(t, newOAuthCase(t, factory)) })
 	t.Run("TokenRevocation", func(t *testing.T) { runOAuthTokenRevocation(t, newOAuthCase(t, factory)) })
 	t.Run("SecretFreeStorageAndAudit", func(t *testing.T) { runOAuthSecretFree(t, newOAuthCase(t, factory)) })
+	t.Run("LongClientID", func(t *testing.T) { runOAuthLongClientID(t, newOAuthCase(t, factory)) })
+	t.Run("AuditFailureRollsBack", func(t *testing.T) { runOAuthAuditFailure(t, newOAuthCase(t, factory)) })
 }
 
 // runOAuthDynamicClients proves registration, live lookup, the 24-hour
@@ -766,6 +768,23 @@ func runOAuthSecretFree(t *testing.T, c *oauthCase) {
 	_, err = c.st.RevokeOwnOAuthGrant(c.ctx, c.owner.ID, revoked.GrantID)
 	requireOK(t, err)
 	c.code(t, c.owner.ID, client.ID, client.Name)
+	// Untrusted client metadata that carries secret-shaped values keeps its
+	// exact identity for binding checks, and the audit payload carries it
+	// only after the shared redaction (req-security-boundaries REQ-3;
+	// component-identity-membership invariants 36 and 45).
+	const (
+		leakedGitHub = "ghp_ConformanceLeak0123456789abcdefABCDEF"
+		leakedKey    = "sk-conformance-leak-0123456789"
+	)
+	leakyID := "https://client.example.test/" + leakedGitHub + "/client.json"
+	leakyName := "Leaky " + leakedKey
+	leaky := c.grant(t, c.owner.ID, leakyID, leakyName)
+	if grant, ok := c.grantOf(t, c.owner.ID, leaky.GrantID); !ok || grant.ClientID != leakyID || grant.ClientName != leakyName {
+		t.Fatalf("grant with secret-shaped metadata=%+v listed=%t, want the exact client identity", grant, ok)
+	}
+	if rotated, err := c.refresh(c.ctx, leaky); err != nil || rotated.ClientID != leakyID {
+		t.Fatalf("refresh with the exact secret-shaped client ID=%+v err=%v", rotated.OAuthTokenPair, err)
+	}
 
 	digests := map[string]bool{}
 	for _, value := range c.issuedValues() {
@@ -786,8 +805,8 @@ func runOAuthSecretFree(t *testing.T, c *oauthCase) {
 		}
 		requireSecretFree(t, c, string(row.Table)+" row "+row.ID, row.Text)
 	}
-	if stored[OAuthClientsTable] != 1 || stored[OAuthAuthorizationCodesTable] != 3 || stored[OAuthGrantsTable] != 2 || stored[OAuthTokensTable] != 6 {
-		t.Fatalf("stored rows=%v, want 1 client, 3 codes, 2 grants, and 6 tokens", stored)
+	if stored[OAuthClientsTable] != 1 || stored[OAuthAuthorizationCodesTable] != 4 || stored[OAuthGrantsTable] != 3 || stored[OAuthTokensTable] != 10 {
+		t.Fatalf("stored rows=%v, want 1 client, 4 codes, 3 grants, and 10 tokens", stored)
 	}
 	allowed := []string{"client_id", "client_name", "grant_id", "user_id"}
 	kinds := map[string]int{}
@@ -802,9 +821,109 @@ func runOAuthSecretFree(t *testing.T, c *oauthCase) {
 			t.Fatalf("%s payload fields=%v, want %v", event.Kind, keys, allowed)
 		}
 		requireSecretFree(t, c, event.Kind, event)
+		raw, err := json.Marshal(event)
+		requireOK(t, err)
+		if strings.Contains(string(raw), leakedGitHub) || strings.Contains(string(raw), leakedKey) {
+			t.Fatalf("%s carries a secret-shaped value from client metadata", event.Kind)
+		}
+		if payload := eventPayload(t, event); payload["grant_id"] == leaky.GrantID {
+			if id, _ := payload["client_id"].(string); !strings.HasPrefix(id, "https://client.example.test/") || id == leakyID {
+				t.Fatalf("%s client_id=%q, want the redacted client ID", event.Kind, id)
+			}
+		}
 	}
-	if kinds[store.OAuthEventGrantCreated] != 2 || kinds[store.OAuthEventRefreshReuseDetected] != 1 || kinds[store.OAuthEventGrantRevoked] != 1 || len(kinds) != 3 {
+	if kinds[store.OAuthEventGrantCreated] != 3 || kinds[store.OAuthEventRefreshReuseDetected] != 1 || kinds[store.OAuthEventGrantRevoked] != 1 || len(kinds) != 3 {
 		t.Fatalf("OAuth audit kinds=%v", kinds)
+	}
+}
+
+// runOAuthLongClientID proves that every backend keeps a verified
+// metadata-document client ID longer than 255 characters exactly, through
+// the exchange and a refresh, and refuses a truncated one (req-mcp-oauth
+// AC-2.1, AC-4.1, AC-4.2; component-persistence invariant 3).
+func runOAuthLongClientID(t *testing.T, c *oauthCase) {
+	longID := "https://client.example.test/" + strings.Repeat("long-client-metadata-path/", 40) + "client.json"
+	if len(longID) <= 1000 {
+		t.Fatalf("fixture client ID has %d characters, want more than 1000", len(longID))
+	}
+	pair := c.grant(t, c.owner.ID, longID, "Long Client")
+	if pair.ClientID != longID {
+		t.Fatalf("first pair client ID has %d characters, want the exact %d", len(pair.ClientID), len(longID))
+	}
+	grant, ok := c.grantOf(t, c.owner.ID, pair.GrantID)
+	if !ok || grant.ClientID != longID {
+		t.Fatalf("listed grant client ID has %d characters, want the exact %d", len(grant.ClientID), len(longID))
+	}
+	_, err := c.st.RefreshOAuthTokens(c.ctx, store.OAuthRefreshExchange{RefreshToken: pair.RefreshToken, ClientID: longID[:255], Resource: oauthResource})
+	requireOAuthError(t, err, store.ErrOAuthTokenInvalid, "refresh with a truncated client ID")
+	next, err := c.refresh(c.ctx, pair)
+	requireOK(t, err)
+	if next.ClientID != longID || next.GrantID != pair.GrantID {
+		t.Fatalf("refreshed pair client ID has %d characters, want the exact %d", len(next.ClientID), len(longID))
+	}
+	c.requireAccess(t, next.AccessToken, next.OAuthTokenPair)
+	requireOK(t, c.st.RevokeOAuthToken(c.ctx, longID, next.AccessToken))
+	c.requireAccessRefused(t, next.AccessToken, "access token revoked by the long client ID")
+}
+
+// errInjectedOAuthAudit is the failure the audit test hook returns.
+var errInjectedOAuthAudit = errors.New("injected OAuth audit append failure")
+
+// runOAuthAuditFailure makes the audit append fail after each writer's state
+// change, through the identity test hook every backend runs before its OAuth
+// audit append. The exchange, the replay revocation, the owner revocation,
+// and the token revocation each roll back: the code stays usable, the grant
+// stays live, and no event commits (component-persistence invariants 5 and
+// 17; req-mcp-oauth AC-4.1, AC-4.2, AC-4.4).
+func runOAuthAuditFailure(t *testing.T, c *oauthCase) {
+	failing := store.WithIdentityTestHook(c.ctx, func(stage string) error {
+		if stage == store.IdentityHookOAuthAudit {
+			return errInjectedOAuthAudit
+		}
+		return nil
+	})
+	client := c.client(t, "Audit Failure Client")
+	_, value := c.code(t, c.owner.ID, client.ID, client.Name)
+	_, err := c.st.ExchangeOAuthAuthorizationCode(failing, oauthExchange(value, client.ID))
+	requireOAuthError(t, err, errInjectedOAuthAudit, "exchange whose audit append fails")
+	if grants, err := c.st.ListOwnOAuthGrants(c.ctx, c.owner.ID); err != nil || len(grants) != 0 {
+		t.Fatalf("a failed exchange left grants=%+v err=%v", grants, err)
+	}
+	if read, err := c.st.GetOAuthClient(c.ctx, client.ID); err != nil || read.FirstUsedAt != nil {
+		t.Fatalf("a failed exchange marked the client used: %+v err=%v", read, err)
+	}
+	pair, err := c.st.ExchangeOAuthAuthorizationCode(c.ctx, oauthExchange(value, client.ID))
+	requireOK(t, err)
+	c.remember(pair)
+
+	rotated, err := c.refresh(c.ctx, pair)
+	requireOK(t, err)
+	_, err = c.refresh(failing, pair)
+	requireOAuthError(t, err, errInjectedOAuthAudit, "replay whose audit append fails")
+	if errors.Is(err, store.ErrOAuthRefreshTokenReused) {
+		t.Fatal("a rolled-back replay claimed a committed reuse refusal")
+	}
+	c.requireAccess(t, rotated.AccessToken, rotated.OAuthTokenPair)
+
+	_, err = c.st.RevokeOwnOAuthGrant(failing, c.owner.ID, pair.GrantID)
+	requireOAuthError(t, err, errInjectedOAuthAudit, "owner revocation whose audit append fails")
+	c.requireAccess(t, rotated.AccessToken, rotated.OAuthTokenPair)
+
+	err = c.st.RevokeOAuthToken(failing, client.ID, rotated.AccessToken)
+	requireOAuthError(t, err, errInjectedOAuthAudit, "token revocation whose audit append fails")
+	c.requireAccess(t, rotated.AccessToken, rotated.OAuthTokenPair)
+	if grant, ok := c.grantOf(t, c.owner.ID, pair.GrantID); !ok || grant.RevokedAt != nil {
+		t.Fatalf("grant after failed revocations=%+v listed=%t, want live", grant, ok)
+	}
+	if _, err := c.refresh(c.ctx, rotated); err != nil {
+		t.Fatalf("the current refresh token failed after rolled-back revocations: %v", err)
+	}
+	kinds := map[string]int{}
+	for _, event := range c.hooks.events(t, c.ctx) {
+		kinds[event.Kind]++
+	}
+	if kinds[store.OAuthEventGrantCreated] != 1 || len(kinds) != 1 {
+		t.Fatalf("OAuth audit kinds=%v, want only the one committed grant event", kinds)
 	}
 }
 

@@ -219,8 +219,21 @@ func (m *volatileMemory) ExchangeOAuthAuthorizationCode(ctx context.Context, exc
 		m.oauth = snapshot
 		return core.IssuedOAuthTokenPair{}, err
 	}
-	m.recordEventLocked(actor, "", core.Event{Kind: OAuthEventGrantCreated, ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(OAuthGrantEventPayload(grant.OAuthGrant)), At: time.Now().UTC()})
+	if err := m.appendOAuthEventLocked(ctx, actor, OAuthEventGrantCreated, grant.OAuthGrant, time.Now().UTC()); err != nil {
+		m.oauth = snapshot
+		return core.IssuedOAuthTokenPair{}, err
+	}
 	return pair, nil
+}
+
+// appendOAuthEventLocked appends one OAuth audit event. The test hook runs
+// first, so a failed append leaves the caller to restore its state change.
+func (m *volatileMemory) appendOAuthEventLocked(ctx context.Context, actor Actor, kind string, grant core.OAuthGrant, at time.Time) error {
+	if err := RunIdentityTestHook(ctx, IdentityHookOAuthAudit); err != nil {
+		return err
+	}
+	m.recordEventLocked(actor, "", core.Event{Kind: kind, ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(OAuthGrantEventPayload(grant)), At: at})
+	return nil
 }
 
 func (m *volatileMemory) exchangeOAuthCodeLocked(exchange OAuthCodeExchange, grantID string) (core.IssuedOAuthTokenPair, oauthGrantRecord, error) {
@@ -286,9 +299,13 @@ func (m *volatileMemory) RefreshOAuthTokens(ctx context.Context, exchange OAuthR
 		return core.IssuedOAuthTokenPair{}, ErrOAuthTokenInvalid
 	}
 	if grant.CurrentRefreshID != token.ID {
+		live := grant
 		grant.RevokedAt = timePtr(now)
 		m.oauth.grants[grant.ID] = grant
-		m.recordEventLocked(actor, "", core.Event{Kind: OAuthEventRefreshReuseDetected, ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(OAuthGrantEventPayload(grant.OAuthGrant)), At: now})
+		if err := m.appendOAuthEventLocked(ctx, actor, OAuthEventRefreshReuseDetected, grant.OAuthGrant, now); err != nil {
+			m.oauth.grants[grant.ID] = live
+			return core.IssuedOAuthTokenPair{}, err
+		}
 		return core.IssuedOAuthTokenPair{}, ErrOAuthRefreshTokenReused
 	}
 	if !now.Before(token.ExpiresAt) {
@@ -390,20 +407,29 @@ func (m *volatileMemory) RevokeOwnOAuthGrant(ctx context.Context, userID, grantI
 	if !ok || grant.UserID != userID {
 		return core.OAuthGrant{}, fmt.Errorf("%w: OAuth grant %s", ErrNotFound, grantID)
 	}
-	m.revokeOAuthGrantLocked(actor, &grant)
+	if err := m.revokeOAuthGrantLocked(ctx, actor, &grant); err != nil {
+		return core.OAuthGrant{}, err
+	}
 	return grant.OAuthGrant, nil
 }
 
 // revokeOAuthGrantLocked revokes an unrevoked grant and appends its audit
-// event. An already revoked grant changes nothing.
-func (m *volatileMemory) revokeOAuthGrantLocked(actor Actor, grant *oauthGrantRecord) {
+// event. An already revoked grant changes nothing. A failed append restores
+// the live grant.
+func (m *volatileMemory) revokeOAuthGrantLocked(ctx context.Context, actor Actor, grant *oauthGrantRecord) error {
 	if grant.RevokedAt != nil {
-		return
+		return nil
 	}
+	live := *grant
 	now := time.Now().UTC()
 	grant.RevokedAt = timePtr(now)
 	m.oauth.grants[grant.ID] = *grant
-	m.recordEventLocked(actor, "", core.Event{Kind: OAuthEventGrantRevoked, ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(OAuthGrantEventPayload(grant.OAuthGrant)), At: now})
+	if err := m.appendOAuthEventLocked(ctx, actor, OAuthEventGrantRevoked, grant.OAuthGrant, now); err != nil {
+		m.oauth.grants[grant.ID] = live
+		*grant = live
+		return err
+	}
+	return nil
 }
 
 // RevokeOAuthToken implements OAuthStore.
@@ -422,6 +448,5 @@ func (m *volatileMemory) RevokeOAuthToken(ctx context.Context, clientID, candida
 	if !ok || grant.ClientID != clientID {
 		return nil
 	}
-	m.revokeOAuthGrantLocked(actor, &grant)
-	return nil
+	return m.revokeOAuthGrantLocked(ctx, actor, &grant)
 }

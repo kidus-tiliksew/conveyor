@@ -19,9 +19,9 @@ import (
 )
 
 // The PostgreSQL OAuth store is the reference behavior for the shared OAuth
-// suite (component-persistence invariant 3). Every transition reads the
-// database clock once per transaction through now(), and every contended
-// transition locks its authoritative row: the code for consumption, and the
+// suite (component-persistence invariant 3). Every contended transition
+// locks its authoritative row, then reads fresh database time with
+// clock_timestamp() for its expiry decision: the code for consumption, and the
 // grant for rotation and both revocation paths (req-mcp-oauth AC-4.1, AC-4.2,
 // AC-4.4; component-identity-membership invariants 52 to 54).
 
@@ -134,37 +134,44 @@ func (s *Store) IssueOAuthAuthorizationCode(ctx context.Context, request store.O
 	return code, value, nil
 }
 
-// transactionNow reads the transaction's database clock. now() is fixed for
-// the transaction, so every time this transaction writes and compares agrees.
-func transactionNow(ctx context.Context, tx pgx.Tx) (time.Time, error) {
+// decisionNow reads fresh database time. A caller reads it after it holds
+// every lock its decision needs: now() is fixed at transaction start, so a
+// lock wait would carry it past a code, client, or token deadline
+// (req-mcp-oauth AC-2.3, AC-3.3, AC-4.1).
+func decisionNow(ctx context.Context, tx pgx.Tx) (time.Time, error) {
 	var now time.Time
-	if err := tx.QueryRow(ctx, `SELECT now()`).Scan(&now); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
 		return time.Time{}, err
 	}
 	return now.UTC(), nil
 }
 
-// consumeOAuthCode is the single-use primitive. It locks the code row, checks
-// every binding and the S256 verifier, and marks the code consumed. A
-// concurrent exchange waits on the row lock and then reads the consumed row.
+// consumeOAuthCode is the single-use primitive. It locks the code row, reads
+// fresh database time, checks expiry, every binding, and the S256 verifier,
+// and marks the code consumed. A concurrent exchange waits on the row lock
+// and then reads the consumed row.
 func consumeOAuthCode(ctx context.Context, tx pgx.Tx, exchange store.OAuthCodeExchange) (core.OAuthAuthorizationCode, error) {
 	var code core.OAuthAuthorizationCode
 	var stored []byte
-	var usable bool
+	var consumed pgtype.Timestamptz
 	hash := core.OAuthCredentialDigest(exchange.Code)
 	err := tx.QueryRow(ctx, `SELECT id,code_hash,user_id,client_id,client_name,redirect_uri,resource,code_challenge,created_at,expires_at,
-		consumed_at IS NULL AND expires_at>now() FROM oauth_authorization_codes WHERE code_hash=$1 FOR UPDATE`, hash).
-		Scan(&code.ID, &stored, &code.UserID, &code.ClientID, &code.ClientName, &code.RedirectURI, &code.Resource, &code.CodeChallenge, &code.CreatedAt, &code.ExpiresAt, &usable)
+		consumed_at FROM oauth_authorization_codes WHERE code_hash=$1 FOR UPDATE`, hash).
+		Scan(&code.ID, &stored, &code.UserID, &code.ClientID, &code.ClientName, &code.RedirectURI, &code.Resource, &code.CodeChallenge, &code.CreatedAt, &code.ExpiresAt, &consumed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.OAuthAuthorizationCode{}, store.ErrOAuthCodeInvalid
 	}
 	if err != nil {
 		return core.OAuthAuthorizationCode{}, err
 	}
-	if !usable || subtle.ConstantTimeCompare(stored, hash) != 1 || !store.OAuthCodeBindingsMatch(code, exchange) {
+	now, err := decisionNow(ctx, tx)
+	if err != nil {
+		return core.OAuthAuthorizationCode{}, err
+	}
+	if consumed.Valid || !now.Before(code.ExpiresAt) || subtle.ConstantTimeCompare(stored, hash) != 1 || !store.OAuthCodeBindingsMatch(code, exchange) {
 		return core.OAuthAuthorizationCode{}, store.ErrOAuthCodeInvalid
 	}
-	if _, err = tx.Exec(ctx, `UPDATE oauth_authorization_codes SET consumed_at=now() WHERE id=$1`, code.ID); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE oauth_authorization_codes SET consumed_at=$2 WHERE id=$1`, code.ID, now); err != nil {
 		return core.OAuthAuthorizationCode{}, err
 	}
 	return code, nil
@@ -212,7 +219,12 @@ func issueOAuthPair(ctx context.Context, tx pgx.Tx, grant core.OAuthGrant, now t
 // insertOAuthEvent appends one OAuth audit event with the context actor. Its
 // payload carries IDs and the client name only (component-identity-membership
 // invariant 36).
+// The identity test hook runs first, after the caller's state change, so a
+// test can fail the append and prove that the transaction rolls back.
 func insertOAuthEvent(ctx context.Context, q *db.Queries, kind string, grant core.OAuthGrant, at time.Time) error {
+	if err := store.RunIdentityTestHook(ctx, store.IdentityHookOAuthAudit); err != nil {
+		return err
+	}
 	actor := store.ActorFromContext(ctx)
 	return insertDeploymentEvent(ctx, q, db.InsertDeploymentEventParams{
 		Kind: kind, ActorID: actor.ID, ActorRole: string(actor.Role),
@@ -235,10 +247,6 @@ func (s *Store) ExchangeOAuthAuthorizationCode(ctx context.Context, exchange sto
 	}
 	var pair core.IssuedOAuthTokenPair
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		now, err := transactionNow(ctx, tx)
-		if err != nil {
-			return err
-		}
 		code, err := consumeOAuthCode(ctx, tx, exchange)
 		if err != nil {
 			return err
@@ -248,16 +256,29 @@ func (s *Store) ExchangeOAuthAuthorizationCode(ctx context.Context, exchange sto
 		} else if !active {
 			return store.ErrOAuthCodeInvalid
 		}
-		if !core.IsOAuthMetadataDocumentClientID(code.ClientID) {
-			var live bool
-			err := tx.QueryRow(ctx, `SELECT first_used_at IS NOT NULL OR unused_expires_at>now() FROM oauth_clients WHERE id=$1 FOR UPDATE`, code.ClientID).Scan(&live)
-			if errors.Is(err, pgx.ErrNoRows) || err == nil && !live {
+		var firstUsed pgtype.Timestamptz
+		var unusedExpires time.Time
+		dynamic := !core.IsOAuthMetadataDocumentClientID(code.ClientID)
+		if dynamic {
+			err := tx.QueryRow(ctx, `SELECT first_used_at,unused_expires_at FROM oauth_clients WHERE id=$1 FOR UPDATE`, code.ClientID).Scan(&firstUsed, &unusedExpires)
+			if errors.Is(err, pgx.ErrNoRows) {
 				return store.ErrOAuthCodeInvalid
 			}
 			if err != nil {
 				return err
 			}
-			if _, err = tx.Exec(ctx, `UPDATE oauth_clients SET first_used_at=now() WHERE id=$1 AND first_used_at IS NULL`, code.ClientID); err != nil {
+		}
+		// Fresh time after the code, owner, and client locks decides the
+		// unused-client deadline and stamps the grant.
+		now, err := decisionNow(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if dynamic && !firstUsed.Valid {
+			if !now.Before(unusedExpires) {
+				return store.ErrOAuthCodeInvalid
+			}
+			if _, err = tx.Exec(ctx, `UPDATE oauth_clients SET first_used_at=$2 WHERE id=$1 AND first_used_at IS NULL`, code.ClientID, now); err != nil {
 				return err
 			}
 		}
@@ -317,14 +338,10 @@ func (s *Store) RefreshOAuthTokens(ctx context.Context, exchange store.OAuthRefr
 	var pair core.IssuedOAuthTokenPair
 	reused := false
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		now, err := transactionNow(ctx, tx)
-		if err != nil {
-			return err
-		}
 		var tokenID, grantID, kind string
 		var stored []byte
-		var expired bool
-		err = tx.QueryRow(ctx, `SELECT id,grant_id,kind,token_hash,expires_at<=now() FROM oauth_tokens WHERE token_hash=$1`, hash).Scan(&tokenID, &grantID, &kind, &stored, &expired)
+		var expiresAt time.Time
+		err := tx.QueryRow(ctx, `SELECT id,grant_id,kind,token_hash,expires_at FROM oauth_tokens WHERE token_hash=$1`, hash).Scan(&tokenID, &grantID, &kind, &stored, &expiresAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.ErrOAuthTokenInvalid
 		}
@@ -346,11 +363,15 @@ func (s *Store) RefreshOAuthTokens(ctx context.Context, exchange store.OAuthRefr
 		} else if !active {
 			return store.ErrOAuthTokenInvalid
 		}
+		now, err := decisionNow(ctx, tx)
+		if err != nil {
+			return err
+		}
 		if current != tokenID {
 			reused = true
 			return revokeOAuthGrant(ctx, tx, q, &grant, store.OAuthEventRefreshReuseDetected, now)
 		}
-		if expired {
+		if !now.Before(expiresAt) {
 			return store.ErrOAuthTokenInvalid
 		}
 		if _, err = tx.Exec(ctx, `UPDATE oauth_tokens SET rotated_at=$2 WHERE id=$1`, tokenID, now); err != nil {
@@ -469,7 +490,7 @@ func (s *Store) RevokeOwnOAuthGrant(ctx context.Context, userID, grantID string)
 		if grant.RevokedAt != nil {
 			return nil
 		}
-		now, err := transactionNow(ctx, tx)
+		now, err := decisionNow(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -501,7 +522,7 @@ func (s *Store) RevokeOAuthToken(ctx context.Context, clientID, candidate string
 		if err != nil || !ok || grant.ClientID != clientID || grant.RevokedAt != nil {
 			return err
 		}
-		now, err := transactionNow(ctx, tx)
+		now, err := decisionNow(ctx, tx)
 		if err != nil {
 			return err
 		}

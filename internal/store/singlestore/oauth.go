@@ -57,7 +57,9 @@ func nullTimePtr(at sql.NullTime) *time.Time {
 	return &value
 }
 
-// databaseNow reads the database clock.
+// databaseNow reads the database clock. A caller reads it after it holds
+// every lock its decision needs, so a lock wait cannot carry an old time past
+// a code, client, or token deadline (req-mcp-oauth AC-2.3, AC-3.3, AC-4.1).
 func databaseNow(ctx context.Context, tx *sql.Tx) (time.Time, error) {
 	var now time.Time
 	if err := tx.QueryRowContext(ctx, "SELECT CURRENT_TIMESTAMP(6)").Scan(&now); err != nil {
@@ -229,10 +231,11 @@ func (s *Store) IssueOAuthAuthorizationCode(ctx context.Context, request store.O
 }
 
 // consumeOAuthCode is the single-use primitive. It finds the code by digest,
-// locks its row, and decides only from that locked row: unconsumed, unexpired,
-// and matching every binding and the S256 verifier. A concurrent exchange
-// waits on the row lock and then reads the consumed row.
-func consumeOAuthCode(ctx context.Context, tx *sql.Tx, exchange store.OAuthCodeExchange, now time.Time) (core.OAuthAuthorizationCode, error) {
+// locks its row, reads the database clock, and decides only from that locked
+// row: unconsumed, unexpired, and matching every binding and the S256
+// verifier. A concurrent exchange waits on the row lock and then reads the
+// consumed row.
+func consumeOAuthCode(ctx context.Context, tx *sql.Tx, exchange store.OAuthCodeExchange) (core.OAuthAuthorizationCode, error) {
 	hash := core.OAuthCredentialDigest(exchange.Code)
 	var id string
 	err := tx.QueryRowContext(ctx, "SELECT id FROM oauth_authorization_codes WHERE code_hash=?", hash).Scan(&id)
@@ -250,6 +253,10 @@ func consumeOAuthCode(ctx context.Context, tx *sql.Tx, exchange store.OAuthCodeE
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.OAuthAuthorizationCode{}, store.ErrOAuthCodeInvalid
 	}
+	if err != nil {
+		return core.OAuthAuthorizationCode{}, err
+	}
+	now, err := databaseNow(ctx, tx)
 	if err != nil {
 		return core.OAuthAuthorizationCode{}, err
 	}
@@ -302,8 +309,13 @@ func issueOAuthPair(ctx context.Context, tx *sql.Tx, grant core.OAuthGrant, now 
 
 // appendOAuthEvent appends one OAuth audit event through the deployment
 // ledger's insert-only write path. Its payload carries IDs and the client
-// name only (component-identity-membership invariant 36).
+// name only (component-identity-membership invariant 36). The identity test
+// hook runs first, after the caller's state change, so a test can fail the
+// append and prove that the transaction rolls back.
 func appendOAuthEvent(ctx context.Context, tx *sql.Tx, kind string, grant core.OAuthGrant) error {
+	if err := store.RunIdentityTestHook(ctx, store.IdentityHookOAuthAudit); err != nil {
+		return err
+	}
 	return appendDeploymentEvent(ctx, tx, kind, store.OAuthGrantEventPayload(grant))
 }
 
@@ -322,11 +334,7 @@ func (s *Store) ExchangeOAuthAuthorizationCode(ctx context.Context, exchange sto
 	}
 	var pair core.IssuedOAuthTokenPair
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		now, err := databaseNow(ctx, tx)
-		if err != nil {
-			return err
-		}
-		code, err := consumeOAuthCode(ctx, tx, exchange, now)
+		code, err := consumeOAuthCode(ctx, tx, exchange)
 		if err != nil {
 			return err
 		}
@@ -335,9 +343,10 @@ func (s *Store) ExchangeOAuthAuthorizationCode(ctx context.Context, exchange sto
 		} else if !active {
 			return store.ErrOAuthCodeInvalid
 		}
-		if !core.IsOAuthMetadataDocumentClientID(code.ClientID) {
-			var firstUsed sql.NullTime
-			var unusedExpires time.Time
+		var firstUsed sql.NullTime
+		var unusedExpires time.Time
+		dynamic := !core.IsOAuthMetadataDocumentClientID(code.ClientID)
+		if dynamic {
 			err := tx.QueryRowContext(ctx, "SELECT first_used_at,unused_expires_at FROM oauth_clients WHERE id=? FOR UPDATE", code.ClientID).Scan(&firstUsed, &unusedExpires)
 			if errors.Is(err, sql.ErrNoRows) {
 				return store.ErrOAuthCodeInvalid
@@ -345,6 +354,14 @@ func (s *Store) ExchangeOAuthAuthorizationCode(ctx context.Context, exchange sto
 			if err != nil {
 				return err
 			}
+		}
+		// The clock read after the code and client locks decides the
+		// unused-client deadline and stamps the grant.
+		now, err := databaseNow(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if dynamic {
 			if !firstUsed.Valid {
 				if !now.Before(unusedExpires.UTC()) {
 					return store.ErrOAuthCodeInvalid

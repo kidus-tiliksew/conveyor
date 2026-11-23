@@ -8,7 +8,9 @@
 -- its tokens share the grant ID as shard key, so a rotation or revocation
 -- writes one partition, and every rotation and revocation decides on the
 -- locked grant row, which names the one current refresh token. Restart-safe:
--- every statement is IF NOT EXISTS. No backfill.
+-- every statement is IF NOT EXISTS. A grant keeps the full verified client ID,
+-- which a metadata-document URL can make longer than 255 characters, so the
+-- column is LONGTEXT and carries no index. No backfill.
 CREATE ROWSTORE TABLE IF NOT EXISTS oauth_clients (
  id VARCHAR(255) NOT NULL,
  name LONGTEXT NOT NULL,
@@ -41,7 +43,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS oauth_authorization_codes (
 CREATE ROWSTORE TABLE IF NOT EXISTS oauth_grants (
  id VARCHAR(255) NOT NULL,
  user_id VARCHAR(255) NOT NULL,
- client_id VARCHAR(255) NOT NULL,
+ client_id LONGTEXT NOT NULL,
  client_name LONGTEXT NOT NULL,
  resource LONGTEXT NOT NULL,
  current_refresh_token_id VARCHAR(255) NOT NULL,
@@ -50,7 +52,6 @@ CREATE ROWSTORE TABLE IF NOT EXISTS oauth_grants (
  revoked_at DATETIME(6),
  PRIMARY KEY (id),
  KEY oauth_grants_user_idx (user_id, created_at),
- KEY oauth_grants_client_idx (client_id),
  SHARD KEY (id)
 ) COLLATE utf8mb4_bin;
 
