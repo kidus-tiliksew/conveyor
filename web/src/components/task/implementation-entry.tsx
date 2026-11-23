@@ -81,9 +81,29 @@ export function ImplementationEntry({
           {entry.summary}
         </MarkdownProse>
         {summaryAudit && <div className="px-4 pb-3 text-xs text-muted">{summaryAudit}</div>}
+        {entry.progress && <JobProgress progress={entry.progress} />}
         {footer}
       </article>
     </li>
+  )
+}
+
+// A running job's current progress report, inside its own card below the
+// summary. The job card, the Implementation card, and the Verify card print it
+// only when their body does not already hold it, so the report shows once and
+// never as a separate timeline note (component-web-task-surfaces invariant 72;
+// req-operator-next-action AC-7.3).
+export function JobProgress({ progress }: { progress: string }) {
+  return (
+    <section aria-label="Latest progress report" className="px-4 pb-3" data-job-progress>
+      <h4 className="text-[11px] font-medium text-muted">Latest progress report</h4>
+      <MarkdownProse
+        className="pt-0.5 text-sm leading-6 text-foreground/85 [overflow-wrap:anywhere]"
+        components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}
+      >
+        {progress}
+      </MarkdownProse>
+    </section>
   )
 }
 
