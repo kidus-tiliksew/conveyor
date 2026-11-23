@@ -33,6 +33,7 @@ type Backend interface {
 	WorkspaceControlStore
 	StagePreferenceStore
 	CrateStore
+	OAuthStore
 	Close()
 	ConfigureGitHubAppKeyEncryptionKey([]byte)
 	BootstrapIdentity(context.Context, config.FirstOperatorIdentity, string) (bool, error)

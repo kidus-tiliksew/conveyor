@@ -161,6 +161,17 @@ type Fixture struct {
 	// per read label, so a suite can bound the rows one read transfers. A
 	// backend that transfers no rows leaves it nil.
 	DrainReadRows func() map[string]uint64
+	// OAuthDeploymentEvents returns the deployment audit events whose kind
+	// starts with identity.oauth_, ascending by (at, id). AgeOAuthRecord moves
+	// every stored time of one OAuth row back by the given duration.
+	// OAuthStoredRows returns every row of the four OAuth tables. No public
+	// read exposes the deployment ledger, a stored digest, or a stored time,
+	// so each test binary supplies all three. The OAuth cases require them
+	// and never skip (req-mcp-oauth; component-identity-membership
+	// invariants 36 and 51 to 54).
+	OAuthDeploymentEvents func(t *testing.T, ctx context.Context) []core.Event
+	AgeOAuthRecord        func(t *testing.T, ctx context.Context, table OAuthTable, id string, by time.Duration)
+	OAuthStoredRows       func(t *testing.T, ctx context.Context) []OAuthStoredRow
 }
 
 // requireStoredTaskHoldSeed returns the fixture's historical hold seed or
@@ -249,6 +260,7 @@ func RunAll(t *testing.T, factory Factory) {
 	})
 	run("ChangeNotices", func(t *testing.T) { RunChangeNoticeConformance(t, factory.fresh(t, nil)) })
 	run("Crates", func(t *testing.T) { runCrates(t, factory) })
+	run("OAuth", func(t *testing.T) { runOAuth(t, factory) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
 	run("TaskMap", func(t *testing.T) { RunTaskMapConformance(t, factory.fresh(t, nil)) })

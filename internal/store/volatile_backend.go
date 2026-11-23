@@ -26,9 +26,12 @@ type volatileMemory struct {
 	workspaceGitHubApps     map[string]workspaceAppRecord
 	gitHubWebhookDeliveries map[string]map[string]time.Time
 	stagePreferences        map[string]StagePreferences
-	orgName                 string
-	gitHubAppEncryptionKey  []byte
-	log                     eventlog.Store
+	// oauth holds the deployment OAuth tables (component-persistence
+	// invariant 21) under the memory mutex.
+	oauth                  oauthState
+	orgName                string
+	gitHubAppEncryptionKey []byte
+	log                    eventlog.Store
 }
 
 var _ Backend = (*volatileMemory)(nil)
@@ -48,6 +51,7 @@ func NewVolatileBackend() Backend {
 		sessions:    map[string]dashboardSession{},
 		// stagePreferences is keyed by user ID (component-stage-preferences).
 		stagePreferences: map[string]StagePreferences{},
+		oauth:            newOAuthState(),
 		orgName:          "Conveyor",
 		log:              logqueue.Notify(memlog.New(), mem.changes),
 	}

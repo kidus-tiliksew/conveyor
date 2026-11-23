@@ -437,6 +437,9 @@ type CredentialMethod string
 const (
 	CredentialMethodBearer  CredentialMethod = "bearer"
 	CredentialMethodSession CredentialMethod = "session"
+	// CredentialMethodOAuthMCP marks an OAuth access token, which admits only
+	// `/mcp` (req-mcp-oauth AC-4.3; req-security-boundaries AC-1.4; DEC-147(1)).
+	CredentialMethodOAuthMCP CredentialMethod = "oauth_mcp"
 )
 
 // TaskRunClaimantPrefix distinguishes an explicit user invocation from worker
