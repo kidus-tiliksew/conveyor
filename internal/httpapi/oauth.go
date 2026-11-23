@@ -94,6 +94,14 @@ func oauthIssuerFromPublicURL(publicURL string) (string, bool) {
 	if host == "" || parsed.Host != strings.ToLower(parsed.Host) || strings.HasSuffix(parsed.Host, ":") {
 		return "", false
 	}
+	// A bracketed authority must hold an IPv6 literal without a zone; Go's
+	// URL parser accepts any bracketed text, such as [conveyor.example].
+	if strings.HasPrefix(parsed.Host, "[") {
+		literal, literalErr := netip.ParseAddr(host)
+		if literalErr != nil || !literal.Is6() || literal.Zone() != "" {
+			return "", false
+		}
+	}
 	if port := parsed.Port(); port != "" {
 		number, portErr := strconv.Atoi(port)
 		if portErr != nil || number < 1 || number > 65535 || strconv.Itoa(number) != port {
@@ -840,8 +848,11 @@ type oauthAuthorizationRequest struct {
 	CodeChallenge       string `json:"code_challenge"`
 	CodeChallengeMethod string `json:"code_challenge_method"`
 	State               string `json:"state"`
-	Resource            string `json:"resource"`
-	Scope               string `json:"scope"`
+	// Resource is nil when the request omits it. An explicit value, the
+	// empty string included, is kept as sent, so only omission takes the
+	// default audience (req-mcp-oauth AC-3.3).
+	Resource *string `json:"resource"`
+	Scope    string  `json:"scope"`
 }
 
 // oauthConsentError is a refused authorization request. A non-empty
@@ -875,8 +886,19 @@ func oauthAuthorizationRequestFromQuery(query url.Values) (oauthAuthorizationReq
 	return oauthAuthorizationRequest{
 		ResponseType: query.Get("response_type"), ClientID: query.Get("client_id"), RedirectURI: query.Get("redirect_uri"),
 		CodeChallenge: query.Get("code_challenge"), CodeChallengeMethod: query.Get("code_challenge_method"),
-		State: query.Get("state"), Resource: query.Get("resource"), Scope: query.Get("scope"),
+		State: query.Get("state"), Resource: oauthQueryField(query, "resource"), Scope: query.Get("scope"),
 	}, nil
+}
+
+// oauthQueryField returns a pointer to a query parameter's value, or nil when
+// the query does not name the parameter.
+func oauthQueryField(query url.Values, field string) *string {
+	values, present := query[field]
+	if !present || len(values) == 0 {
+		return nil
+	}
+	value := values[0]
+	return &value
 }
 
 // verifyOAuthAuthorizationRequest verifies the client, then the redirect
@@ -915,9 +937,9 @@ func (s *Server) verifyOAuthAuthorizationRequest(ctx context.Context, provider o
 	}
 	// An omitted resource names the MCP audience; any other value is refused
 	// (RFC 8707; req-mcp-oauth AC-3.3).
-	resource := request.Resource
-	if resource == "" {
-		resource = provider.audience()
+	resource := provider.audience()
+	if request.Resource != nil {
+		resource = *request.Resource
 	}
 	if resource != provider.audience() {
 		return oauthVerifiedClient{}, store.OAuthCodeRequest{}, redirectError("invalid_target", "resource must be "+provider.audience())

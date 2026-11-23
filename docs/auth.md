@@ -237,7 +237,8 @@ recorded as your act.
 OAuth is on only when `CONVEYOR_PUBLIC_URL` is a canonical origin:
 
 - `https://<host>` or `https://<host>:<port>`, in lowercase, with no path,
-  query, fragment, or user information and no default port; or
+  query, fragment, or user information and no default port. A bracketed host
+  must be an IPv6 literal without a zone, such as `[2001:db8::1]`; or
 - for local development, `http://127.0.0.1`, `http://[::1]`, or
   `http://localhost`, with an optional port.
 
@@ -322,7 +323,9 @@ OAuth token is refused on this API with 401.
 request and changes nothing. The query takes `response_type` (`code`),
 `client_id`, `redirect_uri`, `code_challenge`, `code_challenge_method`
 (`S256`), an optional `state` of at most 2,048 bytes, and an optional
-`resource` that must equal `<public-url>/mcp` when present. A parameter given
+`resource` that must equal `<public-url>/mcp` when present. An explicit empty
+`resource` is refused with `invalid_target`; only an omitted one takes the
+default. A parameter given
 twice is refused. A valid request answers:
 
 ```json
@@ -382,10 +385,16 @@ refresh token it used. Conveyor stores every code and token only as a SHA-256
 hash.
 
 A refresh token that was already used is refused with `invalid_grant`, and
-the whole grant is revoked at once, including the newest pair. This also
-happens when a client retries a refresh after a network failure, or sends two
-refreshes of one token at the same time: the client must send you through
-sign-in again. Other refusals are `invalid_grant` without detail (an unknown,
+the whole grant is revoked at once, including the newest pair. After a network
+failure, the outcome depends on where the first request stopped:
+
+- If the refresh never reached Conveyor, nothing rotated, and the client can
+  retry the same refresh token.
+- If Conveyor rotated the pair but its response was lost, the old refresh token
+  was already used. A retry with it counts as reuse, revokes the grant, and the
+  client must send you through sign-in again.
+
+Two refreshes of one token sent at the same time also count as reuse. Other refusals are `invalid_grant` without detail (an unknown,
 expired, revoked, or mismatched code or token), `invalid_target` (a wrong or
 missing `resource`), `invalid_client`, `invalid_request`, and
 `unsupported_grant_type`. A brief storage conflict answers `503`

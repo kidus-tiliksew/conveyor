@@ -128,10 +128,23 @@ func (resolver *oauthMetadataResolver) resolve(ctx context.Context, clientID str
 	if err != nil {
 		return oauthMetadataDocument{}, err
 	}
+	return resolver.publish(clientID, document, now), nil
+}
+
+// publish caches a document fetched from an observation that started at
+// now, and returns the document the cache holds afterwards. An entry's
+// expiry is its observation start plus the cache lifetime, so when two
+// overlapping fetches of one client ID finish out of order, the later
+// observation is kept and the earlier one never replaces it.
+func (resolver *oauthMetadataResolver) publish(clientID string, document oauthMetadataDocument, now time.Time) oauthMetadataDocument {
+	expires := now.Add(oauthMetadataDocumentCacheLifetime)
 	resolver.mu.Lock()
 	defer resolver.mu.Unlock()
 	if resolver.cache == nil {
 		resolver.cache = make(map[string]oauthMetadataCacheEntry)
+	}
+	if existing, present := resolver.cache[clientID]; present && existing.expires.After(expires) {
+		return existing.document
 	}
 	if _, present := resolver.cache[clientID]; !present && len(resolver.cache) >= oauthMetadataDocumentCacheEntries {
 		// Evict expired entries first, then the entry closest to expiry, so
@@ -150,8 +163,8 @@ func (resolver *oauthMetadataResolver) resolve(ctx context.Context, clientID str
 			delete(resolver.cache, oldestKey)
 		}
 	}
-	resolver.cache[clientID] = oauthMetadataCacheEntry{document: document, expires: now.Add(oauthMetadataDocumentCacheLifetime)}
-	return document, nil
+	resolver.cache[clientID] = oauthMetadataCacheEntry{document: document, expires: expires}
+	return document
 }
 
 // validateOAuthMetadataClientID refuses a client_id that cannot name a

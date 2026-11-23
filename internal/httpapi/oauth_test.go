@@ -410,6 +410,8 @@ func TestOAuthIssuerAcceptsOnlyCanonicalOrigins(t *testing.T) {
 		"http://localhost:80", "ftp://conveyor.example", "https://", "https://conveyor.example:0", "https://conveyor.example:99999",
 		"https://conveyor.example:08443", "http://127.0.0.2", "http://localhost.example", " https://conveyor.example", "https://conveyor.example\\x",
 		"https://conveyor.example:", "http://[::1]:", "http://localhost:",
+		// A bracketed authority must be an IPv6 literal without a zone.
+		"https://[conveyor.example]", "https://[conveyor.example]:8443", "http://[localhost]:8080", "https://[10.0.0.1]", "https://[fe80::1%25eth0]",
 	}
 	for _, value := range invalid {
 		if issuer, ok := oauthIssuerFromPublicURL(value); ok {
@@ -476,6 +478,7 @@ func TestOAuthDisabledRefusesDiscoveryAndEndpointsWithoutHTML(t *testing.T) {
 		"unset public URL":    func(s *Server) { s.InvitationDelivery.PublicURL = "" },
 		"insecure public URL": func(s *Server) { s.InvitationDelivery.PublicURL = "http://conveyor.example" },
 		"public URL path":     func(s *Server) { s.InvitationDelivery.PublicURL = "https://conveyor.example/base" },
+		"bracketed DNS name":  func(s *Server) { s.InvitationDelivery.PublicURL = "https://[conveyor.example]" },
 		"backend without OAuth": func(s *Server) {
 			s.OAuth = nil
 		},
@@ -879,6 +882,8 @@ func TestOAuthConsentNeverRedirectsToAnUnverifiedTarget(t *testing.T) {
 		"missing PKCE":     {oauthAuthorizeQuery(clientID, oauthTestRedirect, "keep me", "code_challenge", ""), "invalid_request"},
 		"short challenge":  {oauthAuthorizeQuery(clientID, oauthTestRedirect, "keep me", "code_challenge", "abc"), "invalid_request"},
 		"foreign resource": {oauthAuthorizeQuery(clientID, oauthTestRedirect, "keep me", "resource", "https://other.example/mcp"), "invalid_target"},
+		// An explicit empty resource is a value, not an omission.
+		"empty resource": {oauthAuthorizeQuery(clientID, oauthTestRedirect, "keep me", "resource", ""), "invalid_target"},
 	} {
 		response := h.do(oauthRequest{method: http.MethodGet, path: "/v1/oauth/authorize?" + tc.query, session: h.memberSession})
 		body := expectOAuthError(t, response, http.StatusBadRequest, tc.code)
@@ -886,6 +891,29 @@ func TestOAuthConsentNeverRedirectsToAnUnverifiedTarget(t *testing.T) {
 		if err != nil || !strings.HasPrefix(target.String(), oauthTestRedirect+"?") || target.Query().Get("error") != tc.code || target.Query().Get("state") != "keep me" || target.Query().Get("code") != "" {
 			t.Fatalf("%s: redirect_to=%v", name, body["redirect_to"])
 		}
+	}
+	// On POST too, an explicit empty resource answers invalid_target and
+	// mints no code, while an omitted resource takes the MCP audience.
+	decision := func(resource *string) *httptest.ResponseRecorder {
+		fields := map[string]any{
+			"decision": "approve", "response_type": "code", "client_id": clientID, "redirect_uri": oauthTestRedirect,
+			"code_challenge": core.OAuthS256Challenge(oauthTestVerifier), "code_challenge_method": "S256", "state": "keep me",
+		}
+		if resource != nil {
+			fields["resource"] = *resource
+		}
+		body, _ := json.Marshal(fields)
+		return h.do(oauthRequest{method: http.MethodPost, path: "/v1/oauth/authorize", body: string(body), contentType: "application/json", session: h.memberSession, proof: true})
+	}
+	empty := ""
+	refused := decision(&empty)
+	body := expectOAuthError(t, refused, http.StatusBadRequest, "invalid_target")
+	if target, err := url.Parse(fmt.Sprint(body["redirect_to"])); err != nil || target.Query().Get("error") != "invalid_target" || target.Query().Get("code") != "" || len(h.oauth.issued) != 0 {
+		t.Fatalf("explicit empty resource on POST: %v, issued %d", body, len(h.oauth.issued))
+	}
+	approved := decision(nil)
+	if approved.Code != http.StatusOK || len(h.oauth.issued) != 1 || h.oauth.issued[0].Resource != oauthTestAudience {
+		t.Fatalf("omitted resource on POST: status=%d issued=%v", approved.Code, h.oauth.issued)
 	}
 }
 
@@ -1038,7 +1066,11 @@ func TestOAuthConcurrentCodeExchangeHasOneWinner(t *testing.T) {
 	clientID := h.register(oauthTestRedirect)
 	code := h.approve(h.memberSession, clientID, oauthTestRedirect, "s").Query().Get("code")
 	const racers = 16
-	statuses := make(chan int, racers)
+	type outcome struct {
+		status int
+		body   string
+	}
+	statuses := make(chan outcome, racers)
 	var start sync.WaitGroup
 	start.Add(1)
 	var done sync.WaitGroup
@@ -1051,20 +1083,25 @@ func TestOAuthConcurrentCodeExchangeHasOneWinner(t *testing.T) {
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			response := httptest.NewRecorder()
 			h.server.Handler().ServeHTTP(response, request)
-			statuses <- response.Code
+			statuses <- outcome{status: response.Code, body: response.Body.String()}
 		}()
 	}
 	start.Done()
 	done.Wait()
 	close(statuses)
 	wins := 0
-	for status := range statuses {
-		switch status {
+	for result := range statuses {
+		switch result.status {
 		case http.StatusOK:
 			wins++
 		case http.StatusBadRequest:
+			// Every losing exchange is a replay of the consumed code.
+			var refusal map[string]any
+			if err := json.Unmarshal([]byte(result.body), &refusal); err != nil || refusal["error"] != "invalid_grant" {
+				t.Fatalf("losing exchange answered %s, want invalid_grant", result.body)
+			}
 		default:
-			t.Fatalf("racer status=%d", status)
+			t.Fatalf("racer status=%d", result.status)
 		}
 	}
 	if wins != 1 {
@@ -1681,6 +1718,30 @@ func TestOAuthMetadataAddressPolicyRefusesNonPublicRanges(t *testing.T) {
 	}
 }
 
+// TestOAuthMetadataCacheKeepsTheLaterObservation proves that when two
+// overlapping fetches of one client ID publish out of order, the document
+// from the later observation stays cached.
+func TestOAuthMetadataCacheKeepsTheLaterObservation(t *testing.T) {
+	resolver := &oauthMetadataResolver{}
+	start := time.Unix(1000, 0)
+	older := oauthMetadataDocument{ClientID: "https://app.example/client.json", RedirectURIs: []string{"https://app.example/removed"}}
+	newer := oauthMetadataDocument{ClientID: "https://app.example/client.json", RedirectURIs: []string{"https://app.example/current"}}
+	if kept := resolver.publish(newer.ClientID, newer, start.Add(time.Second)); !kept.allowsRedirect("https://app.example/current") {
+		t.Fatalf("first publication = %+v", kept)
+	}
+	// The older observation finishes last and must not replace the newer.
+	if kept := resolver.publish(older.ClientID, older, start); kept.allowsRedirect("https://app.example/removed") || !kept.allowsRedirect("https://app.example/current") {
+		t.Fatalf("older observation replaced the newer: %+v", kept)
+	}
+	if cached := resolver.cache[newer.ClientID].document; cached.allowsRedirect("https://app.example/removed") {
+		t.Fatalf("cache holds the older document: %+v", cached)
+	}
+	// A later observation does replace the cached document.
+	if kept := resolver.publish(older.ClientID, older, start.Add(2*time.Second)); !kept.allowsRedirect("https://app.example/removed") {
+		t.Fatalf("later observation was not cached: %+v", kept)
+	}
+}
+
 func TestOAuthMetadataResolverFetchesOverCheckedAddresses(t *testing.T) {
 	fixture := newMetadataFixture(t)
 	clientID := fixture.url("example.com", "/client.json")
@@ -1751,7 +1812,6 @@ func TestOAuthMetadataResolverRefusesUnsafeOrInvalidDocuments(t *testing.T) {
 		"oversized document":            fixture.url("example.com", "/huge.json"),
 		"not JSON":                      fixture.url("example.com", "/not-json.json"),
 		"missing document":              fixture.url("example.com", "/missing.json"),
-		"TLS identity mismatch":         fixture.url("client.test", "/client.json"),
 		"redirect to http":              fixture.url("example.com", "/redirect/http://example.com:PORT/client.json"),
 		"redirect loop":                 fixture.url("example.com", "/loop"),
 		"unknown host":                  fixture.url("nowhere.example", "/client.json"),
@@ -1769,6 +1829,22 @@ func TestOAuthMetadataResolverRefusesUnsafeOrInvalidDocuments(t *testing.T) {
 	}
 	if dials := fixture.dials()[before:]; len(dials) != 1 || dials[0] != "127.0.0.1:"+fixture.port {
 		t.Fatalf("redirect to a private address dialed %v", dials)
+	}
+	// TLS identity alone refuses this document: it names exactly the
+	// requested client ID and is otherwise valid, but the certificate does
+	// not name client.test. A control resolver that verifies the same
+	// certificate as example.com accepts it, so the document is not why the
+	// first fetch fails.
+	tlsClientID := fixture.url("client.test", "/tls-identity.json")
+	fixture.document("/tls-identity.json", tlsClientID, "none", "https://app.example/cb")
+	if _, err := fixture.resolver(true).resolve(t.Context(), tlsClientID); !errors.Is(err, errOAuthClientUnverified) {
+		t.Errorf("TLS identity mismatch: err=%v", err)
+	}
+	control := fixture.resolver(true)
+	control.tlsConfig = control.tlsConfig.Clone()
+	control.tlsConfig.ServerName = "example.com"
+	if document, err := control.resolve(t.Context(), tlsClientID); err != nil || document.ClientID != tlsClientID {
+		t.Fatalf("TLS control: document=%+v err=%v", document, err)
 	}
 	slow := fixture.resolver(true)
 	slow.timeout = 100 * time.Millisecond
