@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs'
 import { expect, type Page, type Route, test } from '@playwright/test'
 import { callerIdentity, capabilitiesForRole } from './helpers/caller-identity'
 import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
@@ -1666,15 +1667,25 @@ function requestOrderFixture() {
 
 async function routeRequestOrder(
   page: Page,
-  options: { listGate?: Promise<void>; detailGate?: Promise<void> },
+  options: {
+    listGate?: Promise<void>
+    detailGate?: Promise<void>
+    versionsGate?: Promise<void>
+    archivedOnly?: boolean
+  },
 ): Promise<{
   listQueries: string[]
   detailPaths: string[]
   detailHitsAfterList: string[]
   detailStartedBeforeList: () => boolean
+  listAnswered: () => boolean
+  versionsAnswered: () => boolean
 }> {
   const fixture = requestOrderFixture()
+  const views = [fixture.live, fixture.other, fixture.archived]
+  const list = options.archivedOnly ? [summarizeRequirement(fixture.archived)] : fixture.list
   const listQueries: string[] = []
+  let versionsAnswered = false
   // Completed detail requests. The detail query consumes its abort signal, so
   // StrictMode's discarded first mount in a development build can abort and
   // repeat it; an aborted request never finishes.
@@ -1696,42 +1707,75 @@ async function routeRequestOrder(
       listQueries.push(url.searchParams.get('include_archived') ?? '')
       await options.listGate
       listAnswered = true
-      return route.fulfill({ json: fixture.list })
+      return route.fulfill({ json: list })
     }
-    if (path.endsWith('/versions')) return route.fulfill({ json: [fixture.live.current_version] })
+    if (path.endsWith('/versions')) {
+      // Each document answers with its own version list.
+      await options.versionsGate
+      versionsAnswered = true
+      const id = decodeURIComponent(path.slice('/v1/requirements/'.length, -'/versions'.length))
+      const view = views.find((item) => item.requirement.id === id)
+      return view
+        ? route.fulfill({ json: [view.current_version] })
+        : route.fulfill({ status: 404, body: 'requirement not found' })
+    }
     if (path.endsWith('/events')) return route.fulfill({ json: documentEventPage([]) })
     if (path.startsWith('/v1/requirements/')) {
       if (listAnswered) detailHitsAfterList.push(path)
       else detailBeforeList = true
       await options.detailGate
       const id = decodeURIComponent(path.slice('/v1/requirements/'.length))
-      const view = [fixture.live, fixture.other, fixture.archived].find((item) => item.requirement.id === id)
+      const view = views.find((item) => item.requirement.id === id)
       return view ? route.fulfill({ json: view }) : route.fulfill({ status: 404, body: 'requirement not found' })
     }
     return route.fulfill({ json: [] })
   })
-  return { listQueries, detailPaths, detailHitsAfterList, detailStartedBeforeList: () => detailBeforeList }
+  return {
+    listQueries,
+    detailPaths,
+    detailHitsAfterList,
+    detailStartedBeforeList: () => detailBeforeList,
+    listAnswered: () => listAnswered,
+    versionsAnswered: () => versionsAnswered,
+  }
 }
 
-test('requirements starts the detail request before the list answers and sends one list request', async ({ page }) => {
+test('requirements renders a deep-linked document from its detail before the list and versions answer', async ({
+  page,
+}) => {
   await initShell(page)
   let releaseList: () => void = () => {}
   const listGate = new Promise<void>((resolve) => {
     releaseList = resolve
   })
-  const requests = await routeRequestOrder(page, { listGate })
+  let releaseVersions: () => void = () => {}
+  const versionsGate = new Promise<void>((resolve) => {
+    releaseVersions = resolve
+  })
+  const requests = await routeRequestOrder(page, { listGate, versionsGate })
 
   await page.goto('/w/demo/requirements?requirement=req-retries')
   // The detail request starts while the list request still waits.
   await expect.poll(() => requests.detailPaths).toEqual(['/v1/requirements/req-retries'])
   expect(requests.detailStartedBeforeList()).toBe(true)
-  await expect(
-    page.getByRole('region', { name: 'Requirement document' }).getByText('Loading requirements…'),
-  ).toBeVisible()
+  // The canvas renders the confirmed version from the detail read while the
+  // list and version reads both wait, and shows neither placeholder.
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
+  await expect(canvas.getByRole('tabpanel')).toContainText('Keep retries bounded.')
+  await expect(canvas.getByText('Loading requirements…')).toHaveCount(0)
+  await expect(canvas.getByText('Loading versions…')).toHaveCount(0)
+  await expect(canvas.getByText('Loading requirement…')).toHaveCount(0)
+  expect(requests.listAnswered()).toBe(false)
+  expect(requests.versionsAnswered()).toBe(false)
   releaseList()
 
   // The canvas reads the cached detail and sends no detail request of its own.
   await expect(page.getByRole('button', { name: 'Archive' })).toBeVisible()
+  await expect(
+    page.getByRole('navigation', { name: 'Document tree' }).getByRole('button', { name: /^Other live intent/ }),
+  ).toBeVisible()
+  await expect(canvas.getByRole('tabpanel')).toContainText('Keep retries bounded.')
   expect(requests.listQueries).toEqual(['true'])
   expect(requests.detailPaths).toEqual(['/v1/requirements/req-retries'])
   expect(requests.detailHitsAfterList).toEqual([])
@@ -1745,6 +1789,7 @@ test('requirements starts the detail request before the list answers and sends o
   await expect(dialog.getByText('Archived intent')).toHaveCount(0)
   await expect(dialog.getByText('Requirement · req-retries')).toHaveCount(0)
   await dialog.getByRole('button', { name: 'Cancel' }).click()
+  releaseVersions()
 
   // History keeps the Delivery rows and the pre-retirement blueprint rows
   // with their plan badge.
@@ -1790,6 +1835,88 @@ test('requirements waits for a detail that answers after the list and keeps sele
   expect(requests.listQueries).toEqual(['true'])
 })
 
+// Visual evidence for the deep link rendered from its detail read while the
+// list and version reads both wait. Each capture is attached to the report and
+// also written to CONVEYOR_SCREENSHOT_DIR when it is set.
+for (const viewport of [
+  { name: 'mobile', width: 375, height: 1600 },
+  { name: 'desktop', width: 1280, height: 1000 },
+]) {
+  test(`capture a deep-linked requirement rendered before the list answers at ${viewport.width} px`, async ({
+    page,
+  }, testInfo) => {
+    await initShell(page)
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    let releaseList: () => void = () => {}
+    const listGate = new Promise<void>((resolve) => {
+      releaseList = resolve
+    })
+    let releaseVersions: () => void = () => {}
+    const versionsGate = new Promise<void>((resolve) => {
+      releaseVersions = resolve
+    })
+    const requests = await routeRequestOrder(page, { listGate, versionsGate })
+    await page.goto('/w/demo/requirements?requirement=req-retries')
+    const canvas = page.getByRole('region', { name: 'Requirement document' })
+    await expect(canvas.getByRole('tabpanel')).toContainText('Keep retries bounded.')
+    await expect(canvas.locator('[data-mermaid] svg')).toBeVisible()
+    expect(requests.listAnswered()).toBe(false)
+    expect(requests.versionsAnswered()).toBe(false)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const name = `requirement-detail-first-${viewport.name}.png`
+    const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+    await testInfo.attach(name, { body: image, contentType: 'image/png' })
+    releaseList()
+    releaseVersions()
+  })
+}
+
+test('requirements keeps a missing address ID until the list answers, then replaces it', async ({ page }) => {
+  await initShell(page)
+  let releaseList: () => void = () => {}
+  const listGate = new Promise<void>((resolve) => {
+    releaseList = resolve
+  })
+  const requests = await routeRequestOrder(page, { listGate })
+
+  await page.goto('/w/demo/requirements?requirement=req-missing')
+  // The detail read fails first. The page waits for the list instead of
+  // showing the error or replacing the address early.
+  await expect.poll(() => requests.detailPaths).toEqual(['/v1/requirements/req-missing'])
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByText('Loading requirements…')).toBeVisible()
+  await expect(canvas.getByText('Could not load this requirement.')).toHaveCount(0)
+  await expect(page).toHaveURL(/requirement=req-missing/)
+  releaseList()
+
+  await expect(page).toHaveURL(/requirement=req-retries/)
+  await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
+  await expect(canvas.getByText('Could not load this requirement.')).toHaveCount(0)
+  expect(requests.listQueries).toEqual(['true'])
+})
+
+test('requirements replaces a missing address ID with the first archived requirement when all are archived', async ({
+  page,
+}) => {
+  await initShell(page)
+  let releaseList: () => void = () => {}
+  const listGate = new Promise<void>((resolve) => {
+    releaseList = resolve
+  })
+  const requests = await routeRequestOrder(page, { listGate, archivedOnly: true })
+
+  await page.goto('/w/demo/requirements?requirement=req-missing')
+  await expect.poll(() => requests.detailPaths).toEqual(['/v1/requirements/req-missing'])
+  await expect(page).toHaveURL(/requirement=req-missing/)
+  releaseList()
+
+  await expect(page).toHaveURL(/requirement=req-archived/)
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByRole('heading', { name: 'Archived intent' })).toBeVisible()
+  await expect(canvas.getByText('Could not load this requirement.')).toHaveCount(0)
+})
+
 test('requirements replaces an address ID that the list lacks with the first live requirement', async ({ page }) => {
   await initShell(page)
   const requests = await routeRequestOrder(page, {})
@@ -1800,6 +1927,106 @@ test('requirements replaces an address ID that the list lacks with the first liv
   await expect(page.getByText('Could not load this requirement.')).toHaveCount(0)
   expect(requests.listQueries).toEqual(['true'])
   expect(requests.detailPaths).toContain('/v1/requirements/req-retries')
+})
+
+// The committed dashboard bundle that vite preview serves.
+const dashboard = new URL('../../internal/httpapi/dashboard/', import.meta.url)
+const dashboardAsset = (name: string) => readFileSync(new URL(`assets/${name}`, dashboard), 'utf8')
+
+// Every chunk a module imports statically, directly or through other chunks.
+function staticImportClosure(roots: string[]) {
+  const closure = new Set<string>()
+  const pending = [...roots]
+  while (pending.length) {
+    const name = pending.pop() as string
+    if (closure.has(name)) continue
+    closure.add(name)
+    for (const match of dashboardAsset(name).matchAll(
+      /\bimport\s*(?:[^'"`();]*?\bfrom\s*)?["'`]\.\/([\w.-]+\.js)["'`]/g,
+    ))
+      if (existsSync(new URL(`assets/${match[1]}`, dashboard))) pending.push(match[1])
+  }
+  return closure
+}
+
+test('the built dashboard loads Mermaid only when a diagram mounts', { tag: '@built-dashboard' }, async ({ page }) => {
+  // The entry script and its preload links name the chunks every page loads.
+  const html = readFileSync(new URL('index.html', dashboard), 'utf8')
+  const entry = [...html.matchAll(/(?:src|href)="\/assets\/([\w.-]+\.js)"/g)].map((match) => match[1])
+  expect(entry.length).toBeGreaterThan(0)
+  const eager = staticImportClosure(entry)
+  // The lazy Mermaid chunk is the one the entry graph imports dynamically.
+  const lazy = [...eager]
+    .flatMap((name) => [...dashboardAsset(name).matchAll(/\bimport\(\s*["'`]\.\/([\w.-]+\.js)["'`]\s*\)/g)])
+    .map((match) => match[1])
+    .filter((name) => name.startsWith('mermaid.core-'))
+  expect(new Set(lazy).size).toBe(1)
+  const mermaidChunk = lazy[0]
+  // Mermaid-only chunks are those that the Mermaid chunk reaches and the
+  // entry graph does not. Chunks both share are ordinary dashboard code.
+  const mermaidOnly = [...staticImportClosure([mermaidChunk])].filter((name) => !eager.has(name))
+  expect(eager.has(mermaidChunk)).toBe(false)
+  expect(mermaidOnly).toContain(mermaidChunk)
+
+  await initShell(page)
+  const fixture = requestOrderFixture()
+  const plain = {
+    ...fixture.other,
+    requirement: { ...fixture.other.requirement, id: 'req-plain', slug: 'plain', title: 'Plain intent' },
+    current_version: {
+      ...fixture.other.current_version,
+      requirement_id: 'req-plain',
+      content: 'Plain prose without a diagram.',
+      statements: [],
+    },
+  }
+  const views = [plain, fixture.live]
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/requirements') return route.fulfill({ json: views.map(summarizeRequirement) })
+    if (path.endsWith('/events')) return route.fulfill({ json: documentEventPage([]) })
+    const view = views.find((item) => path.startsWith(`/v1/requirements/${item.requirement.id}`))
+    if (!view) return route.fulfill({ json: [] })
+    return route.fulfill({ json: path.endsWith('/versions') ? [view.current_version] : view })
+  })
+  const requested: string[] = []
+  page.on('request', (request) => {
+    const name = /\/assets\/([\w.-]+\.js)$/.exec(new URL(request.url()).pathname)?.[1]
+    if (name) requested.push(name)
+  })
+  let releaseMermaid: () => void = () => {}
+  const mermaidGate = new Promise<void>((resolve) => {
+    releaseMermaid = resolve
+  })
+  await page.route(`**/assets/${mermaidChunk}`, async (route) => {
+    await mermaidGate
+    await route.continue()
+  })
+
+  // A plain document renders without any Mermaid-only request.
+  await page.goto('/w/demo/requirements?requirement=req-plain')
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByRole('tabpanel')).toContainText('Plain prose without a diagram.')
+  expect(requested.length).toBeGreaterThan(0)
+  expect(requested.filter((name) => mermaidOnly.includes(name))).toEqual([])
+
+  // Opening a document with a diagram requests the Mermaid chunk. The code
+  // fence stays visible while the chunk is held, then the diagram renders.
+  await page
+    .getByRole('navigation', { name: 'Document tree' })
+    .getByRole('button', { name: /^Retry behavior/ })
+    .click()
+  await expect.poll(() => requested).toContain(mermaidChunk)
+  await expect(canvas.locator('code.language-mermaid').first()).toContainText('Attempt --> Limit')
+  await expect(canvas.locator('[data-mermaid]')).toHaveCount(0)
+  releaseMermaid()
+  await expect(canvas.locator('[data-mermaid] svg')).toBeVisible()
+  await expect(canvas.locator('code.language-mermaid')).toHaveCount(1)
+  await expect(canvas.locator('code.language-mermaid')).toContainText(
+    'this is deliberately malformed requirement mermaid',
+  )
 })
 
 test('requirements deep-link exact versions, render statements, diff pending intent, and guard confirmation', async ({

@@ -1,10 +1,32 @@
-import mermaid from 'mermaid'
 import { useEffect, useId, useState } from 'react'
 import Markdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' })
+type Mermaid = typeof import('mermaid')['default']
 
+// Mermaid loads only when a diagram block mounts, so it stays out of the
+// dashboard's entry bundle and its preload links (component-web-dashboard).
+// Every block shares one import, which initializes Mermaid once. A failed
+// import is forgotten, so a later block can try again.
+let mermaidLoad: Promise<Mermaid> | undefined
+
+function loadMermaid() {
+  mermaidLoad ??= import('mermaid').then(
+    ({ default: mermaid }) => {
+      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' })
+      return mermaid
+    },
+    (error: unknown) => {
+      mermaidLoad = undefined
+      throw error
+    },
+  )
+  return mermaidLoad
+}
+
+// The code fence stays visible while Mermaid loads or renders, and after a
+// load or parse failure. A result that arrives after the source changes or
+// the block unmounts is dropped.
 function MermaidBlock({ source }: { source: string }) {
   const id = `mermaid-${useId().replace(/:/g, '')}`
   const [svg, setSvg] = useState<string>()
@@ -14,8 +36,8 @@ function MermaidBlock({ source }: { source: string }) {
     let active = true
     setSvg(undefined)
     setFailed(false)
-    mermaid
-      .render(id, source)
+    loadMermaid()
+      .then((mermaid) => mermaid.render(id, source))
       .then(({ svg: rendered }) => {
         if (active) setSvg(rendered)
       })

@@ -881,6 +881,10 @@ async function seedReview(
   // Every document events request, as path plus query, in send order.
   const eventRequests: string[] = []
   let refuse = false
+  // While held, every version-list read waits until release. Detail and list
+  // reads still answer at once.
+  let versionsHeld: Promise<void> | undefined
+  let releaseVersions = () => {}
   const detail = (workspace: string, id = 'doc-review') => {
     const document = {
       id,
@@ -945,10 +949,12 @@ async function seedReview(
     }
     if (/\/doc-(review|other)$/.test(path))
       return route.fulfill({ json: detail(workspace, path.endsWith('doc-other') ? 'doc-other' : 'doc-review') })
-    if (path.endsWith('/versions'))
+    if (path.endsWith('/versions')) {
+      await versionsHeld
       return route.fulfill({
         json: detail(workspace, path.includes('doc-other') ? 'doc-other' : 'doc-review').versions,
       })
+    }
     if (request.method() === 'POST' && /\/(confirm|dismiss)$/.test(path)) {
       calls.push({ path, body: request.postDataJSON() })
       if (refuse) return route.fulfill({ status: 409, body: 'The selected version changed; refresh and retry.' })
@@ -978,6 +984,15 @@ async function seedReview(
     setRefuse: (value: boolean) => {
       refuse = value
     },
+    holdVersions: () => {
+      versionsHeld = new Promise<void>((resolve) => {
+        releaseVersions = () => {
+          versionsHeld = undefined
+          resolve()
+        }
+      })
+    },
+    releaseVersions: () => releaseVersions(),
     url: `/${tier}?${tier === 'requirements' ? 'requirement' : 'document'}=doc-review&tab=changes&target=2`,
   }
 }
@@ -1490,6 +1505,90 @@ for (const tier of ['requirements', 'system-design'] as const) {
     expect(seed.calls).toHaveLength(0)
   })
 }
+
+// The requirement detail read carries the confirmed version and the open
+// proposals. Document renders from it while the version list still loads,
+// whenever it holds the version Document selects. Every other selection waits
+// for the complete list (component-web-document-surfaces invariants 8 to 10).
+test('requirements: Document renders from the detail read while the version list waits', async ({ page }) => {
+  const seed = await seedReview(page, 'requirements')
+  const panel = page.getByRole('tabpanel')
+  const loadingVersions = panel.getByText('Loading versions…')
+
+  // With both a confirmed version and proposals, Document shows the confirmed
+  // version at once.
+  seed.holdVersions()
+  await page.goto('/requirements?requirement=doc-review')
+  await expect(panel).toContainText('Renew every 30 seconds.')
+  await expect(panel).not.toContainText('Renew every 10 seconds.')
+  await expect(loadingVersions).toHaveCount(0)
+
+  // Changes and History wait for the complete list.
+  await page.getByRole('tab', { name: 'changes', exact: true }).click()
+  await expect(loadingVersions).toBeVisible()
+  await expect(page.getByLabel('Target version', { exact: true })).toHaveCount(0)
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
+  await expect(loadingVersions).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Version history' })).toHaveCount(0)
+  seed.releaseVersions()
+  const history = page.getByRole('region', { name: 'Version history' })
+  await expect(history.getByRole('listitem')).toHaveCount(4)
+  await expect(history).toContainText("Operator's reason: Keep the existing behavior.")
+  await page.getByRole('tab', { name: 'changes', exact: true }).click()
+  await expect(page.getByLabel('Target version', { exact: true })).toHaveValue('3')
+  await expect(page.getByLabel('Target version', { exact: true }).locator('option')).toHaveCount(4)
+
+  // An explicit target that the detail read holds renders at once.
+  seed.holdVersions()
+  await page.goto('/requirements?requirement=doc-review&tab=document&target=2')
+  await expect(panel).toContainText('Renew every 10 seconds.')
+  await expect(loadingVersions).toHaveCount(0)
+  seed.releaseVersions()
+
+  // A dismissed target is only in the version list, so Document waits for it.
+  seed.holdVersions()
+  await page.goto('/requirements?requirement=doc-review&tab=document&target=4')
+  await expect(loadingVersions).toBeVisible()
+  await expect(panel).not.toContainText('Renew every')
+  seed.releaseVersions()
+  await expect(panel).toContainText('Dismissed proposal.')
+  await expect(loadingVersions).toHaveCount(0)
+
+  // A target the document lacks waits too, then shows the unavailable state
+  // and never another version.
+  seed.holdVersions()
+  await page.goto('/requirements?requirement=doc-review&tab=document&target=99')
+  await expect(loadingVersions).toBeVisible()
+  await expect(page.getByText('The selected version is unavailable for this document.')).toHaveCount(0)
+  seed.releaseVersions()
+  await expect(page.getByText('The selected version is unavailable for this document.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Reset version selection' })).toBeVisible()
+  await expect(panel).not.toContainText('Renew every')
+  expect(seed.calls).toEqual([])
+})
+
+test('requirements: a proposal-only detail renders before the version list answers', async ({ page }) => {
+  const seed = await seedReview(page, 'requirements', { first: true })
+  seed.holdVersions()
+  await page.goto('/requirements?requirement=doc-review')
+  await expect(page.getByRole('tabpanel')).toContainText('Renew every 10 seconds.')
+  await expect(page.getByRole('tabpanel').getByText('Loading versions…')).toHaveCount(0)
+  seed.releaseVersions()
+})
+
+// With only a dismissed version, the detail read holds nothing to show, so
+// Document waits and then shows the last version instead of an empty state.
+test('requirements: a dismissed-only document waits for the version list', async ({ page }) => {
+  const seed = await seedReview(page, 'requirements', { first: true, archived: true, historicalState: 'dismissed' })
+  seed.holdVersions()
+  await page.goto('/requirements?requirement=doc-review')
+  const panel = page.getByRole('tabpanel')
+  await expect(panel.getByText('Loading versions…')).toBeVisible()
+  await expect(panel).not.toContainText('Nothing has been proposed for this requirement yet.')
+  seed.releaseVersions()
+  await expect(panel).toContainText('Renew every 10 seconds.')
+  await expect(panel).not.toContainText('Nothing has been proposed for this requirement yet.')
+})
 
 // Records Chromium timing and heap observations for the representative guard
 // comparison. Durations depend on the host, so they are attached as evidence

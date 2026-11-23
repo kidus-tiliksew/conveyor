@@ -105,6 +105,7 @@ export function DocumentReview({
   document,
   history,
   loading,
+  documentReady = false,
   error,
 }: {
   search: ReviewSearch
@@ -116,6 +117,11 @@ export function DocumentReview({
   document: ReactNode
   history: ReactNode
   loading?: boolean
+  // The caller sets documentReady when a read other than the version list
+  // already holds the version the Document view selects. Document then
+  // renders while the list loads. Changes and History always wait for the
+  // complete list (component-web-document-surfaces).
+  documentReady?: boolean
   error?: string
 }) {
   const id = useId()
@@ -184,7 +190,7 @@ export function DocumentReview({
             {error}
           </p>
         )}
-        {loading ? (
+        {loading && !(tab === 'document' && documentReady) ? (
           <p role="status" className="text-sm text-muted">
             Loading versions…
           </p>

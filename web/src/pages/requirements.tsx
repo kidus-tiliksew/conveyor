@@ -213,6 +213,15 @@ export function RequirementsPage() {
     })
   }, [navigate, requirements, selectedId])
   const selected = requirements?.find((item) => item.requirement.id === selectedId)
+  // A deep-linked requirement renders from its detail read while the list is
+  // still loading, so the list no longer gates the canvas. Once the list
+  // answers, list membership decides again: an unlisted ID shows no canvas
+  // while the effect above replaces it. A detail error before the list
+  // answers waits for the list, so a missing ID redirects instead of showing
+  // an error (component-web-document-surfaces).
+  const canvasShown =
+    Boolean(selectedId) &&
+    (requirements ? Boolean(selected) : !openOverview && !error && Boolean(detail.data || detail.isLoading))
   const openOverviewDocument = overviews.find((document) => document.id === openOverview?.id)
 
   const selectRequirement = (requirement: string) => {
@@ -356,7 +365,7 @@ export function RequirementsPage() {
         <section aria-label="Requirement document" className="min-w-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
             {!workspace && <EmptyMessage>Choose a workspace to open its requirements.</EmptyMessage>}
-            {isLoading && <EmptyMessage>Loading requirements…</EmptyMessage>}
+            {isLoading && !canvasShown && <EmptyMessage>Loading requirements…</EmptyMessage>}
             {error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
             {openOverviewDocument ? (
               <OverviewCanvas
@@ -385,8 +394,8 @@ export function RequirementsPage() {
                     </CardContent>
                   </Card>
                 )}
-                {selected && (
-                  <RequirementCanvas key={selected.requirement.id} detail={detail} requirements={requirements ?? []} />
+                {canvasShown && (
+                  <RequirementCanvas key={selectedId} detail={detail} requirements={requirements ?? []} />
                 )}
               </>
             )}
@@ -615,6 +624,19 @@ function RequirementDetailCanvas({
     ).values(),
   ]
   const displayed = selectedReviewVersion(reviewVersions, item.current_version, search)
+  // The detail read carries the confirmed version and the open proposals.
+  // When it holds the version Document selects (the confirmed version, else
+  // the first proposal, or an explicit target), Document renders before the
+  // version list answers. Otherwise Document waits for the list, so the last
+  // version or the unavailable-version state never shows early
+  // (component-web-document-surfaces).
+  const documentReady = Boolean(
+    selectedReviewVersion(
+      [...(item.current_version ? [item.current_version] : []), ...item.pending_versions],
+      item.current_version,
+      search,
+    ),
+  )
   const reviewed = changesTargetVersion(reviewVersions, item.current_version, search)
   const { data: referenceDocuments = [] } = useQuery({
     queryKey: ['reference-documents', workspace],
@@ -1357,6 +1379,7 @@ function RequirementDetailCanvas({
           </>
         }
         loading={versionsLoading}
+        documentReady={documentReady}
         error={versionsError ? errorMessage(versionsError, 'Could not load version history.') : undefined}
       />
     </div>
