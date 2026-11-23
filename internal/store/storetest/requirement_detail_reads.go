@@ -244,6 +244,12 @@ func runRequirementDetailReads(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		_, _, err = st.ConfirmRequirementVersion(otherCtx, foreignID, foreignFirst.Version)
 		requireOK(t, err)
+		// The same ID also names a System Design there, so the design read
+		// must skip it by workspace and not because the ID is unknown.
+		_, foreignDesign, err := st.CreateSystemDesign(otherCtx, core.SystemDesign{ID: foreignID, Title: foreignID, Category: "Component design"}, core.SystemDesignVersion{DocumentID: foreignID, Content: designContent("foreign summary"), Origin: core.SystemDesignOriginOperator})
+		requireOK(t, err)
+		_, _, err = st.ConfirmSystemDesignVersion(otherCtx, foreignID, foreignDesign.Version)
+		requireOK(t, err)
 
 		requirement, err := st.GetRequirement(ctx, requirementID)
 		requireOK(t, err)
@@ -270,7 +276,7 @@ func runRequirementDetailReads(t *testing.T, x Fixture) {
 
 		design, err := st.GetSystemDesign(ctx, designID)
 		requireOK(t, err)
-		designs, err := st.ListSystemDesignVersionSummaries(ctx, []store.DocumentVersionSelection{{ID: designID, CurrentVersion: design.CurrentVersion}, {ID: foreignID, CurrentVersion: foreignFirst.Version}})
+		designs, err := st.ListSystemDesignVersionSummaries(ctx, []store.DocumentVersionSelection{{ID: designID, CurrentVersion: design.CurrentVersion}, {ID: foreignID, CurrentVersion: foreignDesign.Version}})
 		requireOK(t, err)
 		fullDesign, err := st.ListSystemDesignVersions(ctx, designID)
 		requireOK(t, err)
