@@ -272,3 +272,20 @@ test('turning the risk policy on saves the chosen mode and every edited tier val
     },
   })
 })
+
+// component-web-dashboard v61 invariant 33; req-delivery-and-forge AC-8.1: the
+// General tab's issue publication switch reads off when the key is absent, and
+// a save writes issue_publication.enabled.
+test('the General tab saves issue publication as issue_publication.enabled', async ({ page }) => {
+  const submitted = await mockAPIs(page)
+  await page.goto('/w/demo/workspace')
+  await page.getByRole('tab', { name: 'General' }).click()
+  const publish = page.getByRole('switch', { name: 'Publish GitHub issues for approved plans' })
+  await expect(publish).not.toBeChecked()
+  await publish.click()
+  await expect(publish).toBeChecked()
+  await page.getByRole('button', { name: 'Save changes' }).click()
+
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  expect(submitted()?.document).toMatchObject({ issue_publication: { enabled: true } })
+})

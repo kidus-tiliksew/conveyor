@@ -687,6 +687,28 @@ async function serveCrates(
   return { listRequests, created, patched, insightRequests, briefingGets, briefingPosts }
 }
 
+// No horizontal page scroll: neither the document nor any scroll container
+// under `root` is wider than the viewport.
+async function expectNoHorizontalScroll(page: Page, root = 'body') {
+  const overflow = await page.evaluate((root) => {
+    const width = document.documentElement.clientWidth
+    const wide: string[] = []
+    if (document.documentElement.scrollWidth > width) wide.push('document')
+    for (const element of Array.from(document.querySelectorAll<HTMLElement>(`${root} *`))) {
+      const style = getComputedStyle(element)
+      if (!/(auto|scroll)/.test(style.overflowX)) continue
+      // A deliberately scrolling strip, such as a segmented control, is fine.
+      // So is the branch map, which scrolls sideways inside its card below
+      // 680 px (req-crate-insights REQ-2).
+      if (element.closest('fieldset, [data-branch-map-scroll]')) continue
+      if (element.scrollWidth > element.clientWidth + 1 && element.clientWidth >= width - 32)
+        wide.push(`${element.tagName.toLowerCase()}.${element.className} ${element.scrollWidth}>${element.clientWidth}`)
+    }
+    return wide
+  }, root)
+  expect(overflow).toEqual([])
+}
+
 test('primary navigation opens the crates list directly after Tasks', async ({ page }) => {
   await serveCrates(page)
   await page.goto('/w/demo/inbox')
@@ -1086,3 +1108,20 @@ test('crates list posts once for each missing or old briefing, two at a time, an
   await page.waitForTimeout(400)
   expect(server.briefingPosts).toHaveLength(5)
 })
+
+// component-crates v4, Verification: the crates list and a crate page render at
+// 375 px and at a desktop width without a horizontal page scroll.
+for (const width of [375, 1280]) {
+  test(`the crates list and a crate page render without horizontal scroll at ${width} px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await serveCrates(page)
+    await page.goto('/w/demo/crates')
+    await expect(page.locator('[data-crate-row]')).toHaveCount(3)
+    await expectNoHorizontalScroll(page)
+
+    await page.goto('/w/demo/crates/crate-billing')
+    await expect(page.locator('[data-crate-task]')).toHaveCount(2)
+    await expect(page.getByRole('region', { name: 'Activity' }).locator('[data-activity-kind]')).toHaveCount(4)
+    await expectNoHorizontalScroll(page)
+  })
+}
