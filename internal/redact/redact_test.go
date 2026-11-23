@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
 type testSecretSource struct {
@@ -184,6 +186,8 @@ func TestRedactsTokenShapesAndKeepsDigests(t *testing.T) {
 		{"digest in a payload", `{"artifact_id":"` + digest + `","content_digest":"` + digest + `"}`},
 		{"digest in a URI", "artifact://" + digest},
 		{"prefix named in prose", "the cv_pat_ prefix and cv_session_ cookies"},
+		{"OAuth prefixes named in prose", "the cv_oac_, cv_oat_, and cv_ort_ prefixes"},
+		{"short OAuth identifier", "cv_oat_short"},
 		{"short identifier", "cv_pat_short"},
 		{"bearer in prose", "the bearer token and Bearer authentication"},
 		{"github_pat prefix alone", "a github_pat_ value"},
@@ -195,6 +199,49 @@ func TestRedactsTokenShapesAndKeepsDigests(t *testing.T) {
 				t.Fatalf("clean=%q stats=%+v", clean, stats)
 			}
 		})
+	}
+}
+
+// TestRedactsOAuthCredentialShapes mints each OAuth credential with the
+// encoding the store issues and proves that pattern redaction removes the
+// full wire value, counts it once by pattern class, and never by value
+// (req-security-boundaries REQ-3, AC-3.1; component-identity-membership
+// invariant 46).
+func TestRedactsOAuthCredentialShapes(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []core.OAuthCredentialKind{core.OAuthCredentialCode, core.OAuthCredentialAccess, core.OAuthCredentialRefresh} {
+		_, value, digest, err := core.NewOAuthCredential(kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(value, "cv_"+string(kind)+"_") || len(digest) != 32 {
+			t.Fatalf("%s value does not have the cv_%s_<id>_<secret> shape", kind, kind)
+		}
+		secret := value[len("cv_"+string(kind)+"_")+17:]
+		for _, form := range []struct{ name, text string }{
+			{"bare", "leaked " + value + " here"},
+			{"quoted", `{"access_token":"` + value + `"}`},
+			{"form body", "grant_type=refresh_token&refresh_token=" + value + "&client_id=ocl_x"},
+			{"bearer", "Authorization: Bearer " + value},
+		} {
+			t.Run(string(kind)+"/"+form.name, func(t *testing.T) {
+				t.Parallel()
+				clean, stats := New(nil).Redact(form.text)
+				if strings.Contains(clean, value) || strings.Contains(clean, secret) {
+					t.Fatal("OAuth credential survived redaction")
+				}
+				if stats.Pattern != 1 || stats.Exact+stats.Encoded+stats.Entropy != 0 {
+					t.Fatalf("stats=%+v, want one pattern removal", stats)
+				}
+				raw, err := json.Marshal(stats)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(raw), value) || strings.Contains(string(raw), secret) {
+					t.Fatal("redaction stats carry the value")
+				}
+			})
+		}
 	}
 }
 

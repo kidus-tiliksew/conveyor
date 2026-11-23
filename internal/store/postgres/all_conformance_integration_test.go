@@ -426,6 +426,12 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 					return time.Time{}
 				}
 				return lastUsed.UTC()
+			}, OAuthDeploymentEvents: func(t *testing.T, ctx context.Context) []core.Event {
+				return oauthDeploymentEvents(t, ctx, st)
+			}, AgeOAuthRecord: func(t *testing.T, ctx context.Context, table storetest.OAuthTable, id string, by time.Duration) {
+				ageOAuthRecord(t, ctx, st, table, id, by)
+			}, OAuthStoredRows: func(t *testing.T, ctx context.Context) []storetest.OAuthStoredRow {
+				return oauthStoredRows(t, ctx, st)
 			}, TaskIntakeHTTP: func(_ *testing.T, generate func(context.Context, core.Task) (string, error)) http.Handler {
 				server := httpapi.NewServer(st)
 				server.Credentials = nil
@@ -561,4 +567,95 @@ func (l *conformanceReadLedger) drain(pending *map[string]uint64) map[string]uin
 	drained := *pending
 	*pending = map[string]uint64{}
 	return drained
+}
+
+// oauthDeploymentEvents reads the appended OAuth audit records from the
+// deployment ledger itself; no workspace feed carries them
+// (component-identity-membership invariant 36).
+func oauthDeploymentEvents(t *testing.T, ctx context.Context, st *Store) []core.Event {
+	t.Helper()
+	rows, err := st.pool.Query(ctx, `SELECT id,kind,actor_id,actor_role,payload_json,at FROM deployment_events WHERE kind IN ('identity.oauth_grant_created','identity.oauth_grant_revoked','identity.oauth_refresh_reuse_detected') ORDER BY at,id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var events []core.Event
+	for rows.Next() {
+		var event core.Event
+		var role string
+		if err := rows.Scan(&event.ID, &event.Kind, &event.ActorID, &role, &event.Payload, &event.At); err != nil {
+			t.Fatal(err)
+		}
+		event.ActorRole = core.ActorRole(role)
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return events
+}
+
+// oauthTimeColumns lists every stored time of each OAuth table.
+var oauthTimeColumns = map[storetest.OAuthTable][]string{
+	storetest.OAuthClientsTable:            {"created_at", "unused_expires_at", "first_used_at"},
+	storetest.OAuthAuthorizationCodesTable: {"created_at", "expires_at", "consumed_at"},
+	storetest.OAuthGrantsTable:             {"created_at", "last_used_at", "revoked_at"},
+	storetest.OAuthTokensTable:             {"created_at", "expires_at", "rotated_at"},
+}
+
+// ageOAuthRecord moves every stored time of one OAuth row back by by.
+func ageOAuthRecord(t *testing.T, ctx context.Context, st *Store, table storetest.OAuthTable, id string, by time.Duration) {
+	t.Helper()
+	columns, ok := oauthTimeColumns[table]
+	if !ok {
+		t.Fatalf("unknown OAuth table %q", table)
+	}
+	sets := make([]string, 0, len(columns))
+	for _, column := range columns {
+		sets = append(sets, column+"="+column+"-$2::bigint*interval '1 microsecond'")
+	}
+	tag, err := st.pool.Exec(ctx, "UPDATE "+string(table)+" SET "+strings.Join(sets, ",")+" WHERE id=$1", id, by.Microseconds())
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("age %s row %s rows=%d err=%v", table, id, tag.RowsAffected(), err)
+	}
+}
+
+// oauthStoredRows renders every OAuth row: its digest column apart and every
+// other column as text.
+func oauthStoredRows(t *testing.T, ctx context.Context, st *Store) []storetest.OAuthStoredRow {
+	t.Helper()
+	var out []storetest.OAuthStoredRow
+	for _, table := range []struct {
+		name   storetest.OAuthTable
+		digest string
+	}{
+		{storetest.OAuthClientsTable, ""},
+		{storetest.OAuthAuthorizationCodesTable, "code_hash"},
+		{storetest.OAuthGrantsTable, ""},
+		{storetest.OAuthTokensTable, "token_hash"},
+	} {
+		digest := "NULL::bytea"
+		text := "to_jsonb(r)::text"
+		if table.digest != "" {
+			digest = "r." + table.digest
+			text = "(to_jsonb(r)-'" + table.digest + "')::text"
+		}
+		rows, err := st.pool.Query(ctx, "SELECT r.id,"+digest+","+text+" FROM "+string(table.name)+" r ORDER BY r.id")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			row := storetest.OAuthStoredRow{Table: table.name}
+			if err := rows.Scan(&row.ID, &row.Digest, &row.Text); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			out = append(out, row)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out
 }

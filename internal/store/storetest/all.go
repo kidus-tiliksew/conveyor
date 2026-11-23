@@ -214,6 +214,17 @@ type Fixture struct {
 	// PostgreSQL provides it. The volatile backend's lock is in-process and
 	// has no such report, so it leaves it nil.
 	AwaitTaskOperationWaiter func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{})
+	// OAuthDeploymentEvents returns the deployment audit events whose kind
+	// starts with identity.oauth_, ascending by (at, id). AgeOAuthRecord moves
+	// every stored time of one OAuth row back by the given duration.
+	// OAuthStoredRows returns every row of the four OAuth tables. No public
+	// read exposes the deployment ledger, a stored digest, or a stored time,
+	// so each test binary supplies all three. The OAuth cases require them
+	// and never skip (req-mcp-oauth; component-identity-membership
+	// invariants 36 and 51 to 54).
+	OAuthDeploymentEvents func(t *testing.T, ctx context.Context) []core.Event
+	AgeOAuthRecord        func(t *testing.T, ctx context.Context, table OAuthTable, id string, by time.Duration)
+	OAuthStoredRows       func(t *testing.T, ctx context.Context) []OAuthStoredRow
 }
 
 // requireStoredTaskHoldSeed returns the fixture's historical hold seed or
@@ -316,6 +327,7 @@ func RunAll(t *testing.T, factory Factory) {
 		RunWorkspaceNoticeConformance(t, factory.fresh(t, nil), factory.StatementMemo, factory.Capabilities.Identity && factory.Capabilities.Membership)
 	})
 	run("Crates", func(t *testing.T) { runCrates(t, factory) })
+	run("OAuth", func(t *testing.T) { runOAuth(t, factory) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("RedispatchOfferParity", func(t *testing.T) { runRedispatchOfferParity(t, factory.fresh(t, nil)) })
 	run("RedispatchPlanRevisionGate", func(t *testing.T) { runRedispatchPlanRevisionGate(t, factory.fresh(t, nil), factory.PlanRevisionGate) })

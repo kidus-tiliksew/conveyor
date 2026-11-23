@@ -412,6 +412,12 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 					t.Fatal(err)
 				}
 				return lastUsed.Time.UTC()
+			}, OAuthDeploymentEvents: func(t *testing.T, ctx context.Context) []core.Event {
+				return oauthDeploymentEvents(t, ctx, st)
+			}, AgeOAuthRecord: func(t *testing.T, ctx context.Context, table storetest.OAuthTable, id string, by time.Duration) {
+				ageOAuthRecord(t, ctx, st, table, id, by)
+			}, OAuthStoredRows: func(t *testing.T, ctx context.Context) []storetest.OAuthStoredRow {
+				return oauthStoredRows(t, ctx, st)
 			}, TaskIntakeHTTP: func(_ *testing.T, generate func(context.Context, core.Task) (string, error)) http.Handler {
 				server := httpapi.NewServer(st)
 				server.Credentials = nil
@@ -541,4 +547,118 @@ func (l *conformanceReadLedger) drain(pending *map[string]uint64) map[string]uin
 	drained := *pending
 	*pending = map[string]uint64{}
 	return drained
+}
+
+// oauthDeploymentEvents reads the appended OAuth audit records from the
+// deployment ledger itself; no workspace feed carries them
+// (component-identity-membership invariant 36).
+func oauthDeploymentEvents(t *testing.T, ctx context.Context, st *Store) []core.Event {
+	t.Helper()
+	rows, err := st.db.QueryContext(ctx, "SELECT id,kind,actor_id,actor_role,payload_json,at FROM deployment_events WHERE kind IN ('identity.oauth_grant_created','identity.oauth_grant_revoked','identity.oauth_refresh_reuse_detected') ORDER BY at,id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var events []core.Event
+	for rows.Next() {
+		var event core.Event
+		var role string
+		var payload []byte
+		if err := rows.Scan(&event.ID, &event.Kind, &event.ActorID, &role, &payload, &event.At); err != nil {
+			t.Fatal(err)
+		}
+		event.ActorRole, event.Payload, event.At = core.ActorRole(role), json.RawMessage(payload), event.At.UTC()
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return events
+}
+
+// oauthTimeColumns lists every stored time of each OAuth table.
+var oauthTimeColumns = map[storetest.OAuthTable][]string{
+	storetest.OAuthClientsTable:            {"created_at", "unused_expires_at", "first_used_at"},
+	storetest.OAuthAuthorizationCodesTable: {"created_at", "expires_at", "consumed_at"},
+	storetest.OAuthGrantsTable:             {"created_at", "last_used_at", "revoked_at"},
+	storetest.OAuthTokensTable:             {"created_at", "expires_at", "rotated_at"},
+}
+
+// ageOAuthRecord moves every stored time of one OAuth row back by by.
+func ageOAuthRecord(t *testing.T, ctx context.Context, st *Store, table storetest.OAuthTable, id string, by time.Duration) {
+	t.Helper()
+	columns, ok := oauthTimeColumns[table]
+	if !ok {
+		t.Fatalf("unknown OAuth table %q", table)
+	}
+	sets := make([]string, 0, len(columns))
+	args := make([]any, 0, len(columns)+1)
+	for _, column := range columns {
+		sets = append(sets, column+"=DATE_SUB("+column+",INTERVAL ? MICROSECOND)")
+		args = append(args, by.Microseconds())
+	}
+	result, err := st.db.ExecContext(ctx, "UPDATE "+string(table)+" SET "+strings.Join(sets, ",")+" WHERE id=?", append(args, id)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		t.Fatalf("age %s row %s rows=%d err=%v", table, id, rows, err)
+	}
+}
+
+// oauthStoredRows renders every OAuth row: its digest column apart and every
+// other column as text.
+func oauthStoredRows(t *testing.T, ctx context.Context, st *Store) []storetest.OAuthStoredRow {
+	t.Helper()
+	var out []storetest.OAuthStoredRow
+	for _, table := range []struct {
+		name   storetest.OAuthTable
+		digest string
+	}{
+		{storetest.OAuthClientsTable, ""},
+		{storetest.OAuthAuthorizationCodesTable, "code_hash"},
+		{storetest.OAuthGrantsTable, ""},
+		{storetest.OAuthTokensTable, "token_hash"},
+	} {
+		rows, err := st.db.QueryContext(ctx, "SELECT * FROM "+string(table.name)+" ORDER BY id")
+		if err != nil {
+			t.Fatal(err)
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			values := make([]sql.RawBytes, len(columns))
+			targets := make([]any, len(columns))
+			for i := range values {
+				targets[i] = &values[i]
+			}
+			if err := rows.Scan(targets...); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			row := storetest.OAuthStoredRow{Table: table.name}
+			var text []string
+			for i, column := range columns {
+				switch column {
+				case "id":
+					row.ID = string(values[i])
+				case table.digest:
+					row.Digest = append([]byte(nil), values[i]...)
+					continue
+				}
+				text = append(text, column+"="+string(values[i]))
+			}
+			row.Text = strings.Join(text, " ")
+			out = append(out, row)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out
 }
