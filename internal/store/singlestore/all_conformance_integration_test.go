@@ -506,7 +506,7 @@ func (l *conformanceReadLedger) drain(pending *map[string]uint64) map[string]uin
 // (component-identity-membership invariant 36).
 func oauthDeploymentEvents(t *testing.T, ctx context.Context, st *Store) []core.Event {
 	t.Helper()
-	rows, err := st.db.QueryContext(ctx, "SELECT id,kind,actor_id,actor_role,payload_json,at FROM deployment_events WHERE kind IN ('identity.oauth_grant_created','identity.oauth_grant_revoked','identity.oauth_refresh_reuse_detected') ORDER BY at,id")
+	rows, err := st.db.QueryContext(ctx, "SELECT id,kind,actor_id,actor_role,payload_json,at FROM deployment_events WHERE LEFT(kind, CHAR_LENGTH('identity.oauth_'))='identity.oauth_' ORDER BY at,id")
 	if err != nil {
 		t.Fatal(err)
 	}

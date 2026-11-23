@@ -158,6 +158,9 @@ func (s *Store) DeleteExpiredOAuthClients(ctx context.Context) (int, error) {
 	}
 	removed := 0
 	for _, id := range candidates {
+		// deleted is set by the callback, and removed counts it only after
+		// the transaction commits.
+		deleted := false
 		err = s.withTx(ctx, func(tx *sql.Tx) error {
 			var expired bool
 			err := tx.QueryRowContext(ctx, "SELECT first_used_at IS NULL AND unused_expires_at<=CURRENT_TIMESTAMP(6) FROM oauth_clients WHERE id=? FOR UPDATE", id).Scan(&expired)
@@ -174,11 +177,14 @@ func (s *Store) DeleteExpiredOAuthClients(ctx context.Context) (int, error) {
 			if _, err = writeRow(ctx, tx, rowWrite{table: "oauth_clients", operation: "DELETE", where: map[string]any{"id": id}}); err != nil {
 				return err
 			}
-			removed++
+			deleted = true
 			return nil
 		})
 		if err != nil {
 			return removed, translateBackendConflict(err)
+		}
+		if deleted {
+			removed++
 		}
 	}
 	return removed, nil

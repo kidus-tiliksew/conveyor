@@ -380,7 +380,7 @@ func (m *volatileMemory) ListOwnOAuthGrants(_ context.Context, userID string) ([
 	items := []core.OAuthGrant{}
 	for _, grant := range m.oauth.grants {
 		if grant.UserID == userID && grant.RevokedAt == nil {
-			items = append(items, grant.OAuthGrant)
+			items = append(items, detachOAuthGrant(grant.OAuthGrant))
 		}
 	}
 	sortOAuthGrants(items)
@@ -413,7 +413,19 @@ func (m *volatileMemory) RevokeOwnOAuthGrant(ctx context.Context, userID, grantI
 	if err := m.revokeOAuthGrantLocked(ctx, actor, &grant); err != nil {
 		return core.OAuthGrant{}, err
 	}
-	return grant.OAuthGrant, nil
+	return detachOAuthGrant(grant.OAuthGrant), nil
+}
+
+// detachOAuthGrant copies a grant's timestamps, so a caller cannot change
+// stored state through a returned projection.
+func detachOAuthGrant(grant core.OAuthGrant) core.OAuthGrant {
+	if grant.LastUsedAt != nil {
+		grant.LastUsedAt = timePtr(*grant.LastUsedAt)
+	}
+	if grant.RevokedAt != nil {
+		grant.RevokedAt = timePtr(*grant.RevokedAt)
+	}
+	return grant
 }
 
 // revokeOAuthGrantLocked revokes an unrevoked grant and appends its audit

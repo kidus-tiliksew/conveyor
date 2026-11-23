@@ -583,8 +583,19 @@ func runOAuthRefreshRacesReplay(t *testing.T, c *oauthCase) {
 	var legitErr, replayErr error
 	start := make(chan struct{})
 	wg.Add(2)
-	go func() { defer wg.Done(); <-start; legit, legitErr = c.refresh(c.ctx, second) }()
-	go func() { defer wg.Done(); <-start; _, replayErr = c.refresh(c.ctx, first) }()
+	// A SQL backend can answer lock contention with store.ErrRetryable,
+	// which rolls the whole command back, so each caller retries it a
+	// bounded number of times before the outcome is judged.
+	refreshRetrying := func(pair core.IssuedOAuthTokenPair) (core.IssuedOAuthTokenPair, error) {
+		for attempt := 0; ; attempt++ {
+			next, err := c.refresh(c.ctx, pair)
+			if !errors.Is(err, store.ErrRetryable) || attempt == 9 {
+				return next, err
+			}
+		}
+	}
+	go func() { defer wg.Done(); <-start; legit, legitErr = refreshRetrying(second) }()
+	go func() { defer wg.Done(); <-start; _, replayErr = refreshRetrying(first) }()
 	close(start)
 	wg.Wait()
 	requireOAuthError(t, replayErr, store.ErrOAuthRefreshTokenReused, "racing replay")
@@ -866,17 +877,22 @@ func runOAuthSecretFree(t *testing.T, c *oauthCase) {
 		}
 	}
 
-	digests := map[string]bool{}
+	// Each issued wire value is cv_<row id>_<secret>, and the row ID is
+	// <kind>_<16 characters>, so every stored row maps to the digest of the
+	// one value issued for it.
+	digests := map[string]string{}
 	for _, value := range c.issuedValues() {
-		digests[string(core.OAuthCredentialDigest(value))] = true
+		if len(value) > len("cv_oat_")+16 {
+			digests[value[len("cv_"):len("cv_oat_")+16]] = string(core.OAuthCredentialDigest(value))
+		}
 	}
 	stored := map[OAuthTable]int{}
 	for _, row := range c.hooks.rows(t, c.ctx) {
 		stored[row.Table]++
 		switch row.Table {
 		case OAuthAuthorizationCodesTable, OAuthTokensTable:
-			if len(row.Digest) != 32 || !digests[string(row.Digest)] {
-				t.Fatalf("%s row %s stores %d bytes that are not the SHA-256 of an issued value", row.Table, row.ID, len(row.Digest))
+			if want, ok := digests[row.ID]; len(row.Digest) != 32 || !ok || string(row.Digest) != want {
+				t.Fatalf("%s row %s stores %d bytes that are not the SHA-256 of the value issued for that row", row.Table, row.ID, len(row.Digest))
 			}
 		default:
 			if len(row.Digest) != 0 {
