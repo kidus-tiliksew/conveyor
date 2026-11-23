@@ -42,7 +42,10 @@ CREATE TABLE IF NOT EXISTS oauth_grants (
  revoked_at timestamptz
 );
 CREATE INDEX IF NOT EXISTS oauth_grants_user_idx ON oauth_grants (user_id, created_at DESC, id);
-CREATE INDEX IF NOT EXISTS oauth_grants_client_idx ON oauth_grants (client_id);
+-- A metadata-document client ID can exceed the B-tree entry size limit, so
+-- the client index is a hash index, which stores a hash of any length of
+-- value and serves the exact-equality lookups that cleanup uses.
+CREATE INDEX IF NOT EXISTS oauth_grants_client_idx ON oauth_grants USING hash (client_id);
 
 CREATE TABLE IF NOT EXISTS oauth_tokens (
  id text PRIMARY KEY,

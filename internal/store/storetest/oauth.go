@@ -1,12 +1,15 @@
 package storetest
 
 import (
+	"bytes"
+	"compress/flate"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"slices"
 	"strings"
 	"sync"
@@ -215,6 +218,7 @@ func runOAuth(t *testing.T, factory Factory) {
 	t.Run("SecretFreeStorageAndAudit", func(t *testing.T) { runOAuthSecretFree(t, newOAuthCase(t, factory)) })
 	t.Run("CredentialShapeRefusals", func(t *testing.T) { runOAuthCredentialShapeRefusals(t, newOAuthCase(t, factory)) })
 	t.Run("LongClientID", func(t *testing.T) { runOAuthLongClientID(t, newOAuthCase(t, factory)) })
+	t.Run("OrdinaryMetadata", func(t *testing.T) { runOAuthOrdinaryMetadata(t, newOAuthCase(t, factory)) })
 	t.Run("AuditFailureRollsBack", func(t *testing.T) { runOAuthAuditFailure(t, newOAuthCase(t, factory)) })
 }
 
@@ -940,12 +944,14 @@ var oauthCredentialShapes = []struct{ name, value string }{
 	{"assigned secret", "token=conformanceassigned0123456789"},
 }
 
-// runOAuthCredentialShapeRefusals puts every credential shape directly after
-// a letter, a digit, and an underscore, and in percent-encoded form, into a
-// client name, a client ID, and a redirect URI. Registration, code issuance,
-// and exchange each refuse it before any write, with the sentinel for the
-// field, so no row, grant listing entry, or audit event holds it. Clean
-// metadata still binds exactly (req-security-boundaries REQ-2, REQ-3;
+// runOAuthCredentialShapeRefusals puts every credential shape after a slash,
+// and percent-encoded after a slash, into a client name, a client ID, and a
+// redirect URI. Each Conveyor cv_ kind is also put directly after a letter,
+// a digit, and an underscore, because only those kinds match without a
+// leading word boundary. Registration, code issuance, and exchange each
+// refuse it before any write, with the sentinel for the field, so no row,
+// grant listing entry, or audit event holds it. Clean metadata still binds
+// exactly (req-security-boundaries REQ-2, REQ-3;
 // component-identity-membership invariants 36, 45, and 46).
 func runOAuthCredentialShapeRefusals(t *testing.T, c *oauthCase) {
 	client := c.client(t, "Shape Client")
@@ -965,14 +971,21 @@ func runOAuthCredentialShapeRefusals(t *testing.T, c *oauthCase) {
 			t.Fatalf("%s err=%v, want %v as a refusal", what, err, want)
 		}
 	}
-	checks := 0
+	checks, want := 0, 0
 	for _, shape := range oauthCredentialShapes {
-		for _, glue := range []struct{ name, text string }{
-			{"after a letter", "x" + shape.value},
-			{"after a digit", "9" + shape.value},
-			{"after an underscore", "_" + shape.value},
-			{"percent-encoded", encodeAll(shape.value)},
-		} {
+		glues := []struct{ name, text string }{
+			{"after a slash", "/" + shape.value},
+			{"percent-encoded after a slash", encodeAll("/" + shape.value)},
+		}
+		if strings.HasPrefix(shape.value, "cv_") {
+			glues = append(glues,
+				struct{ name, text string }{"after a letter", "x" + shape.value},
+				struct{ name, text string }{"after a digit", "9" + shape.value},
+				struct{ name, text string }{"after an underscore", "_" + shape.value},
+			)
+		}
+		want += len(glues) * 7
+		for _, glue := range glues {
 			what := shape.name + " " + glue.name
 			name := "Client " + glue.text
 			clientID := "https://client.example.test/meta" + glue.text + "/client.json"
@@ -997,7 +1010,7 @@ func runOAuthCredentialShapeRefusals(t *testing.T, c *oauthCase) {
 			checks += 7
 		}
 	}
-	if want := len(oauthCredentialShapes) * 4 * 7; checks != want {
+	if checks != want || want != (7*5+12*2)*7 {
 		t.Fatalf("ran %d refusal checks, want %d", checks, want)
 	}
 	if rows, events := len(c.hooks.rows(t, c.ctx)), len(c.hooks.events(t, c.ctx)); rows != rowsBefore || events != eventsBefore {
@@ -1035,33 +1048,119 @@ func runOAuthCredentialShapeRefusals(t *testing.T, c *oauthCase) {
 	}
 }
 
+// oauthBTreeEntryLimit is about the largest PostgreSQL B-tree entry, in
+// bytes after compression (https://www.postgresql.org/docs/15/btree-intro.html).
+const oauthBTreeEntryLimit = 2712
+
+// nonRepetitiveClientID returns a metadata-document client ID of about size
+// bytes from a fixed-seed generator, so the value is the same on every run
+// and does not compress below the PostgreSQL B-tree entry limit. It uses only
+// lowercase letters, digits, and slashes, so it holds no credential shape.
+func nonRepetitiveClientID(size int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	random := rand.New(rand.NewSource(20261123))
+	var out strings.Builder
+	out.WriteString("https://client.example.test/")
+	for i := 1; out.Len() < size-len("/client.json"); i++ {
+		if i%128 == 0 {
+			out.WriteByte('/')
+			continue
+		}
+		out.WriteByte(alphabet[random.Intn(len(alphabet))])
+	}
+	out.WriteString("/client.json")
+	return out.String()
+}
+
 // runOAuthLongClientID proves that every backend keeps a verified
-// metadata-document client ID longer than 255 characters exactly, through
-// the exchange and a refresh, and refuses a truncated one (req-mcp-oauth
-// AC-2.1, AC-4.1, AC-4.2; component-persistence invariant 3).
+// metadata-document client ID longer than 255 characters exactly, and one of
+// 8 KiB that does not compress below the PostgreSQL B-tree entry limit,
+// through the exchange, the grant listing, a refresh, and revocation, and
+// refuses a truncated one (req-mcp-oauth AC-2.1, AC-4.1, AC-4.2;
+// component-identity-membership invariants 51 and 53; component-persistence
+// invariant 3).
 func runOAuthLongClientID(t *testing.T, c *oauthCase) {
-	longID := "https://client.example.test/" + strings.Repeat("long-client-metadata-path/", 40) + "client.json"
-	if len(longID) <= 1000 {
-		t.Fatalf("fixture client ID has %d characters, want more than 1000", len(longID))
+	repetitive := "https://client.example.test/" + strings.Repeat("long-client-metadata-path/", 40) + "client.json"
+	if len(repetitive) <= 1000 {
+		t.Fatalf("fixture client ID has %d characters, want more than 1000", len(repetitive))
 	}
-	pair := c.grant(t, c.owner.ID, longID, "Long Client")
-	if pair.ClientID != longID {
-		t.Fatalf("first pair client ID has %d characters, want the exact %d", len(pair.ClientID), len(longID))
-	}
-	grant, ok := c.grantOf(t, c.owner.ID, pair.GrantID)
-	if !ok || grant.ClientID != longID {
-		t.Fatalf("listed grant client ID has %d characters, want the exact %d", len(grant.ClientID), len(longID))
-	}
-	_, err := c.st.RefreshOAuthTokens(c.ctx, store.OAuthRefreshExchange{RefreshToken: pair.RefreshToken, ClientID: longID[:255], Resource: oauthResource})
-	requireOAuthError(t, err, store.ErrOAuthTokenInvalid, "refresh with a truncated client ID")
-	next, err := c.refresh(c.ctx, pair)
+	large := nonRepetitiveClientID(8192)
+	var compressed bytes.Buffer
+	writer, err := flate.NewWriter(&compressed, flate.BestCompression)
 	requireOK(t, err)
-	if next.ClientID != longID || next.GrantID != pair.GrantID {
-		t.Fatalf("refreshed pair client ID has %d characters, want the exact %d", len(next.ClientID), len(longID))
+	_, err = writer.Write([]byte(large))
+	requireOK(t, err)
+	requireOK(t, writer.Close())
+	if len(large) < 8000 || compressed.Len() <= oauthBTreeEntryLimit {
+		t.Fatalf("large fixture has %d bytes and compresses to %d, want 8 KiB that stays above %d", len(large), compressed.Len(), oauthBTreeEntryLimit)
 	}
-	c.requireAccess(t, next.AccessToken, next.OAuthTokenPair)
-	requireOK(t, c.st.RevokeOAuthToken(c.ctx, longID, next.AccessToken))
-	c.requireAccessRefused(t, next.AccessToken, "access token revoked by the long client ID")
+	for _, longID := range []string{repetitive, large} {
+		t.Run(fmt.Sprintf("%d bytes", len(longID)), func(t *testing.T) {
+			pair := c.grant(t, c.owner.ID, longID, "Long Client")
+			if pair.ClientID != longID {
+				t.Fatalf("first pair client ID has %d characters, want the exact %d", len(pair.ClientID), len(longID))
+			}
+			grant, ok := c.grantOf(t, c.owner.ID, pair.GrantID)
+			if !ok || grant.ClientID != longID {
+				t.Fatalf("listed grant client ID has %d characters, want the exact %d", len(grant.ClientID), len(longID))
+			}
+			_, err := c.st.RefreshOAuthTokens(c.ctx, store.OAuthRefreshExchange{RefreshToken: pair.RefreshToken, ClientID: longID[:255], Resource: oauthResource})
+			requireOAuthError(t, err, store.ErrOAuthTokenInvalid, "refresh with a truncated client ID")
+			next, err := c.refresh(c.ctx, pair)
+			requireOK(t, err)
+			if next.ClientID != longID || next.GrantID != pair.GrantID {
+				t.Fatalf("refreshed pair client ID has %d characters, want the exact %d", len(next.ClientID), len(longID))
+			}
+			c.requireAccess(t, next.AccessToken, next.OAuthTokenPair)
+			requireOK(t, c.st.RevokeOAuthToken(c.ctx, longID, next.AccessToken))
+			c.requireAccessRefused(t, next.AccessToken, "access token revoked by the long client ID")
+			if _, ok := c.grantOf(t, c.owner.ID, pair.GrantID); ok {
+				t.Fatal("a grant revoked by the long client ID is still listed")
+			}
+		})
+	}
+}
+
+// runOAuthOrdinaryMetadata proves that ordinary hyphenated client metadata,
+// whose words end in "sk" before a hyphen, is admitted on every backend: a
+// dynamic client with a hyphenated name and a hyphenated redirect URI host,
+// and a metadata-document client ID with a task-... path segment. Each code
+// exchanges, and the grant listing shows the exact client identity
+// (req-mcp-oauth AC-2.1, AC-2.2, AC-4.1; component-identity-membership
+// invariant 51).
+func runOAuthOrdinaryMetadata(t *testing.T, c *oauthCase) {
+	const (
+		dynamicName     = "Risk-management-assistant"
+		dynamicRedirect = "https://desk-application-callback.example.com/cb"
+		documentID      = "https://tools.example.com/oauth/task-client-metadata-document.json"
+		documentName    = "Flask-oauth-sample-client-app"
+		documentRedir   = "https://my-kiosk-integration-service.example.org/callback"
+	)
+	client, err := c.st.RegisterOAuthClient(c.ctx, store.OAuthClientRegistration{Name: dynamicName, RedirectURIs: []string{dynamicRedirect}, GrantTypes: []string{"authorization_code", "refresh_token"}})
+	requireOK(t, err)
+	if read, err := c.st.GetOAuthClient(c.ctx, client.ID); err != nil || read.Name != dynamicName || !slices.Equal(read.RedirectURIs, []string{dynamicRedirect}) {
+		t.Fatalf("hyphenated client=%+v err=%v", read, err)
+	}
+	for _, binding := range []struct{ clientID, clientName, redirect string }{
+		{client.ID, dynamicName, dynamicRedirect},
+		{documentID, documentName, documentRedir},
+	} {
+		_, value, err := c.st.IssueOAuthAuthorizationCode(c.ctx, store.OAuthCodeRequest{
+			UserID: c.owner.ID, ClientID: binding.clientID, ClientName: binding.clientName, RedirectURI: binding.redirect, Resource: oauthResource, CodeChallenge: core.OAuthS256Challenge(oauthVerifier),
+		})
+		requireOK(t, err)
+		c.note(value)
+		pair, err := c.st.ExchangeOAuthAuthorizationCode(c.ctx, store.OAuthCodeExchange{Code: value, ClientID: binding.clientID, RedirectURI: binding.redirect, Resource: oauthResource, CodeVerifier: oauthVerifier})
+		requireOK(t, err)
+		c.remember(pair)
+		grant, ok := c.grantOf(t, c.owner.ID, pair.GrantID)
+		if !ok || grant.ClientID != binding.clientID || grant.ClientName != binding.clientName || pair.ClientID != binding.clientID {
+			t.Fatalf("grant=%+v listed=%t, want the exact client %q named %q", grant, ok, binding.clientID, binding.clientName)
+		}
+		next, err := c.refresh(c.ctx, pair)
+		requireOK(t, err)
+		c.requireAccess(t, next.AccessToken, next.OAuthTokenPair)
+	}
 }
 
 // errInjectedOAuthAudit is the failure the audit test hook returns.

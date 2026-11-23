@@ -287,29 +287,37 @@ func percentEncodeAll(value string) string {
 	return out.String()
 }
 
-// TestHoldsCredentialShapeAnywhere proves the boundary-free refusal check
-// finds every credential shape directly after a letter, a digit, and an
-// underscore, and in percent-encoded form, and that redaction itself now
-// removes every Conveyor kind in the glued forms. Ordinary text, bare
-// prefixes, and short values stay clean, and redaction keeps the leading
-// boundary of the non-Conveyor shapes (req-security-boundaries REQ-2, REQ-3;
-// component-identity-membership invariants 45 and 46).
+// TestHoldsCredentialShapeAnywhere proves the refusal check uses the
+// redactor's own rules. Every shape is found as given, after a space or a
+// slash, and in percent-encoded form. Every Conveyor kind is also found, and
+// redacted, directly after a letter, a digit, and an underscore. Every other
+// shape keeps its leading word boundary, so ordinary hyphenated names, hosts,
+// and paths stay clean (req-security-boundaries REQ-2, REQ-3;
+// component-identity-membership invariants 45, 46, and 51).
 func TestHoldsCredentialShapeAnywhere(t *testing.T) {
 	t.Parallel()
 	for _, shape := range credentialShapeFixtures {
-		for _, form := range []struct{ name, text string }{
+		forms := []struct{ name, text string }{
 			{"as given", shape.value},
-			{"after a letter", "Client x" + shape.value},
-			{"after a digit", "client-9" + shape.value},
-			{"after an underscore", "https://client.example.test/meta_" + shape.value + "/client.json"},
+			{"after a space", "Client " + shape.value},
+			{"after a slash", "https://client.example.test/meta/" + shape.value + "/client.json"},
 			{"percent-encoded", "https://client.example.test/" + percentEncodeAll(shape.value)},
-		} {
+		}
+		conveyor := strings.HasPrefix(shape.value, "cv_")
+		if conveyor {
+			forms = append(forms,
+				struct{ name, text string }{"after a letter", "Client x" + shape.value},
+				struct{ name, text string }{"after a digit", "client-9" + shape.value},
+				struct{ name, text string }{"after an underscore", "https://client.example.test/meta_" + shape.value + "/client.json"},
+			)
+		}
+		for _, form := range forms {
 			t.Run(shape.name+"/"+form.name, func(t *testing.T) {
 				t.Parallel()
 				if !HoldsCredentialShape(form.text) {
 					t.Fatal("credential shape not found")
 				}
-				if strings.HasPrefix(shape.value, "cv_") && form.name != "percent-encoded" {
+				if conveyor && form.name != "percent-encoded" {
 					clean, stats := New(nil).Redact(form.text)
 					if strings.Contains(clean, shape.value) || stats.Pattern != 1 {
 						t.Fatalf("Conveyor credential survived redaction: stats=%+v", stats)
@@ -327,6 +335,18 @@ func TestHoldsCredentialShapeAnywhere(t *testing.T) {
 		"cv_pat_short and xcv_oat_short_value",
 		"the sk- prefix, ghp_ tokens, and Bearer authentication",
 		"%zz is not a valid escape",
+		// Ordinary metadata whose words end in "sk" or "bearer" before a
+		// hyphen or a space, from the round 5 review.
+		"Risk-management-assistant",
+		"Ask-the-assistant-bot",
+		"Flask-oauth-sample-client-app",
+		"https://desk-application-callback.example.com/cb",
+		"https://my-kiosk-integration-service.example.org/callback",
+		"https://tools.example.com/oauth/task-client-metadata-document.json",
+		"task-0123456789abcdefghij",
+		"Cupbearer assistantinterfaceservice01",
+		percentEncodeAll("Risk-management-assistant"),
+		percentEncodeAll("https://tools.example.com/oauth/task-client-metadata-document.json"),
 	} {
 		if HoldsCredentialShape(clean) {
 			t.Errorf("clean text %q holds a credential shape", clean)

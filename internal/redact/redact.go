@@ -170,9 +170,8 @@ func quotedForm(value string) string {
 }
 
 // credentialPatternSources lists every credential shape the redactor knows.
-// credentialPatterns compiles them as written for redaction.
-// credentialShapesAnywhere compiles the same sources with every word boundary
-// removed, for HoldsCredentialShape only, so the two lists cannot drift.
+// credentialPatterns compiles them for redaction, and HoldsCredentialShape
+// uses the same compiled list, so the two cannot drift.
 var credentialPatternSources = []string{
 	`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`,
 	`\bAIza[0-9A-Za-z_-]{20,}\b`,
@@ -195,30 +194,25 @@ var credentialPatternSources = []string{
 	`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`,
 }
 
-var credentialPatterns = compileCredentialPatterns(false)
+var credentialPatterns = compileCredentialPatterns()
 
-// credentialShapesAnywhere is the boundary-free variant of
-// credentialPatterns. It redacts nothing.
-var credentialShapesAnywhere = compileCredentialPatterns(true)
-
-func compileCredentialPatterns(anywhere bool) []*regexp.Regexp {
+func compileCredentialPatterns() []*regexp.Regexp {
 	patterns := make([]*regexp.Regexp, 0, len(credentialPatternSources))
 	for _, source := range credentialPatternSources {
-		if anywhere {
-			source = strings.ReplaceAll(source, `\b`, "")
-		}
 		patterns = append(patterns, regexp.MustCompile(source))
 	}
 	return patterns
 }
 
-// HoldsCredentialShape reports whether value holds any credential shape the
-// redactor knows anywhere in it, including directly after a word character:
-// every credential pattern without its word boundaries, and the assignment
-// rule. It also checks the value percent-decoded once. A value that fails to
-// decode is checked as given. It is for refusing untrusted input before
-// storage, where refusing an odd value is acceptable and storing a credential
-// is not (req-security-boundaries REQ-2, REQ-3).
+// HoldsCredentialShape reports whether value holds a credential shape by the
+// redactor's own rules: every credential pattern exactly as redaction uses
+// it, and the assignment rule. A Conveyor cv_ kind matches anywhere, even
+// directly after a word character. Every other shape keeps its leading word
+// boundary, so ordinary hyphenated words such as "Risk-management" or
+// "task-<id>" never match sk-. It also checks the value percent-decoded once
+// by the same rules. A value that fails to decode is checked as given. It is
+// for refusing untrusted input before storage (req-security-boundaries
+// REQ-2, REQ-3).
 func HoldsCredentialShape(value string) bool {
 	forms := []string{value}
 	if decoded, err := url.PathUnescape(value); err == nil && decoded != value {
@@ -228,7 +222,7 @@ func HoldsCredentialShape(value string) bool {
 		if assignedSecret.MatchString(form) {
 			return true
 		}
-		for _, pattern := range credentialShapesAnywhere {
+		for _, pattern := range credentialPatterns {
 			if pattern.MatchString(form) {
 				return true
 			}
