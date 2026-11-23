@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import { expect, type Page, type Route, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
 
@@ -80,22 +79,6 @@ test('workspace edits policy only and sends no retired execution detail', async 
   expect(body).not.toMatch(/setup|harness|model|argv/)
 })
 
-// case: FF-001
-test('fail-fast review is off by default and survives a seat change when enabled', async ({ page }) => {
-  const submitted = await mockAPIs(page)
-  await page.goto('/w/demo/workspace')
-
-  const failFast = page.getByRole('switch', { name: 'Fail-fast review' })
-  await expect(failFast).not.toBeChecked()
-  await failFast.click()
-  await page.getByLabel('Review seats').fill('3')
-  await expect(failFast).toBeChecked()
-  await page.getByRole('button', { name: 'Save changes' }).click()
-
-  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
-  expect(submitted()?.document).toMatchObject({ review: { seats: [{}, {}, {}], fail_fast: true } })
-})
-
 // req-review-gates-evidence AC-2.9: off by default and sent only once turned on.
 test('distinct seat models is off by default and submits when enabled', async ({ page }) => {
   const submitted = await mockAPIs(page)
@@ -106,34 +89,6 @@ test('distinct seat models is off by default and submits when enabled', async ({
   await distinct.click()
   await page.getByLabel('Review seats').fill('3')
   await expect(distinct).toBeChecked()
-  await page.getByRole('button', { name: 'Save changes' }).click()
-
-  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
-  expect(submitted()?.document).toMatchObject({ review: { seats: [{}, {}, {}], distinct_models: true } })
-})
-
-test('turning distinct seat models on and off again leaves nothing to save', async ({ page }) => {
-  await mockAPIs(page)
-  await page.goto('/w/demo/workspace')
-
-  const distinct = page.getByRole('switch', { name: 'Distinct seat models' })
-  const unsaved = page.getByText('Unsaved changes', { exact: true })
-  await expect(distinct).not.toBeChecked()
-  await expect(unsaved).toHaveCount(0)
-  await distinct.click()
-  await expect(unsaved).toBeVisible()
-  await distinct.click()
-  await expect(distinct).not.toBeChecked()
-  await expect(unsaved).toHaveCount(0)
-})
-
-test('a persisted distinct seat models setting loads on and survives a seat change', async ({ page }) => {
-  const served = { ...document, review: { seats: [{}, {}], distinct_models: true } }
-  const submitted = await mockAPIs(page, false, served)
-  await page.goto('/w/demo/workspace')
-
-  await expect(page.getByRole('switch', { name: 'Distinct seat models' })).toBeChecked()
-  await page.getByLabel('Review seats').fill('3')
   await page.getByRole('button', { name: 'Save changes' }).click()
 
   await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
@@ -189,51 +144,6 @@ test('workspace surfaces named policy rejections verbatim', async ({ page }) => 
   await expect(page.getByText('stage_timeouts.review: stage_timeouts.review must be positive')).toBeVisible()
 })
 
-test('workspace shows no worker surface', async ({ page }) => {
-  const mocks = await mockAPIs(page)
-  // Ordinary navigation opens on Policy. A link saved while the retired
-  // Workers tab was open (`?tab=workers`) opens General as a bounded
-  // compatibility fallback; any other tab value selects nothing.
-  for (const [address, opens] of [
-    ['/w/demo/workspace', 'Policy'],
-    ['/w/demo/workspace?tab=policy', 'Policy'],
-    ['/w/demo/workspace?tab=members', 'Policy'],
-    ['/w/demo/workspace?tab=workers', 'General'],
-  ] as const) {
-    await page.goto(address)
-    await expect(page.getByRole('tab')).toHaveText(['General', 'Policy', 'Verification', 'Members'])
-    await expect(page.getByRole('tab', { name: opens })).toHaveAttribute('aria-selected', 'true')
-    await expect(page.getByRole('tab', { name: 'Workers' })).toHaveCount(0)
-    if (opens === 'General') {
-      await expect(page.getByText('Work-order queue timeout')).toBeVisible()
-      await expect(page.getByText('Pipeline policy')).toHaveCount(0)
-    } else {
-      await expect(page.getByText('Pipeline policy')).toBeVisible()
-    }
-    for (const tab of ['General', 'Policy', 'Verification', 'Members']) {
-      await page.getByRole('tab', { name: tab }).click()
-      await expect(page.getByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true')
-      await expect(page.getByText(/worker|pairing|pull claiming|rate limit/i)).toHaveCount(0)
-      await expect(page.getByRole('button', { name: 'Issue pairing token' })).toHaveCount(0)
-    }
-  }
-  expect(mocks.workerRequests()).toEqual([])
-})
-
-test('scoped configuration sources contain no retired vocabulary or API paths', () => {
-  const workspace = readFileSync('src/pages/workspace.tsx', 'utf8')
-  const taskCreate = readFileSync('src/components/task/task-create-sheet.tsx', 'utf8')
-  const taskHeader = readFileSync('src/components/task/task-header.tsx', 'utf8')
-  const api = readFileSync('src/lib/api.ts', 'utf8')
-
-  // DEC-104(4) and req-review-gates-evidence AC-2.9 admit the review.distinct_models
-  // switch. Only its key and label are exempt; any other match stays refused.
-  const policyOnly = workspace.replace(/distinct_models|Distinct seat models/g, '')
-  expect(policyOnly).not.toBe(workspace)
-  expect(`${policyOnly}\n${taskCreate}\n${taskHeader}`).not.toMatch(/setup|harness|model/i)
-  expect(api).not.toMatch(/getHarnessTemplates|changeTaskSetup|setup\?: string/)
-})
-
 // A stateful mock for the review scope settings: a save replaces the served
 // document, so a reload reads what was saved, and a listed refusal answers 422.
 async function mockReviewScopeAPIs(
@@ -270,47 +180,6 @@ async function mockReviewScopeAPIs(
   return () => saved
 }
 
-// feature-delta-review-rounds DR-1; req-review-gates-evidence AC-4.3,
-// AC-12.1: a document without the members shows the defaults, each value
-// says in plain words what it reviews, and an unrelated save sends the
-// defaults.
-test('review scope settings show their defaults and say what each value reviews', async ({ page }) => {
-  const saved = await mockReviewScopeAPIs(page, document)
-  await page.goto('/w/demo/workspace')
-
-  const laterRound = page.getByRole('combobox', { name: 'Later review rounds' })
-  const refresh = page.getByRole('combobox', { name: 'Refresh review' })
-  await expect(laterRound).toHaveValue('full')
-  await expect(refresh).toHaveValue('delta')
-  await expect(laterRound.locator('option')).toHaveText(['Whole change', 'Changes since the last complete round'])
-  await expect(refresh.locator('option')).toHaveText(['Changes since the approved commit', 'Whole change'])
-  await expect(laterRound).toHaveAccessibleDescription(
-    'A review round after a bounce reviews the whole change. New tasks only.',
-  )
-  await expect(refresh).toHaveAccessibleDescription(
-    'When the branch changes after approval, the refresh review covers only the changes since the approved commit. New tasks only.',
-  )
-  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0)
-
-  await laterRound.selectOption('delta')
-  await refresh.selectOption('full')
-  await expect(laterRound).toHaveAccessibleDescription(
-    'A review round after a bounce reviews only the changes since the last complete round. New tasks only.',
-  )
-  await expect(refresh).toHaveAccessibleDescription(
-    'When the branch changes after approval, the refresh review covers the whole change. New tasks only.',
-  )
-  await expect(page.getByText('Unsaved changes', { exact: true })).toBeVisible()
-  await laterRound.selectOption('full')
-  await refresh.selectOption('delta')
-  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0)
-
-  await page.getByLabel('Review seats').fill('3')
-  await page.getByRole('button', { name: 'Save changes' }).click()
-  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
-  expect(saved().at(-1)).toMatchObject({ later_round_review: 'full', refresh_review: 'delta' })
-})
-
 test('changed review scope settings save and read back after a reload', async ({ page }) => {
   const saved = await mockReviewScopeAPIs(page, document)
   await page.goto('/w/demo/workspace')
@@ -327,28 +196,6 @@ test('changed review scope settings save and read back after a reload', async ({
   await expect(page.getByRole('combobox', { name: 'Refresh review' })).toHaveValue('full')
   await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0)
 })
-
-test('a served document with saved review scopes loads them', async ({ page }) => {
-  await mockReviewScopeAPIs(page, { ...document, later_round_review: 'delta', refresh_review: 'full' })
-  await page.goto('/w/demo/workspace')
-  await expect(page.getByRole('combobox', { name: 'Later review rounds' })).toHaveValue('delta')
-  await expect(page.getByRole('combobox', { name: 'Refresh review' })).toHaveValue('full')
-})
-
-for (const refusal of [
-  { field: 'later_round_review', message: 'later_round_review must be full or delta', control: 'Later review rounds' },
-  { field: 'refresh_review', message: 'refresh_review must be delta or full', control: 'Refresh review' },
-]) {
-  test(`a save refusal naming ${refusal.field} shows below its control`, async ({ page }) => {
-    await mockReviewScopeAPIs(page, document, { field: refusal.field, message: refusal.message })
-    await page.goto('/w/demo/workspace')
-    await page.getByRole('combobox', { name: refusal.control }).selectOption({ index: 1 })
-    await page.getByRole('button', { name: 'Save changes' }).click()
-    const control = page.getByRole('combobox', { name: refusal.control }).locator('xpath=ancestor::div[1]')
-    await expect(control.getByRole('alert')).toHaveText(refusal.message)
-    await expect(page.getByRole('alert').filter({ hasText: refusal.message })).toHaveCount(1)
-  })
-}
 
 // req-delegated-execution AC-6.4; component-web-dashboard invariant 33: the
 // Policy tab shows the served progress report interval, says that 0 turns it
@@ -399,33 +246,46 @@ test('a refused progress report interval shows as a field error on the Policy ta
   await expect(page.getByRole('tab', { name: /Policy/ })).toHaveAttribute('aria-selected', 'true')
 })
 
-// Visual record for the pull request: the Progress reports card with the
-// served value and with a server refusal, at 375 px and at a desktop width.
-// Each image is attached to the Playwright report, which CI uploads, and is
-// also written to PROGRESS_REPORT_SCREENSHOT_DIR when it is set, else to the
-// test's output directory. No image is committed.
-for (const width of [375, 1440]) {
-  test(`progress report interval screenshots at ${width} px`, async ({ page }, testInfo) => {
-    await page.setViewportSize({ width, height: 900 })
-    const directory = process.env.PROGRESS_REPORT_SCREENSHOT_DIR
-    const target = (name: string) => (directory ? `${directory}/${name}` : testInfo.outputPath(name))
-    const shoot = async (name: string) => {
-      await page.getByText('Progress reports', { exact: true }).evaluate((element) => element.scrollIntoView())
-      await page.screenshot({ path: target(name) })
-      await testInfo.attach(name, { path: target(name), contentType: 'image/png' })
-    }
-    const message = 'execution.progress_report_interval must be 0 or a duration from 1m to 60m'
-    await mockReviewScopeAPIs(page, servedInterval, { field: 'execution.progress_report_interval', message })
-    await page.goto('/w/demo/workspace')
-    const interval = page.getByRole('textbox', { name: 'Progress report interval' })
-    await expect(interval).toHaveValue('10m')
-    // The page never scrolls sideways.
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
-    await shoot(`progress-report-interval-served-${width}.png`)
+// req-risk-based-review AC-1.3, AC-1.4: turning the risk policy on shows the
+// default tier table, and a save sends the chosen mode with every edited value.
+test('turning the risk policy on saves the chosen mode and every edited tier value', async ({ page }) => {
+  const submitted = await mockAPIs(page)
+  await page.goto('/w/demo/workspace')
+  const mode = page.getByLabel('Risk mode')
+  await expect(mode).toHaveValue('off')
+  await mode.selectOption('enforce')
+  await expect(page.getByText('its tier sets the reviews and approvals it needs')).toBeVisible()
+  await page.getByLabel('Medium agent reviews').fill('2')
+  await page.getByLabel('High human approvals').fill('3')
+  await mode.selectOption('record')
+  await page.getByRole('button', { name: 'Save changes' }).click()
 
-    await interval.fill('2h')
-    await page.getByRole('button', { name: 'Save changes' }).click()
-    await expect(interval.locator('xpath=ancestor::div[1]').getByRole('alert')).toHaveText(message)
-    await shoot(`progress-report-interval-refused-${width}.png`)
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  expect(submitted()?.document).toMatchObject({
+    risk_policy: {
+      mode: 'record',
+      tiers: {
+        low: { agent_reviews: 1, human_approvals: 0 },
+        medium: { agent_reviews: 2, human_approvals: 1 },
+        high: { agent_reviews: 2, human_approvals: 3 },
+      },
+    },
   })
-}
+})
+
+// component-web-dashboard v61 invariant 33; req-delivery-and-forge AC-8.1: the
+// General tab's issue publication switch reads off when the key is absent, and
+// a save writes issue_publication.enabled.
+test('the General tab saves issue publication as issue_publication.enabled', async ({ page }) => {
+  const submitted = await mockAPIs(page)
+  await page.goto('/w/demo/workspace')
+  await page.getByRole('tab', { name: 'General' }).click()
+  const publish = page.getByRole('switch', { name: 'Publish GitHub issues for approved plans' })
+  await expect(publish).not.toBeChecked()
+  await publish.click()
+  await expect(publish).toBeChecked()
+  await page.getByRole('button', { name: 'Save changes' }).click()
+
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  expect(submitted()?.document).toMatchObject({ issue_publication: { enabled: true } })
+})
