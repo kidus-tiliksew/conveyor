@@ -1,6 +1,12 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
-import { issuedTokenValue, mockSettingsPage, openSettingsRow, settingsRowHeader } from './helpers/settings'
+import {
+  issuedTokenValue,
+  mockSettingsPage,
+  openSettingsRow,
+  settingsRowHeader,
+  settingsStages,
+} from './helpers/settings'
 
 const workspaceConfig = {
   workspace: 'demo',
@@ -543,3 +549,41 @@ test('the welcome page opens the Access tokens row and leaves the other rows clo
   await page.goto('/w/demo/settings')
   await expect(settingsRowHeader(page, 'Access tokens')).toHaveAttribute('aria-expanded', 'false')
 })
+
+// component-stage-preferences v2, Verification; req-stage-preferences AC-2.1:
+// the closed Stage preferences row states every stage and review seat, and the
+// opened card shows the saved set, at 375 px and at a desktop width.
+for (const width of [375, 1280]) {
+  test(`the stage preferences card shows the saved set at ${width} px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1600 })
+    await mockSettingsPage(page)
+    await page.goto('/w/demo/settings')
+    const header = settingsRowHeader(page, 'Stage preferences')
+    await expect(header).toHaveAttribute('aria-expanded', 'false')
+    for (const line of [
+      'Plan: codex · gpt-6.1-sol · medium',
+      'Implement: claude-code · claude-opus-5-5 · high',
+      'Verify: claude-code · claude-sonnet-5-5',
+      'Risk: claude-code · claude-haiku-5-5 · low',
+      'Review primary: claude-code · claude-opus-5-5 · high',
+      'Review seat 1: codex · gpt-6.1-sol · high',
+      'Review seat 2: claude-code · claude-fable-5-2',
+      'They apply in every workspace.',
+    ])
+      await expect(header).toContainText(line)
+
+    await openSettingsRow(page, 'Stage preferences')
+    const form = page.getByRole('form', { name: 'Edit stage preferences' })
+    const sections = await form
+      .getByRole('region')
+      .evaluateAll((regions) => regions.map((region) => region.getAttribute('aria-label')))
+    expect(sections).toEqual(['Plan stage', 'Implement stage', 'Verify stage', 'Risk stage', 'Review stage'])
+    await expect(page.getByLabel('Plan model', { exact: true })).toHaveValue(settingsStages.plan.model)
+    await expect(page.getByLabel('Risk effort', { exact: true })).toHaveValue(settingsStages.risk.effort)
+    await expect(page.getByRole('button', { name: 'Save stage preferences' })).toBeDisabled()
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    )
+    expect(overflow).toBeLessThanOrEqual(0)
+  })
+}

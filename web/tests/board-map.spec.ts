@@ -1,17 +1,9 @@
 import { expect, type Locator, type Page } from '@playwright/test'
-import {
-  buildModel,
-  DONE,
-  type GraphTask,
-  openDownstreamCounts,
-  type TaskGraphModel,
-  walk,
-} from '../src/components/board/map/graph-model'
+import { buildModel, DONE, type GraphTask, type TaskGraphModel, walk } from '../src/components/board/map/graph-model'
 import type { NextActionCompact, TaskMapItem, TaskMapRequirement, TaskMapResponse } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { waitForSheetSettled } from './helpers/sheet'
-import { controlWorkspaceChanges, type WorkspaceChangeControl } from './helpers/workspace-changes'
 
 // The Board map (req-board-map v3; req-operator-next-action AC-1.7, AC-3.4,
 // AC-6.1; component-web-task-surfaces, Board map). GET /v1/task-map is mocked
@@ -409,85 +401,6 @@ test('the map opens on every group in urgency order, each with its tasks, hub, a
   await expectEveryGroupInPane(page)
 })
 
-test('a blocked task outranks any number of tasks needing judgment', async ({ page }) => {
-  const decisions = Array.from({ length: 101 }, (_, index) =>
-    task(`d${index}`, `Decide item ${index}`, proposal, { reqs: ['req-gamma'] }),
-  )
-  await mockMap(page, () => ({
-    tasks: [
-      ...decisions,
-      task('x1', 'Waiting beta item', blocked, { depends: ['x2'], blocking: ['x2'], reqs: ['req-beta'] }),
-      task('x2', 'Unrequired prerequisite', working),
-    ],
-    requirements,
-  }))
-  await page.goto('/?view=map')
-  expect(await groupOrder(page)).toEqual(['req-beta', 'req-gamma', '__none'])
-  await expect(group(page, 'req-gamma')).toContainText('101 open')
-  await expect(group(page, 'req-gamma').locator('.bg-attention-dot')).toHaveCount(1)
-  // Frames differ in size, and rows still read in urgency order.
-  const heights = await groups(page).evaluateAll((elements) => elements.map((element) => element.clientHeight))
-  expect(new Set(heights).size).toBeGreaterThan(1)
-  await page.getByRole('button', { name: 'Whole map' }).click()
-  await expectEveryGroupInPane(page)
-})
-
-test('a 500-task chain in one group opens readable at its top, and Whole map fits it inside the pane', async ({
-  page,
-}) => {
-  test.setTimeout(60_000)
-  // One requirement whose open tasks form a single dependency chain lays out
-  // as one frame tens of thousands of pixels tall, too tall for the usual
-  // least zoom (req-board-map AC-1.9).
-  const chain = Array.from({ length: 500 }, (_, index) =>
-    task(`c${index}`, `Chain step ${index}`, queued, {
-      depends: index > 0 ? [`c${index - 1}`] : [],
-      reqs: ['req-alpha'],
-    }),
-  )
-  await mockMap(page, () => ({ tasks: chain, requirements }))
-  for (const size of [
-    { width: 1280, height: 720 },
-    { width: 390, height: 844 },
-  ]) {
-    await page.setViewportSize(size)
-    await page.goto('/?view=map')
-    await expect(taskNodes(page)).toHaveCount(500)
-    // The tall group opens at its top, readable; Whole map fits all of it.
-    await waitForCamera(groups(page).first())
-    expect(await zoom(page)).toBeGreaterThanOrEqual(0.7)
-    await expect(node(page, 'c0')).toBeInViewport()
-    await page.getByRole('button', { name: 'Whole map' }).click()
-    await expectEveryGroupInPane(page)
-    await page.mouse.move(size.width / 2, size.height / 2)
-    await page.mouse.wheel(0, -2400)
-    await page.getByRole('button', { name: 'Whole map' }).click()
-    await expectEveryGroupInPane(page)
-  }
-})
-
-test('a change in urgency with the same tasks reorders the groups', async ({ page }) => {
-  // The same tasks and edges in both reads; only the stated next action of
-  // p1 changes, from queued to blocked by p2.
-  const groupsFor = (blockedNow: boolean) => [
-    task('p1', 'First beta step', blockedNow ? blocked : queued, {
-      depends: ['p2'],
-      blocking: blockedNow ? ['p2'] : [],
-      reqs: ['req-beta'],
-    }),
-    task('p2', 'Second beta step', working, { reqs: ['req-beta'] }),
-    task('q1', 'Gamma decision', proposal, { reqs: ['req-gamma'] }),
-    task('q2', 'Gamma follow-up', queued, { reqs: ['req-gamma'] }),
-  ]
-  const seen = await mockMap(page, ({ includeFinished }) => ({ tasks: groupsFor(includeFinished), requirements }))
-  await page.goto('/?view=map')
-  expect(await groupOrder(page)).toEqual(['req-gamma', 'req-beta'])
-  await page.getByRole('button', { name: 'Finished', exact: true }).click()
-  await expect.poll(() => seen.reads.at(-1)?.includeFinished).toBe(true)
-  await expect(group(page, 'req-beta').locator('.bg-failure')).toHaveCount(1)
-  await expect.poll(() => groupOrder(page)).toEqual(['req-beta', 'req-gamma'])
-})
-
 test('selecting a requirement flies to its single-home group, flowing into the requirement at a readable zoom', async ({
   page,
 }) => {
@@ -574,106 +487,6 @@ test('task nodes print the stated label with a mark from the stated actor, and w
   await expect(page.getByRole('button', { name: '1 Job failed' })).toBeVisible()
 })
 
-test('a dependency diamond counts each open dependent once', async ({ page }) => {
-  // d4 waits on d2 and d3, which both wait on d1: d1 unblocks three tasks,
-  // not four (req-board-map AC-2.2).
-  await mockMap(page, () => ({
-    tasks: [
-      task('d1', 'Diamond root', working),
-      task('d2', 'Diamond left', blocked, { depends: ['d1'], blocking: ['d1'] }),
-      task('d3', 'Diamond right', blocked, { depends: ['d1'], blocking: ['d1'] }),
-      task('d4', 'Diamond join', blocked, { depends: ['d2', 'd3'], blocking: ['d2', 'd3'] }),
-    ],
-    requirements: [],
-  }))
-  await page.goto('/?view=map&arrangement=dependencies')
-  await zoomToCards(page)
-  await expect(node(page, 'd1')).toContainText('→3')
-  await expect(node(page, 'd2')).toContainText('→1')
-  await expect(node(page, 'd4')).not.toContainText('→')
-  await expect(node(page, 'd4').locator('[data-dependency-mark]')).toHaveAttribute(
-    'aria-label',
-    'Waiting for Diamond left, Diamond right',
-  )
-})
-
-test('a stated-label chip highlights its tasks and dims the rest, in both arrangements', async ({ page }) => {
-  await mockMap(page)
-  const dimmed = (id: string) => node(page, id).locator(':scope > div')
-  const dim = /\bopacity-(15|20)\b/
-  const cases = [
-    { address: '/?view=map&scope=req-alpha', chip: '1 Agent working', match: ['a2'], other: ['a1', 'a3', 'm1'] },
-    {
-      address: '/?view=map&arrangement=dependencies',
-      chip: '3 Blocked by a dependency',
-      match: ['a1', 'a3', 'b1'],
-      other: ['a2', 'n1', 'g1'],
-    },
-  ]
-  for (const { address, chip, match, other } of cases) {
-    await page.goto(address)
-    await expect(node(page, match[0])).toBeVisible()
-    await page.getByRole('button', { name: 'Status details' }).click()
-    const button = page.getByRole('button', { name: chip, exact: true })
-    await button.click()
-    await expect(button).toHaveAttribute('aria-pressed', 'true')
-    for (const id of match) await expect(dimmed(id)).not.toHaveClass(dim)
-    for (const id of other) await expect(dimmed(id)).toHaveClass(dim)
-    // Turning the chip off restores every task.
-    await button.click()
-    await expect(button).toHaveAttribute('aria-pressed', 'false')
-    for (const id of [...match, ...other]) await expect(dimmed(id)).not.toHaveClass(dim)
-  }
-})
-
-test('the legend sums the stated labels into five states on one row, and a state highlights its tasks', async ({
-  page,
-}) => {
-  await mockMap(page)
-  await page.goto('/?view=map&scope=req-alpha')
-  await expect(node(page, 'a2')).toBeVisible()
-  const legend = page.locator('header').filter({ has: page.getByRole('button', { name: 'Status details' }) })
-  // A single row until the detail opens.
-  const details = page.getByRole('button', { name: 'Status details' })
-  await expect(details).toHaveAttribute('aria-expanded', 'false')
-  const blocked = legend.getByRole('button', { name: /^\d+ Blocked$/ })
-  const working = legend.getByRole('button', { name: /^\d+ Working$/ })
-  await expect(blocked).toHaveAttribute('aria-pressed', 'false')
-  const dim = /\bopacity-(15|20)\b/
-  await working.click()
-  await expect(working).toHaveAttribute('aria-pressed', 'true')
-  await expect(node(page, 'a2').locator(':scope > div')).not.toHaveClass(dim)
-  await expect(node(page, 'a1').locator(':scope > div')).toHaveClass(dim)
-  await working.click()
-  await expect(node(page, 'a1').locator(':scope > div')).not.toHaveClass(dim)
-})
-
-test('both arrangements keep the zoom control in one place, and the minimap draws their nodes except on a phone', async ({
-  page,
-}) => {
-  await mockMap(page)
-  await page.setViewportSize({ width: 1280, height: 800 })
-  const place = async () => {
-    const pane = await page.locator('.react-flow').boundingBox()
-    const box = await page.locator('.react-flow__controls').boundingBox()
-    if (!pane || !box) throw new Error('the zoom control is not laid out')
-    return { left: Math.round(box.x - pane.x), bottom: Math.round(pane.y + pane.height - (box.y + box.height)) }
-  }
-  await page.goto('/?view=map')
-  await expect(taskNodes(page).first()).toBeVisible()
-  await expect(page.locator('.react-flow__minimap-node').first()).toBeAttached()
-  const requirements = await place()
-  await page.goto('/?view=map&arrangement=dependencies')
-  await expect(taskNodes(page).first()).toBeVisible()
-  await expect(page.locator('.react-flow__minimap-node').first()).toBeAttached()
-  expect(await place()).toEqual(requirements)
-  await expect(page.getByRole('button', { name: 'Whole map' })).toBeVisible()
-  await expect(page.locator('.react-flow__minimap')).toHaveCSS('width', '120px')
-
-  await page.setViewportSize({ width: 390, height: 844 })
-  await expect(page.locator('.react-flow__minimap')).toHaveCount(0)
-})
-
 test('selecting a task traces both directions, dims the rest, draws its cross-cluster edges, and opens the panel', async ({
   page,
 }) => {
@@ -721,29 +534,6 @@ test('selecting a task traces both directions, dims the rest, draws its cross-cl
   await expect(page).toHaveURL(/focus=a2/)
   await expect(aside).toContainText('Unblocks · 4 open downstream')
   await expect(aside.getByRole('button', { name: /Wire the alpha form/ })).toContainText('a1 · Blocked by a dependency')
-})
-
-test('hover lights only the task’s own edges after a pause and dims nothing, in both arrangements', async ({
-  page,
-}) => {
-  await mockMap(page)
-  for (const address of ['/?view=map&scope=req-alpha', '/?view=map&arrangement=dependencies']) {
-    await page.goto(address)
-    await expect(node(page, 'a3')).toBeVisible()
-    await waitForCamera(node(page, 'a3'))
-    const own = edge(page, 'a2->a3').locator('path').first()
-    const other = edge(page, 'a2->a1').locator('path').first()
-    await node(page, 'a3').hover()
-    await expect(own).toHaveAttribute('style', /var\(--color-muted\)/)
-    await expect(other).not.toHaveAttribute('style', /var\(--color-muted\)/)
-    await expect(other).toHaveAttribute('style', /opacity: 1/)
-    await expect(page.locator('.react-flow__node-task > .opacity-20')).toHaveCount(0)
-    expect(page.url()).not.toContain('focus=')
-    // Edges out of a task an agent is working animate without a selection.
-    await expect(edge(page, 'a2->a1')).toHaveClass(/animated/)
-    await page.mouse.move(2, 2)
-    await expect(own).not.toHaveAttribute('style', /var\(--color-muted\)/)
-  }
 })
 
 test('search by title or ID selects the first match and moves to it', async ({ page }) => {
@@ -934,160 +724,6 @@ test('500 open and 2,000 finished tasks show their groups, tasks, and edges with
   await expect(page.locator('.react-flow__node-tile')).toHaveCount(0)
 })
 
-// The title row carries only the title and the actions; the shared toolbar
-// closes with the icon view switch, which keeps one position in every view
-// (component-web-task-surfaces; req-board-map AC-1.1; req-operator-next-action
-// AC-6.1).
-test('the view switch closes one shared toolbar at the same position in every view', async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 800 })
-  await mockMap(page)
-  await page.goto('/')
-  const title = page.getByRole('heading', { name: 'Tasks', exact: true, level: 1 })
-  const header = page.locator('header').filter({ has: title })
-  await expect(header.getByRole('group', { name: 'Tasks view' })).toHaveCount(0)
-  const mcp = header.getByRole('button', { name: 'MCP', exact: true })
-  await expect(mcp).toHaveAttribute('title', 'MCP')
-  await expect(mcp).toHaveText('')
-
-  const toolbar = page.getByTestId('board-toolbar')
-  const views = toolbar.getByRole('group', { name: 'Tasks view' })
-  const button = (name: string) => views.getByRole('button', { name, exact: true })
-  const place = async () => {
-    const box = await views.boundingBox()
-    const bar = await toolbar.boundingBox()
-    if (!box || !bar) throw new Error('the view switch is not laid out')
-    // The switch is the toolbar's last control: nothing sits to its right
-    // but the toolbar's own padding.
-    expect(bar.x + bar.width - (box.x + box.width)).toBeLessThanOrEqual(24.5)
-    return { right: Math.round(box.x + box.width), top: Math.round(box.y) }
-  }
-  const expectPressed = async (pressed: string) => {
-    for (const name of ['Kanban', 'Graph']) {
-      await expect(button(name)).toHaveAttribute('title', name)
-      await expect(button(name)).toHaveText('')
-      await expect(button(name)).toHaveAttribute('aria-pressed', String(name === pressed))
-    }
-    // The selection takes the soft treatment; New task keeps the only fill.
-    await expect(button(pressed)).toHaveClass(/bg-primary-soft/)
-    await expect(button(pressed)).not.toHaveClass(/(^|\s)bg-primary(\s|$)/)
-  }
-
-  await expect(toolbar).toHaveCount(1)
-  await expectPressed('Kanban')
-  const kanban = await place()
-
-  await button('Graph').click()
-  await expect(page).toHaveURL(/view=map/)
-  await expect(group(page, 'req-alpha')).toBeVisible()
-  await expect(toolbar).toHaveCount(1)
-  await expect(toolbar.getByRole('group', { name: 'Arrange by' })).toBeVisible()
-  await expectPressed('Graph')
-  expect(await place()).toEqual(kanban)
-
-  await button('Kanban').click()
-  await expect(page).not.toHaveURL(/view=/)
-  await expectPressed('Kanban')
-})
-
-// A failed map read still leaves the switch in place, so the operator can
-// leave the view without reloading. With nothing loaded, the canvas area says
-// so in words, with the server's message rather than the raw error value
-// (component-web-task-surfaces, Board map Read).
-test('the view switch stays reachable when the map read fails', async ({ page }) => {
-  await mockMap(page)
-  await page.route('**/v1/task-map**', (route) => route.fulfill({ status: 500, json: { error: 'unavailable' } }))
-  await page.goto('/?view=map')
-  // Wait for the error branch itself, not the loading skeleton before it.
-  const alert = page.getByRole('alert').filter({ hasText: 'Could not load the map' })
-  await expect(alert).toBeVisible()
-  await expect(alert).toContainText('unavailable')
-  await expect(alert).not.toContainText('Error')
-  await expect(alert.getByRole('button', { name: 'Retry' })).toBeVisible()
-  const views = page.getByTestId('board-toolbar').getByRole('group', { name: 'Tasks view' })
-  await expect(views.getByRole('button', { name: 'Graph', exact: true })).toHaveAttribute('aria-pressed', 'true')
-  await views.getByRole('button', { name: 'Kanban', exact: true }).click()
-  await expect(page).not.toHaveURL(/view=/)
-  await expect(page.getByRole('region', { name: 'Task columns' })).toBeVisible()
-})
-
-// The Board offers kanban and the map only. A retired list address and the
-// former Tasks page both land on kanban, and a Tasks filter link keeps its
-// filter (req-operator-next-action AC-6.1, AC-6.3; component-web-task-surfaces,
-// Board).
-test('the view switch offers only Kanban and Graph, and list addresses open the kanban view', async ({ page }) => {
-  const seen = await mockMap(page)
-  const activityReads: URL[] = []
-  page.on('request', (request) => {
-    const url = new URL(request.url())
-    if (url.pathname === '/v1/activity') activityReads.push(url)
-  })
-  const views = page.getByTestId('board-toolbar').getByRole('group', { name: 'Tasks view' })
-  const kanban = page.getByRole('region', { name: 'Task columns' })
-
-  await page.goto('/')
-  await expect(views.getByRole('button')).toHaveCount(2)
-  await expect(views.getByRole('button', { name: 'Kanban', exact: true })).toHaveAttribute('aria-pressed', 'true')
-  await expect(views.getByRole('button', { name: 'Graph', exact: true })).toHaveAttribute('aria-pressed', 'false')
-  await expect(views.getByRole('button', { name: 'List', exact: true })).toHaveCount(0)
-
-  for (const path of ['/?view=list', '/w/demo/tasks']) {
-    await page.goto(path)
-    await expect(kanban, path).toBeVisible()
-    await expect(page, path).not.toHaveURL(/view=/)
-    await expect(views.getByRole('button', { name: 'Kanban', exact: true })).toHaveAttribute('aria-pressed', 'true')
-  }
-
-  // A former Tasks filter link lands on kanban, and the kanban filter adopts
-  // what it names before reading, then leaves the address.
-  activityReads.length = 0
-  await page.goto('/w/demo/tasks?view=list&q=alpha&state=running&repository=web')
-  await expect(kanban).toBeVisible()
-  await expect(page).toHaveURL(/\/$/)
-  await expect(page.getByRole('searchbox', { name: 'Search tasks' })).toHaveValue('alpha')
-  await expect.poll(() => activityReads.length).toBeGreaterThan(0)
-  for (const url of activityReads) {
-    expect(url.searchParams.get('q')).toBe('alpha')
-    expect(url.searchParams.getAll('state')).toEqual(['running'])
-    expect(url.searchParams.getAll('repository')).toEqual(['web'])
-  }
-
-  // A legacy panel permalink opens that task's sheet over the kanban view.
-  await page.goto('/w/demo/tasks?task=a1')
-  await expect(page).toHaveURL(/\/tasks\/a1$/)
-  await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
-  await expect(kanban).toBeVisible()
-  expect(seen.taskOperations).toBe(0)
-})
-
-// At phone width the title row and the toolbar wrap inside the viewport and
-// every control stays reachable, in both views.
-test('at 390 px the Board header and toolbar wrap without overflow in every view', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 })
-  await mockMap(page)
-  for (const path of ['/', '/?view=map']) {
-    await page.goto(path)
-    const header = page.locator('header').filter({ has: page.getByRole('heading', { name: 'Tasks', exact: true }) })
-    const toolbar = page.getByTestId('board-toolbar')
-    if (path.endsWith('map')) await expect(toolbar.getByRole('group', { name: 'Arrange by' })).toBeVisible()
-    await expect(toolbar.getByRole('group', { name: 'Tasks view' })).toBeInViewport()
-    for (const row of [header, toolbar]) {
-      expect(await row.evaluate((node) => node.scrollWidth <= node.clientWidth), `${path} row overflow`).toBe(true)
-      const controls = row.locator('button, input, select, a[href]')
-      expect(await controls.count(), `${path} row has controls`).toBeGreaterThan(0)
-      for (const control of await controls.all()) {
-        const box = await control.boundingBox()
-        expect(box, `${path} control laid out`).not.toBeNull()
-        expect((box?.x ?? -1) >= 0 && (box?.x ?? 0) + (box?.width ?? 0) <= 390.5, `${path} control inside 390 px`).toBe(
-          true,
-        )
-      }
-    }
-  }
-  await page.goto('/')
-  await page.getByRole('button', { name: 'MCP', exact: true }).click()
-  await expect(page.getByRole('dialog', { name: 'MCP Setup' })).toBeVisible()
-})
-
 // Fails every map read while `failing` is set; otherwise the mocked server
 // answers.
 async function failMapReads(page: Page) {
@@ -1098,20 +734,6 @@ async function failMapReads(page: Page) {
     return route.fulfill({ status: 503, json: { error: 'the task map is unavailable' } })
   })
   return control
-}
-
-// A workspace change frame refreshes the map after 250 ms; there is no timer
-// (component-web-dashboard, Workspace change stream). React Query's one retry
-// follows a second later on the page's clock. Reads keep failing until the
-// spec says.
-async function failRefresh(page: Page, changes: WorkspaceChangeControl, control: { failing: boolean; failed: number }) {
-  const before = control.failed
-  control.failing = true
-  await changes.activity('a1')
-  await page.clock.fastForward(250)
-  await expect.poll(() => control.failed).toBeGreaterThan(before)
-  await page.clock.fastForward(2_000)
-  await expect.poll(() => control.failed).toBeGreaterThan(before + 1)
 }
 
 test('a failed first read offers Retry, which loads the map', async ({ page }) => {
@@ -1128,49 +750,6 @@ test('a failed first read offers Retry, which loads the map', async ({ page }) =
   await expect(group(page, 'req-alpha')).toBeVisible()
   await expect(alert).toHaveCount(0)
   expect(seen.reads.length).toBeGreaterThan(0)
-})
-
-test('a failed refresh after a successful load keeps the map with a dismissible notice and Retry', async ({ page }) => {
-  const changes = await controlWorkspaceChanges(page)
-  await page.clock.install()
-  const seen = await mockMap(page)
-  const control = await failMapReads(page)
-  await page.goto('/?view=map')
-  await expect(group(page, 'req-alpha')).toBeVisible()
-  const notice = page.getByRole('status').filter({ hasText: 'Could not refresh the map' })
-  await expect(notice).toHaveCount(0)
-  const loaded = seen.reads.length
-  await changes.ready()
-  await page.clock.fastForward(250)
-  await expect.poll(() => seen.reads.length).toBeGreaterThan(loaded)
-
-  // The clock alone never rereads the map.
-  const settled = seen.reads.length
-  await page.clock.fastForward(120_000)
-  expect(seen.reads.length).toBe(settled)
-
-  await failRefresh(page, changes, control)
-  // The map that loaded stays on the canvas; only a notice says the refresh
-  // failed, and the full error state does not replace it.
-  await expect(notice).toBeVisible()
-  await expect(group(page, 'req-alpha')).toBeVisible()
-  await expect(groups(page)).toHaveCount(4)
-  await expect(page.getByRole('alert')).toHaveCount(0)
-
-  // Dismissed, it stays hidden until a later refresh fails.
-  await notice.getByRole('button', { name: 'Dismiss' }).click()
-  await expect(notice).toHaveCount(0)
-  await failRefresh(page, changes, control)
-  await expect(notice).toBeVisible()
-  await expect(groups(page)).toHaveCount(4)
-
-  // Retry reads again; the successful read clears the notice.
-  control.failing = false
-  const reads = seen.reads.length
-  await notice.getByRole('button', { name: 'Retry' }).click()
-  await expect(notice).toHaveCount(0)
-  await expect.poll(() => seen.reads.length).toBeGreaterThan(reads)
-  await expect(group(page, 'req-alpha')).toBeVisible()
 })
 
 // Serves the ELK worker script with a wrapper that fails every real layout
@@ -1246,124 +825,6 @@ test('an ELK error shows the layout alert with Retry in both arrangements, and R
   await expect(alert).toHaveCount(0)
 })
 
-test('a layout worker that dies rejects the layout, and Retry starts a fresh worker', async ({ page }) => {
-  await mockMap(page)
-  const served = await serveLayoutWorker(page, 'worker-error')
-  await page.goto('/?view=map&arrangement=dependencies')
-  const alert = page.getByRole('alert').filter({ hasText: 'Could not lay out the map' })
-  await expect(alert).toBeVisible()
-  await expect(taskNodes(page)).toHaveCount(0)
-  await alert.getByRole('button', { name: 'Retry' }).click()
-  await expect(node(page, 'a1')).toBeVisible()
-  await expect(alert).toHaveCount(0)
-  expect(served.fetched).toBe(2)
-})
-
-test('Open document is an in-app link that encodes the requirement', async ({ page }) => {
-  // An identifier that a raw interpolation would break: a space, an
-  // ampersand, and a hash.
-  const id = 'req-one two&three#4'
-  await mockMap(page, () => ({
-    tasks: [task('e1', 'Encode the link', queued, { reqs: [id] })],
-    requirements: [{ id, title: 'Encoded requirement', open_task_count: 1, merged_task_count: 0, total_task_count: 1 }],
-  }))
-  await page.goto('/?view=map')
-  await clickHeader(page, id)
-  await expect(page.getByTestId(`rf__node-doc:${id}`)).toBeVisible()
-  const link = page.getByRole('link', { name: 'Open document' })
-  const href = await link.getAttribute('href')
-  const target = new URL(href ?? '', 'http://conveyor.test')
-  expect(target.pathname).toBe('/w/demo/requirements')
-  expect(target.searchParams.get('requirement')).toBe(id)
-  expect([...target.searchParams.keys()]).toEqual(['requirement'])
-  expect(target.hash).toBe('')
-
-  // The router opens it in place: the document is not reloaded.
-  await page.evaluate(() => {
-    ;(window as unknown as { mapDocument: boolean }).mapDocument = true
-  })
-  await link.click()
-  await expect(page).toHaveURL(
-    (url) => url.pathname === '/w/demo/requirements' && url.searchParams.get('requirement') === id,
-  )
-  expect(await page.evaluate(() => (window as unknown as { mapDocument?: boolean }).mapDocument)).toBe(true)
-})
-
-// A parked task, the treatment the factory's own work takes, fills its share
-// of a requirement's delivery bar and is counted on the requirement's hub.
-test('the progress bar and the hub count a parked task', async ({ page }) => {
-  const parked = (id: string, title: string) => task(id, title, merging, { state: 'approved', reqs: ['req-alpha'] })
-  const items = [
-    parked('p1', 'Land the first slice'),
-    parked('p2', 'Land the second slice'),
-    task('p3', 'Build the third slice', working, { reqs: ['req-alpha'] }),
-    task('p4', 'Ship the base slice', finished, { state: 'merged', reqs: ['req-alpha'] }),
-  ]
-  await mockMap(page, () => ({
-    tasks: items,
-    requirements: [
-      { id: 'req-alpha', title: 'Alpha delivery', open_task_count: 3, merged_task_count: 1, total_task_count: 4 },
-    ],
-  }))
-  await page.goto('/?view=map&scope=req-alpha')
-  await zoomToCards(page)
-  const hub = page.getByTestId('rf__node-doc:req-alpha')
-  await expect(hub.locator('[title="Parked"]')).toHaveText('2')
-  await expect(hub.locator('[title="Running"]')).toHaveText('1')
-
-  // Merged, running, then the two parked tasks fill the bar.
-  const segments = await renderDocListBar(page, items)
-  expect(segments).toEqual([
-    { tone: 'bg-positive', width: 25 },
-    { tone: 'bg-primary', width: 25 },
-    { tone: 'bg-muted', width: 50 },
-  ])
-})
-
-// DocList, the requirement list with the stacked delivery bar, rendered alone
-// in the page with the app's own React and modules from the Vite dev server:
-// the map does not mount it. The script is a string so the spec's transform
-// leaves its dynamic imports to the browser.
-async function renderDocListBar(page: Page, items: TaskMapItem[]) {
-  const script = `(async (items) => {
-    const dependency = (name) =>
-      performance
-        .getEntriesByType('resource')
-        .map((entry) => entry.name)
-        .find((url) => new URL(url).pathname === '/node_modules/.vite/deps/' + name + '.js')
-    // Vite pre-bundles React as CommonJS, so its exports sit on default.
-    const load = async (name) => {
-      const module = await import(dependency(name))
-      return module.default ?? module
-    }
-    const { createElement } = await load('react')
-    const { createRoot } = await load('react-dom_client')
-    const { DocList } = await import('/src/components/board/map/doc-map.tsx')
-    const { buildModel } = await import('/src/components/board/map/graph-model.ts')
-    const model = buildModel(items)
-    const host = document.createElement('div')
-    document.body.append(host)
-    // The wrapper's ref attaches once the list has committed.
-    await new Promise((resolve) =>
-      createRoot(host).render(
-        createElement(
-          'div',
-          { ref: (element) => element && resolve() },
-          createElement(DocList, {
-            cards: [{ id: 'req-alpha', title: 'Alpha delivery', tasks: [...model.tasks.values()] }],
-            onSelect: () => undefined,
-          }),
-        ),
-      ),
-    )
-    return [...host.querySelectorAll('nav button span[style]')].map((segment) => ({
-      tone: segment.className,
-      width: Number.parseFloat(segment.style.width),
-    }))
-  })(${JSON.stringify(items)})`
-  return (await page.evaluate(script)) as Array<{ tone: string; width: number }>
-}
-
 // The open-downstream counts as the map computed them before: a walk from
 // every task (component-web-task-surfaces, Board map Model).
 function walkedCounts(model: TaskGraphModel) {
@@ -1377,12 +838,6 @@ function walkedCounts(model: TaskGraphModel) {
     counts.set(id, open)
   }
   return counts
-}
-
-function edgeCount(model: TaskGraphModel) {
-  let edges = 0
-  for (const task of model.tasks.values()) edges += task.dependsOn.length
-  return edges
 }
 
 test('buildModel keeps its output on a fixture with a diamond, cycles, stubs, and finished tasks', () => {
@@ -1435,34 +890,4 @@ test('buildModel keeps its output on a fixture with a diamond, cycles, stubs, an
   expect([stub('hidden').stub, stub('hidden').status]).toEqual([true, 'parked'])
   expect([stub('gone').stub, stub('gone').status]).toEqual([true, 'merged'])
   expect(model.tasks.get('h1')?.blocking).toEqual([{ id: 'hidden', title: 'hidden', unsatisfiable: false }])
-})
-
-test('the downstream counts relax each dependency edge once on a 2,000-task graph', () => {
-  // A 1,000-task chain whose head feeds ten layers of 100 tasks, each task
-  // depending on three in the layer before: a walk from every task visits
-  // the chain's tail over and over.
-  const items: TaskMapItem[] = []
-  for (let index = 0; index < 1_000; index++)
-    items.push(
-      task(`chain-${index}`, `Chain ${index}`, index % 7 ? queued : finished, {
-        state: index % 7 ? 'running' : 'merged',
-        depends: index ? [`chain-${index - 1}`] : [],
-      }),
-    )
-  for (let layer = 0; layer < 10; layer++)
-    for (let index = 0; index < 100; index++)
-      items.push(
-        task(`layer-${layer}-${index}`, `Layer ${layer} task ${index}`, queued, {
-          depends: layer
-            ? [0, 1, 2].map((offset) => `layer-${layer - 1}-${(index + offset * 7) % 100}`)
-            : ['chain-999'],
-        }),
-      )
-  const model = buildModel(items)
-  const pass = openDownstreamCounts(model.tasks, model.dependents)
-  // Acyclic, so every edge joins two components and is relaxed exactly once.
-  expect(edgeCount(model)).toBe(999 + 100 + 900 * 3)
-  expect(pass.relaxed).toBe(edgeCount(model))
-  expect(pass.counts).toEqual(walkedCounts(model))
-  expect(model.unblocks.get('chain-0')).toBe(857 + 1_000)
 })

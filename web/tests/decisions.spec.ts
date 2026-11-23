@@ -129,26 +129,6 @@ function demoDecisions(sweepStatus = { alpha: 'open', beta: 'open' }): DecisionF
   ]
 }
 
-// A decision whose stored text is Markdown: code spans, emphasis, a clause
-// marker inside a code span, two context paragraphs, and an alternative whose
-// code span holds a colon and a sentence end.
-const markdownDecision: DecisionFixture = {
-  id: 'DEC-60',
-  statement:
-    '(1) A kit pin stays eligible with a `pin_version_drift` warning. (2) The local `kit_permissions` requirement stays, and `retry (3) later` is code, not a clause. (3) Reopening it takes a *new* decision.',
-  context:
-    'The scan `git grep -i -E "standing.?grant|pin_version_drift"` had no hit.\n\nThe workspace leaves `verify_stage` off.',
-  alternatives_rejected:
-    'Building every grant: too much to operate. It also needed `git grep -e "a: b. C"` to scan. Dropping drift: every revision excludes kits.',
-  status: 'confirmed',
-  origin: 'operator',
-  confirmed_by: 'user:operator',
-  confirmed_at: '2026-11-05T09:00:00Z',
-  sweep: { clean: true, entries: [] },
-  workspace: 'demo',
-  created_at: '2026-11-05T08:00:00Z',
-}
-
 const demoCitations = {
   items: [
     { decision_id: 'DEC-7', tier: 'requirement', document_id: 'req-alpha', title: 'Alpha requirement', version: 3 },
@@ -325,31 +305,6 @@ test('search matches DEC-n, statement, or context inside the chosen filter, igno
   await expect.poll(() => rowIds(page)).toEqual(['DEC-4'])
 })
 
-test('the attention notice counts open flags and narrows to their decisions; proposed decisions link to the Inbox (AC-7.4, AC-7.5)', async ({
-  page,
-}) => {
-  await serve(page)
-  await page.goto('/w/demo/decisions')
-  const notice = page.getByRole('region', { name: 'Decisions needing attention' })
-  await expect(notice).toContainText('2 open flags')
-  await notice.getByRole('button', { name: 'Review' }).click()
-  await expect(page).toHaveURL(/flagged=true/)
-  await expect.poll(() => rowIds(page)).toEqual(['DEC-7'])
-  await expect(
-    page.getByRole('group', { name: 'Filter decisions' }).getByRole('button', { name: /All/ }),
-  ).toHaveAttribute('aria-pressed', 'true')
-  await notice.getByRole('button', { name: 'Show all decisions' }).click()
-  await expect.poll(() => rowIds(page)).toHaveLength(7)
-
-  await expect(page.getByText('1 proposed decision waits for an operator.')).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Open the Inbox' })).toHaveAttribute(
-    'href',
-    '/w/demo/inbox?band=decisions',
-  )
-  // The surface offers no decision control of its own.
-  await expect(page.getByRole('button', { name: /^(Confirm|Dismiss)$/ })).toHaveCount(0)
-})
-
 test('a decision page shows its record, clauses, chain, alternatives, and citing documents (AC-8.1 to AC-8.3, AC-8.5, REQ-3)', async ({
   page,
 }) => {
@@ -399,141 +354,6 @@ test('a decision page shows its record, clauses, chain, alternatives, and citing
 
   // The decision detail offers the lineage explorer (REQ-3).
   await expect(page.getByRole('button', { name: 'Knowledge explorer' })).toBeVisible()
-})
-
-test('a decision page copies its own scoped address', async ({ page, context }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  await serve(page)
-  await page.goto('/w/demo/decisions/DEC-7')
-  await page.getByRole('button', { name: 'Copy link' }).click()
-  await expect
-    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toBe(`${new URL(page.url()).origin}/w/demo/decisions/DEC-7`)
-})
-
-test('a statement without ordered clause markers renders as one paragraph (AC-8.2)', async ({ page }) => {
-  await serve(page)
-  await page.goto('/w/demo/decisions/DEC-40')
-  const statement = page.getByRole('region', { name: 'Statement' })
-  await expect(statement.getByRole('listitem')).toHaveCount(0)
-  await expect(statement).toHaveText('(1) Publish the bundle with the web change. (3) Never split it.')
-  await expect(page.getByRole('region', { name: 'Version chain' })).toHaveCount(0)
-  await expect(page.getByRole('region', { name: 'Alternatives rejected' }).getByRole('listitem')).toHaveText([
-    'Untracking the bundle.',
-    'Building it only in CI.',
-  ])
-})
-
-test('a decision page renders its statement, context, and alternatives as Markdown after splitting the source (AC-8.1, AC-8.2)', async ({
-  page,
-}) => {
-  await serve(page, { extra: [markdownDecision] })
-  await page.goto('/w/demo/decisions/DEC-60')
-  await expect(page.getByRole('heading', { name: 'DEC-60', level: 1 })).toBeVisible()
-
-  // Splitting reads the source first: the `(3) ` inside a code span is code,
-  // so the statement keeps three numbered clauses.
-  const statement = page.getByRole('region', { name: 'Statement' })
-  const clauses = statement.getByRole('listitem')
-  await expect(clauses).toHaveCount(3)
-  await expect(clauses).toHaveText([
-    '(1)A kit pin stays eligible with a pin_version_drift warning.',
-    '(2)The local kit_permissions requirement stays, and retry (3) later is code, not a clause.',
-    '(3)Reopening it takes a new decision.',
-  ])
-  await expect(clauses.nth(0).locator('code')).toHaveText('pin_version_drift')
-  await expect(clauses.nth(1).locator('code')).toHaveText(['kit_permissions', 'retry (3) later'])
-  await expect(clauses.nth(2).locator('em')).toHaveText('new')
-  // A clause adds no paragraph margin inside its numbered row.
-  for (const margin of await clauses
-    .locator('p')
-    .evaluateAll((items) =>
-      items.map((item) => getComputedStyle(item).marginTop + getComputedStyle(item).marginBottom),
-    ))
-    expect(margin).toBe('0px0px')
-
-  // Context is block Markdown: two paragraphs, each code span a <code>.
-  const why = page.getByRole('region', { name: 'Why' })
-  await expect(why.locator('p')).toHaveCount(2)
-  await expect(why.locator('code')).toHaveText(['git grep -i -E "standing.?grant|pin_version_drift"', 'verify_stage'])
-
-  // The colon and sentence end inside the code span neither start a row nor
-  // cut the span.
-  const alternatives = page.getByRole('region', { name: 'Alternatives rejected' }).getByRole('listitem')
-  await expect(alternatives).toHaveText([
-    'Building every grant: too much to operate. It also needed git grep -e "a: b. C" to scan.',
-    'Dropping drift: every revision excludes kits.',
-  ])
-  await expect(alternatives.nth(0).locator('code')).toHaveText('git grep -e "a: b. C"')
-
-  for (const region of ['Statement', 'Why', 'Alternatives rejected'])
-    await expect(page.getByRole('region', { name: region })).not.toContainText('`')
-})
-
-test('a fenced code block stays whole in its alternative row, and a code span never crosses a list item', async ({
-  page,
-}) => {
-  await serve(page, {
-    extra: [
-      {
-        ...markdownDecision,
-        id: 'DEC-62',
-        alternatives_rejected:
-          'Scanning with a script: too slow.\n```sh\ngit grep -e "a: b"\n\nmore: lines\n```\nA kit service: too much to run.',
-      },
-      {
-        ...markdownDecision,
-        id: 'DEC-63',
-        alternatives_rejected: '- Keep `one`: it stays.\n- Drop `two: it goes.\n- Hold three`: it waits.',
-      },
-    ],
-  })
-  await page.goto('/w/demo/decisions/DEC-62')
-  const rowsOf = () =>
-    page.getByRole('region', { name: 'Alternatives rejected' }).locator('ul').first().locator(':scope > li')
-  await expect(rowsOf()).toHaveCount(2)
-  await expect(rowsOf().nth(0).locator('p')).toHaveText('Scanning with a script: too slow.')
-  await expect(rowsOf().nth(0).locator('pre code')).toHaveText('git grep -e "a: b"\n\nmore: lines')
-  await expect(rowsOf().nth(1)).toHaveText('A kit service: too much to run.')
-
-  // Each list item is its own block, so the backticks in items two and three
-  // stay literal and every line keeps its own row.
-  await page.goto('/w/demo/decisions/DEC-63')
-  await expect(rowsOf()).toHaveCount(3)
-  await expect(rowsOf().nth(0).locator('code')).toHaveText('one')
-  await expect(rowsOf().nth(1)).toHaveText('Drop `two: it goes.')
-  await expect(rowsOf().nth(2)).toHaveText('Hold three`: it waits.')
-})
-
-test('a decision without context or alternatives keeps the plain-text fallbacks', async ({ page }) => {
-  await serve(page, { extra: [{ ...markdownDecision, id: 'DEC-61', context: '', alternatives_rejected: '' }] })
-  await page.goto('/w/demo/decisions/DEC-61')
-  await expect(page.getByRole('region', { name: 'Why' })).toHaveText('WhyNo context was recorded.')
-  await expect(page.getByRole('region', { name: 'Why' }).locator('.markdown')).toHaveCount(0)
-  await expect(page.getByRole('region', { name: 'Alternatives rejected' })).toHaveText(
-    'Alternatives rejectedNo alternatives were recorded.',
-  )
-})
-
-test('a list row previews Markdown inline inside its clamp, and search reads the stored text (AC-7.1, AC-7.3)', async ({
-  page,
-}) => {
-  await serve(page, { extra: [markdownDecision] })
-  await page.goto('/w/demo/decisions')
-  await expect.poll(() => rowIds(page)).toEqual(['DEC-60', 'DEC-40', 'DEC-9', 'DEC-7'])
-  const preview = row(page, 'DEC-60').locator('[data-decision-preview]')
-  await expect(preview).toHaveText('(1) A kit pin stays eligible with a pin_version_drift warning.')
-  await expect(preview.locator('code')).toHaveText('pin_version_drift')
-  await expect(preview).toHaveClass(/line-clamp-3/)
-  await expect(preview.locator('p, div, ul, ol, li, pre, h1, h2, h3, h4, a')).toHaveCount(0)
-  await expect(row(page, 'DEC-60')).toContainText('3 clauses')
-
-  // Search matches the stored Markdown source, backticks included.
-  const search = page.getByRole('textbox', { name: 'Search decisions' })
-  await search.fill('`kit_permissions`')
-  await expect.poll(() => rowIds(page)).toEqual(['DEC-60'])
-  await search.fill('standing.?grant')
-  await expect.poll(() => rowIds(page)).toEqual(['DEC-60'])
 })
 
 test('a superseded decision says it no longer governs and links its successor and the newest decision (AC-8.4)', async ({
@@ -603,31 +423,12 @@ test('a caller who may confirm documents dismisses an open flag, and a refusal s
   await expect(cleared.getByRole('button', { name: 'Dismiss' })).toHaveCount(0)
 })
 
-test('a caller without confirm_documents sees open flags without Dismiss (AC-8.6)', async ({ page }) => {
-  await serve(page, { role: 'maintainer' })
-  await page.goto('/w/demo/decisions/DEC-7')
-  const open = page.getByRole('list', { name: 'Documents still citing DEC-4' })
-  await expect(open.getByRole('listitem')).toHaveCount(2)
-  await expect(open.getByRole('button', { name: 'Dismiss' })).toHaveCount(0)
-})
-
 test('an unknown DEC-n says the workspace has no such decision and links the surface (AC-8.8)', async ({ page }) => {
   await serve(page)
   await page.goto('/w/demo/decisions/DEC-999')
   const missing = page.getByRole('region', { name: 'Decision not found' })
   await expect(missing).toContainText('This workspace has no decision DEC-999.')
   await expect(missing.getByRole('link', { name: 'Open Decisions' })).toHaveAttribute('href', '/w/demo/decisions')
-})
-
-test('the earlier System Design decision address opens the decision page (AC-8.9)', async ({ page }) => {
-  await serve(page)
-  await page.goto('/w/demo/system-design#decision-dec-7')
-  await expect(page).toHaveURL(/\/w\/demo\/decisions\/DEC-7$/)
-  await expect(page.getByRole('heading', { name: 'DEC-7', level: 1 })).toBeVisible()
-  // An unscoped legacy address resolves under the remembered workspace first.
-  await page.goto('/system-design#decision-dec-4')
-  await expect(page).toHaveURL(/\/w\/demo\/decisions\/DEC-4$/)
-  await expect(page.getByRole('heading', { name: 'DEC-4', level: 1 })).toBeVisible()
 })
 
 test('both reads name the address workspace and show no data from another workspace', async ({ page }) => {

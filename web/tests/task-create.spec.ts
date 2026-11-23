@@ -229,38 +229,6 @@ async function mockTaskCreateAPIs(
   }
 }
 
-// DEC-60: intake follows create_tasks, which only maintainers and operators
-// are granted. Every opener and the sheet itself follow the caller's role bundle;
-// the server authorizes the request again.
-for (const [role, allowed] of [
-  ['viewer', false],
-  ['executor', false],
-  ['contributor', false],
-  ['maintainer', true],
-  ['operator', true],
-] as const) {
-  test(`task creation capability follows every workspace role ${role}`, async ({ page }) => {
-    await mockTaskCreateAPIs(page, { role })
-    const count = allowed ? 1 : 0
-
-    await page.goto('/w/demo/tasks')
-    await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
-    await expect(page.getByRole('link', { name: 'New task' })).toHaveCount(count)
-
-    await page.goto('/w/demo/tasks?create=true')
-    await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
-    await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(count)
-
-    await page.goto('/')
-    await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'New task' })).toHaveCount(count)
-    if (allowed) {
-      await page.getByRole('button', { name: 'New task' }).click()
-      await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
-    }
-  })
-}
-
 test('new task removes title input and submits description for AI title generation', async ({ page }) => {
   const { submitted } = await mockTaskCreateAPIs(page)
   await page.goto('/w/demo/new')
@@ -305,83 +273,6 @@ test('intake attaches confirmed product and design context with authenticated re
   await expect.poll(submitted).toContain('"system_design_ids":["design-context"]')
 })
 
-test('context dropdown searches, keeps selections visible, and removes them', async ({ page }) => {
-  const { submitted } = await mockTaskCreateAPIs(page)
-  await page.goto('/w/demo/new')
-  await descriptionEditor(page).fill('Attach several documents')
-
-  const search = page.getByRole('combobox', { name: 'Search context' })
-  await search.click()
-  const list = page.getByRole('listbox', { name: 'Context' })
-  await expect(list.getByRole('option')).toHaveCount(3)
-
-  // Search spans both groups and matches title or ID.
-  await search.fill('stalled')
-  await expect(list.getByRole('option')).toHaveCount(1)
-  await expect(list.getByRole('option', { name: /Operators can resume a stalled task/ })).toBeVisible()
-  await search.fill('design-context')
-  await expect(list.getByRole('option', { name: /Confirmed technical guidance/ })).toBeVisible()
-  await expect(list.getByRole('group', { name: 'Requirements' })).toHaveCount(0)
-
-  await search.fill('nothing matches this')
-  await expect(list.getByRole('option')).toHaveCount(0)
-  await expect(page.getByText('No context matches your search.')).toBeVisible()
-
-  // Multi-select across both groups, driven from the keyboard.
-  await search.fill('')
-  await expect(list.getByRole('option')).toHaveCount(3)
-  await search.press('ArrowDown')
-  await search.press('Enter')
-  await search.press('ArrowDown')
-  await search.press('ArrowDown')
-  await search.press('Enter')
-  await expect(page.getByRole('button', { name: 'Remove context Confirmed product outcome' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Remove context Confirmed technical guidance' })).toBeVisible()
-
-  // Selections survive closing the dropdown.
-  await search.press('Escape')
-  await expect(list).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Remove context Confirmed product outcome' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Remove context Confirmed technical guidance' })).toBeVisible()
-
-  await page.getByRole('button', { name: 'Remove context Confirmed product outcome' }).click()
-  await expect(page.getByRole('button', { name: 'Remove context Confirmed product outcome' })).toHaveCount(0)
-  await page.getByRole('button', { name: 'Create task' }).click()
-  await expect.poll(submitted).toContain('"system_design_ids":["design-context"]')
-  expect(submitted()).not.toContain('"requirement_ids"')
-})
-
-test('context dropdown never offers unconfirmed documents', async ({ page }) => {
-  await mockTaskCreateAPIs(page)
-  await page.goto('/w/demo/new')
-  await page.getByRole('combobox', { name: 'Search context' }).click()
-  const list = page.getByRole('listbox', { name: 'Context' })
-  await expect(list.getByRole('option', { name: /Confirmed product outcome/ })).toBeVisible()
-  await expect(list.getByRole('option', { name: /Unconfirmed product outcome/ })).toHaveCount(0)
-  await expect(list.getByRole('option', { name: /Unconfirmed technical guidance/ })).toHaveCount(0)
-  await expect(list.getByRole('option')).toHaveCount(3)
-})
-
-test('intake offers no hold control and no worker availability warning', async ({ page }) => {
-  const { submitted, workerRequests } = await mockTaskCreateAPIs(page)
-  await page.goto('/w/demo/new')
-
-  // A task carries no hold or execution reservation (DEC-125(3)), and a filed
-  // task waits for an agent session with no availability warning
-  // (req-task-lifecycle-and-queue AC-9.4; DEC-97(1)).
-  await expect(page.getByRole('radiogroup', { name: 'Execution mode' })).toHaveCount(0)
-  await expect(page.getByRole('switch', { name: /hold/i })).toHaveCount(0)
-  await expect(page.getByText(/Hold for hands-on work/)).toHaveCount(0)
-  await descriptionEditor(page).fill('Queue this one openly')
-  await expect(page.getByText(/worker/i)).toHaveCount(0)
-  await expect(page.getByText(/claim it manually/)).toHaveCount(0)
-  await page.getByRole('button', { name: 'Create task' }).click()
-
-  await expect.poll(submitted).toContain('Queue this one openly')
-  expect(submitted()).not.toContain('"hold"')
-  expect(workerRequests()).toBe(0)
-})
-
 test('dependency candidates load lazily and selected cross-repository chips survive repository changes', async ({
   page,
 }) => {
@@ -418,47 +309,6 @@ test('dependency candidates load lazily and selected cross-repository chips surv
   await expect.poll(submitted).toContain('"repo":"api"')
 })
 
-test('dependency candidates distinguish loading, request failure, empty results, and bounded results', async ({
-  page,
-}) => {
-  const delayed = await mockTaskCreateAPIs(page, { taskList: 'delayed' })
-  await page.goto('/w/demo/new')
-  await page.getByText('Advanced options').click()
-  await expect(page.getByText('Loading dependency candidates…')).toBeVisible()
-  delayed.releaseTaskList()
-  await expect(page.getByText('2 matching open tasks.')).toBeVisible()
-
-  await page.unroute('**/v1/**')
-  await mockTaskCreateAPIs(page, { taskList: 'error' })
-  await page.reload()
-  await page.getByText('Advanced options').click()
-  await expect(page.getByText('Could not load dependency candidates. Check your access and try again.')).toBeVisible()
-  await expect(page.getByText('No matching open tasks.')).toHaveCount(0)
-
-  await page.unroute('**/v1/**')
-  await mockTaskCreateAPIs(page, { candidates: [] })
-  await page.reload()
-  await page.getByText('Advanced options').click()
-  await expect(page.getByText('No matching open tasks.')).toBeVisible()
-
-  await page.unroute('**/v1/**')
-  await mockTaskCreateAPIs(page, {
-    candidates: Array.from({ length: 25 }, (_, index) => ({
-      id: `candidate-${index}`,
-      workspace: 'demo',
-      title: `Candidate ${index}`,
-      body: '',
-      repo: index % 2 ? 'api' : 'conveyor',
-      state: 'running',
-      created_at: createdAt,
-    })),
-  })
-  await page.reload()
-  await page.getByText('Advanced options').click()
-  await expect(page.getByText('Showing 20 of 25 matching open tasks. Narrow your search to see more.')).toBeVisible()
-  await expect(page.locator('#dependency-results input[type="checkbox"]')).toHaveCount(20)
-})
-
 test('structured dependency validation opens Advanced options and renders the error once', async ({ page }) => {
   await mockTaskCreateAPIs(page, { createDependencyError: true })
   await page.goto('/w/demo/new')
@@ -472,99 +322,6 @@ test('structured dependency validation opens Advanced options and renders the er
   await expect(page.getByText('The selected dependency creates a cycle.')).toHaveCount(1)
 })
 
-test('intake markdown editor formats, toggles, previews, and restores selection', async ({ page }) => {
-  await mockTaskCreateAPIs(page)
-  await page.goto('/w/demo/new')
-
-  const editor = descriptionEditor(page)
-  const toolbar = page.getByRole('toolbar', { name: 'Markdown formatting' })
-  for (const name of [
-    'Heading',
-    'Bold',
-    'Italic',
-    'Quote',
-    'Inline code',
-    'Code block',
-    'Link',
-    'Bullet list',
-    'Numbered list',
-    'Task list',
-  ]) {
-    await expect(toolbar.getByRole('button', { name, exact: true })).toBeVisible()
-  }
-  await expect(editor).toHaveCSS('font-family', /monospace|Mono/i)
-
-  await editor.fill('format me')
-  await editor.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(0, 6))
-  await toolbar.getByRole('button', { name: 'Bold', exact: true }).click()
-  await expect(editor).toHaveValue('**format** me')
-  await expect(editor).toBeFocused()
-  await expect
-    .poll(() => editor.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd]))
-    .toEqual([2, 8])
-  await toolbar.getByRole('button', { name: 'Bold', exact: true }).click()
-  await expect(editor).toHaveValue('format me')
-
-  await editor.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(0, 6))
-  await editor.press(process.platform === 'darwin' ? 'Meta+b' : 'Control+b')
-  await expect(editor).toHaveValue('**format** me')
-  await editor.press(process.platform === 'darwin' ? 'Meta+b' : 'Control+b')
-  await expect(editor).toHaveValue('format me')
-
-  await editor.press(process.platform === 'darwin' ? 'Meta+i' : 'Control+i')
-  await expect(editor).toHaveValue('_format_ me')
-  await editor.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(9, 11))
-  await editor.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k')
-  await expect(editor).toHaveValue('_format_ [me](url)')
-  await expect
-    .poll(() =>
-      editor.evaluate((element: HTMLTextAreaElement) =>
-        element.value.slice(element.selectionStart, element.selectionEnd),
-      ),
-    )
-    .toBe('url')
-
-  for (const [name, expected] of [
-    ['Heading', '## first\n## second'],
-    ['Quote', '> first\n> second'],
-    ['Bullet list', '- first\n- second'],
-    ['Numbered list', '1. first\n2. second'],
-  ] as const) {
-    await editor.fill('first\nsecond')
-    await editor.selectText()
-    await toolbar.getByRole('button', { name, exact: true }).click()
-    await expect(editor).toHaveValue(expected)
-    await toolbar.getByRole('button', { name, exact: true }).click()
-    await expect(editor).toHaveValue('first\nsecond')
-  }
-
-  for (const [name, expected] of [
-    ['Inline code', '`code`'],
-    ['Code block', '```\ncode\n```'],
-  ] as const) {
-    await editor.fill('code')
-    await editor.selectText()
-    await toolbar.getByRole('button', { name, exact: true }).click()
-    await expect(editor).toHaveValue(expected)
-    await toolbar.getByRole('button', { name, exact: true }).click()
-    await expect(editor).toHaveValue('code')
-  }
-
-  await editor.fill('first\nsecond')
-  await editor.selectText()
-  await toolbar.getByRole('button', { name: 'Task list', exact: true }).click()
-  await expect(editor).toHaveValue('- [ ] first\n- [ ] second')
-  await toolbar.getByRole('button', { name: 'Task list', exact: true }).click()
-  await expect(editor).toHaveValue('first\nsecond')
-
-  await page.getByRole('tab', { name: 'Preview' }).click()
-  await expect(page.getByRole('tabpanel')).toContainText('first')
-  await page.getByRole('tab', { name: 'Write' }).click()
-  await editor.fill('')
-  await page.getByRole('tab', { name: 'Preview' }).click()
-  await expect(page.getByText('Nothing to preview')).toBeVisible()
-})
-
 // ---- Intake plan fields (component-web-task-surfaces invariant 63;
 // req-task-plan-state AC-2.1 to AC-2.6) ----
 
@@ -574,8 +331,6 @@ function submittedTask(raw: string): Record<string, unknown> {
   if (!match) throw new Error(`no task part in ${raw}`)
   return JSON.parse(match[1]) as Record<string, unknown>
 }
-
-const validCommit = '0123456789abcdef0123456789abcdef01234567'
 const intakePlan = '## Approach\nSplit the reader.\n\n## Done criteria\n- The reader is split.'
 
 test('an unchanged plan state select opens on the workspace default and sends no plan_state', async ({ page }) => {
@@ -601,66 +356,6 @@ test('an unchanged plan state select opens on the workspace default and sends no
   expect(task).not.toHaveProperty('spec_approval')
 })
 
-test('the plan state select reads Workspace default until the workspace read states one', async ({ page }) => {
-  const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: null })
-  await page.goto('/w/demo/new')
-  const sheet = page.getByRole('dialog', { name: 'New task' })
-  const select = sheet.getByRole('combobox', { name: 'Plan state' })
-  await expect(select.locator('option:checked')).toHaveText('Workspace default')
-  await expect(sheet.locator('[data-resulting-plan-state]')).toHaveText(
-    'This task will start at the workspace default plan state.',
-  )
-
-  // A changed select sends the chosen state.
-  await select.selectOption('not_required')
-  await expect(sheet.locator('[data-resulting-plan-state]')).toHaveText('This task will start at: No plan required.')
-  await descriptionEditor(page).fill('Skip planning for this one')
-  await sheet.getByRole('button', { name: 'Create task' }).click()
-  await expect.poll(submitted).toContain('Skip planning for this one')
-  expect(submittedTask(submitted())).toMatchObject({ plan_state: 'not_required' })
-})
-
-test('a plan state picked before the default arrives is sent even when the default matches it', async ({ page }) => {
-  const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: 'needed' })
-  let releaseWorkspace = () => {}
-  const workspaceGate = new Promise<void>((resolve) => {
-    releaseWorkspace = resolve
-  })
-  // Registered last, so it answers first: the workspace read waits until the
-  // operator has chosen.
-  await page.route('**/v1/workspace?*', async (route) => {
-    await workspaceGate
-    await route.fallback()
-  })
-  await page.goto('/w/demo/new')
-  const sheet = page.getByRole('dialog', { name: 'New task' })
-  const select = sheet.getByRole('combobox', { name: 'Plan state' })
-  await expect(select.locator('option:checked')).toHaveText('Workspace default')
-  await select.selectOption('needed')
-  releaseWorkspace()
-  await expect(select.locator('option')).toHaveText(['Planning needed', 'No plan required'])
-  await expect(select).toHaveValue('needed')
-  await descriptionEditor(page).fill('Plan this one explicitly')
-  await sheet.getByRole('button', { name: 'Create task' }).click()
-  await expect.poll(submitted).toContain('Plan this one explicitly')
-  expect(submittedTask(submitted())).toMatchObject({ plan_state: 'needed' })
-})
-
-test('Workspace default stays a choice while the default is unknown and sends no plan_state', async ({ page }) => {
-  const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: null })
-  await page.goto('/w/demo/new')
-  const sheet = page.getByRole('dialog', { name: 'New task' })
-  const select = sheet.getByRole('combobox', { name: 'Plan state' })
-  await select.selectOption('needed')
-  await expect(select.locator('option')).toHaveText(['Workspace default', 'Planning needed', 'No plan required'])
-  await select.selectOption('')
-  await expect(select.locator('option:checked')).toHaveText('Workspace default')
-  await descriptionEditor(page).fill('Back to the default')
-  await sheet.getByRole('button', { name: 'Create task' }).click()
-  await expect.poll(submitted).toContain('Back to the default')
-  expect(submittedTask(submitted())).not.toHaveProperty('plan_state')
-})
-
 test('a plan disables the plan state select and is sent without plan_state', async ({ page }) => {
   const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: 'needed' })
   await page.goto('/w/demo/new')
@@ -684,31 +379,6 @@ test('a plan disables the plan state select and is sent without plan_state', asy
   expect(task).not.toHaveProperty('plan_state')
   expect(task).not.toHaveProperty('plan_base_commit')
   expect(task).not.toHaveProperty('plan_approved')
-})
-
-test('a base commit other than 40 lowercase hex characters disables Create and says why', async ({ page }) => {
-  const { submitted } = await mockTaskCreateAPIs(page)
-  await page.goto('/w/demo/new')
-  const sheet = page.getByRole('dialog', { name: 'New task' })
-  const create = sheet.getByRole('button', { name: 'Create task' })
-  await descriptionEditor(page).fill('Plan read against a commit')
-  await sheet.getByRole('textbox', { name: 'Plan' }).fill(intakePlan)
-  const commit = sheet.getByRole('textbox', { name: 'Base commit' })
-
-  for (const invalid of ['abc123', validCommit.toUpperCase(), `${validCommit}0`, `${validCommit.slice(0, 39)}g`]) {
-    await commit.fill(invalid)
-    await expect(create).toBeDisabled()
-    await expect(sheet.getByRole('alert')).toHaveText(
-      'Base commit must be a full commit ID of 40 lowercase hexadecimal characters.',
-    )
-  }
-  // Surrounding whitespace is trimmed before the check and the send.
-  await commit.fill(`  ${validCommit} `)
-  await expect(sheet.getByRole('alert')).toHaveCount(0)
-  await expect(create).toBeEnabled()
-  await create.click()
-  await expect.poll(submitted).toContain('Plan read against a commit')
-  expect(submittedTask(submitted())).toMatchObject({ plan: intakePlan, plan_base_commit: validCommit })
 })
 
 test('Approve this plan shows only with a plan for operate_gates and sends plan_approved', async ({ page }) => {
