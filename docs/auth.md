@@ -334,7 +334,10 @@ refused.
 The `authorization_endpoint` is the dashboard page `/oauth/authorize`. It
 reads the session-only consent API under `/v1`, so the `conveyor_session`
 cookie stays at `Path=/v1` and `SameSite=Strict`. A personal access token or
-OAuth token is refused on this API with 401.
+OAuth token is refused on this API with 401. In fact, any request that
+carries an `Authorization` header, whatever its scheme or letter case, is
+refused with 401 before the session cookie is read, so a header never falls
+back to the cookie.
 
 `GET /v1/oauth/authorize?<the client's authorization query>` checks the
 request and changes nothing. The query takes `response_type` (`code`),
@@ -442,9 +445,10 @@ again.
 
   `DELETE /v1/oauth/grants/{grant_id}` revokes one of your
   grants and answers it; any other ID answers 404. Both routes accept only a
-  dashboard session, like consent. A personal access token or an OAuth token
-  is refused with 401, also when it comes with a valid session cookie. A
-  `DELETE` needs the session's CSRF proof.
+  dashboard session, like consent. Any request with an `Authorization`
+  header, such as a personal access token or an OAuth token in any scheme
+  spelling, is refused with 401, also when it comes with a valid session
+  cookie. A `DELETE` needs the session's CSRF proof.
 - **By deactivation.** When the instance administrator deactivates an
   account, all of its OAuth tokens are refused at their next use.
 

@@ -831,6 +831,69 @@ func TestOAuthExpiredUnusedClientIsRefusedAndCleanupKeepsActiveGrants(t *testing
 
 // --- Consent (AC-3.2 to AC-3.4) ---
 
+// TestOAuthSessionRoutesRefuseAnyAuthorizationHeader proves that the four
+// dashboard-session mounts refuse a request that carries any Authorization
+// header beside a valid session cookie, whatever the scheme spelling, before
+// the cookie is read: no code is issued and no grant changes. The
+// cookie-only requests still succeed (approved plan v1;
+// component-identity-membership invariants 52 and 54).
+func TestOAuthSessionRoutesRefuseAnyAuthorizationHeader(t *testing.T) {
+	h := newOAuthHarness(t)
+	clientID, pair := h.grant()
+	grants, err := h.st.ListOwnOAuthGrants(t.Context(), h.member.ID)
+	if err != nil || len(grants) != 1 {
+		t.Fatal(grants, err)
+	}
+	grantID := grants[0].ID
+	issued := len(h.oauth.issued)
+	query := "/v1/oauth/authorize?" + oauthAuthorizeQuery(clientID, oauthTestRedirect, "s")
+	mounts := []oauthRequest{
+		{method: http.MethodGet, path: query},
+		{method: http.MethodPost, path: "/v1/oauth/authorize", body: oauthDecisionBody("approve", clientID, oauthTestRedirect, "s"), contentType: "application/json", proof: true},
+		{method: http.MethodGet, path: "/v1/oauth/grants"},
+		{method: http.MethodDelete, path: "/v1/oauth/grants/" + grantID, proof: true},
+	}
+	for _, authorization := range []string{
+		"Bearer " + h.memberPAT, "bearer " + h.memberPAT, "BEARER " + h.memberPAT, "bEaReR " + h.memberPAT,
+		"Basic bWVtYmVyOnBhc3N3b3Jk", "Token " + h.memberPAT, "",
+	} {
+		for _, mount := range mounts {
+			request := mount
+			request.session = h.memberSession
+			request.header = map[string]string{"Authorization": authorization}
+			response := h.do(request)
+			if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") != "Bearer" {
+				t.Fatalf("%s %s with Authorization %q: status=%d body=%s", mount.method, mount.path, strings.Fields(authorization + " -")[0], response.Code, response.Body.String())
+			}
+			expectNoStore(t, response)
+		}
+	}
+	if len(h.oauth.issued) != issued {
+		t.Fatalf("a refused consent issued %d codes", len(h.oauth.issued)-issued)
+	}
+	if listed, err := h.st.ListOwnOAuthGrants(t.Context(), h.member.ID); err != nil || len(listed) != 1 || listed[0].ID != grantID {
+		t.Fatalf("grants after refused requests = %+v, %v", listed, err)
+	}
+	if result := h.mcp(pair.AccessToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); result.status != http.StatusOK {
+		t.Fatalf("token after refused requests: %+v", result)
+	}
+	// The same requests with the cookie alone succeed.
+	for index, mount := range mounts {
+		request := mount
+		request.session = h.memberSession
+		response := h.do(request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("cookie-only %s %s: status=%d body=%s", mount.method, mount.path, response.Code, response.Body.String())
+		}
+		if index == 1 && len(h.oauth.issued) != issued+1 {
+			t.Fatalf("cookie-only approval issued %d codes", len(h.oauth.issued)-issued)
+		}
+	}
+	if listed, err := h.st.ListOwnOAuthGrants(t.Context(), h.member.ID); err != nil || len(listed) != 0 {
+		t.Fatalf("grants after cookie-only revoke = %+v, %v", listed, err)
+	}
+}
+
 func TestOAuthConsentIsSessionOnly(t *testing.T) {
 	h := newOAuthHarness(t)
 	clientID, pair := h.grant()

@@ -428,6 +428,23 @@ func (o oauthServer) requireGrantAudience(ctx context.Context, credential core.A
 	return core.ErrInvalidCredential
 }
 
+// refuseAuthorizationHeader refuses, with 401, any request that carries an
+// Authorization header at all, whatever its scheme or spelling, before the
+// session cookie is read. It guards only the dashboard-session consent and
+// grant mounts, so a bearer of any scheme spelling never falls back to the
+// cookie there (approved plan v1; component-identity-membership invariants
+// 52 and 54). Other routes keep authenticateHumanCredential's own rule.
+func refuseAuthorizationHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, present := r.Header["Authorization"]; present {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // requireDashboardSession admits only a dashboard session, after
 // requireSelfServiceCredential authenticated it, so consent and grant
 // management never accept a personal access token or an OAuth token

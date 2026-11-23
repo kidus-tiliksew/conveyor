@@ -325,10 +325,10 @@ func (s *Server) Handler() http.Handler {
 		// approved plan v1 states, and keep the owner scope of the
 		// self-service class (component-identity-membership invariants 52
 		// and 54).
-		r.With(oauthNoStore, s.requireOAuthEnabled, s.requireSelfServiceCredential, requireDashboardSession).Get("/oauth/authorize", s.getOAuthAuthorization)
-		r.With(oauthNoStore, s.requireOAuthEnabled, s.requireSelfServiceCredential, requireDashboardSession).Post("/oauth/authorize", s.postOAuthAuthorization)
-		r.With(oauthNoStore, s.requireOAuthStore, s.requireSelfServiceCredential, requireDashboardSession).Get("/oauth/grants", s.listOwnOAuthGrants)
-		r.With(oauthNoStore, s.requireOAuthStore, s.requireSelfServiceCredential, requireDashboardSession).Delete("/oauth/grants/{grant_id}", s.revokeOwnOAuthGrant)
+		r.With(oauthNoStore, s.requireOAuthEnabled, refuseAuthorizationHeader, s.requireSelfServiceCredential, requireDashboardSession).Get("/oauth/authorize", s.getOAuthAuthorization)
+		r.With(oauthNoStore, s.requireOAuthEnabled, refuseAuthorizationHeader, s.requireSelfServiceCredential, requireDashboardSession).Post("/oauth/authorize", s.postOAuthAuthorization)
+		r.With(oauthNoStore, s.requireOAuthStore, refuseAuthorizationHeader, s.requireSelfServiceCredential, requireDashboardSession).Get("/oauth/grants", s.listOwnOAuthGrants)
+		r.With(oauthNoStore, s.requireOAuthStore, refuseAuthorizationHeader, s.requireSelfServiceCredential, requireDashboardSession).Delete("/oauth/grants/{grant_id}", s.revokeOwnOAuthGrant)
 		r.With(s.requireWorkspaceCreation).Post("/workspaces", s.createWorkspace)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
