@@ -1309,6 +1309,43 @@ export interface IssuedPersonalAccessToken extends PersonalAccessToken {
   value: string
 }
 
+// The verified authorization request that `GET /v1/oauth/authorize` serves to
+// the consent page (req-mcp-oauth AC-3.2; component-web-dashboard invariant 37).
+// Only a metadata-document client has an `origin`.
+export type OAuthClientKind = 'metadata_document' | 'dynamic_registration'
+
+export interface OAuthConsentView {
+  client: {
+    client_id: string
+    client_name: string
+    kind: OAuthClientKind
+    origin?: string
+  }
+  redirect_host: string
+  user: { id: string; email?: string; display_name?: string }
+  resource: string
+}
+
+export type OAuthDecision = 'approve' | 'deny'
+
+// Both decisions answer only the address the browser opens next: the verified
+// redirect URI with a code, or with `error=access_denied`.
+export interface OAuthDecisionResult {
+  redirect_to: string
+}
+
+// One row of `GET /v1/oauth/grants`. The served projection carries no token
+// value or hash, and this type holds no field for one (req-mcp-oauth AC-4.5).
+export interface OAuthGrant {
+  id: string
+  client_id: string
+  client_name: string
+  resource: string
+  created_at: string
+  last_used_at: string | null
+  revoked_at?: string
+}
+
 // req-delivery-and-forge AC-1.5: the read model contains no app credentials.
 export interface WorkspaceGitHubAppStatus {
   connected: boolean

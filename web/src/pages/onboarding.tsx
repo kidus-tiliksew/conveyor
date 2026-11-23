@@ -1,10 +1,10 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { useLocation, useNavigate } from '@tanstack/react-router'
 import { LoaderCircle, UserRoundCheck } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
-import { fetchOwnProfile, updateOwnDisplayName, updateOwnPassword } from '../lib/api'
+import { fetchOwnProfile, oauthReturnPathFromSearch, updateOwnDisplayName, updateOwnPassword } from '../lib/api'
 
 export function OnboardingPage() {
   const navigate = useNavigate()
@@ -15,6 +15,10 @@ export function OnboardingPage() {
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
+  // A validated return to the OAuth consent page that sign-in carried here,
+  // or undefined (req-mcp-oauth AC-3.1).
+  const searchStr = useLocation({ select: (location) => location.searchStr })
+  const returnPath = oauthReturnPathFromSearch(searchStr)
 
   useEffect(() => {
     let active = true
@@ -45,7 +49,10 @@ export function OnboardingPage() {
       await updateOwnDisplayName(displayName)
       await updateOwnPassword('', password)
       queryClient.clear()
-      await navigate({ to: '/', replace: true })
+      // The consent page opens as a new document, so the router never
+      // rewrites the authorization query it carries.
+      if (returnPath) window.location.replace(returnPath)
+      else await navigate({ to: '/', replace: true })
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not complete profile setup.')
     } finally {

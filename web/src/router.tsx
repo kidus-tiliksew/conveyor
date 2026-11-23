@@ -15,6 +15,7 @@ import { CratesPage, validateCratesSearch } from './pages/crates'
 import { DecisionPage, DecisionsPage } from './pages/decisions'
 import { InboxPage } from './pages/inbox'
 import { MonitorPage } from './pages/monitor'
+import { OAuthAuthorizePage } from './pages/oauth-authorize'
 import { OnboardingPage } from './pages/onboarding'
 import { PlanningPage } from './pages/planning'
 import { RequirementsPage } from './pages/requirements'
@@ -146,18 +147,33 @@ const settingsRoute = createRoute({
   }),
   component: SettingsPage,
 })
+// `next` is kept as the router reads it, so a navigation can carry it. The
+// pages read and validate the raw value themselves (req-mcp-oauth AC-3.1).
+const returnPathSearch = (search: Record<string, unknown>): { next?: string } => ({
+  next: typeof search.next === 'string' && search.next ? search.next : undefined,
+})
 const signInRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/sign-in',
-  validateSearch: (search: Record<string, unknown>): { token?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { token?: string; next?: string } => ({
     token: typeof search.token === 'string' && search.token ? search.token : undefined,
+    ...returnPathSearch(search),
   }),
   component: SignInPage,
 })
 const onboardingRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/onboarding',
+  validateSearch: returnPathSearch,
   component: OnboardingPage,
+})
+// The OAuth consent page keeps an unscoped address outside the workspace
+// shell (component-web-dashboard invariants 1 and 37; DEC-146(3)). Its query
+// is the client's authorization request, read as the raw string.
+const oauthAuthorizeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/oauth/authorize',
+  component: OAuthAuthorizePage,
 })
 const requirementsRoute = createRoute({
   getParentRoute: () => workspaceLayoutRoute,
@@ -299,6 +315,7 @@ const routeTree = rootRoute.addChildren([
   createWorkspaceRoute,
   signInRoute,
   onboardingRoute,
+  oauthAuthorizeRoute,
 ])
 // The Board keeps its trailing slash, so its address reads `/w/<id>/`.
 export const router = createRouter({ routeTree, trailingSlash: 'preserve' })
