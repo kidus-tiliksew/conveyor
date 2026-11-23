@@ -77,61 +77,121 @@ const (
 func oauthActor() store.Actor { return store.SystemActor("oauth") }
 
 // oauthIssuerFromPublicURL returns the issuer that publicURL names, or false
-// when it is not a canonical origin: `https://host[:port]`, or loopback
-// `http://` for local development, in lowercase, with no user information,
-// path, query, or fragment (req-mcp-oauth AC-1.1, AC-1.4). Nothing derives an
-// issuer from a request's Host header.
+// when publicURL is not exactly its own canonical origin (req-mcp-oauth
+// AC-1.1, AC-1.4; component-identity-membership invariant 50; DEC-146(1)).
+// One rule decides: canonicalOAuthOrigin builds the canonical spelling from
+// the parsed value, and OAuth is enabled only when the configured value
+// equals it byte for byte. So the issuer, every advertised endpoint, and the
+// session Origin comparison, which reads the same configured value, all use
+// one string, the one a browser sends as Origin. Nothing derives an issuer
+// from a request's Host header.
 func oauthIssuerFromPublicURL(publicURL string) (string, bool) {
-	if publicURL == "" || strings.ContainsAny(publicURL, "?#@\\") || hasOAuthControlOrSpace(publicURL) {
-		return "", false
-	}
-	parsed, err := url.Parse(publicURL)
-	if err != nil || parsed.User != nil || parsed.Opaque != "" || parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
-		return "", false
-	}
-	host := parsed.Hostname()
-	// An authority that ends in a colon names an empty port, which is not
-	// canonical; a bracketed IPv6 host without a port ends in "]".
-	if host == "" || parsed.Host != strings.ToLower(parsed.Host) || strings.HasSuffix(parsed.Host, ":") {
-		return "", false
-	}
-	// A bracketed authority must hold an IPv6 literal without a zone; Go's
-	// URL parser accepts any bracketed text, such as [conveyor.example]. An
-	// unbracketed host must hold no colon: Go splits http://::1:8080 into
-	// host ::1 and port 8080, which is not a valid origin. A host that ends
-	// in a dot is a different origin from the same name without it, so it is
-	// not canonical either.
-	if strings.HasPrefix(parsed.Host, "[") {
-		literal, literalErr := netip.ParseAddr(host)
-		if literalErr != nil || !literal.Is6() || literal.Zone() != "" {
-			return "", false
-		}
-	} else if strings.Contains(host, ":") || strings.HasSuffix(host, ".") {
-		return "", false
-	}
-	if port := parsed.Port(); port != "" {
-		number, portErr := strconv.Atoi(port)
-		if portErr != nil || number < 1 || number > 65535 || strconv.Itoa(number) != port {
-			return "", false
-		}
-		if (parsed.Scheme == "https" && port == "443") || (parsed.Scheme == "http" && port == "80") {
-			return "", false
-		}
-	}
-	switch parsed.Scheme {
-	case "https":
-	case "http":
-		if !oauthLoopbackHost(host) {
-			return "", false
-		}
-	default:
-		return "", false
-	}
-	canonical := parsed.Scheme + "://" + parsed.Host
-	if canonical != publicURL {
+	canonical, ok := canonicalOAuthOrigin(publicURL)
+	if !ok || canonical != publicURL {
 		return "", false
 	}
 	return canonical, true
+}
+
+// canonicalOAuthOrigin parses raw and builds its canonical origin:
+//   - a lowercase scheme, https, or http only for a loopback host;
+//   - a lowercase DNS name with no trailing dot, no empty label, labels of
+//     at most 63 bytes, a name of at most 253 bytes, and a last label that is
+//     not all digits, so a malformed IPv4 address is never read as a name;
+//   - or an IP address written as netip.Addr.String() renders it, an IPv6
+//     address in brackets, with no zone and not IPv4-mapped;
+//   - a decimal port from 1 to 65535, left out when it is the scheme's
+//     default.
+//
+// raw must hold no user information, query, or fragment, and no path other
+// than "/". It reports false when no canonical origin exists. The caller
+// compares raw with the result, so every other spelling is refused.
+func canonicalOAuthOrigin(raw string) (string, bool) {
+	if raw == "" || strings.ContainsAny(raw, "\\") || hasOAuthControlOrSpace(raw) {
+		return "", false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Opaque != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery ||
+		parsed.Fragment != "" || parsed.RawFragment != "" || parsed.RawPath != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	defaultPort := map[string]string{"https": "443", "http": "80"}[scheme]
+	if defaultPort == "" {
+		return "", false
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return "", false
+	}
+	bracketed := strings.HasPrefix(parsed.Host, "[")
+	var canonicalHost string
+	if address, addrErr := netip.ParseAddr(host); addrErr == nil {
+		if address.Zone() != "" || address.Is4In6() {
+			return "", false
+		}
+		if address.Is6() {
+			if !bracketed {
+				return "", false
+			}
+			canonicalHost = "[" + address.String() + "]"
+		} else {
+			if bracketed {
+				return "", false
+			}
+			canonicalHost = address.String()
+		}
+	} else {
+		if bracketed {
+			return "", false
+		}
+		name, nameOK := canonicalOAuthDNSName(host)
+		if !nameOK {
+			return "", false
+		}
+		canonicalHost = name
+	}
+	if scheme == "http" && !oauthLoopbackHost(strings.Trim(canonicalHost, "[]")) {
+		return "", false
+	}
+	canonical := scheme + "://" + canonicalHost
+	if port := parsed.Port(); port != "" {
+		number, portErr := strconv.Atoi(port)
+		if portErr != nil || number < 1 || number > 65535 {
+			return "", false
+		}
+		if decimal := strconv.Itoa(number); decimal != defaultPort {
+			canonical += ":" + decimal
+		}
+	}
+	return canonical, true
+}
+
+// canonicalOAuthDNSName lowercases a DNS host name and reports whether it is
+// a valid name: letters, digits, and hyphens in labels of 1 to 63 bytes that
+// neither start nor end with a hyphen, at most 253 bytes in all, with no
+// trailing dot, and a last label that is not all digits.
+func canonicalOAuthDNSName(host string) (string, bool) {
+	name := strings.ToLower(host)
+	if name == "" || len(name) > 253 {
+		return "", false
+	}
+	labels := strings.Split(name, ".")
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				return "", false
+			}
+		}
+	}
+	last := labels[len(labels)-1]
+	if strings.Trim(last, "0123456789") == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // oauthLoopbackHost reports whether host is one of the three loopback names

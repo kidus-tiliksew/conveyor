@@ -234,15 +234,28 @@ recorded as your act.
 
 ### Enabling it
 
-OAuth is on only when `CONVEYOR_PUBLIC_URL` is a canonical origin:
+OAuth is on only when `CONVEYOR_PUBLIC_URL` is written exactly as its own
+canonical origin, the form a browser sends in its `Origin` header. Conveyor
+builds that form from the setting and compares the two byte for byte:
 
-- `https://<host>` or `https://<host>:<port>`, in lowercase, with no path,
-  query, fragment, or user information and no default port. A bracketed host
-  must be an IPv6 literal without a zone, such as `[2001:db8::1]`. An IPv6
-  address must be bracketed, so `http://::1:8080` is refused. A host that ends
-  in a dot is refused; or
-- for local development, `http://127.0.0.1`, `http://[::1]`, or
-  `http://localhost`, with an optional port.
+- The scheme is `https`, or `http` for local development on `127.0.0.1`,
+  `[::1]`, or `localhost` only. It is in lowercase.
+- A DNS name is in lowercase, with no trailing dot and no empty label. Each
+  label holds 1 to 63 letters, digits, or hyphens and does not start or end
+  with a hyphen, the name is at most 253 bytes, and its last label is not all
+  digits.
+- An IP address is written in its shortest standard form: `10.0.0.1`, not
+  `010.0.0.1`, and `[2001:db8::1]`, not `[2001:0db8:0:0:0:0:0:1]`. An IPv6
+  address is in brackets, has no zone, and is not IPv4-mapped.
+- A port is decimal, from 1 to 65535, and is left out when it is the default
+  (`443` for `https`, `80` for `http`).
+- There is no user information, path, query, or fragment.
+
+For example, `https://conveyor.example`, `https://conveyor.example:8443`,
+`http://127.0.0.1:8080`, `http://[::1]:8080`, and `http://localhost:8080` turn
+OAuth on. `https://Conveyor.example`, `https://conveyor.example:443`,
+`http://::1:8080`, and `https://[2001:0db8::1]` do not. The issuer, every
+advertised endpoint, and the consent `Origin` check all use this one string.
 
 A trailing slash is removed when the setting is read. When the setting is
 unset or is not such an origin, the discovery documents, registration,

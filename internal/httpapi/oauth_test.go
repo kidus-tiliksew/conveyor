@@ -396,28 +396,84 @@ const oauthResourceChallenge = `Bearer resource_metadata="https://conveyor.examp
 
 // --- Public URL gate and discovery (AC-1.1 to AC-1.4) ---
 
+// TestOAuthIssuerAcceptsOnlyCanonicalOrigins is the one table for the public
+// URL rule (req-mcp-oauth AC-1.1, AC-1.4; component-identity-membership
+// invariant 50). Every row runs through the router: a refused value answers
+// the JSON discovery refusal and a bare Bearer challenge on /mcp, and a
+// valid value enables discovery and names itself in the challenge.
 func TestOAuthIssuerAcceptsOnlyCanonicalOrigins(t *testing.T) {
-	valid := []string{"https://conveyor.example", "https://conveyor.example:8443", "http://127.0.0.1:8080", "http://localhost:8080", "http://localhost", "http://[::1]:8080", "https://10.0.0.1"}
+	valid := []string{
+		"https://conveyor.example", "https://conveyor.example:8443", "http://127.0.0.1:8080", "http://[::1]:8080",
+		"http://localhost:8080", "http://localhost", "https://10.0.0.1", "https://[2001:db8::1]", "https://a-b.example.co",
+		"https://" + strings.Repeat("a", 63) + ".example",
+	}
+	refused := []string{
+		// Not an origin, or an unsupported scheme.
+		"", "conveyor.example", "ftp://conveyor.example", "https://", " https://conveyor.example", "https://conveyor.example\\x",
+		// HTTP is for loopback only.
+		"http://conveyor.example", "http://127.0.0.2", "http://localhost.example", "http://10.0.0.1:8080",
+		// A path, a trailing slash, a query, a fragment, or user information.
+		"https://conveyor.example/", "https://conveyor.example/base", "https://conveyor.example?x=1", "https://conveyor.example?",
+		"https://conveyor.example#frag", "https://conveyor.example#", "https://user@conveyor.example", "https://user:pass@conveyor.example",
+		// Uppercase scheme or host.
+		"HTTPS://conveyor.example", "Https://conveyor.example", "https://Conveyor.example", "https://CONVEYOR.EXAMPLE", "http://LOCALHOST:8080",
+		// An explicit default port, an empty, zero, out-of-range, or padded port.
+		"https://conveyor.example:443", "http://localhost:80", "http://127.0.0.1:80", "http://[::1]:80",
+		"https://conveyor.example:", "http://[::1]:", "http://localhost:", "https://conveyor.example:0", "https://conveyor.example:65536",
+		"https://conveyor.example:99999", "https://conveyor.example:08443",
+		// A bracketed authority that is not an IPv6 literal, or a zoned one.
+		"https://[conveyor.example]", "https://[conveyor.example]:8443", "http://[localhost]:8080", "https://[10.0.0.1]", "https://[fe80::1%25eth0]",
+		// An unbracketed IPv6 host, or an empty host.
+		"http://::1:8080", "http://::1", "https://2001:db8::1", "https://2001:db8::1:8443", "https://:8443",
+		// A noncanonical IPv6 spelling.
+		"https://[2001:0db8:0:0:0:0:0:1]", "https://[2001:DB8::1]", "http://[0:0:0:0:0:0:0:1]:8080", "http://[::0001]:8080",
+		// An IPv4-mapped IPv6 literal.
+		"http://[::ffff:127.0.0.1]:8080", "https://[::ffff:10.0.0.1]", "https://[::ffff:a00:1]",
+		// A noncanonical IPv4 spelling, which is not a DNS name either.
+		"http://127.000.000.001:8080", "http://127.0.0.01:8080", "https://010.0.0.1", "http://0x7f.0.0.1:8080", "https://10.0.1", "https://1.2.3.4.5",
+		// A trailing dot, an empty label, an invalid label, or an overlong name.
+		"https://conveyor.example.", "http://localhost.:8080", "http://127.0.0.1.:8080", "https://a..b", "https://.conveyor.example",
+		"https://-conveyor.example", "https://conveyor-.example", "https://conveyor_dev.example", "https://conveyor%2Eexample",
+		"https://" + strings.Repeat("a", 64) + ".example",
+		"https://" + strings.Repeat(strings.Repeat("a", 50)+".", 5) + "example",
+	}
+	if long := strings.Repeat(strings.Repeat("a", 50)+".", 5) + "example"; len(long) <= 253 {
+		t.Fatalf("overlong name row is only %d bytes", len(long))
+	}
+	h := newOAuthHarness(t)
+	discover := func(publicURL string) (*httptest.ResponseRecorder, oauthMCPResult) {
+		h.server.InvitationDelivery.PublicURL = publicURL
+		response := h.do(oauthRequest{method: http.MethodGet, path: "/.well-known/oauth-protected-resource/mcp", header: map[string]string{"Host": "attacker.example"}})
+		return response, h.mcp("", getStagePreferencesTool, map[string]any{"workspace_id": "alpha"})
+	}
 	for _, value := range valid {
 		if issuer, ok := oauthIssuerFromPublicURL(value); !ok || issuer != value {
 			t.Errorf("oauthIssuerFromPublicURL(%q) = %q, %v; want the value itself", value, issuer, ok)
+			continue
+		}
+		response, challenge := discover(value)
+		if response.Code != http.StatusOK || decodeOAuthJSON(t, response)["resource"] != value+"/mcp" {
+			t.Errorf("%q: discovery status=%d body=%s", value, response.Code, response.Body.String())
+		}
+		if want := `Bearer resource_metadata="` + value + `/.well-known/oauth-protected-resource/mcp"`; challenge.status != http.StatusUnauthorized || challenge.header.Get("WWW-Authenticate") != want {
+			t.Errorf("%q: challenge=%q", value, challenge.header.Get("WWW-Authenticate"))
 		}
 	}
-	invalid := []string{
-		"", "conveyor.example", "http://conveyor.example", "https://conveyor.example/", "https://conveyor.example/base",
-		"https://conveyor.example?x=1", "https://conveyor.example?", "https://conveyor.example#frag", "https://user@conveyor.example",
-		"https://user:pass@conveyor.example", "https://Conveyor.example", "HTTPS://conveyor.example", "https://conveyor.example:443",
-		"http://localhost:80", "ftp://conveyor.example", "https://", "https://conveyor.example:0", "https://conveyor.example:99999",
-		"https://conveyor.example:08443", "http://127.0.0.2", "http://localhost.example", " https://conveyor.example", "https://conveyor.example\\x",
-		"https://conveyor.example:", "http://[::1]:", "http://localhost:",
-		// A bracketed authority must be an IPv6 literal without a zone.
-		"https://[conveyor.example]", "https://[conveyor.example]:8443", "http://[localhost]:8080", "https://[10.0.0.1]", "https://[fe80::1%25eth0]",
-		// An unbracketed IPv6 host, an empty host, and a trailing dot.
-		"http://::1:8080", "http://::1", "https://2001:db8::1", "https://2001:db8::1:8443", "https://:8443", "https://conveyor.example.", "http://localhost.:8080",
-	}
-	for _, value := range invalid {
+	for _, value := range refused {
 		if issuer, ok := oauthIssuerFromPublicURL(value); ok {
 			t.Errorf("oauthIssuerFromPublicURL(%q) = %q, accepted; want refused", value, issuer)
+			continue
+		}
+		response, challenge := discover(value)
+		body := response.Body.String()
+		if response.Code != http.StatusNotFound || !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") ||
+			strings.Contains(strings.ToLower(body), "<html") || strings.Contains(body, "attacker.example") {
+			t.Errorf("%q: discovery status=%d type=%q body=%s", value, response.Code, response.Header().Get("Content-Type"), body)
+		} else if decodeOAuthJSON(t, response)["error"] != "oauth_unavailable" {
+			t.Errorf("%q: discovery body=%s", value, body)
+		}
+		if challenge.status != http.StatusUnauthorized || challenge.header.Get("WWW-Authenticate") != "Bearer" {
+			t.Errorf("%q: challenge status=%d header=%q", value, challenge.status, challenge.header.Get("WWW-Authenticate"))
 		}
 	}
 }
@@ -515,24 +571,6 @@ func TestOAuthDisabledRefusesDiscoveryAndEndpointsWithoutHTML(t *testing.T) {
 				t.Fatalf("/mcp status=%d challenge=%q", result.status, result.header.Get("WWW-Authenticate"))
 			}
 		})
-	}
-}
-
-// TestOAuthCanonicalOriginsEnableDiscovery proves through the router that
-// the valid origin forms stay enabled: a DNS name over HTTPS and a bracketed
-// IPv6 loopback over HTTP (req-mcp-oauth AC-1.1).
-func TestOAuthCanonicalOriginsEnableDiscovery(t *testing.T) {
-	for _, origin := range []string{"https://conveyor.example", "http://[::1]:8080"} {
-		h := newOAuthHarness(t)
-		h.server.InvitationDelivery.PublicURL = origin
-		response := h.do(oauthRequest{method: http.MethodGet, path: "/.well-known/oauth-protected-resource/mcp"})
-		if response.Code != http.StatusOK || decodeOAuthJSON(t, response)["resource"] != origin+"/mcp" {
-			t.Fatalf("%s: discovery status=%d body=%s", origin, response.Code, response.Body.String())
-		}
-		result := h.mcp("", getStagePreferencesTool, map[string]any{"workspace_id": "alpha"})
-		if want := `Bearer resource_metadata="` + origin + `/.well-known/oauth-protected-resource/mcp"`; result.status != http.StatusUnauthorized || result.header.Get("WWW-Authenticate") != want {
-			t.Fatalf("%s: challenge=%q", origin, result.header.Get("WWW-Authenticate"))
-		}
 	}
 }
 
