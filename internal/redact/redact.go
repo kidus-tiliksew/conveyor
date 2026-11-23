@@ -169,20 +169,66 @@ func quotedForm(value string) string {
 	return quoted[1 : len(quoted)-1]
 }
 
-var credentialPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`),
-	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{20,}\b`),
-	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}\b`),
-	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}\b`),
+// credentialPatternSources lists every credential shape the redactor knows.
+// credentialPatterns compiles them for redaction, and HoldsCredentialShape
+// uses the same compiled list, so the two cannot drift.
+var credentialPatternSources = []string{
+	`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`,
+	`\bAIza[0-9A-Za-z_-]{20,}\b`,
+	`\bsk-[A-Za-z0-9_-]{16,}\b`,
+	`\bgh[pousr]_[A-Za-z0-9]{20,}\b`,
 	// Fine-grained GitHub tokens and Conveyor's own tokens,
 	// cv_<kind>_<id>_<base64url>, whose base64url tail can end in "-", so no
 	// closing word boundary applies (req-security-boundaries REQ-3).
-	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}`),
-	regexp.MustCompile(`\bcv_(?:pat|agent|session|signin)_[A-Za-z0-9_-]{16,}`),
+	`\bgithub_pat_[A-Za-z0-9_]{20,}`,
+	// Every Conveyor credential kind also matches with a word character
+	// directly before it, so a credential glued into other text is still
+	// found. The 16-character floor keeps bare prefixes in prose untouched
+	// (component-identity-membership invariant 46; req-security-boundaries
+	// REQ-2, REQ-3). The non-Conveyor shapes keep their leading boundary,
+	// because ordinary text such as a task-<id> name would match sk-.
+	`cv_(?:pat|agent|session|signin|oac|oat|ort)_[A-Za-z0-9_-]{16,}`,
 	// A bearer credential of any other shape. A 64-hex value stays allowed
 	// alone, because artifact IDs and content digests have that shape.
-	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}`),
-	regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`),
+	`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}`,
+	`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`,
+}
+
+var credentialPatterns = compileCredentialPatterns()
+
+func compileCredentialPatterns() []*regexp.Regexp {
+	patterns := make([]*regexp.Regexp, 0, len(credentialPatternSources))
+	for _, source := range credentialPatternSources {
+		patterns = append(patterns, regexp.MustCompile(source))
+	}
+	return patterns
+}
+
+// HoldsCredentialShape reports whether value holds a credential shape by the
+// redactor's own rules: every credential pattern exactly as redaction uses
+// it, and the assignment rule. A Conveyor cv_ kind matches anywhere, even
+// directly after a word character. Every other shape keeps its leading word
+// boundary, so ordinary hyphenated words such as "Risk-management" or
+// "task-<id>" never match sk-. It also checks the value percent-decoded once
+// by the same rules. A value that fails to decode is checked as given. It is
+// for refusing untrusted input before storage (req-security-boundaries
+// REQ-2, REQ-3).
+func HoldsCredentialShape(value string) bool {
+	forms := []string{value}
+	if decoded, err := url.PathUnescape(value); err == nil && decoded != value {
+		forms = append(forms, decoded)
+	}
+	for _, form := range forms {
+		if assignedSecret.MatchString(form) {
+			return true
+		}
+		for _, pattern := range credentialPatterns {
+			if pattern.MatchString(form) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 var assignedSecret = regexp.MustCompile(`(?i)((?:token|secret|password|api[_-]?key)\s*[:=]\s*["']?)([A-Za-z0-9+/=_-]{20,})`)
