@@ -1549,12 +1549,13 @@ func TestOAuthStoreFailuresAreGeneric(t *testing.T) {
 		}
 		expectNoStore(t, response)
 	}
-	// Nothing changed: the grant and its pair still work, and the code still
-	// exchanges once.
+	// Nothing changed: the grant and its pair still work, the code still
+	// exchanges once, and the original refresh token still rotates.
 	if result := h.mcp(pair.AccessToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); result.status != http.StatusOK {
 		t.Fatalf("token after injected failures: %+v", result)
 	}
 	decodeTokenPair(t, h.token(codeExchangeForm(code, clientID, oauthTestRedirect)))
+	decodeTokenPair(t, h.token(refreshForm(pair.RefreshToken, clientID)))
 }
 
 func withForm(form url.Values, key, value string) url.Values {
