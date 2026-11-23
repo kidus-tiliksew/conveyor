@@ -406,6 +406,8 @@ func TestOAuthIssuerAcceptsOnlyCanonicalOrigins(t *testing.T) {
 		"https://conveyor.example", "https://conveyor.example:8443", "http://127.0.0.1:8080", "http://[::1]:8080",
 		"http://localhost:8080", "http://localhost", "https://10.0.0.1", "https://[2001:db8::1]", "https://a-b.example.co",
 		"https://" + strings.Repeat("a", 63) + ".example",
+		// A hexadecimal-looking label that is not the last one is a DNS name.
+		"https://0x7f.example", "https://0xcafe.conveyor.example",
 	}
 	refused := []string{
 		// Not an origin, or an unsupported scheme.
@@ -431,6 +433,11 @@ func TestOAuthIssuerAcceptsOnlyCanonicalOrigins(t *testing.T) {
 		"http://[::ffff:127.0.0.1]:8080", "https://[::ffff:10.0.0.1]", "https://[::ffff:a00:1]",
 		// A noncanonical IPv4 spelling, which is not a DNS name either.
 		"http://127.000.000.001:8080", "http://127.0.0.01:8080", "https://010.0.0.1", "http://0x7f.0.0.1:8080", "https://10.0.1", "https://1.2.3.4.5",
+		// Every other numeric IPv4 form a browser accepts: hexadecimal,
+		// octal, a single integer, and fewer than four parts.
+		"https://0x7f000001", "http://0x7f000001:8080", "https://0X7F000001", "https://0x0a000001", "https://127.0x1", "https://10.0.0.0x1",
+		"https://0x", "https://0177.0.0.1", "http://0177.0.0.01:8080", "https://2130706433", "http://2130706433:8080", "https://127.1",
+		"https://10.1", "https://10.0.1", "http://127.1:8080",
 		// A trailing dot, an empty label, an invalid label, or an overlong name.
 		"https://conveyor.example.", "http://localhost.:8080", "http://127.0.0.1.:8080", "https://a..b", "https://.conveyor.example",
 		"https://-conveyor.example", "https://conveyor-.example", "https://conveyor_dev.example", "https://conveyor%2Eexample",

@@ -170,7 +170,12 @@ func canonicalOAuthOrigin(raw string) (string, bool) {
 // canonicalOAuthDNSName lowercases a DNS host name and reports whether it is
 // a valid name: letters, digits, and hyphens in labels of 1 to 63 bytes that
 // neither start nor end with a hyphen, at most 253 bytes in all, with no
-// trailing dot, and a last label that is not all digits.
+// trailing dot, and a last label that is not a number. A browser parses a
+// host whose last label is a number as IPv4 (WHATWG URL "ends in a number"):
+// all decimal digits, which also covers octal, single-integer, and
+// fewer-than-four-part forms such as 0177.0.0.1, 2130706433, and 127.1, or
+// 0x with hexadecimal digits, such as 0x7f000001. Such a host is never the
+// canonical dotted-decimal form that netip renders, so it is refused.
 func canonicalOAuthDNSName(host string) (string, bool) {
 	name := strings.ToLower(host)
 	if name == "" || len(name) > 253 {
@@ -189,6 +194,9 @@ func canonicalOAuthDNSName(host string) (string, bool) {
 	}
 	last := labels[len(labels)-1]
 	if strings.Trim(last, "0123456789") == "" {
+		return "", false
+	}
+	if hex, isHex := strings.CutPrefix(last, "0x"); isHex && strings.Trim(hex, "0123456789abcdef") == "" {
 		return "", false
 	}
 	return name, true

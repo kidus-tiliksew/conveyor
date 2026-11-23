@@ -242,8 +242,10 @@ builds that form from the setting and compares the two byte for byte:
   `[::1]`, or `localhost` only. It is in lowercase.
 - A DNS name is in lowercase, with no trailing dot and no empty label. Each
   label holds 1 to 63 letters, digits, or hyphens and does not start or end
-  with a hyphen, the name is at most 253 bytes, and its last label is not all
-  digits.
+  with a hyphen, and the name is at most 253 bytes. Its last label is not a
+  number, all digits or `0x` with hexadecimal digits, because a browser reads
+  such a host as an IPv4 address. So `0x7f000001`, `0177.0.0.1`,
+  `2130706433`, and `127.1` are refused.
 - An IP address is written in its shortest standard form: `10.0.0.1`, not
   `010.0.0.1`, and `[2001:db8::1]`, not `[2001:0db8:0:0:0:0:0:1]`. An IPv6
   address is in brackets, has no zone, and is not IPv4-mapped.
