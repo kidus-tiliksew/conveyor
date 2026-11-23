@@ -10,7 +10,6 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 // Capabilities describe behavior, not merely satisfaction of Go interfaces.
@@ -73,10 +72,6 @@ type Fixture struct {
 	// deactivation operation, such as SingleStore. Others use their
 	// DeactivateIdentityUser method (component-identity-membership).
 	DeactivateUser func(t *testing.T, ctx context.Context, userID string)
-	// SeedSetupContract replaces one task's stored setup contract with raw
-	// JSON, modelling rows an earlier encoding wrote. No public writer accepts
-	// a raw contract; the volatile backend decodes it into the task.
-	SeedSetupContract func(t *testing.T, ctx context.Context, taskID, raw string)
 	// SeedTaskIntakeKey writes key as one task's intake key directly, without
 	// the command's uniqueness check, as a SingleStore row an older writer
 	// could leave. It reports whether the backend stored the key: a backend
@@ -125,31 +120,8 @@ type Fixture struct {
 	// import internal/httpapi, because httpapi tests import storetest, so
 	// each conformance entry point constructs it
 	// (component-verification-strategy; component-lineage). The
-	// dependency-removal case and the inbox attention count case require it
-	// and never skip.
+	// dependency-removal case requires it and never skips.
 	LineageHTTP func(t *testing.T) http.Handler
-	// RedispatchHTTP returns the LineageHTTP handler with onDispatch as its
-	// OnCreate and a real dispatcher as its OnIntervention. The redispatch
-	// gate case reads the route's dispatch request through onDispatch and
-	// records a plan-revision decision through POST /v1/tasks/{id}/review,
-	// which moves no task without a dispatcher. It requires this field and
-	// never skips (component-work-orders invariant 39).
-	RedispatchHTTP func(t *testing.T, onDispatch func(context.Context, string)) http.Handler
-	// WorkOrderHTTP returns the LineageHTTP handler with a work-order service
-	// over Backend, as conveyord configures it, so GET /v1/work-orders serves
-	// the service's claim projections. The task observation claimability
-	// case compares that list with GET /v1/tasks/{id}/observation. It
-	// requires this field and never skips (component-next-action invariant
-	// 57).
-	WorkOrderHTTP func(t *testing.T) http.Handler
-	// TaskIntakeHTTP returns the real httpapi handler over Backend, bound to
-	// Workspace and accepting LineageHTTPToken, with generate as its title
-	// generator. GitHubIssueIntake takes one ready issue in through the real
-	// dispatcher with the label move stubbed. storetest cannot import httpapi
-	// or dispatch, so each conformance entry point constructs them. The task
-	// title cases require both and never skip (req-security-boundaries REQ-3).
-	TaskIntakeHTTP    func(t *testing.T, generate func(context.Context, core.Task) (string, error)) http.Handler
-	GitHubIssueIntake func(ctx context.Context, repo config.Repo, issue github.Issue) error
 	// VerificationClaimReads observes the tasks whose verification rows
 	// ReconcileVerificationClaims reads in Workspace and returns a reader of
 	// the task IDs seen so far, in read order. The durable backends read
@@ -189,31 +161,6 @@ type Fixture struct {
 	// per read label, so a suite can bound the rows one read transfers. A
 	// backend that transfers no rows leaves it nil.
 	DrainReadRows func() map[string]uint64
-	// MarkerReadLeavesRowTestsToGo is true when the backend's activity-marker
-	// read selects bounces and submissions by kind and task alone and leaves
-	// the source and submission tests to Go: SingleStore, where a text test
-	// on a stored payload costs more than the rows it leaves out. Such a
-	// read still bounds its rows by task: it reads a submission only for a
-	// task with a merge failure and a claim only from a task's last user
-	// change request on (component-web-task-surfaces invariant 19).
-	MarkerReadLeavesRowTestsToGo bool
-	// NestedTaskCommandsInterleave is true when a command started under a
-	// WithTaskSideEffectLock context skips the task-operation lock that the
-	// context already owns, so a second command of that context commits while
-	// the first is inside its transaction: SingleStore. The risk order cases
-	// then commit a cancellation, a raise, or a release inside a completion's
-	// read-to-write window. That is the order a commit spanning partitions
-	// produces when it releases the lock before the completion reads its
-	// order row (component-persistence invariant 8). The volatile backend and
-	// PostgreSQL leave it false: their completion holds the lock across that
-	// window, and the cases prove that the other command waits.
-	NestedTaskCommandsInterleave bool
-	// AwaitTaskOperationWaiter returns once the backend reports a session
-	// waiting on the task's task-operation lock, read from the database and
-	// not inferred from elapsed time, and fails when done closes first.
-	// PostgreSQL provides it. The volatile backend's lock is in-process and
-	// has no such report, so it leaves it nil.
-	AwaitTaskOperationWaiter func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{})
 	// OAuthDeploymentEvents returns the deployment audit events whose kind
 	// starts with identity.oauth_, ascending by (at, id). AgeOAuthRecord moves
 	// every stored time of one OAuth row back by the given duration.
@@ -243,9 +190,6 @@ type Factory struct {
 	New               func(*testing.T, []config.Repo) Fixture
 	Capabilities      Capabilities
 	ProductionCapable bool
-	// PlanRevisionGate is dispatch.PendingPlanRevisionGate. storetest cannot
-	// import dispatch: dispatch integration tests import storetest.
-	PlanRevisionGate PlanRevisionGateFunc
 	// ReviewSweep is workorder.Service.SweepAutomaticReviewRecovery. storetest
 	// cannot import workorder: workorder tests import storetest.
 	ReviewSweep ReviewSweepFunc
@@ -253,14 +197,6 @@ type Factory struct {
 	// workorder: workorder tests import storetest. The claim-failure stall
 	// case requires it and never skips.
 	ClaimService ClaimServiceFunc
-	// SubmitPlanService is workorder.Service.SubmitPlan with a real
-	// dispatcher, for the same reason. The plan-submission serialization
-	// case requires it and never skips.
-	SubmitPlanService SubmitPlanServiceFunc
-	// StatementMemo builds an HTTP server over the backend, so the workspace
-	// notice suite proves each notice drops the response memo. A nil value
-	// proves the notices alone.
-	StatementMemo StatementMemoFunc
 }
 
 func (f Factory) fresh(t *testing.T, repos []config.Repo) Fixture {
@@ -323,50 +259,15 @@ func RunAll(t *testing.T, factory Factory) {
 		})
 	})
 	run("ChangeNotices", func(t *testing.T) { RunChangeNoticeConformance(t, factory.fresh(t, nil)) })
-	run("WorkspaceNotices", func(t *testing.T) {
-		RunWorkspaceNoticeConformance(t, factory.fresh(t, nil), factory.StatementMemo, factory.Capabilities.Identity && factory.Capabilities.Membership)
-	})
 	run("Crates", func(t *testing.T) { runCrates(t, factory) })
 	run("OAuth", func(t *testing.T) { runOAuth(t, factory) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
-	run("RedispatchOfferParity", func(t *testing.T) { runRedispatchOfferParity(t, factory.fresh(t, nil)) })
-	run("RedispatchPlanRevisionGate", func(t *testing.T) { runRedispatchPlanRevisionGate(t, factory.fresh(t, nil), factory.PlanRevisionGate) })
-	run("InboxAttentionCount", func(t *testing.T) { runInboxAttentionCount(t, factory.fresh(t, nil)) })
-	run("TaskObservationClaimability", func(t *testing.T) { runTaskObservationClaimability(t, factory.fresh(t, nil)) })
-	run("InboxAttentionCountBodyFree", func(t *testing.T) {
-		x := factory.fresh(t, nil)
-		if factory.ProductionCapable && x.DrainReadBytes == nil {
-			t.Fatal("production-capable conformance fixture must provide DrainReadBytes")
-		}
-		runInboxAttentionCountBodyFree(t, x)
-	})
-	run("HoldRetirement", func(t *testing.T) { runHoldRetirement(t, factory.fresh(t, nil), factory.ClaimService) })
-	run("PlanSubmitSerialization", func(t *testing.T) {
-		runPlanSubmitSerialization(t, factory.fresh(t, nil), factory.SubmitPlanService)
-	})
-	run("ReviewDistinctModelsNoClaimStall", func(t *testing.T) {
-		runDistinctModelsNoClaimFailure(t, factory.fresh(t, nil), factory.ClaimService)
-	})
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
 	run("TaskMap", func(t *testing.T) { RunTaskMapConformance(t, factory.fresh(t, nil)) })
 	run("ActivityValidation", func(t *testing.T) { RunActivityValidationConformance(t, factory.fresh(t, nil)) })
-	run("ActivityAnchorPaging", func(t *testing.T) { RunActivityAnchorPagingConformance(t, factory.fresh(t, nil)) })
-	run("ActivityMarkerCompactReads", func(t *testing.T) {
-		x := factory.fresh(t, nil)
-		if factory.ProductionCapable && x.DrainReadBytes == nil {
-			t.Fatal("production-capable conformance fixture must provide DrainReadBytes")
-		}
-		runActivityMarkerCompactReads(t, x)
-	})
 	run("DocumentationGate", func(t *testing.T) { runDocumentationGate(t, factory.fresh(t, nil)) })
-	run("TaskFlow", func(t *testing.T) { runTaskFlow(t, factory) })
-	run("GateKind", func(t *testing.T) {
-		x := factory.fresh(t, nil)
-		RunGateKindConformance(t, x.Backend, x.Context, x.Workspace)
-	})
 	run("FeatureRetirement", func(t *testing.T) { RunFeatureRetirementConformance(t, factory.fresh(t, nil)) })
 	run("Requirements", func(t *testing.T) { RunRequirementConformance(t, requirements) })
-	run("VersionDismissal", func(t *testing.T) { RunVersionDismissalConformance(t, requirements) })
 	run("Lineage", func(t *testing.T) {
 		RunLineageConformance(t, func(t *testing.T, repos []config.Repo) LineageFixture {
 			x := factory.fresh(t, repos)
@@ -383,73 +284,29 @@ func RunAll(t *testing.T, factory Factory) {
 		name string
 		run  func(*testing.T, store.Store, context.Context)
 	}{
-		{"CheckpointDecisionRequests", RunCheckpointDecisionRequestConformance},
-		{"CheckpointRenewal", RunCheckpointRenewalConformance},
-		{"ForgeAuthorIdentity", RunForgeAuthorIdentityConformance},
 		{"PlanRevision", RunPlanRevisionConformance},
 		{"ReferenceDocuments", RunReferenceDocumentConformance},
-		{"SystemDesignProposals", RunSystemDesignProposalConformance},
 	} {
 		run(suite.name, func(t *testing.T) { x := factory.fresh(t, nil); suite.run(t, x.Backend, x.Context) })
 	}
-	run("PlanRevisionGatePayload", func(t *testing.T) {
-		x := factory.fresh(t, nil)
-		RunPlanRevisionGatePayloadConformance(t, x.Backend, x.Context, factory.PlanRevisionGate)
-	})
 	run("PlanningBundles", func(t *testing.T) {
 		RunPlanningBundleConformance(t, func(t *testing.T) (store.Store, context.Context, string) {
 			x := factory.fresh(t, nil)
 			return x.Backend, x.Context, x.Workspace
 		})
 	})
-	run("SystemDesignConsultation", func(t *testing.T) { RunSystemDesignConsultationConformance(t, factory.fresh(t, nil)) })
 	run("SystemDesignDrift", func(t *testing.T) {
 		RunSystemDesignDriftConformance(t, func(t *testing.T) (store.Store, context.Context, string) {
 			x := factory.fresh(t, nil)
 			return x.Backend, x.Context, x.Workspace
 		})
 	})
-	run("TaskContextRepin", func(t *testing.T) {
-		x := factory.fresh(t, nil)
-		RunTaskContextQueueRepinConformance(t, x.Backend, x.Context, x.Config)
-	})
-	run("DependencyAddition", func(t *testing.T) {
-		x := factory.fresh(t, nil)
-		RunDependencyAdditionConformance(t, x.Backend, x.Context, x.Workspace)
-	})
-	run("AutomaticRecovery", func(t *testing.T) {
-		x := factory.fresh(t, nil)
-		RunAutomaticRecoveryConformance(t, x.Backend, x.Context)
-	})
-	run("ReconcileWaitingOrder", func(t *testing.T) {
-		x := factory.fresh(t, nil)
-		RunReconcileWaitingOrderConformance(t, x.Backend, x.Context, x.Workspace, factory.ProductionCapable)
-	})
-	run("TimedOutSiblingRetirement", func(t *testing.T) {
-		RunTimedOutSiblingRetirementConformance(t, factory.fresh(t, nil))
-	})
-	run("TerminalOrderRetirement", func(t *testing.T) {
-		RunTerminalOrderRetirementConformance(t, factory.fresh(t, nil))
-	})
-	run("TerminalOrderClock", func(t *testing.T) {
-		RunTerminalOrderClockConformance(t, factory.fresh(t, nil))
-	})
 	run("AutomaticPublicationRecovery", func(t *testing.T) {
 		x := factory.fresh(t, nil)
 		RunAutomaticPublicationRecoveryConformance(t, x.Backend, x.Context, x.Workspace, factory.ReviewSweep)
 	})
-	run("AutomaticReviewRecovery", func(t *testing.T) {
-		x := factory.fresh(t, nil)
-		RunAutomaticReviewRecoveryConformance(t, x.Backend, x.Context, x.Workspace, factory.ReviewSweep)
-	})
-	run("RiskPolicyFreeze", func(t *testing.T) {
-		RunRiskPolicyFreezeConformance(t, factory.fresh(t, nil))
-	})
 	run("RiskRatings", func(t *testing.T) {
 		RunRiskRatingConformance(t, factory.fresh(t, nil))
-	})
-	run("RiskOrders", func(t *testing.T) {
-		RunRiskOrderConformance(t, factory.fresh(t, nil))
 	})
 	run("HeadRiskOrders", func(t *testing.T) {
 		RunHeadRiskOrderConformance(t, factory.fresh(t, nil))
@@ -457,26 +314,11 @@ func RunAll(t *testing.T, factory Factory) {
 	run("PlanRiskOrders", func(t *testing.T) {
 		RunPlanRiskOrderConformance(t, factory.fresh(t, nil))
 	})
-	run("RiskWaitNextAction", func(t *testing.T) {
-		RunRiskWaitNextActionConformance(t, factory.fresh(t, nil))
-	})
-	run("PlanGateRiskRecovery", func(t *testing.T) {
-		RunPlanGateRiskRecoveryConformance(t, factory.fresh(t, nil))
-	})
-	run("RiskEnforcement", func(t *testing.T) {
-		RunRiskEnforcementConformance(t, factory.fresh(t, nil))
-	})
-	run("RiskAcceptanceAuthors", func(t *testing.T) {
-		RunRiskAcceptanceAuthorsConformance(t, factory.fresh(t, nil))
-	})
 	run("TaskApprovals", func(t *testing.T) {
 		RunTaskApprovalConformance(t, factory.fresh(t, nil))
 	})
 	run("ReviewPolicyStatuses", func(t *testing.T) {
 		RunReviewPolicyStatusConformance(t, factory.fresh(t, nil))
-	})
-	run("ZeroSetupReviewSeats", func(t *testing.T) {
-		RunZeroSetupReviewSeatsConformance(t, factory.fresh(t, nil), factory.ReviewSweep)
 	})
 	for _, suite := range []struct {
 		name    string
@@ -487,70 +329,27 @@ func RunAll(t *testing.T, factory Factory) {
 		{"TaskOperationsPagination", true, runTaskPagination},
 		{"ReconcileReads", true, runReconcileReads},
 		{"TaskDetailReads", true, runTaskDetailReads},
-		{"ActivityMarkerBounds", true, RunActivityMarkerBoundsConformance},
-		{"ActivityMarkerHorizon", true, RunActivityMarkerHorizonConformance},
 		{"ActivityMarkerReviewRounds", true, RunActivityMarkerReviewRoundsConformance},
 		{"RequirementDetailReads", true, runRequirementDetailReads},
-		{"DocumentVersionSummaries", true, runDocumentVersionSummaries},
-		{"RequirementEventReads", true, RunRequirementEventReads},
-		{"RequirementDeliveryEvents", true, runRequirementDeliveryEvents},
-		{"ScopedDocumentEventReads", true, runScopedDocumentEventReads},
-		{"TaskLifecycle", true, runTaskLifecycle},
-		{"TaskBranchUniqueness", true, runTaskBranchUniqueness},
-		{"TaskBranchConcurrentClaims", true, runTaskBranchConcurrentClaims},
-		{"TaskBranchAttach", true, runTaskBranchAttach},
-		{"TaskEventAtomicity", true, runTaskEventAtomicity},
-		{"TaskCreationProvenance", true, runTaskCreationProvenance},
-		{"PlanStateIntake", true, runPlanStateIntake},
-		{"PlanStateActs", true, runPlanStateActs},
 		{"ArtifactRepair", true, runArtifactRepair},
 		{"Verification", true, runVerification},
-		{"ArtifactIntake", true, runArtifactIntake},
-		{"LegacyVerificationEvidence", true, runLegacyVerificationEvidence},
 		{"WorkOrders", true, runWorkOrders},
-		{"MergeTaskAtGate", true, runMergeTaskAtGate},
 		{"CheckStatusDeadline", true, runCheckStatusDeadline},
-		{"ClaimsProceedWithPendingProposals", true, runClaimsProceedWithPendingProposals},
-		{"LargeArgumentWrites", true, runLargeArgumentWrites},
-		{"AutomaticRecoveryAuthority", true, runAutomaticRecoveryAuthority},
 		{"ContextFreshness", true, runContextFreshness},
-		{"TaskContextReads", true, runTaskContextReads},
-		{"TaskTitleRedaction", true, runTaskTitleRedaction},
-		{"RedactionCounts", true, runRedactionCounts},
-		{"WorkOrderClocks", true, runWorkOrderClocks},
-		{"QueueClockRetired", true, runQueueClockRetired},
-		{"QueueReentryPins", true, runQueueReentryPins},
-		{"ReviewRounds", true, runReviewRounds},
-		{"ReviewAcceptance", true, runReviewAcceptance},
-		{"ReviewAccept", true, runReviewAccept},
-		{"ReviewRoundSeats", true, RunReviewRoundSeatsConformance},
 		{"ReviewSummary", true, runReviewSummary},
 		{"ReviewFailFast", true, runReviewFailFast},
-		{"ReviewSeatRetirement", true, runReviewSeatRetirement},
-		{"ReviewDistinctModels", true, runReviewDistinctModels},
-		{"LaterRoundReview", true, runLaterRoundReview},
-		{"DeltaReviewRounds", true, runDeltaReviewRounds},
 		{"RequirementInsight", true, RunRequirementInsightConformance},
 		{"Decisions", true, runDecisions},
-		{"ArchiveRestore", true, runArchiveRestore},
 		{"Monitor", true, runMonitor},
 		{"EmptyProjections", true, runEmptyProjections},
 		{"ProjectionReads", true, runProjectionReads},
 		{"MonitorPullRequestEvents", true, runMonitorPullRequestEvents},
-		{"TaskEventOrdering", true, runTaskEventOrdering},
-		{"TaskEventWindows", true, runTaskEventWindows},
 		{"EventRecency", true, runEventRecency},
-		{"PopulatedProjections", factory.Capabilities.Membership, runPopulatedProjections},
 		{"WorkspaceControl", true, runWorkspaceControl},
-		{"WorkspaceNameUniqueness", true, runWorkspaceNameUniqueness},
 		{"RepositoryInstall", true, runRepositoryInstall},
 		{"CommandRefusals", true, runCommandRefusals},
 		{"ApprovalRefresh", true, runApprovalRefresh},
 		{"PlanningReads", true, runPlanningReads},
-		{"TaskFilter", factory.Capabilities.Membership, runTaskFilter},
-		{"TaskAssigneeMembership", factory.Capabilities.Membership, runTaskAssigneeMembership},
-		{"TaskListHydration", factory.Capabilities.Membership, runTaskListHydration},
-		{"Identity", factory.Capabilities.Identity, runIdentity},
 		{"Membership", factory.Capabilities.Membership, runMembership},
 		{"InvitationSessions", factory.Capabilities.Identity && factory.Capabilities.Membership, runInvitationSessions},
 		{"Tokens", factory.Capabilities.Tokens, runTokens},

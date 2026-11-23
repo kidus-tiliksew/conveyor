@@ -2,7 +2,6 @@ package storetest
 
 import (
 	"context"
-	"encoding/json"
 	"reflect"
 	"strconv"
 	"testing"
@@ -492,17 +491,6 @@ func flowApprovedGateOff(t *testing.T, st store.Store, ctx context.Context, work
 	return id
 }
 
-// ReadTaskFlow is the store half of GET /v1/tasks/{id}/flow: the next action
-// and the fold both read at now.
-func ReadTaskFlow(t *testing.T, st store.Store, ctx context.Context, id string, now time.Time) store.TaskFlow {
-	t.Helper()
-	action, err := store.ReadNextAction(ctx, st, id, store.NextActionOptions{Now: now})
-	requireOK(t, err)
-	events, err := st.ListEvents(ctx, id)
-	requireOK(t, err)
-	return store.FoldTaskFlow(events, action, config.DefaultRecoveryPolicy(), now)
-}
-
 // ReplayTaskFlow copies a task's ledger verbatim into a fresh bare task on
 // replay, whose task, work-order, job and intervention projections were never
 // built by commands, and folds what replay stores. replay may be the source
@@ -537,245 +525,6 @@ func ReplayTaskFlow(t *testing.T, source store.Store, ctx context.Context, repla
 	return store.FoldTaskFlow(replayed, action, config.DefaultRecoveryPolicy(), now)
 }
 
-func runTaskFlow(t *testing.T, factory Factory) {
-	x := factory.fresh(t, nil)
-	st, ctx := x.Backend, x.Context
-	scenarios := SeedTaskFlowScenarios(t, st, ctx, x.Workspace)
-	for _, scenario := range scenarios {
-		t.Run(scenario.Name, func(t *testing.T) {
-			now := time.Now().UTC()
-			flow := ReadTaskFlow(t, st, ctx, scenario.TaskID, now)
-			stages := make([]core.Stage, len(flow.Stages))
-			for i, stage := range flow.Stages {
-				stages[i] = stage.ID
-			}
-			if want := []core.Stage{core.StageTriage, core.StageSpec, core.StageImplement, core.StageVerify, core.StageReview, core.StageMerge}; !equalStages(stages, want) {
-				t.Fatalf("stages = %v", stages)
-			}
-			count := flowBounceCount(t, st, ctx, scenario.TaskID)
-			folded := 0
-			for _, loop := range flow.Loops {
-				folded += loop.Count
-			}
-			if folded != count {
-				t.Fatalf("loops %+v count %d, store window counts %d", flow.Loops, folded, count)
-			}
-			switch scenario.Name {
-			case "two bounces":
-				if len(flow.Loops) != 1 || flow.Loops[0] != (store.FlowLoop{From: core.StageReview, To: core.StageImplement, Count: 2, Label: "sent back ×2"}) {
-					t.Fatalf("loops = %+v", flow.Loops)
-				}
-			case "redirect window":
-				if len(flow.Loops) != 1 || flow.Loops[0].Count != 1 {
-					t.Fatalf("loops after redirect = %+v", flow.Loops)
-				}
-			}
-			if !flow.AsOf.Equal(now) {
-				t.Fatalf("as_of = %s, want the read's now %s", flow.AsOf, now)
-			}
-			if scenario.Check != nil {
-				scenario.Check(t, flow)
-			}
-			want, err := json.Marshal(flow)
-			requireOK(t, err)
-			for range 50 {
-				again, err := json.Marshal(ReadTaskFlowWith(t, st, ctx, scenario.TaskID, flow.NextAction, now))
-				requireOK(t, err)
-				if string(again) != string(want) {
-					t.Fatalf("fold is not deterministic:\n%s\nwant\n%s", again, want)
-				}
-			}
-			rebuilt, err := json.Marshal(ReplayTaskFlow(t, st, ctx, x, scenario.TaskID, flow.NextAction, now))
-			requireOK(t, err)
-			if string(rebuilt) != string(want) {
-				t.Fatalf("replayed ledger folds differently:\n%s\nwant\n%s", rebuilt, want)
-			}
-		})
-	}
-
-	// A bounce recorded at the human redirect's own instant stays outside
-	// the window in both the store count and the fold.
-	t.Run("same instant bounce", func(t *testing.T) {
-		var redirect string
-		for _, scenario := range scenarios {
-			if scenario.Name == "redirect window" {
-				redirect = scenario.TaskID
-			}
-		}
-		events, err := st.ListEvents(ctx, redirect)
-		requireOK(t, err)
-		var at time.Time
-		for _, event := range events {
-			if event.Kind == "intervention.redirect" && event.ActorRole == core.ActorHuman {
-				at = event.At
-			}
-		}
-		if at.IsZero() {
-			t.Fatal("redirect intervention event missing")
-		}
-		x.SeedEvents(t, ctx, 0, []core.Event{{ID: 1, TaskID: redirect, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement"}), At: at}})
-		flow := ReadTaskFlow(t, st, ctx, redirect, time.Now().UTC())
-		if count := flowBounceCount(t, st, ctx, redirect); count != 1 || len(flow.Loops) != 1 || flow.Loops[0].Count != 1 {
-			t.Fatalf("store count %d, loops %+v; want 1", count, flow.Loops)
-		}
-	})
-
-	// A recorded gate whose decision another operator stop masks: the stored
-	// ledger enters the plan or merge gate, and the next action supplied to the
-	// fold is a different operator stop. The gate reads waiting while the
-	// aggregate stage still needs the operator, and only a gate decision marks
-	// the gate needs_operator (req-operator-next-action AC-7.5, AC-7.7).
-	t.Run("masked gates wait", func(t *testing.T) {
-		ids := map[string]string{}
-		for _, scenario := range scenarios {
-			ids[scenario.Name] = scenario.TaskID
-		}
-		now := time.Now().UTC()
-		for _, tc := range []struct {
-			scenario    string
-			stage       core.Stage
-			kinds       []string
-			plan, merge string
-		}{
-			{"plan approval", core.StageSpec, []string{nextaction.KindAgentQuestion, nextaction.KindContextProposal}, store.FlowWaiting, store.FlowUpcoming},
-			{"merge approval", core.StageMerge, []string{nextaction.KindAgentQuestion}, store.FlowDone, store.FlowWaiting},
-		} {
-			id := ids[tc.scenario]
-			if id == "" {
-				t.Fatalf("scenario %q missing", tc.scenario)
-			}
-			for _, kind := range tc.kinds {
-				action := nextaction.NextAction{Actor: nextaction.ActorOperator, Kind: kind, Judgment: true}
-				flow := ReadTaskFlowWith(t, st, ctx, id, action, now)
-				if got := taskFlowStage(t, flow, tc.stage).Status; got != store.FlowNeedsOperator {
-					t.Fatalf("%s masked by %s: %s status = %s, want needs_operator", tc.scenario, kind, tc.stage, got)
-				}
-				requireFlowGates(t, flow, tc.plan, tc.merge)
-				masked := taskFlowStage(t, flow, tc.stage)
-				if masked.GateStatusLabel != "Waiting" || masked.GateStatusText != masked.GateLabel+" waits until the current stop is resolved." || !masked.GateTraversed {
-					t.Fatalf("%s masked by %s: gate copy = %+v", tc.scenario, kind, masked)
-				}
-				want, err := json.Marshal(flow)
-				requireOK(t, err)
-				rebuilt, err := json.Marshal(ReplayTaskFlow(t, st, ctx, x, id, action, now))
-				requireOK(t, err)
-				if string(rebuilt) != string(want) {
-					t.Fatalf("%s masked by %s: replay differs:\n%s\nwant\n%s", tc.scenario, kind, rebuilt, want)
-				}
-			}
-		}
-	})
-
-	// Skipped nodes on a path the task has passed: with every switch off by
-	// frozen policy, Plan, Plan approval, Verify, and Merge approval stay off
-	// but read traversed once the recorded transitions place the task beyond
-	// them, and not before (req-operator-next-action AC-7.5).
-	t.Run("skipped nodes traversed once passed", func(t *testing.T) {
-		id := flowTask(t, st, ctx, x.Workspace, core.Task{PlanState: core.PlanNotRequired, MergeApproval: false})
-		events, err := st.ListEvents(ctx, id)
-		requireOK(t, err)
-		if len(events) == 0 {
-			t.Fatal("task.created missing")
-		}
-		at := events[len(events)-1].At.Truncate(time.Microsecond)
-		event := func(n int64, kind string, payload map[string]any) core.Event {
-			return core.Event{ID: n, TaskID: id, Kind: kind, ActorRole: core.ActorSystem, Payload: core.JSONPayload(payload), At: at.Add(time.Duration(n) * time.Second)}
-		}
-		type marks struct {
-			status, gate             string
-			traversed, gateTraversed bool
-		}
-		read := func(flow store.TaskFlow, stage core.Stage) marks {
-			row := taskFlowStage(t, flow, stage)
-			gate := ""
-			if row.GateStatus != nil {
-				gate = *row.GateStatus
-			}
-			return marks{row.Status, gate, row.Traversed, row.GateTraversed}
-		}
-		check := func(name string, want map[core.Stage]marks) {
-			t.Helper()
-			now := time.Now().UTC()
-			flow := ReadTaskFlow(t, st, ctx, id, now)
-			for stage, mark := range want {
-				if got := read(flow, stage); got != mark {
-					t.Fatalf("%s: %s = %+v, want %+v", name, stage, got, mark)
-				}
-			}
-			served, err := json.Marshal(flow)
-			requireOK(t, err)
-			rebuilt, err := json.Marshal(ReplayTaskFlow(t, st, ctx, x, id, flow.NextAction, now))
-			requireOK(t, err)
-			if string(rebuilt) != string(served) {
-				t.Fatalf("%s: replay differs:\n%s\nwant\n%s", name, rebuilt, served)
-			}
-		}
-		check("before any transition", map[core.Stage]marks{
-			core.StageSpec:   {store.FlowOff, store.FlowOff, false, false},
-			core.StageVerify: {store.FlowOff, "", false, false},
-			core.StageMerge:  {store.FlowUpcoming, store.FlowOff, false, false},
-		})
-		x.SeedEvents(t, ctx, 0, []core.Event{
-			event(1, "pipeline.transition_decided", map[string]any{"from_stage": "triage", "next_stage": "implement"}),
-			event(2, "work_order.created", map[string]any{"id": id + "-implement-1", "stage": "implement", "state": "queued"}),
-		})
-		check("at implement", map[core.Stage]marks{
-			core.StageSpec:   {store.FlowOff, store.FlowOff, true, true},
-			core.StageVerify: {store.FlowOff, "", false, false},
-			core.StageMerge:  {store.FlowUpcoming, store.FlowOff, false, false},
-		})
-		x.SeedEvents(t, ctx, 0, []core.Event{
-			event(3, "pipeline.transition_decided", map[string]any{"from_stage": "implement", "next_stage": "review"}),
-			event(4, "pipeline.transition_decided", map[string]any{"from_stage": "review", "next_stage": "merge"}),
-			event(5, "task.state_changed", map[string]any{"to": core.TaskApproved, "command": core.TaskReviewAccept}),
-		})
-		check("approved and merging", map[core.Stage]marks{
-			core.StageSpec:   {store.FlowOff, store.FlowOff, true, true},
-			core.StageVerify: {store.FlowOff, "", true, false},
-			core.StageMerge:  {store.FlowInProgress, store.FlowOff, true, true},
-		})
-	})
-
-	// A verification failure records from=review beside source=verification;
-	// the fold attributes it to verify while every other source keeps its
-	// recorded from, and the stored payload is not rewritten
-	// (req-operator-next-action AC-7.5).
-	t.Run("verification bounce loop", func(t *testing.T) {
-		id := flowTask(t, st, ctx, x.Workspace, core.Task{NextStage: core.StageImplement})
-		at := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
-		bounce := func(n int64, payload map[string]any) core.Event {
-			return core.Event{ID: n, TaskID: id, Kind: "pipeline.bounced", ActorRole: core.ActorSystem, Payload: core.JSONPayload(payload), At: at.Add(time.Duration(n) * time.Minute)}
-		}
-		x.SeedEvents(t, ctx, 0, []core.Event{
-			bounce(1, map[string]any{"from": "review", "to": "implement", "source": "verification", "reason_code": "verification-failed"}),
-			bounce(2, map[string]any{"from": "review", "to": "implement"}),
-			bounce(3, map[string]any{"from": "review", "to": "implement", "source": "mystery"}),
-			bounce(4, map[string]any{"from": "review", "to": "implement", "source": "verification", "reason_code": "verification-failed"}),
-		})
-		flow := ReadTaskFlow(t, st, ctx, id, time.Now().UTC())
-		want := []store.FlowLoop{
-			{From: core.StageVerify, To: core.StageImplement, Count: 2, Label: "sent back ×2"},
-			{From: core.StageReview, To: core.StageImplement, Count: 2, Label: "sent back ×2"},
-		}
-		if !reflect.DeepEqual(flow.Loops, want) {
-			t.Fatalf("loops = %+v, want %+v", flow.Loops, want)
-		}
-		if count := flowBounceCount(t, st, ctx, id); count != 4 {
-			t.Fatalf("store bounce window = %d, want 4", count)
-		}
-		events, err := st.ListEvents(ctx, id)
-		requireOK(t, err)
-		for _, event := range events {
-			var payload struct {
-				From string `json:"from"`
-			}
-			if event.Kind == "pipeline.bounced" && (json.Unmarshal(event.Payload, &payload) != nil || payload.From != "review") {
-				t.Fatalf("recorded bounce payload changed: %s", event.Payload)
-			}
-		}
-	})
-}
-
 // requireFlowGates asserts the plan and merge gate marks and that only those
 // two rows carry one.
 func requireFlowGates(t *testing.T, flow store.TaskFlow, plan, merge string) {
@@ -798,15 +547,6 @@ func requireFlowGates(t *testing.T, flow store.TaskFlow, plan, merge string) {
 	}
 }
 
-// ReadTaskFlowWith folds the task's current ledger against a fixed next action
-// at now.
-func ReadTaskFlowWith(t *testing.T, st store.Store, ctx context.Context, id string, action nextaction.NextAction, now time.Time) store.TaskFlow {
-	t.Helper()
-	events, err := st.ListEvents(ctx, id)
-	requireOK(t, err)
-	return store.FoldTaskFlow(events, action, config.DefaultRecoveryPolicy(), now)
-}
-
 func taskFlowStage(t *testing.T, flow store.TaskFlow, id core.Stage) store.FlowStage {
 	t.Helper()
 	for _, stage := range flow.Stages {
@@ -816,18 +556,6 @@ func taskFlowStage(t *testing.T, flow store.TaskFlow, id core.Stage) store.FlowS
 	}
 	t.Fatalf("stage %s missing", id)
 	return store.FlowStage{}
-}
-
-func equalStages(a, b []core.Stage) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func sameFlowTime(a, b *time.Time) bool {

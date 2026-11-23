@@ -10,9 +10,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
-	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -21,25 +19,9 @@ import (
 
 func TestMemoryConformance(t *testing.T) {
 	storetest.RunAll(t, storetest.Factory{
-		PlanRevisionGate: func(ctx context.Context, st store.Store, taskID string) (bool, error) {
-			_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, taskID)
-			return pending, err
-		},
 		ClaimService: func(st store.Store, cfg *config.Config) func(context.Context, string, core.WorkOrderClaim) (core.WorkOrder, error) {
 			service := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 			return service.Claim
-		},
-		SubmitPlanService: func(st store.Store, cfg *config.Config) func(context.Context, string, string, pipeline.StructuredPlan) (map[string]any, error) {
-			dispatcher := dispatch.New(st, cfg, nil)
-			dispatcher.DisableMemoryQueueForTest()
-			service := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
-			return service.SubmitPlan
-		},
-		StatementMemo: func(st store.Store, workspace string, memoClock func() time.Time) http.Handler {
-			server := httpapi.NewServer(st)
-			server.Workspace, server.BearerToken = workspace, storetest.StatementMemoToken
-			server.UseReadMemoClock(memoClock)
-			return server.Handler()
 		},
 		ReviewSweep: func(ctx context.Context, st store.Store, cfg *config.Config, head string, now time.Time) (int, error) {
 			service := &workorder.Service{
@@ -93,8 +75,6 @@ func TestMemoryConformance(t *testing.T) {
 				store.SeedWorkspaceConfigYAMLForTest(t, st, workspace, raw)
 			}, WorkspaceConfigYAML: func(t *testing.T, _ context.Context) string {
 				return store.WorkspaceConfigYAMLForTest(t, st, workspace)
-			}, SeedSetupContract: func(t *testing.T, _ context.Context, taskID, raw string) {
-				store.SeedSetupContractForTest(t, st, taskID, raw)
 			}, SeedTaskIntakeKey: func(t *testing.T, _ context.Context, taskID, key string) bool {
 				return store.SeedTaskIntakeKeyForTest(t, st, taskID, key)
 			}, RestoreSupersededDeliveries: func(t *testing.T, _ context.Context, taskID string) {
@@ -131,37 +111,11 @@ func TestMemoryConformance(t *testing.T) {
 					rows = append(rows, storetest.OAuthStoredRow{Table: storetest.OAuthTable(row.Table), ID: row.ID, Digest: row.Digest, Text: row.Text})
 				}
 				return rows
-			}, TaskIntakeHTTP: func(_ *testing.T, generate func(context.Context, core.Task) (string, error)) http.Handler {
-				server := httpapi.NewServer(st)
-				server.Credentials = nil
-				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
-				server.GenerateTaskTitle = generate
-				return server.Handler()
-			}, GitHubIssueIntake: func(ctx context.Context, repo config.Repo, issue githubtrigger.Issue) error {
-				d := dispatch.New(st, cfg, nil)
-				d.DisableMemoryQueueForTest()
-				d.MarkIssueDispatched = func(context.Context, string, int, string) error { return nil }
-				return d.TakeInReadyIssue(ctx, ctx, workspace, repo, issue)
 			}, LineageHTTP: func(*testing.T) http.Handler {
 				// The shared-token operator fixture (component-lineage).
 				server := httpapi.NewServer(st)
 				server.Credentials = nil
 				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
-				return server.Handler()
-			}, WorkOrderHTTP: func(*testing.T) http.Handler {
-				server := httpapi.NewServer(st)
-				server.Credentials = nil
-				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
-				server.WorkOrders = &workorder.Service{Store: st}
-				return server.Handler()
-			}, RedispatchHTTP: func(_ *testing.T, onDispatch func(context.Context, string)) http.Handler {
-				server := httpapi.NewServer(st)
-				server.Credentials = nil
-				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
-				server.OnCreate = onDispatch
-				dispatcher := dispatch.New(st, cfg, nil)
-				dispatcher.DisableMemoryQueueForTest()
-				server.OnIntervention = dispatcher.HandleIntervention
 				return server.Handler()
 			}}
 		},

@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -485,8 +487,9 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 			t.Fatalf("list includes detail-only field %q: %s", detailOnly, response.Body.String())
 		}
 	}
-	if guard.fullLineage != 0 || guard.fullArtifacts != 0 || guard.neighborhood != 0 || guard.scopedArtifacts != 0 {
-		t.Fatalf("requirements queries full_lineage=%d full_artifacts=%d neighborhood=%d scoped_artifacts=%d", guard.fullLineage, guard.fullArtifacts, guard.neighborhood, guard.scopedArtifacts)
+	if guard.fullLineage != 0 || guard.fullArtifacts != 0 || guard.neighborhood != 0 || guard.scopedArtifacts != 0 || guard.ownerArtifacts != 0 || guard.kindLinks != 0 {
+		t.Fatalf("requirements queries full_lineage=%d full_artifacts=%d neighborhood=%d scoped_artifacts=%d owner_artifacts=%d kind_links=%d",
+			guard.fullLineage, guard.fullArtifacts, guard.neighborhood, guard.scopedArtifacts, guard.ownerArtifacts, guard.kindLinks)
 	}
 
 	unauthorized := httptest.NewRecorder()
@@ -515,8 +518,8 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 		strings.Contains(confirmedList.Body.String(), `"content"`) || confirmedList.Body.Len() > 2048 {
 		t.Fatalf("compact confirmed list status=%d bytes=%d body=%s", confirmedList.Code, confirmedList.Body.Len(), confirmedList.Body.String())
 	}
-	if guard.neighborhood != 0 || guard.scopedArtifacts != 0 {
-		t.Fatalf("confirmed list queries neighborhood=%d scoped_artifacts=%d", guard.neighborhood, guard.scopedArtifacts)
+	if guard.neighborhood != 0 || guard.scopedArtifacts != 0 || guard.ownerArtifacts != 0 || guard.kindLinks != 0 {
+		t.Fatalf("confirmed list queries neighborhood=%d scoped_artifacts=%d owner_artifacts=%d kind_links=%d", guard.neighborhood, guard.scopedArtifacts, guard.ownerArtifacts, guard.kindLinks)
 	}
 	if guard.batchVersions != 2 || guard.batchEvents != 2 || guard.batchDelivery != 2 || guard.batchDeliveryEvents != 2 || guard.taskLists != 0 || guard.singleVersions != 0 || guard.singleEvents != 0 || guard.singleDelivery != 0 {
 		t.Fatalf("confirmed list requirement reads batch_versions=%d batch_events=%d batch_delivery=%d batch_delivery_events=%d task_lists=%d single_versions=%d single_events=%d single_delivery=%d",
@@ -553,8 +556,22 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 		t.Fatalf("detail requirement view=%+v", view)
 	}
 	assertDetailHasNoDocumentEvents(t, detail.Body.Bytes())
-	if guard.neighborhood != 1 || guard.scopedArtifacts != 1 {
-		t.Fatalf("detail queries neighborhood=%d scoped_artifacts=%d", guard.neighborhood, guard.scopedArtifacts)
+	// The detail reads only the requirement's own artifacts and its direct
+	// serves links in both directions: no neighborhood walk, no lineage
+	// artifact read, and no whole-workspace scan (component-lineage;
+	// component-artifacts).
+	if guard.neighborhood != 0 || guard.scopedArtifacts != 0 || guard.fullLineage != 0 || guard.fullArtifacts != 0 {
+		t.Fatalf("detail queries neighborhood=%d scoped_artifacts=%d full_lineage=%d full_artifacts=%d", guard.neighborhood, guard.scopedArtifacts, guard.fullLineage, guard.fullArtifacts)
+	}
+	if guard.ownerArtifacts != 1 || !reflect.DeepEqual(guard.ownerReads, []store.ArtifactOwners{{RequirementIDs: []string{requirement.ID}}}) {
+		t.Fatalf("detail artifact owner reads=%d owners=%+v", guard.ownerArtifacts, guard.ownerReads)
+	}
+	root := core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}
+	if guard.kindLinks != 2 || !reflect.DeepEqual(guard.kindQueries, []core.LineageKindLinkQuery{
+		{Nodes: []core.LineageNode{root}, Kind: "serves", FarType: core.LineageTask, Limit: requirementDetailServesReadLimit},
+		{Nodes: []core.LineageNode{root}, Kind: "serves", Inbound: true, FarType: core.LineageTask, Limit: requirementDetailServesReadLimit},
+	}) {
+		t.Fatalf("detail kind-link reads=%d queries=%+v", guard.kindLinks, guard.kindQueries)
 	}
 	if guard.singleVersions != 1 || guard.singleEvents != 1 || guard.singleDelivery != 1 || guard.eventPages != 0 {
 		t.Fatalf("detail requirement reads versions=%d events=%d delivery=%d event_pages=%d", guard.singleVersions, guard.singleEvents, guard.singleDelivery, guard.eventPages)
@@ -572,6 +589,9 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 type requirementsScopedStore struct {
 	store.Store
 	fullLineage, fullArtifacts, neighborhood, scopedArtifacts                 int
+	ownerArtifacts, kindLinks                                                 int
+	ownerReads                                                                []store.ArtifactOwners
+	kindQueries                                                               []core.LineageKindLinkQuery
 	batchVersions, batchEvents, batchDelivery, batchDeliveryEvents, taskLists int
 	singleVersions, singleEvents, singleDelivery, eventPages                  int
 	versionIDs, eventIDs, deliveryIDs, deliveryTaskIDs                        [][]string
@@ -648,6 +668,18 @@ func (st *requirementsScopedStore) ListLineageNeighborhood(ctx context.Context, 
 func (st *requirementsScopedStore) ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error) {
 	st.scopedArtifacts++
 	return st.Store.ListArtifactsForLineage(ctx, nodes)
+}
+
+func (st *requirementsScopedStore) ListArtifactsForOwners(ctx context.Context, owners store.ArtifactOwners) ([]core.Artifact, error) {
+	st.ownerArtifacts++
+	st.ownerReads = append(st.ownerReads, owners)
+	return st.Store.ListArtifactsForOwners(ctx, owners)
+}
+
+func (st *requirementsScopedStore) ListLineageKindLinks(ctx context.Context, query core.LineageKindLinkQuery) ([]core.LineageLink, error) {
+	st.kindLinks++
+	st.kindQueries = append(st.kindQueries, query)
+	return st.Store.ListLineageKindLinks(ctx, query)
 }
 
 func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
@@ -1498,18 +1530,23 @@ func TestRequirementStalenessTreatsUnrecoverablePlannedVersionAsNotEvaluated(t *
 	}
 }
 
-type truncatedDisplayLineageStore struct{ store.Store }
+// displayOnlyServesStore answers the detail's inbound serves read with 300
+// legacy task -serves-> requirement links. The delivery read never sees
+// them.
+type displayOnlyServesStore struct {
+	store.Store
+	links []core.LineageLink
+}
 
-func (st *truncatedDisplayLineageStore) ListLineageNeighborhood(_ context.Context, roots []core.LineageNode, _ core.LineageTraversalBudget) ([]core.LineageLink, error) {
-	links := make([]core.LineageLink, 0, 300)
-	root := roots[0]
-	for index := 0; index < 300; index++ {
-		links = append(links, core.LineageLink{
-			Workspace: "demo", SrcType: root.Type, SrcID: root.ID,
-			DstType: core.LineageEvidence, DstID: fmt.Sprintf("artifact-%03d", index), Kind: "supports", CreatedByEventID: int64(index + 1),
-		})
+func (st *displayOnlyServesStore) ListLineageKindLinks(ctx context.Context, query core.LineageKindLinkQuery) ([]core.LineageLink, error) {
+	if query.Kind != "serves" || !query.Inbound || query.FarType != core.LineageTask {
+		return st.Store.ListLineageKindLinks(ctx, query)
 	}
-	return links, nil
+	links := st.links
+	if len(links) > query.Limit {
+		links = links[:query.Limit]
+	}
+	return append([]core.LineageLink(nil), links...), nil
 }
 
 func TestRequirementStalenessIgnoresDisplayTruncation(t *testing.T) {
@@ -1545,7 +1582,31 @@ func TestRequirementStalenessIgnoresDisplayTruncation(t *testing.T) {
 	if _, fresh, recordErr := base.(monitor.Store).RecordDrift(ctx, drift); recordErr != nil || !fresh {
 		t.Fatalf("record drift fresh=%t err=%v", fresh, recordErr)
 	}
-	server := NewServer(&truncatedDisplayLineageStore{Store: base})
+	// Display-only tasks reach the requirement only through legacy inbound
+	// serves links. One of them merged after confirmation without holding
+	// the requirement in its context, and a drift names it. Neither may
+	// change the delivery result or the drift attribution.
+	display := &displayOnlyServesStore{Store: base}
+	for index := 0; index < 300; index++ {
+		id := fmt.Sprintf("display-%03d", index)
+		if err = base.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Title: "Display-only " + id, Repo: "conveyor", BaseBranch: "main",
+			Branch: "conveyor/task-" + id, State: core.TaskMerged, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		display.links = append(display.links, core.LineageLink{Workspace: "demo", SrcType: core.LineageTask, SrcID: id,
+			DstType: core.LineageRequirement, DstID: requirement.ID, Kind: "serves", CreatedByEventID: int64(1_000_000 + index), CreatedAt: time.Now().UTC()})
+	}
+	if err = base.AppendEvent(ctx, core.Event{TaskID: "display-000", Kind: "merge.confirmed", At: mergeAt, Payload: core.JSONPayload(map[string]any{
+		"repository": "kidus/conveyor", "base_sha": "display-base", "head_sha": "display-head", "task_title": "Display-only display-000",
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	displayDrift := monitor.Drift{ID: "direct_push:conveyor:display-only", WorkspaceID: "demo", Repository: "conveyor", Kind: monitor.DirectPush,
+		SourceURL: "https://example.test/commit/display-head", CommitSHA: "display-head", TaskID: "display-000", DetectedAt: mergeAt.Add(time.Minute)}
+	if _, fresh, recordErr := base.(monitor.Store).RecordDrift(ctx, displayDrift); recordErr != nil || !fresh {
+		t.Fatalf("record display drift fresh=%t err=%v", fresh, recordErr)
+	}
+	server := NewServer(display)
 	server.Workspace = "demo"
 	server.Monitor = &monitor.Service{Store: base.(monitor.Store), WorkspaceID: "demo", Enabled: true}
 	response := httptest.NewRecorder()
@@ -1561,6 +1622,15 @@ func TestRequirementStalenessIgnoresDisplayTruncation(t *testing.T) {
 		len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].TaskID != task.ID ||
 		view.Staleness.Deliveries[0].NeedsAttention || len(view.Staleness.ActiveDrift) != 1 || view.Staleness.ActiveDrift[0].ID != drift.ID {
 		t.Fatalf("display-independent staleness=%+v", view.Staleness)
+	}
+	// The display-only tasks still list, capped at 255 with the delivery
+	// task, and the cut adds no marker.
+	ids := make([]string, 0, len(view.ServingTasks))
+	for _, served := range view.ServingTasks {
+		ids = append(ids, served.ID)
+	}
+	if len(ids) != requirementDetailServingTaskLimit || ids[0] != "display-000" || !sort.StringsAreSorted(ids) {
+		t.Fatalf("display serving tasks = %d first=%v sorted=%t", len(ids), ids[:1], sort.StringsAreSorted(ids))
 	}
 }
 
@@ -1590,6 +1660,21 @@ func TestRequirementStalenessSurfacesTruncatedDeliveryEvaluation(t *testing.T) {
 	if _, _, err = base.ConfirmRequirementVersion(ctx, requirement.ID, proposed.Version); err != nil {
 		t.Fatal(err)
 	}
+	// Every delivery task exists, and one merged after confirmation without
+	// holding the requirement in its context: a complete evaluation would
+	// flag it.
+	for index := 0; index < 300; index++ {
+		id := fmt.Sprintf("delivery-%03d", index)
+		if err = base.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Title: "Delivery " + id, Repo: "conveyor", BaseBranch: "main",
+			Branch: "conveyor/task-" + id, State: core.TaskMerged, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = base.AppendEvent(ctx, core.Event{TaskID: "delivery-000", Kind: "merge.confirmed", At: time.Now().UTC().Add(time.Minute), Payload: core.JSONPayload(map[string]any{
+		"repository": "kidus/conveyor", "base_sha": "base", "head_sha": "head", "task_title": "Delivery delivery-000",
+	})}); err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(&truncatedDeliveryLineageStore{Store: base})
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
@@ -1603,6 +1688,11 @@ func TestRequirementStalenessSurfacesTruncatedDeliveryEvaluation(t *testing.T) {
 	}
 	if !view.Staleness.PartialEvaluation || view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 0 {
 		t.Fatalf("partial staleness = %+v", view.Staleness)
+	}
+	// The display reads serves links directly, and this stub adds delivery
+	// links only, so the detail lists no serving task.
+	if len(view.ServingTasks) != 0 {
+		t.Fatalf("serving tasks = %d", len(view.ServingTasks))
 	}
 }
 

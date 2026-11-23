@@ -37,6 +37,8 @@ func runReviewFailFast(t *testing.T, x Fixture) {
 	t.Run("NextRoundKeepsPanelSize", func(t *testing.T) { runFailFastNextRound(t, x) })
 	t.Run("SettledRoundRefusesAdditions", func(t *testing.T) { runFailFastAdditionRefused(t, x) })
 	t.Run("SummaryEligibility", func(t *testing.T) { runFailFastSummary(t, x) })
+	t.Run("DistinctModelRefusal", func(t *testing.T) { runFailFastDistinctModelRefusal(t, x) })
+	t.Run("DeltaRetryKeepsPair", func(t *testing.T) { runFailFastDeltaRetryKeepsPair(t, x) })
 }
 
 const ffWorker = "ff-worker"
@@ -593,5 +595,100 @@ func runFailFastSummary(t *testing.T, x Fixture) {
 	}
 	if got := ffKinds(t, x, task.ID); got["pipeline.bounced"] != kinds["pipeline.bounced"] || got["review.accepted"] != kinds["review.accepted"] {
 		t.Fatalf("summary changed verdicts or bounces: %v -> %v", kinds, got)
+	}
+}
+
+// runFailFastDistinctModelRefusal keeps one claim refusal of the retired
+// ReviewDistinctModels suite on every backend (req-review-gates-evidence
+// AC-2.10): under a frozen distinct_models policy, a seat claim whose model
+// matches a held seat's model, ignoring case and surrounding space, fails
+// with the held name, writes nothing, and leaves the seat claimable.
+func runFailFastDistinctModelRefusal(t *testing.T, x Fixture) {
+	task := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: seatFixtureHead, CreatedAt: time.Now().UTC()}
+	task.Branch = "conveyor/task-" + task.ID
+	task.SetupContract = config.PolicyContract{MaxBounces: 3, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2), DistinctModels: true}, StageTimeouts: config.PolicyStageTimeouts{Review: "1h"}}
+	requireOK(t, x.Backend.CreateTask(x.Context, task))
+	resolution := resolveSeats(t, x, task.ID, 1)
+	jobs, orders := seatMembers(task.ID, 1, resolution.SeatCount)
+	requireOK(t, createSeatRound(x, task.ID, resolution, jobs, orders))
+	claim := func(order core.WorkOrder, model string) error {
+		session := order.ID + "-" + core.NewTaskID()
+		_, err := ClaimWorkOrder(x.Context, x.Backend, order.ID, core.WorkOrderClaim{ClaimantID: ffWorker, SessionID: session, ClientToken: session + "-token", Model: model, Agent: "conformance", Lease: time.Hour, ExecutionTimeout: time.Hour})
+		return err
+	}
+	requireOK(t, claim(orders[0], "claude-sonnet-5-5"))
+	before := ffSnapshot(t, x, task.ID)
+	err := claim(orders[1], "  Claude-Sonnet-5-5\t")
+	if !errors.Is(err, store.ErrReviewSeatModelNotDistinct) || !strings.Contains(err.Error(), "claude-sonnet-5-5") {
+		t.Fatalf("repeated model claim err=%v", err)
+	}
+	ffRequireUnchanged(t, "refused claim", ffSnapshot(t, x, task.ID), before)
+	if seat := ffOrder(t, x, orders[1].ID); seat.State != core.WorkOrderQueued || !seat.Claimable || seat.SessionID != "" {
+		t.Fatalf("refused seat state=%s claimable=%t session=%q", seat.State, seat.Claimable, seat.SessionID)
+	}
+	requireOK(t, claim(orders[1], "gpt-6"))
+}
+
+// runFailFastDeltaRetryKeepsPair keeps the delta pair cases of the retired
+// DeltaReviewRounds suite on every backend (req-review-gates-evidence
+// AC-12.4, AC-12.5): a retried later-round delta round stores the delta
+// scope, the judged-head baseline, and the head on every new seat, and with
+// verify_stage on, a verdict naming another pair is refused while the stored
+// pair is accepted.
+func runFailFastDeltaRetryKeepsPair(t *testing.T, x Fixture) {
+	const judged = "judged-head"
+	v := newVerificationFixtureBound(t, x, []core.VerificationRevision{{Repository: "conveyor", RemoteIdentity: "https://example.test/conveyor", SHA: strings.Repeat("d", 40)}},
+		func(task *core.Task) { task.SetupContract.LaterRoundReview = config.LaterRoundReviewDelta }, 1, store.ReviewScopeDelta, judged, true)
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "succeeded", Coverage: verificationFixtureCoverage(v.snapshot(t))}})
+	verify, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
+	requireOK(t, err)
+	seats := func(round int) ([]core.Job, []core.WorkOrder) {
+		jobs, orders := seatMembers(verify.TaskID, round, 2)
+		for i := range orders {
+			orders[i].HeadSHA, orders[i].ReviewScope, orders[i].BaselineSHA = verify.HeadSHA, store.ReviewScopeDelta, judged
+		}
+		return jobs, orders
+	}
+	jobs, orders := seats(1)
+	requireOK(t, CreateReviewRound(x.Context, x.Backend, verify.TaskID, jobs, orders))
+	// Seat 1 ends without a verdict and seat 2 times out, so a retry can
+	// replace the round.
+	first, err := ClaimWorkOrder(x.Context, x.Backend, orders[0].ID, core.WorkOrderClaim{SessionID: "delta-seat-one-" + verify.TaskID, ClientToken: "one", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	requireOK(t, err)
+	first.State = core.WorkOrderCompleted
+	requireOK(t, UpdateWorkOrder(x.Context, x.Backend, first, core.WorkOrderCmdSubmitReviewVerdict))
+	_, err = ClaimWorkOrder(x.Context, x.Backend, orders[1].ID, core.WorkOrderClaim{SessionID: "delta-seat-two-" + verify.TaskID, ClientToken: "timeout", Lease: time.Minute, ExecutionTimeout: time.Nanosecond})
+	requireOK(t, err)
+	_, err = taskops.New(x.Backend).TickOrderClock(x.Context, time.Now().UTC().Add(time.Second))
+	requireOK(t, err)
+	retryJobs, retried := seats(2)
+	result, err := RetryReviewRound(x.Context, x.Backend, store.ReviewRoundRetryRequest{TaskID: verify.TaskID, RequestID: "delta-retry-" + verify.TaskID, PriorRound: 1, Reason: "seat timed out", PRHead: verify.HeadSHA}, retryJobs, retried)
+	requireOK(t, err)
+	if len(result.WorkOrders) != 2 {
+		t.Fatalf("retry opened %d seats, want 2", len(result.WorkOrders))
+	}
+	for _, opened := range result.WorkOrders {
+		stored, err := x.Backend.GetWorkOrder(x.Context, opened.ID)
+		requireOK(t, err)
+		if stored.ReviewRound != 2 || stored.ReviewScope != store.ReviewScopeDelta || stored.BaselineSHA != judged || stored.HeadSHA != verify.HeadSHA {
+			t.Fatalf("retried seat %s round=%d scope=%q baseline=%q head=%q, want round 2 delta from %q at %q", stored.ID, stored.ReviewRound, stored.ReviewScope, stored.BaselineSHA, stored.HeadSHA, judged, verify.HeadSHA)
+		}
+	}
+	seat, err := ClaimWorkOrder(x.Context, x.Backend, result.WorkOrders[0].ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("reviewer"), SessionID: "delta-retry-reviewer", ClientToken: "delta-retry-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: verify.ServedRequirementSnapshot})
+	requireOK(t, err)
+	ctx := store.WithActor(x.Context, store.Actor{ID: store.UserActorID("reviewer"), Role: core.ActorUser})
+	decision := core.ReviewDecision{TaskID: seat.TaskID, JobID: seat.JobID, ReviewWorkOrderID: seat.ID, ClaimSession: "delta-retry-reviewer", ReviewRound: 2, ReviewSeat: seat.ReviewSeat, Verdict: "approve", ReasonCode: "verified", Summary: "Retried delta seat assessed",
+		ReviewedCommitSHA: verify.HeadSHA, HeadSHA: seat.HeadSHA, ReviewScope: seat.ReviewScope, BaselineSHA: seat.BaselineSHA, MaxBounces: 3,
+		VerificationAssessment: &core.VerificationAssessment{ContextIDs: []string{v.contextID}, RunIDs: []string{}, EvidenceIDs: []string{}, Mappings: []core.VerificationAssessmentMapping{{DocumentID: "req-fixture", Version: 1, AcceptanceCriterionID: "AC-1.1", EvidenceIDs: []string{}, Assessment: "The delta context was sealed for this head"}}}}
+	wrongPair := decision
+	wrongPair.ReviewScope, wrongPair.BaselineSHA = "", verify.HeadSHA
+	before := ffSnapshot(t, x, seat.TaskID)
+	if err := taskops.New(x.Backend).AcceptReviewDecision(ctx, wrongPair); !errors.Is(err, store.ErrVerificationState) {
+		t.Fatalf("wrong-pair verdict err=%v, want %v", err, store.ErrVerificationState)
+	}
+	ffRequireUnchanged(t, "wrong-pair verdict", ffSnapshot(t, x, seat.TaskID), before)
+	requireOK(t, taskops.New(x.Backend).AcceptReviewDecision(ctx, decision))
+	if kinds := ffKinds(t, x, seat.TaskID); kinds["review.accepted"] != 1 {
+		t.Fatalf("stored-pair verdict recorded %v, want one review.accepted", kinds)
 	}
 }

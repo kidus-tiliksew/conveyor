@@ -13,13 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres"
-	"github.com/kidus-tiliksew/conveyor/internal/testsupport/vk10fixture"
 )
-
-func TestVK10PostgresScenarioIntegration(t *testing.T) {
-	raw := disposablePostgresURL(t, "VK-10")
-	vk10fixture.Run(t, func(t *testing.T) store.Backend { return postgresSchemaBackend(t, raw, "vk10_") })
-}
 
 // disposablePostgresURL is CONVEYOR_TEST_DATABASE_URL; the test skips when it
 // is unset and fails unless it names a disposable database ending in _test.

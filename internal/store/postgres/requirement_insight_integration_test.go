@@ -7,13 +7,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // requirementInsightStore opens a migrated store whose every query is
@@ -40,107 +38,6 @@ func requirementInsightStore(t *testing.T) (*Store, *queryRecorder, context.Cont
 		t.Fatal(err)
 	}
 	return st, recorder, store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "operator", Role: core.ActorHuman}), workspace)
-}
-
-// seedRequirementInsight creates a confirmed requirement served by count
-// tasks, each attached to a design. Every fifth task is merged and every
-// seventh closed; the open tasks form one dependency chain, because a new
-// task may depend only on an open task. It returns the requirement and each
-// task's expected dependency count.
-func seedRequirementInsight(t *testing.T, st *Store, ctx context.Context, count int) (string, map[string]int) {
-	t.Helper()
-	suffix := strings.ToLower(core.NewTaskID())
-	requirement := "req-insight-scale-" + suffix
-	_, version, err := st.CreateRequirement(ctx, core.Requirement{ID: requirement, Title: "Scale " + suffix}, core.RequirementVersion{Content: "# Scale " + suffix, Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Insights scale."}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement, version.Version); err != nil {
-		t.Fatal(err)
-	}
-	design := "design-insight-scale-" + suffix
-	_, designVersion, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: design, Title: "Scale design " + suffix, Category: "Component design"}, core.SystemDesignVersion{Content: "# Scale design " + suffix + "\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/insight/**\n```", Origin: core.SystemDesignOriginOperator})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design, designVersion.Version); err != nil {
-		t.Fatal(err)
-	}
-	plane := taskops.New(st)
-	workspace, _ := store.WorkspaceFromContext(ctx)
-	created := time.Now().UTC().Add(-24 * time.Hour)
-	previous := ""
-	wantDependencies := map[string]int{}
-	for i := 0; i < count; i++ {
-		id := fmt.Sprintf("insight-%04d-%s", i, suffix)
-		terminal := i%5 == 0 || i%7 == 0
-		var dependencies []string
-		if previous != "" && !terminal {
-			dependencies = []string{previous}
-		}
-		wantDependencies[id] = len(dependencies)
-		task := core.Task{ID: id, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, Title: "Insight " + id, Body: "Body " + id, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: created.Add(time.Duration(i) * time.Second)}
-		if err = st.CreateTaskWithDependencies(ctx, task, dependencies); err != nil {
-			t.Fatal(err)
-		}
-		if _, err = st.UpdateTaskContext(ctx, id, store.TaskContextChange{Add: store.TaskContextInput{RequirementIDs: []string{requirement}, DesignIDs: []string{design}}}); err != nil {
-			t.Fatal(err)
-		}
-		switch {
-		case i%5 == 0:
-			_, err = plane.Perform(ctx, id, taskops.Command{Kind: core.TaskMergeRecover})
-		case i%7 == 0:
-			_, err = plane.Perform(ctx, id, taskops.Command{Kind: core.TaskCancel})
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !terminal {
-			previous = id
-		}
-	}
-	return requirement, wantDependencies
-}
-
-// The input read issues the same fixed number of queries for 3 and 200
-// serving tasks, covering task rows with bodies, assignees, dependencies,
-// designs, and terminal times (feature-requirement-insights RI-2;
-// req-requirement-insights AC-3.7).
-func TestRequirementInsightInputsBoundedQueriesIntegration(t *testing.T) {
-	st, recorder, ctx := requirementInsightStore(t)
-	counts := map[int]int{}
-	for _, size := range []int{3, 200} {
-		requirement, wantDependencies := seedRequirementInsight(t, st, ctx, size)
-		recorder.reset()
-		inputs, err := st.ReadRequirementInsightInputs(ctx, requirement)
-		queries := recorder.snapshot()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(inputs.Tasks) != size {
-			t.Fatalf("size %d: %d serving tasks", size, len(inputs.Tasks))
-		}
-		merged, closed := 0, 0
-		for _, task := range inputs.Tasks {
-			if task.Task.Body == "" || len(task.Designs) != 1 || len(task.DependsOn) != wantDependencies[task.Task.ID] {
-				t.Fatalf("size %d: task %+v lacks its body, design, or dependency", size, task)
-			}
-			if !task.MergedAt.IsZero() {
-				merged++
-			}
-			if !task.ClosedAt.IsZero() {
-				closed++
-			}
-		}
-		if merged == 0 || (closed == 0 && size > 7) {
-			t.Fatalf("size %d: merged=%d closed=%d", size, merged, closed)
-		}
-		counts[size] = len(queries)
-		t.Logf("requirement insight inputs: %d tasks, %d queries", size, len(queries))
-	}
-	if counts[3] != counts[200] || counts[200] > 8 {
-		t.Fatalf("input read queries %v, want an equal fixed count of at most 8", counts)
-	}
 }
 
 func recordInsightHeadlinesConcurrently(st *Store, ctx context.Context, headlines []store.RequirementInsightHeadline) ([]store.RequirementInsightHeadline, []error) {

@@ -1,11 +1,13 @@
 package postgres
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
@@ -75,4 +77,14 @@ func TestRiskTokenHistoryUpgradeIntegration(t *testing.T) {
 			t.Fatalf("backfilled claim identities=%d, want 1", backfilled)
 		}
 	})
+}
+
+func activityValidationWorkspace(t *testing.T, st *Store, prefix string) (string, context.Context) {
+	t.Helper()
+	workspace := prefix + "-" + core.NewTaskID()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
+	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	return workspace, ctx
 }

@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -195,15 +198,38 @@ func TestRequirementDetailTaskFieldsAreCompact(t *testing.T) {
 func TestRequirementDetailStoreCallsDoNotGrowWithTasks(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	inner := store.NewMemory()
+	// Both fixtures stay below the 256-link probe of each serves read.
 	small := storetest.SeedRequirementDetail(t, inner, ctx, "small", 2, 1)
 	large := storetest.SeedRequirementDetail(t, inner, ctx, "large", 40, 10)
-	counter := newTaskDetailCountingStore(inner)
+	// Each requirement has its own artifacts, and its serving tasks have
+	// artifacts the detail does not show.
+	artifactCounts := map[string]int{small: 1, large: 3}
+	for _, id := range []string{small, large} {
+		for index := 0; index < artifactCounts[id]; index++ {
+			if _, err := inner.CreateArtifact(ctx, core.Artifact{Name: fmt.Sprintf("%s-%d.txt", id, index), ContentType: "text/plain",
+				Role: core.ArtifactRoleTaskContext, RequirementID: id}, []byte(fmt.Sprintf("artifact %d of %s", index, id))); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	tasks, err := inner.ListTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range tasks {
+		if _, err = inner.CreateArtifact(ctx, core.Artifact{Name: task.ID + ".txt", ContentType: "text/plain",
+			Role: core.ArtifactRoleTaskContext, TaskID: task.ID}, []byte("artifact of "+task.ID)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counter := &requirementOwnerCountingStore{taskDetailCountingStore: newTaskDetailCountingStore(inner)}
 	server := NewServer(counter)
 	server.Workspace = "demo"
 	read := func(id string, serving, linked int) (map[string]int, int) {
 		t.Helper()
 		requirementDetailRecorder(t, server, "/v1/requirements/"+id) // warm any first-request work
 		counter.reset()
+		counter.takeOwners()
 		response := requirementDetailRecorder(t, server, "/v1/requirements/"+id)
 		calls := counter.reset()
 		var view requirementView
@@ -212,6 +238,17 @@ func TestRequirementDetailStoreCallsDoNotGrowWithTasks(t *testing.T) {
 		}
 		if len(view.ServingTasks) != serving || len(view.ServingBlueprints) != linked || view.Staleness.PartialEvaluation {
 			t.Fatalf("%s fixture: serving=%d blueprints=%d partial=%t", id, len(view.ServingTasks), len(view.ServingBlueprints), view.Staleness.PartialEvaluation)
+		}
+		if len(view.Artifacts) != artifactCounts[id] {
+			t.Fatalf("%s fixture: artifacts = %+v", id, view.Artifacts)
+		}
+		for _, artifact := range view.Artifacts {
+			if artifact.RequirementID != id || artifact.TaskID != "" {
+				t.Fatalf("%s fixture: artifact %+v", id, artifact)
+			}
+		}
+		if owners := counter.takeOwners(); len(owners) != 1 || !reflect.DeepEqual(owners[0], store.ArtifactOwners{RequirementIDs: []string{id}}) {
+			t.Fatalf("%s fixture: artifact owner reads = %+v", id, owners)
 		}
 		for _, blueprint := range view.ServingBlueprints {
 			if blueprint.Spec == nil || *blueprint.Spec != (requirementPlanSummary{Version: 2, Approved: false}) {
@@ -233,6 +270,15 @@ func TestRequirementDetailStoreCallsDoNotGrowWithTasks(t *testing.T) {
 	if smallCalls["ListRequirementDetailTasks"] != 1 || smallCalls["ListLatestPlanSummaries"] != 1 {
 		t.Fatalf("detail batch reads = %v", smallCalls)
 	}
+	// The detail reads its display links and artifacts directly: no
+	// neighborhood walk, no lineage artifact read, and no whole-workspace
+	// scan (component-lineage; component-artifacts).
+	for method, want := range map[string]int{"ListLineageNeighborhood": 0, "ListArtifactsForLineage": 0, "ListLineageLinks": 0, "ListArtifacts": 0,
+		"ListLineageKindLinks": 2, "ListArtifactsForOwners": 1, "ListRequirementDeliveryLineage": 1, "ListRequirementDeliveryEventsForTasks": 1} {
+		if smallCalls[method] != want {
+			t.Fatalf("detail called %s %d times, want %d: %v", method, smallCalls[method], want, smallCalls)
+		}
+	}
 	t.Logf("MEASUREMENT memory requirement detail store calls=%d small_bytes=%d large_bytes=%d", totalCalls(smallCalls), smallBytes, largeBytes)
 }
 
@@ -242,4 +288,601 @@ func totalCalls(calls map[string]int) int {
 		total += count
 	}
 	return total
+}
+
+// requirementDisplayFixture builds one confirmed requirement and the tasks,
+// links, and artifacts around it for the detail display tests.
+type requirementDisplayFixture struct {
+	t           *testing.T
+	ctx         context.Context
+	st          store.Store
+	requirement core.Requirement
+	created     time.Time
+	nextEventID int64
+}
+
+func newRequirementDisplayFixture(t *testing.T, st store.Store, id string) *requirementDisplayFixture {
+	t.Helper()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "operator", Role: core.ActorHuman}), "demo")
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: "Display " + id}, core.RequirementVersion{
+		Content: "# Display " + id, Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "The detail lists the tasks that serve it."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	return &requirementDisplayFixture{t: t, ctx: ctx, st: st, requirement: requirement, created: time.Now().UTC().Add(-time.Hour), nextEventID: 1 << 40}
+}
+
+func (f *requirementDisplayFixture) task(id, parent string) {
+	f.t.Helper()
+	if err := f.st.CreateTask(f.ctx, core.Task{ID: id, Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/" + id,
+		Title: "Task " + id, State: core.TaskRunning, ParentTaskID: parent, CreatedAt: time.Now().UTC()}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// attach projects requirement -serves-> task through task context.
+func (f *requirementDisplayFixture) attach(id string) {
+	f.t.Helper()
+	if _, err := f.st.UpdateTaskContext(f.ctx, id, store.TaskContextChange{Add: store.TaskContextInput{RequirementIDs: []string{f.requirement.ID}}}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *requirementDisplayFixture) link(id string, confirm bool) {
+	f.t.Helper()
+	if _, err := f.st.ProposeRequirementServes(f.ctx, id, f.requirement.ID, core.RequirementServesOperator, confirm); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// inbound returns a legacy task -serves-> requirement link. The projector no
+// longer writes this direction, so the tests inject it through
+// requirementDisplayLinkStore.
+func (f *requirementDisplayFixture) inbound(taskID string) core.LineageLink {
+	f.nextEventID++
+	f.created = f.created.Add(time.Second)
+	return core.LineageLink{Workspace: "demo", SrcType: core.LineageTask, SrcID: taskID, DstType: core.LineageRequirement, DstID: f.requirement.ID,
+		Kind: "serves", CreatedByEventID: f.nextEventID, CreatedAt: f.created}
+}
+
+func (f *requirementDisplayFixture) artifact(name string, owner core.Artifact) core.Artifact {
+	f.t.Helper()
+	owner.Name, owner.ContentType = name, "text/plain"
+	if owner.Role == "" {
+		owner.Role = core.ArtifactRoleTaskContext
+	}
+	artifact, err := f.st.CreateArtifact(f.ctx, owner, []byte(name))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return artifact
+}
+
+// requirementDisplayLinkStore adds lineage links that the memory projector
+// cannot write. Its neighborhood and kind-link reads follow the store
+// contract over the inner links plus the added ones: the neighborhood asks
+// core.FetchLineageNeighborhood for ranked prefixes, and the kind-link read
+// keeps the first Limit links in core.SortLineageKindLinks order
+// (component-lineage).
+type requirementDisplayLinkStore struct {
+	store.Store
+	extra       []core.LineageLink
+	kindQueries []core.LineageKindLinkQuery
+}
+
+func (s *requirementDisplayLinkStore) allLinks(ctx context.Context) ([]core.LineageLink, error) {
+	links, err := s.Store.ListLineageLinks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	for _, link := range s.extra {
+		if link.Workspace == workspace {
+			links = append(links, link)
+		}
+	}
+	return links, nil
+}
+
+func (s *requirementDisplayLinkStore) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	links, err := s.allLinks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	budget.Workspace, _ = store.WorkspaceFromContext(ctx)
+	return core.FetchLineageNeighborhood(ctx, roots, budget, func(_ context.Context, nodes []core.LineageNode, limit int) (map[core.LineageNode][]core.LineageLink, error) {
+		out := make(map[core.LineageNode][]core.LineageLink, len(nodes))
+		for _, node := range nodes {
+			incident := []core.LineageLink{}
+			for _, link := range links {
+				if (link.SrcType == node.Type && link.SrcID == node.ID) || (link.DstType == node.Type && link.DstID == node.ID) {
+					incident = append(incident, link)
+				}
+			}
+			out[node] = core.RankLineageLinks(node, incident, limit)
+		}
+		return out, nil
+	})
+}
+
+func (s *requirementDisplayLinkStore) ListLineageKindLinks(ctx context.Context, query core.LineageKindLinkQuery) ([]core.LineageLink, error) {
+	s.kindQueries = append(s.kindQueries, query)
+	if err := query.Validate(); err != nil {
+		return nil, err
+	}
+	links, err := s.allLinks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nodes := map[core.LineageNode]bool{}
+	for _, node := range query.Nodes {
+		nodes[node] = true
+	}
+	out := []core.LineageLink{}
+	for _, link := range links {
+		near, far := core.LineageNode{Type: link.SrcType, ID: link.SrcID}, link.DstType
+		if query.Inbound {
+			near, far = core.LineageNode{Type: link.DstType, ID: link.DstID}, link.SrcType
+		}
+		if link.Kind == query.Kind && nodes[near] && far == query.FarType && link.Validate() == nil {
+			out = append(out, link)
+		}
+	}
+	core.SortLineageKindLinks(out)
+	if len(out) > query.Limit {
+		if query.Newest {
+			out = out[len(out)-query.Limit:]
+		} else {
+			out = out[:query.Limit]
+		}
+	}
+	return out, nil
+}
+
+// legacyRequirementDisplay recomputes serving_tasks and artifacts as the
+// detail read did before it dropped the 5-hop neighborhood walk: the
+// directly serving tasks among the fetched neighborhood links, without tasks
+// that have children, in task-ID order, and the requirement's own artifacts
+// among those of the traversed nodes. It is the parity oracle for the direct
+// reads that replaced the walk.
+func legacyRequirementDisplay(t *testing.T, st store.Store, ctx context.Context, requirementID string) ([]requirementTaskSummary, []core.Artifact) {
+	t.Helper()
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	root := core.LineageNode{Type: core.LineageRequirement, ID: requirementID}
+	budget := core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 256, MaxLinks: 1024, Workspace: workspace}
+	links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := core.TraverseLineage(links, []core.LineageNode{root}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := st.ListArtifactsForLineage(ctx, graph.Nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := []core.Artifact{}
+	for _, artifact := range listed {
+		if artifact.RequirementID == requirementID {
+			artifacts = append(artifacts, artifact)
+		}
+	}
+	ids := sortedIDs(directServingTaskIDs(links, requirementID))
+	tasks, err := st.ListRequirementDetailTasks(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serving := []requirementTaskSummary{}
+	for _, id := range ids {
+		task, found := tasks[id]
+		if !found {
+			t.Fatalf("legacy serving task %s has no summary", id)
+		}
+		if !task.HasChildren {
+			serving = append(serving, requirementTaskSummaryOf(task))
+		}
+	}
+	return serving, artifacts
+}
+
+func readRequirementDetail(t *testing.T, st store.Store, id string) (requirementView, map[string]any) {
+	t.Helper()
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := requirementDetailRecorder(t, server, "/v1/requirements/"+id)
+	var view requirementView
+	if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &object); err != nil {
+		t.Fatal(err)
+	}
+	return view, object
+}
+
+func assertSameJSON(t *testing.T, label string, got, want any) {
+	t.Helper()
+	gotJSON, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("%s differs from the neighborhood walk:\n got %s\nwant %s", label, gotJSON, wantJSON)
+	}
+}
+
+func servingTaskIDs(tasks []requirementTaskSummary) []string {
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		ids = append(ids, task.ID)
+	}
+	return ids
+}
+
+// The direct reads give the detail the same serving tasks and artifacts as
+// the neighborhood walk did: outbound and legacy inbound serves links, one
+// entry for a task linked in both directions, no task with children, the
+// requirement's own artifacts in order, and no artifact of a serving task.
+// Requirement links, blueprints, and staleness keep their values
+// (component-lineage; component-artifacts).
+func TestRequirementDetailDirectReadsMatchNeighborhoodWalk(t *testing.T) {
+	inner := store.NewMemory()
+	f := newRequirementDisplayFixture(t, inner, "req-display-parity")
+	other := newRequirementDisplayFixture(t, inner, "req-display-other")
+	for _, id := range []string{"out-a", "out-b", "both", "parent", "linked", "pending", "elsewhere"} {
+		f.task(id, "")
+	}
+	f.task("parent-child", "parent")
+	f.task("inbound-only", "")
+	f.task("inbound-parent", "")
+	f.task("inbound-parent-child", "inbound-parent")
+	for _, id := range []string{"out-a", "out-b", "both", "parent"} {
+		f.attach(id)
+	}
+	f.link("linked", true)
+	f.link("pending", false)
+	other.attach("elsewhere")
+	spec, err := inner.CreateSpecVersion(f.ctx, core.SpecVersion{TaskID: "linked", Content: "plan", Acceptance: core.JSONPayload([]any{}), Decomposition: core.JSONPayload([]any{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = inner.ApproveSpecVersion(f.ctx, "linked", spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	first := f.artifact("first.txt", core.Artifact{RequirementID: f.requirement.ID})
+	second := f.artifact("second.txt", core.Artifact{RequirementID: f.requirement.ID, Role: core.ArtifactRoleGeneratedOutput})
+	f.artifact("task-only.txt", core.Artifact{TaskID: "out-a"})
+	f.artifact("other-requirement.txt", core.Artifact{RequirementID: other.requirement.ID})
+
+	// The link store reads the memory store's own links like the memory
+	// store does before any link is added.
+	plain := &requirementDisplayLinkStore{Store: inner}
+	root := core.LineageNode{Type: core.LineageRequirement, ID: f.requirement.ID}
+	budget := core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 256, MaxLinks: 1024, Workspace: "demo"}
+	wantNeighborhood, err := inner.ListLineageNeighborhood(f.ctx, []core.LineageNode{root}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotNeighborhood, err := plain.ListLineageNeighborhood(f.ctx, []core.LineageNode{root}, budget)
+	if err != nil || !reflect.DeepEqual(gotNeighborhood, wantNeighborhood) {
+		t.Fatalf("link store neighborhood = %v err=%v, want %v", gotNeighborhood, err, wantNeighborhood)
+	}
+	query := core.LineageKindLinkQuery{Nodes: []core.LineageNode{root}, Kind: "serves", FarType: core.LineageTask, Limit: 10}
+	wantKind, err := inner.ListLineageKindLinks(f.ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotKind, kindErr := plain.ListLineageKindLinks(f.ctx, query); kindErr != nil || !reflect.DeepEqual(gotKind, wantKind) {
+		t.Fatalf("link store kind links = %v err=%v, want %v", gotKind, kindErr, wantKind)
+	}
+
+	st := &requirementDisplayLinkStore{Store: inner, extra: []core.LineageLink{f.inbound("both"), f.inbound("inbound-only"), f.inbound("inbound-parent")}}
+	view, _ := readRequirementDetail(t, st, f.requirement.ID)
+	legacyServing, legacyArtifacts := legacyRequirementDisplay(t, st, f.ctx, f.requirement.ID)
+	assertSameJSON(t, "serving_tasks", view.ServingTasks, legacyServing)
+	assertSameJSON(t, "artifacts", view.Artifacts, legacyArtifacts)
+	if got, want := servingTaskIDs(view.ServingTasks), []string{"both", "inbound-only", "linked", "out-a", "out-b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("serving task IDs = %v, want %v", got, want)
+	}
+	if len(view.Artifacts) != 2 || view.Artifacts[0].ID != first.ID || view.Artifacts[1].ID != second.ID ||
+		view.Artifacts[1].Role != core.ArtifactRoleGeneratedOutput {
+		t.Fatalf("artifacts = %+v", view.Artifacts)
+	}
+	links := map[string]core.RequirementServesState{}
+	for _, link := range view.RequirementLinks {
+		links[link.BlueprintTaskID] = link.State
+	}
+	if len(links) != 2 || links["linked"] != core.RequirementServesConfirmed || links["pending"] == core.RequirementServesConfirmed {
+		t.Fatalf("requirement links = %+v", view.RequirementLinks)
+	}
+	if len(view.ServingBlueprints) != 1 || view.ServingBlueprints[0].Task.ID != "linked" || view.ServingBlueprints[0].Spec == nil ||
+		*view.ServingBlueprints[0].Spec != (requirementPlanSummary{Version: 1, Approved: true}) {
+		t.Fatalf("serving blueprints = %+v", view.ServingBlueprints)
+	}
+	if view.Staleness.PartialEvaluation || view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 0 {
+		t.Fatalf("staleness = %+v", view.Staleness)
+	}
+	// One bounded read per direction names only the requirement.
+	if len(st.kindQueries) != 2 {
+		t.Fatalf("kind-link reads = %+v", st.kindQueries)
+	}
+	for index, got := range st.kindQueries {
+		if !reflect.DeepEqual(got.Nodes, []core.LineageNode{root}) || got.Kind != "serves" || got.Inbound != (index == 1) ||
+			got.FarType != core.LineageTask || got.Limit != requirementDetailServesReadLimit || got.Newest {
+			t.Fatalf("serves read %d = %+v", index, got)
+		}
+	}
+}
+
+// The detail lists at most 255 serving tasks. At 255 it matches the
+// neighborhood walk exactly. Above 255 it lists the first 255 eligible task
+// IDs in task-ID order, with the same response shape, and the cut sets no
+// marker: staleness.partial_evaluation still reports only delivery
+// truncation.
+func TestRequirementDetailCapsServingTasksAt255(t *testing.T) {
+	var shape []string
+	for _, count := range []int{255, 256, 300} {
+		t.Run(fmt.Sprintf("%d outbound", count), func(t *testing.T) {
+			st := store.NewMemory()
+			f := newRequirementDisplayFixture(t, st, fmt.Sprintf("req-cap-%d", count))
+			for index := 0; index < count; index++ {
+				id := fmt.Sprintf("cap-%03d", index)
+				f.task(id, "")
+				f.attach(id)
+			}
+			view, object := readRequirementDetail(t, st, f.requirement.ID)
+			legacyServing, _ := legacyRequirementDisplay(t, st, f.ctx, f.requirement.ID)
+			root := core.LineageNode{Type: core.LineageRequirement, ID: f.requirement.ID}
+			budget := core.LineageTraversalBudget{MaxDepth: 3, MaxNodes: 256, MaxLinks: 1024, Workspace: "demo"}
+			delivery, err := st.ListRequirementDeliveryLineage(f.ctx, f.requirement.ID, budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			graph, err := core.TraverseLineage(delivery, []core.LineageNode{root}, budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if view.Staleness.PartialEvaluation != graph.Truncated {
+				t.Fatalf("partial_evaluation = %t, delivery truncated = %t", view.Staleness.PartialEvaluation, graph.Truncated)
+			}
+			keys := objectKeys(object)
+			if shape == nil {
+				shape = keys
+			} else if !reflect.DeepEqual(keys, shape) {
+				t.Fatalf("response keys = %v, want %v", keys, shape)
+			}
+			if count <= requirementDetailServingTaskLimit {
+				assertSameJSON(t, "serving_tasks", view.ServingTasks, legacyServing)
+				return
+			}
+			ids := servingTaskIDs(view.ServingTasks)
+			want := make([]string, 0, requirementDetailServingTaskLimit)
+			for index := 0; index < requirementDetailServingTaskLimit; index++ {
+				want = append(want, fmt.Sprintf("cap-%03d", index))
+			}
+			if !reflect.DeepEqual(ids, want) {
+				t.Fatalf("capped serving tasks = %d %v, want the first %d eligible IDs", len(ids), ids, requirementDetailServingTaskLimit)
+			}
+			t.Logf("serving tasks: walk listed %d, detail lists %d", len(legacyServing), len(ids))
+		})
+	}
+}
+
+// The cap applies to the union of outbound and legacy inbound serving tasks
+// after duplicates and tasks with children are removed. Below the cap, a
+// mixed fixture matches the neighborhood walk exactly.
+func TestRequirementDetailCapsMixedServingTasks(t *testing.T) {
+	build := func(t *testing.T, id string, outbound, parents, inboundOnly, duplicates int) (*requirementDisplayLinkStore, *requirementDisplayFixture, []string) {
+		t.Helper()
+		inner := store.NewMemory()
+		f := newRequirementDisplayFixture(t, inner, id)
+		st := &requirementDisplayLinkStore{Store: inner}
+		eligible := []string{}
+		for index := 0; index < outbound; index++ {
+			task := fmt.Sprintf("out-%03d", index)
+			f.task(task, "")
+			f.attach(task)
+			if index < parents {
+				f.task(task+"-child", task)
+				continue
+			}
+			if index >= outbound-duplicates {
+				st.extra = append(st.extra, f.inbound(task))
+			}
+			eligible = append(eligible, task)
+		}
+		for index := 0; index < inboundOnly; index++ {
+			task := fmt.Sprintf("in-%03d", index)
+			f.task(task, "")
+			st.extra = append(st.extra, f.inbound(task))
+			eligible = append(eligible, task)
+		}
+		sort.Strings(eligible)
+		return st, f, eligible
+	}
+	t.Run("below the cap", func(t *testing.T) {
+		st, f, eligible := build(t, "req-mixed-below", 200, 2, 10, 10)
+		view, _ := readRequirementDetail(t, st, f.requirement.ID)
+		legacyServing, _ := legacyRequirementDisplay(t, st, f.ctx, f.requirement.ID)
+		assertSameJSON(t, "serving_tasks", view.ServingTasks, legacyServing)
+		if got := servingTaskIDs(view.ServingTasks); !reflect.DeepEqual(got, eligible) {
+			t.Fatalf("serving tasks = %d, want %d eligible", len(got), len(eligible))
+		}
+	})
+	t.Run("above the cap", func(t *testing.T) {
+		st, f, eligible := build(t, "req-mixed-above", 250, 3, 20, 5)
+		if len(eligible) <= requirementDetailServingTaskLimit {
+			t.Fatalf("fixture has %d eligible tasks", len(eligible))
+		}
+		view, _ := readRequirementDetail(t, st, f.requirement.ID)
+		if got, want := servingTaskIDs(view.ServingTasks), eligible[:requirementDetailServingTaskLimit]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("capped serving tasks = %v, want the first %d eligible IDs", got, requirementDetailServingTaskLimit)
+		}
+		// The delivery graph holds all 250 outbound links, so the display
+		// cut leaves delivery evaluation complete.
+		if view.Staleness.PartialEvaluation {
+			t.Fatalf("a display cut set partial_evaluation: %+v", view.Staleness)
+		}
+	})
+}
+
+// requirementOwnerCountingStore adds the artifact owner read to the shared
+// counting store and records each read's owners.
+type requirementOwnerCountingStore struct {
+	*taskDetailCountingStore
+	ownerMu sync.Mutex
+	owners  []store.ArtifactOwners
+}
+
+func (c *requirementOwnerCountingStore) ListArtifactsForOwners(ctx context.Context, owners store.ArtifactOwners) ([]core.Artifact, error) {
+	c.count("ListArtifactsForOwners")
+	c.ownerMu.Lock()
+	c.owners = append(c.owners, owners)
+	c.ownerMu.Unlock()
+	return c.taskDetailCountingStore.ListArtifactsForOwners(ctx, owners)
+}
+
+func (c *requirementOwnerCountingStore) takeOwners() []store.ArtifactOwners {
+	c.ownerMu.Lock()
+	defer c.ownerMu.Unlock()
+	out := c.owners
+	c.owners = nil
+	return out
+}
+
+// A confirmed requirement link adds a requirement -serves-> blueprint link
+// beside the task link, and those links took slots in the old walk's ranked
+// prefix. With 120 attached and 130 linked tasks, 250 tasks are eligible
+// and the walk listed only 188. The detail lists all 250, so it never omits
+// a task the walk listed (review round 1; plan v3).
+func TestRequirementDetailListsEveryEligibleTaskBesideBlueprintLinks(t *testing.T) {
+	st := store.NewMemory()
+	f := newRequirementDisplayFixture(t, st, "req-blueprint-heavy")
+	eligible := []string{}
+	for index := 0; index < 250; index++ {
+		id := fmt.Sprintf("bp-%03d", index)
+		f.task(id, "")
+		if index < 120 {
+			f.attach(id)
+		} else {
+			f.link(id, true)
+		}
+		eligible = append(eligible, id)
+	}
+	view, _ := readRequirementDetail(t, st, f.requirement.ID)
+	legacyServing, _ := legacyRequirementDisplay(t, st, f.ctx, f.requirement.ID)
+	if len(legacyServing) != 188 {
+		t.Fatalf("the walk listed %d tasks, want the 188 the review measured", len(legacyServing))
+	}
+	got := servingTaskIDs(view.ServingTasks)
+	if !reflect.DeepEqual(got, eligible) {
+		t.Fatalf("serving tasks = %d, want all %d eligible tasks in task-ID order", len(got), len(eligible))
+	}
+	listed := map[string]bool{}
+	for _, id := range got {
+		listed[id] = true
+	}
+	for _, id := range servingTaskIDs(legacyServing) {
+		if !listed[id] {
+			t.Fatalf("the detail omits %s, which the walk listed", id)
+		}
+	}
+	if len(view.ServingBlueprints) != 130 || len(view.RequirementLinks) != 130 {
+		t.Fatalf("blueprints = %d, links = %d", len(view.ServingBlueprints), len(view.RequirementLinks))
+	}
+}
+
+// Each serves read returns a prefix in event-ID order. When the first
+// 256-link probe fills, the detail reads again with a larger bound, so a
+// link beyond the probe cannot hide an eligible task or an earlier task ID.
+// The fixtures attach tasks in reverse task-ID order, so the earliest IDs
+// have the newest links (component-lineage).
+func TestRequirementDetailServesReadsDoNotStopAtTheProbe(t *testing.T) {
+	assertReads := func(t *testing.T, queries []core.LineageKindLinkQuery, inbound bool) {
+		t.Helper()
+		limits := []int{}
+		for _, query := range queries {
+			if query.Inbound == inbound {
+				limits = append(limits, query.Limit)
+			}
+		}
+		if !reflect.DeepEqual(limits, []int{requirementDetailServesReadLimit, 2 * requirementDetailServesReadLimit}) {
+			t.Fatalf("inbound=%t read limits = %v", inbound, limits)
+		}
+	}
+	firstIDs := func(prefix string, count int) []string {
+		ids := make([]string, 0, count)
+		for index := 0; index < count; index++ {
+			ids = append(ids, fmt.Sprintf("%s-%03d", prefix, index))
+		}
+		return ids
+	}
+	t.Run("outbound earliest IDs beyond the probe", func(t *testing.T) {
+		inner := store.NewMemory()
+		f := newRequirementDisplayFixture(t, inner, "req-outbound-overflow")
+		for index := 299; index >= 0; index-- {
+			id := fmt.Sprintf("out-%03d", index)
+			f.task(id, "")
+			f.attach(id)
+		}
+		st := &requirementDisplayLinkStore{Store: inner}
+		view, _ := readRequirementDetail(t, st, f.requirement.ID)
+		if got, want := servingTaskIDs(view.ServingTasks), firstIDs("out", requirementDetailServingTaskLimit); !reflect.DeepEqual(got, want) {
+			t.Fatalf("serving tasks = %v, want the first %d task IDs", got, requirementDetailServingTaskLimit)
+		}
+		assertReads(t, st.kindQueries, false)
+	})
+	t.Run("outbound eligible tasks beyond the probe", func(t *testing.T) {
+		// The 100 newest links of the probe name tasks with children, so
+		// the probe holds 156 eligible tasks and 44 more lie beyond it.
+		inner := store.NewMemory()
+		f := newRequirementDisplayFixture(t, inner, "req-outbound-parents")
+		eligible := []string{}
+		for index := 299; index >= 0; index-- {
+			id := fmt.Sprintf("out-%03d", index)
+			f.task(id, "")
+			f.attach(id)
+			if index >= 200 {
+				f.task(id+"-child", id)
+				continue
+			}
+			eligible = append(eligible, id)
+		}
+		sort.Strings(eligible)
+		st := &requirementDisplayLinkStore{Store: inner}
+		view, _ := readRequirementDetail(t, st, f.requirement.ID)
+		if got := servingTaskIDs(view.ServingTasks); !reflect.DeepEqual(got, eligible) {
+			t.Fatalf("serving tasks = %d, want all %d eligible tasks", len(got), len(eligible))
+		}
+		assertReads(t, st.kindQueries, false)
+	})
+	t.Run("inbound earliest IDs beyond the probe", func(t *testing.T) {
+		inner := store.NewMemory()
+		f := newRequirementDisplayFixture(t, inner, "req-inbound-overflow")
+		st := &requirementDisplayLinkStore{Store: inner}
+		for index := 299; index >= 0; index-- {
+			id := fmt.Sprintf("in-%03d", index)
+			f.task(id, "")
+			st.extra = append(st.extra, f.inbound(id))
+		}
+		view, _ := readRequirementDetail(t, st, f.requirement.ID)
+		if got, want := servingTaskIDs(view.ServingTasks), firstIDs("in", requirementDetailServingTaskLimit); !reflect.DeepEqual(got, want) {
+			t.Fatalf("serving tasks = %v, want the first %d task IDs", got, requirementDetailServingTaskLimit)
+		}
+		assertReads(t, st.kindQueries, true)
+		if view.Staleness.PartialEvaluation {
+			t.Fatalf("a display overflow set partial_evaluation: %+v", view.Staleness)
+		}
+	})
 }
