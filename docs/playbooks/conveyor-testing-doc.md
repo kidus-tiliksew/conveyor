@@ -35,7 +35,7 @@ each one proves:
 
 The tables below are this repository's example, not a template: they record the
 Conveyor repository's own surfaces. Its testing strategy,
-`component-verification-strategy`, is the model document for the result. It
+`component-testing-strategy`, is the model document for the result. It
 names each tier, the CI job that evidences it, and what a green job proves.
 Discover another repository's surfaces instead of copying these rows.
 
@@ -68,7 +68,7 @@ its own job record.
 
 For every gate a CI job runs, exact-head CI is the review evidence: the record
 of every `ci.yml` job on the task's pull request at the exact reviewed head
-commit (DEC-72). Implementers do not run `make validate`,
+commit (DEC-108). Implementers do not run `make validate`,
 `make test-integration`, or `make test-integration-singlestore-ci` locally to
 satisfy review. Local runs serve focused iteration, CI-failure diagnosis, and
 gates CI does not run, such as `make test-validation-docker`. A green job

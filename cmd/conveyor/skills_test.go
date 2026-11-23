@@ -425,7 +425,7 @@ func TestConveyorWorkSkillOmitsRepositoryValidationProcedure(t *testing.T) {
 	}
 
 	// Playbooks ship to every repository, so CI-designated evidence is
-	// described without this repository's targets or workflow (DEC-72).
+	// described without this repository's targets or workflow (DEC-108).
 	forbidden := []string{
 		"make validate",
 		"make test",

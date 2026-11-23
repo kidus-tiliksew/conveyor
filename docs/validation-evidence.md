@@ -52,7 +52,7 @@ Any complete success or failure log, report, or other file from a local run
 relied upon for a local-only acceptance gate or for diagnosis belongs in a
 durable per-attempt evidence bundle described below; copying a tail into a
 transcript does not preserve the original log. Gates CI runs are evidenced by
-the exact-head CI job record instead (DEC-72).
+the exact-head CI job record instead (DEC-108(1)).
 
 Register the supported cleanup command for normal exit, command failure, and
 catchable interruption, and run it explicitly when the claim concludes. Pass
@@ -269,31 +269,34 @@ this fallback when the claim ends.
 
 ## Run one validation session and preserve its evidence
 
-DEC-72 splits review evidence by where a gate runs:
+DEC-108 splits review evidence by where a gate runs:
 
 - **Gates CI runs.** For task review, a green run of every job in
   `.github/workflows/ci.yml` on the task's pull request at the exact reviewed
   head is the evidence for build, vet, fmt-check, `make test` including
   Playwright, PostgreSQL integration (`make test-integration-ci`), and
   SingleStore integration (`make test-integration-singlestore-ci`)
-  (DEC-72(1)). Do not run `make validate`, `make test-integration`, or
-  `make test-integration-singlestore-ci` locally to satisfy review. Reviewers
-  require no local manifest or complete-log reference for any gate CI runs.
+  (DEC-108(1)). A `pull_request` run records the head SHA and tests GitHub's
+  merge of that head into the base as of the run (DEC-108(1);
+  `component-testing-strategy` v6 invariant 5). Do not run `make validate`,
+  `make test-integration`, or `make test-integration-singlestore-ci` locally to
+  satisfy review. Reviewers require no local manifest or complete-log reference
+  for any gate CI runs.
   The CI PostgreSQL job runs against a service container created for that run
-  and satisfies the integration run a schema change needs (DEC-72(2)).
+  and satisfies the integration run a schema change needs (DEC-108(2)).
 - **Gates CI does not run.** `make test-validation-docker` runs only locally.
   When a change touches the validation helpers' Docker, container, network,
   database, Compose, or fixture lifecycle, or the Playwright server lifecycle
-  (`component-verification-strategy` "Evidence by risk"), run it directly as a
-  local-only acceptance gate and retain its record with
+  (`component-testing-strategy` v6 invariant 33; `component-validation-tooling`
+  v9), run it directly as a local-only acceptance gate and retain its record with
   `scripts/validation_evidence.py run` as described below. CI's PostgreSQL job
   runs against its own service container and never exercises the managed
-  container lifecycle (DEC-72(3)).
+  container lifecycle (DEC-108(3)).
 - **Iteration and diagnosis.** Focused checks while iterating, such as a
   single-package `go test`, need no retained record unless the approved plan
   names them as acceptance gates. Running a heavy target locally to diagnose a
   CI failure is allowed; retain that record under the rules below, but it
-  never replaces the exact-head CI job (DEC-72(3)).
+  never replaces the exact-head CI job (DEC-108(3)).
 
 The rest of this section, the resource rules, and the evidence helper describe
 local execution: the target mechanics for iteration and diagnosis, and the
@@ -481,7 +484,7 @@ The launcher stops its group when it receives `SIGINT`, `SIGTERM`, or
 checks an existing record with `check`, and associates eligible evidence with
 the actual pushed branch using `bind`. Use it for a local-only acceptance gate
 and for a retained diagnostic run; a gate CI runs needs no local record
-(DEC-72(2)). It never skips a Make prerequisite or changes a required gate.
+(DEC-108(2)). It never skips a Make prerequisite or changes a required gate.
 Run it from the dedicated worktree. By default, `run` exclusively
 creates a unique attempt directory under
 `$XDG_STATE_HOME/conveyor/<task-id>/` (default
@@ -598,15 +601,19 @@ unchanged. They serve local-only acceptance gates and retained diagnosis; no
 local record, checked or bound, stands in for a gate CI runs.
 
 For gates CI runs, the review evidence is the `ci.yml` run at the exact pushed
-head of the task's pull request (DEC-72(1)). Record it in `report_progress` and
+head of the task's pull request (DEC-108(1)). Record it in `report_progress` and
 in the pull request body: the run URL, the run attempt, the exact head SHA,
 every job name with its conclusion, and every failed or cancelled attempt on
 that head. A missing, cancelled, or failed job leaves its gate unsatisfied. A
 passing rerun attempt on the same head satisfies it when the pull request lists
 the failed attempts, and a newer commit, including a merge of the base branch,
-needs its own green run (DEC-72(4)). CI stays review evidence and adds no merge
-gate; both task gates are unchanged (DEC-72(5)). Neither CI nor local
-equivalence makes a prior reviewed-head approval current or replaces
-independent reviewer judgment, mandatory done criteria, or either operator gate
-(`req-review-gates-evidence` REQ-4/AC-4.1 and REQ-7/AC-7.1;
-`component-verification-strategy`; DEC-53; DEC-72).
+needs its own green run (DEC-108(4)). CI stays review evidence, and both task
+gates are unchanged. With the merge gate off, Conveyor reads the check status of
+the approved head before an automatic merge and holds the merge on a failed or
+pending check. With the merge gate on, or for an operator's own merge act,
+Conveyor reads no check status (DEC-108(5), DEC-108(6);
+`req-review-gates-evidence` AC-1.4 to AC-1.9; `component-testing-strategy` v6
+invariant 8). Neither CI nor local equivalence makes a prior reviewed-head
+approval current or replaces independent reviewer judgment, mandatory done
+criteria, or either operator gate (`req-review-gates-evidence` REQ-4/AC-4.1 and
+REQ-7/AC-7.1; `component-testing-strategy`; DEC-53; DEC-108).
