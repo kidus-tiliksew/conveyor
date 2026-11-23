@@ -66,11 +66,10 @@ RUN_GO_UNIT_TESTS = echo "CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS=$(REVIEW_SUMMARY
 # that selected no test (component-verification-strategy, "CI shards").
 # GO_INTEGRATION_FLAGS follows each shard's own flags, so a later -run wins.
 GO_TEST_REQUIRE_TESTS = $(VALIDATION_CHILD_ENV) bash scripts/go-test-require-tests.sh
-# The serial test wrapper also limits build parallelism. Warm the first
-# package and its dependencies at Go's default parallelism before the wrapper.
-# Building every package here delays the first test in multi-package shards.
+# Build every selected package at Go's default parallelism before the serial
+# test wrapper. This avoids compiling later packages under the wrapper's -p=1.
 # -exec=true runs no test binary or TestMain. A build failure stops the recipe.
-go_test_compile = $(VALIDATION_CHILD_ENV) go test -exec=true -count=1 $(firstword $(1))
+go_test_compile = $(VALIDATION_CHILD_ENV) go test -exec=true -count=1 $(1)
 GO_INTEGRATION_FLAGS ?=
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
