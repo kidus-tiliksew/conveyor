@@ -1190,17 +1190,26 @@ func TestOAuthAccessTokenActsAsItsOwnerWithLiveCapabilities(t *testing.T) {
 	if set.status != http.StatusOK || set.isError {
 		t.Fatalf("set_stage_preference: %+v", set)
 	}
-	// The act is recorded as the token's owner.
-	preferences, err := h.st.GetStagePreferences(t.Context(), h.member.ID)
-	if err != nil || preferences.Stages.Verify == nil || preferences.Stages.Verify.Model != "oauth-model" {
-		t.Fatalf("member preferences = %+v, %v", preferences, err)
-	}
-	if owner, _ := h.st.GetStagePreferences(t.Context(), h.owner.ID); owner.Stages.Verify != nil {
-		t.Fatal("the act was recorded for another person")
-	}
+	// The act is recorded as the token's owner: the owner's own personal
+	// access token reads the new preference, and another person's does not.
 	// A personal access token still works on /mcp.
-	if result := h.mcp(h.memberPAT, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); result.status != http.StatusOK || result.isError {
-		t.Fatalf("PAT on /mcp: %+v", result)
+	readVerify := func(token string) *store.StagePreferenceEntry {
+		t.Helper()
+		result := h.mcp(token, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"})
+		if result.status != http.StatusOK || result.isError {
+			t.Fatalf("get_stage_preferences: %+v", result)
+		}
+		var set store.StagePreferences
+		if err := json.Unmarshal([]byte(result.text), &set); err != nil {
+			t.Fatalf("decode %s: %v", result.text, err)
+		}
+		return set.Stages.Verify
+	}
+	if verify := readVerify(h.memberPAT); verify == nil || verify.Model != "oauth-model" {
+		t.Fatalf("member verify preference = %+v", verify)
+	}
+	if verify := readVerify(oauthTestOwnerPAT); verify != nil {
+		t.Fatalf("the act was recorded for another person: %+v", verify)
 	}
 	// A removed workspace role applies on the next call.
 	if err := h.st.RevokeWorkspaceRole(h.ownerCtx, h.member.ID, "alpha"); err != nil {
