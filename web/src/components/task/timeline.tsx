@@ -40,7 +40,7 @@ import { useNextAction } from '../inbox/use-next-actions'
 import { Badge } from '../ui/badge'
 import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
-import { ImplementationEntry } from './implementation-entry'
+import { ImplementationEntry, JobProgress } from './implementation-entry'
 import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
 import { logoAssets } from './model-logo-assets'
 import { PlanCycleEntry, planCycleDecider, planCycleFoldable, planCycleStepLabel } from './plan-cycle-entry'
@@ -741,6 +741,7 @@ function TimelineRow({
         item={item}
         job={entry.job}
         order={entry.order}
+        progress={entry.progress}
         dotSlot={(className) => rail(jobPeople(entry.job, entry.order), className)}
         footer={
           <JobFooter
@@ -787,6 +788,7 @@ function TimelineRow({
         taskId={item.task.id}
         summary={entry.summary}
         summaryEventId={entry.summaryEventId}
+        progress={entry.progress}
         model={entry.model}
         tone={entry.tone}
         order={entry.order}
@@ -870,7 +872,11 @@ function TimelineRow({
             {entry.badge && <Badge variant={entry.badge.variant}>{entry.badge.label}</Badge>}
             <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
           </div>
-          {entry.detail && <p className="mt-0.5 break-words text-xs text-muted">{entry.detail}</p>}
+          {entry.detail && (
+            <p className="mt-0.5 whitespace-pre-line break-words text-xs text-muted" data-order-detail>
+              {entry.detail}
+            </p>
+          )}
         </div>
       </li>
     )
@@ -938,14 +944,6 @@ function TimelineRow({
             <summary className="cursor-pointer">Captured child error</summary>
             <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface p-2 font-mono">
               {entry.failureDetail}
-            </pre>
-          </details>
-        )}
-        {entry.fullProgress && (
-          <details className="basis-full text-xs text-muted">
-            <summary className="cursor-pointer">Show full progress report</summary>
-            <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface p-2 font-sans text-sm text-foreground">
-              {entry.fullProgress}
             </pre>
           </details>
         )}
@@ -1525,6 +1523,7 @@ function JobEntry({
   taskId,
   summary,
   summaryEventId,
+  progress,
   model,
   tone,
   order,
@@ -1535,6 +1534,7 @@ function JobEntry({
   taskId: string
   summary: string
   summaryEventId?: string
+  progress?: string
   model: string
   tone: Extract<TimelineEntry, { type: 'job' }>['tone']
   order?: WorkOrder
@@ -1608,6 +1608,7 @@ function JobEntry({
             />
           </div>
         )}
+        {progress && <JobProgress progress={progress} />}
         <JobCardFooter job={job} model={model} order={order} usageAvailable={usageAvailable} />
       </article>
     </li>
@@ -1618,9 +1619,11 @@ function JobEntry({
 // surfaces invariants 72 and 73; DEC-138(5)). The header holds the stage
 // title, what the order rates, and the order's own tier chip or its state
 // badge, with the entry time until the order's job starts. A rated order's
-// body is the risk agent's reason; an unrated order's body is its state
-// detail. Once the job starts, the footer is the job card's footer: the
-// model and the run time.
+// body is the risk agent's reason. An unrated order's body is its state
+// detail: an order in progress shows its own progress report, prose like a
+// running job's, and no body without one. The rail avatar alone names the
+// person who claimed the order. Once the job starts, the footer is the job
+// card's footer: the model and the run time.
 function RiskOrderEntry({
   entry,
   risk,
@@ -1640,7 +1643,9 @@ function RiskOrderEntry({
     : undefined
   const job = risk.job?.started_at ? risk.job : undefined
   const reason = risk.rating?.reason?.trim()
-  const hasBody = Boolean(reason || (!risk.rating && entry.detail))
+  const detail = risk.rating ? undefined : entry.detail
+  const progress = entry.order.state === 'claimed' ? detail : undefined
+  const hasBody = Boolean(reason || detail)
   return (
     <li
       className="relative pl-7"
@@ -1651,7 +1656,7 @@ function RiskOrderEntry({
       {rail}
       <article className="rounded-lg bg-surface" data-risk-order-card>
         <header
-          className={cn('flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3', !hasBody && !job && 'pb-3')}
+          className={cn('flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3', !hasBody && 'pb-3')}
           data-job-header
         >
           <span className={cn('text-sm font-semibold', entry.tone === 'alarm' ? 'text-attention' : 'text-foreground')}>
@@ -1683,14 +1688,22 @@ function RiskOrderEntry({
               {reason}
             </MarkdownProse>
           </div>
+        ) : progress ? (
+          <div data-risk-order-body="progress">
+            <MarkdownProse
+              className="px-4 pt-1.5 pb-3 text-sm leading-6 text-foreground/85 [overflow-wrap:anywhere]"
+              components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}
+            >
+              {progress}
+            </MarkdownProse>
+          </div>
         ) : (
-          !risk.rating &&
-          entry.detail && (
+          detail && (
             <p
               className="px-4 pt-1.5 pb-3 text-sm leading-6 text-muted [overflow-wrap:anywhere]"
               data-risk-order-body="detail"
             >
-              {entry.detail}
+              {detail}
             </p>
           )
         )}

@@ -13,6 +13,7 @@ import { absoluteTime, cn, duration } from '../../lib/utils'
 import { pinDriftWarnings } from '../../lib/verification-drift'
 import { Badge } from '../ui/badge'
 import { useTaskVerification, useVerificationPages } from './use-task-detail'
+import { JobProgress } from './implementation-entry'
 import {
   sealedAttemptGroundIds,
   sealedAttemptGrounds,
@@ -94,12 +95,15 @@ export function VerificationEntry({
   item,
   job,
   order,
+  progress,
   footer,
   dotSlot,
 }: {
   item: ActivityItem
   job: Job
   order?: WorkOrder
+  // The running verifier's current progress report, beside its evidence.
+  progress?: string
   footer?: ReactNode
   dotSlot?: (className: string) => ReactNode
 }) {
@@ -152,6 +156,11 @@ export function VerificationEntry({
           </p>
         )}
         {context && <ContextBody taskId={item.task.id} context={context} outcome={outcome} order={order} />}
+        {progress && (
+          <div className="pt-3">
+            <JobProgress progress={progress} />
+          </div>
+        )}
         {order && <VerificationPermissions order={order} />}
         {footer}
       </article>

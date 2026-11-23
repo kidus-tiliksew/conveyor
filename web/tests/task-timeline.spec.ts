@@ -296,8 +296,11 @@ const absenceCases: AbsenceCase[] = [
       const entry = timeline.locator('li[data-order-entry="claimed"]')
       await expect(entry.getByText('Implementation', { exact: true })).toBeVisible()
       await expect(entry.getByText('In progress', { exact: true })).toBeVisible()
-      await expect(entry.getByText('run:usr_operator · claude-code · claude-opus-5-5', { exact: true })).toBeVisible()
-      await expect(timeline.getByText('Agent activity — Progress: removing the facts panel')).toBeVisible()
+      // The order's own report is its detail. The rail avatar alone names the
+      // claimant, and no separate note repeats the report.
+      await expect(entry.locator('[data-order-detail]')).toHaveText('Removing the facts panel in full detail.')
+      await expect(timeline.getByText(/run:usr_operator|claude-code · claude-opus-5-5/)).toHaveCount(0)
+      await expect(timeline.getByText(/Agent activity/)).toHaveCount(0)
     },
   },
   {
@@ -627,8 +630,12 @@ function titleOf(entry: TimelineEntry) {
   return 'title' in entry ? entry.title : entry.type
 }
 
+// A timeline note a removed producer once added for an order's last agent
+// activity. No order adds one now: each live card prints its own report.
 const agentActivity = (entries: TimelineEntry[]) =>
-  entries.filter((entry) => entry.type === 'note' && entry.title.startsWith('Agent activity'))
+  entries.filter(
+    (entry) => entry.type === 'note' && (entry.title.startsWith('Agent activity') || entry.key.startsWith('agent-')),
+  )
 
 // The plan section and the approval intervention tell a plan stage, so its
 // "Plan vN drafted" note stays technical (component-web-task-surfaces
@@ -669,57 +676,49 @@ test('a running job sits at its start, and a finished job without an end keeps i
   expect(timelineOf(failed).find((entry) => entry.type === 'job')?.at).toBe(minutes(9))
 })
 
-test('attempt bookkeeping and finished or superseded orders add no agent-activity note', () => {
-  expect(agentActivity(timelineOf(planStage()))).toEqual([])
-  for (const label of [
-    'Work order claimed',
-    'Claim lease renewed',
-    'Attempt worktree checkpointed',
-    'Usage telemetry reported',
-    'Usage and rate-limit telemetry reported',
-    'Transcript uploaded',
-  ]) {
-    const live = activity({
-      work_orders: [
-        order(`${taskId}-implement-1`, { last_agent_activity_at: minutes(7), last_agent_activity_label: label }),
-      ],
-    })
-    expect(agentActivity(timelineOf(live)), label).toEqual([])
-  }
-  const progress = { last_agent_activity_at: minutes(7), last_agent_activity_label: 'Progress: wiring the timeline' }
-  for (const state of ['submitted', 'completed', 'cancelled'] as const) {
-    const finished = activity({ work_orders: [order(`${taskId}-implement-1`, { state, ...progress })] })
-    expect(agentActivity(timelineOf(finished)), state).toEqual([])
-  }
-  const superseded = activity({
-    work_orders: [
-      order(`${taskId}-implement-1`, { state: 'stale', ...progress }),
-      order(`${taskId}-implement-2`, { state: 'queued', queue_entered_at: minutes(30) }),
-    ],
-  })
-  expect(agentActivity(timelineOf(superseded))).toEqual([])
-})
+// No order adds a separate agent activity note, whatever its stage, state, or
+// last activity label (component-web-task-surfaces invariant 72;
+// req-operator-next-action AC-7.3). Lifecycle notes from events stay.
+const activityLabels = ['Progress: wiring the timeline', 'Branch pushed', 'Work order claimed', 'Claim lease renewed']
+const orderStates = ['queued', 'claimed', 'stale', 'timed_out', 'submitted', 'completed', 'cancelled'] as const
 
-test('a live order keeps its progress note and the full report', () => {
-  for (const state of ['claimed', 'queued'] as const) {
-    const live = activity({
-      work_orders: [
-        order(`${taskId}-implement-1`, {
-          state,
-          last_agent_activity_at: minutes(7),
-          last_agent_activity_label: 'Progress: wiring the timeline',
-          progress: 'Wiring the timeline in full detail.',
-        }),
-      ],
-    })
-    const notes = agentActivity(timelineOf(live))
-    expect(notes).toHaveLength(1)
-    expect(notes[0]).toMatchObject({
-      at: minutes(7),
-      title: 'Agent activity — Progress: wiring the timeline',
-      fullProgress: 'Wiring the timeline in full detail.',
-    })
+test('no order adds a separate agent activity note in any stage or state', () => {
+  for (const stage of ['spec', 'implement', 'verify', 'review', 'risk'] as const) {
+    for (const state of orderStates) {
+      for (const label of activityLabels) {
+        for (const withJob of [false, true]) {
+          const id = `${taskId}-${stage}-1`
+          const item = activity({
+            latest_stage: stage,
+            jobs: withJob ? [job(id, stage, state === 'claimed' ? 'running' : 'done')] : [],
+            work_orders: [
+              order(id, {
+                stage,
+                state,
+                review_round: stage === 'review' ? 1 : undefined,
+                review_seat: stage === 'review' ? 1 : undefined,
+                last_agent_activity_at: minutes(7),
+                last_agent_activity_label: label,
+                progress: 'Wiring the timeline in full detail.',
+              }),
+            ],
+          })
+          const where = `${stage} ${state} ${label} ${withJob ? 'with' : 'without'} job`
+          expect(agentActivity(timelineOf(item)), where).toEqual([])
+        }
+      }
+    }
   }
+  // An event note still renders beside a live order.
+  const pushed = activity({
+    work_orders: [order(`${taskId}-implement-1`, { last_agent_activity_label: 'Branch pushed' })],
+    events: [event(1, 'task.state_changed', minutes(8), { to: 'parked', command: 'triage.park' })],
+  })
+  expect(
+    timelineOf(pushed)
+      .filter((entry) => entry.type === 'note')
+      .map(titleOf),
+  ).toEqual(['Parked'])
 })
 
 // A live order whose progress report is printed as its running job entry's
@@ -744,75 +743,80 @@ const progressShownItem = activity({
   ],
 })
 
-test('a running job entry that prints its order progress adds no progress note for that order', () => {
+test('a running job entry that prints its order progress as its summary prints it once', () => {
   const entries = timelineOf(progressShownItem)
   const jobEntry = entries.find((entry) => entry.type === 'job')
   expect(jobEntry).toMatchObject({ summary: runningReport })
+  expect(jobEntry).not.toHaveProperty('progress', expect.anything())
   expect(agentActivity(entries)).toEqual([])
 })
 
-test('a progress note stays wherever no job entry prints that order progress', () => {
-  const note = (entries: TimelineEntry[]) => agentActivity(entries).map((entry) => [entry.at, titleOf(entry)])
-  const expected = [[minutes(7), 'Agent activity — Progress: Round 1 fixes are pushed']]
-  // A claimed order without a job, and a queued order.
-  for (const state of ['claimed', 'queued'] as const) {
-    const jobless = activity({ work_orders: [order(runningJobId, { state, ...runningProgress })] })
-    expect(note(timelineOf(jobless)), state).toEqual(expected)
-    expect(agentActivity(timelineOf(jobless))[0]).toMatchObject({ fullProgress: runningReport })
-  }
-  // A job that has not started renders no job entry.
+test('a live report stays inside its own card wherever no job summary prints it', () => {
+  const jobEntryOf = (item: object) => timelineOf(item).find((entry) => entry.type === 'job')
+  const orderEntryOf = (item: object) => timelineOf(item).find((entry) => entry.type === 'order')
+  // A claimed order without a job shows its report as its detail.
+  const jobless = activity({ work_orders: [order(runningJobId, runningProgress)] })
+  expect(orderEntryOf(jobless)).toMatchObject({ detail: runningReport })
+  // A queued order adds no entry: the next-action card states the wait.
+  expect(timelineOf(activity({ work_orders: [order(runningJobId, { state: 'queued', ...runningProgress })] }))).toEqual(
+    [],
+  )
+  // A job that has not started renders no job entry, so its order shows the report.
   const pending = activity({
     jobs: [job(runningJobId, 'implement', 'pending', { started_at: undefined })],
     work_orders: [order(runningJobId, runningProgress)],
   })
-  expect(note(timelineOf(pending))).toEqual(expected)
-  // A job entry keeping its own narration does not print the progress.
+  expect(orderEntryOf(pending)).toMatchObject({ detail: runningReport })
+  // A job entry keeping its own narration prints the report beside it.
   const narrated = activity({
     jobs: [job(runningJobId, 'implement', 'running')],
     work_orders: [order(runningJobId, runningProgress)],
     summaries: { job_results: { [runningJobId]: { summary: { text: 'Harness narration of the attempt.' } } } },
   })
-  const narratedEntries = timelineOf(narrated)
-  expect(narratedEntries.find((entry) => entry.type === 'job')).toMatchObject({
-    summary: 'Harness narration of the attempt.',
+  expect(jobEntryOf(narrated)).toMatchObject({ summary: 'Harness narration of the attempt.', progress: runningReport })
+  // A Verify card shows no summary, so it always takes the live report.
+  const verifyId = `${taskId}-verify-1`
+  const verify = activity({
+    jobs: [job(verifyId, 'verify', 'running')],
+    work_orders: [order(verifyId, { stage: 'verify', ...runningProgress })],
   })
-  expect(note(narratedEntries)).toEqual(expected)
-  expect(agentActivity(narratedEntries)[0]).toMatchObject({ fullProgress: runningReport })
-})
-
-test('suppression covers only Progress labels of the order whose job entry prints the progress', () => {
-  // A non-bookkeeping label that is not a progress report keeps its note.
-  const pushed = activity({
-    jobs: [job(runningJobId, 'implement', 'running')],
-    work_orders: [order(runningJobId, { ...runningProgress, last_agent_activity_label: 'Branch pushed' })],
+  expect(jobEntryOf(verify)).toMatchObject({ progress: runningReport })
+  // Only a running job under a claimed order takes the live report.
+  for (const [orderState, jobState] of [
+    ['submitted', 'running'],
+    ['claimed', 'done'],
+  ] as const) {
+    const finished = activity({
+      jobs: [job(runningJobId, 'implement', jobState, { ended_at: minutes(9) })],
+      work_orders: [order(runningJobId, { state: orderState, ...runningProgress })],
+      summaries: { job_results: { [runningJobId]: { summary: { text: 'Harness narration of the attempt.' } } } },
+    })
+    expect(jobEntryOf(finished), `${orderState} ${jobState}`).not.toHaveProperty('progress', expect.anything())
+  }
+  // A blank or run-mode-only report is no report.
+  for (const progress of ['conveyor run mode: self-claimed', '  \n ', undefined]) {
+    expect(
+      orderEntryOf(activity({ work_orders: [order(runningJobId, { progress })] })),
+      String(progress),
+    ).not.toHaveProperty('detail', expect.anything())
+    const narratedBlank = activity({
+      jobs: [job(runningJobId, 'implement', 'running')],
+      work_orders: [order(runningJobId, { progress })],
+      summaries: { job_results: { [runningJobId]: { summary: { text: 'Harness narration of the attempt.' } } } },
+    })
+    expect(jobEntryOf(narratedBlank), String(progress)).not.toHaveProperty('progress', expect.anything())
+  }
+  // Run-mode lines are dropped from the report.
+  const runMode = activity({
+    work_orders: [order(runningJobId, { progress: `conveyor run mode: self-claimed\n${runningReport}` })],
   })
-  expect(agentActivity(timelineOf(pushed)).map(titleOf)).toEqual(['Agent activity — Branch pushed'])
-  // Another live order without a job entry keeps its own progress note.
-  const planOrderId = `${taskId}-spec-1`
-  const twoOrders = activity({
-    jobs: [job(runningJobId, 'implement', 'running')],
-    work_orders: [
-      order(runningJobId, runningProgress),
-      order(planOrderId, {
-        stage: 'spec',
-        last_agent_activity_at: minutes(8),
-        last_agent_activity_label: 'Progress: drafting the plan',
-        progress: 'Drafting the plan in full detail.',
-      }),
-    ],
-  })
-  const notes = agentActivity(timelineOf(twoOrders))
-  expect(notes.map(titleOf)).toEqual(['Agent activity — Progress: drafting the plan'])
-  expect(notes[0]).toMatchObject({
-    key: `agent-activity-${planOrderId}`,
-    fullProgress: 'Drafting the plan in full detail.',
-  })
+  expect(orderEntryOf(runMode)).toMatchObject({ detail: runningReport })
 })
 
 // A deliberating review seat prints its order's progress report in its panel
 // row: the report reads once, in the seat, and the seat offers the full report
-// when its two-line clamp hides text. Every other agent-activity note stays
-// (component-web-task-surfaces; task 261117-fd5fe8).
+// when its two-line clamp hides text (component-web-task-surfaces; task
+// 261117-fd5fe8).
 const seatOrderId = `${taskId}-review-1-seat-1`
 const seatReport =
   'I claimed the document comparison review and read the approved plan; next I will check the change and its evidence independently.'
@@ -848,75 +852,32 @@ function deliberatingSeat(extra: Partial<WorkOrder> = {}, jobState = 'running') 
 const panelSeatStatus = (entries: TimelineEntry[]) =>
   entries.flatMap((entry) => (entry.type === 'panel' ? entry.seats.map((seat) => seat.status) : []))
 
-test('a deliberating panel seat that prints its progress adds no progress note for its order', () => {
+test('a panel seat in any status adds no agent activity note for its order', () => {
   const entries = timelineOf(deliberatingSeat())
   expect(panelSeatStatus(entries)).toEqual(['deliberating'])
   expect(agentActivity(entries)).toEqual([])
   // A seat without a job still deliberates while its order is claimed.
-  const jobless = deliberatingSeat()
-  const joblessEntries = timelineOf({ ...jobless, jobs: [] })
+  const joblessEntries = timelineOf({ ...deliberatingSeat(), jobs: [] })
   expect(panelSeatStatus(joblessEntries)).toEqual(['deliberating'])
   expect(agentActivity(joblessEntries)).toEqual([])
-})
-
-test('a panel order keeps its agent-activity note when its seat prints no progress report', () => {
-  const noteTitles = (item: object) => agentActivity(timelineOf(item)).map(titleOf)
-  // A label that is not a progress report keeps its note.
-  expect(noteTitles(deliberatingSeat({ last_agent_activity_label: 'Branch pushed' }))).toEqual([
-    'Agent activity — Branch pushed',
-  ])
-  // A report that is empty after the seat row's filtering prints nothing in
-  // the seat, so the note stays.
-  const progressNote = [`Agent activity — ${seatProgress.last_agent_activity_label}`]
-  for (const progress of ['conveyor run mode: self-claimed', '  \n ', undefined]) {
-    expect(noteTitles(deliberatingSeat({ progress })), String(progress)).toEqual(progressNote)
-  }
-  // A seat in any status other than deliberating prints no report.
   const cases: [string, object][] = [
+    ['deliberating', deliberatingSeat({ last_agent_activity_label: 'Branch pushed' })],
+    ['deliberating', deliberatingSeat({ progress: 'conveyor run mode: self-claimed' })],
     ['waiting', deliberatingSeat({ state: 'queued' })],
     ['stale', deliberatingSeat({ state: 'stale' })],
     ['timed_out', deliberatingSeat({ state: 'timed_out' })],
     ['failed', deliberatingSeat({}, 'failed')],
   ]
   for (const [status, item] of cases) {
-    const entries = timelineOf(item)
-    expect(panelSeatStatus(entries), status).toEqual([status])
-    expect(agentActivity(entries).map(titleOf), status).toEqual(progressNote)
-    expect(agentActivity(entries)[0], status).toMatchObject({ fullProgress: seatReport })
+    const seatEntries = timelineOf(item)
+    expect(panelSeatStatus(seatEntries), status).toEqual([status])
+    expect(agentActivity(seatEntries), status).toEqual([])
+    // The panel absorbs the seat's order, so no other entry shows its report.
+    expect(
+      seatEntries.filter((entry) => entry.type !== 'panel'),
+      status,
+    ).toEqual([])
   }
-})
-
-test('a deliberating seat suppresses only its own order and leaves other orders their notes', () => {
-  const implementId = `${taskId}-implement-1`
-  const otherSeatId = `${taskId}-review-1-seat-2`
-  const item = activity({
-    latest_stage: 'review',
-    work_orders: [
-      order(implementId, {
-        state: 'claimed',
-        queue_entered_at: minutes(1),
-        last_agent_activity_at: minutes(3),
-        last_agent_activity_label: 'Progress: addressing the review',
-        progress: 'Addressing the review in full detail.',
-      }),
-      order(seatOrderId, { stage: 'review', review_round: 1, review_seat: 1, ...seatProgress }),
-      order(otherSeatId, {
-        stage: 'review',
-        review_round: 1,
-        review_seat: 2,
-        state: 'stale',
-        last_agent_activity_at: minutes(8),
-        last_agent_activity_label: 'Progress: reading the diff',
-        progress: 'Reading the diff in full detail.',
-      }),
-    ],
-  })
-  const notes = agentActivity(timelineOf(item))
-  expect(notes.map((entry) => entry.key)).toEqual([`agent-activity-${implementId}`, `agent-activity-${otherSeatId}`])
-  expect(notes.map(titleOf)).toEqual([
-    'Agent activity — Progress: addressing the review',
-    'Agent activity — Progress: reading the diff',
-  ])
 })
 
 for (const surface of surfaces) {
@@ -1389,6 +1350,11 @@ for (const scenario of implementationCases) {
 // claimant, agent, or model, and a queued order that adds no entry. Every
 // order reports usage or none, and no entry prints it
 // (component-web-task-surfaces, Work-order timeline entries).
+// A claimed order's own report is its detail, and a long unbroken token still
+// wraps inside the entry.
+const claimedOrderReport =
+  'Reading the claim lease rules before editing internal/httpapi/server_task_detail_projection_long_identifier.go.'
+
 const orderStatesItem = activity({
   work_orders: [
     order(`${taskId}-implement-1`, {
@@ -1406,6 +1372,7 @@ const orderStatesItem = activity({
       claimed_by: 'run:usr_operator_with_a_long_claimant_identifier',
       agent: 'claude-code',
       model: 'claude-opus-5-5',
+      progress: claimedOrderReport,
       usage_reported: true,
       tokens_in: 45_678,
       tokens_out: 1_234,
@@ -1437,7 +1404,7 @@ const orderStateRows = [
     state: 'claimed',
     stage: 'Implementation',
     badge: 'In progress',
-    detail: 'run:usr_operator_with_a_long_claimant_identifier · claude-code · claude-opus-5-5',
+    detail: claimedOrderReport,
   },
   { state: 'claimed', stage: 'Plan', badge: 'In progress', detail: undefined },
 ] as const
@@ -3251,10 +3218,12 @@ async function expectRiskEntries(page: Page) {
     await expect(riskEntry(page, n).locator('[data-job-footer]')).toHaveCount(0)
     await expect(riskEntry(page, n).locator('[data-risk-order-body]')).toHaveCount(0)
   }
-  // A claimed unrated order's body is its state detail.
-  await expect(riskEntry(page, 4).locator('[data-risk-order-body="detail"]')).toHaveText(
-    'run:usr_operator · claude-code · claude-opus-5-5',
-  )
+  // A claimed unrated order with no progress report has no body, and no card
+  // prints the claimant: the rail avatar names the person.
+  await expect(riskEntry(page, 4).locator('[data-risk-order-body]')).toHaveCount(0)
+  await expect(riskEntry(page, 4).locator('header')).toHaveClass(/pb-3/)
+  await expect(timeline.getByText(/run:usr_operator/)).toHaveCount(0)
+  await expect(timeline.getByText(/Agent activity/)).toHaveCount(0)
   // No entry borrows the task's tier, and the open and cancelled orders show none.
   await expect(timeline.locator('[data-order-stage="risk"] [data-risk-tier="high"]')).toHaveCount(0)
   for (const n of [3, 4, 5]) await expect(riskEntry(page, n).locator('[data-risk-order-rating]')).toHaveCount(0)
