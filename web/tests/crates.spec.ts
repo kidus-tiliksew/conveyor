@@ -312,6 +312,10 @@ const lineCrate: CrateDetail = {
   ],
 }
 
+// A readable task that belongs to no crate, for a `task` search value that
+// names a task outside the crate's member list.
+const outsideTask = { id: '261115-zzz', title: 'Tidy the release notes' }
+
 // An open crate with no member task.
 const emptyCrate: CrateDetail = {
   ...crateRow({ id: 'crate-empty', name: 'Next quarter' }),
@@ -505,6 +509,7 @@ async function serveCrates(
     closedList?: Crate[]
     briefings?: Record<string, CrateBriefing | null>
     briefingPost?: (crateId: string, count: number) => Promise<BriefingReply | undefined> | BriefingReply | undefined
+    activity?: Record<string, CrateActivityEvent[]>
   } = {},
 ) {
   const role = options.role ?? 'operator'
@@ -522,6 +527,8 @@ async function serveCrates(
   }
   const insightRequests: string[] = []
   const listRequests: string[] = []
+  // The workspace-wide activity read the Board's task order comes from.
+  const boardActivityReads: string[] = []
   const created: Record<string, unknown>[] = []
   const patched: Record<string, unknown>[] = []
   await page.addInitScript(() => {
@@ -534,6 +541,7 @@ async function serveCrates(
     const method = request.method()
     if (path === '/v1/workspaces')
       return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1, created_at: createdAt }] })
+    if (path === '/v1/activity') boardActivityReads.push(url.search)
     if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: `usr_${role}`, role }, request) })
     if (path === '/v1/workspace')
       return route.fulfill({
@@ -562,7 +570,8 @@ async function serveCrates(
     }
     const activity = path.match(/^\/v1\/crates\/([^/]+)\/activity$/)
     if (activity) {
-      return route.fulfill({ json: { events: activity[1] === billing.id ? billingActivity : [] } })
+      const events = options.activity?.[activity[1]] ?? (activity[1] === billing.id ? billingActivity : [])
+      return route.fulfill({ json: { events } })
     }
     const insight = path.match(/^\/v1\/crates\/([^/]+)\/insight$/)
     if (insight) {
@@ -650,24 +659,31 @@ async function serveCrates(
         },
       })
     }
-    // Task detail for any member task; each one belongs to Billing v2.
+    // Task detail for any member task, read with the title and crate of the
+    // crate that holds it. A task no crate holds reads as Billing v2's first
+    // task, except the task outside every crate.
     const taskRead = path.match(/^\/v1\/tasks\/([^/]+)\/(activity|next-action)$/)
     if (taskRead && method === 'GET') {
       const id = decodeURIComponent(taskRead[1])
       if (taskRead[2] === 'next-action')
         return route.fulfill({ json: { ...memberNextAction, choices: [], details: {} } })
+      const owner = Object.values(details).find((crate) => crate.tasks.some((task) => task.id === id))
+      const outside = id === outsideTask.id
+      const holder = outside ? undefined : (owner ?? billing)
       return route.fulfill({
         json: {
           task: {
             id,
             workspace: 'demo',
-            title: billing.tasks.find((task) => task.id === id)?.title ?? 'Send invoices by email',
+            title: outside
+              ? outsideTask.title
+              : (owner?.tasks.find((task) => task.id === id)?.title ?? 'Send invoices by email'),
             body: 'Send each invoice by email.',
             repo: 'conveyor',
             state: 'running',
             branch: `conveyor/task-${id}`,
             created_at: createdAt,
-            crate: { id: billing.id, name: billing.name },
+            crate: holder ? { id: holder.id, name: holder.name } : undefined,
           },
           jobs: [],
           events: [],
@@ -684,7 +700,7 @@ async function serveCrates(
     }
     return route.fulfill({ json: [] })
   })
-  return { listRequests, created, patched, insightRequests, briefingGets, briefingPosts }
+  return { listRequests, created, patched, insightRequests, briefingGets, briefingPosts, boardActivityReads }
 }
 
 // No horizontal page scroll: neither the document nor any scroll container
@@ -813,8 +829,12 @@ test('crate page shows the header, requirements with the uncovered mark, verbati
     'https://github.com/acme/app/pull/412',
   )
 
+  // A member row opens the task's detail in the sheet over the crate page
+  // (AC-5.8).
   await member.locator('[data-task-row]').click()
-  await expect(page).toHaveURL(/\/w\/demo\/tasks\/261101-aaaaaa$/)
+  await expect(page).toHaveURL(/\/w\/demo\/crates\/crate-billing\?task=261101-aaaaaa$/)
+  await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
+  await expect(hero).toBeVisible()
 })
 
 // AC-5.2: a closed crate still shows its saved target date, read-only, with
@@ -1123,5 +1143,204 @@ for (const width of [375, 1280]) {
     await expect(page.locator('[data-crate-task]')).toHaveCount(2)
     await expect(page.getByRole('region', { name: 'Activity' }).locator('[data-activity-kind]')).toHaveCount(4)
     await expectNoHorizontalScroll(page)
+  })
+}
+
+// The task detail sheet over the crate page (req-crates AC-5.8;
+// component-crates invariant 37; component-web-task-surfaces invariants 32
+// and 39). The line crate serves its members in an order no sort
+// reproduces, and holds more than five so the member list can expand.
+const lineOrder = lineCrate.tasks.map((task) => task.id)
+const lineTitle = (id: string) => lineCrate.tasks.find((task) => task.id === id)?.title ?? id
+
+// Newest first, for two members of the line crate.
+const lineActivity: CrateActivityEvent[] = [
+  {
+    id: 41,
+    kind: 'task.crate_set',
+    at: '2026-11-18T09:00:00Z',
+    actor_id: 'usr_operator',
+    actor_role: 'operator',
+    task_id: '261115-d09',
+    task_title: 'Show spelling suggestions',
+  },
+  {
+    id: 40,
+    kind: 'merge.confirmed',
+    at: '2026-11-13T09:00:00Z',
+    actor_id: 'usr_operator',
+    actor_role: 'operator',
+    task_id: '261115-a01',
+    task_title: 'Drop the legacy search index',
+  },
+]
+
+const taskSheet = (page: Page) => page.getByRole('dialog', { name: 'Task detail' })
+
+// The sheet shows the task's title as the body's heading.
+async function expectSheetTask(page: Page, id: string) {
+  await expect(page).toHaveURL(new RegExp(`/w/demo/crates/crate-line\\?task=${id}$`))
+  await expect(taskSheet(page).getByRole('heading', { level: 2 }).first()).toHaveText(lineTitle(id))
+}
+
+// The crate page stays open with no sheet and no `task` value.
+async function expectCrateOnly(page: Page) {
+  await expect(page).toHaveURL(/\/w\/demo\/crates\/crate-line$/)
+  await expect(taskSheet(page)).toHaveCount(0)
+}
+
+// A briefing the page still wants after its one attempt failed, so a remount
+// of the crate page would post again (component-crates invariant 35).
+const failingBriefing = {
+  briefings: { [lineCrate.id]: null },
+  briefingPost: () => ({ status: 500, json: { error: 'internal error' } }),
+  activity: { [lineCrate.id]: lineActivity },
+}
+
+test('a crate task opens in the task sheet over the crate page, which stays mounted', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  const server = await serveCrates(page, failingBriefing)
+  await page.goto('/w/demo/crates/crate-line')
+  await expect.poll(() => server.briefingPosts.length).toBe(1)
+  await expect(page.locator('[data-crate-task]')).toHaveCount(5)
+  await page.locator('[data-crate-tasks-toggle]').click()
+  await expect(page.locator('[data-crate-task]')).toHaveCount(8)
+
+  // Mark the page's own DOM and scroll it, so a remount would show. A click
+  // scrolls its target into view, so each step reads the scroll position
+  // after the sheet opens and expects the same position after it closes.
+  const scroller = page.locator('[data-crate-scroll]')
+  await page.locator('[data-crate-main]').evaluate((element) => {
+    element.dataset.probe = 'kept'
+  })
+  await scroller.evaluate((element) => {
+    element.scrollTop = 240
+  })
+  const scrollTop = () => scroller.evaluate((element) => element.scrollTop)
+  expect(await scrollTop()).toBe(240)
+  const expectCrateKept = async (top: number) => {
+    expect(top).toBeGreaterThan(0)
+    await expect(page.locator('[data-crate-main]')).toHaveAttribute('data-probe', 'kept')
+    expect(await scrollTop()).toBe(top)
+    await expect(page.locator('[data-crate-tasks-toggle]')).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('[data-crate-task]')).toHaveCount(8)
+  }
+
+  // The member list opens the sheet, and Previous and Next step through the
+  // served member order on the crate page.
+  await page.locator('[data-crate-task="261115-b02"] [data-task-row]').click()
+  await expectSheetTask(page, '261115-b02')
+  let top = await scrollTop()
+  const sheet = taskSheet(page)
+  await expect(sheet.getByRole('note')).toHaveCount(0)
+  await sheet.getByRole('button', { name: 'Next task' }).click()
+  await expectSheetTask(page, '261115-e05')
+  await sheet.getByRole('button', { name: 'Previous task' }).click()
+  await expectSheetTask(page, '261115-b02')
+  await sheet.getByRole('button', { name: 'Previous task' }).click()
+  await expectSheetTask(page, '261115-c11')
+  await expectCrateKept(top)
+
+  // The Close button clears `task` and keeps the crate page.
+  await sheet.getByRole('button', { name: 'Close panel' }).click()
+  await expectCrateOnly(page)
+  await expectCrateKept(top)
+
+  // The activity feed opens the sheet, and Escape closes it.
+  const activity = page.getByRole('region', { name: 'Activity' })
+  await activity.getByRole('link', { name: 'Show spelling suggestions' }).click()
+  await expectSheetTask(page, '261115-d09')
+  top = await scrollTop()
+  await page.keyboard.press('Escape')
+  await expectCrateOnly(page)
+  await expectCrateKept(top)
+
+  // The branch map opens the sheet from the keyboard (its lines overlap, so
+  // a pointer can land on a neighbour), and the scrim closes it.
+  const map = page.getByRole('region', { name: 'Where the work is' })
+  await map.getByRole('button', { name: /^Index product reviews:/ }).focus()
+  await page.keyboard.press('Enter')
+  await expectSheetTask(page, '261115-c11')
+  top = await scrollTop()
+  await page.mouse.click(20, 400)
+  await expectCrateOnly(page)
+  await expectCrateKept(top)
+
+  // No Board activity read, and no second briefing post.
+  await page.waitForTimeout(300)
+  expect(server.boardActivityReads).toEqual([])
+  expect(server.briefingPosts).toEqual([lineCrate.id])
+})
+
+test('the briefing opens a task in the sheet over the crate page', async ({ page }) => {
+  const server = await serveCrates(page, { briefings: { [lineCrate.id]: storedBriefing({ look_first: lookFirst }) } })
+  await page.goto('/w/demo/crates/crate-line')
+  await briefingSection(page).locator('[data-briefing-task="261115-c11"]').click()
+  await expectSheetTask(page, '261115-c11')
+  await expect(page.getByRole('region', { name: 'Crate summary' })).toBeVisible()
+  expect(server.briefingPosts).toEqual([])
+})
+
+test('a crate link with a task opens the sheet, and Previous and Next stop at the ends of the crate', async ({
+  page,
+}) => {
+  const server = await serveCrates(page)
+  // The first served member has no previous task.
+  await page.goto(`/w/demo/crates/crate-line?task=${lineOrder[0]}`)
+  await expectSheetTask(page, lineOrder[0])
+  await expect(page.getByRole('region', { name: 'Crate summary' })).toBeVisible()
+  const sheet = taskSheet(page)
+  await expect(sheet.getByRole('button', { name: 'Previous task' })).toBeDisabled()
+  await expect(sheet.getByRole('button', { name: 'Next task' })).toBeEnabled()
+
+  // The last served member has no next task.
+  const last = lineOrder[lineOrder.length - 1]
+  await page.goto(`/w/demo/crates/crate-line?task=${last}`)
+  await expectSheetTask(page, last)
+  await expect(sheet.getByRole('button', { name: 'Previous task' })).toBeEnabled()
+  await expect(sheet.getByRole('button', { name: 'Next task' })).toBeDisabled()
+  await sheet.getByRole('button', { name: 'Previous task' }).click()
+  await expectSheetTask(page, lineOrder[lineOrder.length - 2])
+
+  // A task outside the crate still reads, with both controls disabled.
+  await page.goto(`/w/demo/crates/crate-line?task=${outsideTask.id}`)
+  await expect(sheet.getByRole('heading', { level: 2 }).first()).toHaveText(outsideTask.title)
+  await expect(sheet.getByRole('button', { name: 'Previous task' })).toBeDisabled()
+  await expect(sheet.getByRole('button', { name: 'Next task' })).toBeDisabled()
+  await expect(sheet.getByRole('note')).toHaveCount(0)
+
+  // An empty `task` value opens no sheet.
+  await page.goto('/w/demo/crates/crate-line?task=%20%20')
+  await expect(page.getByRole('region', { name: 'Crate summary' })).toBeVisible()
+  await expect(page.locator('[data-crate-task]')).toHaveCount(5)
+  await expect(taskSheet(page)).toHaveCount(0)
+  expect(server.boardActivityReads).toEqual([])
+})
+
+test('the full task page opens from the sheet over a crate page', async ({ page }) => {
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-line?task=261115-c11')
+  await expectSheetTask(page, '261115-c11')
+  await taskSheet(page).getByRole('link', { name: 'Open full task page' }).click()
+  await expect(page).toHaveURL(/\/w\/demo\/tasks\/261115-c11\/full$/)
+})
+
+// Visual record for the pull request: the task sheet open over a crate page
+// at 375 px and a desktop width. The task scratch directory named by
+// CONVEYOR_SCREENSHOT_DIR keeps a local copy, and the Playwright report
+// carries each attachment.
+for (const width of [375, 1280]) {
+  test(`the task sheet over a crate page screenshot at ${width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 })
+    await serveCrates(page, { activity: { [lineCrate.id]: lineActivity } })
+    await page.goto('/w/demo/crates/crate-line?task=261115-b02')
+    await expectSheetTask(page, '261115-b02')
+    await expect(taskSheet(page).getByRole('button', { name: 'Next task' })).toBeEnabled()
+    await page.evaluate(() => document.fonts.ready)
+    await expectNoHorizontalScroll(page)
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const file = `crate-task-sheet-${width}.png`
+    const image = await page.screenshot({ path: shots ? `${shots}/${file}` : undefined })
+    await testInfo.attach(file, { body: image, contentType: 'image/png' })
   })
 }

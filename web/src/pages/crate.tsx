@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from '@tanstack/react-router'
+import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
   Archive,
   ArchiveRestore,
@@ -28,6 +28,7 @@ import { CrateFormDialog } from '../components/crate/crate-parts'
 import { CrateStage } from '../components/crate/crate-stage'
 import { DeliveryStatsSheet } from '../components/crate/delivery-stats'
 import { TaskRow } from '../components/insights/shared'
+import { TaskSheet } from '../components/task/task-sheet'
 import { Button } from '../components/ui/button'
 import { Dialog } from '../components/ui/dialog'
 import { DropdownMenu, DropdownMenuItem } from '../components/ui/dropdown-menu'
@@ -48,6 +49,17 @@ import { taskStateLabels } from '../lib/contracts'
 import { crateActivityQueryKey, crateInsightQueryKey, crateQueryKey } from '../lib/query-keys'
 import type { CrateActivityEvent, CrateDetail, CrateRequirement, CrateTask } from '../lib/types'
 import { absoluteTime, cn, relativeTime } from '../lib/utils'
+
+export interface CrateSearch {
+  // The task whose detail sheet is open over the crate page (req-crates
+  // AC-5.8; component-crates invariant 37).
+  task?: string
+}
+
+export function validateCrateSearch(search: Record<string, unknown>): CrateSearch {
+  const task = typeof search.task === 'string' ? search.task.trim() : ''
+  return { task: task || undefined }
+}
 
 // One crate's page (component-crates invariants 17 and 33; req-crates REQ-5):
 // the header with its counts, shipped statement, and line of stations, then
@@ -127,8 +139,18 @@ function CrateView({ crate }: { crate: CrateDetail }) {
     queryFn: () => fetchCrateInsight(workspace, crate.id),
     enabled: Boolean(workspace),
   })
-  const openTask = (id: string) =>
-    void navigate({ to: '/w/$workspaceId/tasks/$taskId', params: { workspaceId: workspace, taskId: id } })
+  // Every task the page offers opens in the task detail sheet over this page,
+  // named by the `task` search value, so the page stays mounted with its
+  // scroll, expanded list, and briefing decision (req-crates AC-5.8;
+  // component-crates invariants 35 and 37).
+  const search = useSearch({ strict: false }) as CrateSearch
+  const showTask = (task: string | undefined) =>
+    void navigate({
+      to: '/w/$workspaceId/crates/$crateId',
+      params: { workspaceId: workspace, crateId: crate.id },
+      search: (prev) => ({ ...prev, task }),
+    })
+  const openTask = (id: string) => showTask(id)
   const open = crate.state === 'open'
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['crates', workspace] })
   const setState = useMutation({
@@ -184,7 +206,7 @@ function CrateView({ crate }: { crate: CrateDetail }) {
           </DropdownMenu>
         )}
       </PageHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto" data-crate-scroll>
         <div className="mx-auto w-full max-w-6xl space-y-5 px-4 py-5 lg:px-6">
           {setState.error != null && (
             <p role="alert" className="rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">
@@ -256,6 +278,18 @@ function CrateView({ crate }: { crate: CrateDetail }) {
         />
       )}
       {panel === 'add' && <AddTaskDialog crate={crate} onClose={() => setPanel(null)} />}
+      {/* Previous and Next step through the member tasks in the served order
+          of component-crates invariant 28, and closing clears only `task`. */}
+      {search.task && (
+        <TaskSheet
+          taskId={search.task}
+          host={{
+            order: crate.tasks.map((task) => task.id),
+            onSelect: openTask,
+            onClose: () => showTask(undefined),
+          }}
+        />
+      )}
       {panel && typeof panel === 'object' && (
         <RemoveTaskDialog crate={crate} task={panel.remove} onClose={() => setPanel(null)} />
       )}
@@ -592,7 +626,7 @@ function Activity({ crate }: { crate: CrateDetail }) {
       {events.length > 0 && (
         <ol className="relative px-4 py-3">
           {events.map((event, index) => (
-            <ActivityEntry key={event.id} event={event} last={index === events.length - 1} />
+            <ActivityEntry key={event.id} crateId={crate.id} event={event} last={index === events.length - 1} />
           ))}
         </ol>
       )}
@@ -648,7 +682,7 @@ function verdictText(verdict: string) {
   return verdict.replaceAll('_', ' ')
 }
 
-function ActivityEntry({ event, last }: { event: CrateActivityEvent; last: boolean }) {
+function ActivityEntry({ crateId, event, last }: { crateId: string; event: CrateActivityEvent; last: boolean }) {
   const { workspace } = useWorkspaceSelection()
   const meta = activityMeta[event.kind] ?? activityMeta['task.created']
   const Icon = meta.Icon
@@ -677,9 +711,11 @@ function ActivityEntry({ event, last }: { event: CrateActivityEvent; last: boole
             {relativeTime(event.at)}
           </time>
         </p>
+        {/* The task opens in the sheet over this crate page (AC-5.8). */}
         <Link
-          to="/w/$workspaceId/tasks/$taskId"
-          params={{ workspaceId: workspace, taskId: event.task_id }}
+          to="/w/$workspaceId/crates/$crateId"
+          params={{ workspaceId: workspace, crateId }}
+          search={(prev) => ({ ...prev, task: event.task_id })}
           className="mt-0.5 block truncate text-xs text-muted hover:text-foreground hover:underline"
         >
           {event.task_title || event.task_id}

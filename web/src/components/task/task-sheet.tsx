@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronUp, Maximize2, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import type { ActivityItem } from '../../lib/types'
 import {
   blueprintsQueryOptions,
@@ -25,13 +25,84 @@ import { TaskControlsPlaceholder, TaskLoadError } from './task-load-error'
 import { TaskPlanSection } from './task-plan-section'
 import { taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } from './use-task-detail'
 
+// How a host page other than the Board opens the task detail sheet over
+// itself (component-web-task-surfaces invariant 39; component-crates invariant
+// 37): the host supplies the task order that Previous and Next step through,
+// what selecting a neighbour does, and what closing does.
+export interface TaskSheetHost {
+  // Task IDs in the host's order. The sheet takes neighbours from this list
+  // alone and never sorts it or falls back to the Board's order.
+  order: readonly string[]
+  onSelect: (taskId: string) => void
+  onClose: () => void
+}
+
 // The task detail sheet: the costed event timeline — which
 // carries the review actions as its live tail — opened over the board so the
 // reviewer never loses Board context. The kanban and map views open it the
 // same way, and closing returns to whichever view the Board was showing.
-export function TaskSheet({ taskId }: { taskId: string }) {
+// A host page such as a crate page opens the same sheet over itself through
+// `host`, and the Board's order, window note, and links then take no part.
+export function TaskSheet({ taskId, host }: { taskId: string; host?: TaskSheetHost }) {
+  if (host) return <HostedTaskSheet taskId={taskId} host={host} />
+  return <BoardTaskSheet taskId={taskId} />
+}
+
+// The Board's adapter: neighbours follow the Board's loaded page of tasks, the
+// window note says when a neighbour is on another page, and the links keep the
+// Board's search.
+function BoardTaskSheet({ taskId }: { taskId: string }) {
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
+  const boardOrder = useTaskOrder(taskId)
+  const close = () =>
+    void navigate({ to: '/w/$workspaceId/', params: { workspaceId: workspace }, search: (prev) => prev })
+  return (
+    <TaskSheetFrame
+      taskId={taskId}
+      onClose={close}
+      note={boardOrder.windowEdge}
+      previous={<SheetNavLink targetId={boardOrder.previousId} label="Previous task" icon={<ChevronUp />} />}
+      next={<SheetNavLink targetId={boardOrder.nextId} label="Next task" icon={<ChevronDown />} />}
+    />
+  )
+}
+
+// A host page's adapter: neighbours come from the host's order by position, and
+// a task the order does not hold has none.
+function HostedTaskSheet({ taskId, host }: { taskId: string; host: TaskSheetHost }) {
+  const index = host.order.indexOf(taskId)
+  const previousId = index > 0 ? host.order[index - 1] : undefined
+  const nextId = index >= 0 && index < host.order.length - 1 ? host.order[index + 1] : undefined
+  return (
+    <TaskSheetFrame
+      taskId={taskId}
+      onClose={host.onClose}
+      previous={
+        <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} onSelect={host.onSelect} />
+      }
+      next={<SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} onSelect={host.onSelect} />}
+    />
+  )
+}
+
+// The one sheet composition every host shares (component-web-task-surfaces
+// invariant 32). Its adapter supplies the close action, the neighbour
+// controls, and any note about them.
+function TaskSheetFrame({
+  taskId,
+  onClose,
+  note,
+  previous,
+  next,
+}: {
+  taskId: string
+  onClose: () => void
+  note?: string
+  previous: ReactNode
+  next: ReactNode
+}) {
+  const { workspace } = useWorkspaceSelection()
   const { data: item, isLoading, error, refetch, isFetching } = useTaskDetail(taskId)
   useSheetPrefetch(taskId)
   // The summary family has zero garbage-collection time, so this observer is
@@ -39,11 +110,6 @@ export function TaskSheet({ taskId }: { taskId: string }) {
   // verification entries mount with the body and share it. It reads while the
   // detail is pending and afterwards only for a task with a verify stage.
   useTaskVerification(taskId, item ? taskHasVerifyStage(item) : true)
-  const boardOrder = useTaskOrder(taskId)
-  const previousId = boardOrder.previousId
-  const nextId = boardOrder.nextId
-  const close = () =>
-    void navigate({ to: '/w/$workspaceId/', params: { workspaceId: workspace }, search: (prev) => prev })
   // A blueprint anchor has one home, and it is not this sheet.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
   // The body opens with the title, so the header names the task only once that
@@ -61,7 +127,7 @@ export function TaskSheet({ taskId }: { taskId: string }) {
   }, [heading])
 
   return (
-    <Sheet onClose={close} label="Task detail">
+    <Sheet onClose={onClose} label="Task detail">
       <header className="pointer-coarse:[&_button]:min-h-10 pointer-coarse:[&_button]:min-w-10 flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2.5">
         {/* The title takes whatever width the fixed-size controls leave and
             truncates, so every control, Close included, stays on this one row. */}
@@ -79,21 +145,22 @@ export function TaskSheet({ taskId }: { taskId: string }) {
           error == null && <TaskControlsPlaceholder part="explorer" />
         )}
         {/* The Board-window note is Board context, not a task control, so it
-            shows in every state and never shifts the controls when they arrive. */}
-        {boardOrder.windowEdge && (
+            shows in every state and never shifts the controls when they arrive.
+            A host page other than the Board supplies no note. */}
+        {note && (
           // Below sm the note takes its own line under the controls so it
           // never squeezes the title out of the header.
           <span
             className="max-w-56 text-right text-[11px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
             role="note"
           >
-            {boardOrder.windowEdge}
+            {note}
           </span>
         )}
         {item ? (
           <>
-            <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
-            <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
+            {previous}
+            {next}
           </>
         ) : (
           error == null && <TaskControlsPlaceholder part="navigation" />
@@ -108,7 +175,7 @@ export function TaskSheet({ taskId }: { taskId: string }) {
             <Maximize2 />
           </Button>
         </Link>
-        <Button variant="ghost" size="icon" className="shrink-0" aria-label="Close panel" onClick={close}>
+        <Button variant="ghost" size="icon" className="shrink-0" aria-label="Close panel" onClick={onClose}>
           <X />
         </Button>
       </header>
@@ -147,15 +214,17 @@ function useSheetPrefetch(taskId: string) {
   }, [queryClient, workspace, taskId])
 }
 
-function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: string; icon: React.ReactNode }) {
+function DisabledNavButton({ label, icon }: { label: string; icon: ReactNode }) {
+  return (
+    <Button variant="ghost" size="icon" className="shrink-0" aria-label={label} disabled>
+      {icon}
+    </Button>
+  )
+}
+
+function SheetNavLink({ targetId, label, icon }: { targetId?: string; label: string; icon: ReactNode }) {
   const { workspace } = useWorkspaceSelection()
-  if (!targetId) {
-    return (
-      <Button variant="ghost" size="icon" className="shrink-0" aria-label={label} disabled>
-        {icon}
-      </Button>
-    )
-  }
+  if (!targetId) return <DisabledNavButton label={label} icon={icon} />
   return (
     <Link
       to="/w/$workspaceId/tasks/$taskId"
@@ -168,6 +237,25 @@ function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: s
         {icon}
       </Button>
     </Link>
+  )
+}
+
+function SheetNavButton({
+  targetId,
+  label,
+  icon,
+  onSelect,
+}: {
+  targetId?: string
+  label: string
+  icon: ReactNode
+  onSelect: (taskId: string) => void
+}) {
+  if (!targetId) return <DisabledNavButton label={label} icon={icon} />
+  return (
+    <Button variant="ghost" size="icon" className="shrink-0" aria-label={label} onClick={() => onSelect(targetId)}>
+      {icon}
+    </Button>
   )
 }
 
