@@ -215,6 +215,76 @@ func runRequirementDetailReads(t *testing.T, x Fixture) {
 		}
 	})
 
+	// Kept from the retired DocumentVersionSummaries suite: the list routes'
+	// summary reads equal the same backend's per-document version reads,
+	// skip an ID of another workspace, and drop historical requirement
+	// content (component-persistence; DEC-19; DEC-38).
+	t.Run("VersionSummariesEqualVersionReads", func(t *testing.T) {
+		requirementVersion := func(id string, n int) core.RequirementVersion {
+			return core.RequirementVersion{RequirementID: id, Content: fmt.Sprintf("# %s\n\nversion %d", id, n), Origin: core.RequirementOriginOperator,
+				Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: fmt.Sprintf("Version %d holds.", n)}}}
+		}
+		requirementID, designID, foreignID := "req-summary-"+core.NewTaskID(), "design-summary-"+core.NewTaskID(), "req-summary-foreign-"+core.NewTaskID()
+		_, first, err := st.CreateRequirement(ctx, core.Requirement{ID: requirementID, Title: requirementID}, requirementVersion(requirementID, 1))
+		requireOK(t, err)
+		_, _, err = st.ConfirmRequirementVersion(ctx, requirementID, first.Version)
+		requireOK(t, err)
+		second, err := st.ProposeRequirementVersion(ctx, requirementVersion(requirementID, 2))
+		requireOK(t, err)
+		_, _, err = st.ConfirmRequirementVersion(ctx, requirementID, second.Version)
+		requireOK(t, err)
+		_, firstDesign, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: designID, Title: designID, Category: "Component design"}, core.SystemDesignVersion{DocumentID: designID, Content: designContent("summary v1"), Origin: core.SystemDesignOriginOperator})
+		requireOK(t, err)
+		_, _, err = st.ConfirmSystemDesignVersion(ctx, designID, firstDesign.Version)
+		requireOK(t, err)
+		_, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: designID, Content: designContent("summary v2"), Origin: core.SystemDesignOriginOperator})
+		requireOK(t, err)
+		foreignVersion := requirementVersion(foreignID, 1)
+		_, foreignFirst, err := st.CreateRequirement(otherCtx, core.Requirement{ID: foreignID, Title: foreignID}, foreignVersion)
+		requireOK(t, err)
+		_, _, err = st.ConfirmRequirementVersion(otherCtx, foreignID, foreignFirst.Version)
+		requireOK(t, err)
+
+		requirement, err := st.GetRequirement(ctx, requirementID)
+		requireOK(t, err)
+		requirements, err := st.ListRequirementVersionSummaries(ctx, []store.DocumentVersionSelection{{ID: requirementID, CurrentVersion: requirement.CurrentVersion}, {ID: foreignID, CurrentVersion: foreignFirst.Version}})
+		requireOK(t, err)
+		fullRequirement, err := st.ListRequirementVersions(ctx, requirementID)
+		requireOK(t, err)
+		if len(fullRequirement) != 2 {
+			t.Fatalf("full requirement read returned %d versions, want 2", len(fullRequirement))
+		}
+		wantRequirement := make([]core.RequirementVersion, 0, len(fullRequirement))
+		for _, version := range fullRequirement {
+			if version.Version != requirement.CurrentVersion && (version.Confirmed || version.Retired) {
+				version.Content = ""
+			}
+			wantRequirement = append(wantRequirement, version)
+		}
+		if len(requirements) != 1 || !reflect.DeepEqual(requirements[requirementID], wantRequirement) {
+			t.Fatalf("requirement summaries = %+v\nwant only %s: %+v", requirements, requirementID, wantRequirement)
+		}
+		if historical := requirements[requirementID][0]; historical.Version != first.Version || historical.Content != "" || len(historical.Statements) == 0 {
+			t.Fatalf("historical requirement summary = %+v, want v%d with statements and no content", historical, first.Version)
+		}
+
+		design, err := st.GetSystemDesign(ctx, designID)
+		requireOK(t, err)
+		designs, err := st.ListSystemDesignVersionSummaries(ctx, []store.DocumentVersionSelection{{ID: designID, CurrentVersion: design.CurrentVersion}, {ID: foreignID, CurrentVersion: foreignFirst.Version}})
+		requireOK(t, err)
+		fullDesign, err := st.ListSystemDesignVersions(ctx, designID)
+		requireOK(t, err)
+		var wantDesign []core.SystemDesignVersion
+		for _, version := range fullDesign {
+			if version.Version == design.CurrentVersion || (!version.Confirmed && !version.Dismissed) {
+				wantDesign = append(wantDesign, version)
+			}
+		}
+		if len(designs) != 1 || len(wantDesign) != 2 || !reflect.DeepEqual(designs[designID], wantDesign) {
+			t.Fatalf("design summaries = %+v\nwant only %s with its current and pending versions: %+v", designs, designID, wantDesign)
+		}
+	})
+
 	t.Run("DoneContextReturnsNoResult", func(t *testing.T) {
 		done, cancel := context.WithCancel(ctx)
 		cancel()
