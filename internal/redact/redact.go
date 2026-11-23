@@ -169,27 +169,72 @@ func quotedForm(value string) string {
 	return quoted[1 : len(quoted)-1]
 }
 
-var credentialPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`),
-	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{20,}\b`),
-	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}\b`),
-	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}\b`),
+// credentialPatternSources lists every credential shape the redactor knows.
+// credentialPatterns compiles them as written for redaction.
+// credentialShapesAnywhere compiles the same sources with every word boundary
+// removed, for HoldsCredentialShape only, so the two lists cannot drift.
+var credentialPatternSources = []string{
+	`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`,
+	`\bAIza[0-9A-Za-z_-]{20,}\b`,
+	`\bsk-[A-Za-z0-9_-]{16,}\b`,
+	`\bgh[pousr]_[A-Za-z0-9]{20,}\b`,
 	// Fine-grained GitHub tokens and Conveyor's own tokens,
 	// cv_<kind>_<id>_<base64url>, whose base64url tail can end in "-", so no
 	// closing word boundary applies (req-security-boundaries REQ-3).
-	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}`),
-	regexp.MustCompile(`\bcv_(?:pat|agent|session|signin)_[A-Za-z0-9_-]{16,}`),
-	// The OAuth authorization code, access token, and refresh token kinds,
-	// oac, oat, and ort, also match with a word character directly before
-	// them, so a credential glued into untrusted client metadata is still
+	`\bgithub_pat_[A-Za-z0-9_]{20,}`,
+	// Every Conveyor credential kind also matches with a word character
+	// directly before it, so a credential glued into other text is still
 	// found. The 16-character floor keeps bare prefixes in prose untouched
 	// (component-identity-membership invariant 46; req-security-boundaries
-	// REQ-2, REQ-3).
-	regexp.MustCompile(`cv_(?:oac|oat|ort)_[A-Za-z0-9_-]{16,}`),
+	// REQ-2, REQ-3). The non-Conveyor shapes keep their leading boundary,
+	// because ordinary text such as a task-<id> name would match sk-.
+	`cv_(?:pat|agent|session|signin|oac|oat|ort)_[A-Za-z0-9_-]{16,}`,
 	// A bearer credential of any other shape. A 64-hex value stays allowed
 	// alone, because artifact IDs and content digests have that shape.
-	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}`),
-	regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`),
+	`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}`,
+	`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`,
+}
+
+var credentialPatterns = compileCredentialPatterns(false)
+
+// credentialShapesAnywhere is the boundary-free variant of
+// credentialPatterns. It redacts nothing.
+var credentialShapesAnywhere = compileCredentialPatterns(true)
+
+func compileCredentialPatterns(anywhere bool) []*regexp.Regexp {
+	patterns := make([]*regexp.Regexp, 0, len(credentialPatternSources))
+	for _, source := range credentialPatternSources {
+		if anywhere {
+			source = strings.ReplaceAll(source, `\b`, "")
+		}
+		patterns = append(patterns, regexp.MustCompile(source))
+	}
+	return patterns
+}
+
+// HoldsCredentialShape reports whether value holds any credential shape the
+// redactor knows anywhere in it, including directly after a word character:
+// every credential pattern without its word boundaries, and the assignment
+// rule. It also checks the value percent-decoded once. A value that fails to
+// decode is checked as given. It is for refusing untrusted input before
+// storage, where refusing an odd value is acceptable and storing a credential
+// is not (req-security-boundaries REQ-2, REQ-3).
+func HoldsCredentialShape(value string) bool {
+	forms := []string{value}
+	if decoded, err := url.PathUnescape(value); err == nil && decoded != value {
+		forms = append(forms, decoded)
+	}
+	for _, form := range forms {
+		if assignedSecret.MatchString(form) {
+			return true
+		}
+		for _, pattern := range credentialShapesAnywhere {
+			if pattern.MatchString(form) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 var assignedSecret = regexp.MustCompile(`(?i)((?:token|secret|password|api[_-]?key)\s*[:=]\s*["']?)([A-Za-z0-9+/=_-]{20,})`)

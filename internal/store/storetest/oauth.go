@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -212,6 +213,7 @@ func runOAuth(t *testing.T, factory Factory) {
 	t.Run("OwnerGrants", func(t *testing.T) { runOAuthOwnerGrants(t, newOAuthCase(t, factory)) })
 	t.Run("TokenRevocation", func(t *testing.T) { runOAuthTokenRevocation(t, newOAuthCase(t, factory)) })
 	t.Run("SecretFreeStorageAndAudit", func(t *testing.T) { runOAuthSecretFree(t, newOAuthCase(t, factory)) })
+	t.Run("CredentialShapeRefusals", func(t *testing.T) { runOAuthCredentialShapeRefusals(t, newOAuthCase(t, factory)) })
 	t.Run("LongClientID", func(t *testing.T) { runOAuthLongClientID(t, newOAuthCase(t, factory)) })
 	t.Run("AuditFailureRollsBack", func(t *testing.T) { runOAuthAuditFailure(t, newOAuthCase(t, factory)) })
 }
@@ -910,6 +912,126 @@ func runOAuthSecretFree(t *testing.T, c *oauthCase) {
 	}
 	if kinds[store.OAuthEventGrantCreated] != 2 || kinds[store.OAuthEventRefreshReuseDetected] != 1 || kinds[store.OAuthEventGrantRevoked] != 1 || len(kinds) != 3 {
 		t.Fatalf("OAuth audit kinds=%v", kinds)
+	}
+}
+
+// oauthCredentialShapes holds one synthetic value for every credential shape
+// the shared redactor knows: each credential pattern and the assignment rule.
+// No value is a real credential.
+var oauthCredentialShapes = []struct{ name, value string }{
+	{"JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjb25mb3JtYW5jZSJ9.c2lnbmF0dXJlLXZhbHVl"},
+	{"Google API key", "AIzaSyConformance0123456789abcdefgh"},
+	{"sk- key", "sk-conformance0123456789abcdef"},
+	{"GitHub ghp_ token", "ghp_Conformance0123456789abcdefABCDEF"},
+	{"GitHub gho_ token", "gho_Conformance0123456789abcdefABCDEF"},
+	{"GitHub ghu_ token", "ghu_Conformance0123456789abcdefABCDEF"},
+	{"GitHub ghs_ token", "ghs_Conformance0123456789abcdefABCDEF"},
+	{"GitHub ghr_ token", "ghr_Conformance0123456789abcdefABCDEF"},
+	{"fine-grained GitHub token", "github_pat_11AAAAAAA0conformance_abcdefghij"},
+	{"Conveyor personal access token", "cv_pat_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"retired Conveyor agent token", "cv_agent_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"Conveyor session token", "cv_session_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"Conveyor sign-in token", "cv_signin_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"OAuth authorization code", "cv_oac_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"OAuth access token", "cv_oat_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"OAuth refresh token", "cv_ort_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"bearer credential", "Bearer conformanceopaquevalue0123456789"},
+	{"PEM private key", "-----BEGIN PRIVATE KEY-----MIIBconformance-----END PRIVATE KEY-----"},
+	{"assigned secret", "token=conformanceassigned0123456789"},
+}
+
+// runOAuthCredentialShapeRefusals puts every credential shape directly after
+// a letter, a digit, and an underscore, and in percent-encoded form, into a
+// client name, a client ID, and a redirect URI. Registration, code issuance,
+// and exchange each refuse it before any write, with the sentinel for the
+// field, so no row, grant listing entry, or audit event holds it. Clean
+// metadata still binds exactly (req-security-boundaries REQ-2, REQ-3;
+// component-identity-membership invariants 36, 45, and 46).
+func runOAuthCredentialShapeRefusals(t *testing.T, c *oauthCase) {
+	client := c.client(t, "Shape Client")
+	_, cleanCode := c.code(t, c.owner.ID, client.ID, client.Name)
+	rowsBefore := len(c.hooks.rows(t, c.ctx))
+	eventsBefore := len(c.hooks.events(t, c.ctx))
+	encodeAll := func(value string) string {
+		var out strings.Builder
+		for i := 0; i < len(value); i++ {
+			fmt.Fprintf(&out, "%%%02X", value[i])
+		}
+		return out.String()
+	}
+	requireRefused := func(t *testing.T, err, want error, what string) {
+		t.Helper()
+		if !errors.Is(err, want) || !errors.Is(err, store.ErrRefusal) {
+			t.Fatalf("%s err=%v, want %v as a refusal", what, err, want)
+		}
+	}
+	checks := 0
+	for _, shape := range oauthCredentialShapes {
+		for _, glue := range []struct{ name, text string }{
+			{"after a letter", "x" + shape.value},
+			{"after a digit", "9" + shape.value},
+			{"after an underscore", "_" + shape.value},
+			{"percent-encoded", encodeAll(shape.value)},
+		} {
+			what := shape.name + " " + glue.name
+			name := "Client " + glue.text
+			clientID := "https://client.example.test/meta" + glue.text + "/client.json"
+			redirect := oauthRedirect + "?state=s" + glue.text
+			code := func(clientID, clientName, redirect string) error {
+				_, _, err := c.st.IssueOAuthAuthorizationCode(c.ctx, store.OAuthCodeRequest{
+					UserID: c.owner.ID, ClientID: clientID, ClientName: clientName, RedirectURI: redirect, Resource: oauthResource, CodeChallenge: core.OAuthS256Challenge(oauthVerifier),
+				})
+				return err
+			}
+			_, err := c.st.RegisterOAuthClient(c.ctx, store.OAuthClientRegistration{Name: name, RedirectURIs: []string{oauthRedirect}})
+			requireRefused(t, err, store.ErrOAuthClientMetadataRefused, "registration name with "+what)
+			_, err = c.st.RegisterOAuthClient(c.ctx, store.OAuthClientRegistration{Name: "Clean", RedirectURIs: []string{redirect}})
+			requireRefused(t, err, store.ErrOAuthRedirectURIRefused, "registration redirect URI with "+what)
+			requireRefused(t, code(oauthCIMD, name, oauthRedirect), store.ErrOAuthClientMetadataRefused, "code client name with "+what)
+			requireRefused(t, code(clientID, "Clean", oauthRedirect), store.ErrOAuthClientMetadataRefused, "code client ID with "+what)
+			requireRefused(t, code(oauthCIMD, "Clean", redirect), store.ErrOAuthRedirectURIRefused, "code redirect URI with "+what)
+			_, err = c.st.ExchangeOAuthAuthorizationCode(c.ctx, oauthExchange(cleanCode, clientID))
+			requireRefused(t, err, store.ErrOAuthClientMetadataRefused, "exchange client ID with "+what)
+			_, err = c.st.ExchangeOAuthAuthorizationCode(c.ctx, store.OAuthCodeExchange{Code: cleanCode, ClientID: client.ID, RedirectURI: redirect, Resource: oauthResource, CodeVerifier: oauthVerifier})
+			requireRefused(t, err, store.ErrOAuthRedirectURIRefused, "exchange redirect URI with "+what)
+			checks += 7
+		}
+	}
+	if want := len(oauthCredentialShapes) * 4 * 7; checks != want {
+		t.Fatalf("ran %d refusal checks, want %d", checks, want)
+	}
+	if rows, events := len(c.hooks.rows(t, c.ctx)), len(c.hooks.events(t, c.ctx)); rows != rowsBefore || events != eventsBefore {
+		t.Fatalf("refusals changed stored rows from %d to %d and events from %d to %d", rowsBefore, rows, eventsBefore, events)
+	}
+	holdsShape := func(text string) bool {
+		for _, shape := range oauthCredentialShapes {
+			if strings.Contains(text, shape.value) || strings.Contains(text, encodeAll(shape.value)) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, row := range c.hooks.rows(t, c.ctx) {
+		if holdsShape(row.Text) {
+			t.Fatalf("%s row %s stores a credential shape", row.Table, row.ID)
+		}
+	}
+	// Clean metadata still binds exactly: the clean code that every refused
+	// exchange named is unconsumed and exchanges with the exact client ID.
+	pair, err := c.st.ExchangeOAuthAuthorizationCode(c.ctx, oauthExchange(cleanCode, client.ID))
+	requireOK(t, err)
+	c.remember(pair)
+	listed, err := c.st.ListOwnOAuthGrants(c.ctx, c.owner.ID)
+	requireOK(t, err)
+	if len(listed) != 1 || listed[0].ClientID != client.ID || listed[0].ClientName != client.Name {
+		t.Fatalf("grant listing=%+v, want only the clean grant with its exact client", listed)
+	}
+	for _, event := range c.hooks.events(t, c.ctx) {
+		raw, err := json.Marshal(event)
+		requireOK(t, err)
+		if holdsShape(string(raw)) {
+			t.Fatalf("%s holds a credential shape", event.Kind)
+		}
 	}
 }
 

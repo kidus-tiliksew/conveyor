@@ -252,6 +252,99 @@ func TestRedactsOAuthCredentialShapes(t *testing.T) {
 	}
 }
 
+// credentialShapeFixtures holds one synthetic value for every credential
+// shape the redactor knows: each entry of credentialPatternSources and the
+// assignment rule. No value is a real credential.
+var credentialShapeFixtures = []struct{ name, value string }{
+	{"JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjb25mb3JtYW5jZSJ9.c2lnbmF0dXJlLXZhbHVl"},
+	{"Google API key", "AIzaSyConformance0123456789abcdefgh"},
+	{"sk- key", "sk-conformance0123456789abcdef"},
+	{"GitHub ghp_ token", "ghp_Conformance0123456789abcdefABCDEF"},
+	{"GitHub gho_ token", "gho_Conformance0123456789abcdefABCDEF"},
+	{"GitHub ghu_ token", "ghu_Conformance0123456789abcdefABCDEF"},
+	{"GitHub ghs_ token", "ghs_Conformance0123456789abcdefABCDEF"},
+	{"GitHub ghr_ token", "ghr_Conformance0123456789abcdefABCDEF"},
+	{"fine-grained GitHub token", "github_pat_11AAAAAAA0conformance_abcdefghij"},
+	{"Conveyor personal access token", "cv_pat_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"retired Conveyor agent token", "cv_agent_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"Conveyor session token", "cv_session_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"Conveyor sign-in token", "cv_signin_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"OAuth authorization code", "cv_oac_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"OAuth access token", "cv_oat_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"OAuth refresh token", "cv_ort_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"bearer credential", "Bearer conformanceopaquevalue0123456789"},
+	{"PEM private key", "-----BEGIN PRIVATE KEY-----MIIBconformance-----END PRIVATE KEY-----"},
+	{"assigned secret", "token=conformanceassigned0123456789"},
+}
+
+// percentEncodeAll encodes every byte of value as %XX, so no credential
+// pattern matches the encoded text itself.
+func percentEncodeAll(value string) string {
+	var out strings.Builder
+	for i := 0; i < len(value); i++ {
+		fmt.Fprintf(&out, "%%%02X", value[i])
+	}
+	return out.String()
+}
+
+// TestHoldsCredentialShapeAnywhere proves the boundary-free refusal check
+// finds every credential shape directly after a letter, a digit, and an
+// underscore, and in percent-encoded form, and that redaction itself now
+// removes every Conveyor kind in the glued forms. Ordinary text, bare
+// prefixes, and short values stay clean, and redaction keeps the leading
+// boundary of the non-Conveyor shapes (req-security-boundaries REQ-2, REQ-3;
+// component-identity-membership invariants 45 and 46).
+func TestHoldsCredentialShapeAnywhere(t *testing.T) {
+	t.Parallel()
+	for _, shape := range credentialShapeFixtures {
+		for _, form := range []struct{ name, text string }{
+			{"as given", shape.value},
+			{"after a letter", "Client x" + shape.value},
+			{"after a digit", "client-9" + shape.value},
+			{"after an underscore", "https://client.example.test/meta_" + shape.value + "/client.json"},
+			{"percent-encoded", "https://client.example.test/" + percentEncodeAll(shape.value)},
+		} {
+			t.Run(shape.name+"/"+form.name, func(t *testing.T) {
+				t.Parallel()
+				if !HoldsCredentialShape(form.text) {
+					t.Fatal("credential shape not found")
+				}
+				if strings.HasPrefix(shape.value, "cv_") && form.name != "percent-encoded" {
+					clean, stats := New(nil).Redact(form.text)
+					if strings.Contains(clean, shape.value) || stats.Pattern != 1 {
+						t.Fatalf("Conveyor credential survived redaction: stats=%+v", stats)
+					}
+				}
+			})
+		}
+	}
+	for _, clean := range []string{
+		"Conformance Client",
+		"https://client.example.test/oauth/client.json",
+		"http://127.0.0.1:43123/callback",
+		"the cv_pat_, cv_agent_, cv_session_, cv_signin_, cv_oac_, cv_oat_, and cv_ort_ prefixes",
+		"xcv_pat_, 9cv_session_, and _cv_ort_ are prefixes",
+		"cv_pat_short and xcv_oat_short_value",
+		"the sk- prefix, ghp_ tokens, and Bearer authentication",
+		"%zz is not a valid escape",
+	} {
+		if HoldsCredentialShape(clean) {
+			t.Errorf("clean text %q holds a credential shape", clean)
+		}
+	}
+	// Redaction keeps the leading boundary of the non-Conveyor shapes, so a
+	// task name stays readable in logs.
+	if clean, stats := New(nil).Redact("task-0123456789abcdefghij"); clean != "task-0123456789abcdefghij" || stats.Total() != 0 {
+		t.Fatalf("redaction changed a task name: %q %+v", clean, stats)
+	}
+	for _, kind := range []string{"pat", "agent", "session", "signin"} {
+		value := "xcv_" + kind + "_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"
+		if clean, stats := New(nil).Redact(value); clean != "x"+patternPlaceholder || stats.Pattern != 1 {
+			t.Errorf("glued %s token: clean=%q stats=%+v", kind, clean, stats)
+		}
+	}
+}
+
 // TestRedactsQuotedFormOfKnownValues covers a known value printed with %q,
 // whose escapes would otherwise defeat the exact match. A value quoting leaves
 // alone counts once, as exact.

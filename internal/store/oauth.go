@@ -29,11 +29,14 @@ var (
 	ErrOAuthRefreshTokenReused = errors.New("oauth refresh token reused")
 	// ErrOAuthClientMetadataRefused refuses a client registration, an
 	// authorization code, or a grant whose client ID or client name the
-	// shared redactor would change. The store writes nothing. The HTTP server
+	// shared redactor would change or that holds any credential shape the
+	// redactor knows, anywhere and after one percent-decoding. The store
+	// writes nothing. The HTTP server
 	// maps it to invalid_client. It is also a store.ErrRefusal.
 	ErrOAuthClientMetadataRefused = Refuse(errors.New("oauth client ID or name holds a secret-shaped value"))
 	// ErrOAuthRedirectURIRefused refuses the same writes when a redirect URI
-	// holds a value the shared redactor would change. The store writes
+	// holds a value the shared redactor would change or a credential shape
+	// by the same rule. The store writes
 	// nothing. The HTTP server maps it to invalid_redirect_uri. It is also a
 	// store.ErrRefusal.
 	ErrOAuthRedirectURIRefused = Refuse(errors.New("oauth redirect URI holds a secret-shaped value"))
@@ -185,13 +188,20 @@ func ValidateOAuthClientRegistration(registration OAuthClientRegistration) error
 // REQ-3; component-identity-membership invariant 45).
 func refuseSecretShapedOAuthMetadata(clientID, clientName string, redirectURIs ...string) error {
 	redactor := redact.New(nil)
+	// secretShaped refuses a value the redactor would change, or one that
+	// holds any credential shape anywhere, also after one percent-decoding.
+	// The stored value stays exactly as given when both checks pass.
+	secretShaped := func(value string) bool {
+		clean, _ := redactor.Redact(value)
+		return clean != value || redact.HoldsCredentialShape(value)
+	}
 	for _, value := range []string{clientID, clientName} {
-		if clean, _ := redactor.Redact(value); clean != value {
+		if secretShaped(value) {
 			return ErrOAuthClientMetadataRefused
 		}
 	}
 	for _, uri := range redirectURIs {
-		if clean, _ := redactor.Redact(uri); clean != uri {
+		if secretShaped(uri) {
 			return ErrOAuthRedirectURIRefused
 		}
 	}
