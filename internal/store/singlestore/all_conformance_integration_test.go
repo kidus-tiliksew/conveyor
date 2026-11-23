@@ -250,26 +250,12 @@ func TestResetTablesEmptiesEveryTableWithBoundedWorkers(t *testing.T) {
 	}
 }
 
-func TestResetTablesReturnsFirstFailureAfterWorkersExit(t *testing.T) {
+func TestResetTablesStopsAtFirstFailure(t *testing.T) {
 	failure := errors.New("delete refused")
-	running := make(chan struct{})
-	failed := make(chan struct{})
-	var started, finished atomic.Int32
-	err := resetTables(t.Context(), []string{"slow", "broken", "later_1", "later_2", "later_3"}, 2, func(ctx context.Context, table string) error {
-		started.Add(1)
-		defer finished.Add(1)
-		switch table {
-		case "slow":
-			close(running)
-			<-failed
-			time.Sleep(20 * time.Millisecond)
-			if ctx.Err() != nil {
-				t.Error("a running reset lost its context")
-			}
-			return errors.New("later failure")
-		case "broken":
-			<-running
-			defer close(failed)
+	var started []string
+	err := resetTables(t.Context(), []string{"emptied", "broken", "later_1", "later_2"}, 1, func(_ context.Context, table string) error {
+		started = append(started, table)
+		if table == "broken" {
 			return failure
 		}
 		return nil
@@ -277,8 +263,32 @@ func TestResetTablesReturnsFirstFailureAfterWorkersExit(t *testing.T) {
 	if !errors.Is(err, failure) || !strings.Contains(err.Error(), "reset broken") {
 		t.Errorf("error = %v, want the broken table's failure", err)
 	}
-	if started.Load() != 2 || finished.Load() != 2 {
-		t.Errorf("started %d and finished %d resets, want 2 and 2", started.Load(), finished.Load())
+	if got := strings.Join(started, " "); got != "emptied broken" {
+		t.Errorf("started %q, want no table after the failure", got)
+	}
+}
+
+func TestResetTablesFailureWaitsForRunningResets(t *testing.T) {
+	failure := errors.New("delete refused")
+	running, failed := make(chan struct{}), make(chan struct{})
+	var finished atomic.Bool
+	err := resetTables(t.Context(), []string{"slow", "broken"}, 2, func(ctx context.Context, table string) error {
+		if table == "broken" {
+			<-running
+			defer close(failed)
+			return failure
+		}
+		close(running)
+		<-failed
+		time.Sleep(20 * time.Millisecond) // resetTables must outwait this
+		finished.Store(true)
+		return ctx.Err() // nil: the failure leaves a running reset its context
+	})
+	if !errors.Is(err, failure) {
+		t.Errorf("error = %v, want %v", err, failure)
+	}
+	if !finished.Load() {
+		t.Error("resetTables returned before a running reset finished")
 	}
 }
 
