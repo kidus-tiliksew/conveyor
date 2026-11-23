@@ -16,7 +16,19 @@ import (
 
 // Parser acceptance is separate from runtime credential retrieval. Never run
 // a native connection (or a credential helper) in the publication check.
-func validateMCPParser(binary, tool, staged, name string) error {
+// Under --auth oauth, Codex must report the registered URL. Under --auth pat,
+// Codex must report http_headers_helper (component-cli-onboarding invariant
+// 11; req-mcp-oauth AC-5.3).
+//
+// `codex mcp get --json` only prints the parsed entry. `claude mcp get`
+// connects to an enabled entry and runs its headersHelper. It connects to no
+// entry that is disabled for the project, so claudeParserConfig disables the
+// entry in the isolated copy, for the isolated directory only. The staged
+// bytes never change. The directory is its own git root, because Claude
+// keys project settings by the git root. A closed proxy is a second barrier
+// against a connection. Output that does not report the disabled state
+// refuses, because the check cannot then be shown to be parser-only.
+func validateMCPParser(binary, tool, staged, name string, id mcpIdentity) error {
 	content, err := os.ReadFile(staged)
 	if err != nil {
 		return err
@@ -34,6 +46,18 @@ func validateMCPParser(binary, tool, staged, name string) error {
 		args = append(args, "--json")
 		helperField = "http_headers_helper"
 	}
+	environment := mcpIsolatedEnvironment(isolated)
+	if tool == "claude" {
+		if content, err = claudeParserConfig(content, isolated, name); err != nil {
+			return errors.New("claude parser check could not isolate the staged registration (output withheld)")
+		}
+		if err = os.Mkdir(filepath.Join(isolated, ".git"), 0o700); err != nil {
+			return err
+		}
+		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
+			environment = append(environment, key+"=http://127.0.0.1:9")
+		}
+	}
 	if err = os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return err
 	}
@@ -44,7 +68,7 @@ func validateMCPParser(binary, tool, staged, name string) error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = isolated
-	cmd.Env = mcpIsolatedEnvironment(isolated)
+	cmd.Env = environment
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = io.Discard
@@ -52,24 +76,79 @@ func validateMCPParser(binary, tool, staged, name string) error {
 	if err = cmd.Run(); err != nil {
 		return fmt.Errorf("%s parser rejected the staged registration; upgrade the client or check its configuration (output withheld)", tool)
 	}
+	if tool != "codex" {
+		if !claudeReportsDisabled(output.Bytes()) {
+			return errors.New("claude mcp get did not report the registration as disabled for the check, so the check can contact the server (output withheld). Upgrade Claude Code")
+		}
+		return nil
+	}
 	var parsed map[string]any
 	_ = json.Unmarshal(output.Bytes(), &parsed)
-	var hasHelper func(map[string]any) bool
-	hasHelper = func(object map[string]any) bool {
-		if value, ok := object[helperField].(string); ok && value != "" {
+	// hasField reports whether the object, or an object inside it, holds the
+	// key with a string value that accepts.
+	var hasField func(map[string]any, string, func(string) bool) bool
+	hasField = func(object map[string]any, key string, accepts func(string) bool) bool {
+		if value, ok := object[key].(string); ok && accepts(value) {
 			return true
 		}
 		for _, value := range object {
-			if child, ok := value.(map[string]any); ok && hasHelper(child) {
+			if child, ok := value.(map[string]any); ok && hasField(child, key, accepts) {
 				return true
 			}
 		}
 		return false
 	}
-	if tool == "codex" && !hasHelper(parsed) {
+	if id.oauth() {
+		// Codex reports the endpoint in transport.url. Another field named
+		// url, such as a custom header, is not the endpoint.
+		transport, _ := parsed["transport"].(map[string]any)
+		if transport["url"] != id.endpoint {
+			return errors.New("Codex parser did not report the registered URL (output withheld). Upgrade Codex or check its configuration")
+		}
+		return nil
+	}
+	if !hasField(parsed, helperField, func(value string) bool { return value != "" }) {
 		return errors.New("Codex parser did not expose http_headers_helper; upgrade Codex before installing a saved-credential connection")
 	}
 	return nil
+}
+
+// claudeParserConfig returns the staged configuration with the registration
+// disabled for the isolated directory. Claude keys a project by its resolved
+// path, so both spellings are listed.
+func claudeParserConfig(staged []byte, isolated, name string) ([]byte, error) {
+	resolved, err := filepath.EvalSymlinks(isolated)
+	if err != nil {
+		return nil, err
+	}
+	object, err := scanJSONObject(staged)
+	if err != nil {
+		return nil, err
+	}
+	projects := []byte("{}")
+	if member, ok := object.member("projects"); ok {
+		projects = staged[member.valueStart:member.valueEnd]
+	}
+	disabled, err := json.Marshal(map[string][]string{"disabledMcpServers": {name}})
+	if err != nil {
+		return nil, err
+	}
+	for _, directory := range []string{isolated, resolved} {
+		if projects, err = setJSONObjectMember(projects, directory, disabled); err != nil {
+			return nil, err
+		}
+	}
+	return setJSONObjectMember(staged, "projects", projects)
+}
+
+func claudeReportsDisabled(output []byte) bool {
+	for _, line := range strings.Split(string(output), "\n") {
+		status, ok := strings.CutPrefix(strings.TrimSpace(line), "Status:")
+		if ok && strings.Contains(strings.ToLower(status), "disabled for this project") {
+			return true
+		}
+	}
+	return false
 }
 
 func mcpIsolatedEnvironment(home string) []string {
@@ -90,11 +169,13 @@ func mcpIsolatedEnvironment(home string) []string {
 
 // validateAntigravityMCP runs `agy mcp list` against a copy of the staged
 // file in an isolated home before publication (component-cli-onboarding
-// invariant 11). `agy mcp list` parses the file and starts no stdio server,
-// so the check never runs the bridge. A nonzero exit, a timeout, or a list
-// without a stdio row for the exact registration name refuses publication.
-// The client output is withheld, as in validateMCPParser.
-func validateAntigravityMCP(binary, staged, name string, timeout time.Duration) error {
+// invariant 11). `agy mcp list` parses the file and starts no stdio server
+// and no remote connection, so the check never runs the bridge or signs in.
+// A nonzero exit, a timeout, or a list without a row of the given transport
+// for the exact registration name refuses publication. The transport is
+// http under --auth oauth and stdio under --auth pat. The client output is
+// withheld, as in validateMCPParser.
+func validateAntigravityMCP(binary, staged, name, transport string, timeout time.Duration) error {
 	content, err := os.ReadFile(staged)
 	if err != nil {
 		return err
@@ -125,19 +206,20 @@ func validateAntigravityMCP(binary, staged, name string, timeout time.Duration) 
 	} else if err != nil {
 		return errors.New("agy mcp list rejected the staged registration (output withheld). Upgrade agy or check its configuration")
 	}
-	if !antigravityListsStdio(output.Bytes(), name) {
-		return fmt.Errorf("agy mcp list did not list registration %s as a stdio server (output withheld)", name)
+	if !antigravityListsTransport(output.Bytes(), name, transport) {
+		return fmt.Errorf("agy mcp list did not list registration %s as a %s server (output withheld)", name, transport)
 	}
 	return nil
 }
 
-// antigravityListsStdio reports whether a row of `agy mcp list` output has
-// the exact registration name in its NAME column and stdio in its TYPE
-// column. A name that only contains the registration name does not match.
-func antigravityListsStdio(output []byte, name string) bool {
+// antigravityListsTransport reports whether a row of `agy mcp list` output
+// has the exact registration name in its NAME column and the transport in
+// its TYPE column. A name that only contains the registration name does not
+// match.
+func antigravityListsTransport(output []byte, name, transport string) bool {
 	for _, line := range strings.Split(string(output), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] == name && fields[1] == "stdio" {
+		if len(fields) >= 2 && fields[0] == name && fields[1] == transport {
 			return true
 		}
 	}

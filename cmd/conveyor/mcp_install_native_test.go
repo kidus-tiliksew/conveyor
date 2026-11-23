@@ -305,6 +305,175 @@ func TestMCPNativeClients(t *testing.T) {
 		})
 	}
 	t.Run("antigravity", testMCPNativeAntigravityParser)
+	t.Run("oauth parsers", testMCPNativeOAuthParsers)
+	t.Run("parsers contact no server", testMCPNativeParsersContactNoServer)
+}
+
+// testMCPNativeParsersContactNoServer proves with each installed client that
+// the publication check sends no request to the registered server and runs no
+// credential helper, in both modes (component-cli-onboarding invariant 11).
+// The home is a git repository, because Claude keys project settings by the
+// git root. Cursor has no parser check, so its row only proves that
+// publication sends nothing. The Claude control runs the plain command and
+// must reach the fixture and the helper, so a fixture that records nothing
+// cannot pass.
+func testMCPNativeParsersContactNoServer(t *testing.T) {
+	binaries := map[string]string{"codex": "codex", "claude": "claude", "opencode": "opencode", "cursor": "cursor-agent", "antigravity": "agy"}
+	for _, tool := range mcpAuthTools {
+		for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+			t.Run(tool+"/"+mode, func(t *testing.T) {
+				if _, err := exec.LookPath(binaries[tool]); err != nil {
+					t.Skipf("%s unavailable; no native evidence", binaries[tool])
+				}
+				var mu sync.Mutex
+				var requests []string
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					mu.Lock()
+					requests = append(requests, r.Method+" "+r.URL.Path)
+					mu.Unlock()
+					w.WriteHeader(http.StatusUnauthorized)
+				}))
+				defer server.Close()
+				seen := func() []string {
+					mu.Lock()
+					defer mu.Unlock()
+					return append([]string(nil), requests...)
+				}
+				home := t.TempDir()
+				t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+				if output, err := exec.Command("git", "init", "-q", home).CombinedOutput(); err != nil {
+					t.Fatalf("git init: %v %s", err, output)
+				}
+				sentinel := filepath.Join(home, "helper-ran")
+				helper := filepath.Join(home, "bin", "conveyor")
+				if err := os.MkdirAll(filepath.Dir(helper), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(helper, []byte("#!/bin/sh\ntouch '"+sentinel+"'\necho '{}'\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				id, err := newMCPOAuthIdentity(server.URL, "conveyor-native-check")
+				if mode == mcpAuthPAT {
+					id, err = newMCPIdentity(server.URL, "conveyor-native-check", helper, filepath.Join(home, "credentials.json"))
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				target := mcpTargets(home, []skillTool{{name: tool}})[0]
+				result, err := reconcileNamedMCPRegistration(home, target, id, false, true, exec.LookPath)
+				if err != nil || result.status != "created" {
+					t.Fatalf("native install: result=%+v err=%v", result, err)
+				}
+				// A late request from a client child would arrive here.
+				time.Sleep(time.Second)
+				if got := seen(); len(got) != 0 {
+					t.Fatalf("the parser check contacted the server: %v", got)
+				}
+				if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+					t.Fatalf("the parser check ran the helper or bridge: %v", err)
+				}
+				data, _ := os.ReadFile(target.path)
+				if bytes.Contains(data, []byte("disabledMcpServers")) {
+					t.Fatalf("the isolation reached the published file:\n%s", data)
+				}
+				t.Logf("%s %s: 0 requests, no helper; %s", tool, mode, result.validation)
+				if tool != "claude" {
+					return
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, "claude", "mcp", "get", id.name)
+				cmd.Dir = home
+				cmd.Env = mcpIsolatedEnvironment(home)
+				cmd.WaitDelay = time.Second
+				_, _ = cmd.CombinedOutput()
+				if len(seen()) == 0 {
+					t.Fatal("the control did not reach the fixture, so zero requests prove nothing")
+				}
+				if _, err := os.Stat(sentinel); mode == mcpAuthPAT && err != nil {
+					t.Fatalf("the control did not run the helper: %v", err)
+				}
+				t.Logf("control: plain claude mcp get sent %d requests", len(seen()))
+			})
+		}
+	}
+}
+
+// testMCPNativeOAuthParsers runs each installed client's own parser on the
+// OAuth registration and on a switch between the two modes
+// (component-cli-onboarding invariant 11; req-mcp-oauth AC-5.3). It proves
+// parser acceptance only. It does no browser sign-in and opens no
+// connection. A missing client is a skip, not a pass, and Cursor has no
+// parser check, so its row records a skip.
+func testMCPNativeOAuthParsers(t *testing.T) {
+	binaries := map[string]string{"codex": "codex", "claude": "claude", "opencode": "opencode", "cursor": "cursor-agent", "antigravity": "agy"}
+	for _, tool := range []string{"codex", "claude", "opencode", "cursor", "antigravity"} {
+		t.Run(tool, func(t *testing.T) {
+			if tool == "cursor" {
+				t.Skip("cursor has no parser check; no native parser evidence")
+			}
+			binary, err := exec.LookPath(binaries[tool])
+			if err != nil {
+				t.Skipf("%s unavailable; no native evidence", binaries[tool])
+			}
+			version, err := exec.Command(binary, "--version").Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("client %s %s", tool, strings.TrimSpace(string(version)))
+			home := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+			credentialPath := filepath.Join(home, "saved credentials.json")
+			// The parser check never runs the helper or the bridge, so the
+			// PAT entry names an installed conveyor path that need not exist.
+			helper := filepath.Join(home, "bin", "conveyor")
+			oauth, err := newMCPOAuthIdentity("https://example.invalid", "conveyor-native-check")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pat, err := newMCPIdentity("https://example.invalid", "conveyor-native-check", helper, credentialPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := mcpTargets(home, []skillTool{{name: tool}})[0]
+			for _, step := range []struct {
+				id   mcpIdentity
+				want string
+			}{{oauth, "created"}, {oauth, "unchanged"}, {pat, "refreshed"}, {oauth, "refreshed"}} {
+				result, err := reconcileNamedMCPRegistration(home, target, step.id, false, true, exec.LookPath)
+				if err != nil || result.status != step.want {
+					t.Fatalf("native %s install: result=%+v err=%v", step.id.auth, result, err)
+				}
+				t.Logf("%s %s %s: %s", tool, step.id.auth, result.status, result.validation)
+			}
+			data, err := os.ReadFile(target.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"Bearer", "CONVEYOR_MCP_TOKEN_", "auth token", "Helper", "helper", "mcp stdio"} {
+				if bytes.Contains(data, []byte(forbidden)) {
+					t.Fatalf("OAuth registration keeps %q after the switch:\n%s", forbidden, data)
+				}
+			}
+			// The native parser must refuse a registration for another
+			// endpoint, or of the other transport, so a skip in the check
+			// cannot pass silently.
+			switch tool {
+			case "codex":
+				other, _ := newMCPOAuthIdentity("https://other.invalid", "conveyor-native-check")
+				if err := validateMCPParser(binary, tool, target.path, oauth.name, other); err == nil {
+					t.Fatal("native Codex check accepted another endpoint")
+				}
+				if err := validateMCPParser(binary, tool, target.path, oauth.name, pat); err == nil {
+					t.Fatal("native Codex check accepted an OAuth entry as a PAT entry")
+				}
+			case "antigravity":
+				if err := validateAntigravityMCP(binary, target.path, oauth.name, "stdio", 30*time.Second); err == nil {
+					t.Fatal("native agy check accepted an http entry as stdio")
+				}
+			}
+		})
+	}
 }
 
 // testMCPNativeAntigravityParser checks the installed agy parser only. agy
@@ -362,7 +531,7 @@ func testMCPNativeAntigravityParser(t *testing.T) {
 		return string(output), err
 	}
 	output, err := listed(home)
-	if err != nil || !antigravityListsStdio([]byte(output), id.name) {
+	if err != nil || !antigravityListsTransport([]byte(output), id.name, "stdio") {
 		t.Fatalf("agy mcp list did not list %s as stdio: err=%v\n%s", id.name, err, output)
 	}
 	t.Logf("agy mcp list row: %s", strings.TrimSpace(output[strings.Index(output, id.name):]))
@@ -378,7 +547,7 @@ func testMCPNativeAntigravityParser(t *testing.T) {
 	if err := os.WriteFile(staged, stagedBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateAntigravityMCP(binary, staged, "sentinel", 30*time.Second); err != nil {
+	if err := validateAntigravityMCP(binary, staged, "sentinel", "stdio", 30*time.Second); err != nil {
 		t.Fatalf("native parser rejected a stdio entry: %v", err)
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
@@ -392,7 +561,7 @@ func testMCPNativeAntigravityParser(t *testing.T) {
 		if err := os.WriteFile(staged, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := validateAntigravityMCP(binary, staged, "sentinel", 30*time.Second); err == nil {
+		if err := validateAntigravityMCP(binary, staged, "sentinel", "stdio", 30*time.Second); err == nil {
 			t.Fatalf("native parser accepted %s", label)
 		} else {
 			t.Logf("native parser refused %s: %v", label, err)
