@@ -559,7 +559,11 @@ func (s *Store) requirementEventsForIDs(ctx context.Context, ids []string) (map[
 // reviewed_commit_sha of each object element, keeps every other element as
 // stored, and orders the elements by their stored position. A non-array
 // reviews value and a payload that is not an object stay as stored. The two
-// %s marks take the same task IDs.
+// %s marks take the same deduplicated task IDs. Each scan of
+// events_columnstore filters on event_shard_key and requires task_id to equal
+// it, because every task event stores its task ID as its shard key, so
+// SingleStore prunes each scan to the partitions of the named tasks
+// (component-persistence).
 const requirementDeliveryEventsQuery = `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.actor_id,e.actor_role,CASE WHEN JSON_GET_TYPE(e.payload_json)='object' THEN CASE
 	WHEN e.kind IN ('merge.confirmed','merge.reconciled') THEN JSON_BUILD_OBJECT('url',JSON_EXTRACT_JSON(e.payload_json,'url'),'title',JSON_EXTRACT_JSON(e.payload_json,'title'),'task_title',JSON_EXTRACT_JSON(e.payload_json,'task_title'),'head_sha',JSON_EXTRACT_JSON(e.payload_json,'head_sha'),'reviewed_head_sha',JSON_EXTRACT_JSON(e.payload_json,'reviewed_head_sha'),'approved_head_sha',JSON_EXTRACT_JSON(e.payload_json,'approved_head_sha'),'factory_review_validated',JSON_EXTRACT_JSON(e.payload_json,'factory_review_validated'))
 	WHEN e.kind='review.round_completed' THEN JSON_BUILD_OBJECT('verdict',JSON_EXTRACT_JSON(e.payload_json,'verdict'),'approved_head_sha',JSON_EXTRACT_JSON(e.payload_json,'approved_head_sha'),'reviews',(CASE WHEN JSON_GET_TYPE(JSON_EXTRACT_JSON(e.payload_json,'reviews'))='array' THEN COALESCE(rv.reviews,'[]') ELSE JSON_EXTRACT_JSON(e.payload_json,'reviews') END):>JSON)
@@ -568,19 +572,18 @@ const requirementDeliveryEventsQuery = `SELECT e.id,e.task_id,COALESCE(e.job_id,
 FROM events_columnstore e LEFT JOIN (
 	SELECT x.id,x.task_id,JSON_AGG((CASE WHEN JSON_GET_TYPE(r.table_col)='object' THEN JSON_BUILD_OBJECT('verdict',JSON_EXTRACT_JSON(r.table_col,'verdict'),'reviewed_commit_sha',JSON_EXTRACT_JSON(r.table_col,'reviewed_commit_sha')) ELSE r.table_col END):>JSON ORDER BY r.table_ord) AS reviews
 	FROM events_columnstore x JOIN TABLE(JSON_TO_ARRAY(CASE WHEN JSON_GET_TYPE(JSON_EXTRACT_JSON(x.payload_json,'reviews'))='array' THEN JSON_EXTRACT_JSON(x.payload_json,'reviews') ELSE '[]' END)) WITH ORDINALITY AS r
-	WHERE x.workspace_id=? AND x.task_id IN (%s) AND x.kind='review.round_completed'
+	WHERE x.workspace_id=? AND x.event_shard_key IN (%s) AND x.task_id=x.event_shard_key AND x.kind='review.round_completed'
 	GROUP BY x.id,x.task_id
 ) rv ON rv.id=e.id AND rv.task_id=e.task_id
-WHERE e.workspace_id=? AND e.task_id IN (%s) AND e.kind IN ('merge.confirmed','merge.reconciled','review.round_completed','task.context_requirement_added','task.context_requirement_activated','task.context_requirement_removed')
+WHERE e.workspace_id=? AND e.event_shard_key IN (%s) AND e.task_id=e.event_shard_key AND e.kind IN ('merge.confirmed','merge.reconciled','review.round_completed','task.context_requirement_added','task.context_requirement_activated','task.context_requirement_removed')
 ORDER BY e.task_id,e.at,e.id`
 
-func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, ids []string) (map[string][]core.Event, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementDeliveryEventsForTasks")
-	out := map[string][]core.Event{}
-	if len(ids) == 0 {
-		return out, nil
-	}
-	ws := documentWorkspace(ctx)
+// requirementDeliveryEventsStatement builds requirementDeliveryEventsQuery
+// for a nonempty task ID list. It removes duplicate IDs and keeps the first
+// position of each. It binds the workspace and the IDs for the review
+// subquery first, then for the outer query, in SQL order.
+func requirementDeliveryEventsStatement(ws string, ids []string) (string, []any) {
+	ids = store.UniqueTaskIDs(ids)
 	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
 	args := make([]any, 0, 2*len(ids)+2)
 	args = append(args, ws)
@@ -591,7 +594,17 @@ func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, ids [
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	rows, err := documentRows(ctx, s.db, fmt.Sprintf(requirementDeliveryEventsQuery, marks, marks), args...)
+	return fmt.Sprintf(requirementDeliveryEventsQuery, marks, marks), args
+}
+
+func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, ids []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementDeliveryEventsForTasks")
+	out := map[string][]core.Event{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	query, args := requirementDeliveryEventsStatement(documentWorkspace(ctx), ids)
+	rows, err := documentRows(ctx, s.db, query, args...)
 	if err != nil {
 		return nil, err
 	}
