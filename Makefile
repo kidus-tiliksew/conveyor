@@ -54,8 +54,8 @@ VALIDATION_CHILD_ENV = env $(foreach name,$(VALIDATION_WORKER_ENV_VARS),-u $(nam
 RUN_WEB_LINT = cd web && $(VALIDATION_CHILD_ENV) npm run lint
 RUN_PLAYWRIGHT = cd web && CONVEYOR_VALIDATION_TASK=$(VALIDATION_TASK) PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e --
 RUN_WEB_TESTS = $(RUN_WEB_LINT) && CONVEYOR_VALIDATION_TASK=$(VALIDATION_TASK) PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
-# The memory (go test ./...) and PostgreSQL ReviewSummary stress cases run
-# 500 rounds wherever they run; the SingleStore pull-request shards leave
+# The memory (go test ./...) ReviewSummary stress cases run 500 rounds
+# wherever they run; the PostgreSQL and SingleStore pull-request shards leave
 # CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS unset and run 50, and the nightly soak
 # workflow runs SingleStore at 500 (component-testing-strategy,
 # Configuration). go test ./... runs without -v, so the memory run echoes its
@@ -214,28 +214,30 @@ test-ui-evidence: ui
 compose-check:
 	$(VALIDATION_CHILD_ENV) python3 scripts/validate_compose_isolation.py
 
-# The PostgreSQL gate is the union of its shards. CI runs one shard per job by
-# setting POSTGRES_INTEGRATION_SHARD; an empty value runs every shard in one
-# go test invocation. Only shards that run the VK-10 browser scenario
-# (internal/dispatch) build the CLI and install Chromium.
-POSTGRES_INTEGRATION_SHARDS = store cli daemon
+# The PostgreSQL gate is the union of its shards, each one go test command
+# built from the shard's packages and optional -run pattern. The store shard
+# runs the whole PostgreSQL store package. The runtime shard runs only the
+# tests named with Integration in the command and dispatch packages, because
+# make test-go already runs their other tests. CI runs one shard per job by
+# setting POSTGRES_INTEGRATION_SHARD; an empty value runs every shard in
+# order. No shard runs the VK-10 browser scenario, so no shard builds the CLI
+# or installs Chromium; VK-10 runs on the memory backend in make test-go.
+POSTGRES_INTEGRATION_SHARDS = store runtime
 POSTGRES_INTEGRATION_PACKAGES_store = ./internal/store/postgres
-POSTGRES_INTEGRATION_PACKAGES_cli = ./cmd/conveyor
-POSTGRES_INTEGRATION_PACKAGES_daemon = ./cmd/conveyord ./internal/dispatch
-POSTGRES_INTEGRATION_RUNTIME_daemon = vk10-runtime
+POSTGRES_INTEGRATION_PACKAGES_runtime = ./cmd/conveyor ./cmd/conveyord ./internal/dispatch
+POSTGRES_INTEGRATION_RUN_runtime = Integration
+postgres_integration_args = $(POSTGRES_INTEGRATION_PACKAGES_$(1))$(if $(POSTGRES_INTEGRATION_RUN_$(1)), -run '$(POSTGRES_INTEGRATION_RUN_$(1))')
 POSTGRES_INTEGRATION_SHARD ?=
 postgres_integration_selected = $(or $(POSTGRES_INTEGRATION_SHARD),$(POSTGRES_INTEGRATION_SHARDS))
-POSTGRES_INTEGRATION_PACKAGES = $(foreach shard,$(postgres_integration_selected),$(POSTGRES_INTEGRATION_PACKAGES_$(shard)))
-POSTGRES_INTEGRATION_RUNTIME = $(sort $(foreach shard,$(postgres_integration_selected),$(POSTGRES_INTEGRATION_RUNTIME_$(shard))))
 
-.PHONY: _postgres-integration-shard-check _postgres-integration-url-check
+.PHONY: _postgres-integration-shard-check _postgres-integration-url-check _test-postgres-shard
 _postgres-integration-shard-check:
 	@for shard in $(postgres_integration_selected); do case " $(POSTGRES_INTEGRATION_SHARDS) " in *" $$shard "*) ;; *) echo "unknown POSTGRES_INTEGRATION_SHARD $$shard; expected one of: $(POSTGRES_INTEGRATION_SHARDS)" >&2; exit 1;; esac; done
 
 _postgres-integration-url-check:
 	@test -n "$(CONVEYOR_TEST_DATABASE_URL)" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
 
-test-integration: compose-check test-validation-docker vk10-runtime
+test-integration: compose-check test-validation-docker
 	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then \
 			$(MAKE) _test-integration-postgres; \
 		else \
@@ -243,8 +245,8 @@ test-integration: compose-check test-validation-docker vk10-runtime
 			$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(VALIDATION_TASK)" --managed-postgres --backend postgres --url-env TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) _test-integration-postgres; \
 		fi
 
-# The URL and shard checks run before the browser runtime is built.
-test-integration-ci: _postgres-integration-shard-check _postgres-integration-url-check compose-check $(POSTGRES_INTEGRATION_RUNTIME)
+# The shard and URL checks run before the fixture is prepared.
+test-integration-ci: _postgres-integration-shard-check _postgres-integration-url-check compose-check
 	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) _test-integration-postgres; else \
 		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
 		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend postgres --url-env CONVEYOR_TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) _test-integration-postgres; \
@@ -254,7 +256,11 @@ test-integration-ci: _postgres-integration-shard-check _postgres-integration-url
 _test-integration-postgres:
 	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "PostgreSQL fixture was not prepared" >&2; exit 1)
 	@test -n "$$CONVEYOR_TEST_DATABASE_URL" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
-	CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS=$(REVIEW_SUMMARY_STRESS_ROUNDS_FULL) $(GO_TEST_REQUIRE_TESTS) -v -p=1 $(POSTGRES_INTEGRATION_PACKAGES) -count=1 -timeout=10m $(GO_INTEGRATION_FLAGS)
+	@for shard in $(postgres_integration_selected); do $(MAKE) --no-print-directory _test-postgres-shard POSTGRES_INTEGRATION_SHARD=$$shard || exit 1; done
+
+_test-postgres-shard:
+	@test -n "$(POSTGRES_INTEGRATION_PACKAGES_$(POSTGRES_INTEGRATION_SHARD))" || (echo "unknown POSTGRES_INTEGRATION_SHARD '$(POSTGRES_INTEGRATION_SHARD)'; expected one of: $(POSTGRES_INTEGRATION_SHARDS)" >&2; exit 1)
+	$(GO_TEST_REQUIRE_TESTS) -v -p=1 $(call postgres_integration_args,$(POSTGRES_INTEGRATION_SHARD)) -count=1 -timeout=10m $(GO_INTEGRATION_FLAGS)
 
 # Keep the accepted work-order validation command explicit while sharing the
 # integration suite's isolated Postgres lifecycle.
@@ -312,19 +318,16 @@ dev: db-up
 # built from the shard's packages, -run and -skip patterns, and timeout.
 # The two conformance shards select complementary subtests of
 # TestSingleStoreConformanceIntegration through one shared pattern. The
-# migrations shard runs the DDL-heavy migration and layout tests and the
-# VK-10 browser scenario, each by full test name; the packages shard skips the
-# conformance test and that list, so together they run exactly the three
-# store packages. The commands shard keeps the command and daemon cases. CI
-# runs one shard per job through SINGLESTORE_INTEGRATION_SHARD; an empty value
-# runs every shard in order. Only the migrations shard, which runs the VK-10
-# browser scenario, builds the CLI and installs Chromium. RunAll registers
-# every suite in each conformance shard, so its registration audit runs in
-# both. make singlestore-shard-union-check proves the union.
-SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages migrations commands
+# packages shard skips the conformance test, so together they run exactly the
+# three store packages. The commands shard keeps the command and daemon cases.
+# CI runs one shard per job through SINGLESTORE_INTEGRATION_SHARD; an empty
+# value runs every shard in order. No shard runs the VK-10 browser scenario,
+# so no shard builds the CLI or installs Chromium. RunAll registers every
+# suite in each conformance shard, so its registration audit runs in both.
+# make singlestore-shard-union-check proves the union.
+SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages commands
 SINGLESTORE_CONFORMANCE_TEST = ^TestSingleStoreConformanceIntegration$$
 SINGLESTORE_CONFORMANCE_FIRST = ^(Verification|Requirements|NextAction|Lineage|AutomaticRecovery|ListPages|ActivityMarkerBounds|SystemDesignDrift)$$
-SINGLESTORE_MIGRATION_TESTS = ^(TestActivityValidationTransfersFixedSizeIntegration|TestExistingColumnstoreEventLogPreservedIntegration|TestHistoryMigrationLayoutsIntegration|TestFeatureRetirementPartialDDLRetryIntegration|TestVK10SingleStoreScenarioIntegration)$$
 SINGLESTORE_INTEGRATION_PACKAGES_conformance-1 = ./internal/store/singlestore
 SINGLESTORE_INTEGRATION_RUN_conformance-1 = $(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)
 SINGLESTORE_INTEGRATION_TIMEOUT_conformance-1 = 20m
@@ -333,12 +336,8 @@ SINGLESTORE_INTEGRATION_RUN_conformance-2 = $(SINGLESTORE_CONFORMANCE_TEST)
 SINGLESTORE_INTEGRATION_SKIP_conformance-2 = $(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)
 SINGLESTORE_INTEGRATION_TIMEOUT_conformance-2 = 20m
 SINGLESTORE_INTEGRATION_PACKAGES_packages = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore
-SINGLESTORE_INTEGRATION_SKIP_packages = $(SINGLESTORE_CONFORMANCE_TEST)|$(SINGLESTORE_MIGRATION_TESTS)
+SINGLESTORE_INTEGRATION_SKIP_packages = $(SINGLESTORE_CONFORMANCE_TEST)
 SINGLESTORE_INTEGRATION_TIMEOUT_packages = 20m
-SINGLESTORE_INTEGRATION_PACKAGES_migrations = ./internal/store/singlestore
-SINGLESTORE_INTEGRATION_RUN_migrations = $(SINGLESTORE_MIGRATION_TESTS)
-SINGLESTORE_INTEGRATION_TIMEOUT_migrations = 20m
-SINGLESTORE_INTEGRATION_RUNTIME_migrations = vk10-runtime
 SINGLESTORE_INTEGRATION_PACKAGES_commands = ./cmd/conveyor ./cmd/conveyord
 SINGLESTORE_INTEGRATION_RUN_commands = TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration
 SINGLESTORE_INTEGRATION_TIMEOUT_commands = 10m
@@ -351,7 +350,6 @@ SINGLESTORE_INTEGRATION_REQUIRED_CASES = ./cmd/conveyor:TestSingleStoreInitAndUs
 singlestore_integration_args = $(SINGLESTORE_INTEGRATION_PACKAGES_$(1))$(if $(SINGLESTORE_INTEGRATION_RUN_$(1)), -run '$(SINGLESTORE_INTEGRATION_RUN_$(1))')$(if $(SINGLESTORE_INTEGRATION_SKIP_$(1)), -skip '$(SINGLESTORE_INTEGRATION_SKIP_$(1))') -timeout=$(SINGLESTORE_INTEGRATION_TIMEOUT_$(1))
 SINGLESTORE_INTEGRATION_SHARD ?=
 singlestore_integration_selected = $(or $(SINGLESTORE_INTEGRATION_SHARD),$(SINGLESTORE_INTEGRATION_SHARDS))
-SINGLESTORE_INTEGRATION_RUNTIME = $(sort $(foreach shard,$(singlestore_integration_selected),$(SINGLESTORE_INTEGRATION_RUNTIME_$(shard))))
 
 .PHONY: _singlestore-integration-shard-check _singlestore-integration-url-check _test-singlestore-shard
 _singlestore-integration-shard-check:
@@ -360,8 +358,8 @@ _singlestore-integration-shard-check:
 _singlestore-integration-url-check:
 	@test -n "$$CONVEYOR_TEST_SINGLESTORE_URL" || (echo "CONVEYOR_TEST_SINGLESTORE_URL is required" >&2; exit 1)
 
-# The URL and shard checks run before the browser runtime is built.
-test-integration-singlestore-ci: _singlestore-integration-shard-check _singlestore-integration-url-check $(SINGLESTORE_INTEGRATION_RUNTIME)
+# The shard and URL checks run before the fixture is prepared.
+test-integration-singlestore-ci: _singlestore-integration-shard-check _singlestore-integration-url-check
 	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) _test-integration-singlestore; else \
 		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/singlestore-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
 		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend singlestore --url-env CONVEYOR_TEST_SINGLESTORE_URL --prepared-url-env CONVEYOR_TEST_SINGLESTORE_URL --state "$$state" -- $(MAKE) _test-integration-singlestore; \
