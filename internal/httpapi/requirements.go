@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -562,9 +563,8 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	// Staleness is an authority decision, not prompt rendering. Keep enough
 	// fixed delivery-chain depth even when operators tune agent context lower.
 	deliveryBudget := core.LineageTraversalBudget{MaxDepth: 3, MaxNodes: 256, MaxLinks: 1024, Workspace: workspace}
-	artifactNodes := map[core.LineageNode]bool{}
 	deliveryGraphs := make(map[string]core.LineageTraversal, len(requirements))
-	lineageByRequirement := make(map[string][]core.LineageLink, len(requirements))
+	displayServingByRequirement := make(map[string]map[string]bool, len(requirements))
 	deliveryLineageByRequirement := map[string][]core.LineageLink{}
 	if !includeDetail {
 		requirementIDs := make([]string, 0, len(requirements))
@@ -578,21 +578,6 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	}
 	for _, requirement := range requirements {
 		root := core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}
-		if includeDetail {
-			lineageBudget := core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 256, MaxLinks: 1024, Workspace: workspace}
-			lineage, listErr := s.Store.ListLineageNeighborhood(r.Context(), []core.LineageNode{root}, lineageBudget)
-			if listErr != nil {
-				return nil, listErr
-			}
-			graph, graphErr := core.TraverseLineage(lineage, []core.LineageNode{root}, lineageBudget)
-			if graphErr != nil {
-				return nil, graphErr
-			}
-			for _, node := range graph.Nodes {
-				artifactNodes[node] = true
-			}
-			lineageByRequirement[root.ID] = lineage
-		}
 		deliveryLineage := deliveryLineageByRequirement[requirement.ID]
 		if includeDetail {
 			var deliveryErr error
@@ -606,14 +591,24 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			return nil, deliveryErr
 		}
 		deliveryGraphs[root.ID] = deliveryGraph
+		if includeDetail {
+			displayServing, displayErr := s.requirementDisplayServingTaskIDs(r.Context(), root, deliveryGraph)
+			if displayErr != nil {
+				return nil, displayErr
+			}
+			displayServingByRequirement[root.ID] = displayServing
+		}
 	}
-	nodes := make([]core.LineageNode, 0, len(artifactNodes))
 	artifacts := []core.Artifact{}
 	if includeDetail {
-		for node := range artifactNodes {
-			nodes = append(nodes, node)
+		// The detail shows only artifacts attached to the requirement itself,
+		// so it reads them by owner instead of through a lineage walk
+		// (component-artifacts; component-lineage).
+		requirementIDs := make([]string, 0, len(requirements))
+		for _, requirement := range requirements {
+			requirementIDs = append(requirementIDs, requirement.ID)
 		}
-		artifacts, err = s.Store.ListArtifactsForLineage(r.Context(), nodes)
+		artifacts, err = s.Store.ListArtifactsForOwners(r.Context(), store.ArtifactOwners{RequirementIDs: requirementIDs})
 		if err != nil {
 			return nil, err
 		}
@@ -686,7 +681,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	tasksByID := map[string]store.RequirementDetailTask{}
 	plansByTask := map[string]store.PlanSummary{}
 	if includeDetail {
-		detailTaskIDs, linkedTaskIDs := requirementDetailTaskIDs(requirements, linksByRequirement, lineageByRequirement, deliveryGraphs)
+		detailTaskIDs, linkedTaskIDs := requirementDetailTaskIDs(requirements, linksByRequirement, displayServingByRequirement, deliveryGraphs)
 		tasksByID, err = s.Store.ListRequirementDetailTasks(r.Context(), detailTaskIDs)
 		if err != nil {
 			return nil, err
@@ -790,7 +785,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		deliveryServingTaskIDs := directServingTaskIDs(deliveryGraph.Links, requirement.ID)
 		servingTaskIDs := deliveryServingTaskIDs
 		if includeDetail {
-			servingTaskIDs = directServingTaskIDs(lineageByRequirement[requirement.ID], requirement.ID)
+			servingTaskIDs = displayServingByRequirement[requirement.ID]
 		}
 		for taskID := range servingTaskIDs {
 			task, getErr := loadTask(taskID)
@@ -802,6 +797,12 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			}
 		}
 		sort.Slice(view.ServingTasks, func(i, j int) bool { return view.ServingTasks[i].ID < view.ServingTasks[j].ID })
+		if includeDetail && len(view.ServingTasks) > requirementDetailServingTaskLimit {
+			// The cut keeps the response shape: no marker is added, and
+			// staleness.partial_evaluation keeps reporting delivery
+			// truncation only.
+			view.ServingTasks = view.ServingTasks[:requirementDetailServingTaskLimit]
+		}
 		effectiveBoundary := requirementAcknowledgedThrough(requirementEvents, confirmedAt)
 		if requirement.Archived {
 			effectiveBoundary = requirementDeliveryWatermark{}
@@ -872,11 +873,44 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	return views, nil
 }
 
+// requirementDetailServingTaskLimit caps the detail's serving_tasks list.
+// The forward delivery graph counts the requirement within its 256-node
+// budget, so it names at most 255 directly serving tasks. The detail keeps
+// the first 255 eligible tasks in task-ID order. A requirement with 256 or
+// more serves links can therefore list fewer tasks than it has.
+const requirementDetailServingTaskLimit = 255
+
+// requirementDisplayServingTaskIDs names the tasks the detail lists as
+// serving the requirement: the direct requirement -serves-> task links of
+// the forward delivery graph, and the legacy task -serves-> requirement
+// links that a bounded inbound read returns. The inbound links are for
+// display only. They never enter the delivery graph, the delivery event
+// batch, reachability, or classification (component-lineage;
+// req-260811-228be6 REQ-1).
+func (s *Server) requirementDisplayServingTaskIDs(ctx context.Context, root core.LineageNode, deliveryGraph core.LineageTraversal) (map[string]bool, error) {
+	taskIDs := directServingTaskIDs(deliveryGraph.Links, root.ID)
+	// The read asks for one link more than the display cap. A read that
+	// returns that many links is incomplete: it does not prove that no other
+	// inbound link exists. Such a requirement has 256 or more serves links,
+	// so the display cap above already applies to it.
+	inbound, err := s.Store.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{
+		Nodes: []core.LineageNode{root}, Kind: "serves", Inbound: true, FarType: core.LineageTask,
+		Limit: requirementDetailServingTaskLimit + 1,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for taskID := range directServingTaskIDs(inbound, root.ID) {
+		taskIDs[taskID] = true
+	}
+	return taskIDs, nil
+}
+
 // requirementDetailTaskIDs names every task the detail reads: the tasks of
-// confirmed requirement links, the directly serving tasks of the detail
-// lineage, and the delivery-reachable tasks. The second result names the
-// confirmed-link tasks, whose latest plan the detail shows.
-func requirementDetailTaskIDs(requirements []core.Requirement, links map[string][]core.RequirementServesLink, lineage map[string][]core.LineageLink, deliveryGraphs map[string]core.LineageTraversal) ([]string, []string) {
+// confirmed requirement links, the tasks the detail lists as serving, and
+// the delivery-reachable tasks. The second result names the confirmed-link
+// tasks, whose latest plan the detail shows.
+func requirementDetailTaskIDs(requirements []core.Requirement, links map[string][]core.RequirementServesLink, displayServing map[string]map[string]bool, deliveryGraphs map[string]core.LineageTraversal) ([]string, []string) {
 	taskSet, linkedSet := map[string]bool{}, map[string]bool{}
 	for _, requirement := range requirements {
 		for _, link := range links[requirement.ID] {
@@ -884,7 +918,7 @@ func requirementDetailTaskIDs(requirements []core.Requirement, links map[string]
 				taskSet[link.BlueprintTaskID], linkedSet[link.BlueprintTaskID] = true, true
 			}
 		}
-		for taskID := range directServingTaskIDs(lineage[requirement.ID], requirement.ID) {
+		for taskID := range displayServing[requirement.ID] {
 			taskSet[taskID] = true
 		}
 		for taskID := range deliveryReachableTasks(deliveryGraphs[requirement.ID].Links, requirement.ID) {
