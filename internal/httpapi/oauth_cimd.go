@@ -268,6 +268,9 @@ func (resolver *oauthMetadataResolver) httpClient() *http.Client {
 // is not public, and dials the checked addresses directly. The TLS layer
 // above it still verifies the certificate for the URL hostname.
 func (resolver *oauthMetadataResolver) dialChecked(ctx context.Context, network, address string) (net.Conn, error) {
+	// One deadline covers the lookup and every candidate dial.
+	ctx, cancel := context.WithTimeout(ctx, resolver.fetchTimeout())
+	defer cancel()
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, errOAuthClientUnverified
@@ -312,19 +315,30 @@ func (resolver *oauthMetadataResolver) dialChecked(ctx context.Context, network,
 	return nil, fmt.Errorf("dial metadata document host: %w", lastErr)
 }
 
-// oauthBlockedPrefixes are special-purpose ranges that netip's predicates do
-// not cover but that must never be fetched: this network, shared address
-// space, IETF protocol assignments, benchmarking, reserved, NAT64, and 6to4,
-// which can embed a private IPv4 address.
+// oauthBlockedPrefixes are special-purpose ranges (the IANA IPv4 and IPv6
+// special-purpose address registries) that netip's predicates do not cover
+// but that are not public destinations: this network, shared address space,
+// IETF protocol assignments, documentation, the 6to4 relay, benchmarking,
+// reserved, discard-only, NAT64, Teredo and other IETF assignments, 6to4,
+// which can embed a private IPv4 address, and deprecated site-local.
 var oauthBlockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("100.64.0.0/10"),
 	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
 	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
 	netip.MustParsePrefix("240.0.0.0/4"),
 	netip.MustParsePrefix("64:ff9b::/96"),
 	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
 	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("3fff::/20"),
+	netip.MustParsePrefix("fec0::/10"),
 }
 
 // oauthPublicAddress reports whether address may be fetched: it refuses

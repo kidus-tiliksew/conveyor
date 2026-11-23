@@ -215,6 +215,11 @@ func (h *oauthHarness) do(c oauthRequest) *httptest.ResponseRecorder {
 		request.RemoteAddr = c.remote
 	}
 	for key, value := range c.header {
+		// The handler reads Request.Host, not a Host header entry.
+		if strings.EqualFold(key, "Host") {
+			request.Host = value
+			continue
+		}
 		request.Header.Set(key, value)
 	}
 	response := httptest.NewRecorder()
@@ -393,6 +398,7 @@ func TestOAuthIssuerAcceptsOnlyCanonicalOrigins(t *testing.T) {
 		"https://user:pass@conveyor.example", "https://Conveyor.example", "HTTPS://conveyor.example", "https://conveyor.example:443",
 		"http://localhost:80", "ftp://conveyor.example", "https://", "https://conveyor.example:0", "https://conveyor.example:99999",
 		"https://conveyor.example:08443", "http://127.0.0.2", "http://localhost.example", " https://conveyor.example", "https://conveyor.example\\x",
+		"https://conveyor.example:", "http://[::1]:", "http://localhost:",
 	}
 	for _, value := range invalid {
 		if issuer, ok := oauthIssuerFromPublicURL(value); ok {
@@ -631,6 +637,22 @@ func TestOAuthSourceAddressTrustsOnlyConfiguredProxies(t *testing.T) {
 	if _, err := ParseTrustedProxies("10.0.0.1, proxy.internal"); err == nil {
 		t.Fatal("an invalid entry was accepted")
 	}
+	// An IPv4-mapped prefix matches the unmapped peer it covers.
+	mapped, err := ParseTrustedProxies("::ffff:10.0.0.0/104, ::ffff:192.0.2.7/128")
+	if err != nil || len(mapped) != 2 || mapped[0].String() != "10.0.0.0/8" || mapped[1].String() != "192.0.2.7/32" {
+		t.Fatalf("mapped prefixes = %v, %v", mapped, err)
+	}
+	mappedServer := NewServer(store.NewMemory())
+	mappedServer.TrustedProxies = mapped
+	mappedRequest := httptest.NewRequest(http.MethodPost, "/oauth/register", nil)
+	mappedRequest.RemoteAddr = "10.9.9.9:1"
+	mappedRequest.Header.Set("X-Forwarded-For", "198.51.100.77")
+	if got := mappedServer.oauthSourceAddress(mappedRequest); got != "198.51.100.77" {
+		t.Fatalf("mapped proxy source = %q", got)
+	}
+	if _, err := ParseTrustedProxies("::ffff:0:0/80"); err == nil {
+		t.Fatal("a mapped prefix shorter than /96 was accepted")
+	}
 	t.Setenv(TrustedProxiesEnv, "10.0.0.0/8, nonsense")
 	if prefixes := trustedProxiesFromEnvironment(); prefixes != nil {
 		t.Fatalf("an invalid setting trusted %v", prefixes)
@@ -644,19 +666,33 @@ func TestOAuthSourceAddressTrustsOnlyConfiguredProxies(t *testing.T) {
 func TestOAuthLimiterMemoryIsBounded(t *testing.T) {
 	limiter := newOAuthAttemptLimiter(1, time.Minute, 3)
 	now := time.Unix(1000, 0)
-	for index := range 10 {
+	for index := range 3 {
 		if !limiter.allow(fmt.Sprintf("source-%d", index), now.Add(time.Duration(index)*time.Second)) {
 			t.Fatalf("first attempt of source %d refused", index)
+		}
+	}
+	// A full table of live windows refuses a new source and never evicts a
+	// live window, so an exhausted source cannot regain its budget.
+	for index := 3; index < 10; index++ {
+		if limiter.allow(fmt.Sprintf("source-%d", index), now.Add(10*time.Second)) {
+			t.Fatalf("new source %d was admitted into a full table", index)
 		}
 		if len(limiter.windows) > 3 {
 			t.Fatalf("limiter holds %d keys", len(limiter.windows))
 		}
 	}
-	if limiter.allow("source-9", now.Add(10*time.Second)) {
-		t.Fatal("a second attempt within the window was allowed")
+	if limiter.allow("source-0", now.Add(20*time.Second)) {
+		t.Fatal("an exhausted source regained its budget")
 	}
+	// Once the windows end, their slots are reclaimed.
 	if !limiter.allow("source-9", now.Add(80*time.Second)) {
+		t.Fatal("a new source was refused after the windows ended")
+	}
+	if !limiter.allow("source-0", now.Add(80*time.Second)) {
 		t.Fatal("an attempt in a new window was refused")
+	}
+	if len(limiter.windows) > 3 {
+		t.Fatalf("limiter holds %d keys", len(limiter.windows))
 	}
 }
 
@@ -783,6 +819,7 @@ func TestOAuthConsentNeverRedirectsToAnUnverifiedTarget(t *testing.T) {
 		"duplicate redirect":     {oauthAuthorizeQuery(clientID, oauthTestRedirect, "s") + "&redirect_uri=" + url.QueryEscape("https://attacker.example/cb"), "invalid_request"},
 		"oversized state":        {oauthAuthorizeQuery(clientID, oauthTestRedirect, strings.Repeat("s", oauthStateMaxBytes+1)), "invalid_request"},
 		"oversized metadata URL": {oauthAuthorizeQuery("https://app.example/"+strings.Repeat("a", oauthClientIDMaxBytes), oauthTestRedirect, "s"), "invalid_client"},
+		"malformed resource":     {strings.Replace(oauthAuthorizeQuery(clientID, oauthTestRedirect, "s"), "resource="+url.QueryEscape(oauthTestAudience), "resource=%zz", 1), "invalid_request"},
 	} {
 		response := h.do(oauthRequest{method: http.MethodGet, path: "/v1/oauth/authorize?" + tc.query, session: h.memberSession})
 		body := expectOAuthError(t, response, http.StatusBadRequest, tc.code)
@@ -792,7 +829,7 @@ func TestOAuthConsentNeverRedirectsToAnUnverifiedTarget(t *testing.T) {
 		expectNoStore(t, response)
 		// A decision body cannot repeat a field, so the repeated-field cases
 		// apply to the query only.
-		if strings.HasPrefix(name, "duplicate") {
+		if strings.HasPrefix(name, "duplicate") || name == "malformed resource" {
 			continue
 		}
 		post := h.do(oauthRequest{method: http.MethodPost, path: "/v1/oauth/authorize", session: h.memberSession, proof: true, contentType: "application/json",
@@ -1262,11 +1299,17 @@ func TestOAuthAccessTokenIsRefusedOnEveryNonMCPRoute(t *testing.T) {
 		{http.MethodGet, "/tasks"},
 		{http.MethodGet, "/oauth/authorize"},
 		{http.MethodGet, "/mcp/"},
+		{http.MethodGet, "/%6dcp"},
+		{http.MethodPost, "/%6Dcp"},
 	} {
 		for _, session := range []string{"", h.memberSession} {
 			response := h.do(oauthRequest{method: route.method, path: route.path, bearer: pair.AccessToken, session: session, proof: route.method != http.MethodGet, contentType: "application/json", body: "{}"})
 			if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") != "Bearer" {
 				t.Fatalf("%s %s (session=%t): status=%d challenge=%q body=%s", route.method, route.path, session != "", response.Code, response.Header().Get("WWW-Authenticate"), response.Body.String())
+			}
+			// An OAuth route keeps its privacy headers on the early refusal.
+			if oauthLoggedPath(route.path) {
+				expectNoStore(t, response)
 			}
 		}
 	}
@@ -1282,9 +1325,19 @@ func TestOAuthAccessTokenIsRefusedOnEveryNonMCPRoute(t *testing.T) {
 	if response := h.do(oauthRequest{method: http.MethodGet, path: "/v1/me", bearer: h.memberPAT}); response.Code != http.StatusOK {
 		t.Fatalf("PAT /v1/me status=%d", response.Code)
 	}
-	// /mcp itself admits the token.
+	// /mcp itself admits the token, with any letter case of the scheme and
+	// more than one separating space.
 	if result := h.mcp(pair.AccessToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); result.status != http.StatusOK || result.isError {
 		t.Fatalf("/mcp: %+v", result)
+	}
+	for _, header := range []string{"bearer " + pair.AccessToken, "BEARER  " + pair.AccessToken, "Bearer   " + h.memberPAT} {
+		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_stage_preferences","arguments":{"workspace_id":"alpha"}}}`))
+		request.Header.Set("Authorization", header)
+		response := httptest.NewRecorder()
+		h.server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"isError":true`) {
+			t.Fatalf("/mcp with %q: status=%d body=%s", strings.Fields(header)[0], response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -1409,6 +1462,7 @@ func TestOAuthMetadataAddressPolicyRefusesNonPublicRanges(t *testing.T) {
 		"10.1.2.3", "172.16.0.1", "192.168.1.1", "127.0.0.1", "127.8.8.8", "::1", "169.254.169.254", "fe80::1", "0.0.0.0", "::", "0.1.2.3",
 		"224.0.0.1", "239.1.1.1", "ff02::1", "ff05::2", "fc00::1", "fd12::1", "100.64.0.1", "198.18.0.1", "192.0.0.8", "255.255.255.255", "240.0.0.1",
 		"::ffff:10.0.0.1", "::ffff:127.0.0.1", "64:ff9b::a00:1", "2002:a00:1::1",
+		"192.0.2.1", "198.51.100.1", "203.0.113.1", "192.88.99.1", "2001:db8::1", "2001::1", "100::1", "3fff::1", "fec0::1",
 	} {
 		if oauthPublicAddress(netip.MustParseAddr(address)) {
 			t.Errorf("%s was admitted", address)
@@ -1493,7 +1547,6 @@ func TestOAuthMetadataResolverRefusesUnsafeOrInvalidDocuments(t *testing.T) {
 		"missing document":              fixture.url("example.com", "/missing.json"),
 		"TLS identity mismatch":         fixture.url("client.test", "/client.json"),
 		"redirect to http":              fixture.url("example.com", "/redirect/http://example.com:PORT/client.json"),
-		"redirect to private address":   fixture.url("example.com", "/redirect/https://internal.example.com:PORT/client.json"),
 		"redirect loop":                 fixture.url("example.com", "/loop"),
 		"unknown host":                  fixture.url("nowhere.example", "/client.json"),
 	} {
@@ -1501,6 +1554,15 @@ func TestOAuthMetadataResolverRefusesUnsafeOrInvalidDocuments(t *testing.T) {
 		if _, err := resolver.resolve(t.Context(), clientID); !errors.Is(err, errOAuthClientUnverified) {
 			t.Errorf("%s: err=%v", name, err)
 		}
+	}
+	// A redirect to a private name stops before a second dial: only the
+	// first hop's checked address is dialed.
+	before := len(fixture.dials())
+	if _, err := fixture.resolver(true).resolve(t.Context(), fixture.url("example.com", "/redirect/https://internal.example.com:PORT/client.json")); !errors.Is(err, errOAuthClientUnverified) {
+		t.Errorf("redirect to private address: err=%v", err)
+	}
+	if dials := fixture.dials()[before:]; len(dials) != 1 || dials[0] != "127.0.0.1:"+fixture.port {
+		t.Fatalf("redirect to a private address dialed %v", dials)
 	}
 	slow := fixture.resolver(true)
 	slow.timeout = 100 * time.Millisecond
@@ -1511,7 +1573,7 @@ func TestOAuthMetadataResolverRefusesUnsafeOrInvalidDocuments(t *testing.T) {
 	}
 	// With the production policy, a loopback or private address is never
 	// dialed, by name or literal.
-	before := len(fixture.dials())
+	before = len(fixture.dials())
 	strict := fixture.resolver(false)
 	for _, clientID := range []string{good, fixture.url("127.0.0.1", "/client.json"), fixture.url("[::1]", "/client.json"), fixture.url("internal.example.com", "/client.json")} {
 		if _, err := strict.resolve(t.Context(), clientID); !errors.Is(err, errOAuthClientUnverified) {

@@ -90,7 +90,9 @@ func oauthIssuerFromPublicURL(publicURL string) (string, bool) {
 		return "", false
 	}
 	host := parsed.Hostname()
-	if host == "" || parsed.Host != strings.ToLower(parsed.Host) {
+	// An authority that ends in a colon names an empty port, which is not
+	// canonical; a bracketed IPv6 host without a port ends in "]".
+	if host == "" || parsed.Host != strings.ToLower(parsed.Host) || strings.HasSuffix(parsed.Host, ":") {
 		return "", false
 	}
 	if port := parsed.Port(); port != "" {
@@ -192,22 +194,38 @@ func (s *Server) requireOAuthStore(next http.Handler) http.Handler {
 // (component-identity-membership invariant 52).
 func oauthNoStore(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Pragma", "no-cache")
-		w.Header().Set("Referrer-Policy", "no-referrer")
+		setOAuthNoStoreHeaders(w)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func setOAuthNoStoreHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+}
+
+// bearerValue parses one Authorization header value as a Bearer credential.
+// The scheme is matched without regard to case and may be followed by more
+// than one space (RFC 9110 section 11.1; RFC 6750 section 2.1).
+func bearerValue(header string) (string, bool) {
+	scheme, provided, ok := strings.Cut(strings.TrimSpace(header), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+	provided = strings.TrimLeft(provided, " ")
+	return provided, provided != ""
 }
 
 // oauthBearerPresented reports whether the request presents any OAuth wire
 // value as its bearer. Only the prefix is read; no lookup happens.
 func oauthBearerPresented(r *http.Request) bool {
 	for _, header := range r.Header.Values("Authorization") {
-		scheme, provided, ok := strings.Cut(strings.TrimSpace(header), " ")
-		if !ok || !strings.EqualFold(scheme, "Bearer") {
+		provided, ok := bearerValue(header)
+		if !ok {
 			continue
 		}
-		if _, isOAuth := core.OAuthCredentialKindOf(strings.TrimSpace(provided)); isOAuth {
+		if _, isOAuth := core.OAuthCredentialKindOf(provided); isOAuth {
 			return true
 		}
 	}
@@ -221,7 +239,15 @@ func oauthBearerPresented(r *http.Request) bool {
 // req-mcp-oauth AC-4.3; component-http-api invariant 6).
 func refuseOAuthBearerOutsideMCP(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/mcp" && oauthBearerPresented(r) {
+		// The exception compares the escaped path, which is what the router
+		// matches, so a percent-encoded "/mcp" that the router would send
+		// elsewhere is refused too.
+		if r.URL.EscapedPath() != "/mcp" && oauthBearerPresented(r) {
+			if oauthLoggedPath(r.URL.Path) {
+				// An OAuth route keeps its privacy headers on this early
+				// refusal (component-identity-membership invariant 52).
+				setOAuthNoStoreHeaders(w)
+			}
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -250,7 +276,7 @@ func (s *Server) requireMCPEndpointAuth(next http.Handler) http.Handler {
 			}
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 		}
-		provided, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		provided, ok := bearerValue(r.Header.Get("Authorization"))
 		if !ok {
 			challenge()
 			return
@@ -633,20 +659,17 @@ func (l *oauthAttemptLimiter) allow(key string, now time.Time) bool {
 	defer l.mu.Unlock()
 	state, present := l.windows[key]
 	if !present && len(l.windows) >= l.maxKeys {
-		// Drop finished windows first, then the oldest window, so memory
-		// stays bounded.
-		oldestKey, oldest := "", time.Time{}
+		// Reclaim finished windows. A live window is never evicted, so a
+		// source that used its budget cannot get a fresh one by crowding
+		// the table; while the table stays full of live windows, a new
+		// source is refused until a window ends.
 		for candidate, window := range l.windows {
 			if now.Sub(window.started) >= l.window {
 				delete(l.windows, candidate)
-				continue
-			}
-			if oldestKey == "" || window.started.Before(oldest) {
-				oldestKey, oldest = candidate, window.started
 			}
 		}
-		if len(l.windows) >= l.maxKeys && oldestKey != "" {
-			delete(l.windows, oldestKey)
+		if len(l.windows) >= l.maxKeys {
+			return false
 		}
 	}
 	if !present || now.Sub(state.started) >= l.window {
@@ -678,6 +701,14 @@ func ParseTrustedProxies(value string) ([]netip.Prefix, error) {
 			prefix, err := netip.ParsePrefix(field)
 			if err != nil {
 				return nil, fmt.Errorf("%s: invalid prefix %q", TrustedProxiesEnv, field)
+			}
+			// Peers are compared unmapped, so an IPv4-mapped prefix is
+			// rewritten as the IPv4 prefix it covers.
+			if prefix.Addr().Is4In6() {
+				if prefix.Bits() < 96 {
+					return nil, fmt.Errorf("%s: IPv4-mapped prefix %q must be /96 or longer; write it as an IPv4 prefix", TrustedProxiesEnv, field)
+				}
+				prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
 			}
 			prefixes = append(prefixes, prefix.Masked())
 			continue
@@ -959,7 +990,14 @@ func (s *Server) getOAuthAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	credential, _ := store.CredentialFromContext(r.Context())
-	request, failure := oauthAuthorizationRequestFromQuery(r.URL.Query())
+	// A malformed pair is refused, never dropped, so a damaged resource
+	// cannot read as omitted.
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeOAuthConsentError(w, &oauthConsentError{status: http.StatusBadRequest, code: "invalid_request", description: "the authorization query is not valid URL encoding"})
+		return
+	}
+	request, failure := oauthAuthorizationRequestFromQuery(query)
 	if failure != nil {
 		writeOAuthConsentError(w, failure)
 		return

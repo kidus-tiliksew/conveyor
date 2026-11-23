@@ -242,17 +242,21 @@ OAuth is on only when `CONVEYOR_PUBLIC_URL` is a canonical origin:
   `http://localhost`, with an optional port.
 
 A trailing slash is removed when the setting is read. When the setting is
-unset or is not such an origin, the discovery documents and every OAuth
-endpoint answer `404` with `{"error":"oauth_unavailable"}`, and `/mcp`
-challenges with a bare `WWW-Authenticate: Bearer`. The server never derives
-an issuer from a request's `Host` or forwarded headers.
+unset or is not such an origin, the discovery documents, registration,
+consent, token, and revocation endpoints answer `404` with
+`{"error":"oauth_unavailable"}`, and `/mcp` challenges with a bare
+`WWW-Authenticate: Bearer`. The server never derives an issuer from a
+request's `Host` or forwarded headers. While issuance is off, you can still
+list and revoke your existing grants under `/v1/oauth/grants`. A backend
+without OAuth storage turns those grant routes off too.
 
 `CONVEYOR_TRUSTED_PROXIES` is an optional comma-separated list of proxy IP
 addresses or CIDR prefixes. Client registration is rate limited per source
 address. The source is the connection's peer address, or, when the peer is a
 listed proxy, the nearest `X-Forwarded-For` address that is not a listed
 proxy, read from the right. A malformed `X-Forwarded-For` chain is ignored. An
-invalid setting is logged at startup and trusts no proxy. Password sign-in
+IPv4-mapped prefix such as `::ffff:10.0.0.0/104` is read as the IPv4 prefix it
+covers. An invalid setting is logged at startup and trusts no proxy. Password sign-in
 keeps its own limiter, which reads only the peer address.
 
 ### Discovery
@@ -279,7 +283,8 @@ A client identifies itself in one of two ways.
   only the `authorization_code` and `refresh_token` grants, and list 1 to 16
   redirect URIs. The fetch uses no proxy. It resolves the host, refuses the
   fetch when any address is private, loopback, link-local, unspecified,
-  multicast, or another special-purpose range, and connects to the checked
+  multicast, documentation, or another special-purpose range, and connects
+  to the checked
   address while still verifying TLS for the host name. Each redirect is
   checked the same way. A fetch follows at most 3 redirects, takes at most 5
   seconds, and reads at most 64 KiB. A verified document is reused for up to
