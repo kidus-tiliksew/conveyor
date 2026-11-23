@@ -1469,7 +1469,7 @@ test('a parked decision renders its triage summary, questions, and risks as Mark
   parked.events[0].payload.summary = 'The billing service has no `seat_count` field.\n\nIt syncs *nightly*.'
   parked.events[0].payload.brief = {
     questions: ['Is the `seat_floor` per **organization**?', 'Who owns <b data-raw>billing</b>?'],
-    risks: ['Syncing early could *lock out* members.'],
+    risks: ['Syncing early could *lock out* members.', 'A stale `seat_cache` could keep removed members.'],
     affected_areas: [],
   }
   await serve(page, fixture)
@@ -1488,8 +1488,13 @@ test('a parked decision renders its triage summary, questions, and risks as Mark
   await expect(questions.locator('code')).toHaveText('seat_floor')
   await expect(questions.locator('strong')).toHaveText('organization')
   const risks = reason.getByRole('region', { name: 'Risks' })
-  await expect(risks.getByRole('listitem')).toHaveText(['Syncing early could lock out members.'])
+  await expect(risks.getByRole('listitem')).toHaveText([
+    'Syncing early could lock out members.',
+    'A stale seat_cache could keep removed members.',
+  ])
   await expect(risks.locator('em')).toHaveText('lock out')
+  await expect(risks.locator('code')).toHaveText('seat_cache')
+  expect(await risks.innerText()).not.toContain('`')
   // Each entry keeps the bullet list's layout: a disc marker and no paragraph
   // margin around the entry's text.
   for (const list of [questions, risks]) {
