@@ -1,4 +1,4 @@
-import { expect, type Page, type Request, type Route } from '@playwright/test'
+import { expect, type Locator, type Page, type Request, type Route } from '@playwright/test'
 import { citedSections, headingWords } from '../src/components/inbox/citation-matcher'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity, capabilitiesForRole } from './helpers/caller-identity'
@@ -3782,3 +3782,521 @@ for (const width of [375, 1440]) {
     })
   })
 }
+
+// Inbox titles and prose carry authored or agent-written Markdown
+// (req-operator-next-action AC-2.1, AC-2.3, AC-2.8, AC-2.9). A title renders
+// phrasing Markdown only: code, emphasis, strong text, and strikethrough, with
+// no block and no link of its own inside the row or heading link. Prose renders
+// block Markdown. Raw HTML stays inert in both renderers.
+const markdownTitle =
+  'Serve `/mcp` from `conveyord` with *new* ~~old~~ **routes**, [docs](https://example.test/docs) and <b data-raw>raw</b> HTML'
+
+// No element a phrasing-only title must not add: a block, a link, or raw HTML.
+const titleBlocks = 'a, p, div, ul, ol, li, h1, h2, h3, h4, pre, blockquote, b, [data-raw]'
+
+async function expectMarkdownTitle(title: Locator) {
+  await expect(title.locator('code')).toHaveText(['/mcp', 'conveyord'])
+  await expect(title.locator('em')).toHaveText('new')
+  await expect(title.locator('del')).toHaveText('old')
+  await expect(title.locator('strong')).toHaveText('routes')
+  await expect(title.locator(titleBlocks)).toHaveCount(0)
+  await expect(title).toContainText('docs')
+  await expect(title).toContainText('routes')
+  expect(await title.innerText()).not.toContain('`')
+  expect(await title.innerText()).not.toContain('**')
+}
+
+function markdownTitlesFixture(): Fixture {
+  const fixture = decisionsFixture()
+  for (const item of fixture.items) {
+    const current = item.task as { id: string; title: string } | undefined
+    if (current && ['T-zeta', 'T-wait', 'T-auto'].includes(current.id)) item.task = { ...current, title: markdownTitle }
+  }
+  fixture.items.push({
+    band: 'decisions',
+    kind: 'document_proposal',
+    label: 'Decision proposal',
+    question: 'Confirm or dismiss this proposed decision?',
+    if_ignored: 'The proposal stays pending.',
+    proposal: {
+      id: 'DEC-200',
+      title: markdownTitle,
+      tier: 'decision',
+      origin_type: 'operator',
+      proposed_at: proposedAt,
+      age_seconds: 600,
+    },
+  })
+  fixture.documents = {
+    '/v1/decisions/DEC-200': {
+      id: 'DEC-200',
+      statement: markdownTitle,
+      context: 'The daemon reads `CONVEYOR_PUBLIC_URL`.',
+      alternatives_rejected: '',
+      status: 'proposed',
+    },
+  }
+  return fixture
+}
+
+test('Inbox titles render inline Markdown with no link, block, or raw HTML of their own', async ({ page }) => {
+  await serve(page, markdownTitlesFixture())
+  await page.goto('/w/demo/inbox')
+  const decisions = page.getByRole('region', { name: 'Decisions' })
+
+  // The task decision row: the title stays inside its row link, clamped to
+  // two lines, with the source text on its title attribute, and the sibling
+  // pull request link stays outside the row link.
+  const taskRow = decisions.locator('[data-inbox-row="T-zeta"]')
+  const taskTitle = taskRow.locator('[data-row-title]')
+  await expectMarkdownTitle(taskTitle)
+  await expect(taskTitle).toHaveAttribute('title', markdownTitle)
+  await expect(taskTitle).toHaveClass(/line-clamp-2/)
+  expect(await taskTitle.evaluate((node) => getComputedStyle(node).webkitLineClamp)).toBe('2')
+  await expect(taskRow).toHaveAttribute('href', /selected=T-zeta/)
+  const pullRequest = decisions.locator('[data-inbox-row-item="T-zeta"] [data-row-pull-request]')
+  await expect(pullRequest).toHaveAttribute('href', 'https://github.com/acme/conveyor/pull/77')
+  expect(await page.locator('a a').count()).toBe(0)
+
+  // The decision proposal row carries the same Markdown title.
+  const proposalRow = decisions.locator('[data-inbox-row="decision:DEC-200"]')
+  await expectMarkdownTitle(proposalRow.locator('[data-row-title]'))
+  await expect(proposalRow.locator('[data-row-title]')).toHaveAttribute('title', markdownTitle)
+
+  // The task decision detail: the heading link keeps its target and holds
+  // no nested link; the article keeps the source text as its name.
+  const detail = decisionDetail(page)
+  await expect(detail).toHaveAttribute('aria-label', markdownTitle)
+  const heading = detail.locator('[data-detail-title]')
+  const headingLink = heading.getByRole('link')
+  await expect(headingLink).toHaveCount(1)
+  await expect(headingLink).toHaveAttribute('href', '/w/demo/tasks/T-zeta')
+  await expectMarkdownTitle(headingLink)
+  await expect(heading.locator('p, div, ul, li, [data-raw], b')).toHaveCount(0)
+
+  // The decision proposal detail renders the heading and keeps the statement.
+  await proposalRow.click()
+  await expect(page).toHaveURL(/selected=decision%3ADEC-200|selected=decision:DEC-200/)
+  const proposal = page.locator('[data-inbox-detail] [data-inbox-item="document_proposal"]')
+  await expect(proposal).toHaveAttribute('aria-label', markdownTitle)
+  const proposalHeading = proposal.locator('[data-detail-title]')
+  await expectMarkdownTitle(proposalHeading)
+  const statement = proposal
+    .getByRole('region', { name: 'Proposed decision' })
+    .locator('div')
+    .filter({ has: page.getByText('Statement', { exact: true }) })
+    .locator('dd')
+  await expect(statement.locator('code')).toHaveText(['/mcp', 'conveyord'])
+  await expect(proposal.locator('[data-raw], b')).toHaveCount(0)
+  expect(await proposal.innerText()).not.toContain('`')
+  expect(await page.locator('a a').count()).toBe(0)
+
+  // The blocked and automatic rows keep one truncated line, the source text
+  // on the title attribute, and the link to the task.
+  await page.setViewportSize({ width: 375, height: 900 })
+  for (const [band, taskId] of [
+    ['blocked', 'T-wait'],
+    ['automatic', 'T-auto'],
+  ] as const) {
+    await page.goto(`/w/demo/inbox?band=${band}`)
+    const link = page.locator(`[data-inbox-item="${taskId}"]`).getByRole('link', { name: /Serve/ })
+    await expectMarkdownTitle(link)
+    await expect(link).toHaveAttribute('title', markdownTitle)
+    await expect(link).toHaveAttribute('href', `/w/demo/tasks/${taskId}`)
+    await expect(link).toHaveClass(/truncate/)
+    const box = await link.evaluate((node) => ({
+      overflow: node.scrollWidth > node.clientWidth,
+      ellipsis: getComputedStyle(node).textOverflow,
+      lines: node.getBoundingClientRect().height / Number.parseFloat(getComputedStyle(node).lineHeight),
+    }))
+    expect(box.ellipsis).toBe('ellipsis')
+    expect(box.overflow).toBe(true)
+    expect(box.lines).toBeLessThan(1.5)
+    expect(await page.locator('a a').count()).toBe(0)
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    expect(overflow).toBeLessThanOrEqual(0)
+  }
+})
+
+// One fixture whose decisions carry Markdown in every prose field the detail
+// renders: the recommendation, a plan file note, the checkpoint question,
+// reviewer feedback and the implementer reply, the latest run, and triage.
+function markdownProseFixture(): Fixture {
+  const fixture = decisionsFixture()
+  const zeta = fixture.items[0]
+  zeta.recommendation = 'Approve: the plan runs `make test`.\n\n- *First* check\n- Second <b data-raw>check</b>'
+  fixture.items.push({
+    band: 'decisions',
+    task: task('T-run', 'Failed run decision', 'failed'),
+    next_action: {
+      kind: 'job_failure',
+      label: 'Decide after a failed run',
+      actor: 'operator',
+      judgment: true,
+      summary: 'The run failed.',
+    },
+  })
+  fixture.actions['T-run'] = {
+    kind: 'job_failure',
+    label: 'Decide after a failed run',
+    actor: 'operator',
+    judgment: true,
+    summary: 'The run failed.',
+    choices: [choice('retry', 'Retry', '/v1/tasks/T-run/retry')],
+    deadline: null,
+    details: {},
+  }
+  const base = (id: string, title: string) => ({
+    task: task(id, title),
+    events: [],
+    jobs: [],
+    work_orders: [],
+    interventions: [],
+  })
+  const job = (taskId: string, id: string, stage: string, hour: number, summary: string) => ({
+    event: {
+      id: hour,
+      task_id: taskId,
+      job_id: id,
+      kind: 'job.summary',
+      at: `2026-10-10T1${hour}:30:00Z`,
+      payload: { summary },
+    },
+    job: { id, task_id: taskId, stage, state: 'succeeded', started_at: `2026-10-10T1${hour}:00:00Z`, summary },
+  })
+  const review = [
+    job('T-mid', 'job-impl', 'implement', 0, 'First implementation.'),
+    job('T-mid', 'job-review', 'review', 1, 'The `cache_key` is *wrong*.\n\nUse the task ID.'),
+    job('T-mid', 'job-impl-2', 'implement', 2, 'Fixed `cache_key`:\n\n1. **Keyed** by task\n2. Tested'),
+  ]
+  const run = [job('T-run', 'job-run', 'implement', 3, 'The build failed in `go vet`.\n\n- *Fix* the import')]
+  fixture.activity = {
+    'T-zeta': {
+      ...base('T-zeta', 'Zeta plan everyone waits on'),
+      spec: {
+        task_id: 'T-zeta',
+        version: 2,
+        content: [
+          '## Approach',
+          'Render it.',
+          '',
+          '## Files touched',
+          '- `web/a.tsx` — renders `InlineMarkdown` for *titles*',
+          '- `web/b.tsx`',
+          '',
+          '## Ordering',
+          '1. Render.',
+          '',
+          '## Risks',
+          '- None.',
+          '',
+          '## Done criteria',
+          '- Tests pass.',
+        ].join('\n'),
+        acceptance_criteria: [],
+        created_at: proposedAt,
+      },
+    },
+    'T-alpha': {
+      ...base('T-alpha', 'Alpha agent question'),
+      work_orders: [
+        {
+          id: 'wo-alpha',
+          task_id: 'T-alpha',
+          job_id: 'job-alpha',
+          stage: 'implement',
+          state: 'released',
+          checkpoint: {
+            decision_request: 'Use the `redis` cache?\n\n1. **Keep** it\n2. Drop <b data-raw>it</b>',
+            class: 'authority_conflict',
+            citations: [],
+          },
+        },
+      ],
+    },
+    'T-mid': {
+      ...base('T-mid', 'Mid item without a deadline'),
+      events: review.map((entry) => entry.event),
+      jobs: review.map((entry) => entry.job),
+    },
+    'T-run': {
+      ...base('T-run', 'Failed run decision'),
+      events: run.map((entry) => entry.event),
+      jobs: run.map((entry) => entry.job),
+    },
+  }
+  return fixture
+}
+
+async function expectNoMarkdownSource(locator: Locator) {
+  const text = await locator.innerText()
+  expect(text).not.toContain('`')
+  expect(text).not.toContain('**')
+  await expect(locator.locator('[data-raw], b')).toHaveCount(0)
+}
+
+test('Inbox decision prose renders Markdown in the recommendation, plan notes, checkpoint, and runs', async ({
+  page,
+}) => {
+  await serve(page, markdownProseFixture())
+  await page.goto('/w/demo/inbox')
+  const detail = decisionDetail(page)
+
+  // The recommendation renders code, emphasis, and its list.
+  const recommendation = detail.locator('[data-recommendation]')
+  await expect(recommendation.locator('code')).toHaveText('make test')
+  // Raw HTML stays inert: the source prints as text and adds no element.
+  await expect(recommendation.locator('li')).toHaveText(['First check', 'Second <b data-raw>check</b>'])
+  await expect(recommendation.locator('em')).toHaveText('First')
+  await expectNoMarkdownSource(recommendation)
+
+  // A plan file note renders code and emphasis beside its path; a file with
+  // no note shows only its path.
+  const files = detail.locator('[data-plan-section="Files touched"] li')
+  await expect(files).toHaveCount(2)
+  await expect(files.nth(0).locator('code')).toHaveText(['web/a.tsx', 'InlineMarkdown'])
+  await expect(files.nth(0).locator('em')).toHaveText('titles')
+  await expect(files.nth(1)).toHaveText('web/b.tsx')
+  await expect(files.nth(1).locator('.markdown')).toHaveCount(0)
+  await expectNoMarkdownSource(detail.locator('[data-plan-section="Files touched"]'))
+
+  // The checkpoint question renders as block Markdown.
+  await select(page, 'Alpha agent question')
+  const checkpoint = detail.getByRole('region', { name: 'Agent checkpoint' })
+  await expect(checkpoint.locator('code')).toHaveText('redis')
+  await expect(checkpoint.locator('ol > li')).toHaveText(['Keep it', 'Drop <b data-raw>it</b>'])
+  await expect(checkpoint.locator('strong')).toHaveText('Keep')
+  await expectNoMarkdownSource(checkpoint)
+
+  // A single review's summary and the implementer reply render Markdown.
+  await select(page, 'Mid item without a deadline')
+  const feedback = detail.getByRole('region', { name: 'Latest reviewer feedback' })
+  await expect(feedback.locator('code')).toHaveText('cache_key')
+  await expect(feedback.locator('em')).toHaveText('wrong')
+  await expect(feedback.locator('p')).toHaveText(['The cache_key is wrong.', 'Use the task ID.'])
+  await expectNoMarkdownSource(feedback)
+  const reply = detail.getByRole('region', { name: 'Implementer reply' })
+  await expect(reply.locator('code')).toHaveText('cache_key')
+  await expect(reply.locator('ol > li')).toHaveText(['Keyed by task', 'Tested'])
+  await expectNoMarkdownSource(reply)
+
+  // Any other decision's latest run renders Markdown under its stage.
+  await select(page, 'Failed run decision')
+  await expect(detail.locator('[data-context-heading]')).toHaveText('Latest run')
+  const latest = detail.getByRole('region', { name: 'Latest run' })
+  await expect(latest.locator('h4')).toHaveText('Implement')
+  await expect(latest.locator('code')).toHaveText('go vet')
+  await expect(latest.locator('li')).toHaveText('Fix the import')
+  await expectNoMarkdownSource(latest)
+})
+
+test('Inbox fallbacks stay plain text, and an omitted recommendation adds nothing', async ({ page }) => {
+  const fixture = markdownProseFixture()
+  delete fixture.items[0].recommendation
+  const alpha = fixture.activity?.['T-alpha'] as { work_orders: { checkpoint: { decision_request: string } }[] }
+  alpha.work_orders[0].checkpoint.decision_request = ''
+  await serve(page, fixture)
+  await page.goto('/w/demo/inbox')
+  const detail = decisionDetail(page)
+  await expect(detail.locator('[data-plan-context]')).toBeVisible()
+  await expect(detail.locator('[data-recommendation]')).toHaveCount(0)
+  await select(page, 'Alpha agent question')
+  const checkpoint = detail.getByRole('region', { name: 'Agent checkpoint' })
+  await expect(checkpoint.locator('p')).toHaveText('The agent stopped without a structured question.')
+  await expect(checkpoint.locator('.markdown')).toHaveCount(0)
+})
+
+test('a parked decision renders its triage summary, questions, and risks as Markdown in an intact list', async ({
+  page,
+}) => {
+  const fixture = parkedFixture()
+  const parked = fixture.activity?.['T-parked'] as { events: { payload: Record<string, unknown> }[] }
+  parked.events[0].payload.summary = 'The billing service has no `seat_count` field.\n\nIt syncs *nightly*.'
+  parked.events[0].payload.brief = {
+    questions: ['Is the `seat_floor` per **organization**?', 'Who owns <b data-raw>billing</b>?'],
+    risks: ['Syncing early could *lock out* members.'],
+    affected_areas: [],
+  }
+  await serve(page, fixture)
+  await page.goto('/w/demo/inbox?selected=T-parked')
+  const reason = decisionDetail(page).locator('[data-park-reason]')
+  const summary = reason.getByRole('region', { name: 'Triage summary' })
+  await expect(summary.locator('code')).toHaveText('seat_count')
+  await expect(summary.locator('p')).toHaveText(['The billing service has no seat_count field.', 'It syncs nightly.'])
+  await expect(summary.locator('em')).toHaveText('nightly')
+  const questions = reason.getByRole('region', { name: 'Open questions' })
+  await expect(questions.locator('ul')).toHaveCount(1)
+  await expect(questions.getByRole('listitem')).toHaveText([
+    'Is the seat_floor per organization?',
+    'Who owns <b data-raw>billing</b>?',
+  ])
+  await expect(questions.locator('code')).toHaveText('seat_floor')
+  await expect(questions.locator('strong')).toHaveText('organization')
+  const risks = reason.getByRole('region', { name: 'Risks' })
+  await expect(risks.getByRole('listitem')).toHaveText(['Syncing early could lock out members.'])
+  await expect(risks.locator('em')).toHaveText('lock out')
+  // Each entry keeps the bullet list's layout: a disc marker and no paragraph
+  // margin around the entry's text.
+  for (const list of [questions, risks]) {
+    const layout = await list.locator('ul').evaluate((ul) => ({
+      style: getComputedStyle(ul).listStyleType,
+      margins: Array.from(ul.querySelectorAll(':scope > li > .markdown > p')).map((p) => {
+        const style = getComputedStyle(p)
+        return `${style.marginTop} ${style.marginBottom}`
+      }),
+    }))
+    expect(layout.style).toBe('disc')
+    expect(layout.margins.length).toBeGreaterThan(0)
+    for (const margin of layout.margins) expect(margin).toBe('0px 0px')
+  }
+  await expectNoMarkdownSource(reason)
+})
+
+test('a parked decision with an empty triage summary keeps its plain fallback', async ({ page }) => {
+  const fixture = parkedFixture()
+  const parked = fixture.activity?.['T-parked'] as { events: { payload: Record<string, unknown> }[] }
+  parked.events[0].payload.summary = ''
+  parked.events[0].payload.brief = { questions: [], risks: [], affected_areas: [] }
+  await serve(page, fixture)
+  await page.goto('/w/demo/inbox?selected=T-parked')
+  const reason = decisionDetail(page).locator('[data-park-reason]')
+  const summary = reason.getByRole('region', { name: 'Triage summary' })
+  await expect(summary.locator('p')).toHaveText('Triage stated no summary.')
+  await expect(summary.locator('.markdown')).toHaveCount(0)
+  await expect(reason.getByRole('region', { name: 'Open questions' })).toHaveCount(0)
+  await expect(reason.getByRole('region', { name: 'Risks' })).toHaveCount(0)
+})
+
+// A justification renders phrasing Markdown under the two-line clamp and the
+// full Markdown once expanded. "Show more" appears only when the clamped
+// preview clips text, as measured on the rendered preview.
+const markdownJustifications: [string, string] = [
+  'Guards the `review` evidence *rules*.',
+  [
+    `Its Credential handling section and its Verification section apply to \`make test\` **runs**, see [the guide](https://example.test/guide) and <b data-raw>raw</b>. ${'The suite names every gate it guards and the evidence each gate keeps. '.repeat(4)}`,
+    '',
+    '- First *listed* reason',
+    '- Second reason',
+  ].join('\n'),
+]
+
+async function clampState(justification: Locator) {
+  return justification.evaluate((node) => ({
+    clamped: node.classList.contains('line-clamp-2'),
+    clips: node.scrollHeight > node.clientHeight + 1,
+  }))
+}
+
+test('a context justification clamps inline Markdown and expands to full Markdown', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  await serve(page, previewFixture(markdownJustifications))
+  await page.goto('/w/demo/inbox')
+  // Below md the list and the detail show one at a time.
+  await decisionRows(page).first().click()
+  const rows = decisionDetail(page).locator('[data-context-proposal]')
+  await expect(rows).toHaveCount(2)
+
+  // A short justification renders its code and emphasis on its clamped line
+  // and offers no control.
+  const short = rows.nth(0).locator('[data-context-justification]')
+  await expect(short.locator('code')).toHaveText('review')
+  await expect(short.locator('em')).toHaveText('rules')
+  await expect(short).toHaveClass(/line-clamp-2/)
+  expect((await clampState(short)).clips).toBe(false)
+  await expect(rows.nth(0).locator('[data-context-expand]')).toHaveCount(0)
+  await expectNoMarkdownSource(short)
+
+  // A long one clips at two lines with phrasing Markdown only, and offers
+  // Show more.
+  const long = rows.nth(1).locator('[data-context-justification]')
+  const expand = rows.nth(1).locator('[data-context-expand]')
+  await expect(long).toHaveClass(/line-clamp-2/)
+  await expect(long.locator('code')).toHaveText('make test')
+  await expect(long.locator('strong')).toHaveText('runs')
+  await expect(long.locator('a, p, ul, li, [data-raw], b')).toHaveCount(0)
+  expect(await clampState(long)).toEqual({ clamped: true, clips: true })
+  await expect(expand).toHaveText('Show more')
+  await expect(expand).toHaveAttribute('aria-controls', (await long.getAttribute('id')) ?? '')
+  await expect(expand).toHaveAttribute('aria-expanded', 'false')
+
+  // Expanded, it renders the full Markdown: paragraphs, the list, and the link.
+  await expand.click()
+  await expect(expand).toHaveText('Show less')
+  await expect(expand).toHaveAttribute('aria-expanded', 'true')
+  await expect(long).not.toHaveClass(/line-clamp-2/)
+  await expect(long.locator('li')).toHaveText(['First listed reason', 'Second reason'])
+  await expect(long.locator('p')).toHaveCount(1)
+  await expect(long.getByRole('link', { name: 'the guide' })).toHaveAttribute('href', 'https://example.test/guide')
+  await expectNoMarkdownSource(long)
+
+  // Show less restores the clamp and the measured control.
+  await expand.click()
+  await expect(expand).toHaveText('Show more')
+  await expect(long).toHaveClass(/line-clamp-2/)
+  await expect(long.locator('li')).toHaveCount(0)
+  expect(await clampState(long)).toEqual({ clamped: true, clips: true })
+
+  // After a width change the control follows the rendered preview: it shows
+  // exactly when the clamped preview clips text.
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 })
+    for (const index of [0, 1]) {
+      const row = rows.nth(index)
+      await expect
+        .poll(async () => {
+          const state = await clampState(row.locator('[data-context-justification]'))
+          const shown = await row.locator('[data-context-expand]').count()
+          return state.clips === (shown === 1)
+        })
+        .toBe(true)
+    }
+  }
+  await expect(expand).toHaveText('Show more')
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+  expect(overflow).toBeLessThanOrEqual(0)
+})
+
+test('the preview sheet renders the justification as Markdown and keeps its cited sections', async ({ page }) => {
+  await serve(page, previewFixture(markdownJustifications))
+  await page.goto('/w/demo/inbox')
+  const card = decisionDetail(page)
+  await card.getByRole('button', { name: contextTargets[1].title, exact: true }).click()
+  const panel = previewPanel(page)
+  await expect(panel).toHaveAccessibleName(`Preview: ${contextTargets[1].title}`)
+  const why = panel.locator('[data-preview-why]')
+  await expect(why).toContainText('Why planning suggests it')
+  await expect(why.locator('code')).toHaveText('make test')
+  await expect(why.locator('strong')).toHaveText('runs')
+  await expect(why.locator('li')).toHaveText(['First listed reason', 'Second reason'])
+  await expect(why.getByRole('link', { name: 'the guide' })).toHaveAttribute('href', 'https://example.test/guide')
+  await expectNoMarkdownSource(why)
+  // The source text still decides the cited sections.
+  await expect(panel.locator('[data-preview-cited-count]')).toHaveText('2 of 4 sections cited')
+  // The preview opens in place over the detail.
+  await expect(page).toHaveURL(/\/w\/demo\/inbox/)
+  await page.keyboard.press('Escape')
+  await expect(previewPanel(page)).toHaveCount(0)
+  await expect(card).toBeVisible()
+})
+
+test('the compact checklist on task detail shows the justification as Markdown behind Show why', async ({ page }) => {
+  await serve(page, previewFixture(markdownJustifications))
+  await page.goto('/w/demo/tasks/T-ctx')
+  const checklist = page.locator('[data-context-checklist="compact"]')
+  await expect(checklist).toBeVisible()
+  const row = checklist.locator('[data-context-proposal]').nth(1)
+  await expect(row.locator('[data-context-justification]')).toHaveCount(0)
+  const why = row.getByRole('button', { name: 'Show why' })
+  await why.click()
+  const justification = row.locator('[data-context-justification]')
+  await expect(row.getByRole('button', { name: 'Hide why' })).toHaveAttribute(
+    'aria-controls',
+    (await justification.getAttribute('id')) ?? '',
+  )
+  await expect(justification).not.toHaveClass(/line-clamp-2/)
+  await expect(justification.locator('code')).toHaveText('make test')
+  await expect(justification.locator('li')).toHaveText(['First listed reason', 'Second reason'])
+  await expectNoMarkdownSource(justification)
+  await row.getByRole('button', { name: 'Hide why' }).click()
+  await expect(row.locator('[data-context-justification]')).toHaveCount(0)
+})

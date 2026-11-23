@@ -19,6 +19,7 @@ import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { VersionDismissDialog } from '../documents/version-dismiss-dialog'
 import { type ReviseTarget, VersionReviseDialog } from '../documents/version-revise-dialog'
 import { Button } from '../ui/button'
+import { InlineMarkdown } from '../ui/markdown-prose'
 import { DecisionFooter } from './decision-footer'
 import { Kbd } from './inbox-keyboard'
 import { KindPill } from './inbox-kind'
@@ -146,7 +147,7 @@ export function ProposalDetail({
           )}
         </div>
         <h2 data-detail-title tabIndex={-1} className="break-words text-lg font-semibold leading-snug outline-none">
-          {proposal.title}
+          <InlineMarkdown>{proposal.title}</InlineMarkdown>
         </h2>
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
           <span>Origin: {originLink(proposal, workspace)}</span>

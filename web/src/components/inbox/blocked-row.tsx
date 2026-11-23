@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { ArrowRight } from 'lucide-react'
 import type { InboxItem, Task } from '../../lib/types'
 import { useWorkspaceSelection } from '../app-shell'
+import { InlineMarkdown } from '../ui/markdown-prose'
 
 const chip = 'inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px]'
 
@@ -28,7 +29,7 @@ export function BlockedRow({
         title={task.title}
         className="block truncate text-sm font-medium hover:underline"
       >
-        {task.title}
+        <InlineMarkdown>{task.title}</InlineMarkdown>
       </Link>
       {item.next_action?.summary && <p className="mt-0.5 text-xs text-muted">{item.next_action.summary}</p>}
       {blockers.length > 0 && (

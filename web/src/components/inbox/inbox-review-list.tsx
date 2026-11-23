@@ -3,6 +3,7 @@ import { Flame } from 'lucide-react'
 import type { InboxItem } from '../../lib/types'
 import { cn, fullTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
+import { InlineMarkdown } from '../ui/markdown-prose'
 import { pullRequestLabel } from './decision-card'
 import { Kbd } from './inbox-keyboard'
 import { compactAge, DueChip, inboxKind, itemKind, KindIcon, toneBar, UnblocksMark, useMinuteClock } from './inbox-kind'
@@ -129,7 +130,7 @@ function InboxRow({
             selected ? 'font-semibold' : 'font-medium',
           )}
         >
-          {row.title}
+          <InlineMarkdown>{row.title}</InlineMarkdown>
         </span>
       </Link>
       {(urgent || row.blocks > 0 || row.deadline || pullRequest) && (
