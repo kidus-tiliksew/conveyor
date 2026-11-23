@@ -31,6 +31,10 @@ type mcpIdentity struct {
 	// and never enters the registration name or the ownership marker
 	// (req-mcp-oauth AC-5.1, AC-5.2).
 	auth string
+	// running is the absolute path of the running executable. It only
+	// recognizes a helper or bridge that this executable wrote, so an OAuth
+	// rerun can remove it. No registration names it.
+	running string
 }
 
 const (
@@ -56,7 +60,7 @@ func newMCPIdentity(server, name, binary, credentials string) (mcpIdentity, erro
 	}
 	id.auth = mcpAuthPAT
 	id.bridge = shellQuoteMCP(binary) + " auth token --server " + shellQuoteMCP(id.server) + " --credentials-file " + shellQuoteMCP(credentials)
-	id.binary, id.credentials = binary, credentials
+	id.binary, id.credentials, id.running = binary, credentials, binary
 	return id, nil
 }
 
@@ -144,11 +148,11 @@ func antigravityOwnedBridge(entry mcpEntry, id mcpIdentity) bool {
 }
 
 // mcpConveyorCommand reports whether path can name the Conveyor executable
-// that an earlier install wrote: the current executable, or an absolute path
-// whose file name is conveyor. A marker alone never makes another command a
-// Conveyor command.
+// that an earlier install wrote: the running executable, under either auth
+// mode, or an absolute path whose file name is conveyor. A marker alone
+// never makes another command a Conveyor command.
 func mcpConveyorCommand(path string, id mcpIdentity) bool {
-	if id.binary != "" && path == id.binary {
+	if (id.binary != "" && path == id.binary) || (id.running != "" && path == id.running) {
 		return true
 	}
 	if !filepath.IsAbs(path) {

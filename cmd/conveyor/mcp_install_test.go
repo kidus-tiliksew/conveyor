@@ -1136,9 +1136,11 @@ func TestMCPInstallServerSelectionBothModes(t *testing.T) {
 // TestMCPInstallSwitchesModesAllClients covers req-mcp-oauth AC-5.3 through
 // the command for all five clients. An installed conveyor executable wrote
 // the first PAT registration. The default OAuth install then removes its
-// helper, header reference, or bridge, and --auth pat writes them again for
-// this executable. Each switch reports refreshed and keeps the one entry, and
-// only the PAT output names the PAT credential source.
+// helper, header reference, or bridge. --auth pat writes them again for the
+// running test executable, whose file name is not conveyor, and the next
+// OAuth install removes them again with no stored credential. Each switch
+// reports refreshed and keeps the one entry, and only the PAT output names
+// the PAT credential source (component-cli-onboarding invariant 9).
 func TestMCPInstallSwitchesModesAllClients(t *testing.T) {
 	for _, tool := range mcpAuthTools {
 		t.Run(tool, func(t *testing.T) {
@@ -1175,19 +1177,11 @@ func TestMCPInstallSwitchesModesAllClients(t *testing.T) {
 					args = append([]string{"--auth", "pat"}, args...)
 					id = pat
 				}
-				if step == 2 && tool != "cursor" && tool != "opencode" {
-					// This test executable wrote the PAT entry, and its file
-					// name is not conveyor. OAuth recognizes only a conveyor
-					// file name without resolving the executable, so it
-					// refuses. Cursor and OpenCode name no executable.
-					before, _ := os.ReadFile(path)
-					if _, err := runMCPInstall(t, mcpModeLookup(t, mode, id.name), args...); err == nil {
-						t.Fatal("OAuth removed a helper or bridge of an executable that it cannot recognize")
-					}
-					if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
-						t.Fatal("the refusal changed the file")
-					}
-					continue
+				if step == 2 {
+					// OAuth needs no stored credential to switch the entry
+					// that this executable wrote.
+					setMCPTestCredentials(t, "https://other.example", "other-secret")
+					setMCPTestServer(t, "https://factory.example")
 				}
 				output, err := runMCPInstall(t, mcpModeLookup(t, mode, id.name), args...)
 				if err != nil {
@@ -1203,6 +1197,9 @@ func TestMCPInstallSwitchesModesAllClients(t *testing.T) {
 				}
 				if strings.Contains(output, "stored-secret") || bytes.Contains(data, []byte("stored-secret")) || bytes.Contains(data, []byte("/usr/local/bin/conveyor")) {
 					t.Fatalf("step %d: token or old executable remains", step)
+				}
+				if mode == mcpAuthOAuth && bytes.Contains(data, []byte(binary)) {
+					t.Fatalf("step %d: the OAuth entry names the executable:\n%s", step, data)
 				}
 				hasExport := strings.Contains(output, "export ")
 				if hasExport != (mode == mcpAuthPAT && (tool == "cursor" || tool == "opencode")) {
@@ -1402,6 +1399,100 @@ func TestMCPParserChecksBothModesAllClients(t *testing.T) {
 				}
 				if entries, _ := os.ReadDir(home); len(entries) != 0 {
 					t.Fatalf("list wrote %v", entries)
+				}
+			})
+		}
+	}
+}
+
+// TestMCPInstallServerFlagPresenceBothModes covers component-cli-onboarding
+// invariant 7 through the real root command, so cobra parses --server as a
+// person types it. A --server flag on the command line is the explicit
+// source even when it is empty, blank, or invalid. It refuses before any
+// write and never falls back to CONVEYOR_ADDR or a stored server. An empty
+// or blank CONVEYOR_ADDR counts as unset. Each row runs in both modes.
+func TestMCPInstallServerFlagPresenceBothModes(t *testing.T) {
+	type row struct {
+		flag               *string
+		env                string
+		stored             bool
+		oauthWant, patWant string
+		err                string
+	}
+	str := func(s string) *string { return &s }
+	rows := map[string]row{
+		"empty flag with valid environment":        {flag: str(""), env: "https://env.example", err: "server URL is required"},
+		"empty flag with one stored server":        {flag: str(""), stored: true, err: "server URL is required"},
+		"empty flag with both":                     {flag: str(""), env: "https://env.example", stored: true, err: "server URL is required"},
+		"blank flag with valid environment":        {flag: str("   "), env: "https://env.example", err: "server URL is required"},
+		"blank flag with one stored server":        {flag: str("   "), stored: true, err: "server URL is required"},
+		"invalid scheme with valid environment":    {flag: str("ftp://factory.example"), env: "https://env.example", err: "http or https"},
+		"invalid scheme with one stored server":    {flag: str("ftp://factory.example"), stored: true, err: "http or https"},
+		"relative URL with valid environment":      {flag: str("factory.example"), env: "https://env.example", err: "absolute http or https URL"},
+		"relative URL with one stored server":      {flag: str("factory.example"), stored: true, err: "absolute http or https URL"},
+		"URL with a query with one stored server":  {flag: str("https://factory.example?x=1"), stored: true, err: "must not contain credentials, a query, or a fragment"},
+		"empty environment with one stored server": {env: "", stored: true, oauthWant: "https://stored.example", patWant: "https://stored.example"},
+		"blank environment with one stored server": {env: "   ", stored: true, oauthWant: "https://stored.example", patWant: "https://stored.example"},
+		"valid flag with valid environment":        {flag: str("https://factory.example"), env: "https://env.example", oauthWant: "https://factory.example", err: "no stored credential for https://factory.example"},
+		"valid flag with one stored server":        {flag: str("HTTPS://Factory.Example/mcp/"), stored: true, oauthWant: "https://factory.example", err: "no stored credential for https://factory.example"},
+		"valid flag naming the stored server":      {flag: str("https://stored.example"), env: "https://env.example", stored: true, oauthWant: "https://stored.example", patWant: "https://stored.example"},
+		"valid environment with one stored server": {env: "https://env.example/mcp", stored: true, oauthWant: "https://env.example", err: "no stored credential for https://env.example"},
+		"one stored server only":                   {stored: true, oauthWant: "https://stored.example", patWant: "https://stored.example"},
+	}
+	for label, r := range rows {
+		for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+			t.Run(label+"/"+mode, func(t *testing.T) {
+				home := t.TempDir()
+				t.Setenv("HOME", home)
+				t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+				// No client binary is on PATH, so the parser check is skipped
+				// and --tool opencode needs no binary.
+				t.Setenv("PATH", t.TempDir())
+				t.Setenv(mcpAddressEnv, r.env)
+				credentials := setMCPTestConfigRoot(t)
+				if r.stored {
+					setMCPTestConfig(t, localAuthConfig{Servers: map[string]localServerConfig{"https://stored.example": {Token: "stored-secret"}}})
+					credentials, _ = localAuthConfigPath()
+				}
+				before, _ := os.ReadFile(credentials)
+				t.Cleanup(func() { serverFlag, serverFlagExplicit = "", false })
+				args := []string{}
+				if r.flag != nil {
+					args = append(args, "--server="+*r.flag)
+				}
+				args = append(args, "mcp", "install", "--auth", mode, "--tool", "opencode")
+				root := newRootCmd()
+				var output bytes.Buffer
+				root.SetOut(&output)
+				root.SetErr(&output)
+				root.SetArgs(args)
+				err := root.Execute()
+				want := r.oauthWant
+				if mode == mcpAuthPAT {
+					want = r.patWant
+				}
+				path := filepath.Join(home, "config", "opencode", "opencode.json")
+				if want == "" {
+					if err == nil || !strings.Contains(err.Error(), r.err) {
+						t.Fatalf("%v: error=%v, want %q\n%s", args, err, r.err, output.String())
+					}
+					if _, statErr := os.Stat(filepath.Join(home, "config")); !os.IsNotExist(statErr) {
+						t.Fatalf("refusal wrote the registration: %v", statErr)
+					}
+				} else {
+					if err != nil {
+						t.Fatalf("%v: %v\n%s", args, err, output.String())
+					}
+					data, _ := os.ReadFile(path)
+					if !bytes.Contains(data, []byte(`"url":"`+want+`/mcp"`)) || !strings.Contains(output.String(), "Endpoint: "+want+"/mcp\n") {
+						t.Fatalf("%v: want %s:\n%s\n%s", args, want, data, output.String())
+					}
+				}
+				if after, _ := os.ReadFile(credentials); !bytes.Equal(before, after) {
+					t.Fatal("the install changed the credential file")
+				}
+				if strings.Contains(output.String(), "stored-secret") {
+					t.Fatal("output carries the stored token")
 				}
 			})
 		}

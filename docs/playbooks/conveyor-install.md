@@ -488,8 +488,17 @@ client:
 OAuth needs a server with a valid `CONVEYOR_PUBLIC_URL`, and the dashboard
 shows the consent page. Use the server's public URL as `<server-url>`, so the
 endpoint equals the token's resource. The installer does not test the server
-for OAuth. When the sign-in reports `oauth_unavailable`, or the machine has no
-browser, use the PAT mode:
+for OAuth.
+
+A server without OAuth answers in two different ways. `/mcp` answers 401 with
+a bare `WWW-Authenticate: Bearer` challenge that names no OAuth metadata. The
+OAuth endpoints, such as `/.well-known/oauth-protected-resource/mcp`, answer
+404 with `oauth_unavailable`. A client can read only the `/mcp` challenge. It
+then reports a general sign-in failure or offers no sign-in, and does not
+show `oauth_unavailable`. When the sign-in fails, ask the person to open
+`<server-url>/.well-known/oauth-protected-resource/mcp`. A 404 with
+`oauth_unavailable` means that OAuth is off. In that case, or when the
+machine has no browser, use the PAT mode:
 
 ```sh
 conveyor mcp install --auth pat --server <server-url> --name <connection-name>

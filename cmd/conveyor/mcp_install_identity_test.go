@@ -1403,3 +1403,43 @@ func TestMCPHelperParserAcceptsOnlyTheInstallerForm(t *testing.T) {
 		}
 	}
 }
+
+// TestMCPOAuthRecognizesRunningExecutableAllClients covers the switch to
+// OAuth of an owned PAT entry that the running executable wrote, when its
+// file name is not conveyor (component-cli-onboarding invariant 9;
+// req-mcp-oauth AC-5.3). The OAuth identity knows only the running path, not
+// the credential file. A marked entry of another executable stays refused.
+func TestMCPOAuthRecognizesRunningExecutableAllClients(t *testing.T) {
+	const running = "/opt/tools/conveyor-dev"
+	for _, tool := range mcpAuthTools {
+		for label, c := range map[string]struct {
+			running string
+			accept  bool
+		}{
+			"running executable wrote it": {running, true},
+			"another executable wrote it": {"/opt/tools/other-dev", false},
+			"running path unknown":        {"", false},
+		} {
+			t.Run(tool+"/"+label, func(t *testing.T) {
+				data, _ := mcpOwnedEntryWithPaths(t, tool, running, "/elsewhere/conveyor/credentials.json")
+				id := testMCPOAuthIdentity(t, "https://one.example", "")
+				id.running = c.running
+				next, status, name, err := testMCPReconcile(tool, data, id, false)
+				if tool == "cursor" || tool == "opencode" || c.accept {
+					// Cursor and OpenCode registrations name no executable.
+					if err != nil || status != "refreshed" || name != "manual" {
+						t.Fatalf("status=%s name=%s err=%v", status, name, err)
+					}
+					checkMCPModeEntry(t, tool, next, name, id, nil)
+					if bytes.Contains(next, []byte(running)) {
+						t.Fatalf("the OAuth entry keeps the executable:\n%s", next)
+					}
+					return
+				}
+				if err == nil {
+					t.Fatalf("OAuth removed a helper or bridge that %q did not write", c.running)
+				}
+			})
+		}
+	}
+}

@@ -62,7 +62,9 @@ stored token, and the installer does not read the credential file. Without
 them, OAuth uses the sole stored server, with or without a token. With
 `--auth pat`, the selected server must have a stored token. Both modes refuse
 an invalid server address, several stored servers, or no server, before any
-write.
+write. A `--server` flag on the command line is always the selected source.
+An empty or blank value, such as `--server=`, refuses and never uses
+`CONVEYOR_ADDR` or a stored server. An empty `CONVEYOR_ADDR` counts as unset.
 
 ### Two servers and stable names
 
@@ -121,8 +123,23 @@ token's `resource` is `<CONVEYOR_PUBLIC_URL>/mcp`. Install with the same base
 URL, so the registered endpoint equals that resource. See
 [MCP OAuth 2.1](auth.md#mcp-oauth-21) for discovery, client identification,
 consent, and token rules. The installer does not probe the server for OAuth,
-exchange a token, or change to PAT by itself. A server without OAuth answers
-the sign-in with `oauth_unavailable`. Then install again with `--auth pat`.
+exchange a token, or change to PAT by itself.
+
+A server without OAuth answers in two different ways:
+
+- `/mcp` answers 401 with a bare `WWW-Authenticate: Bearer` challenge. The
+  challenge names no `resource_metadata`, so it gives the client no OAuth
+  server to find.
+- The OAuth endpoints answer 404 with `{"error":"oauth_unavailable"}`. These
+  are the discovery documents under `/.well-known/`, registration, consent,
+  token, and revocation.
+
+A client that reads only the `/mcp` challenge does not call the OAuth
+endpoints. It can then report a general authentication failure, or offer no
+sign-in, and never show `oauth_unavailable`. To check the server, request
+`<base>/.well-known/oauth-protected-resource/mcp`. A 404 with
+`oauth_unavailable` means that OAuth is off. Then install again with
+`--auth pat`.
 
 Use `--auth pat` on a headless machine where an agent tool cannot open a
 browser for consent. The PAT registrations below work there without a
@@ -216,17 +233,17 @@ only when all of these are true:
 - The ownership marker names the same endpoint.
 - The helper or bridge has the exact form that the installer writes.
 - It names the same server.
-- Its executable is the current executable, or an absolute path whose file
-  name is `conveyor` or `conveyor.exe`.
+- Its executable is the running `conveyor` executable, whatever its file
+  name, or an absolute path whose file name is `conveyor` or `conveyor.exe`.
 - Its credential file path is absolute.
 
 The installer never runs or resolves the old command. The PAT mode then writes
-the current paths, and the OAuth mode removes the helper or bridge. An entry
-without the marker needs `--adopt` and the exact current helper or bridge, so
-only `--auth pat` can adopt it. The OAuth mode does not resolve the current
-executable. It removes an owned helper or bridge only when the file name is
-`conveyor` or `conveyor.exe`. For any other entry, run `--auth pat` first, or
-remove the helper or bridge by hand.
+the current paths, and the OAuth mode removes the helper or bridge. The OAuth
+mode reads no credential for this. It looks up only the path of the running
+executable, and the registration never names that path. So an entry that the
+same executable wrote under `--auth pat` switches to OAuth in place, with no
+stored token. An entry without the marker needs `--adopt` and the exact
+current helper or bridge, so only `--auth pat` can adopt it.
 
 Only installer-marked registrations are migrated automatically. A matching
 legacy `conveyor` registration moves to the selected name while nested tool

@@ -161,11 +161,20 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 }
 
 // newMCPInstallIdentity builds the identity for the auth mode. Only the PAT
-// mode resolves the executable and the credential file path, because only
-// its bridge names them (component-cli-onboarding invariants 6 and 7).
+// mode resolves the credential file path, because only its helper and
+// bridge name it. The OAuth mode reads no credential and needs no stored
+// token (component-cli-onboarding invariants 6 and 7). It looks up the
+// running executable only to recognize a helper or bridge that this
+// executable wrote, so that the entry can switch in place
+// (component-cli-onboarding invariant 9; req-mcp-oauth AC-5.3). When the
+// lookup fails, only the conveyor file name rule applies.
 func newMCPInstallIdentity(mode, server, name string) (mcpIdentity, error) {
 	if mode == mcpAuthOAuth {
-		return newMCPOAuthIdentity(server, name)
+		id, err := newMCPOAuthIdentity(server, name)
+		if executable, lookupErr := os.Executable(); err == nil && lookupErr == nil && filepath.IsAbs(executable) {
+			id.running = executable
+		}
+		return id, err
 	}
 	binary, err := os.Executable()
 	if err != nil {
@@ -200,12 +209,20 @@ func mcpOAuthSignIn(tool, name string) string {
 	return "use the client's MCP sign-in control for " + name
 }
 
-// explicitMCPServer returns --server, else CONVEYOR_ADDR, else "".
-func explicitMCPServer() string {
+// explicitMCPServer returns the explicit server source and whether one was
+// given. A --server flag counts as given whenever it is on the command line,
+// even as `--server=` or with only whitespace, so an empty or invalid flag
+// refuses instead of falling back to CONVEYOR_ADDR or a stored server. An
+// empty or blank CONVEYOR_ADDR counts as unset, as it does for every other
+// command (component-cli-onboarding invariant 7; req-mcp-oauth AC-5.1).
+func explicitMCPServer() (string, bool) {
 	if serverFlagExplicit || strings.TrimSpace(serverFlag) != "" {
-		return serverFlag
+		return serverFlag, true
 	}
-	return strings.TrimSpace(os.Getenv(mcpAddressEnv))
+	if value := strings.TrimSpace(os.Getenv(mcpAddressEnv)); value != "" {
+		return value, true
+	}
+	return "", false
 }
 
 // selectedMCPServer selects the server from --server, then CONVEYOR_ADDR,
@@ -217,7 +234,7 @@ func selectedMCPServer(mode string) (string, error) {
 	if mode != mcpAuthOAuth {
 		return selectedStoredMCPServer()
 	}
-	if explicit := explicitMCPServer(); explicit != "" {
+	if explicit, given := explicitMCPServer(); given {
 		return normalizeServerURL(explicit)
 	}
 	config, err := loadLocalAuthConfig()
@@ -243,7 +260,7 @@ func selectedStoredMCPServer() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if explicit := explicitMCPServer(); explicit != "" {
+	if explicit, given := explicitMCPServer(); given {
 		canonical, normalizeErr := normalizeServerURL(explicit)
 		if normalizeErr != nil {
 			return "", normalizeErr
