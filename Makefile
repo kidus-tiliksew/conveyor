@@ -334,7 +334,7 @@ dev: db-up
 # make singlestore-shard-union-check proves the union.
 SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages commands
 SINGLESTORE_CONFORMANCE_TEST = ^TestSingleStoreConformanceIntegration$$
-SINGLESTORE_CONFORMANCE_FIRST = ^(Verification|Requirements|NextAction|SystemDesignDrift|ListPages|OAuth)$$
+SINGLESTORE_CONFORMANCE_FIRST = ^(Verification|Requirements|NextAction|SystemDesignDrift|Lineage|OAuth)$$
 SINGLESTORE_INTEGRATION_PACKAGES_conformance-1 = ./internal/store/singlestore
 SINGLESTORE_INTEGRATION_RUN_conformance-1 = $(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)
 SINGLESTORE_INTEGRATION_TIMEOUT_conformance-1 = 20m
