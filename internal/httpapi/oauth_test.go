@@ -911,6 +911,19 @@ func TestOAuthConsentNeverRedirectsToAnUnverifiedTarget(t *testing.T) {
 	if target, err := url.Parse(fmt.Sprint(body["redirect_to"])); err != nil || target.Query().Get("error") != "invalid_target" || target.Query().Get("code") != "" || len(h.oauth.issued) != 0 {
 		t.Fatalf("explicit empty resource on POST: %v, issued %d", body, len(h.oauth.issued))
 	}
+	// JSON null is an explicit value too: it is refused, not read as an
+	// omission.
+	nullBody, _ := json.Marshal(map[string]any{
+		"decision": "approve", "response_type": "code", "client_id": clientID, "redirect_uri": oauthTestRedirect,
+		"code_challenge": core.OAuthS256Challenge(oauthTestVerifier), "code_challenge_method": "S256", "state": "keep me", "resource": nil,
+	})
+	if !strings.Contains(string(nullBody), `"resource":null`) {
+		t.Fatalf("null body = %s", nullBody)
+	}
+	nullRefused := h.do(oauthRequest{method: http.MethodPost, path: "/v1/oauth/authorize", body: string(nullBody), contentType: "application/json", session: h.memberSession, proof: true})
+	if expectOAuthError(t, nullRefused, http.StatusBadRequest, "invalid_target"); len(h.oauth.issued) != 0 {
+		t.Fatalf("null resource minted %d codes", len(h.oauth.issued))
+	}
 	approved := decision(nil)
 	if approved.Code != http.StatusOK || len(h.oauth.issued) != 1 || h.oauth.issued[0].Resource != oauthTestAudience {
 		t.Fatalf("omitted resource on POST: status=%d issued=%v", approved.Code, h.oauth.issued)

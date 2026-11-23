@@ -324,8 +324,8 @@ request and changes nothing. The query takes `response_type` (`code`),
 `client_id`, `redirect_uri`, `code_challenge`, `code_challenge_method`
 (`S256`), an optional `state` of at most 2,048 bytes, and an optional
 `resource` that must equal `<public-url>/mcp` when present. An explicit empty
-`resource` is refused with `invalid_target`; only an omitted one takes the
-default. A parameter given
+`resource`, or a JSON `null` one in the decision body, is refused with
+`invalid_target`; only an omitted one takes the default. A parameter given
 twice is refused. A valid request answers:
 
 ```json

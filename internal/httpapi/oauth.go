@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -848,11 +849,28 @@ type oauthAuthorizationRequest struct {
 	CodeChallenge       string `json:"code_challenge"`
 	CodeChallengeMethod string `json:"code_challenge_method"`
 	State               string `json:"state"`
-	// Resource is nil when the request omits it. An explicit value, the
-	// empty string included, is kept as sent, so only omission takes the
-	// default audience (req-mcp-oauth AC-3.3).
-	Resource *string `json:"resource"`
-	Scope    string  `json:"scope"`
+	// Resource records whether the request names a resource. An explicit
+	// value, the empty string and JSON null included, is kept as sent, so
+	// only omission takes the default audience (req-mcp-oauth AC-3.3).
+	Resource oauthOptionalString `json:"resource"`
+	Scope    string              `json:"scope"`
+}
+
+// oauthOptionalString is a string field that remembers whether the request
+// named it. JSON null counts as named, with an empty value, so it is refused
+// like an explicit empty string rather than read as an omission.
+type oauthOptionalString struct {
+	Set   bool
+	Value string
+}
+
+func (o *oauthOptionalString) UnmarshalJSON(data []byte) error {
+	o.Set = true
+	if string(data) == "null" {
+		o.Value = ""
+		return nil
+	}
+	return json.Unmarshal(data, &o.Value)
 }
 
 // oauthConsentError is a refused authorization request. A non-empty
@@ -890,15 +908,13 @@ func oauthAuthorizationRequestFromQuery(query url.Values) (oauthAuthorizationReq
 	}, nil
 }
 
-// oauthQueryField returns a pointer to a query parameter's value, or nil when
-// the query does not name the parameter.
-func oauthQueryField(query url.Values, field string) *string {
+// oauthQueryField reads a query parameter and whether the query names it.
+func oauthQueryField(query url.Values, field string) oauthOptionalString {
 	values, present := query[field]
 	if !present || len(values) == 0 {
-		return nil
+		return oauthOptionalString{}
 	}
-	value := values[0]
-	return &value
+	return oauthOptionalString{Set: true, Value: values[0]}
 }
 
 // verifyOAuthAuthorizationRequest verifies the client, then the redirect
@@ -938,8 +954,8 @@ func (s *Server) verifyOAuthAuthorizationRequest(ctx context.Context, provider o
 	// An omitted resource names the MCP audience; any other value is refused
 	// (RFC 8707; req-mcp-oauth AC-3.3).
 	resource := provider.audience()
-	if request.Resource != nil {
-		resource = *request.Resource
+	if request.Resource.Set {
+		resource = request.Resource.Value
 	}
 	if resource != provider.audience() {
 		return oauthVerifiedClient{}, store.OAuthCodeRequest{}, redirectError("invalid_target", "resource must be "+provider.audience())
