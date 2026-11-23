@@ -2480,6 +2480,56 @@ test('the timeline builder keeps each live report in its own card, once', () => 
   }
 })
 
+// A running job's body and its live report pass the same run-mode filter
+// before the timeline compares them. A body that matches the filtered report
+// prints once, and the summary keeps its audit link. A Verify card shows no
+// summary, so it still takes the report.
+const matchedBody = 'The unit tests passed.'
+const matchedReport = `conveyor run mode: self-claimed\n${matchedBody}`
+
+function matchedBodyItem(stage: 'implement' | 'verify'): ActivityItem {
+  const id = `${liveTask}-${stage}-1`
+  const item = liveProgressItem()
+  item.jobs = [liveJob(id, stage, 'running', 3)] as unknown as ActivityItem['jobs']
+  item.work_orders = [liveOrder(id, stage, 'claimed', { progress: matchedReport })]
+  item.risk = undefined
+  item.summaries = {
+    ...item.summaries,
+    job_results: {
+      [id]: { summary: { text: matchedBody, truncated: true, event_id: '77' } },
+    } as TaskSummaries['job_results'],
+  }
+  return item
+}
+
+test('a running job body that matches the filtered report prints it once', async ({ page }) => {
+  const implementation = liveTimeline(matchedBodyItem('implement')).find((entry) => entry.type === 'job')
+  expect(implementation).toMatchObject({ summary: matchedBody, summaryEventId: '77' })
+  expect(implementation).not.toHaveProperty('progress', expect.anything())
+  // The body also matches after trimming.
+  const padded = matchedBodyItem('implement')
+  padded.summaries = {
+    ...padded.summaries,
+    job_results: {
+      [`${liveTask}-implement-1`]: { summary: { text: `  ${matchedBody}\n` } },
+    } as TaskSummaries['job_results'],
+  }
+  expect(liveTimeline(padded).find((entry) => entry.type === 'job')).not.toHaveProperty('progress', expect.anything())
+  expect(liveTimeline(matchedBodyItem('verify')).find((entry) => entry.type === 'job')).toMatchObject({
+    progress: matchedBody,
+  })
+
+  await page.route(`**/v1/tasks/${liveTask}/activity*`, (route) =>
+    route.fulfill({ json: matchedBodyItem('implement') }),
+  )
+  await page.goto(`/w/demo/tasks/${liveTask}/full`)
+  const card = page.getByLabel('Execution event timeline').locator('article[data-implementation-entry]')
+  await expect(card.getByText(matchedBody, { exact: true })).toHaveCount(1)
+  await expect(card.locator('[data-job-progress]')).toHaveCount(0)
+  await expect(card.getByText(/conveyor run mode/i)).toHaveCount(0)
+  await expect(card.getByText('Full text (shortened here)')).toBeVisible()
+})
+
 const liveRiskCard = (page: Page, n: number) =>
   page.locator(`li[data-order-stage="risk"][data-order-id="${liveTask}-risk-${n}"] article[data-risk-order-card]`)
 

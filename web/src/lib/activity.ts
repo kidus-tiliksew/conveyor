@@ -1879,9 +1879,10 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
     if (order?.progress && genericSummaries.has(summary)) summary = order.progress
     // A running job's live report stays in its own card. It prints beside a
     // distinct summary, and on a Verify card, which shows no summary, but
-    // never twice.
+    // never twice. The body and the report pass the same filter before they
+    // are compared, so a body that matches the filtered report hides it.
     const live = job.state === 'running' && order?.state === 'claimed' ? liveProgressReport(order.progress) : undefined
-    const progress = live && (job.stage === 'verify' || summary !== order?.progress) ? live : undefined
+    const progress = live && (job.stage === 'verify' || liveProgressReport(summary) !== live) ? live : undefined
     const model = jobCardModel(job, order)
     const tone = rejectedOutput(job, results) ? 'warning' : 'default'
     entries.push({
