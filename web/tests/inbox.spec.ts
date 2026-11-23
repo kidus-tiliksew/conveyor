@@ -1219,6 +1219,12 @@ test('Inbox titles render inline Markdown with no link, block, or raw HTML of th
   await expect(headingLink).toHaveAttribute('href', '/w/demo/tasks/T-zeta')
   await expectMarkdownTitle(headingLink)
   await expect(heading.locator('p, div, ul, li, [data-raw], b')).toHaveCount(0)
+  // The Markdown title adds none of the fields AC-1.9 withholds.
+  await expectNoNextActionOmissions(detail, {
+    actor: 'operator',
+    sentences: ['Does this plan meet the requirement?', 'The task waits at the plan gate.'],
+    identifiers: ['wo-zeta-1'],
+  })
 
   // The decision proposal detail renders the heading and keeps the statement.
   await proposalRow.click()
@@ -1235,6 +1241,9 @@ test('Inbox titles render inline Markdown with no link, block, or raw HTML of th
   await expect(statement.locator('code')).toHaveText(['/mcp', 'conveyord'])
   await expect(proposal.locator('[data-raw], b')).toHaveCount(0)
   expect(await proposal.innerText()).not.toContain('`')
+  await expectNoNextActionOmissions(proposal, {
+    sentences: ['Confirm or dismiss this proposed decision?', 'The proposal stays pending.'],
+  })
   expect(await page.locator('a a').count()).toBe(0)
 
   // The blocked and automatic rows keep one truncated line, the source text
