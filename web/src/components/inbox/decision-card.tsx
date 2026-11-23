@@ -6,6 +6,7 @@ import { useWorkspaceSelection } from '../app-shell'
 import { GateChoices } from '../task/merge-at-gate'
 import { Disclosure } from '../ui/disclosure'
 import { ErrorState } from '../ui/error-state'
+import { InlineMarkdown, MarkdownProse } from '../ui/markdown-prose'
 import { Skeleton } from '../ui/skeleton'
 import {
   ContextProposalChecklist,
@@ -98,7 +99,7 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               params={{ workspaceId: workspace, taskId: task.id }}
               className="hover:underline"
             >
-              {task.title}
+              <InlineMarkdown>{task.title}</InlineMarkdown>
             </Link>
           </h2>
           <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted">
@@ -162,7 +163,9 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
               <div className="min-w-0">
                 <span className="text-xs font-semibold text-primary">Agent recommends</span>
-                <p className="mt-0.5 break-words leading-6">{item.recommendation}</p>
+                <div className="mt-0.5 break-words leading-6">
+                  <MarkdownProse className="markdown-inherit markdown-demoted">{item.recommendation}</MarkdownProse>
+                </div>
               </div>
             </div>
           )}

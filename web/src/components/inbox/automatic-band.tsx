@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import type { FactoryAct, InboxItem, Task } from '../../lib/types'
 import { useWorkspaceSelection } from '../app-shell'
+import { InlineMarkdown } from '../ui/markdown-prose'
 import { ActsLog } from './acts-log'
 import { NextActionChoices } from './choice-button'
 import { KindIcon } from './inbox-kind'
@@ -35,7 +36,7 @@ function AutomaticRow({ item, task }: { item: InboxItem; task: Task }) {
           title={task.title}
           className="min-w-0 truncate text-sm font-medium hover:underline"
         >
-          {task.title}
+          <InlineMarkdown>{task.title}</InlineMarkdown>
         </Link>
         {item.next_action?.label && (
           <span data-automatic-label className="ml-auto shrink-0 rounded bg-surface px-1.5 text-[11px] text-muted">

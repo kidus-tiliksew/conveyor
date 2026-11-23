@@ -8,6 +8,7 @@ import type { NextAction, NextActionChoice, NextActionContextProposal } from '..
 import { absoluteTime, cn, relativeTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
+import { InlineMarkdown, MarkdownProse } from '../ui/markdown-prose'
 import { choiceBody } from './choice-bodies'
 import { ContextDocumentPreview } from './context-document-preview'
 import { CONTEXT_APPLY_SHORTCUT, Kbd, useShortcutChoice } from './inbox-keyboard'
@@ -322,7 +323,7 @@ function ChecklistRow({
   onPreview: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
-  const clamped = useClamped(compact ? null : proposal.justification)
+  const clamped = useClamped(compact ? null : proposal.justification, expanded)
   const descriptionId = useId()
   const justificationId = useId()
   const checked = selection.checked(proposal)
@@ -405,8 +406,11 @@ function ChecklistRow({
               </button>
             )}
           </div>
+          {/* One stable container keeps its ID, ref, and wrapping while the
+              collapsed preview renders phrasing Markdown under the two-line
+              clamp and the open view renders the full Markdown. */}
           {proposal.justification && (!compact || expanded) && (
-            <p
+            <div
               ref={clamped.ref}
               id={justificationId}
               data-context-justification
@@ -416,8 +420,12 @@ function ChecklistRow({
                 faded,
               )}
             >
-              {proposal.justification}
-            </p>
+              {!compact && !expanded ? (
+                <InlineMarkdown>{proposal.justification}</InlineMarkdown>
+              ) : (
+                <MarkdownProse className="markdown-inherit markdown-demoted">{proposal.justification}</MarkdownProse>
+              )}
+            </div>
           )}
           {!compact && proposal.justification && (expanded || clamped.overflows) && (
             <button
@@ -449,10 +457,12 @@ function ChecklistRow({
   )
 }
 
-// Whether a clamped paragraph hides text, so the row offers "Show more" only
-// when there is more to show. It re-measures when the paragraph resizes.
-function useClamped(text: string | null) {
-  const ref = useRef<HTMLParagraphElement>(null)
+// Whether the clamped preview hides text, so the row offers "Show more" only
+// when there is more to show. It measures the rendered preview after layout,
+// again when the text changes or the row collapses, and when the preview
+// resizes.
+function useClamped(text: string | null, expanded: boolean) {
+  const ref = useRef<HTMLDivElement>(null)
   const [overflows, setOverflows] = useState(false)
   useLayoutEffect(() => {
     const node = ref.current
@@ -465,7 +475,7 @@ function useClamped(text: string | null) {
     const observer = new ResizeObserver(measure)
     observer.observe(node)
     return () => observer.disconnect()
-  }, [text])
+  }, [text, expanded])
   return { ref, overflows }
 }
 

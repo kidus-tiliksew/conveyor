@@ -103,13 +103,13 @@ function ContextSection({ item, kind }: { item: ActivityItem; kind: string }) {
             {review.type === 'panel' ? (
               <PanelFeedback panel={review} />
             ) : (
-              review.type === 'job' && <p className="whitespace-pre-wrap break-words text-sm">{review.summary}</p>
+              review.type === 'job' && <ContextProse>{review.summary}</ContextProse>
             )}
           </section>
           {reply && (
             <section aria-label="Implementer reply" className="rounded-lg border border-border px-3 py-3">
               <h3 className="text-xs font-medium text-muted">Implementer reply</h3>
-              <p className="mt-1 whitespace-pre-wrap break-words text-sm">{reply.summary}</p>
+              <ContextProse className="mt-1">{reply.summary}</ContextProse>
             </section>
           )}
         </div>
@@ -147,7 +147,7 @@ function ContextSection({ item, kind }: { item: ActivityItem; kind: string }) {
   return latest ? (
     <section aria-label="Latest run" className="rounded-lg border border-border px-3 py-3">
       <h4 className="text-xs font-medium text-muted">{stageLabel(latest.job.stage)}</h4>
-      <p className="mt-1 whitespace-pre-wrap break-words text-sm">{latest.summary}</p>
+      <ContextProse className="mt-1">{latest.summary}</ContextProse>
     </section>
   ) : (
     <p className="text-sm text-muted">No run has reported yet.</p>
@@ -175,6 +175,16 @@ function PanelFeedback({ panel }: { panel: Extract<TimelineEntry, { type: 'panel
   )
 }
 
+// Authored or agent-written prose in a context card: Markdown in the card's
+// own type size and color, with headings no larger than the card's text.
+function ContextProse({ children, className = '' }: { children: string; className?: string }) {
+  return (
+    <div className={`break-words text-sm ${className}`.trim()}>
+      <MarkdownProse className="markdown-inherit markdown-demoted">{children}</MarkdownProse>
+    </div>
+  )
+}
+
 function stageLabel(stage: string) {
   return stage ? `${stage.charAt(0).toUpperCase()}${stage.slice(1)}` : 'Run'
 }
@@ -193,7 +203,11 @@ function ParkReason({ item }: { item: ActivityItem }) {
     <div className="space-y-2" data-park-reason>
       <section aria-label="Triage summary" className="rounded-lg border border-border px-3 py-3">
         <h4 className="text-xs font-medium text-muted">Triage summary</h4>
-        <p className="mt-1 whitespace-pre-wrap break-words text-sm">{reason.summary || 'Triage stated no summary.'}</p>
+        {reason.summary ? (
+          <ContextProse className="mt-1">{reason.summary}</ContextProse>
+        ) : (
+          <p className="mt-1 whitespace-pre-wrap break-words text-sm">Triage stated no summary.</p>
+        )}
       </section>
       {lists.map((list) => (
         <section key={list.label} aria-label={list.label} className="rounded-lg border border-border px-3 py-3">
@@ -201,7 +215,7 @@ function ParkReason({ item }: { item: ActivityItem }) {
           <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm">
             {list.entries.map((entry, index) => (
               <li key={`${index}:${entry}`} className="break-words">
-                {entry}
+                <MarkdownProse className="markdown-inherit markdown-demoted">{entry}</MarkdownProse>
               </li>
             ))}
           </ul>
@@ -255,9 +269,13 @@ function CheckpointContext({ item }: { item: ActivityItem }) {
     <div className="space-y-3">
       <section aria-label="Agent checkpoint" className="rounded-lg border border-border px-3 py-3">
         <h3 className="text-xs font-medium text-muted">The agent asks</h3>
-        <p className="mt-1 whitespace-pre-wrap break-words text-sm">
-          {checkpoint?.decision_request || 'The agent stopped without a structured question.'}
-        </p>
+        {checkpoint?.decision_request ? (
+          <ContextProse className="mt-1">{checkpoint.decision_request}</ContextProse>
+        ) : (
+          <p className="mt-1 whitespace-pre-wrap break-words text-sm">
+            The agent stopped without a structured question.
+          </p>
+        )}
         {(checkpoint?.citations?.length ?? 0) > 0 && (
           <ul className="mt-2 space-y-1 text-xs text-muted">
             {checkpoint?.citations?.map((citation) => (
@@ -437,7 +455,11 @@ function PlanFiles({ section }: { section: string }) {
         {files.map((file, index) => (
           <li key={`${index}:${file.path}`} className="min-w-0 px-3 py-2">
             <code className="break-all font-mono text-xs">{file.path}</code>
-            {file.note && <p className="mt-0.5 break-words text-xs text-muted">{file.note}</p>}
+            {file.note && (
+              <div className="mt-0.5 break-words text-xs text-muted">
+                <MarkdownProse className="markdown-inherit markdown-demoted">{file.note}</MarkdownProse>
+              </div>
+            )}
           </li>
         ))}
       </ul>

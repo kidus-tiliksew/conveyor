@@ -196,7 +196,9 @@ function PreviewDocument({ proposal, onClose }: { proposal: NextActionContextPro
             <p className="text-[11px] font-medium text-faint">
               Why {sourceWords[proposal.source] ?? proposal.source} suggests it
             </p>
-            <p className="break-words">{proposal.justification}</p>
+            <div className="break-words">
+              <MarkdownProse className="markdown-inherit markdown-demoted">{proposal.justification}</MarkdownProse>
+            </div>
           </div>
         )}
       </header>
