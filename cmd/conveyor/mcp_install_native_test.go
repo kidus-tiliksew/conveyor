@@ -306,6 +306,97 @@ func TestMCPNativeClients(t *testing.T) {
 	}
 	t.Run("antigravity", testMCPNativeAntigravityParser)
 	t.Run("oauth parsers", testMCPNativeOAuthParsers)
+	t.Run("parsers contact no server", testMCPNativeParsersContactNoServer)
+}
+
+// testMCPNativeParsersContactNoServer proves with each installed client that
+// the publication check sends no request to the registered server and runs no
+// credential helper, in both modes (component-cli-onboarding invariant 11).
+// The home is a git repository, because Claude keys project settings by the
+// git root. Cursor has no parser check, so its row only proves that
+// publication sends nothing. The Claude control runs the plain command and
+// must reach the fixture and the helper, so a fixture that records nothing
+// cannot pass.
+func testMCPNativeParsersContactNoServer(t *testing.T) {
+	binaries := map[string]string{"codex": "codex", "claude": "claude", "opencode": "opencode", "cursor": "cursor-agent", "antigravity": "agy"}
+	for _, tool := range mcpAuthTools {
+		for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+			t.Run(tool+"/"+mode, func(t *testing.T) {
+				if _, err := exec.LookPath(binaries[tool]); err != nil {
+					t.Skipf("%s unavailable; no native evidence", binaries[tool])
+				}
+				var mu sync.Mutex
+				var requests []string
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					mu.Lock()
+					requests = append(requests, r.Method+" "+r.URL.Path)
+					mu.Unlock()
+					w.WriteHeader(http.StatusUnauthorized)
+				}))
+				defer server.Close()
+				seen := func() []string {
+					mu.Lock()
+					defer mu.Unlock()
+					return append([]string(nil), requests...)
+				}
+				home := t.TempDir()
+				t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+				if output, err := exec.Command("git", "init", "-q", home).CombinedOutput(); err != nil {
+					t.Fatalf("git init: %v %s", err, output)
+				}
+				sentinel := filepath.Join(home, "helper-ran")
+				helper := filepath.Join(home, "bin", "conveyor")
+				if err := os.MkdirAll(filepath.Dir(helper), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(helper, []byte("#!/bin/sh\ntouch '"+sentinel+"'\necho '{}'\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				id, err := newMCPOAuthIdentity(server.URL, "conveyor-native-check")
+				if mode == mcpAuthPAT {
+					id, err = newMCPIdentity(server.URL, "conveyor-native-check", helper, filepath.Join(home, "credentials.json"))
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				target := mcpTargets(home, []skillTool{{name: tool}})[0]
+				result, err := reconcileNamedMCPRegistration(home, target, id, false, true, exec.LookPath)
+				if err != nil || result.status != "created" {
+					t.Fatalf("native install: result=%+v err=%v", result, err)
+				}
+				// A late request from a client child would arrive here.
+				time.Sleep(time.Second)
+				if got := seen(); len(got) != 0 {
+					t.Fatalf("the parser check contacted the server: %v", got)
+				}
+				if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+					t.Fatalf("the parser check ran the helper or bridge: %v", err)
+				}
+				data, _ := os.ReadFile(target.path)
+				if bytes.Contains(data, []byte("disabledMcpServers")) {
+					t.Fatalf("the isolation reached the published file:\n%s", data)
+				}
+				t.Logf("%s %s: 0 requests, no helper; %s", tool, mode, result.validation)
+				if tool != "claude" {
+					return
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, "claude", "mcp", "get", id.name)
+				cmd.Dir = home
+				cmd.Env = mcpIsolatedEnvironment(home)
+				cmd.WaitDelay = time.Second
+				_, _ = cmd.CombinedOutput()
+				if len(seen()) == 0 {
+					t.Fatal("the control did not reach the fixture, so zero requests prove nothing")
+				}
+				if _, err := os.Stat(sentinel); mode == mcpAuthPAT && err != nil {
+					t.Fatalf("the control did not run the helper: %v", err)
+				}
+				t.Logf("control: plain claude mcp get sent %d requests", len(seen()))
+			})
+		}
+	}
 }
 
 // testMCPNativeOAuthParsers runs each installed client's own parser on the

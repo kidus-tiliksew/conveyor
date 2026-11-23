@@ -824,7 +824,10 @@ printf '{"name":"%s","enabled":true,"transport":{"type":"streamable_http","url":
 
 // claudeGetBinary writes a `claude` stub. It checks the arguments
 // `mcp get <name>`, the isolated home, and that the staged entry has a
-// headersHelper only under PAT. body runs last and sets the result.
+// headersHelper only under PAT. It also checks the barriers against a
+// connection: the entry is disabled for the isolated directory, that
+// directory is a git root, and every proxy is closed. body runs last and
+// sets the result. An empty body reports the disabled state, as Claude does.
 func claudeGetBinary(t *testing.T, mode, body string, names ...string) string {
 	t.Helper()
 	script := `
@@ -842,7 +845,13 @@ esac
 if read -r ignored; then exit 8; fi
 staged="$HOME/.claude.json"
 [ -f "$staged" ]
+/usr/bin/grep -qF "\"$PWD\":{\"disabledMcpServers\":[\"$3\"]}" "$staged"
+[ -d "$PWD/.git" ]
+for proxy in "$HTTP_PROXY" "$HTTPS_PROXY" "$ALL_PROXY" "$http_proxy" "$https_proxy" "$all_proxy"; do [ "$proxy" = 'http://127.0.0.1:9' ]; done
 `
+	if body == "" {
+		body = "printf '%s:\\n  Status: Disabled for this project (re-enable via /mcp)\\n' \"$3\""
+	}
 	switch mode {
 	case mcpAuthOAuth:
 		script += "if /usr/bin/grep -q headersHelper \"$staged\"; then exit 6; fi\n"
@@ -1247,6 +1256,12 @@ func TestMCPParserChecksBothModesAllClients(t *testing.T) {
 			"wrong URL": {stub: func(t *testing.T, mode string, id mcpIdentity) string {
 				return codexGetBinary(t, `echo '{"transport":{"url":"https://wrong.example/mcp","http_headers_helper":"present"},"marker":"parser-output-marker"}'`, id.name)
 			}},
+			"unrelated matching URL": {stub: func(t *testing.T, mode string, id mcpIdentity) string {
+				return codexGetBinary(t, `echo '{"url":"`+id.endpoint+`","transport":{"url":"https://wrong.example/mcp","http_headers":{"url":"`+id.endpoint+`"},"http_headers_helper":"present"},"marker":"parser-output-marker"}'`, id.name)
+			}},
+			"URL outside transport": {stub: func(t *testing.T, mode string, id mcpIdentity) string {
+				return codexGetBinary(t, `echo '{"url":"`+id.endpoint+`","transport":{"http_headers":{"url":"`+id.endpoint+`"},"http_headers_helper":"present"}}'`, id.name)
+			}},
 			"no URL": {stub: func(t *testing.T, mode string, id mcpIdentity) string {
 				return codexGetBinary(t, `echo '{"transport":{"http_headers_helper":"present"}}'`, id.name)
 			}},
@@ -1268,6 +1283,12 @@ func TestMCPParserChecksBothModesAllClients(t *testing.T) {
 			"wrong name": {stub: func(t *testing.T, mode string, id mcpIdentity) string {
 				return claudeGetBinary(t, mode, "", "other-name")
 			}, refusal: "claude parser rejected the staged registration"},
+			"health check ran": {stub: func(t *testing.T, mode string, id mcpIdentity) string {
+				return claudeGetBinary(t, mode, "printf 'parser-output-marker\\n  Status: Failed to connect\\n'", id.name)
+			}, refusal: "claude mcp get did not report the registration as disabled"},
+			"no status": {stub: func(t *testing.T, mode string, id mcpIdentity) string {
+				return claudeGetBinary(t, mode, "echo 'Disabled for this project parser-output-marker'", id.name)
+			}, refusal: "claude mcp get did not report the registration as disabled"},
 		},
 		"opencode": {
 			"accepted":     {stub: func(t *testing.T, mode string, id mcpIdentity) string { return openCodeModeBinary(t, mode, "") }},
@@ -1303,10 +1324,10 @@ func TestMCPParserChecksBothModesAllClients(t *testing.T) {
 				// Decide whether this case refuses under this mode.
 				refusal := c.refusal
 				switch tool + "/" + label {
-				case "codex/wrong URL", "codex/no URL", "codex/not JSON":
+				case "codex/wrong URL", "codex/no URL", "codex/not JSON", "codex/unrelated matching URL", "codex/URL outside transport":
 					if mode == mcpAuthOAuth {
 						refusal = "Codex parser did not report the registered URL"
-					} else if label != "wrong URL" && label != "no URL" {
+					} else if label == "not JSON" {
 						refusal = "Codex parser did not expose http_headers_helper"
 					}
 				case "codex/no helper", "codex/null helper":
@@ -1495,6 +1516,149 @@ func TestMCPInstallServerFlagPresenceBothModes(t *testing.T) {
 					t.Fatal("output carries the stored token")
 				}
 			})
+		}
+	}
+}
+
+// TestMCPInstallKeepsCanonicalBaseAllClients covers component-cli-onboarding
+// invariant 7: the selected server is normalized once, so a base that ends
+// in an MCP path segment keeps its endpoint for every client, in both modes,
+// and from each source. A rerun is a no-op, and a switch of modes keeps the
+// endpoint. The PAT helper and bridge name a --server value that their own
+// normalization turns into the same base.
+func TestMCPInstallKeepsCanonicalBaseAllClients(t *testing.T) {
+	bases := map[string]string{
+		"https://example.test":              "https://example.test",
+		"https://example.test/mcp":          "https://example.test",
+		"https://example.test/team/mcp/":    "https://example.test/team",
+		"https://example.test/team/mcp/mcp": "https://example.test/team/mcp",
+		"https://example.test/mcp/mcp":      "https://example.test/mcp",
+		"https://example.test/mcp/mcp/mcp/": "https://example.test/mcp/mcp",
+	}
+	for _, tool := range mcpAuthTools {
+		for input, base := range bases {
+			for _, source := range []string{"flag", "environment", "stored"} {
+				t.Run(tool+"/"+source+"/"+strings.TrimPrefix(input, "https://"), func(t *testing.T) {
+					home := t.TempDir()
+					t.Setenv("HOME", home)
+					t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+					// The credential file key is the base normalized once.
+					setMCPTestCredentials(t, base, "stored-secret")
+					switch source {
+					case "flag":
+						setMCPTestServer(t, input)
+					case "environment":
+						t.Setenv(mcpAddressEnv, input)
+					}
+					path := mcpTargets(home, []skillTool{{name: tool}})[0].path
+					binary, _ := os.Executable()
+					credentials, _ := localAuthConfigPath()
+					for step, mode := range []string{mcpAuthOAuth, mcpAuthPAT, mcpAuthPAT, mcpAuthOAuth} {
+						id, err := newMCPOAuthIdentityForBase(base, "")
+						if mode == mcpAuthPAT {
+							id, err = newMCPPATIdentityForBase(base, "", binary, credentials)
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						if id.endpoint != base+"/mcp" {
+							t.Fatalf("endpoint %s", id.endpoint)
+						}
+						if again, err := normalizeServerURL(id.serverArgument); err != nil || again != base {
+							t.Fatalf("--server %s names %s, want %s", id.serverArgument, again, base)
+						}
+						output, err := runMCPInstall(t, mcpModeLookup(t, mode, id.name), "--auth", mode, "--tool", tool)
+						if err != nil {
+							t.Fatalf("step %d %s: %v", step, mode, err)
+						}
+						want := []string{"created", "refreshed", "unchanged", "refreshed"}[step]
+						if !strings.Contains(output, tool+"\t"+want+"\t") || !strings.Contains(output, "Endpoint: "+base+"/mcp\n") {
+							t.Fatalf("step %d %s output:\n%s", step, mode, output)
+						}
+						data, _ := os.ReadFile(path)
+						if tool == "antigravity" && mode == mcpAuthPAT {
+							entry := testAntigravityEntry(t, data, id.name)
+							if server, ok := antigravityBridgeServer(entry); !ok || canonicalMCPEndpoint(server) != base+"/mcp" || antigravityEntryEndpoint(entry) != base+"/mcp" {
+								t.Fatalf("the bridge names another endpoint: %v", entry)
+							}
+							continue
+						}
+						checkMCPModeEntry(t, tool, data, id.name, id, nil)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestMCPInstallListMarksOAuthGuidanceAsPreview checks that a listing, which
+// writes nothing, does not describe an installed OAuth registration.
+func TestMCPInstallListMarksOAuthGuidanceAsPreview(t *testing.T) {
+	for _, tool := range mcpAuthTools {
+		t.Run(tool, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+			setMCPTestCredentials(t, "https://factory.example", "stored-secret")
+			lookup := mcpModeLookup(t, mcpAuthPAT, testMCPOAuthIdentity(t, "https://factory.example", "").name)
+			if _, err := runMCPInstall(t, lookup, "--auth", "pat", "--tool", tool); err != nil {
+				t.Fatal(err)
+			}
+			output, err := runMCPInstall(t, lookup, "--tool", tool, "--list")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"Credential source (preview, applies after installation): OAuth 2.1", "Sign-in (preview, applies after installation): "} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("listing lacks %q:\n%s", want, output)
+				}
+			}
+			for _, forbidden := range []string{"The registration holds no token.", "\nSign-in: "} {
+				if strings.Contains(output, forbidden) {
+					t.Fatalf("listing carries %q:\n%s", forbidden, output)
+				}
+			}
+		})
+	}
+}
+
+// TestMCPClaudeParserConfigOnlyAddsTheProject checks the isolated copy: it
+// keeps every other project and setting, and it disables only the
+// registration, only for the isolated directory.
+func TestMCPClaudeParserConfigOnlyAddsTheProject(t *testing.T) {
+	directory := t.TempDir()
+	for _, staged := range []string{
+		`{"theme" : "dark","mcpServers":{"one":{"type":"http","url":"https://one.example/mcp"}}}`,
+		`{"projects" : {"/work":{"disabledMcpServers":["two"],"allowedTools":[]}},"mcpServers":{}}`,
+	} {
+		got, err := claudeParserConfig([]byte(staged), directory, "one")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var before, after map[string]any
+		_ = json.Unmarshal([]byte(staged), &before)
+		if err := json.Unmarshal(got, &after); err != nil {
+			t.Fatal(err)
+		}
+		projects := after["projects"].(map[string]any)
+		entry, _ := json.Marshal(projects[directory])
+		if string(entry) != `{"disabledMcpServers":["one"]}` {
+			t.Fatalf("isolated project: %s", entry)
+		}
+		delete(projects, directory)
+		if resolved, _ := filepath.EvalSymlinks(directory); resolved != directory {
+			delete(projects, resolved)
+		}
+		if len(projects) == 0 {
+			delete(after, "projects")
+		}
+		if fmt.Sprint(before) != fmt.Sprint(after) {
+			t.Fatalf("copy changed other settings:\n%v\n%v", before, after)
+		}
+	}
+	for _, staged := range []string{`{"projects":[]}`, `{"projects":"x"}`, `{"mcpServers":{`} {
+		if _, err := claudeParserConfig([]byte(staged), directory, "one"); err == nil {
+			t.Fatalf("accepted %s", staged)
 		}
 	}
 }

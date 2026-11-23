@@ -127,8 +127,14 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 				if identity.oauth() {
 					// OAuth mode prints no export line. The client signs in
 					// through the server's OAuth flow (req-mcp-oauth AC-5.3).
-					fmt.Fprintln(cmd.OutOrStdout(), "Credential source: OAuth 2.1 sign-in in the client. The registration holds no token.")
-					fmt.Fprintf(cmd.OutOrStdout(), "Sign-in: %s\n", mcpOAuthSignIn(result.tool, result.name))
+					// A listing writes nothing, so its guidance is a preview.
+					if list {
+						fmt.Fprintln(cmd.OutOrStdout(), "Credential source (preview, applies after installation): OAuth 2.1 sign-in in the client. The registration will hold no token.")
+						fmt.Fprintf(cmd.OutOrStdout(), "Sign-in (preview, applies after installation): %s\n", mcpOAuthSignIn(result.tool, result.name))
+					} else {
+						fmt.Fprintln(cmd.OutOrStdout(), "Credential source: OAuth 2.1 sign-in in the client. The registration holds no token.")
+						fmt.Fprintf(cmd.OutOrStdout(), "Sign-in: %s\n", mcpOAuthSignIn(result.tool, result.name))
+					}
 				} else {
 					source := "stored credential via native header helper (requires client support)"
 					if result.tool == "cursor" || result.tool == "opencode" {
@@ -160,7 +166,8 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 	return command
 }
 
-// newMCPInstallIdentity builds the identity for the auth mode. Only the PAT
+// newMCPInstallIdentity builds the identity for the auth mode from the
+// canonical base that selectedMCPServer returns. Only the PAT
 // mode resolves the credential file path, because only its helper and
 // bridge name it. The OAuth mode reads no credential and needs no stored
 // token (component-cli-onboarding invariants 6 and 7). It looks up the
@@ -170,7 +177,7 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 // lookup fails, only the conveyor file name rule applies.
 func newMCPInstallIdentity(mode, server, name string) (mcpIdentity, error) {
 	if mode == mcpAuthOAuth {
-		id, err := newMCPOAuthIdentity(server, name)
+		id, err := newMCPOAuthIdentityForBase(server, name)
 		if executable, lookupErr := os.Executable(); err == nil && lookupErr == nil && filepath.IsAbs(executable) {
 			id.running = executable
 		}
@@ -188,7 +195,7 @@ func newMCPInstallIdentity(mode, server, name string) (mcpIdentity, error) {
 	if err != nil {
 		return mcpIdentity{}, err
 	}
-	return newMCPIdentity(server, name, binary, credentials)
+	return newMCPPATIdentityForBase(server, name, binary, credentials)
 }
 
 // mcpOAuthSignIn names the client's own OAuth sign-in step for the
@@ -225,6 +232,13 @@ func explicitMCPServer() (string, bool) {
 	return "", false
 }
 
+// storedMCPServerBase checks a credential file key, which is already a
+// canonical base. The added /mcp segment is the one that normalization
+// removes, so a base that itself ends in /mcp stays unchanged.
+func storedMCPServerBase(key string) (string, error) {
+	return normalizeServerURL(strings.TrimRight(strings.TrimSpace(key), "/") + "/mcp")
+}
+
 // selectedMCPServer selects the server from --server, then CONVEYOR_ADDR,
 // then the sole stored server. The OAuth mode needs no stored credential and
 // does not read the credential file for an explicit server. The PAT mode
@@ -249,7 +263,7 @@ func selectedMCPServer(mode string) (string, error) {
 	case 0:
 		return "", errors.New("no Conveyor server selected; pass --server or set CONVEYOR_ADDR")
 	case 1:
-		return normalizeServerURL(servers[0])
+		return storedMCPServerBase(servers[0])
 	default:
 		return "", errors.New("multiple stored Conveyor servers; select one with --server")
 	}
@@ -266,7 +280,7 @@ func selectedStoredMCPServer() (string, error) {
 			return "", normalizeErr
 		}
 		if strings.TrimSpace(config.Servers[canonical].Token) == "" {
-			return "", fmt.Errorf("no stored credential for %s; run `conveyor auth login --server %s`", canonical, canonical)
+			return "", fmt.Errorf("no stored credential for %s; run `conveyor auth login --server %s`", canonical, mcpServerArgument(canonical))
 		}
 		return canonical, nil
 	}
@@ -281,7 +295,7 @@ func selectedStoredMCPServer() (string, error) {
 	case 0:
 		return "", errors.New("no stored Conveyor credential; run `conveyor auth login`")
 	case 1:
-		return normalizeServerURL(servers[0])
+		return storedMCPServerBase(servers[0])
 	default:
 		return "", errors.New("multiple stored Conveyor servers; select one with --server")
 	}

@@ -61,8 +61,10 @@ credential file. With `--auth oauth`, `--server` or `CONVEYOR_ADDR` needs no
 stored token, and the installer does not read the credential file. Without
 them, OAuth uses the sole stored server, with or without a token. With
 `--auth pat`, the selected server must have a stored token. Both modes refuse
-an invalid server address, several stored servers, or no server, before any
-write. A `--server` flag on the command line is always the selected source.
+an invalid server address before any write. With no `--server` and no
+`CONVEYOR_ADDR`, both modes also refuse when they find no stored server or
+more than one. For this rule, PAT counts only the stored servers that have a
+token, and OAuth counts every stored server. A `--server` flag on the command line is always the selected source.
 An empty or blank value, such as `--server=`, refuses and never uses
 `CONVEYOR_ADDR` or a stored server. An empty `CONVEYOR_ADDR` counts as unset.
 
@@ -242,8 +244,15 @@ the current paths, and the OAuth mode removes the helper or bridge. The OAuth
 mode reads no credential for this. It looks up only the path of the running
 executable, and the registration never names that path. So an entry that the
 same executable wrote under `--auth pat` switches to OAuth in place, with no
-stored token. An entry without the marker needs `--adopt` and the exact
-current helper or bridge, so only `--auth pat` can adopt it.
+stored token. An entry without the marker that holds a helper or a bridge
+needs `--auth pat` and `--adopt`, and the helper or bridge must be exactly the
+current one. Either mode can adopt an entry without the marker that has the
+matching URL and no other credential source.
+
+The installer refuses an Antigravity entry that has `authProviderType`, and it
+does not change the file. Antigravity uses that field to attach a different
+credential source. This rule applies in both modes, to an owned entry and to
+`--adopt`.
 
 Only installer-marked registrations are migrated automatically. A matching
 legacy `conveyor` registration moves to the selected name while nested tool
@@ -266,7 +275,13 @@ An OAuth installation also reports the sign-in step.
 A client loads a new registration after a restart. Codex and Claude parser
 checks and OpenCode's staged `debug config` check do not initialize MCP.
 With `--auth oauth`, `codex mcp get <name> --json` must report the registered
-URL. With `--auth pat`, it must report `http_headers_helper`.
+URL in `transport.url`. With `--auth pat`, it must report
+`http_headers_helper`.
+`claude mcp get` connects to an enabled server and runs its helper. So the
+installer disables the entry in the isolated copy that Claude reads, and
+Claude then only parses it. The published file is not changed. When Claude
+does not report the entry as disabled, the installer refuses the write.
+Upgrade Claude Code in that case.
 When `agy` is on `PATH`, the installer runs `agy mcp list` on a copy in an
 isolated home before it writes the Antigravity file. It then publishes the
 file only when `agy` exits with status 0 and lists the exact name as an
@@ -284,7 +299,10 @@ production credentials. Unsupported clients require an upgrade, not a
 shared-token fallback.
 
 An OAuth client refreshes its own token. To stop its access, revoke the grant
-in the dashboard settings, then sign in again from the client. For a PAT
+in the dashboard settings. A new sign-in creates a new grant and restores
+access, so sign in again only to restore it.
+
+For a PAT
 registration, after rotation, log in again for that server. Codex caches helper headers for
 a connection and can refresh once after an authentication rejection; Claude
 reads its helper at connection and reconnection. Cursor and OpenCode need

@@ -1297,6 +1297,21 @@ func mcpRefusalCases(tool string) map[string]struct {
 		"unowned foreign Authorization":    {address + `,"headers":{"Authorization":"Bearer fixture-secret"}`, false},
 	}
 	if tool == "antigravity" {
+		// Antigravity attaches another credential source for this field. Each
+		// case runs owned and unowned, with and without --adopt.
+		for label, field := range map[string]string{
+			"Google credentials":     `"authProviderType":"google_credentials"`,
+			"another provider":       `"authProviderType":"other"`,
+			"an empty provider":      `"authProviderType":""`,
+			"a null provider":        `"authProviderType":null`,
+			"another field spelling": `"AuthProviderType":"google_credentials"`,
+		} {
+			for _, owned := range []bool{true, false} {
+				cases[fmt.Sprintf("%s owned=%t", label, owned)] = c{address + "," + field, owned}
+				cases[fmt.Sprintf("%s on url owned=%t", label, owned)] = c{`"url":"https://one.example/mcp",` + field, owned}
+				cases[fmt.Sprintf("%s on the bridge owned=%t", label, owned)] = c{`"command":"/opt/Conveyor's tools/conveyor","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json"],` + field, owned}
+			}
+		}
 		cases["non-bridge command"] = c{`"command":"/usr/bin/other","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json"]`, true}
 		cases["bridge for another server"] = c{address + `,"command":"/opt/bin/conveyor","args":["mcp","stdio","--server","https://two.example","--credentials-file","/config space/conveyor/credentials.json"]`, true}
 		cases["bridge with a relative credential file"] = c{`"command":"/opt/bin/conveyor","args":["mcp","stdio","--server","https://one.example","--credentials-file","credentials.json"]`, true}

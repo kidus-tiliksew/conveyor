@@ -21,6 +21,10 @@ import (
 // req-cli-authentication REQ-4/AC-4.2 and AC-4.3.
 type mcpIdentity struct {
 	server, endpoint, name, tokenEnv, bridge string
+	// serverArgument is the --server value of the helper and the bridge. It
+	// is the canonical base, spelled so that the command's own normalization
+	// yields that base (mcpServerArgument).
+	serverArgument string
 	// binary and credentials are the absolute paths that the bridge names.
 	// Antigravity's stdio entry stores them as separate JSON strings
 	// (component-cli-onboarding invariant 6; DEC-146(5)). An OAuth identity
@@ -47,11 +51,21 @@ func (id mcpIdentity) oauth() bool { return id.auth == mcpAuthOAuth }
 var mcpNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 var mcpSlugPattern = regexp.MustCompile(`[^a-z0-9]+`)
 
-// newMCPIdentity returns the --auth pat identity. Its bridge names the
-// absolute executable and credential file (component-cli-onboarding
-// invariant 6).
+// newMCPIdentity returns the --auth pat identity for a server address that a
+// person or a client configuration supplies. It normalizes the address once.
 func newMCPIdentity(server, name, binary, credentials string) (mcpIdentity, error) {
-	id, err := newMCPBaseIdentity(server, name)
+	canonical, err := normalizeServerURL(server)
+	if err != nil {
+		return mcpIdentity{}, err
+	}
+	return newMCPPATIdentityForBase(canonical, name, binary, credentials)
+}
+
+// newMCPPATIdentityForBase returns the --auth pat identity for a canonical
+// base. Its bridge names the absolute executable and credential file
+// (component-cli-onboarding invariant 6).
+func newMCPPATIdentityForBase(canonical, name, binary, credentials string) (mcpIdentity, error) {
+	id, err := newMCPBaseIdentity(canonical, name)
 	if err != nil {
 		return mcpIdentity{}, err
 	}
@@ -59,25 +73,48 @@ func newMCPIdentity(server, name, binary, credentials string) (mcpIdentity, erro
 		return mcpIdentity{}, errors.New("MCP credential bridge requires absolute executable and credential file paths")
 	}
 	id.auth = mcpAuthPAT
-	id.bridge = shellQuoteMCP(binary) + " auth token --server " + shellQuoteMCP(id.server) + " --credentials-file " + shellQuoteMCP(credentials)
+	id.bridge = shellQuoteMCP(binary) + " auth token --server " + shellQuoteMCP(id.serverArgument) + " --credentials-file " + shellQuoteMCP(credentials)
 	id.binary, id.credentials, id.running = binary, credentials, binary
 	return id, nil
 }
 
-// newMCPOAuthIdentity returns the --auth oauth identity. It needs no
-// executable or credential file path, because an OAuth registration names
-// only the endpoint (req-mcp-oauth AC-5.1; DEC-146(5)).
+// newMCPOAuthIdentity returns the --auth oauth identity for a server address
+// that a person or a client configuration supplies. It normalizes the
+// address once.
 func newMCPOAuthIdentity(server, name string) (mcpIdentity, error) {
-	id, err := newMCPBaseIdentity(server, name)
-	id.auth = mcpAuthOAuth
-	return id, err
-}
-
-func newMCPBaseIdentity(server, name string) (mcpIdentity, error) {
 	canonical, err := normalizeServerURL(server)
 	if err != nil {
 		return mcpIdentity{}, err
 	}
+	return newMCPOAuthIdentityForBase(canonical, name)
+}
+
+// newMCPOAuthIdentityForBase returns the --auth oauth identity for a
+// canonical base. It needs no executable or credential file path, because an
+// OAuth registration names only the endpoint (req-mcp-oauth AC-5.1;
+// DEC-146(5)).
+func newMCPOAuthIdentityForBase(canonical, name string) (mcpIdentity, error) {
+	id, err := newMCPBaseIdentity(canonical, name)
+	id.auth = mcpAuthOAuth
+	return id, err
+}
+
+// mcpServerArgument spells a canonical base as a --server value. Every
+// command normalizes --server once, and that removes one trailing /mcp
+// segment. A base that itself ends in /mcp therefore needs its endpoint as
+// the value. Every other base is its own value.
+func mcpServerArgument(canonical string) string {
+	if again, err := normalizeServerURL(canonical); err == nil && again == canonical {
+		return canonical
+	}
+	return canonical + "/mcp"
+}
+
+// newMCPBaseIdentity takes the canonical base and never normalizes it again,
+// because a second normalization removes another /mcp segment and so names
+// another endpoint (component-cli-onboarding invariant 7; req-mcp-oauth
+// AC-5.1).
+func newMCPBaseIdentity(canonical, name string) (mcpIdentity, error) {
 	u, _ := url.Parse(canonical)
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(canonical)))
 	slug := strings.Trim(mcpSlugPattern.ReplaceAllString(u.Hostname(), "-"), "-")
@@ -102,7 +139,7 @@ func newMCPBaseIdentity(server, name string) (mcpIdentity, error) {
 	} else {
 		name = slug + "-" + hash[:12] + "-conveyor"
 	}
-	return mcpIdentity{server: canonical, endpoint: canonical + "/mcp", name: name, tokenEnv: "CONVEYOR_MCP_TOKEN_" + strings.ToUpper(hash), explicit: explicit}, nil
+	return mcpIdentity{server: canonical, serverArgument: mcpServerArgument(canonical), endpoint: canonical + "/mcp", name: name, tokenEnv: "CONVEYOR_MCP_TOKEN_" + strings.ToUpper(hash), explicit: explicit}, nil
 }
 
 // antigravityBridgeArgs is the argument list of Antigravity's stdio entry.
@@ -111,7 +148,7 @@ func newMCPBaseIdentity(server, name string) (mcpIdentity, error) {
 // (component-cli-onboarding invariant 6; req-cli-authentication AC-4.2;
 // DEC-145).
 func (id mcpIdentity) antigravityBridgeArgs() []any {
-	return []any{"mcp", "stdio", "--server", id.server, "--credentials-file", id.credentials}
+	return []any{"mcp", "stdio", "--server", id.serverArgument, "--credentials-file", id.credentials}
 }
 
 // antigravityBridgeMatches reports whether an entry's command and args are
@@ -140,7 +177,7 @@ func antigravityOwnedBridge(entry mcpEntry, id mcpIdentity) bool {
 	}
 	command, ok := entry.fields["command"].(string)
 	server, shaped := antigravityBridgeServer(entry.fields)
-	if !ok || !shaped || server != id.server || !mcpConveyorCommand(command, id) {
+	if !ok || !shaped || server != id.serverArgument || !mcpConveyorCommand(command, id) {
 		return false
 	}
 	credentials, _ := entry.fields["args"].([]any)[5].(string)
@@ -226,7 +263,7 @@ func mcpOwnedHelper(value any, entry mcpEntry, id mcpIdentity) bool {
 		return false
 	}
 	binary, server, credentials, ok := parseMCPHelper(text)
-	return ok && server == id.server && mcpConveyorCommand(binary, id) && filepath.IsAbs(credentials)
+	return ok && server == id.serverArgument && mcpConveyorCommand(binary, id) && filepath.IsAbs(credentials)
 }
 
 // antigravityBridgeServer returns the --server value of an entry whose
@@ -422,6 +459,16 @@ func updateMCPFields(entry mcpEntry, tool string, id mcpIdentity, adopt bool) (m
 			continue
 		}
 		return nil, fmt.Errorf("conflicting %s configuration; remove it explicitly before installing", key)
+	}
+	if tool == "antigravity" {
+		// Antigravity attaches another credential source for this field, so
+		// neither mode takes over or removes it (req-mcp-oauth AC-5.1;
+		// req-cli-authentication AC-4.2).
+		for key := range f {
+			if strings.EqualFold(key, "authProviderType") {
+				return nil, fmt.Errorf("conflicting %s configuration; remove it explicitly before installing", key)
+			}
+		}
 	}
 	for _, key := range []string{"headers", "http_headers", "env_http_headers"} {
 		if value, ok := f[key]; ok {

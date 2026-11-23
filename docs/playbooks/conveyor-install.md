@@ -475,9 +475,11 @@ conveyor mcp install --server <server-url> --name <connection-name>
 `--tool antigravity` selects one tool, and `--list` previews without writing.
 
 By default the installer writes an OAuth registration (`--auth oauth`). Each
-client registers only `<server-url>/mcp` and holds no token. The person signs
-in from each client through a browser. The installer prints the step for each
-client:
+client registers only `<server-url>/mcp` and holds no token.
+
+Ask the person to restart each client first. A client loads a new registration
+only after a restart. Then the person signs in from each client through a
+browser. The installer prints the step for each client:
 
 - Codex: `codex mcp login <connection-name>`.
 - Claude Code: `claude mcp login <connection-name>`.
@@ -514,7 +516,8 @@ credential for each request. The installer prints no export line for it.
 A later run in the other mode changes the same registration and keeps its
 other settings.
 
-Ask the person to restart each client. Naming, migration, and credential details are in the
+Ask the person to restart each client after a PAT installation too.
+Naming, migration, and credential details are in the
 [MCP reference](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/mcp.md),
 the [OAuth server rules](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/auth.md#mcp-oauth-21),
 and [Authentication](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/auth.md#native-mcp-credentials).
