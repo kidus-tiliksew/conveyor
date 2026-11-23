@@ -139,6 +139,10 @@ for (const width of widths) {
     await openSettingsRow(page, 'Connect a coding agent')
     await expect(page.getByTestId('oauth-grant')).toHaveCount(2)
     await capture(page, 'settings-open', width)
+    // Settings scrolls inside its own panel, so the access token option gets
+    // its own capture.
+    await page.getByTestId('connect-agent-token-option').scrollIntoViewIfNeeded()
+    await capture(page, 'settings-token-option', width)
   })
 
   test(`visual: Settings welcome card at ${width} px`, async ({ page }) => {
@@ -161,7 +165,12 @@ for (const width of widths) {
     await dialog.evaluate((panel) => panel.scrollTo(0, panel.scrollHeight))
     await capture(page, 'mcp-setup-oauth-end', width)
     await dialog.evaluate((panel) => panel.scrollTo(0, 0))
-    await dialog.getByRole('button', { name: 'Access token (--auth pat)' }).click()
+    await dialog.getByRole('button', { name: 'Access token' }).click()
+    await page.mouse.move(0, 0)
+    await capture(page, 'mcp-setup-pat-cursor', width)
+    await dialog.evaluate((panel) => panel.scrollTo(0, panel.scrollHeight))
+    await capture(page, 'mcp-setup-pat-cursor-end', width)
+    await dialog.evaluate((panel) => panel.scrollTo(0, 0))
     await dialog.getByRole('tab', { name: 'Other' }).click()
     await page.mouse.move(0, 0)
     await capture(page, 'mcp-setup-pat', width)

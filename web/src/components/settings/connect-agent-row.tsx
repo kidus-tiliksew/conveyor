@@ -5,8 +5,8 @@ import { SettingsRow } from './settings-row'
 
 // How a coding-agent session reaches this deployment's MCP endpoint. The
 // default is browser sign-in, with only the endpoint in the configuration.
-// The access token setup is the explicit `--auth pat` fallback and carries a
-// placeholder, never a token value (component-web-dashboard invariant 26;
+// The access token setup is the fallback for a client without OAuth sign-in
+// and carries a placeholder, never a token value (component-web-dashboard invariant 26;
 // req-mcp-oauth REQ-5). The closed row copies the endpoint without opening.
 export function ConnectAgentRow({ endpoint }: { endpoint: string }) {
   const config = mcpConnectionConfig(endpoint)
@@ -37,9 +37,12 @@ export function ConnectAgentRow({ endpoint }: { endpoint: string }) {
         <div className="space-y-2 border-t border-border pt-3" data-testid="connect-agent-token-option">
           <p className="font-medium text-foreground">Access token option</p>
           <p>
-            For a client without browser sign-in, run <code className="font-mono text-xs">conveyor auth login</code>,
-            then <code className="font-mono text-xs">conveyor mcp install --auth pat --server {server}</code>. To edit
-            the file yourself, use these settings and replace the placeholder with one of your access tokens.
+            For a client without browser sign-in, run{' '}
+            <code className="font-mono text-xs">conveyor auth login --server {server}</code>, then{' '}
+            <code className="font-mono text-xs">conveyor mcp install --server {server}</code>. The current CLI installs
+            an access token entry. With a CLI version that supports <code className="font-mono text-xs">--auth</code>,
+            add <code className="font-mono text-xs">--auth pat</code>. To edit the file yourself, use these settings and
+            replace the placeholder with one of your access tokens.
           </p>
           <div className="flex items-start gap-2 rounded-md border border-border bg-background p-2">
             <pre className="min-w-0 flex-1 overflow-x-auto font-mono text-xs text-foreground">{tokenConfig}</pre>

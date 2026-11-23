@@ -2,11 +2,30 @@ import { expect, type Page, test } from '@playwright/test'
 import { mockSettingsPage, openSettingsRow, settingsRowHeader } from './helpers/settings'
 
 // The MCP setup dialog and the Settings connection row show browser sign-in
-// to the remote `/mcp` URL by default, with the `--auth pat` access token
-// setup as an explicit second option (component-web-dashboard invariant 26;
-// req-mcp-oauth REQ-5). No setup shows a credential value.
+// to the remote `/mcp` URL by default, with the access token setup as an
+// explicit second option (component-web-dashboard invariant 26; req-mcp-oauth
+// REQ-5). No setup shows a credential value.
+//
+// The released `conveyor mcp install` has no `--auth` flag and writes only an
+// access token entry. So the browser sign-in steps are manual, the access
+// token steps use the released CLI, and every command with `--auth` sits in a
+// note that names the CLI version it needs.
 
 const clients = ['Cursor', 'OpenCode', 'Claude Code', 'Codex', 'Other']
+
+// The CLI `--tool` value and the file each manual step names.
+const toolOf: Record<string, string> = {
+  Cursor: 'cursor',
+  OpenCode: 'opencode',
+  'Claude Code': 'claude',
+  Codex: 'codex',
+}
+const fileOf: Record<string, string> = {
+  Cursor: '~/.cursor/mcp.json',
+  OpenCode: '~/.config/opencode/opencode.json',
+  'Claude Code': '~/.claude.json',
+  Codex: '~/.codex/config.toml',
+}
 
 // Text that marks a token setup. The default setup holds none of it.
 const credentialMarkers = [
@@ -34,10 +53,7 @@ test('the setup dialog defaults to browser sign-in with no credential in any cli
   const endpoint = new URL('/mcp', page.url()).toString()
   await expect(dialog.getByTestId('mcp-endpoint')).toHaveText(endpoint)
   await expect(dialog.getByRole('button', { name: 'Browser sign-in' })).toHaveAttribute('aria-pressed', 'true')
-  await expect(dialog.getByRole('button', { name: 'Access token (--auth pat)' })).toHaveAttribute(
-    'aria-pressed',
-    'false',
-  )
+  await expect(dialog.getByRole('button', { name: 'Access token' })).toHaveAttribute('aria-pressed', 'false')
 
   for (const client of clients) {
     await dialog.getByRole('tab', { name: client }).click()
@@ -45,9 +61,26 @@ test('the setup dialog defaults to browser sign-in with no credential in any cli
     const snippet = await panel.locator('pre').innerText()
     expect(snippet).toContain(endpoint)
     for (const marker of credentialMarkers) expect(snippet).not.toContain(marker)
-    const steps = await panel.locator('ol').innerText()
-    expect(steps).not.toContain('--auth pat')
-    for (const marker of ['CONVEYOR_API_TOKEN', 'auth token', 'auth login']) expect(steps).not.toContain(marker)
+    // The steps are the manual setup that works with the released CLI: put
+    // the endpoint in the client's file, then sign in from the client.
+    const steps = panel.locator('ol > li')
+    const stepText = await steps.allInnerTexts()
+    for (const marker of ['conveyor mcp install', '--auth', 'CONVEYOR_API_TOKEN', 'auth token', 'auth login'])
+      expect(stepText.join('\n')).not.toContain(marker)
+    expect(stepText.join('\n')).toMatch(/approve the request/)
+    const note = panel.getByTestId('mcp-installer-note')
+    if (client === 'Other') {
+      expect(stepText[1]).toContain('Add the endpoint below. Do not add an Authorization header.')
+      await expect(note).toHaveCount(0)
+    } else {
+      expect(stepText[0]).toBe(
+        `${client === 'Codex' ? 'Add' : 'Merge'} the configuration below ${client === 'Codex' ? 'to' : 'into'} ${fileOf[client]}. It holds only the Conveyor endpoint.`,
+      )
+      // The installer command is labeled with the CLI version it needs.
+      await expect(note).toHaveText(
+        `Needs a Conveyor CLI version that supports --auth: conveyor mcp install --tool ${toolOf[client]} --server ${new URL(endpoint).origin} writes this entry for you. The current CLI writes an access token entry instead.`,
+      )
+    }
     // The copied text is the snippet on screen.
     await panel.getByRole('button', { name: `Copy ${client} setup` }).click()
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(snippet)
@@ -57,17 +90,27 @@ test('the setup dialog defaults to browser sign-in with no credential in any cli
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(endpoint)
 })
 
-test('the access token option names --auth pat and holds only placeholders', async ({ page }) => {
+test('the access token option uses the released CLI and holds only placeholders', async ({ page }) => {
   const { dialog } = await openDialog(page)
-  await dialog.getByRole('button', { name: 'Access token (--auth pat)' }).click()
-  await expect(dialog.getByRole('button', { name: 'Access token (--auth pat)' })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  )
+  const server = new URL(page.url()).origin
+  await dialog.getByRole('button', { name: 'Access token' }).click()
+  await expect(dialog.getByRole('button', { name: 'Access token' })).toHaveAttribute('aria-pressed', 'true')
   for (const client of ['Cursor', 'OpenCode', 'Claude Code', 'Codex']) {
     await dialog.getByRole('tab', { name: client }).click()
-    await expect(dialog.getByRole('tabpanel').locator('ol')).toContainText(
-      `--tool ${client === 'Claude Code' ? 'claude' : client.toLowerCase()} --auth pat`,
+    const tab = dialog.getByRole('tabpanel')
+    const stepText = await tab.locator('ol > li').allInnerTexts()
+    // The released CLI: save a token, then install without --auth.
+    expect(stepText[0]).toBe(`Run conveyor auth login --server ${server} to save an access token.`)
+    expect(stepText[1]).toContain(`Run conveyor mcp install --tool ${toolOf[client]} --server ${server}`)
+    expect(stepText.join('\n')).not.toContain('--auth')
+    // A file edited by hand gets a placeholder or an environment reference.
+    expect(stepText[2]).toMatch(/^To edit the file yourself, /)
+    expect(stepText[2]).toMatch(/replace the placeholder|export CONVEYOR_API_TOKEN=\$\(conveyor auth token\)/)
+    await expect(tab.getByTestId('mcp-installer-note')).toHaveText(
+      'With a Conveyor CLI version that supports --auth, add --auth pat to the install command. Without it, that version installs browser sign-in.',
+    )
+    expect(await tab.locator('pre').innerText()).toMatch(
+      /<CONVEYOR_API_TOKEN>|CONVEYOR_API_TOKEN\}|"CONVEYOR_API_TOKEN"/,
     )
   }
   await dialog.getByRole('tab', { name: 'Other' }).click()
@@ -111,7 +154,12 @@ test('the Settings connection row shows the endpoint setup first and the token o
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(config)
 
   const tokenOption = region.getByTestId('connect-agent-token-option')
-  await expect(tokenOption).toContainText('conveyor mcp install --auth pat')
+  // The released CLI first, and --auth only for a CLI version that has it.
+  const server = new URL(page.url()).origin
+  await expect(tokenOption).toContainText(
+    `run conveyor auth login --server ${server}, then conveyor mcp install --server ${server}. The current CLI installs an access token entry. With a CLI version that supports --auth, add --auth pat.`,
+  )
+  await expect(tokenOption).not.toContainText('install --auth')
   await expect(tokenOption.locator('pre')).toContainText('Bearer <CONVEYOR_API_TOKEN>')
   await expect(settingsRowHeader(page, 'Connect a coding agent')).toHaveAttribute('aria-expanded', 'true')
 })

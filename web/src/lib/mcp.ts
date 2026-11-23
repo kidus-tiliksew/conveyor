@@ -2,8 +2,14 @@ export type MCPClient = 'cursor' | 'opencode' | 'claude' | 'codex' | 'other'
 
 // How a client signs in to `/mcp`. OAuth is the default: the client opens
 // Conveyor's sign-in page in the browser and keeps its own token. `pat` is the
-// explicit `conveyor mcp install --auth pat` fallback with a personal access
-// token (req-mcp-oauth REQ-5; component-web-dashboard invariant 26).
+// personal access token fallback (req-mcp-oauth REQ-5; component-web-dashboard
+// invariant 26).
+//
+// The released `conveyor mcp install` has no `--auth` flag: it needs a saved
+// access token and always writes an access token entry. The OAuth installer
+// mode comes with a later CLI version. So each OAuth setup leads with the
+// manual steps that work with any CLI, and every installer command that needs
+// `--auth` is labeled with the CLI version that it needs.
 export type MCPAuthMode = 'oauth' | 'pat'
 
 export interface MCPClientSetup {
@@ -13,6 +19,9 @@ export interface MCPClientSetup {
   steps: string[]
   snippetLabel: string
   snippet: string
+  // An installer command that needs a CLI version with `--auth`, shown apart
+  // from the steps, which work with the released CLI.
+  installerNote: string
 }
 
 export function mcpEndpoint(origin: string) {
@@ -35,7 +44,7 @@ export function mcpConnectionConfig(endpoint: string) {
 }`
 }
 
-/** The `--auth pat` connection settings, with a placeholder and never a value. */
+/** The access token connection settings, with a placeholder and never a value. */
 export function mcpTokenConnectionConfig(endpoint: string) {
   return `{
   "mcpServers": {
@@ -56,25 +65,28 @@ export function mcpClientSetups(endpoint: string, mode: MCPAuthMode = 'oauth'): 
 // credential, a header, or a token placeholder.
 function oauthClientSetups(endpoint: string): MCPClientSetup[] {
   const server = serverBase(endpoint)
+  const installerNote = (tool: string) =>
+    `Needs a Conveyor CLI version that supports --auth: conveyor mcp install --tool ${tool} --server ${server} writes this entry for you. The current CLI writes an access token entry instead.`
   return [
     {
       id: 'cursor',
       label: 'Cursor',
       description: 'Connect Cursor to this Conveyor server. You sign in with your browser.',
       steps: [
-        `Run conveyor mcp install --tool cursor --server ${server}, or merge the configuration below into ~/.cursor/mcp.json.`,
+        'Merge the configuration below into ~/.cursor/mcp.json. It holds only the Conveyor endpoint.',
         'Open Cursor. When it asks you to sign in to Conveyor, approve the request in your browser.',
         'Verify with cursor-agent mcp list-tools conveyor.',
       ],
       snippetLabel: '~/.cursor/mcp.json',
       snippet: mcpConnectionConfig(endpoint),
+      installerNote: installerNote('cursor'),
     },
     {
       id: 'opencode',
       label: 'OpenCode',
       description: 'Connect OpenCode to this Conveyor server. You sign in with your browser.',
       steps: [
-        `Run conveyor mcp install --tool opencode --server ${server}, or merge the configuration below into ~/.config/opencode/opencode.json.`,
+        'Merge the configuration below into ~/.config/opencode/opencode.json. It holds only the Conveyor endpoint.',
         'Start OpenCode. When it asks you to sign in to Conveyor, approve the request in your browser.',
         'Verify with opencode mcp list. The conveyor line must read connected.',
         'Do not add keys outside mcp. OpenCode refuses unknown top-level keys and does not start.',
@@ -88,13 +100,14 @@ function oauthClientSetups(endpoint: string): MCPClientSetup[] {
     }
   }
 }`,
+      installerNote: installerNote('opencode'),
     },
     {
       id: 'claude',
       label: 'Claude Code',
       description: 'Connect Claude Code to this Conveyor server. You sign in with your browser.',
       steps: [
-        `Run conveyor mcp install --tool claude --server ${server}, or merge the configuration below into ~/.claude.json.`,
+        'Merge the configuration below into ~/.claude.json. It holds only the Conveyor endpoint.',
         'Start a new Claude Code session and run /mcp. Select conveyor and approve the request in your browser.',
         'Verify that the Conveyor tools are available.',
       ],
@@ -107,19 +120,21 @@ function oauthClientSetups(endpoint: string): MCPClientSetup[] {
     }
   }
 }`,
+      installerNote: installerNote('claude'),
     },
     {
       id: 'codex',
       label: 'Codex',
       description: 'Connect Codex to this Conveyor server. You sign in with your browser.',
       steps: [
-        `Run conveyor mcp install --tool codex --server ${server}, or add the configuration below to ~/.codex/config.toml.`,
+        'Add the configuration below to ~/.codex/config.toml. It holds only the Conveyor endpoint.',
         'Run codex mcp login conveyor and approve the request in your browser.',
         'Start a new Codex session and verify that the Conveyor tools are available.',
       ],
       snippetLabel: '~/.codex/config.toml',
       snippet: `[mcp_servers.conveyor]
 url = "${endpoint}"`,
+      installerNote: installerNote('codex'),
     },
     {
       id: 'other',
@@ -132,22 +147,29 @@ url = "${endpoint}"`,
       ],
       snippetLabel: 'MCP connection settings',
       snippet: mcpConnectionConfig(endpoint),
+      installerNote: '',
     },
   ]
 }
 
-// The `--auth pat` setups keep a personal access token out of each file: the
-// CLI installer stores a reference, and a pasted file holds a placeholder.
+// The access token setups use the released CLI: `conveyor auth login` saves
+// a token, and `conveyor mcp install` writes an entry that reads it. A file
+// edited by hand holds a placeholder or an environment reference, never a
+// token value.
 function tokenClientSetups(endpoint: string): MCPClientSetup[] {
   const server = serverBase(endpoint)
+  const login = `Run conveyor auth login --server ${server} to save an access token.`
+  const installerNote =
+    'With a Conveyor CLI version that supports --auth, add --auth pat to the install command. Without it, that version installs browser sign-in.'
   return [
     {
       id: 'cursor',
       label: 'Cursor',
       description: 'Connect Cursor with a personal access token.',
       steps: [
-        `Run conveyor auth login --server ${server}, then conveyor mcp install --tool cursor --auth pat --server ${server}.`,
-        'In the shell that launches Cursor, run the export line that the installer prints.',
+        login,
+        `Run conveyor mcp install --tool cursor --server ${server}, then run the export line that it prints in the shell that launches Cursor.`,
+        'To edit the file yourself, merge the configuration below and run export CONVEYOR_API_TOKEN=$(conveyor auth token) in the shell that launches Cursor.',
         'Verify with cursor-agent mcp list-tools conveyor.',
       ],
       snippetLabel: '~/.cursor/mcp.json',
@@ -159,14 +181,16 @@ function tokenClientSetups(endpoint: string): MCPClientSetup[] {
     }
   }
 }`,
+      installerNote,
     },
     {
       id: 'opencode',
       label: 'OpenCode',
       description: 'Connect OpenCode with a personal access token.',
       steps: [
-        `Run conveyor auth login --server ${server}, then conveyor mcp install --tool opencode --auth pat --server ${server}.`,
-        'In the shell that launches OpenCode, run the export line that the installer prints.',
+        login,
+        `Run conveyor mcp install --tool opencode --server ${server}, then run the export line that it prints in the shell that launches OpenCode.`,
+        'To edit the file yourself, merge the configuration below and run export CONVEYOR_API_TOKEN=$(conveyor auth token) in the shell that launches OpenCode.',
         'Verify with opencode mcp list. The conveyor line must read connected.',
       ],
       snippetLabel: '~/.config/opencode/opencode.json',
@@ -180,14 +204,16 @@ function tokenClientSetups(endpoint: string): MCPClientSetup[] {
     }
   }
 }`,
+      installerNote,
     },
     {
       id: 'claude',
       label: 'Claude Code',
       description: 'Connect Claude Code with a personal access token.',
       steps: [
-        `Run conveyor auth login --server ${server}, then conveyor mcp install --tool claude --auth pat --server ${server}.`,
-        'The installer adds a header helper that reads your saved token. To edit the file yourself, replace the placeholder below.',
+        login,
+        `Run conveyor mcp install --tool claude --server ${server}. It adds a header helper that reads your saved token.`,
+        'To edit the file yourself, merge the configuration below and replace the placeholder with one of your access tokens.',
         'Start a new Claude Code session and verify that the Conveyor tools are available.',
       ],
       snippetLabel: '~/.claude.json',
@@ -200,20 +226,23 @@ function tokenClientSetups(endpoint: string): MCPClientSetup[] {
     }
   }
 }`,
+      installerNote,
     },
     {
       id: 'codex',
       label: 'Codex',
       description: 'Connect Codex with a personal access token.',
       steps: [
-        `Run conveyor auth login --server ${server}, then conveyor mcp install --tool codex --auth pat --server ${server}.`,
-        'The installer adds a header helper that reads your saved token. To edit the file yourself, export CONVEYOR_API_TOKEN where Codex starts.',
+        login,
+        `Run conveyor mcp install --tool codex --server ${server}. It adds a header helper that reads your saved token.`,
+        'To edit the file yourself, add the configuration below and run export CONVEYOR_API_TOKEN=$(conveyor auth token) where Codex starts.',
         'Start a new Codex session and verify that the Conveyor tools are available.',
       ],
       snippetLabel: '~/.codex/config.toml',
       snippet: `[mcp_servers.conveyor]
 url = "${endpoint}"
 bearer_token_env_var = "CONVEYOR_API_TOKEN"`,
+      installerNote,
     },
     {
       id: 'other',
@@ -226,6 +255,7 @@ bearer_token_env_var = "CONVEYOR_API_TOKEN"`,
       ],
       snippetLabel: 'MCP connection settings',
       snippet: mcpTokenConnectionConfig(endpoint),
+      installerNote: '',
     },
   ]
 }

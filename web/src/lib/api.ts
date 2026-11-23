@@ -1011,10 +1011,6 @@ export function safeOAuthRedirect(redirectTo: string, redirectHost: string, redi
 /** The consent page's own address, the only page a sign-in returns to. */
 export const oauthAuthorizePath = '/oauth/authorize'
 
-// A return path longer than this is dropped. The decision body limit is
-// 16 KiB, so a valid authorization request fits.
-const oauthReturnPathMaxLength = 16_384
-
 /**
  * The validated return path for `next` on `/sign-in` and `/onboarding`, or
  * undefined (req-mcp-oauth AC-3.1; component-web-dashboard invariants 22,
@@ -1030,9 +1026,18 @@ const oauthReturnPathMaxLength = 16_384
  *   is refused.
  *
  * The accepted value is returned unchanged, and its query is never rebuilt.
+ *
+ * No length cap applies here. The client's percent-encoded query can be
+ * longer than the decoded decision body, and the server ignores unknown
+ * query fields, so any size limit of the body does not bound a valid
+ * address. The address is already bounded where it travels: Chromium refuses
+ * a URL longer than 2 MiB (`url::kMaxURLChars`), and conveyord's Go HTTP
+ * server refuses a request line and headers over 1 MiB
+ * (`http.DefaultMaxHeaderBytes`). A request that reaches this page passed
+ * both limits, so it is kept whole (req-mcp-oauth AC-3.1).
  */
 export function safeOAuthReturnPath(raw: unknown, origin = window.location.origin): string | undefined {
-  if (typeof raw !== 'string' || raw.length > oauthReturnPathMaxLength) return undefined
+  if (typeof raw !== 'string') return undefined
   if (raw !== oauthAuthorizePath && !raw.startsWith(`${oauthAuthorizePath}?`)) return undefined
   if (!/^[\x21-\x7e]+$/.test(raw) || raw.includes('\\') || raw.includes('#')) return undefined
   let parsed: URL

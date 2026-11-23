@@ -446,56 +446,92 @@ test.describe('OAuth consent page', () => {
   }
 })
 
+// A valid authorization query longer than 16 KiB. Its `state` is 2,000
+// percent-encoded slashes, and an unknown field that the server ignores adds
+// 12,000 characters. The decoded decision body stays far under its 16 KiB
+// limit, so the return path must keep this request whole (req-mcp-oauth
+// AC-3.1).
+const longQuery = `${consentQuery.replace('state=1e3~a%2Fb%2Bc', `state=${'%2F'.repeat(2_000)}`)}&client_note=${'x'.repeat(12_000)}`
+
+// Node's HTTP parser, which the Vite dev server uses, refuses a request line
+// over 16 KiB. The browser keeps the long address, and this route answers its
+// document request with the dashboard document of the short path. Every /v1
+// read is mocked, so no long address reaches a server.
+async function serveLongDocuments(page: Page) {
+  await page.route(
+    (url) => ['/oauth/authorize', '/sign-in', '/onboarding'].includes(url.pathname) && url.href.length > 8_000,
+    async (route) => {
+      const url = new URL(route.request().url())
+      return route.fulfill({ response: await route.fetch({ url: `${url.origin}${url.pathname}` }) })
+    },
+  )
+}
+
+const returnCases = [
+  { name: '', query: consentQuery },
+  { name: ' with a query longer than 16 KiB', query: longQuery },
+]
+
 test.describe('OAuth sign-in return path', () => {
-  test('a signed-out browser signs in with a password and returns to the exact request', async ({ page }) => {
-    const { requests } = await mockConsent(page, { signedIn: false })
-    await page.goto(consentPath)
-    await expect(page).toHaveURL(/\/sign-in\?/)
-    // `next` is encoded once and decodes to the exact path and query.
-    const signIn = new URL(page.url())
-    expect(signIn.pathname).toBe('/sign-in')
-    expect(signIn.searchParams.getAll('next')).toEqual([consentPath])
-    expect(signIn.hash).toBe('')
-
-    const form = page.getByRole('form', { name: 'Password sign-in' })
-    await form.getByLabel('Email address').fill('ada@example.test')
-    await form.getByLabel('Password').fill('a-long-password')
-    const returned = page.waitForRequest((request) => request.url().includes('/v1/oauth/authorize?'))
-    await form.getByRole('button', { name: 'Sign in' }).click()
-    await returned
-    await expect(page.getByTestId('oauth-client-name')).toHaveText('Metadata Agent')
-    const reads = consentReads(requests)
-    expect(reads.at(-1)?.search).toBe(`?${consentQuery}`)
+  test('the long test query is above the old 16 KiB cutoff', () => {
+    expect(`/oauth/authorize?${longQuery}`.length).toBeGreaterThan(16_384)
   })
 
-  test('a sign-in link returns through onboarding to the exact request', async ({ page }) => {
-    const { requests } = await mockConsent(page, { signedIn: false })
-    const seen: string[] = []
-    page.on('framenavigated', (frame) => {
-      if (frame === page.mainFrame()) seen.push(frame.url())
+  for (const { name, query } of returnCases) {
+    const path = `/oauth/authorize?${query}`
+
+    test(`a signed-out browser signs in with a password and returns to the exact request${name}`, async ({ page }) => {
+      const { requests } = await mockConsent(page, { signedIn: false })
+      await serveLongDocuments(page)
+      await page.goto(path)
+      await expect(page).toHaveURL(/\/sign-in\?/)
+      // `next` is encoded once and decodes to the exact path and query.
+      const signIn = new URL(page.url())
+      expect(signIn.pathname).toBe('/sign-in')
+      expect(signIn.searchParams.getAll('next')).toEqual([path])
+      expect(signIn.hash).toBe('')
+
+      const form = page.getByRole('form', { name: 'Password sign-in' })
+      await form.getByLabel('Email address').fill('ada@example.test')
+      await form.getByLabel('Password').fill('a-long-password')
+      const returned = page.waitForRequest((request) => request.url().includes('/v1/oauth/authorize?'))
+      await form.getByRole('button', { name: 'Sign in' }).click()
+      await returned
+      await expect(page.getByTestId('oauth-client-name')).toHaveText('Metadata Agent')
+      const reads = consentReads(requests)
+      expect(reads.at(-1)?.search).toBe(`?${query}`)
     })
-    await page.goto(consentPath)
-    await expect(page).toHaveURL(/\/sign-in\?/)
-    const signInURL = new URL(page.url())
-    await page.goto(`${signInURL.pathname}${signInURL.search}#token=cv_signin_synthetic`)
-    await expect(page).toHaveURL(/\/onboarding\?/)
-    const onboarding = new URL(page.url())
-    expect(onboarding.searchParams.getAll('next')).toEqual([consentPath])
-    // The redemption token stays in no address after the fragment is removed.
-    expect(page.url()).not.toContain('cv_signin_')
 
-    const form = page.getByRole('form', { name: 'Complete your profile' })
-    await form.getByLabel('Display name').fill('Ada Lovelace')
-    await form.getByLabel('New password', { exact: true }).fill('a-long-password')
-    await form.getByLabel('Confirm new password').fill('a-long-password')
-    await form.getByRole('button', { name: 'Complete setup' }).click()
-    await expect(page.getByTestId('oauth-client-name')).toHaveText('Metadata Agent')
-    expect(consentReads(requests).at(-1)?.search).toBe(`?${consentQuery}`)
-    expect(seen.filter((url) => url.includes('/oauth/authorize')).every((url) => !url.includes('cv_signin_'))).toBe(
-      true,
-    )
-    expect(requests.every((request) => !request.search.includes('cv_signin_'))).toBe(true)
-  })
+    test(`a sign-in link returns through onboarding to the exact request${name}`, async ({ page }) => {
+      const { requests } = await mockConsent(page, { signedIn: false })
+      await serveLongDocuments(page)
+      const seen: string[] = []
+      page.on('framenavigated', (frame) => {
+        if (frame === page.mainFrame()) seen.push(frame.url())
+      })
+      await page.goto(path)
+      await expect(page).toHaveURL(/\/sign-in\?/)
+      const signInURL = new URL(page.url())
+      await page.goto(`${signInURL.pathname}${signInURL.search}#token=cv_signin_synthetic`)
+      await expect(page).toHaveURL(/\/onboarding\?/)
+      const onboarding = new URL(page.url())
+      expect(onboarding.searchParams.getAll('next')).toEqual([path])
+      // The redemption token stays in no address after the fragment is removed.
+      expect(page.url()).not.toContain('cv_signin_')
+
+      const form = page.getByRole('form', { name: 'Complete your profile' })
+      await form.getByLabel('Display name').fill('Ada Lovelace')
+      await form.getByLabel('New password', { exact: true }).fill('a-long-password')
+      await form.getByLabel('Confirm new password').fill('a-long-password')
+      await form.getByRole('button', { name: 'Complete setup' }).click()
+      await expect(page.getByTestId('oauth-client-name')).toHaveText('Metadata Agent')
+      expect(consentReads(requests).at(-1)?.search).toBe(`?${query}`)
+      expect(seen.filter((url) => url.includes('/oauth/authorize')).every((url) => !url.includes('cv_signin_'))).toBe(
+        true,
+      )
+      expect(requests.every((request) => !request.search.includes('cv_signin_'))).toBe(true)
+    })
+  }
 })
 
 // Every spelling of `next` that is not exactly the consent page, with an
@@ -546,10 +582,15 @@ const refusedNext: Array<[string, string]> = [
   ['a data URL', 'data:text/html,hello'],
   ['a relative path', 'oauth/authorize'],
   ['an empty value', ''],
-  ['an oversized value', `/oauth/authorize?state=${'a'.repeat(17_000)}`],
 ]
 
-const acceptedNext = ['/oauth/authorize', consentPath, '/oauth/authorize?state=a%2Fb%5Cc&x=%2F%2Fevil.example']
+const acceptedNext = [
+  '/oauth/authorize',
+  consentPath,
+  '/oauth/authorize?state=a%2Fb%5Cc&x=%2F%2Fevil.example',
+  // Above the old 16 KiB cutoff: a valid request is kept at any size.
+  `/oauth/authorize?${longQuery}`,
+]
 
 test('the return path validator accepts only the consent page', async ({ page }) => {
   await page.route('**/v1/**', (route) => route.fulfill({ status: 401, body: 'unauthorized' }))
@@ -586,9 +627,7 @@ async function mockSignedInShell(page: Page) {
   return { outbound, ...(await mockConsent(page)) }
 }
 
-// The oversized value stays in the validator table only: the Vite dev server
-// refuses a request line that long before the page loads.
-for (const [name, value] of refusedNext.filter(([name]) => name !== 'an oversized value')) {
+for (const [name, value] of refusedNext) {
   test(`password sign-in ignores ${name} in next`, async ({ page }) => {
     const { outbound, requests } = await mockSignedInShell(page)
     await page.goto(`/sign-in?next=${encodeURIComponent(value)}`)

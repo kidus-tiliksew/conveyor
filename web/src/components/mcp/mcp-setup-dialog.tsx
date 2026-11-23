@@ -49,8 +49,8 @@ export function MCPSetup({ iconOnly = false }: { iconOnly?: boolean }) {
 
 export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
   const endpoint = mcpEndpoint(window.location.origin)
-  // Browser sign-in is the default. The access token setup is the explicit
-  // `--auth pat` fallback (component-web-dashboard invariant 26).
+  // Browser sign-in is the default. The access token setup is the fallback
+  // for a client without OAuth sign-in (component-web-dashboard invariant 26).
   const [mode, setMode] = useState<MCPAuthMode>('oauth')
   const clients = useMemo(() => mcpClientSetups(endpoint, mode), [endpoint, mode])
   const [selected, setSelected] = useState<MCPClient>('cursor')
@@ -88,7 +88,7 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
               onChange={setMode}
               options={[
                 { value: 'oauth', label: 'Browser sign-in' },
-                { value: 'pat', label: 'Access token (--auth pat)' },
+                { value: 'pat', label: 'Access token' },
               ]}
             />
             <p className="text-xs leading-5 text-muted">
@@ -139,6 +139,14 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
               <li key={step}>{step}</li>
             ))}
           </ol>
+          {setup.installerNote && (
+            <p
+              className="mt-3 rounded-md border border-border bg-surface px-3 py-2 text-xs leading-5 text-muted"
+              data-testid="mcp-installer-note"
+            >
+              {setup.installerNote}
+            </p>
+          )}
 
           <div className="mt-5 flex items-center justify-between gap-3">
             <p className="text-xs font-medium text-muted">{setup.snippetLabel}</p>
