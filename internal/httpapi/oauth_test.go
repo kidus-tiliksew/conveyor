@@ -256,6 +256,9 @@ func expectNoStore(t *testing.T, response *httptest.ResponseRecorder) {
 	if got := response.Header().Get("Referrer-Policy"); got != "no-referrer" {
 		t.Fatalf("Referrer-Policy=%q, want no-referrer", got)
 	}
+	if got := response.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("Pragma=%q, want no-cache", got)
+	}
 }
 
 func (h *oauthHarness) register(redirectURIs ...string) string {
@@ -1381,6 +1384,9 @@ func newMetadataFixture(t *testing.T) *metadataFixture {
 		"example.com":          {netip.MustParseAddr("127.0.0.1")},
 		"client.test":          {netip.MustParseAddr("127.0.0.1")},
 		"internal.example.com": {netip.MustParseAddr("10.0.0.5")},
+		"docs6.example.com":    {netip.MustParseAddr("2001:db8::1")},
+		"docs4.example.com":    {netip.MustParseAddr("203.0.113.9")},
+		"teredo.example.com":   {netip.MustParseAddr("2001::5efe:a00:1")},
 	}}
 	fixture.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fixture.mu.Lock()
@@ -1575,7 +1581,11 @@ func TestOAuthMetadataResolverRefusesUnsafeOrInvalidDocuments(t *testing.T) {
 	// dialed, by name or literal.
 	before = len(fixture.dials())
 	strict := fixture.resolver(false)
-	for _, clientID := range []string{good, fixture.url("127.0.0.1", "/client.json"), fixture.url("[::1]", "/client.json"), fixture.url("internal.example.com", "/client.json")} {
+	for _, clientID := range []string{
+		good, fixture.url("127.0.0.1", "/client.json"), fixture.url("[::1]", "/client.json"), fixture.url("internal.example.com", "/client.json"),
+		fixture.url("docs6.example.com", "/client.json"), fixture.url("docs4.example.com", "/client.json"), fixture.url("teredo.example.com", "/client.json"),
+		fixture.url("[2001:db8::1]", "/client.json"),
+	} {
 		if _, err := strict.resolve(t.Context(), clientID); !errors.Is(err, errOAuthClientUnverified) {
 			t.Errorf("%s resolved under the production policy: %v", clientID, err)
 		}
