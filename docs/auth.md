@@ -287,9 +287,11 @@ A client identifies itself in one of two ways.
   redirect URIs. The fetch uses no proxy. It resolves the host, refuses the
   fetch when any address is private, loopback, link-local, unspecified,
   multicast, documentation, or another special-purpose range, and connects
-  to the checked
-  address while still verifying TLS for the host name. Each redirect is
-  checked the same way. A fetch follows at most 3 redirects, takes at most 5
+  to the checked address while still verifying TLS for the host name. Each redirect is
+  checked the same way. An address with an IPv6 zone, such as
+  `fe80::1%eth0`, and an IPv4-compatible address (`::a.b.c.d`) are always
+  refused. An IPv4-mapped address (`::ffff:a.b.c.d`) is checked as the IPv4
+  address it carries. A fetch follows at most 3 redirects, takes at most 5
   seconds, and reads at most 64 KiB. A verified document is reused for up to
   5 minutes, at most 256 documents per process.
 - **Dynamic Client Registration.** `POST /oauth/register` (RFC 7591) takes a
@@ -400,7 +402,19 @@ again.
 - **From Settings.** `GET /v1/oauth/grants` lists your own active grants with
   `id`, `client_id`, `client_name`, `resource`, `created_at`, and
   `last_used_at`. `last_used_at` changes at most once a minute. No token value
-  or hash appears. `DELETE /v1/oauth/grants/{grant_id}` revokes one of your
+  or hash appears. The answer is a JSON array, newest grant first, under the
+  shared page parameters:
+  - Without `limit`, the route answers the whole array and sets no paging
+    header. A person's grants grow only with that person's own sign-ins, so
+    the route has no default page.
+  - With `limit` (1 to 200) and an optional `offset` (0 to 2147483647, only
+    with `limit`), the route answers that page of the array. It sets
+    `X-Conveyor-Total` (all of your grants), `X-Conveyor-Limit`, and
+    `X-Conveyor-Offset`. A page past the end is an empty array.
+  - An out-of-range, malformed, or repeated `limit` or `offset`, or an
+    `offset` without `limit`, answers `400`.
+
+  `DELETE /v1/oauth/grants/{grant_id}` revokes one of your
   grants and answers it; any other ID answers 404. Both routes accept a
   session or a personal access token, and a session `DELETE` needs the CSRF
   proof.

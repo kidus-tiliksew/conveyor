@@ -989,6 +989,13 @@ func TestOAuthCodeExchangeVerifiesEveryBindingAndIsSingleUse(t *testing.T) {
 		expectOAuthError(t, h.do(request), http.StatusBadRequest, "invalid_request")
 		_ = name
 	}
+	// A repeated parameter is refused with a fixed message that never echoes
+	// the untrusted parameter name (req-security-boundaries REQ-2).
+	secretName := "cv_oat_oat_echoedname_0123456789abcdefghij"
+	repeated := h.do(oauthRequest{method: http.MethodPost, path: "/oauth/token", body: codeExchangeForm(code, clientID, oauthTestRedirect).Encode() + "&" + secretName + "=1&" + secretName + "=2", contentType: "application/x-www-form-urlencoded"})
+	if body := expectOAuthError(t, repeated, http.StatusBadRequest, "invalid_request"); strings.Contains(repeated.Body.String(), secretName) || body["error_description"] != "a parameter appears more than once" {
+		t.Fatalf("repeated parameter refusal echoed input: %s", repeated.Body.String())
+	}
 	// A larger body answers 413, also when only its declared length is over
 	// the bound (component-http-api invariant 17; DEC-105(3)).
 	oversized := h.do(oauthRequest{method: http.MethodPost, path: "/oauth/token", body: codeExchangeForm(code, clientID, oauthTestRedirect).Encode() + "&pad=" + strings.Repeat("p", oauthFormBodyLimit), contentType: "application/x-www-form-urlencoded"})
@@ -1164,6 +1171,12 @@ func TestOAuthRevocationEndpointIsIdempotentAndRevokesTheGrant(t *testing.T) {
 	expectOAuthError(t, revoke(url.Values{"client_id": {"x"}}), http.StatusBadRequest, "invalid_request")
 	// A larger body answers 413 (component-http-api invariant 17).
 	expectOAuthError(t, revoke(url.Values{"token": {"x"}, "client_id": {"y"}, "pad": {strings.Repeat("p", oauthFormBodyLimit)}}), http.StatusRequestEntityTooLarge, "invalid_request")
+	// A repeated parameter is refused without echoing its name.
+	secretName := "cv_ort_ort_echoedname_0123456789abcdefghij"
+	repeated := h.do(oauthRequest{method: http.MethodPost, path: "/oauth/revoke", body: "token=x&client_id=y&" + secretName + "=1&" + secretName + "=2", contentType: "application/x-www-form-urlencoded"})
+	if body := expectOAuthError(t, repeated, http.StatusBadRequest, "invalid_request"); strings.Contains(repeated.Body.String(), secretName) || body["error_description"] != "a parameter appears more than once" {
+		t.Fatalf("repeated parameter refusal echoed input: %s", repeated.Body.String())
+	}
 	if response := revoke(url.Values{"token": {"cv_oat_oat_unknown_0123456789abcdef"}, "client_id": {"ocl_x"}}); response.Code != http.StatusOK || response.Body.Len() != 0 {
 		t.Fatalf("unknown token status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1194,6 +1207,71 @@ func TestOAuthRevocationEndpointIsIdempotentAndRevokesTheGrant(t *testing.T) {
 				t.Fatalf("repeat revocation status=%d", again.Code)
 			}
 		})
+	}
+}
+
+// TestOAuthGrantListingFollowsThePageContract proves that the grant listing
+// uses the shared page parameters and headers and stays owner-scoped and
+// hash-free (component-http-api invariant 19; DEC-105(4)).
+func TestOAuthGrantListingFollowsThePageContract(t *testing.T) {
+	h := newOAuthHarness(t)
+	var issued []oauthTokenResponse
+	for range 3 {
+		_, pair := h.grant()
+		issued = append(issued, pair)
+	}
+	list := func(query, session string) ([]map[string]any, *httptest.ResponseRecorder) {
+		t.Helper()
+		response := h.do(oauthRequest{method: http.MethodGet, path: "/v1/oauth/grants" + query, session: session})
+		if response.Code != http.StatusOK {
+			return nil, response
+		}
+		var grants []map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &grants); err != nil {
+			t.Fatalf("%s: %v body=%s", query, err, response.Body.String())
+		}
+		for _, pair := range issued {
+			if strings.Contains(response.Body.String(), pair.AccessToken) || strings.Contains(response.Body.String(), pair.RefreshToken) {
+				t.Fatalf("%s: listing carried a token value", query)
+			}
+		}
+		return grants, response
+	}
+	// Without limit, the whole array and no paging header.
+	all, response := list("", h.memberSession)
+	if len(all) != 3 || response.Header().Get("X-Conveyor-Total") != "" || response.Header().Get("X-Conveyor-Limit") != "" || response.Header().Get("X-Conveyor-Offset") != "" {
+		t.Fatalf("unpaged listing: %d grants, headers %v", len(all), response.Header())
+	}
+	headers := func(response *httptest.ResponseRecorder) string {
+		return response.Header().Get("X-Conveyor-Total") + "/" + response.Header().Get("X-Conveyor-Limit") + "/" + response.Header().Get("X-Conveyor-Offset")
+	}
+	first, response := list("?limit=2", h.memberSession)
+	if len(first) != 2 || headers(response) != "3/2/0" {
+		t.Fatalf("first page: %d grants, headers %s", len(first), headers(response))
+	}
+	second, response := list("?limit=2&offset=2", h.memberSession)
+	if len(second) != 1 || headers(response) != "3/2/2" {
+		t.Fatalf("second page: %d grants, headers %s", len(second), headers(response))
+	}
+	// The pages keep the unpaged order, newest first.
+	for index, grant := range append(first, second...) {
+		if grant["id"] != all[index]["id"] {
+			t.Fatalf("page order differs at %d: %v vs %v", index, grant["id"], all[index]["id"])
+		}
+	}
+	past, response := list("?limit=2&offset=10", h.memberSession)
+	if len(past) != 0 || headers(response) != "3/2/10" || strings.TrimSpace(response.Body.String()) != "[]" {
+		t.Fatalf("page past the end: %d grants, headers %s body %s", len(past), headers(response), response.Body.String())
+	}
+	// Another person's page is empty: the owner scope holds under paging.
+	foreign, response := list("?limit=10", h.otherSession)
+	if len(foreign) != 0 || headers(response) != "0/10/0" {
+		t.Fatalf("foreign page: %d grants, headers %s", len(foreign), headers(response))
+	}
+	for _, query := range []string{"?limit=0", "?limit=201", "?limit=x", "?limit=1&limit=2", "?offset=1", "?limit=1&offset=-1", "?limit=1&offset=2147483648", "?limit=1&offset=1&offset=2"} {
+		if _, response := list(query, h.memberSession); response.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status=%d, want 400", query, response.Code)
+		}
 	}
 }
 
@@ -1493,12 +1571,16 @@ type metadataFixture struct {
 func newMetadataFixture(t *testing.T) *metadataFixture {
 	t.Helper()
 	fixture := &metadataFixture{documents: map[string]string{}, requests: map[string]int{}, hosts: map[string][]netip.Addr{
-		"example.com":          {netip.MustParseAddr("127.0.0.1")},
-		"client.test":          {netip.MustParseAddr("127.0.0.1")},
-		"internal.example.com": {netip.MustParseAddr("10.0.0.5")},
-		"docs6.example.com":    {netip.MustParseAddr("2001:db8::1")},
-		"docs4.example.com":    {netip.MustParseAddr("203.0.113.9")},
-		"teredo.example.com":   {netip.MustParseAddr("2001::5efe:a00:1")},
+		"example.com":           {netip.MustParseAddr("127.0.0.1")},
+		"client.test":           {netip.MustParseAddr("127.0.0.1")},
+		"internal.example.com":  {netip.MustParseAddr("10.0.0.5")},
+		"docs6.example.com":     {netip.MustParseAddr("2001:db8::1")},
+		"docs4.example.com":     {netip.MustParseAddr("203.0.113.9")},
+		"teredo.example.com":    {netip.MustParseAddr("2001::5efe:a00:1")},
+		"scoped.example.com":    {netip.MustParseAddr("2001:db8::1%eth0")},
+		"scoped-lo.example.com": {netip.MustParseAddr("::1%lo")},
+		"compat.example.com":    {netip.MustParseAddr("::a00:5")},
+		"mapped.example.com":    {netip.MustParseAddr("::ffff:192.0.2.1")},
 	}}
 	fixture.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fixture.mu.Lock()
@@ -1581,6 +1663,12 @@ func TestOAuthMetadataAddressPolicyRefusesNonPublicRanges(t *testing.T) {
 		"224.0.0.1", "239.1.1.1", "ff02::1", "ff05::2", "fc00::1", "fd12::1", "100.64.0.1", "198.18.0.1", "192.0.0.8", "255.255.255.255", "240.0.0.1",
 		"::ffff:10.0.0.1", "::ffff:127.0.0.1", "64:ff9b::a00:1", "2002:a00:1::1",
 		"192.0.2.1", "198.51.100.1", "203.0.113.1", "192.88.99.1", "2001:db8::1", "2001::1", "100::1", "3fff::1", "fec0::1",
+		// Zone-qualified addresses, even with a public address part.
+		"2001:db8::1%eth0", "fe80::1%eth0", "2606:4700:4700::1111%eth0", "::1%lo",
+		// IPv4-compatible IPv6 addresses, whatever IPv4 address they carry.
+		"::a00:1", "::7f00:1", "::808:808", "::c000:201",
+		// IPv4-mapped addresses whose IPv4 address is in a blocked range.
+		"::ffff:192.0.2.1", "::ffff:100.64.0.1", "::ffff:198.18.0.1", "::ffff:203.0.113.9", "::ffff:240.0.0.1",
 	} {
 		if oauthPublicAddress(netip.MustParseAddr(address)) {
 			t.Errorf("%s was admitted", address)
@@ -1697,9 +1785,23 @@ func TestOAuthMetadataResolverRefusesUnsafeOrInvalidDocuments(t *testing.T) {
 		good, fixture.url("127.0.0.1", "/client.json"), fixture.url("[::1]", "/client.json"), fixture.url("internal.example.com", "/client.json"),
 		fixture.url("docs6.example.com", "/client.json"), fixture.url("docs4.example.com", "/client.json"), fixture.url("teredo.example.com", "/client.json"),
 		fixture.url("[2001:db8::1]", "/client.json"),
+		// A scoped address in a blocked range, an IPv4-compatible address,
+		// and an IPv4-mapped address in a blocked range, by name and literal.
+		fixture.url("scoped.example.com", "/client.json"), fixture.url("compat.example.com", "/client.json"),
+		fixture.url("mapped.example.com", "/client.json"), fixture.url("[::ffff:192.0.2.1]", "/client.json"),
+		fixture.url("[::a00:5]", "/client.json"), fixture.url("[fe80::1%25eth0]", "/client.json"),
 	} {
 		if _, err := strict.resolve(t.Context(), clientID); !errors.Is(err, errOAuthClientUnverified) {
 			t.Errorf("%s resolved under the production policy: %v", clientID, err)
+		}
+	}
+	// A zone is refused before the address policy runs: even a policy that
+	// admits every address never dials a scoped answer.
+	permissive := fixture.resolver(false)
+	permissive.allowAddress = func(netip.Addr) bool { return true }
+	for _, clientID := range []string{fixture.url("scoped-lo.example.com", "/client.json"), fixture.url("scoped.example.com", "/client.json")} {
+		if _, err := permissive.resolve(t.Context(), clientID); !errors.Is(err, errOAuthClientUnverified) {
+			t.Errorf("%s resolved with a zone: %v", clientID, err)
 		}
 	}
 	// One forbidden address among the answers refuses the whole name.

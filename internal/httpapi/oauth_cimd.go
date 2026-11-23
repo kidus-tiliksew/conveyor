@@ -295,7 +295,10 @@ func (resolver *oauthMetadataResolver) dialChecked(ctx context.Context, network,
 		allow = oauthPublicAddress
 	}
 	for _, candidate := range addresses {
-		if !allow(candidate.Unmap()) {
+		// A zone-qualified address names a local interface, and
+		// netip.Prefix.Contains never matches it, so a blocked range could be
+		// missed. It is refused before the address check and before any dial.
+		if candidate.Zone() != "" || !allow(candidate.Unmap()) {
 			return nil, errOAuthClientUnverified
 		}
 	}
@@ -331,6 +334,9 @@ var oauthBlockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("198.51.100.0/24"),
 	netip.MustParsePrefix("203.0.113.0/24"),
 	netip.MustParsePrefix("240.0.0.0/4"),
+	// IPv4-compatible IPv6 (::a.b.c.d) is deprecated and can carry any IPv4
+	// address, so the whole ::/96 block is refused.
+	netip.MustParsePrefix("::/96"),
 	netip.MustParsePrefix("64:ff9b::/96"),
 	netip.MustParsePrefix("64:ff9b:1::/48"),
 	netip.MustParsePrefix("100::/64"),
@@ -345,6 +351,12 @@ var oauthBlockedPrefixes = []netip.Prefix{
 // private, loopback, link-local, unspecified, multicast, and the special
 // ranges above (req-mcp-oauth AC-2.1).
 func oauthPublicAddress(address netip.Addr) bool {
+	// A zone-qualified address is never public, and the prefix checks below
+	// cannot match it. An IPv4-mapped address is checked as the IPv4 address
+	// it carries.
+	if address.Zone() != "" {
+		return false
+	}
 	address = address.Unmap()
 	if !address.IsValid() || address.IsUnspecified() || address.IsLoopback() || address.IsPrivate() ||
 		address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() || address.IsInterfaceLocalMulticast() ||

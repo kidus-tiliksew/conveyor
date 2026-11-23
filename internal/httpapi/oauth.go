@@ -1164,9 +1164,11 @@ func readOAuthForm(w http.ResponseWriter, r *http.Request) (url.Values, bool) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "the body is not valid form encoding")
 		return nil, false
 	}
-	for key, values := range form {
+	for _, values := range form {
 		if len(values) > 1 {
-			writeOAuthError(w, http.StatusBadRequest, "invalid_request", key+" appears more than once")
+			// The parameter name is untrusted input, so the refusal never
+			// echoes it (req-security-boundaries REQ-2).
+			writeOAuthError(w, http.StatusBadRequest, "invalid_request", "a parameter appears more than once")
 			return nil, false
 		}
 	}
@@ -1352,17 +1354,36 @@ func oauthGrantProjection(grant core.OAuthGrant) oauthGrantView {
 	return oauthGrantView{ID: grant.ID, ClientID: grant.ClientID, ClientName: grant.ClientName, Resource: grant.Resource, CreatedAt: grant.CreatedAt, LastUsedAt: grant.LastUsedAt, RevokedAt: grant.RevokedAt}
 }
 
+// listOwnOAuthGrants answers the caller's unrevoked grants, newest first, as
+// a JSON array under the shared page contract (component-http-api invariant
+// 19; DEC-105(4)). A person's grants grow with that person's own
+// authorizations, not with workspace history, so the route has no default
+// page: without limit it answers the whole array and no paging header, and
+// with limit it answers that page and sets X-Conveyor-Total,
+// X-Conveyor-Limit, and X-Conveyor-Offset. A page parameter violation
+// answers 400.
 func (s *Server) listOwnOAuthGrants(w http.ResponseWriter, r *http.Request) {
+	page, ok := readListPage(w, r, 0)
+	if !ok {
+		return
+	}
 	credential, _ := store.CredentialFromContext(r.Context())
 	grants, err := s.OAuth.ListOwnOAuthGrants(r.Context(), credential.OwnerUserID)
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return
 	}
+	total := len(grants)
+	if page.Paged {
+		start := min(page.Offset, total)
+		end := min(start+page.Limit, total)
+		grants = grants[start:end]
+	}
 	views := make([]oauthGrantView, 0, len(grants))
 	for _, grant := range grants {
 		views = append(views, oauthGrantProjection(grant))
 	}
+	page.writeHeaders(w, total)
 	writeJSON(w, http.StatusOK, views)
 }
 
