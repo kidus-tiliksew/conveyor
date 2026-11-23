@@ -756,7 +756,7 @@ func TestGovernanceContractIgnoresRetiredEvidenceOfOlderPins(t *testing.T) {
 // Role prompts are served to every workspace, so validation wording defers to
 // each repository's own validation documentation and names no Make target or
 // repository-specific command; this repository's Make-target and
-// docker compose rules live in its AGENTS.md (DEC-53; DEC-72).
+// docker compose rules live in its AGENTS.md (DEC-53; DEC-108).
 func TestAgentRolesRequireSafeRepositoryValidation(t *testing.T) {
 	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
 	for _, stage := range []core.Stage{core.StageImplement, core.StageReview, core.StageSpec} {
@@ -788,7 +788,7 @@ func TestAgentRolesRequireSafeRepositoryValidation(t *testing.T) {
 
 // The reviewer requires retained manifest and complete-log references only for
 // gates the repository assigns to local runs; a CI-assigned gate's evidence is
-// the exact-head CI record (DEC-72). Unresolvable evidence is reported apart
+// the exact-head CI record (DEC-108). Unresolvable evidence is reported apart
 // from code defects, and repository review-bot findings are read.
 func TestReviewRoleScopesEvidenceToGateAssignment(t *testing.T) {
 	role, err := (Loader{Dir: filepath.Join("..", "..", "pack")}).Role(core.StageReview)
@@ -800,7 +800,7 @@ func TestReviewRoleScopesEvidenceToGateAssignment(t *testing.T) {
 		"For every claimed mandatory run of a gate that the repository's validation documentation assigns to a local run, require resolvable retained manifest and complete-log references",
 		"A transcript tail is diagnostic context, not the original complete log and not proof that the mandatory run passed",
 		"For a gate that the documentation assigns to CI, the evidence is the exact-head CI record in the pull request body",
-		"including failed attempts (DEC-72)",
+		"including failed attempts (DEC-108)",
 		"Do not require local manifest or complete-log references for that gate",
 		"state in the verdict that the evidence is unresolvable and why, separately from any code defect",
 		"such as CodeRabbit or a repository review bot, read their findings on the pull request at the reviewed head",

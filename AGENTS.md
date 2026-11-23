@@ -32,13 +32,13 @@ and historical phase status lives in the "Roadmap" reference document.
   aggregate: Go tests plus web typecheck, Biome lint/format checking, and
   Playwright. Review evidence for these heavy gates is a green run of every
   `.github/workflows/ci.yml` job on the task pull request at the exact reviewed
-  head (DEC-72); its PostgreSQL service uses the CI-only
+  head (DEC-108(1)); its PostgreSQL service uses the CI-only
   `make test-integration-ci` entrypoint. Do not run `make validate`,
   `make test-integration`, or `make test-integration-singlestore-ci` locally
   to satisfy review, and record the CI run URL, attempt, head SHA, and every
   job's conclusion, including failed attempts. With the merge gate off, Conveyor
   reads the approved head's check status before an automatic merge and holds
-  it on a failed or pending check (DEC-108). With the merge gate on, the
+  it on a failed or pending check (DEC-108(5)). With the merge gate on, the
   operator decides, and no code path reads check status.
 - Run local validation in this repository only through the Make targets
   above. Never run raw `docker compose down` commands here: validation

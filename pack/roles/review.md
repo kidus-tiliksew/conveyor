@@ -89,7 +89,7 @@ Method:
   the original complete log and not proof that the mandatory run passed.
 - For a gate that the documentation assigns to CI, the evidence is the
   exact-head CI record in the pull request body: run URL, attempt, head SHA,
-  and each job's conclusion, including failed attempts (DEC-72). Do not
+  and each job's conclusion, including failed attempts (DEC-108). Do not
   require local manifest or complete-log references for that gate.
 - When you cannot run a local gate or resolve its evidence in your own
   environment, state in the verdict that the evidence is unresolvable and
