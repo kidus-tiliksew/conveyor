@@ -188,6 +188,8 @@ func TestRedactsTokenShapesAndKeepsDigests(t *testing.T) {
 		{"prefix named in prose", "the cv_pat_ prefix and cv_session_ cookies"},
 		{"OAuth prefixes named in prose", "the cv_oac_, cv_oat_, and cv_ort_ prefixes"},
 		{"short OAuth identifier", "cv_oat_short"},
+		{"OAuth prefixes after word characters", "xcv_oac_, 9cv_oat_, and _cv_ort_ are prefixes"},
+		{"short OAuth identifier after a letter", "xcv_ort_short_value"},
 		{"short identifier", "cv_pat_short"},
 		{"bearer in prose", "the bearer token and Bearer authentication"},
 		{"github_pat prefix alone", "a github_pat_ value"},
@@ -223,6 +225,11 @@ func TestRedactsOAuthCredentialShapes(t *testing.T) {
 			{"quoted", `{"access_token":"` + value + `"}`},
 			{"form body", "grant_type=refresh_token&refresh_token=" + value + "&client_id=ocl_x"},
 			{"bearer", "Authorization: Bearer " + value},
+			// A word character directly before the value defeats a leading
+			// word boundary, so the OAuth pattern carries none.
+			{"after a letter", "Client x" + value},
+			{"after a digit", "client-9" + value + "-name"},
+			{"after an underscore", "https://client.example.test/meta_" + value + "/client.json"},
 		} {
 			t.Run(string(kind)+"/"+form.name, func(t *testing.T) {
 				t.Parallel()

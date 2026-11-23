@@ -809,13 +809,53 @@ func runOAuthSecretFree(t *testing.T, c *oauthCase) {
 	requireRefused(t, err, store.ErrOAuthClientMetadataRefused, "grant with a secret-shaped client ID")
 	_, err = c.st.ExchangeOAuthAuthorizationCode(c.ctx, store.OAuthCodeExchange{Code: cleanCode, ClientID: client.ID, RedirectURI: leakyRedirect, Resource: oauthResource, CodeVerifier: oauthVerifier})
 	requireRefused(t, err, store.ErrOAuthRedirectURIRefused, "grant with a secret-shaped redirect URI")
+	// A complete OAuth code or token glued behind a word character is still
+	// secret-shaped, so the same refusals hold for it (component-identity-
+	// membership invariant 46).
+	var glued []string
+	for _, kind := range []core.OAuthCredentialKind{core.OAuthCredentialCode, core.OAuthCredentialAccess, core.OAuthCredentialRefresh} {
+		_, value, _, err := core.NewOAuthCredential(kind)
+		requireOK(t, err)
+		glued = append(glued, value)
+	}
+	gluedID := "https://client.example.test/meta_" + glued[0] + "/client.json"
+	gluedName := "Client x" + glued[1]
+	gluedRedirect := oauthRedirect + "?state=x" + glued[2]
+	_, err = c.st.RegisterOAuthClient(c.ctx, store.OAuthClientRegistration{Name: gluedName, RedirectURIs: []string{oauthRedirect}})
+	requireRefused(t, err, store.ErrOAuthClientMetadataRefused, "registration with a glued OAuth token in its name")
+	_, err = c.st.RegisterOAuthClient(c.ctx, store.OAuthClientRegistration{Name: "Clean", RedirectURIs: []string{gluedRedirect}})
+	requireRefused(t, err, store.ErrOAuthRedirectURIRefused, "registration with a glued OAuth token in a redirect URI")
+	for _, refused := range []struct {
+		name    string
+		request store.OAuthCodeRequest
+		want    error
+	}{
+		{"code with a glued OAuth code in its client ID", store.OAuthCodeRequest{ClientID: gluedID, ClientName: "Clean", RedirectURI: oauthRedirect}, store.ErrOAuthClientMetadataRefused},
+		{"code with a glued OAuth token in its client name", store.OAuthCodeRequest{ClientID: oauthCIMD, ClientName: gluedName, RedirectURI: oauthRedirect}, store.ErrOAuthClientMetadataRefused},
+		{"code with a glued OAuth token in its redirect URI", store.OAuthCodeRequest{ClientID: oauthCIMD, ClientName: "Clean", RedirectURI: gluedRedirect}, store.ErrOAuthRedirectURIRefused},
+	} {
+		refused.request.UserID, refused.request.Resource, refused.request.CodeChallenge = c.owner.ID, oauthResource, core.OAuthS256Challenge(oauthVerifier)
+		_, _, err = c.st.IssueOAuthAuthorizationCode(c.ctx, refused.request)
+		requireRefused(t, err, refused.want, refused.name)
+	}
+	_, err = c.st.ExchangeOAuthAuthorizationCode(c.ctx, oauthExchange(cleanCode, gluedID))
+	requireRefused(t, err, store.ErrOAuthClientMetadataRefused, "grant with a glued OAuth code in its client ID")
+	leaked := append([]string{leakedGitHub, leakedKey}, glued...)
+	holdsLeak := func(text string) bool {
+		for _, value := range leaked {
+			if strings.Contains(text, value) {
+				return true
+			}
+		}
+		return false
+	}
 	if rows, events := len(c.hooks.rows(t, c.ctx)), len(c.hooks.events(t, c.ctx)); rows != rowsBefore || events != eventsBefore {
 		t.Fatalf("refusals changed stored rows from %d to %d and events from %d to %d", rowsBefore, rows, eventsBefore, events)
 	}
 	listed, err := c.st.ListOwnOAuthGrants(c.ctx, c.owner.ID)
 	requireOK(t, err)
 	for _, grant := range listed {
-		if strings.Contains(grant.ClientID+grant.ClientName, leakedGitHub) || strings.Contains(grant.ClientID+grant.ClientName, leakedKey) {
+		if holdsLeak(grant.ClientID + grant.ClientName) {
 			t.Fatalf("grant listing carries secret-shaped client metadata: %+v", grant)
 		}
 	}
@@ -838,7 +878,7 @@ func runOAuthSecretFree(t *testing.T, c *oauthCase) {
 			}
 		}
 		requireSecretFree(t, c, string(row.Table)+" row "+row.ID, row.Text)
-		if strings.Contains(row.Text, leakedGitHub) || strings.Contains(row.Text, leakedKey) {
+		if holdsLeak(row.Text) {
 			t.Fatalf("%s row %s stores secret-shaped client metadata", row.Table, row.ID)
 		}
 	}
@@ -860,7 +900,7 @@ func runOAuthSecretFree(t *testing.T, c *oauthCase) {
 		requireSecretFree(t, c, event.Kind, event)
 		raw, err := json.Marshal(event)
 		requireOK(t, err)
-		if strings.Contains(string(raw), leakedGitHub) || strings.Contains(string(raw), leakedKey) {
+		if holdsLeak(string(raw)) {
 			t.Fatalf("%s carries a secret-shaped value from client metadata", event.Kind)
 		}
 	}
