@@ -4,11 +4,12 @@ import cursorIcon from '@lobehub/icons-static-svg/icons/cursor.svg?raw'
 import opencodeIcon from '@lobehub/icons-static-svg/icons/opencode.svg?raw'
 import { Cable, CheckCircle2, Plug, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { type MCPClient, mcpClientSetups, mcpEndpoint } from '../../lib/mcp'
+import { type MCPAuthMode, type MCPClient, mcpClientSetups, mcpEndpoint } from '../../lib/mcp'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 import { Dialog } from '../ui/dialog'
+import { SegmentedControl } from '../ui/segmented-control'
 
 const clientLogos: Partial<Record<MCPClient, string>> = {
   cursor: cursorIcon,
@@ -48,12 +49,15 @@ export function MCPSetup({ iconOnly = false }: { iconOnly?: boolean }) {
 
 export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
   const endpoint = mcpEndpoint(window.location.origin)
-  const clients = useMemo(() => mcpClientSetups(endpoint), [endpoint])
+  // Browser sign-in is the default. The access token setup is the fallback
+  // for a client without OAuth sign-in (component-web-dashboard invariant 26).
+  const [mode, setMode] = useState<MCPAuthMode>('oauth')
+  const clients = useMemo(() => mcpClientSetups(endpoint, mode), [endpoint, mode])
   const [selected, setSelected] = useState<MCPClient>('cursor')
   const setup = clients.find((client) => client.id === selected) ?? clients[0]
 
   return (
-    <Dialog label="MCP Setup" onClose={onClose} className="max-w-2xl overflow-hidden">
+    <Dialog label="MCP Setup" onClose={onClose} className="max-w-2xl overflow-x-hidden">
       <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
         <div>
           <div className="flex items-center gap-2">
@@ -70,6 +74,30 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
       </div>
 
       <div className="min-w-0 px-5 py-4">
+        <div className="mb-4 space-y-2">
+          <div className="flex items-center gap-2 rounded-md border border-border bg-background p-2">
+            <code className="min-w-0 flex-1 break-all font-mono text-xs text-foreground" data-testid="mcp-endpoint">
+              {endpoint}
+            </code>
+            <CopyButton value={endpoint} label="Copy MCP endpoint" />
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <SegmentedControl
+              label="How the client signs in"
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: 'oauth', label: 'Browser sign-in' },
+                { value: 'pat', label: 'Access token' },
+              ]}
+            />
+            <p className="text-xs leading-5 text-muted">
+              {mode === 'oauth'
+                ? 'The client opens Conveyor in your browser. You approve it once.'
+                : 'Use this for a client without OAuth sign-in. It needs an access token.'}
+            </p>
+          </div>
+        </div>
         <div className="rounded-lg bg-surface p-1" role="tablist" aria-label="MCP clients">
           <div className="grid grid-cols-2 gap-1 sm:grid-cols-3 md:grid-cols-5">
             {clients.map((client) => {
@@ -111,6 +139,14 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
               <li key={step}>{step}</li>
             ))}
           </ol>
+          {setup.installerNote && (
+            <p
+              className="mt-3 rounded-md border border-border bg-surface px-3 py-2 text-xs leading-5 text-muted"
+              data-testid="mcp-installer-note"
+            >
+              {setup.installerNote}
+            </p>
+          )}
 
           <div className="mt-5 flex items-center justify-between gap-3">
             <p className="text-xs font-medium text-muted">{setup.snippetLabel}</p>

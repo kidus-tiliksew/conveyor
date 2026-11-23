@@ -1,10 +1,10 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { useLocation, useNavigate } from '@tanstack/react-router'
 import { CheckCircle2, LoaderCircle } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
-import { redeemSignInLink, signInWithPassword } from '../lib/api'
+import { oauthReturnPathFromSearch, redeemSignInLink, signInWithPassword } from '../lib/api'
 
 type State = 'checking' | 'success' | 'invalid'
 
@@ -19,6 +19,10 @@ export function SignInPage() {
   const [password, setPassword] = useState('')
   const [passwordError, setPasswordError] = useState('')
   const [passwordPending, setPasswordPending] = useState(false)
+  // A validated return to the OAuth consent page, or undefined. The token
+  // stays in the fragment and never enters this path (req-mcp-oauth AC-3.1).
+  const searchStr = useLocation({ select: (location) => location.searchStr })
+  const returnPath = oauthReturnPathFromSearch(searchStr)
 
   useEffect(() => {
     const readHash = () => setHash(window.location.hash)
@@ -40,10 +44,10 @@ export function SignInPage() {
       .then(async () => {
         queryClient.clear()
         setState('success')
-        await navigate({ to: '/onboarding', replace: true })
+        await navigate({ to: '/onboarding', search: { next: returnPath }, replace: true })
       })
       .catch(() => setState('invalid'))
-  }, [navigate, queryClient, token])
+  }, [navigate, queryClient, token, returnPath])
 
   async function submitPassword(event: React.FormEvent) {
     event.preventDefault()
@@ -52,7 +56,10 @@ export function SignInPage() {
     try {
       await signInWithPassword(email, password)
       queryClient.clear()
-      await navigate({ to: '/', replace: true })
+      // The consent page opens as a new document, so the router never
+      // rewrites the authorization query it carries.
+      if (returnPath) window.location.replace(returnPath)
+      else await navigate({ to: '/', replace: true })
     } catch {
       setPasswordError(
         'Email or password was not accepted. Ask your operator for a fresh sign-in link if you forgot it.',

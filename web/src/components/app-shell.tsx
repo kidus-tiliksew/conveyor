@@ -381,9 +381,14 @@ export const workspacesQueryDefaults = {
     workspacesRetryDelaysMs[Math.min(failureCount, workspacesRetryDelaysMs.length - 1)],
 }
 
+// Pages that render outside the workspace shell: they read no workspace list,
+// open no stream, and redirect to no workspace (component-web-dashboard
+// invariant 1; req-mcp-oauth REQ-3).
+const unscopedPaths = new Set(['/sign-in', '/onboarding', '/oauth/authorize'])
+
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
-  if (pathname === '/sign-in' || pathname === '/onboarding') {
+  if (unscopedPaths.has(pathname)) {
     return (
       <ThemeProvider>
         <Outlet />

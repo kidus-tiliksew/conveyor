@@ -856,6 +856,228 @@ export async function revokePersonalAccessToken(id: string) {
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
 }
 
+// --- MCP OAuth (req-mcp-oauth REQ-3, AC-4.4, AC-4.5; DEC-146) ---
+
+/**
+ * A refused OAuth consent or grant request. It keeps the HTTP status and the
+ * OAuth error code beside the message, so a page branches on 401 without
+ * reading message text (component-web-dashboard invariant 13). A network
+ * rejection is never an `OAuthRequestError`: it carries no HTTP status.
+ */
+export class OAuthRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message)
+  }
+}
+
+// An OAuth refusal answers `{error, error_description}`. The description is a
+// lower-case phrase, so it becomes one sentence here. Any other body goes
+// through the shared decoder.
+async function oauthFailure(response: Response) {
+  const body = await response.text().catch(() => '')
+  let code: string | undefined
+  let description: string | undefined
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown; error_description?: unknown }
+    if (typeof parsed?.error === 'string') code = parsed.error
+    if (typeof parsed?.error_description === 'string') description = parsed.error_description.trim()
+  } catch {
+    // A plain-text body, such as the 401 `unauthorized`, has no code.
+  }
+  const message =
+    description && plainErrorText(description)
+      ? `${description[0].toUpperCase()}${description.slice(1)}${/[.!?]$/.test(description) ? '' : '.'}`
+      : apiErrorMessage(body, response.statusText || `Conveyor answered ${response.status}.`)
+  return new OAuthRequestError(message, response.status, code)
+}
+
+// The consent reads carry the client's authorization query, so the browser
+// keeps no cached copy and sends no referrer with them. They are reads, so no
+// Origin header is needed (component-web-dashboard invariant 37).
+const oauthConsentReadInit: RequestInit = {
+  cache: 'no-store',
+  credentials: 'same-origin',
+  referrerPolicy: 'no-referrer',
+}
+
+/** The signed-in caller, read without a workspace for the consent page. */
+export async function fetchOAuthConsentCaller(signal?: AbortSignal) {
+  const response = await fetch('/v1/me', { ...oauthConsentReadInit, signal })
+  if (!response.ok) throw await oauthFailure(response)
+  return (await response.json()) as import('./types').CallerIdentity
+}
+
+/**
+ * Verifies one authorization request for the consent page. `search` is the
+ * page's own query string, passed through exactly as the client wrote it: an
+ * omitted `resource` stays omitted and an empty one stays empty, so the
+ * server alone decides what each means (req-mcp-oauth AC-3.2, AC-3.4).
+ */
+export async function fetchOAuthAuthorization(search: string, signal?: AbortSignal) {
+  const query = search === '' || search.startsWith('?') ? search : `?${search}`
+  const response = await fetch(`/v1/oauth/authorize${query}`, { ...oauthConsentReadInit, signal })
+  if (!response.ok) throw await oauthFailure(response)
+  return (await response.json()) as import('./types').OAuthConsentView
+}
+
+// The request fields the decision body repeats. The server decodes the body
+// strictly, so only these fields and `decision` are sent.
+const oauthDecisionFields = [
+  'response_type',
+  'client_id',
+  'redirect_uri',
+  'code_challenge',
+  'code_challenge_method',
+  'state',
+  'resource',
+  'scope',
+] as const
+
+/**
+ * The decision body for one authorization query. A field the query omits is
+ * omitted, and a field it names is sent as written, empty or not, so an
+ * explicit empty `resource` is still refused by the server rather than read
+ * as the default audience.
+ */
+export function oauthDecisionBody(search: string, decision: import('./types').OAuthDecision) {
+  const query = new URLSearchParams(search)
+  const body: Record<string, string> = {}
+  for (const field of oauthDecisionFields) {
+    const value = query.get(field)
+    if (value !== null) body[field] = value
+  }
+  body.decision = decision
+  return body
+}
+
+/**
+ * Records an explicit approve or deny decision (req-mcp-oauth AC-3.2). The
+ * request carries the session cookie, `X-Conveyor-CSRF: 1`, and the browser's
+ * own Origin header, and no Authorization header. `strict-origin` keeps the
+ * Origin header and sends only the origin as the referrer.
+ */
+export async function decideOAuthAuthorization(
+  search: string,
+  decision: import('./types').OAuthDecision,
+  signal?: AbortSignal,
+) {
+  const response = await fetch('/v1/oauth/authorize', {
+    method: 'POST',
+    headers: mutationHeaders(),
+    body: JSON.stringify(oauthDecisionBody(search, decision)),
+    cache: 'no-store',
+    credentials: 'same-origin',
+    referrerPolicy: 'strict-origin',
+    signal,
+  })
+  if (!response.ok) throw await oauthFailure(response)
+  const body = (await response.json().catch(() => null)) as Partial<import('./types').OAuthDecisionResult> | null
+  if (typeof body?.redirect_to !== 'string' || !body.redirect_to)
+    throw new OAuthRequestError('Conveyor did not return the address of the client.', response.status)
+  return { redirect_to: body.redirect_to }
+}
+
+const oauthLoopbackHosts = new Set(['127.0.0.1', '[::1]', 'localhost'])
+
+/**
+ * The address a decision may open, or undefined. Conveyor opens only the
+ * server's `redirect_to`, and only when it is an https address, or a loopback
+ * http address, on the redirect host that the server verified and under the
+ * redirect URI of this request. The browser never builds the address itself
+ * (req-mcp-oauth AC-3.3, AC-3.4).
+ */
+export function safeOAuthRedirect(redirectTo: string, redirectHost: string, redirectURI: string | null) {
+  let target: URL
+  let expected: URL
+  try {
+    target = new URL(redirectTo)
+    expected = new URL(`${target.protocol}//${redirectHost}`)
+  } catch {
+    return undefined
+  }
+  if (target.protocol !== 'https:' && !(target.protocol === 'http:' && oauthLoopbackHosts.has(target.hostname)))
+    return undefined
+  if (target.username || target.password || target.hash || target.host !== expected.host) return undefined
+  if (!redirectURI) return undefined
+  const base = redirectURI.split('?')[0]
+  if (!redirectTo.startsWith(`${base}?`)) return undefined
+  return redirectTo
+}
+
+/** The consent page's own address, the only page a sign-in returns to. */
+export const oauthAuthorizePath = '/oauth/authorize'
+
+/**
+ * The validated return path for `next` on `/sign-in` and `/onboarding`, or
+ * undefined (req-mcp-oauth AC-3.1; component-web-dashboard invariants 22,
+ * 23). Only the consent page, with an optional query, is accepted:
+ *
+ * - The value starts with exactly `/oauth/authorize`, followed by the end or
+ *   by `?`. Absolute and protocol-relative URLs, other paths, and prefixes
+ *   such as `/oauth/authorizeX` or `/oauth/authorize/` are refused.
+ * - It holds only printable ASCII, with no backslash and no `#`. Control
+ *   characters, spaces, and characters that a browser rewrites are refused.
+ * - It reads the same after URL parsing against this origin, so a value that
+ *   needs decoding or normalization to match, such as `/oauth%2Fauthorize`,
+ *   is refused.
+ *
+ * The accepted value is returned unchanged, and its query is never rebuilt.
+ *
+ * No length cap applies here. The client's percent-encoded query can be
+ * longer than the decoded decision body, and the server ignores unknown
+ * query fields, so any size limit of the body does not bound a valid
+ * address. The address is already bounded where it travels: Chromium refuses
+ * a URL longer than 2 MiB (`url::kMaxURLChars`), and conveyord's Go HTTP
+ * server refuses a request line and headers over 1 MiB
+ * (`http.DefaultMaxHeaderBytes`). A request that reaches this page passed
+ * both limits, so it is kept whole (req-mcp-oauth AC-3.1).
+ */
+export function safeOAuthReturnPath(raw: unknown, origin = window.location.origin): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  if (raw !== oauthAuthorizePath && !raw.startsWith(`${oauthAuthorizePath}?`)) return undefined
+  if (!/^[\x21-\x7e]+$/.test(raw) || raw.includes('\\') || raw.includes('#')) return undefined
+  let parsed: URL
+  try {
+    parsed = new URL(raw, origin)
+  } catch {
+    return undefined
+  }
+  if (parsed.origin !== origin || parsed.pathname !== oauthAuthorizePath) return undefined
+  if (`${parsed.pathname}${parsed.search}` !== raw) return undefined
+  return raw
+}
+
+/** The one `next` value of a query string, validated, or undefined. */
+export function oauthReturnPathFromSearch(search: string) {
+  const values = new URLSearchParams(search).getAll('next')
+  return values.length === 1 ? safeOAuthReturnPath(values[0]) : undefined
+}
+
+/**
+ * The caller's own active OAuth grants, newest first (req-mcp-oauth AC-4.5).
+ * The route answers the whole list when no page is asked for. A row holds no
+ * token value or hash.
+ */
+export async function fetchOAuthGrants(signal?: AbortSignal) {
+  const response = await fetch('/v1/oauth/grants', { cache: 'no-store', credentials: 'same-origin', signal })
+  if (!response.ok) throw await oauthFailure(response)
+  return ((await response.json()) as import('./types').OAuthGrant[] | null) ?? []
+}
+
+/** Revokes one of the caller's grants by its ID (req-mcp-oauth AC-4.4). */
+export async function revokeOAuthGrant(id: string) {
+  const response = await fetch(`/v1/oauth/grants/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: mutationHeaders(),
+    credentials: 'same-origin',
+  })
+  if (!response.ok) throw await oauthFailure(response)
+}
+
 // Preserve server remedies, but do not display a machine-only JSON error envelope.
 function githubAppErrorMessage(body: string, fallback: string) {
   let parsed: unknown

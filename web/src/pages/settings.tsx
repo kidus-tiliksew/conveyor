@@ -5,6 +5,7 @@ import { useEffect } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { BoardPreferencesCard } from '../components/settings/board-preferences-card'
 import { ConnectAgentRow } from '../components/settings/connect-agent-row'
+import { OAuthGrantsCard } from '../components/settings/oauth-grants-card'
 import { PasswordCard } from '../components/settings/password-card'
 import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
 import { ProfileCard } from '../components/settings/profile-card'
@@ -42,7 +43,9 @@ export function SettingsPage() {
   const endpoint = mcpEndpoint(window.location.origin)
   const canManage = useWorkspaceCapability('manage_workspace')
   const workspaceName = workspaces.data?.find((item) => item.id === workspace)?.name || workspace
-  const mcpConfig = mcpConnectionConfig(endpoint).replace('<CONVEYOR_API_TOKEN>', '<paste-your-token>')
+  // The welcome card shows the default browser sign-in setup, which holds no
+  // credential (component-web-dashboard invariant 26).
+  const mcpConfig = mcpConnectionConfig(endpoint)
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader title="Settings" description="Your access and connection settings." />
@@ -56,8 +59,9 @@ export function SettingsPage() {
               </CardHeader>
               <CardContent className="space-y-4 text-sm leading-6 text-muted">
                 <p>
-                  You’re signed in. Create your first access token below, copy it when it appears, then use these
-                  details to connect your command line or coding agent.
+                  You are signed in. To use the command line, create your first access token below and copy it when it
+                  appears. To connect a coding agent, add the settings below. The agent opens Conveyor in your browser,
+                  and you approve it once.
                 </p>
                 <div className="space-y-2">
                   <p className="font-medium text-foreground">Command line</p>
@@ -84,6 +88,7 @@ export function SettingsPage() {
               <ProfileCard />
               <PasswordCard />
               <PersonalTokensCard defaultOpen={Boolean(welcome)} />
+              <OAuthGrantsCard />
             </SettingsGroup>
             <SettingsGroup
               title="Agents"
