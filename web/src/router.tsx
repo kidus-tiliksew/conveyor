@@ -10,7 +10,7 @@ import { CreateWorkspaceDialog } from './components/workspace/create-workspace-d
 import { LegacyAddress, PageNotFound, WorkspaceLayout } from './components/workspace/workspace-address'
 import { BlueprintDetailPage } from './pages/blueprint-detail'
 import { BlueprintsPage } from './pages/blueprints'
-import { CratePage } from './pages/crate'
+import { CratePage, validateCrateSearch } from './pages/crate'
 import { CratesPage, validateCratesSearch } from './pages/crates'
 import { DecisionPage, DecisionsPage } from './pages/decisions'
 import { InboxPage } from './pages/inbox'
@@ -263,6 +263,9 @@ const cratesRoute = createRoute({
 const crateRoute = createRoute({
   getParentRoute: () => workspaceLayoutRoute,
   path: '/crates/$crateId',
+  // `task` names the task whose detail sheet is open over the crate page
+  // (component-crates invariant 37).
+  validateSearch: validateCrateSearch,
   component: CratePage,
 })
 const monitorRoute = createRoute({
