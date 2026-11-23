@@ -51,6 +51,14 @@ type recordingOAuthStore struct {
 	exchanged      []core.IssuedOAuthTokenPair
 	expiredClients map[string]bool
 	verifyErr      error
+	listErr        error
+}
+
+func (r *recordingOAuthStore) ListOwnOAuthGrants(ctx context.Context, userID string) ([]core.OAuthGrant, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	return r.OAuthStore.ListOwnOAuthGrants(ctx, userID)
 }
 
 func (r *recordingOAuthStore) RegisterOAuthClient(ctx context.Context, registration store.OAuthClientRegistration) (core.OAuthClient, error) {
@@ -554,7 +562,12 @@ func TestOAuthRegistrationAdmitsOnlyBoundedPublicClients(t *testing.T) {
 		"secret-shaped address": {`{"redirect_uris":["https://app.example/cb?token=0123456789abcdefghij"],"token_endpoint_auth_method":"none"}`, "application/json", "invalid_redirect_uri"},
 	} {
 		response := h.do(oauthRequest{method: http.MethodPost, path: "/oauth/register", body: invalid.body, contentType: invalid.contentType, remote: h.nextSource()})
-		body := expectOAuthError(t, response, http.StatusBadRequest, invalid.code)
+		status := http.StatusBadRequest
+		if name == "oversized body" {
+			// A larger body answers 413 (component-http-api invariant 17).
+			status = http.StatusRequestEntityTooLarge
+		}
+		body := expectOAuthError(t, response, status, invalid.code)
 		if strings.Contains(fmt.Sprint(body), "ghp_0123") || strings.Contains(fmt.Sprint(body), "0123456789abcdefghij") {
 			t.Fatalf("%s: refusal echoed a secret-shaped value: %v", name, body)
 		}
@@ -619,7 +632,13 @@ func TestOAuthSourceAddressTrustsOnlyConfiguredProxies(t *testing.T) {
 		{"10.0.0.1:5", "", "10.0.0.1"},
 		{"10.0.0.1:5", "203.0.113.1", "203.0.113.1"},
 		{"10.0.0.1:5", "203.0.113.1, 198.51.100.7, 10.1.1.1", "198.51.100.7"},
-		{"10.0.0.1:5", "10.2.2.2, 10.3.3.3", "10.2.2.2"},
+		// A chain of trusted proxies names no client: the peer stays the
+		// source.
+		{"10.0.0.1:5", "10.2.2.2, 10.3.3.3", "10.0.0.1"},
+		// A zone-qualified address makes the chain malformed.
+		{"10.0.0.1:5", "203.0.113.1, fe80::1%eth0", "10.0.0.1"},
+		{"10.0.0.1:5", "fe80::1%eth0, 198.51.100.7", "10.0.0.1"},
+		{"10.0.0.1:5", "198.51.100.7, 2001:db8::7%1", "10.0.0.1"},
 		{"10.0.0.1:5", "203.0.113.1, not-an-address", "10.0.0.1"},
 		{"10.0.0.1:5", "203.0.113.1:443", "10.0.0.1"},
 		{"[fd00::1]:5", "2001:db8::5", "2001:db8::5"},
@@ -884,6 +903,14 @@ func TestOAuthConsentDecisionMintsBoundSingleUseCode(t *testing.T) {
 			t.Fatalf("%s: %v", name, got)
 		}
 	}
+	// A larger decision body answers 413 and mints nothing
+	// (component-http-api invariant 17).
+	oversizedDecision := strings.Replace(oauthDecisionBody("approve", clientID, registeredRedirect, "s"), `"decision":"approve"`, `"decision":"approve","pad":"`+strings.Repeat("p", oauthConsentBodyLimit)+`"`, 1)
+	oversized := h.do(oauthRequest{method: http.MethodPost, path: "/v1/oauth/authorize", body: oversizedDecision, contentType: "application/json", session: h.memberSession, proof: true})
+	if got := expectOAuthError(t, oversized, http.StatusRequestEntityTooLarge, "invalid_request"); got["redirect_to"] != nil || len(h.oauth.issued) != 0 {
+		t.Fatalf("oversized decision: %v, issued %d", got, len(h.oauth.issued))
+	}
+	expectNoStore(t, oversized)
 	state := "a b&c=d/é?+%"
 	target := h.approve(h.memberSession, clientID, registeredRedirect, state)
 	query := target.Query()
@@ -958,11 +985,21 @@ func TestOAuthCodeExchangeVerifiesEveryBindingAndIsSingleUse(t *testing.T) {
 		"query parameters": {method: http.MethodPost, path: "/oauth/token?code=" + url.QueryEscape(code), body: codeExchangeForm(code, clientID, oauthTestRedirect).Encode(), contentType: "application/x-www-form-urlencoded"},
 		"JSON body":        {method: http.MethodPost, path: "/oauth/token", body: `{"grant_type":"authorization_code"}`, contentType: "application/json"},
 		"repeated code":    {method: http.MethodPost, path: "/oauth/token", body: codeExchangeForm(code, clientID, oauthTestRedirect).Encode() + "&code=other", contentType: "application/x-www-form-urlencoded"},
-		"oversized body":   {method: http.MethodPost, path: "/oauth/token", body: codeExchangeForm(code, clientID, oauthTestRedirect).Encode() + "&pad=" + strings.Repeat("p", oauthFormBodyLimit), contentType: "application/x-www-form-urlencoded"},
 	} {
 		expectOAuthError(t, h.do(request), http.StatusBadRequest, "invalid_request")
 		_ = name
 	}
+	// A larger body answers 413, also when only its declared length is over
+	// the bound (component-http-api invariant 17; DEC-105(3)).
+	oversized := h.do(oauthRequest{method: http.MethodPost, path: "/oauth/token", body: codeExchangeForm(code, clientID, oauthTestRedirect).Encode() + "&pad=" + strings.Repeat("p", oauthFormBodyLimit), contentType: "application/x-www-form-urlencoded"})
+	expectOAuthError(t, oversized, http.StatusRequestEntityTooLarge, "invalid_request")
+	expectNoStore(t, oversized)
+	declared := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(codeExchangeForm(code, clientID, oauthTestRedirect).Encode()))
+	declared.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	declared.ContentLength = oauthFormBodyLimit + 1
+	declaredResponse := httptest.NewRecorder()
+	h.server.Handler().ServeHTTP(declaredResponse, declared)
+	expectOAuthError(t, declaredResponse, http.StatusRequestEntityTooLarge, "invalid_request")
 	// No refusal consumed the code: the exact bound exchange still wins.
 	response := h.token(codeExchangeForm(code, clientID, oauthTestRedirect))
 	pair := decodeTokenPair(t, response)
@@ -1125,6 +1162,8 @@ func TestOAuthRevocationEndpointIsIdempotentAndRevokesTheGrant(t *testing.T) {
 	}
 	expectOAuthError(t, revoke(url.Values{"token": {"x"}}), http.StatusBadRequest, "invalid_request")
 	expectOAuthError(t, revoke(url.Values{"client_id": {"x"}}), http.StatusBadRequest, "invalid_request")
+	// A larger body answers 413 (component-http-api invariant 17).
+	expectOAuthError(t, revoke(url.Values{"token": {"x"}, "client_id": {"y"}, "pad": {strings.Repeat("p", oauthFormBodyLimit)}}), http.StatusRequestEntityTooLarge, "invalid_request")
 	if response := revoke(url.Values{"token": {"cv_oat_oat_unknown_0123456789abcdef"}, "client_id": {"ocl_x"}}); response.Code != http.StatusOK || response.Body.Len() != 0 {
 		t.Fatalf("unknown token status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1222,6 +1261,79 @@ func TestOAuthGrantManagementIsOwnerScopedAndHashFree(t *testing.T) {
 }
 
 // --- /mcp admission and REST refusal (AC-4.3; security AC-1.4) ---
+
+// TestOAuthAccessTokenIsBoundToTheCurrentAudience proves that /mcp admits an
+// OAuth access token only while its grant's resource equals the configured
+// <public-url>/mcp (DEC-146(4); req-mcp-oauth AC-4.3).
+func TestOAuthAccessTokenIsBoundToTheCurrentAudience(t *testing.T) {
+	h := newOAuthHarness(t)
+	_, pair := h.grant()
+	call := func() oauthMCPResult {
+		return h.mcp(pair.AccessToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"})
+	}
+	if result := call(); result.status != http.StatusOK || result.isError {
+		t.Fatalf("token at its own audience: %+v", result)
+	}
+	// The operator moves the server to a new public URL. The otherwise valid
+	// token was issued for the earlier audience, so it is refused, and the
+	// challenge names the new metadata.
+	h.server.InvitationDelivery.PublicURL = "https://conveyor-new.example"
+	result := call()
+	if result.status != http.StatusUnauthorized || result.header.Get("WWW-Authenticate") != `Bearer resource_metadata="https://conveyor-new.example/.well-known/oauth-protected-resource/mcp"` {
+		t.Fatalf("token after a public URL change: status=%d challenge=%q", result.status, result.header.Get("WWW-Authenticate"))
+	}
+	// A personal access token is not audience-bound and still works.
+	if personal := h.mcp(h.memberPAT, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); personal.status != http.StatusOK || personal.isError {
+		t.Fatalf("PAT after a public URL change: %+v", personal)
+	}
+	// The refusal reads the audience and revokes nothing: back at the
+	// original URL the token works again.
+	h.server.InvitationDelivery.PublicURL = oauthTestIssuer
+	if result := call(); result.status != http.StatusOK || result.isError {
+		t.Fatalf("token back at its own audience: %+v", result)
+	}
+	// A store failure while reading the grant is a server failure, not a
+	// refusal.
+	h.oauth.listErr = errors.New("database offline")
+	if result := call(); result.status != http.StatusInternalServerError || !strings.Contains(result.text, "credential verification failed") {
+		t.Fatalf("grant read failure: %+v", result)
+	}
+}
+
+// TestOAuthPostEndpointsRefuseOtherMethodsWithoutHTML proves that the three
+// POST endpoints are mounted for every method, so GET and HEAD answer 405
+// with Allow: POST and never dashboard HTML, with OAuth on and off
+// (component-http-api invariant 2).
+func TestOAuthPostEndpointsRefuseOtherMethodsWithoutHTML(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		h := newOAuthHarness(t)
+		if !enabled {
+			h.server.InvitationDelivery.PublicURL = ""
+		}
+		for _, path := range []string{"/oauth/register", "/oauth/token", "/oauth/revoke"} {
+			for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete} {
+				response := h.do(oauthRequest{method: method, path: path})
+				body := response.Body.String()
+				if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != http.MethodPost ||
+					strings.Contains(strings.ToLower(body), "<html") || strings.Contains(response.Header().Get("Content-Type"), "text/html") {
+					t.Fatalf("enabled=%t %s %s: status=%d allow=%q type=%q body=%s", enabled, method, path, response.Code, response.Header().Get("Allow"), response.Header().Get("Content-Type"), body)
+				}
+				expectNoStore(t, response)
+				if method != http.MethodHead {
+					expectOAuthError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
+				}
+			}
+			// A POST still reaches the endpoint, and the disabled state
+			// still answers oauth_unavailable.
+			post := h.do(oauthRequest{method: http.MethodPost, path: path, body: "x=y", contentType: "application/x-www-form-urlencoded"})
+			if !enabled {
+				expectOAuthError(t, post, http.StatusNotFound, "oauth_unavailable")
+			} else if post.Code == http.StatusMethodNotAllowed {
+				t.Fatalf("POST %s answered 405", path)
+			}
+		}
+	}
+}
 
 func TestOAuthAccessTokenActsAsItsOwnerWithLiveCapabilities(t *testing.T) {
 	h := newOAuthHarness(t)

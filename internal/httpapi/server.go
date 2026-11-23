@@ -281,9 +281,12 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/.well-known/oauth-protected-resource/mcp", s.getOAuthProtectedResource)
 	r.Get("/.well-known/oauth-authorization-server", s.getOAuthAuthorizationServer)
 	r.HandleFunc("/.well-known/*", notFoundJSON)
-	r.With(oauthNoStore).Post("/oauth/register", s.registerOAuthClient)
-	r.With(oauthNoStore).Post("/oauth/token", s.exchangeOAuthToken)
-	r.With(oauthNoStore).Post("/oauth/revoke", s.revokeOAuthToken)
+	// Each POST endpoint is mounted for every method, as /mcp is, so a
+	// probe with another method gets 405 and never dashboard HTML
+	// (component-http-api invariant 2).
+	r.With(oauthNoStore).HandleFunc("/oauth/register", oauthPostOnly(s.registerOAuthClient))
+	r.With(oauthNoStore).HandleFunc("/oauth/token", oauthPostOnly(s.exchangeOAuthToken))
+	r.With(oauthNoStore).HandleFunc("/oauth/revoke", oauthPostOnly(s.revokeOAuthToken))
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/version", func(w http.ResponseWriter, _ *http.Request) {

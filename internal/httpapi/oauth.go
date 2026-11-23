@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"mime"
 	"net"
@@ -292,6 +291,9 @@ func (s *Server) requireMCPEndpointAuth(next http.Handler) http.Handler {
 				if verifyErr == nil && (credential.Method != core.CredentialMethodOAuthMCP || credential.Kind != core.CredentialUser) {
 					verifyErr = core.ErrInvalidCredential
 				}
+				if verifyErr == nil {
+					verifyErr = provider.requireGrantAudience(r.Context(), credential)
+				}
 			}
 		} else {
 			credential, verifyErr = s.verifyCredential(r.Context(), provided)
@@ -317,6 +319,30 @@ func (s *Server) requireMCPEndpointAuth(next http.Handler) http.Handler {
 		ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// requireGrantAudience refuses an OAuth access token whose grant was not
+// issued for the currently configured audience, <public-url>/mcp. After an
+// operator changes the public URL, a token issued for the earlier origin is
+// refused at its next use (DEC-146(4); req-mcp-oauth AC-4.3). The verified
+// credential's ID is its grant's ID (store.OAuthCredential), and the store's
+// owner-scoped grant listing returns each unrevoked grant's resource, so the
+// check needs no change to the store contract. A missing grant, such as one
+// revoked after verification, is refused too.
+func (o oauthServer) requireGrantAudience(ctx context.Context, credential core.AuthenticatedCredential) error {
+	grants, err := o.store.ListOwnOAuthGrants(ctx, credential.OwnerUserID)
+	if err != nil {
+		return fmt.Errorf("read OAuth grant audience: %w", err)
+	}
+	for _, grant := range grants {
+		if grant.ID == credential.ID {
+			if grant.Resource != o.audience() {
+				return core.ErrInvalidCredential
+			}
+			return nil
+		}
+	}
+	return core.ErrInvalidCredential
 }
 
 // requireDashboardSession admits only a dashboard session, after
@@ -370,6 +396,21 @@ func (s *Server) getOAuthAuthorizationServer(w http.ResponseWriter, _ *http.Requ
 		"token_endpoint_auth_methods_supported": []string{"none"},
 		"client_id_metadata_document_supported": true,
 	})
+}
+
+// oauthPostOnly serves an OAuth endpoint that accepts only POST. The route is
+// mounted for every method, as /mcp is, so any other method answers 405 with
+// Allow: POST and a JSON body, and never falls through to the dashboard
+// (component-http-api invariant 2).
+func oauthPostOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "this endpoint accepts only POST")
+			return
+		}
+		next(w, r)
+	}
 }
 
 // notFoundJSON answers a well-known path this server does not serve with a
@@ -548,7 +589,11 @@ func (s *Server) registerOAuthClient(w http.ResponseWriter, r *http.Request) {
 	// Unknown RFC 7591 fields, such as client_uri or scope, are ignored: the
 	// server keeps only what it verifies.
 	if err := decodeBoundedJSON(w, r, oauthRegistrationBodyLimit, &request); err != nil {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "the registration body is not valid JSON within the size limit")
+		if errors.Is(err, errBodyTooLarge) {
+			writeOAuthError(w, http.StatusRequestEntityTooLarge, "invalid_client_metadata", "the registration body is larger than 16 KiB")
+			return
+		}
+		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "the registration body is not valid JSON")
 		return
 	}
 	if request.TokenEndpointAuthMethod == nil || *request.TokenEndpointAuthMethod != "none" {
@@ -766,7 +811,9 @@ func (s *Server) oauthSourceAddress(r *http.Request) string {
 	for _, header := range r.Header.Values("X-Forwarded-For") {
 		for _, field := range strings.Split(header, ",") {
 			address, parseErr := netip.ParseAddr(strings.TrimSpace(field))
-			if parseErr != nil {
+			// A zone-qualified address names a local interface, never a
+			// client, so the chain is malformed and is not believed.
+			if parseErr != nil || address.Zone() != "" {
 				return peer.String()
 			}
 			chain = append(chain, address.Unmap())
@@ -777,9 +824,8 @@ func (s *Server) oauthSourceAddress(r *http.Request) string {
 			return chain[index].String()
 		}
 	}
-	if len(chain) > 0 {
-		return chain[0].String()
-	}
+	// A chain of trusted proxies names no client, so the direct peer stays
+	// the source (component-identity-membership invariant 32).
 	return peer.String()
 }
 
@@ -1051,6 +1097,10 @@ func (s *Server) postOAuthAuthorization(w http.ResponseWriter, r *http.Request) 
 	credential, _ := store.CredentialFromContext(r.Context())
 	var decision oauthConsentDecision
 	if err := decodeStrictBoundedJSON(w, r, oauthConsentBodyLimit, &decision); err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			writeOAuthConsentError(w, &oauthConsentError{status: http.StatusRequestEntityTooLarge, code: "invalid_request", description: "the decision body is larger than 16 KiB"})
+			return
+		}
 		writeOAuthConsentError(w, &oauthConsentError{status: http.StatusBadRequest, code: "invalid_request", description: "the decision body is not valid"})
 		return
 	}
@@ -1097,9 +1147,16 @@ func readOAuthForm(w http.ResponseWriter, r *http.Request) (url.Values, bool) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "the body must be application/x-www-form-urlencoded")
 		return nil, false
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, oauthFormBodyLimit))
+	// A declared Content-Length over the bound is refused before any read,
+	// and a larger body answers 413 (component-http-api invariant 17;
+	// DEC-105(3)).
+	body, err := readBoundedBody(w, r, oauthFormBodyLimit)
 	if err != nil {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "the body is too large or unreadable")
+		if errors.Is(err, errBodyTooLarge) {
+			writeOAuthError(w, http.StatusRequestEntityTooLarge, "invalid_request", "the body is larger than 16 KiB")
+			return nil, false
+		}
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "the body is unreadable")
 		return nil, false
 	}
 	form, err := url.ParseQuery(string(body))

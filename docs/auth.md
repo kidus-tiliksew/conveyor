@@ -6,7 +6,7 @@ the browser, a personal access token in the CLI and in the MCP
 registrations of the agent sessions the person starts, and an OAuth access
 token that an MCP client obtains for `/mcp` only (see
 [MCP OAuth 2.1](#mcp-oauth-21)). Conveyor launches no agent and mints no
-credential for one (DEC-97(1)).
+credential for one (DEC-131(1)).
 
 ## The two human credential methods
 
@@ -254,7 +254,10 @@ without OAuth storage turns those grant routes off too.
 addresses or CIDR prefixes. Client registration is rate limited per source
 address. The source is the connection's peer address, or, when the peer is a
 listed proxy, the nearest `X-Forwarded-For` address that is not a listed
-proxy, read from the right. A malformed `X-Forwarded-For` chain is ignored. An
+proxy, read from the right. When every forwarded address is a listed proxy,
+the peer address stays the source. A malformed `X-Forwarded-For` chain,
+including one with a zone-qualified address such as `fe80::1%eth0`, is
+ignored, and the peer address stays the source. An
 IPv4-mapped prefix such as `::ffff:10.0.0.0/104` is read as the IPv4 prefix it
 covers. An invalid setting is logged at startup and trusts no proxy. Password sign-in
 keeps its own limiter, which reads only the peer address.
@@ -333,7 +336,8 @@ twice is refused. A valid request answers:
 metadata-document client has an `origin`.
 
 `POST /v1/oauth/authorize` records your decision. It needs the session's
-`X-Conveyor-CSRF: 1` header and `Origin`. Its JSON body repeats the same
+`X-Conveyor-CSRF: 1` header and `Origin`. Its JSON body, of at most 16 KiB,
+repeats the same
 request fields and adds `decision`, which is `approve` or `deny`. The server
 checks the whole request again. Approval mints an authorization code
 (`cv_oac_...`) that is single use, expires after 60 seconds, and is bound to
@@ -388,7 +392,8 @@ again.
 
 ### Revoking access
 
-- **From the client.** `POST /oauth/revoke` (RFC 7009) takes form fields
+- **From the client.** `POST /oauth/revoke` (RFC 7009) takes an
+  `application/x-www-form-urlencoded` body of at most 16 KiB with the fields
   `token` and `client_id`. An access or refresh token of that client revokes
   its whole grant. The answer is `200` with an empty body whether or not the
   token was known, belonged to that client, or was already revoked.
@@ -404,6 +409,21 @@ again.
 
 A revoked token is refused at its next request. A workspace role change
 applies to the next MCP call.
+
+An access token is also bound to the audience it was issued for. On each
+`/mcp` request, Conveyor compares the token's grant with the current
+`<public-url>/mcp`. After an operator changes `CONVEYOR_PUBLIC_URL`, a token
+issued for the earlier URL is refused with 401 at its next use, and its
+client must sign in again.
+
+### Request limits
+
+`POST /oauth/register`, `POST /oauth/token`, `POST /oauth/revoke`, and
+`POST /v1/oauth/authorize` each accept a body of at most 16 KiB. A larger
+body, or a declared `Content-Length` over that bound, answers `413` with an
+OAuth JSON error. These three `/oauth/*` endpoints accept only `POST`. Any
+other method answers `405` with `Allow: POST` and a JSON error, never the
+dashboard page, whether OAuth is on or off.
 
 ## Native MCP credentials
 
