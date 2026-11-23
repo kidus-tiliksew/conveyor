@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -458,4 +459,34 @@ func TestReleasedColumnstoreOperatorCopyIntegration(t *testing.T) {
 	exec("DELETE FROM events_columnstore WHERE workspace_id='released' AND id=123")
 	exec("INSERT INTO events_columnstore (" + eventColumns + ",event_shard_key) SELECT " + eventColumns + ",'wrong' FROM events WHERE workspace_id='released' AND id=123")
 	check(1)
+}
+
+func queryRows(t *testing.T, st *Store, ctx context.Context, query string, args ...any) []string {
+	t.Helper()
+	rows, err := st.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for rows.Next() {
+		values := make([]sql.NullString, len(columns))
+		targets := make([]any, len(columns))
+		for i := range values {
+			targets[i] = &values[i]
+		}
+		if err := rows.Scan(targets...); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, fmt.Sprint(values))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(out)
+	return out
 }

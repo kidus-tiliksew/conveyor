@@ -330,7 +330,7 @@ class FixtureTests(unittest.TestCase):
 
     def test_postgres_target_owns_its_container_through_one_managed_invocation(self):
         makefile = (fixtures.ROOT / "Makefile").read_text()
-        target = makefile.split("test-integration: compose-check test-validation-docker vk10-runtime", 1)[1].split(
+        target = makefile.split("test-integration: compose-check test-validation-docker\n", 1)[1].split(
             "test-integration-ci:", 1
         )[0]
         prepared, standalone = target.split("else", 1)
