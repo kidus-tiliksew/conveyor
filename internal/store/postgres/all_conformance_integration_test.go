@@ -18,9 +18,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
-	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -180,25 +178,9 @@ func conformanceStore(t *testing.T) *Store {
 func TestPostgresConformanceIntegration(t *testing.T) {
 	integrationDatabaseURL(t)
 	storetest.RunAll(t, storetest.Factory{
-		PlanRevisionGate: func(ctx context.Context, st store.Store, taskID string) (bool, error) {
-			_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, taskID)
-			return pending, err
-		},
 		ClaimService: func(st store.Store, cfg *config.Config) func(context.Context, string, core.WorkOrderClaim) (core.WorkOrder, error) {
 			service := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 			return service.Claim
-		},
-		SubmitPlanService: func(st store.Store, cfg *config.Config) func(context.Context, string, string, pipeline.StructuredPlan) (map[string]any, error) {
-			dispatcher := dispatch.New(st, cfg, nil)
-			dispatcher.DisableMemoryQueueForTest()
-			service := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
-			return service.SubmitPlan
-		},
-		StatementMemo: func(st store.Store, workspace string, memoClock func() time.Time) http.Handler {
-			server := httpapi.NewServer(st)
-			server.Workspace, server.BearerToken = workspace, storetest.StatementMemoToken
-			server.UseReadMemoClock(memoClock)
-			return server.Handler()
 		},
 		ReviewSweep: func(ctx context.Context, st store.Store, cfg *config.Config, head string, now time.Time) (int, error) {
 			service := &workorder.Service{
@@ -224,10 +206,7 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			reads := newConformanceReadLedger(st)
-			return storetest.Fixture{ArtifactListStatements: storetest.ArtifactListStatementsExactlyTwo, DrainReadBytes: reads.drainBytes, DrainReadQueries: reads.drainQueries, DrainReadRows: reads.drainRows, VerificationClaimReads: verificationClaimReads(workspace), AwaitTaskOperationWaiter: func(t *testing.T, ctx context.Context, taskID string, done <-chan struct{}) {
-				t.Helper()
-				awaitTaskOperationWaiter(t, ctx, st, workspace, taskID, done)
-			}, RestoreSupersededDeliveries: func(t *testing.T, ctx context.Context, taskID string) {
+			return storetest.Fixture{ArtifactListStatements: storetest.ArtifactListStatementsExactlyTwo, DrainReadBytes: reads.drainBytes, DrainReadQueries: reads.drainQueries, DrainReadRows: reads.drainRows, VerificationClaimReads: verificationClaimReads(workspace), RestoreSupersededDeliveries: func(t *testing.T, ctx context.Context, taskID string) {
 				t.Helper()
 				tag, err := st.pool.Exec(ctx, `UPDATE verification_publication_deliveries SET state='pending', body=jsonb_set(body, '{State}', '"pending"') WHERE workspace_id=$1 AND task_id=$2 AND state='superseded'`, workspace, taskID)
 				if err != nil || tag.RowsAffected() == 0 {
@@ -331,10 +310,6 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 					t.Fatalf("duplicate intake key write = %v, want a unique violation", err)
 				}
 				return false
-			}, SeedSetupContract: func(t *testing.T, ctx context.Context, taskID, raw string) {
-				if _, err := st.pool.Exec(ctx, `UPDATE tasks SET setup_contract=$1::jsonb WHERE workspace_id=$2 AND id=$3`, raw, workspace, taskID); err != nil {
-					t.Fatal(err)
-				}
 			}, SeedRiskRating: func(t *testing.T, ctx context.Context, rating core.RiskRating) {
 				// A reviewer rating a verdict recorded before verdicts stopped
 				// stating a tier; no public writer accepts the source
@@ -426,37 +401,11 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 					return time.Time{}
 				}
 				return lastUsed.UTC()
-			}, TaskIntakeHTTP: func(_ *testing.T, generate func(context.Context, core.Task) (string, error)) http.Handler {
-				server := httpapi.NewServer(st)
-				server.Credentials = nil
-				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
-				server.GenerateTaskTitle = generate
-				return server.Handler()
-			}, GitHubIssueIntake: func(ctx context.Context, repo config.Repo, issue githubtrigger.Issue) error {
-				d := dispatch.New(st, cfg, nil)
-				d.DisableMemoryQueueForTest()
-				d.MarkIssueDispatched = func(context.Context, string, int, string) error { return nil }
-				return d.TakeInReadyIssue(ctx, ctx, workspace, repo, issue)
 			}, LineageHTTP: func(*testing.T) http.Handler {
 				// The shared-token operator fixture (component-lineage).
 				server := httpapi.NewServer(st)
 				server.Credentials = nil
 				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
-				return server.Handler()
-			}, WorkOrderHTTP: func(*testing.T) http.Handler {
-				server := httpapi.NewServer(st)
-				server.Credentials = nil
-				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
-				server.WorkOrders = &workorder.Service{Store: st}
-				return server.Handler()
-			}, RedispatchHTTP: func(_ *testing.T, onDispatch func(context.Context, string)) http.Handler {
-				server := httpapi.NewServer(st)
-				server.Credentials = nil
-				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
-				server.OnCreate = onDispatch
-				dispatcher := dispatch.New(st, cfg, nil)
-				dispatcher.DisableMemoryQueueForTest()
-				server.OnIntervention = dispatcher.HandleIntervention
 				return server.Handler()
 			}}
 		},

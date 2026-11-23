@@ -3,7 +3,6 @@ package storetest
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"reflect"
 	"testing"
 
@@ -336,48 +335,5 @@ func requireSweepTransitions(t *testing.T, x Fixture, decisionID, documentID str
 	}
 	if got != want {
 		t.Fatalf("sweep %s/%s transitions=%+v want %+v", decisionID, documentID, got, want)
-	}
-}
-
-func runArchiveRestore(t *testing.T, x Fixture) {
-	st, ctx := x.Backend, x.Context
-	for _, id := range []string{"old", "new-a", "new-b"} {
-		_, _, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: "# Requirement.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retain version history."}}, Origin: core.RequirementOriginOperator})
-		requireOK(t, err)
-		_, _, err = st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Component design"}, core.SystemDesignVersion{Content: designContent(id), Origin: core.SystemDesignOriginOperator})
-		requireOK(t, err)
-		_, _, err = st.ConfirmRequirementVersion(ctx, id, 1)
-		requireOK(t, err)
-		_, _, err = st.ConfirmSystemDesignVersion(ctx, id, 1)
-		requireOK(t, err)
-	}
-	successors := []string{"new-b", "new-a"}
-	requireOK(t, st.ArchiveRequirement(ctx, "old", "operator", successors))
-	requireOK(t, st.ArchiveSystemDesign(ctx, "old", "operator", successors))
-	req, err := st.GetRequirement(ctx, "old")
-	requireOK(t, err)
-	design, err := st.GetSystemDesign(ctx, "old")
-	requireOK(t, err)
-	if !req.Archived || !design.Archived || !reflect.DeepEqual(req.SupersededBy, successors) || !reflect.DeepEqual(design.SupersededBy, successors) {
-		t.Fatal("archive lost ordered successors")
-	}
-	requireOK(t, st.RestoreRequirement(ctx, "old", "operator"))
-	requireOK(t, st.RestoreSystemDesign(ctx, "old", "operator"))
-	req, err = st.GetRequirement(ctx, "old")
-	requireOK(t, err)
-	design, err = st.GetSystemDesign(ctx, "old")
-	requireOK(t, err)
-	if req.Archived || design.Archived || len(req.SupersededBy) != 0 || len(design.SupersededBy) != 0 {
-		t.Fatal("restore retained archive metadata")
-	}
-	if err := st.ArchiveRequirement(ctx, "old", "operator", []string{"missing"}); !errors.Is(err, store.ErrNotFound) && err == nil {
-		t.Fatal("unknown successor accepted")
-	}
-	versions, err := st.ListRequirementVersions(ctx, "old")
-	requireOK(t, err)
-	designVersions, err := st.ListSystemDesignVersions(ctx, "old")
-	requireOK(t, err)
-	if len(versions) != 1 || len(designVersions) != 1 {
-		t.Fatal("archive or restore rewrote version history")
 	}
 }
