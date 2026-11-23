@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
 type testSecretSource struct {
@@ -184,6 +186,10 @@ func TestRedactsTokenShapesAndKeepsDigests(t *testing.T) {
 		{"digest in a payload", `{"artifact_id":"` + digest + `","content_digest":"` + digest + `"}`},
 		{"digest in a URI", "artifact://" + digest},
 		{"prefix named in prose", "the cv_pat_ prefix and cv_session_ cookies"},
+		{"OAuth prefixes named in prose", "the cv_oac_, cv_oat_, and cv_ort_ prefixes"},
+		{"short OAuth identifier", "cv_oat_short"},
+		{"OAuth prefixes after word characters", "xcv_oac_, 9cv_oat_, and _cv_ort_ are prefixes"},
+		{"short OAuth identifier after a letter", "xcv_ort_short_value"},
 		{"short identifier", "cv_pat_short"},
 		{"bearer in prose", "the bearer token and Bearer authentication"},
 		{"github_pat prefix alone", "a github_pat_ value"},
@@ -195,6 +201,167 @@ func TestRedactsTokenShapesAndKeepsDigests(t *testing.T) {
 				t.Fatalf("clean=%q stats=%+v", clean, stats)
 			}
 		})
+	}
+}
+
+// TestRedactsOAuthCredentialShapes mints each OAuth credential with the
+// encoding the store issues and proves that pattern redaction removes the
+// full wire value, counts it once by pattern class, and never by value
+// (req-security-boundaries REQ-3, AC-3.1; component-identity-membership
+// invariant 46).
+func TestRedactsOAuthCredentialShapes(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []core.OAuthCredentialKind{core.OAuthCredentialCode, core.OAuthCredentialAccess, core.OAuthCredentialRefresh} {
+		_, value, digest, err := core.NewOAuthCredential(kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(value, "cv_"+string(kind)+"_") || len(digest) != 32 {
+			t.Fatalf("%s value does not have the cv_%s_<id>_<secret> shape", kind, kind)
+		}
+		secret := value[len("cv_"+string(kind)+"_")+17:]
+		for _, form := range []struct{ name, text string }{
+			{"bare", "leaked " + value + " here"},
+			{"quoted", `{"access_token":"` + value + `"}`},
+			{"form body", "grant_type=refresh_token&refresh_token=" + value + "&client_id=ocl_x"},
+			{"bearer", "Authorization: Bearer " + value},
+			// A word character directly before the value defeats a leading
+			// word boundary, so the OAuth pattern carries none.
+			{"after a letter", "Client x" + value},
+			{"after a digit", "client-9" + value + "-name"},
+			{"after an underscore", "https://client.example.test/meta_" + value + "/client.json"},
+		} {
+			t.Run(string(kind)+"/"+form.name, func(t *testing.T) {
+				t.Parallel()
+				clean, stats := New(nil).Redact(form.text)
+				if strings.Contains(clean, value) || strings.Contains(clean, secret) {
+					t.Fatal("OAuth credential survived redaction")
+				}
+				if stats.Pattern != 1 || stats.Exact+stats.Encoded+stats.Entropy != 0 {
+					t.Fatalf("stats=%+v, want one pattern removal", stats)
+				}
+				raw, err := json.Marshal(stats)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(raw), value) || strings.Contains(string(raw), secret) {
+					t.Fatal("redaction stats carry the value")
+				}
+			})
+		}
+	}
+}
+
+// credentialShapeFixtures holds one synthetic value for every credential
+// shape the redactor knows: each entry of credentialPatternSources and the
+// assignment rule. No value is a real credential.
+var credentialShapeFixtures = []struct{ name, value string }{
+	{"JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjb25mb3JtYW5jZSJ9.c2lnbmF0dXJlLXZhbHVl"},
+	{"Google API key", "AIzaSyConformance0123456789abcdefgh"},
+	{"sk- key", "sk-conformance0123456789abcdef"},
+	{"GitHub ghp_ token", "ghp_Conformance0123456789abcdefABCDEF"},
+	{"GitHub gho_ token", "gho_Conformance0123456789abcdefABCDEF"},
+	{"GitHub ghu_ token", "ghu_Conformance0123456789abcdefABCDEF"},
+	{"GitHub ghs_ token", "ghs_Conformance0123456789abcdefABCDEF"},
+	{"GitHub ghr_ token", "ghr_Conformance0123456789abcdefABCDEF"},
+	{"fine-grained GitHub token", "github_pat_11AAAAAAA0conformance_abcdefghij"},
+	{"Conveyor personal access token", "cv_pat_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"retired Conveyor agent token", "cv_agent_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"Conveyor session token", "cv_session_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"Conveyor sign-in token", "cv_signin_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"OAuth authorization code", "cv_oac_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"OAuth access token", "cv_oat_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"OAuth refresh token", "cv_ort_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"bearer credential", "Bearer conformanceopaquevalue0123456789"},
+	{"PEM private key", "-----BEGIN PRIVATE KEY-----MIIBconformance-----END PRIVATE KEY-----"},
+	{"assigned secret", "token=conformanceassigned0123456789"},
+}
+
+// percentEncodeAll encodes every byte of value as %XX, so no credential
+// pattern matches the encoded text itself.
+func percentEncodeAll(value string) string {
+	var out strings.Builder
+	for i := 0; i < len(value); i++ {
+		fmt.Fprintf(&out, "%%%02X", value[i])
+	}
+	return out.String()
+}
+
+// TestHoldsCredentialShapeAnywhere proves the refusal check uses the
+// redactor's own rules. Every shape is found as given, after a space or a
+// slash, and in percent-encoded form. Every Conveyor kind is also found, and
+// redacted, directly after a letter, a digit, and an underscore. Every other
+// shape keeps its leading word boundary, so ordinary hyphenated names, hosts,
+// and paths stay clean (req-security-boundaries REQ-2, REQ-3;
+// component-identity-membership invariants 45, 46, and 51).
+func TestHoldsCredentialShapeAnywhere(t *testing.T) {
+	t.Parallel()
+	for _, shape := range credentialShapeFixtures {
+		forms := []struct{ name, text string }{
+			{"as given", shape.value},
+			{"after a space", "Client " + shape.value},
+			{"after a slash", "https://client.example.test/meta/" + shape.value + "/client.json"},
+			{"percent-encoded", "https://client.example.test/" + percentEncodeAll(shape.value)},
+		}
+		conveyor := strings.HasPrefix(shape.value, "cv_")
+		if conveyor {
+			forms = append(forms,
+				struct{ name, text string }{"after a letter", "Client x" + shape.value},
+				struct{ name, text string }{"after a digit", "client-9" + shape.value},
+				struct{ name, text string }{"after an underscore", "https://client.example.test/meta_" + shape.value + "/client.json"},
+			)
+		}
+		for _, form := range forms {
+			t.Run(shape.name+"/"+form.name, func(t *testing.T) {
+				t.Parallel()
+				if !HoldsCredentialShape(form.text) {
+					t.Fatal("credential shape not found")
+				}
+				if conveyor && form.name != "percent-encoded" {
+					clean, stats := New(nil).Redact(form.text)
+					if strings.Contains(clean, shape.value) || stats.Pattern != 1 {
+						t.Fatalf("Conveyor credential survived redaction: stats=%+v", stats)
+					}
+				}
+			})
+		}
+	}
+	for _, clean := range []string{
+		"Conformance Client",
+		"https://client.example.test/oauth/client.json",
+		"http://127.0.0.1:43123/callback",
+		"the cv_pat_, cv_agent_, cv_session_, cv_signin_, cv_oac_, cv_oat_, and cv_ort_ prefixes",
+		"xcv_pat_, 9cv_session_, and _cv_ort_ are prefixes",
+		"cv_pat_short and xcv_oat_short_value",
+		"the sk- prefix, ghp_ tokens, and Bearer authentication",
+		"%zz is not a valid escape",
+		// Ordinary metadata whose words end in "sk" or "bearer" before a
+		// hyphen or a space, from the round 5 review.
+		"Risk-management-assistant",
+		"Ask-the-assistant-bot",
+		"Flask-oauth-sample-client-app",
+		"https://desk-application-callback.example.com/cb",
+		"https://my-kiosk-integration-service.example.org/callback",
+		"https://tools.example.com/oauth/task-client-metadata-document.json",
+		"task-0123456789abcdefghij",
+		"Cupbearer assistantinterfaceservice01",
+		percentEncodeAll("Risk-management-assistant"),
+		percentEncodeAll("https://tools.example.com/oauth/task-client-metadata-document.json"),
+	} {
+		if HoldsCredentialShape(clean) {
+			t.Errorf("clean text %q holds a credential shape", clean)
+		}
+	}
+	// Redaction keeps the leading boundary of the non-Conveyor shapes, so a
+	// task name stays readable in logs.
+	if clean, stats := New(nil).Redact("task-0123456789abcdefghij"); clean != "task-0123456789abcdefghij" || stats.Total() != 0 {
+		t.Fatalf("redaction changed a task name: %q %+v", clean, stats)
+	}
+	for _, kind := range []string{"pat", "agent", "session", "signin"} {
+		value := "xcv_" + kind + "_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"
+		if clean, stats := New(nil).Redact(value); clean != "x"+patternPlaceholder || stats.Pattern != 1 {
+			t.Errorf("glued %s token: clean=%q stats=%+v", kind, clean, stats)
+		}
 	}
 }
 

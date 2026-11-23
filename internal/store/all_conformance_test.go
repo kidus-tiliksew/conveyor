@@ -101,6 +101,16 @@ func TestMemoryConformance(t *testing.T) {
 				return store.SeedStoredAgentCredentialForTest(t, st, userID, label, revoked)
 			}, CredentialLastUsed: func(t *testing.T, _ context.Context, credentialID string) time.Time {
 				return store.CredentialLastUsedForTest(t, st, credentialID)
+			}, OAuthDeploymentEvents: func(t *testing.T, _ context.Context) []core.Event {
+				return store.OAuthDeploymentEventsForTest(t, st)
+			}, AgeOAuthRecord: func(t *testing.T, _ context.Context, table storetest.OAuthTable, id string, by time.Duration) {
+				store.AgeOAuthRecordForTest(t, st, string(table), id, by)
+			}, OAuthStoredRows: func(t *testing.T, ctx context.Context) []storetest.OAuthStoredRow {
+				var rows []storetest.OAuthStoredRow
+				for _, row := range store.OAuthStoredRowsForTest(ctx, t, st) {
+					rows = append(rows, storetest.OAuthStoredRow{Table: storetest.OAuthTable(row.Table), ID: row.ID, Digest: row.Digest, Text: row.Text})
+				}
+				return rows
 			}, LineageHTTP: func(*testing.T) http.Handler {
 				// The shared-token operator fixture (component-lineage).
 				server := httpapi.NewServer(st)
