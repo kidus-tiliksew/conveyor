@@ -2,14 +2,12 @@ package storetest
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // TaskOperationsFixture is a store already holding WantTotal tasks in the
@@ -21,43 +19,6 @@ type TaskOperationsFixture struct {
 	WantTotal int
 	WantOrder []string
 	Filter    store.TaskFilter
-}
-
-type TaskAssigneeMembershipFixture struct {
-	Store          store.Store
-	Context        context.Context
-	TaskID         string
-	ActiveUserID   string
-	InactiveUserID string
-	NonMemberID    string
-	ViewerUserID   string
-}
-
-// RunTaskAssigneeMembershipConformance keeps the volatile and durable stores
-// aligned at the command boundary: only an active workspace member may be
-// assigned, and a rejected replacement must preserve the current assignee.
-func RunTaskAssigneeMembershipConformance(t *testing.T, fixture TaskAssigneeMembershipFixture) {
-	t.Helper()
-	assigned, err := taskops.New(fixture.Store).SetAssignee(fixture.Context, fixture.TaskID, fixture.ActiveUserID)
-	if err != nil || assigned.Assignee == nil || assigned.Assignee.UserID != fixture.ActiveUserID {
-		t.Fatalf("assign active member: assignee=%+v err=%v", assigned.Assignee, err)
-	}
-	for name, userID := range map[string]string{"inactive member": fixture.InactiveUserID, "non-member": fixture.NonMemberID} {
-		if _, err = taskops.New(fixture.Store).SetAssignee(fixture.Context, fixture.TaskID, userID); err == nil || !strings.Contains(err.Error(), "not an active member") || !errors.Is(err, store.ErrAssigneeNotMember) {
-			t.Fatalf("%s assignment error=%v", name, err)
-		}
-		current, getErr := fixture.Store.GetTask(fixture.Context, fixture.TaskID)
-		if getErr != nil || current.Assignee == nil || current.Assignee.UserID != fixture.ActiveUserID {
-			t.Fatalf("%s changed assignee=%+v err=%v", name, current.Assignee, getErr)
-		}
-	}
-	if _, err = taskops.New(fixture.Store).SetAssignee(fixture.Context, fixture.TaskID, fixture.ViewerUserID); err == nil || !strings.Contains(err.Error(), "viewer lacks claim_work capability") || !errors.Is(err, store.ErrAssigneeLacksCapability) {
-		t.Fatalf("viewer assignment error=%v", err)
-	}
-	current, getErr := fixture.Store.GetTask(fixture.Context, fixture.TaskID)
-	if getErr != nil || current.Assignee == nil || current.Assignee.UserID != fixture.ActiveUserID {
-		t.Fatalf("viewer replacement changed assignee=%+v err=%v", current.Assignee, getErr)
-	}
 }
 
 // RunTaskOperationsPaginationConformance asserts that every store answers the

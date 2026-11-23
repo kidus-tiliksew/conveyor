@@ -17,6 +17,7 @@ import (
 
 func runTaskStartOver(t *testing.T, factory Factory) {
 	t.Run("pull_request_close", func(t *testing.T) { runPullRequestClose(t, factory) })
+	t.Run("open_branch_unique", func(t *testing.T) { runOpenBranchUnique(t, factory.fresh(t, nil)) })
 	for _, withPlan := range []bool{false, true} {
 		t.Run(map[bool]string{false: "without_plan", true: "with_plan"}[withPlan], func(t *testing.T) {
 			x := factory.fresh(t, nil)
@@ -558,4 +559,34 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 		}
 	})
 
+}
+
+// runOpenBranchUnique keeps the open-branch refusal of the retired
+// TaskBranchUniqueness suite on every backend (DEC-42; DEC-70): a create or an
+// attach of a branch that another open task of the repository holds fails
+// with that task named and changes nothing, and closing the holder frees it.
+func runOpenBranchUnique(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	branchTask := func(title string) core.Task {
+		return core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", Title: title, BaseBranch: "main", Branch: "feature/open-" + x.Workspace, State: core.TaskQueued, NextStage: core.StageImplement}
+	}
+	holder, duplicate := branchTask("holder"), branchTask("duplicate")
+	requireOK(t, st.CreateTask(ctx, holder))
+	if err := st.CreateTask(ctx, duplicate); !errors.Is(err, store.ErrTaskBranchConflict) || !strings.Contains(err.Error(), holder.ID) {
+		t.Fatalf("create on an open branch: %v", err)
+	}
+	if _, err := st.GetTask(ctx, duplicate.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("refused create stored the task: %v", err)
+	}
+	sibling := newAggregateTask(t, x)
+	if _, err := st.AttachTaskBranch(ctx, sibling.ID, holder.Branch); !errors.Is(err, store.ErrTaskBranchConflict) || !strings.Contains(err.Error(), holder.ID) {
+		t.Fatalf("attach of an open branch: %v", err)
+	}
+	if current, err := st.GetTask(ctx, sibling.ID); err != nil || current.Branch != sibling.Branch {
+		t.Fatalf("refused attach changed the branch to %q: %v", current.Branch, err)
+	}
+	if _, err := taskops.New(st).Cancel(ctx, core.Intervention{TaskID: holder.ID, Action: core.InterventionCancel, ReasonCode: "operator_cancel", Comment: "release branch"}); err != nil {
+		t.Fatal(err)
+	}
+	requireOK(t, st.CreateTask(ctx, duplicate))
 }
