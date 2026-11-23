@@ -225,68 +225,71 @@ func TestMCPSharedWorkerAttachmentNeedsExplicitAdoption(t *testing.T) {
 	}
 }
 
+// TestMCPCommandTwoCredentialsAndList runs in both modes for all five
+// clients: two servers coexist, --list writes nothing, and no token reaches
+// the file or the output.
 func TestMCPCommandTwoCredentialsAndList(t *testing.T) {
 	for _, tool := range []string{"codex", "claude", "cursor", "opencode", "antigravity"} {
-		t.Run(tool, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
-			t.Setenv(mcpAddressEnv, "https://unrelated.example")
-			t.Setenv(mcpTokenEnv, "ambient-secret")
-			setMCPTestConfig(t, localAuthConfig{Servers: map[string]localServerConfig{"https://one.example": {Token: "first-secret"}, "https://two.example": {Token: "second-secret"}}})
-			parser := openCodeValidationBinary(t, `echo '{"http_headers_helper":"fixture"}'`)
-			if tool == "antigravity" {
-				parser = antigravityListBinary(t, "", testMCPIdentity(t, "https://one.example", "").name, testMCPIdentity(t, "https://two.example", "").name)
+		for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+			t.Run(tool+"/"+mode, func(t *testing.T) { testMCPCommandTwoCredentialsAndList(t, tool, mode) })
+		}
+	}
+}
+
+func testMCPCommandTwoCredentialsAndList(t *testing.T, tool, mode string) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv(mcpAddressEnv, "https://unrelated.example")
+	t.Setenv(mcpTokenEnv, "ambient-secret")
+	setMCPTestConfig(t, localAuthConfig{Servers: map[string]localServerConfig{"https://one.example": {Token: "first-secret"}, "https://two.example": {Token: "second-secret"}}})
+	lookup := mcpModeLookup(t, mode, testMCPIdentity(t, "https://one.example", "").name, testMCPIdentity(t, "https://two.example", "").name)
+	t.Cleanup(func() { serverFlag = ""; serverFlagExplicit = false })
+	targets := mcpTargets(home, []skillTool{{name: tool}})
+	path := targets[0].path
+	for _, server := range []string{"https://one.example", "https://two.example", "https://one.example", "https://two.example"} {
+		serverFlag, serverFlagExplicit = server, true
+		cmd := mcpInstallCmdWithLookPath(lookup)
+		var output bytes.Buffer
+		cmd.SetOut(&output)
+		cmd.SetErr(&output)
+		cmd.SetArgs([]string{"--auth", mode, "--tool", tool, "--list"})
+		before, _ := os.ReadFile(path)
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := os.ReadFile(path)
+		if !bytes.Equal(before, after) {
+			t.Fatal("list wrote configuration")
+		}
+		cmd = mcpInstallCmdWithLookPath(lookup)
+		cmd.SetOut(&output)
+		cmd.SetErr(&output)
+		cmd.SetArgs([]string{"--auth", mode, "--tool", tool})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(path)
+		for _, secret := range []string{"ambient-secret", "first-secret", "second-secret"} {
+			if bytes.Contains(data, []byte(secret)) || strings.Contains(output.String(), secret) {
+				t.Fatal("secret leaked")
 			}
-			lookup := func(string) (string, error) { return parser, nil }
-			t.Cleanup(func() { serverFlag = ""; serverFlagExplicit = false })
-			targets := mcpTargets(home, []skillTool{{name: tool}})
-			path := targets[0].path
-			for _, server := range []string{"https://one.example", "https://two.example", "https://one.example", "https://two.example"} {
-				serverFlag, serverFlagExplicit = server, true
-				cmd := mcpInstallCmdWithLookPath(lookup)
-				var output bytes.Buffer
-				cmd.SetOut(&output)
-				cmd.SetErr(&output)
-				cmd.SetArgs([]string{"--tool", tool, "--list"})
-				before, _ := os.ReadFile(path)
-				if err := cmd.Execute(); err != nil {
-					t.Fatal(err)
-				}
-				after, _ := os.ReadFile(path)
-				if !bytes.Equal(before, after) {
-					t.Fatal("list wrote configuration")
-				}
-				cmd = mcpInstallCmdWithLookPath(lookup)
-				cmd.SetOut(&output)
-				cmd.SetErr(&output)
-				cmd.SetArgs([]string{"--tool", tool})
-				if err := cmd.Execute(); err != nil {
-					t.Fatal(err)
-				}
-				data, _ := os.ReadFile(path)
-				for _, secret := range []string{"ambient-secret", "first-secret", "second-secret"} {
-					if bytes.Contains(data, []byte(secret)) || strings.Contains(output.String(), secret) {
-						t.Fatal("secret leaked")
-					}
-				}
-				if !strings.Contains(output.String(), "Native initialize/tools-list: not run") || !strings.Contains(output.String(), "Restart:") {
-					t.Fatal("missing evidence boundary")
-				}
-				info, _ := os.Stat(path)
-				if info.Mode().Perm() != 0o600 {
-					t.Fatal("not owner-only")
-				}
-			}
-			data, _ := os.ReadFile(path)
-			if len(testMCPEntries(t, tool, data)) != 2 {
-				t.Fatal("two saved servers did not coexist")
-			}
-			config, err := loadLocalAuthConfig()
-			if err != nil || config.Servers["https://one.example"].Token != "first-secret" || config.Servers["https://two.example"].Token != "second-secret" {
-				t.Fatal("installation altered stored credentials")
-			}
-		})
+		}
+		if !strings.Contains(output.String(), "Native initialize/tools-list: not run") || !strings.Contains(output.String(), "Restart:") {
+			t.Fatal("missing evidence boundary")
+		}
+		info, _ := os.Stat(path)
+		if info.Mode().Perm() != 0o600 {
+			t.Fatal("not owner-only")
+		}
+	}
+	data, _ := os.ReadFile(path)
+	if len(testMCPEntries(t, tool, data)) != 2 {
+		t.Fatal("two saved servers did not coexist")
+	}
+	config, err := loadLocalAuthConfig()
+	if err != nil || config.Servers["https://one.example"].Token != "first-secret" || config.Servers["https://two.example"].Token != "second-secret" {
+		t.Fatal("installation altered stored credentials")
 	}
 }
 
@@ -394,7 +397,7 @@ func TestMCPParserRejectsMissingOrNullNativeHelper(t *testing.T) {
 			t.Fatal(err)
 		}
 		binary := openCodeValidationBinary(t, "echo "+shellQuoteMCP(output))
-		if err := validateMCPParser(binary, "codex", path, id.name); err == nil {
+		if err := validateMCPParser(binary, "codex", path, id.name, id); err == nil {
 			t.Fatal("accepted ignored helper field")
 		}
 	}
@@ -657,18 +660,20 @@ func TestMCPAntigravityRefusesForeignFieldsBeforeWrite(t *testing.T) {
 		"lowercase foreign Authorization": `{"mcpServers":{"manual":{"url":"https://one.example/mcp","headers":{"authorization":"Bearer ${env:FIXTURE}"}}}}`,
 		"foreign Authorization on owned":  `{"mcpServers":{"manual":{` + bridge + `,"headers":{"Authorization":"Bearer fixture-secret"}}},` + marker + `}`,
 		"non-bridge command":              `{"mcpServers":{"manual":{"command":"/usr/bin/other","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json"]}},` + marker + `}`,
-		"other credentials file":          `{"mcpServers":{"manual":{"command":"/opt/Conveyor's tools/conveyor","args":["mcp","stdio","--server","https://one.example","--credentials-file","/elsewhere/credentials.json"]}},` + marker + `}`,
-		"extra bridge argument":           `{"mcpServers":{"manual":{"command":"/opt/Conveyor's tools/conveyor","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json","--verbose"]}}}`,
-		"args without command":            `{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","args":["x"]}}}`,
-		"command on remote entry":         `{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","command":"/usr/bin/other"}}}`,
-		"env on owned bridge":             `{"mcpServers":{"manual":{` + bridge + `,"env":{"CONVEYOR_API_TOKEN":"fixture-secret"}}},` + marker + `}`,
-		"empty env on owned bridge":       `{"mcpServers":{"manual":{` + bridge + `,"env":{}}},` + marker + `}`,
-		"second endpoint":                 `{"mcpServers":{"manual":{"url":"https://one.example/mcp","serverUrl":"https://two.example/mcp"}}}`,
-		"bridge for another server":       `{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","command":"/opt/Conveyor's tools/conveyor","args":["mcp","stdio","--server","https://two.example","--credentials-file","/config space/conveyor/credentials.json"]}}}`,
-		"name for another server":         `{"mcpServers":{"manual":{"serverUrl":"https://two.example/mcp"}}}`,
-		"marker without an address":       `{"mcpServers":{"manual":{"disabled":false}},` + marker + `}`,
-		"bearer token variable":           `{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","bearer_token_env_var":"OTHER"}}}`,
-		"invalid headers":                 `{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","headers":"Authorization: Bearer fixture-secret"}}}`,
+		// An owned bridge whose credential file moved is refreshed (see
+		// TestMCPAuthModeMovedPathsAllClients). An unowned one stays refused.
+		"unowned other credentials file": `{"mcpServers":{"manual":{"command":"/opt/Conveyor's tools/conveyor","args":["mcp","stdio","--server","https://one.example","--credentials-file","/elsewhere/credentials.json"]}}}`,
+		"extra bridge argument":          `{"mcpServers":{"manual":{"command":"/opt/Conveyor's tools/conveyor","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json","--verbose"]}}}`,
+		"args without command":           `{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","args":["x"]}}}`,
+		"command on remote entry":        `{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","command":"/usr/bin/other"}}}`,
+		"env on owned bridge":            `{"mcpServers":{"manual":{` + bridge + `,"env":{"CONVEYOR_API_TOKEN":"fixture-secret"}}},` + marker + `}`,
+		"empty env on owned bridge":      `{"mcpServers":{"manual":{` + bridge + `,"env":{}}},` + marker + `}`,
+		"second endpoint":                `{"mcpServers":{"manual":{"url":"https://one.example/mcp","serverUrl":"https://two.example/mcp"}}}`,
+		"bridge for another server":      `{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","command":"/opt/Conveyor's tools/conveyor","args":["mcp","stdio","--server","https://two.example","--credentials-file","/config space/conveyor/credentials.json"]}}}`,
+		"name for another server":        `{"mcpServers":{"manual":{"serverUrl":"https://two.example/mcp"}}}`,
+		"marker without an address":      `{"mcpServers":{"manual":{"disabled":false}},` + marker + `}`,
+		"bearer token variable":          `{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","bearer_token_env_var":"OTHER"}}}`,
+		"invalid headers":                `{"mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","headers":"Authorization: Bearer fixture-secret"}}}`,
 	}
 	for label, prior := range cases {
 		t.Run(label, func(t *testing.T) {
@@ -812,5 +817,485 @@ func TestMCPAntigravityMixedLiteralAndEnvironmentAddress(t *testing.T) {
 				unchanged(t, path)
 			}
 		})
+	}
+}
+
+// mcpAuthTools lists the five clients that every auth-mode table covers.
+var mcpAuthTools = []string{"codex", "claude", "cursor", "opencode", "antigravity"}
+
+func testMCPOAuthIdentity(t *testing.T, server, name string) mcpIdentity {
+	t.Helper()
+	id, err := newMCPOAuthIdentity(server, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// testMCPModeIdentity returns the identity of one auth mode. The PAT identity
+// uses the paths of testMCPIdentity. The OAuth identity names no path.
+func testMCPModeIdentity(t *testing.T, mode, server, name string) mcpIdentity {
+	t.Helper()
+	if mode == mcpAuthOAuth {
+		return testMCPOAuthIdentity(t, server, name)
+	}
+	return testMCPIdentity(t, server, name)
+}
+
+// mcpModeFields is the exact set of transport and credential fields that a
+// mode writes for one client (component-cli-onboarding invariant 6;
+// req-mcp-oauth AC-5.1, AC-5.2). OpenCode also holds its ownership marker.
+func mcpModeFields(tool string, id mcpIdentity) map[string]any {
+	marker := map[string]any{"owner": "v2", "endpoint": id.endpoint}
+	if id.oauth() {
+		switch tool {
+		case "codex", "cursor":
+			return map[string]any{"url": id.endpoint}
+		case "claude":
+			return map[string]any{"type": "http", "url": id.endpoint}
+		case "opencode":
+			return map[string]any{"type": "remote", "url": id.endpoint, claudeOwnerKey: marker}
+		case "antigravity":
+			return map[string]any{"serverUrl": id.endpoint}
+		}
+	}
+	switch tool {
+	case "codex":
+		return map[string]any{"url": id.endpoint, "http_headers_helper": id.helper()}
+	case "claude":
+		return map[string]any{"type": "http", "url": id.endpoint, "headersHelper": id.helper()}
+	case "cursor":
+		return map[string]any{"url": id.endpoint, "headers": map[string]any{"Authorization": "Bearer ${env:" + id.tokenEnv + "}"}}
+	case "opencode":
+		return map[string]any{"type": "remote", "url": id.endpoint, "oauth": false, "headers": map[string]any{"Authorization": "Bearer {env:" + id.tokenEnv + "}"}, claudeOwnerKey: marker}
+	case "antigravity":
+		return map[string]any{"command": id.binary, "args": []any{"mcp", "stdio", "--server", id.server, "--credentials-file", id.credentials}}
+	}
+	return nil
+}
+
+// mcpNormalized round-trips a value through JSON so that TOML and JSON
+// numbers and maps compare equal.
+func mcpNormalized(t *testing.T, value any) any {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+// checkMCPModeEntry holds an entry to exactly the mode's fields plus the
+// unrelated fields given. The OAuth entry names no credential artifact.
+func checkMCPModeEntry(t *testing.T, tool string, data []byte, name string, id mcpIdentity, unrelated map[string]any) {
+	t.Helper()
+	entry, ok := testMCPEntries(t, tool, data)[name].(map[string]any)
+	if !ok {
+		t.Fatalf("%s: missing entry %s:\n%s", tool, name, data)
+	}
+	want := mcpModeFields(tool, id)
+	for key, value := range unrelated {
+		if key == "headers" {
+			headers, _ := want["headers"].(map[string]any)
+			merged := map[string]any{}
+			for h, v := range value.(map[string]any) {
+				merged[h] = v
+			}
+			for h, v := range headers {
+				merged[h] = v
+			}
+			want["headers"] = merged
+			continue
+		}
+		want[key] = value
+	}
+	if got, expected := mcpNormalized(t, entry), mcpNormalized(t, want); !reflect.DeepEqual(got, expected) {
+		t.Fatalf("%s %s entry:\n got %v\nwant %v", tool, id.auth, got, expected)
+	}
+	if id.oauth() {
+		entryJSON, _ := json.Marshal(entry)
+		for _, forbidden := range []string{"Bearer", "CONVEYOR_MCP_TOKEN_", mcpTokenEnv, "auth token", "Helper", "helper", `"oauth"`, `"command"`, `"args"`, `"env"`, "mcp stdio"} {
+			if bytes.Contains(entryJSON, []byte(forbidden)) {
+				t.Fatalf("%s OAuth entry carries %q: %s", tool, forbidden, entryJSON)
+			}
+		}
+	}
+	if tool != "codex" && tool != "opencode" {
+		var root struct {
+			Owners map[string]mcpOwnedEndpoint `json:"_conveyor_mcp_install"`
+		}
+		if err := json.Unmarshal(data, &root); err != nil {
+			t.Fatal(err)
+		}
+		if root.Owners[name] != (mcpOwnedEndpoint{Owner: "v2", Endpoint: id.endpoint}) {
+			t.Fatalf("%s ownership marker: %v", tool, root.Owners)
+		}
+	}
+	if tool == "codex" && !bytes.Contains(data, []byte(codexOwnerMarker+"\n[mcp_servers."+name+"]")) {
+		t.Fatalf("codex ownership marker missing:\n%s", data)
+	}
+}
+
+// TestMCPAuthModeCreateShapesAllClients covers req-mcp-oauth AC-5.1 and
+// AC-5.2 for all five clients in both modes: the exact created entry, and a
+// byte-identical no-op rerun.
+func TestMCPAuthModeCreateShapesAllClients(t *testing.T) {
+	for _, tool := range mcpAuthTools {
+		for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+			t.Run(tool+"/"+mode, func(t *testing.T) {
+				id := testMCPModeIdentity(t, mode, "https://one.example/base", "")
+				data, status, name, err := testMCPReconcile(tool, nil, id, false)
+				if err != nil || status != "created" || name != id.name {
+					t.Fatalf("create status=%s name=%s err=%v", status, name, err)
+				}
+				checkMCPModeEntry(t, tool, data, name, id, nil)
+				if len(testMCPEntries(t, tool, data)) != 1 {
+					t.Fatalf("created more than one entry:\n%s", data)
+				}
+				again, status, _, err := testMCPReconcile(tool, data, id, false)
+				if err != nil || status != "unchanged" || !bytes.Equal(again, data) {
+					t.Fatalf("rerun status=%s err=%v", status, err)
+				}
+				if mode == mcpAuthOAuth && bytes.Contains(data, []byte(id.tokenEnv)) {
+					t.Fatal("OAuth registration names the token variable")
+				}
+			})
+		}
+	}
+}
+
+// mcpSwitchFixture is a manual entry for https://one.example/mcp named
+// manual, with unrelated settings in the entry, another entry, and another
+// root key. unrelated lists the entry settings that every mode keeps.
+func mcpSwitchFixture(tool string) (prior string, unrelated map[string]any, others []string) {
+	switch tool {
+	case "codex":
+		return "model = 'x'\n[mcp_servers.manual]\nurl = 'https://one.example/mcp'\nstartup_timeout_sec = 30\nhttp_headers = { X-Other = 'v' }\n[mcp_servers.manual.tools.create_task]\napproval_mode = 'prompt'\n[mcp_servers.other]\nurl = 'https://other.example/mcp'\n",
+			map[string]any{"startup_timeout_sec": 30, "http_headers": map[string]any{"X-Other": "v"}, "tools": map[string]any{"create_task": map[string]any{"approval_mode": "prompt"}}},
+			[]string{"model = 'x'\n", "[mcp_servers.other]\nurl = 'https://other.example/mcp'\n"}
+	case "claude", "cursor":
+		return `{"theme" : "dark","mcpServers":{"manual":{"url":"https://one.example/mcp","timeout":30,"headers":{"X-Other":"v"}},"other":{"url":"https://other.example/mcp"}}}`,
+			map[string]any{"timeout": 30, "headers": map[string]any{"X-Other": "v"}},
+			[]string{`"theme" : "dark"`, `"other":{"url":"https://other.example/mcp"}`}
+	case "opencode":
+		return `{"model" : "x","mcp":{"manual":{"type":"remote","url":"https://one.example/mcp","enabled":false,"timeout":30,"headers":{"X-Other":"v"}},"other":{"type":"local","command":["other"]}}}`,
+			map[string]any{"enabled": false, "timeout": 30, "headers": map[string]any{"X-Other": "v"}},
+			[]string{`"model" : "x"`, `"other":{"type":"local","command":["other"]}`}
+	case "antigravity":
+		return `{"theme" : "dark","mcpServers":{"manual":{"serverUrl":"https://one.example/mcp","disabled":true},"other":{"serverUrl":"https://other.example/mcp"}}}`,
+			map[string]any{"disabled": true},
+			[]string{`"theme" : "dark"`, `"other":{"serverUrl":"https://other.example/mcp"}`}
+	}
+	return "", nil, nil
+}
+
+// TestMCPAuthModeSwitchAllClients covers req-mcp-oauth AC-5.3 for all five
+// clients in both directions. Explicit adoption of a manual entry makes it
+// owned. Each later switch needs no --adopt, keeps the name, the marker, the
+// unrelated entry settings, the other entry, and the other root key, and
+// removes the prior mode's owned fields. Each mode's rerun is a no-op.
+func TestMCPAuthModeSwitchAllClients(t *testing.T) {
+	for _, tool := range mcpAuthTools {
+		for _, first := range []string{mcpAuthOAuth, mcpAuthPAT} {
+			t.Run(tool+"/adopt-"+first, func(t *testing.T) {
+				prior, unrelated, others := mcpSwitchFixture(tool)
+				if tool == "antigravity" {
+					unrelated = map[string]any{"disabled": true}
+				}
+				second := mcpAuthPAT
+				if first == mcpAuthPAT {
+					second = mcpAuthOAuth
+				}
+				data := []byte(prior)
+				states := map[string][]byte{}
+				for step, mode := range []string{first, second, first, second} {
+					id := testMCPModeIdentity(t, mode, "https://one.example", "")
+					if step == 0 {
+						id = testMCPModeIdentity(t, mode, "https://one.example", "manual")
+					}
+					next, status, name, err := testMCPReconcile(tool, data, id, step == 0)
+					if err != nil || status != "refreshed" || name != "manual" {
+						t.Fatalf("step %d %s: status=%s name=%s err=%v", step, mode, status, name, err)
+					}
+					checkMCPModeEntry(t, tool, next, name, id, unrelated)
+					if len(testMCPEntries(t, tool, next)) != 2 {
+						t.Fatalf("step %d: lost or added an entry:\n%s", step, next)
+					}
+					for _, other := range others {
+						if !bytes.Contains(next, []byte(other)) {
+							t.Fatalf("step %d: changed unrelated bytes %q:\n%s", step, other, next)
+						}
+					}
+					again, status, _, err := testMCPReconcile(tool, next, id, false)
+					if err != nil || status != "unchanged" || !bytes.Equal(again, next) {
+						t.Fatalf("step %d %s rerun status=%s err=%v", step, mode, status, err)
+					}
+					if previous, ok := states[mode]; ok && tool != "codex" && !bytes.Equal(previous, next) {
+						t.Fatalf("step %d: %s state is not stable:\n%s\n%s", step, mode, previous, next)
+					}
+					states[mode] = next
+					data = next
+				}
+			})
+		}
+	}
+}
+
+// mcpOwnedEntryWithPaths returns a PAT registration that an earlier install
+// wrote with the given executable and credential file paths.
+func mcpOwnedEntryWithPaths(t *testing.T, tool, binary, credentials string) ([]byte, mcpIdentity) {
+	t.Helper()
+	old, err := newMCPIdentity("https://one.example", "manual", binary, credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _, _, err := testMCPReconcile(tool, nil, old, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data, old
+}
+
+// TestMCPAuthModeMovedPathsAllClients covers an owned PAT registration whose
+// executable or credential file moved, in both modes and for all five
+// clients. The OAuth switch removes the old helper or bridge without
+// resolving any path. The PAT rerun writes the current paths. Cursor and
+// OpenCode name no path, so their row checks that the rerun keeps the entry.
+// An unowned entry with the old paths stays refused under --adopt, and a
+// marker never makes another executable a Conveyor executable.
+func TestMCPAuthModeMovedPathsAllClients(t *testing.T) {
+	moves := map[string][2]string{
+		"executable moved":      {"/old/bin/conveyor", "/config space/conveyor/credentials.json"},
+		"credential file moved": {"/opt/Conveyor's tools/conveyor", "/old config/conveyor/credentials.json"},
+		"both moved":            {"/old/bin/conveyor", "/old config/conveyor/credentials.json"},
+	}
+	for _, tool := range mcpAuthTools {
+		for label, paths := range moves {
+			for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+				t.Run(tool+"/"+label+"/"+mode, func(t *testing.T) {
+					data, _ := mcpOwnedEntryWithPaths(t, tool, paths[0], paths[1])
+					id := testMCPModeIdentity(t, mode, "https://one.example", "")
+					next, status, name, err := testMCPReconcile(tool, data, id, false)
+					if err != nil || name != "manual" {
+						t.Fatalf("owned moved entry: status=%s name=%s err=%v", status, name, err)
+					}
+					wantStatus := "refreshed"
+					if mode == mcpAuthPAT && (tool == "cursor" || tool == "opencode") {
+						wantStatus = "unchanged"
+					}
+					if status != wantStatus {
+						t.Fatalf("status=%s, want %s", status, wantStatus)
+					}
+					checkMCPModeEntry(t, tool, next, name, id, nil)
+					for _, old := range []string{"/old/bin", "/old config"} {
+						if bytes.Contains(next, []byte(old)) {
+							t.Fatalf("old path %q remains:\n%s", old, next)
+						}
+					}
+				})
+			}
+		}
+		t.Run(tool+"/unowned moved entry", func(t *testing.T) {
+			if tool == "cursor" || tool == "opencode" {
+				t.Skip("the registration names no executable or credential path")
+			}
+			data, _ := mcpOwnedEntryWithPaths(t, tool, "/old/bin/conveyor", "/old config/conveyor/credentials.json")
+			// Remove the ownership marker, so the entry is a manual entry.
+			if tool == "codex" {
+				data = bytes.Replace(data, []byte(codexOwnerMarker+"\n"), nil, 1)
+			} else {
+				var root map[string]json.RawMessage
+				_ = json.Unmarshal(data, &root)
+				delete(root, claudeOwnerKey)
+				data, _ = json.Marshal(root)
+			}
+			for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+				for _, adopt := range []bool{false, true} {
+					id := testMCPModeIdentity(t, mode, "https://one.example", "manual")
+					if _, _, _, err := testMCPReconcile(tool, data, id, adopt); err == nil {
+						t.Fatalf("%s adopt=%t accepted an unowned entry with other paths", mode, adopt)
+					}
+				}
+			}
+		})
+		t.Run(tool+"/marker with another executable", func(t *testing.T) {
+			if tool == "cursor" || tool == "opencode" {
+				t.Skip("the registration names no executable")
+			}
+			data, _ := mcpOwnedEntryWithPaths(t, tool, "/usr/bin/other", "/config space/conveyor/credentials.json")
+			for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+				for _, adopt := range []bool{false, true} {
+					id := testMCPModeIdentity(t, mode, "https://one.example", "manual")
+					if _, _, _, err := testMCPReconcile(tool, data, id, adopt); err == nil {
+						t.Fatalf("%s adopt=%t accepted an owned entry that runs another executable", mode, adopt)
+					}
+				}
+			}
+		})
+	}
+}
+
+// mcpRefusalCases lists, for one client, entries that every mode refuses
+// before any write. Each names https://one.example/mcp as manual, with the
+// installer's ownership marker when owned is true.
+func mcpRefusalCases(tool string) map[string]struct {
+	entry string
+	owned bool
+} {
+	type c = struct {
+		entry string
+		owned bool
+	}
+	helper := func(binary, server string) string {
+		return shellQuoteMCP(binary) + " auth token --server " + shellQuoteMCP(server) + " --credentials-file " + shellQuoteMCP("/config space/conveyor/credentials.json") + " --format http-headers"
+	}
+	otherToken := "CONVEYOR_MCP_TOKEN_" + strings.ToUpper(fmt.Sprintf("%x", sha256.Sum256([]byte("https://two.example"))))
+	if tool == "codex" {
+		return map[string]c{
+			"foreign Authorization":         {"url = 'https://one.example/mcp'\nhttp_headers = { Authorization = 'Bearer fixture-secret' }\n", true},
+			"foreign env Authorization":     {"url = 'https://one.example/mcp'\nenv_http_headers = { Authorization = 'OTHER' }\n", true},
+			"foreign bearer variable":       {"url = 'https://one.example/mcp'\nbearer_token_env_var = 'OTHER'\n", true},
+			"foreign helper":                {"url = 'https://one.example/mcp'\nhttp_headers_helper = 'print-token fixture-secret'\n", true},
+			"helper of another executable":  {"url = 'https://one.example/mcp'\nhttp_headers_helper = " + strconvQuote(helper("/usr/bin/other", "https://one.example")) + "\n", true},
+			"helper of another server":      {"url = 'https://one.example/mcp'\nhttp_headers_helper = " + strconvQuote(helper("/opt/bin/conveyor", "https://two.example")) + "\n", true},
+			"relative helper executable":    {"url = 'https://one.example/mcp'\nhttp_headers_helper = " + strconvQuote(helper("conveyor", "https://one.example")) + "\n", true},
+			"helper with extra shell text":  {"url = 'https://one.example/mcp'\nhttp_headers_helper = " + strconvQuote(helper("/opt/bin/conveyor", "https://one.example")+"; true") + "\n", true},
+			"stdio command":                 {"url = 'https://one.example/mcp'\ncommand = 'other'\n", true},
+			"environment":                   {"url = 'https://one.example/mcp'\nenv = { A = 'b' }\n", true},
+			"name of another endpoint":      {"url = 'https://two.example/mcp'\n", true},
+			"unowned foreign Authorization": {"url = 'https://one.example/mcp'\nhttp_headers = { Authorization = 'Bearer fixture-secret' }\n", false},
+		}
+	}
+	key := "mcpServers"
+	if tool == "opencode" {
+		key = "mcp"
+	}
+	_ = key
+	address := `"url":"https://one.example/mcp"`
+	if tool == "antigravity" {
+		address = `"serverUrl":"https://one.example/mcp"`
+	}
+	cases := map[string]c{
+		"foreign Authorization":            {address + `,"headers":{"Authorization":"Bearer fixture-secret"}`, true},
+		"lowercase foreign Authorization":  {address + `,"headers":{"authorization":"Bearer ${env:FIXTURE}"}`, true},
+		"token variable of another server": {address + `,"headers":{"Authorization":"Bearer ${env:` + otherToken + `}"}`, true},
+		"foreign bearer variable":          {address + `,"bearer_token_env_var":"OTHER"`, true},
+		"foreign helper":                   {address + `,"headersHelper":"print-token fixture-secret"`, true},
+		"helper of another executable":     {address + `,"headersHelper":` + strconvQuote(helper("/usr/bin/other", "https://one.example")), true},
+		"helper of another server":         {address + `,"headersHelper":` + strconvQuote(helper("/opt/bin/conveyor", "https://two.example")), true},
+		"environment":                      {address + `,"env":{"A":"b"}`, true},
+		"foreign OAuth configuration":      {address + `,"oauth":{"clientId":"custom"}`, true},
+		"name of another endpoint":         {strings.Replace(address, "one.example", "two.example", 1), true},
+		"unowned foreign Authorization":    {address + `,"headers":{"Authorization":"Bearer fixture-secret"}`, false},
+	}
+	if tool == "antigravity" {
+		cases["non-bridge command"] = c{`"command":"/usr/bin/other","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json"]`, true}
+		cases["bridge for another server"] = c{address + `,"command":"/opt/bin/conveyor","args":["mcp","stdio","--server","https://two.example","--credentials-file","/config space/conveyor/credentials.json"]`, true}
+		cases["bridge with a relative credential file"] = c{`"command":"/opt/bin/conveyor","args":["mcp","stdio","--server","https://one.example","--credentials-file","credentials.json"]`, true}
+		cases["bridge with an extra argument"] = c{`"command":"/opt/bin/conveyor","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json","--verbose"]`, true}
+		cases["unowned moved bridge"] = c{`"command":"/old/bin/conveyor","args":["mcp","stdio","--server","https://one.example","--credentials-file","/config space/conveyor/credentials.json"]`, false}
+	} else {
+		cases["stdio command"] = c{address + `,"command":"other"`, true}
+	}
+	return cases
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// TestMCPAuthModeRefusalsAllClients covers the refusals of
+// component-cli-onboarding invariant 9 for all five clients, in both modes,
+// with and without --adopt. Each refusal keeps the file's bytes and mode,
+// leaves no staged file, and never prints a credential.
+func TestMCPAuthModeRefusalsAllClients(t *testing.T) {
+	for _, tool := range mcpAuthTools {
+		for label, c := range mcpRefusalCases(tool) {
+			t.Run(tool+"/"+label, func(t *testing.T) {
+				var prior string
+				endpoint := "https://one.example/mcp"
+				if strings.Contains(c.entry, "two.example/mcp") {
+					endpoint = "https://two.example/mcp"
+				}
+				switch {
+				case tool == "codex" && c.owned:
+					prior = codexOwnerMarker + "\n[mcp_servers.manual]\n" + c.entry
+				case tool == "codex":
+					prior = "[mcp_servers.manual]\n" + c.entry
+				case tool == "opencode" && c.owned:
+					prior = `{"mcp":{"manual":{` + c.entry + `,"_conveyor_mcp_install":{"owner":"v2","endpoint":"` + endpoint + `"}}}}`
+				case tool == "opencode":
+					prior = `{"mcp":{"manual":{` + c.entry + `}}}`
+				case c.owned:
+					prior = `{"mcpServers":{"manual":{` + c.entry + `}},"_conveyor_mcp_install":{"manual":{"owner":"v2","endpoint":"` + endpoint + `"}}}`
+				default:
+					prior = `{"mcpServers":{"manual":{` + c.entry + `}}}`
+				}
+				for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+					for _, adopt := range []bool{false, true} {
+						home := t.TempDir()
+						path := mcpTargets(home, []skillTool{{name: tool}})[0].path
+						if tool == "opencode" {
+							path = filepath.Join(home, "opencode", "opencode.json")
+						}
+						if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(path, []byte(prior), 0o640); err != nil {
+							t.Fatal(err)
+						}
+						id := testMCPModeIdentity(t, mode, "https://one.example", "manual")
+						lookup := func(name string) (string, error) {
+							t.Fatalf("refusal looked up parser %s", name)
+							return "", nil
+						}
+						_, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: tool, path: path}, id, adopt, true, lookup)
+						if err == nil {
+							t.Fatalf("%s adopt=%t accepted:\n%s", mode, adopt, prior)
+						}
+						if strings.Contains(err.Error(), "fixture-secret") {
+							t.Fatalf("error leaks a credential: %v", err)
+						}
+						after, _ := os.ReadFile(path)
+						info, _ := os.Stat(path)
+						if string(after) != prior || info.Mode().Perm() != 0o640 {
+							t.Fatalf("%s adopt=%t refusal changed bytes or mode: %o %s", mode, adopt, info.Mode().Perm(), after)
+						}
+						if leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".conveyor-*")); len(leftovers) != 0 {
+							t.Fatalf("staging leftovers: %v", leftovers)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestMCPHelperParserAcceptsOnlyTheInstallerForm checks the helper reader
+// that recognizes a moved Conveyor helper on an owned entry.
+func TestMCPHelperParserAcceptsOnlyTheInstallerForm(t *testing.T) {
+	id := testMCPIdentity(t, "https://one.example/base", "")
+	binary, server, credentials, ok := parseMCPHelper(id.helper())
+	if !ok || binary != id.binary || server != id.server || credentials != id.credentials {
+		t.Fatalf("parse %q: %q %q %q %t", id.helper(), binary, server, credentials, ok)
+	}
+	for _, value := range []string{
+		"",
+		"conveyor auth token --server https://one.example --credentials-file /c --format http-headers",
+		id.helper() + " ",
+		id.helper() + "; rm -rf /",
+		strings.Replace(id.helper(), " --format http-headers", " --format raw", 1),
+		strings.Replace(id.helper(), "auth token", "auth  token", 1),
+		"'/bin/conveyor' auth token --server 'https://one.example' --credentials-file '/c'\"x\" --format http-headers",
+		"'/bin/conveyor auth token --server 'https://one.example' --credentials-file '/c' --format http-headers",
+	} {
+		if _, _, _, ok := parseMCPHelper(value); ok {
+			t.Fatalf("accepted %q", value)
+		}
 	}
 }

@@ -47,17 +47,23 @@ func mcpCmd() *cobra.Command {
 	return command
 }
 
-// mcpInstallCmd installs every detected editor's native registration while
-// keeping stored credentials out of editor-owned files
-// (req-cli-authentication REQ-4/AC-4.1, AC-4.2).
+// mcpInstallCmd installs every detected editor's native registration. The
+// default OAuth mode writes only the remote endpoint. The PAT mode keeps
+// stored credentials out of editor-owned files (req-mcp-oauth REQ-5;
+// req-cli-authentication REQ-4/AC-4.1, AC-4.2; DEC-146(5)).
 func mcpInstallCmd() *cobra.Command { return mcpInstallCmdWithLookPath(exec.LookPath) }
 
 func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Command {
 	var list, adopt bool
-	var selectedTool, selectedName string
+	var selectedTool, selectedName, authMode string
 	command := &cobra.Command{
 		Use: "install", Short: "Install Conveyor MCP registrations for detected tools", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Refuse an unknown mode before tool detection, server
+			// selection, or any write (component-cli-onboarding invariant 6).
+			if authMode != mcpAuthOAuth && authMode != mcpAuthPAT {
+				return fmt.Errorf("--auth must be %s or %s", mcpAuthOAuth, mcpAuthPAT)
+			}
 			tools, err := selectSkillTools(selectedTool, lookPath)
 			// An explicit OpenCode install can prepare a machine before the binary is installed.
 			if strings.EqualFold(strings.TrimSpace(selectedTool), "opencode") {
@@ -78,26 +84,14 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 			if len(tools) == 1 && len(targets) == 0 {
 				return fmt.Errorf("no native MCP registration target for %s", tools[0].name)
 			}
-			server, err := selectedStoredMCPServer()
-			if err != nil {
-				return err
-			}
-			binary, err := os.Executable()
-			if err != nil {
-				return err
-			}
-			credentials, err := localAuthConfigPath()
-			if err != nil {
-				return err
-			}
-			credentials, err = filepath.Abs(credentials)
+			server, err := selectedMCPServer(authMode)
 			if err != nil {
 				return err
 			}
 			if cmd.Flags().Changed("name") && strings.TrimSpace(selectedName) == "" {
 				return errors.New("name must not be empty")
 			}
-			identity, err := newMCPIdentity(server, selectedName, binary, credentials)
+			identity, err := newMCPInstallIdentity(authMode, server, selectedName)
 			if err != nil {
 				return err
 			}
@@ -130,16 +124,24 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 					continue
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Registration: %s\nEndpoint: %s\n", result.name, identity.endpoint)
-				source := "stored credential via native header helper (requires client support)"
-				if result.tool == "cursor" || result.tool == "opencode" {
-					source = "stored credential via server-specific environment variable " + identity.tokenEnv
-					fmt.Fprintf(cmd.OutOrStdout(), "export %s=$(%s)\n", identity.tokenEnv, identity.bridge)
-				} else if result.tool == "antigravity" {
-					// The stdio bridge reads the credential file for each
-					// request, so no export line applies (DEC-145).
-					source = "stored credential via the stdio bridge `conveyor mcp stdio`, which reads the credential file for each request"
+				if identity.oauth() {
+					// OAuth mode prints no export line. The client signs in
+					// through the server's OAuth flow (req-mcp-oauth AC-5.3).
+					fmt.Fprintln(cmd.OutOrStdout(), "Credential source: OAuth 2.1 sign-in in the client. The registration holds no token.")
+					fmt.Fprintf(cmd.OutOrStdout(), "Sign-in: %s\n", mcpOAuthSignIn(result.tool, result.name))
+				} else {
+					source := "stored credential via native header helper (requires client support)"
+					if result.tool == "cursor" || result.tool == "opencode" {
+						source = "stored credential via server-specific environment variable " + identity.tokenEnv
+						fmt.Fprintf(cmd.OutOrStdout(), "export %s=$(%s)\n", identity.tokenEnv, identity.bridge)
+					} else if result.tool == "antigravity" {
+						// The stdio bridge reads the credential file for each
+						// request, so no export line applies (DEC-146(5)).
+						source = "stored credential via the stdio bridge `conveyor mcp stdio`, which reads the credential file for each request"
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "Credential source: %s\n", source)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Credential source: %s\nParser: %s\n", source, result.validation)
+				fmt.Fprintf(cmd.OutOrStdout(), "Parser: %s\n", result.validation)
 				if list {
 					fmt.Fprintln(cmd.OutOrStdout(), "Restart: not requested (read-only listing)")
 				} else {
@@ -150,6 +152,7 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 			return nil
 		},
 	}
+	command.Flags().StringVar(&authMode, "auth", mcpAuthOAuth, "registration credential mode: oauth (remote OAuth 2.1 sign-in) or pat (stored personal access token)")
 	command.Flags().BoolVar(&list, "list", false, "list native registration state without writing")
 	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, cursor, opencode, or antigravity)")
 	command.Flags().StringVar(&selectedName, "name", "", "server-specific registration name (1-63 ASCII letters, digits, underscores or hyphens)")
@@ -157,18 +160,90 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 	return command
 }
 
+// newMCPInstallIdentity builds the identity for the auth mode. Only the PAT
+// mode resolves the executable and the credential file path, because only
+// its bridge names them (component-cli-onboarding invariants 6 and 7).
+func newMCPInstallIdentity(mode, server, name string) (mcpIdentity, error) {
+	if mode == mcpAuthOAuth {
+		return newMCPOAuthIdentity(server, name)
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		return mcpIdentity{}, err
+	}
+	credentials, err := localAuthConfigPath()
+	if err != nil {
+		return mcpIdentity{}, err
+	}
+	credentials, err = filepath.Abs(credentials)
+	if err != nil {
+		return mcpIdentity{}, err
+	}
+	return newMCPIdentity(server, name, binary, credentials)
+}
+
+// mcpOAuthSignIn names the client's own OAuth sign-in step for the
+// registration (req-mcp-oauth AC-5.3).
+func mcpOAuthSignIn(tool, name string) string {
+	switch tool {
+	case "codex":
+		return "run `codex mcp login " + name + "`"
+	case "claude":
+		return "run `claude mcp login " + name + "`"
+	case "opencode":
+		return "run `opencode mcp auth " + name + "`"
+	case "cursor":
+		return "use the Connect control for " + name + " in the Cursor MCP settings"
+	case "antigravity":
+		return "use the Authenticate control for " + name + " in Antigravity, or run /mcp"
+	}
+	return "use the client's MCP sign-in control for " + name
+}
+
+// explicitMCPServer returns --server, else CONVEYOR_ADDR, else "".
+func explicitMCPServer() string {
+	if serverFlagExplicit || strings.TrimSpace(serverFlag) != "" {
+		return serverFlag
+	}
+	return strings.TrimSpace(os.Getenv(mcpAddressEnv))
+}
+
+// selectedMCPServer selects the server from --server, then CONVEYOR_ADDR,
+// then the sole stored server. The OAuth mode needs no stored credential and
+// does not read the credential file for an explicit server. The PAT mode
+// needs the selected server's stored token (component-cli-onboarding
+// invariant 7; req-mcp-oauth AC-5.1, AC-5.2).
+func selectedMCPServer(mode string) (string, error) {
+	if mode != mcpAuthOAuth {
+		return selectedStoredMCPServer()
+	}
+	if explicit := explicitMCPServer(); explicit != "" {
+		return normalizeServerURL(explicit)
+	}
+	config, err := loadLocalAuthConfig()
+	if err != nil {
+		return "", err
+	}
+	servers := make([]string, 0, len(config.Servers))
+	for server := range config.Servers {
+		servers = append(servers, server)
+	}
+	switch len(servers) {
+	case 0:
+		return "", errors.New("no Conveyor server selected; pass --server or set CONVEYOR_ADDR")
+	case 1:
+		return normalizeServerURL(servers[0])
+	default:
+		return "", errors.New("multiple stored Conveyor servers; select one with --server")
+	}
+}
+
 func selectedStoredMCPServer() (string, error) {
 	config, err := loadLocalAuthConfig()
 	if err != nil {
 		return "", err
 	}
-	explicit := ""
-	if serverFlagExplicit || strings.TrimSpace(serverFlag) != "" {
-		explicit = serverFlag
-	} else if value := strings.TrimSpace(os.Getenv("CONVEYOR_ADDR")); value != "" {
-		explicit = value
-	}
-	if explicit != "" {
+	if explicit := explicitMCPServer(); explicit != "" {
 		canonical, normalizeErr := normalizeServerURL(explicit)
 		if normalizeErr != nil {
 			return "", normalizeErr
@@ -292,7 +367,8 @@ func reconcileNamedMCPRegistration(home string, target mcpInstallTarget, identit
 	}
 	mode := fs.FileMode(0o600)
 	var validate func(string) error
-	validation := "not run (client parser unavailable for this adapter)"
+	// Cursor has no parser check (component-cli-onboarding invariant 11).
+	validation := "skipped: cursor has no parser check"
 	if target.tool == "opencode" {
 		binary, lookupErr := lookPath("opencode")
 		if lookupErr != nil {
@@ -309,7 +385,7 @@ func reconcileNamedMCPRegistration(home string, target mcpInstallTarget, identit
 		if lookupErr != nil {
 			validation = "skipped: " + target.tool + " is not on PATH"
 		} else {
-			validate = func(staged string) error { return validateMCPParser(binary, target.tool, staged, name) }
+			validate = func(staged string) error { return validateMCPParser(binary, target.tool, staged, name, identity) }
 			validation = "accepted by " + target.tool + " mcp get (not a native connection check)"
 		}
 	}
@@ -318,8 +394,12 @@ func reconcileNamedMCPRegistration(home string, target mcpInstallTarget, identit
 		if lookupErr != nil {
 			validation = "skipped: agy is not on PATH"
 		} else {
+			transport := "stdio"
+			if identity.oauth() {
+				transport = "http"
+			}
 			validate = func(staged string) error {
-				return validateAntigravityMCP(binary, staged, name, 30*time.Second)
+				return validateAntigravityMCP(binary, staged, name, transport, 30*time.Second)
 			}
 			validation = "accepted by agy mcp list (not a native connection check)"
 		}

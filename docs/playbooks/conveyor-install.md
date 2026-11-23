@@ -473,15 +473,42 @@ conveyor mcp install --server <server-url> --name <connection-name>
 
 `--tool claude`, `--tool codex`, `--tool cursor`, `--tool opencode`, or
 `--tool antigravity` selects one tool, and `--list` previews without writing.
+
+By default the installer writes an OAuth registration (`--auth oauth`). Each
+client registers only `<server-url>/mcp` and holds no token. The person signs
+in from each client through a browser. The installer prints the step for each
+client:
+
+- Codex: `codex mcp login <connection-name>`.
+- Claude Code: `claude mcp login <connection-name>`.
+- OpenCode: `opencode mcp auth <connection-name>`.
+- Cursor: the Connect control in the Cursor MCP settings.
+- Antigravity: the Authenticate control, or `/mcp`.
+
+OAuth needs a server with a valid `CONVEYOR_PUBLIC_URL`, and the dashboard
+shows the consent page. Use the server's public URL as `<server-url>`, so the
+endpoint equals the token's resource. The installer does not test the server
+for OAuth. When the sign-in reports `oauth_unavailable`, or the machine has no
+browser, use the PAT mode:
+
+```sh
+conveyor mcp install --auth pat --server <server-url> --name <connection-name>
+```
+
+The PAT mode needs `conveyor auth login` for that server first.
 Codex and Claude Code read the saved credential through a native helper.
 Cursor and OpenCode read a server-specific environment variable. The
 installer prints the export line. The person adds it to the environment that
 launches the client, because its value is a token. Antigravity runs
 the local stdio bridge `conveyor mcp stdio`, which reads the saved
 credential for each request. The installer prints no export line for it.
+A later run in the other mode changes the same registration and keeps its
+other settings.
+
 Ask the person to restart each client. Naming, migration, and credential details are in the
-[MCP reference](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/mcp.md)
-and in [Authentication](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/auth.md#native-mcp-credentials).
+[MCP reference](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/mcp.md),
+the [OAuth server rules](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/auth.md#mcp-oauth-21),
+and [Authentication](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/auth.md#native-mcp-credentials).
 
 ### 7.3 Clone the repositories
 
@@ -661,6 +688,7 @@ each result to the person (AC-3.7):
 - **MCP registrations.** For each tool, ask the person to open a new client
   session and confirm the registered connection lists Conveyor's tools; for
   Claude Code, `claude mcp list` reports each connection's state.
+  For an OAuth registration, the person signs in from the client first.
   `conveyor mcp install --list` reports the registration on disk only.
 
 A healthy server and a sign-in do not prove that agents can deliver. Suggest

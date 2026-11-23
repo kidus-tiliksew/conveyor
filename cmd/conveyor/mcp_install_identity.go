@@ -23,15 +23,53 @@ type mcpIdentity struct {
 	server, endpoint, name, tokenEnv, bridge string
 	// binary and credentials are the absolute paths that the bridge names.
 	// Antigravity's stdio entry stores them as separate JSON strings
-	// (component-cli-onboarding invariant 6; DEC-145).
+	// (component-cli-onboarding invariant 6; DEC-146(5)). An OAuth identity
+	// leaves them, and the bridge, empty.
 	binary, credentials string
 	explicit            bool
+	// auth is mcpAuthOAuth or mcpAuthPAT. It selects the registration shape
+	// and never enters the registration name or the ownership marker
+	// (req-mcp-oauth AC-5.1, AC-5.2).
+	auth string
 }
+
+const (
+	mcpAuthOAuth = "oauth"
+	mcpAuthPAT   = "pat"
+)
+
+func (id mcpIdentity) oauth() bool { return id.auth == mcpAuthOAuth }
 
 var mcpNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 var mcpSlugPattern = regexp.MustCompile(`[^a-z0-9]+`)
 
+// newMCPIdentity returns the --auth pat identity. Its bridge names the
+// absolute executable and credential file (component-cli-onboarding
+// invariant 6).
 func newMCPIdentity(server, name, binary, credentials string) (mcpIdentity, error) {
+	id, err := newMCPBaseIdentity(server, name)
+	if err != nil {
+		return mcpIdentity{}, err
+	}
+	if !filepath.IsAbs(binary) || !filepath.IsAbs(credentials) {
+		return mcpIdentity{}, errors.New("MCP credential bridge requires absolute executable and credential file paths")
+	}
+	id.auth = mcpAuthPAT
+	id.bridge = shellQuoteMCP(binary) + " auth token --server " + shellQuoteMCP(id.server) + " --credentials-file " + shellQuoteMCP(credentials)
+	id.binary, id.credentials = binary, credentials
+	return id, nil
+}
+
+// newMCPOAuthIdentity returns the --auth oauth identity. It needs no
+// executable or credential file path, because an OAuth registration names
+// only the endpoint (req-mcp-oauth AC-5.1; DEC-146(5)).
+func newMCPOAuthIdentity(server, name string) (mcpIdentity, error) {
+	id, err := newMCPBaseIdentity(server, name)
+	id.auth = mcpAuthOAuth
+	return id, err
+}
+
+func newMCPBaseIdentity(server, name string) (mcpIdentity, error) {
 	canonical, err := normalizeServerURL(server)
 	if err != nil {
 		return mcpIdentity{}, err
@@ -60,11 +98,7 @@ func newMCPIdentity(server, name, binary, credentials string) (mcpIdentity, erro
 	} else {
 		name = slug + "-" + hash[:12] + "-conveyor"
 	}
-	if !filepath.IsAbs(binary) || !filepath.IsAbs(credentials) {
-		return mcpIdentity{}, errors.New("MCP credential bridge requires absolute executable and credential file paths")
-	}
-	bridge := shellQuoteMCP(binary) + " auth token --server " + shellQuoteMCP(canonical) + " --credentials-file " + shellQuoteMCP(credentials)
-	return mcpIdentity{server: canonical, endpoint: canonical + "/mcp", name: name, tokenEnv: "CONVEYOR_MCP_TOKEN_" + strings.ToUpper(hash), bridge: bridge, binary: binary, credentials: credentials, explicit: explicit}, nil
+	return mcpIdentity{server: canonical, endpoint: canonical + "/mcp", name: name, tokenEnv: "CONVEYOR_MCP_TOKEN_" + strings.ToUpper(hash), explicit: explicit}, nil
 }
 
 // antigravityBridgeArgs is the argument list of Antigravity's stdio entry.
@@ -81,7 +115,114 @@ func (id mcpIdentity) antigravityBridgeArgs() []any {
 // from the command and args refusal (component-cli-onboarding invariant 9).
 func antigravityBridgeMatches(fields map[string]any, id mcpIdentity) bool {
 	command, ok := fields["command"].(string)
-	return ok && command == id.binary && reflect.DeepEqual(fields["args"], id.antigravityBridgeArgs())
+	return ok && id.binary != "" && command == id.binary && reflect.DeepEqual(fields["args"], id.antigravityBridgeArgs())
+}
+
+// antigravityOwnedBridge reports whether the entry's command and args are a
+// Conveyor bridge that the installer can replace or remove. The bridge of
+// this identity always qualifies. On an owned entry, a bridge whose
+// executable or credential file moved also qualifies: its command is a
+// Conveyor executable, its args have the full bridge shape, its --server is
+// this server, and its credential path is absolute. The installer never runs
+// or resolves the old command. An unowned entry, including one under
+// --adopt, needs the exact bridge of this identity
+// (component-cli-onboarding invariants 6 and 9; req-mcp-oauth AC-5.3).
+func antigravityOwnedBridge(entry mcpEntry, id mcpIdentity) bool {
+	if antigravityBridgeMatches(entry.fields, id) {
+		return true
+	}
+	if !entry.owned {
+		return false
+	}
+	command, ok := entry.fields["command"].(string)
+	server, shaped := antigravityBridgeServer(entry.fields)
+	if !ok || !shaped || server != id.server || !mcpConveyorCommand(command, id) {
+		return false
+	}
+	credentials, _ := entry.fields["args"].([]any)[5].(string)
+	return filepath.IsAbs(credentials)
+}
+
+// mcpConveyorCommand reports whether path can name the Conveyor executable
+// that an earlier install wrote: the current executable, or an absolute path
+// whose file name is conveyor. A marker alone never makes another command a
+// Conveyor command.
+func mcpConveyorCommand(path string, id mcpIdentity) bool {
+	if id.binary != "" && path == id.binary {
+		return true
+	}
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	base := filepath.Base(path)
+	return base == "conveyor" || base == "conveyor.exe"
+}
+
+// readShellQuotedMCP reads one word that shellQuoteMCP wrote at the start of
+// s and returns the word and the rest of s.
+func readShellQuotedMCP(s string) (string, string, bool) {
+	if !strings.HasPrefix(s, "'") {
+		return "", "", false
+	}
+	s = s[1:]
+	var word strings.Builder
+	for {
+		end := strings.IndexByte(s, '\'')
+		if end < 0 {
+			return "", "", false
+		}
+		word.WriteString(s[:end])
+		s = s[end+1:]
+		if !strings.HasPrefix(s, `"'"'`) {
+			return word.String(), s, true
+		}
+		word.WriteByte('\'')
+		s = s[len(`"'"'`):]
+	}
+}
+
+// parseMCPHelper reads a credential helper in the exact form of
+// mcpIdentity.helper. Any other text, including other shell syntax, returns
+// false, because the words must quote back to the same text.
+func parseMCPHelper(value string) (binary, server, credentials string, ok bool) {
+	const serverFlag, credentialsFlag, suffix = " auth token --server ", " --credentials-file ", " --format http-headers"
+	binary, rest, ok := readShellQuotedMCP(value)
+	if !ok || !strings.HasPrefix(rest, serverFlag) {
+		return "", "", "", false
+	}
+	server, rest, ok = readShellQuotedMCP(strings.TrimPrefix(rest, serverFlag))
+	if !ok || !strings.HasPrefix(rest, credentialsFlag) {
+		return "", "", "", false
+	}
+	credentials, rest, ok = readShellQuotedMCP(strings.TrimPrefix(rest, credentialsFlag))
+	if !ok || rest != suffix {
+		return "", "", "", false
+	}
+	if shellQuoteMCP(binary)+serverFlag+shellQuoteMCP(server)+credentialsFlag+shellQuoteMCP(credentials)+suffix != value {
+		return "", "", "", false
+	}
+	return binary, server, credentials, true
+}
+
+// mcpOwnedHelper reports whether a headersHelper or http_headers_helper value
+// is a Conveyor helper for this server that the installer can replace or
+// remove. The helper of this identity always qualifies. On an owned entry, a
+// helper whose executable or credential file moved also qualifies, as for
+// antigravityOwnedBridge. The installer never runs the old helper
+// (component-cli-onboarding invariant 9; req-mcp-oauth AC-5.3).
+func mcpOwnedHelper(value any, entry mcpEntry, id mcpIdentity) bool {
+	text, ok := value.(string)
+	if !ok {
+		return false
+	}
+	if id.bridge != "" && text == id.helper() {
+		return true
+	}
+	if !entry.owned {
+		return false
+	}
+	binary, server, credentials, ok := parseMCPHelper(text)
+	return ok && server == id.server && mcpConveyorCommand(binary, id) && filepath.IsAbs(credentials)
 }
 
 // antigravityBridgeServer returns the --server value of an entry whose
@@ -260,16 +401,23 @@ func selectMCPEntry(entries map[string]mcpEntry, id mcpIdentity, adopt bool) (na
 	return name, "", nil
 }
 
+// updateMCPFields writes the transport and credential fields of the
+// identity's auth mode. It removes the owned fields of the other mode and
+// keeps every other field (component-cli-onboarding invariants 6 and 9;
+// req-mcp-oauth AC-5.1 to AC-5.3; req-cli-authentication AC-4.2, AC-4.3).
 func updateMCPFields(entry mcpEntry, tool string, id mcpIdentity, adopt bool) (map[string]any, error) {
 	f := entry.fields
 	if f == nil {
 		f = map[string]any{}
 	}
 	legacy := entry.owned || adopt
+	bridge := tool == "antigravity" && antigravityOwnedBridge(entry, id)
 	for _, key := range []string{"command", "args", "env", "env_vars", "oauth", "auth"} {
-		if value, ok := f[key]; ok && !(tool == "opencode" && key == "oauth" && value == false) && !(tool == "antigravity" && (key == "command" || key == "args") && antigravityBridgeMatches(f, id)) {
-			return nil, fmt.Errorf("conflicting %s configuration; remove it explicitly before installing", key)
+		value, ok := f[key]
+		if !ok || (tool == "opencode" && key == "oauth" && value == false) || (bridge && (key == "command" || key == "args")) {
+			continue
 		}
+		return nil, fmt.Errorf("conflicting %s configuration; remove it explicitly before installing", key)
 	}
 	for _, key := range []string{"headers", "http_headers", "env_http_headers"} {
 		if value, ok := f[key]; ok {
@@ -281,6 +429,8 @@ func updateMCPFields(entry mcpEntry, tool string, id mcpIdentity, adopt bool) (m
 				if !strings.EqualFold(h, "Authorization") {
 					continue
 				}
+				// The server-specific reference is the PAT mode's own field on
+				// Cursor and OpenCode. Either mode replaces or removes it.
 				expected := "Bearer ${env:" + id.tokenEnv + "}"
 				if tool == "opencode" {
 					expected = "Bearer {env:" + id.tokenEnv + "}"
@@ -303,34 +453,53 @@ func updateMCPFields(entry mcpEntry, tool string, id mcpIdentity, adopt bool) (m
 		delete(f, "bearer_token_env_var")
 	}
 	for _, key := range []string{"headersHelper", "http_headers_helper"} {
-		if v, ok := f[key]; ok && v != id.helper() {
-			return nil, errors.New("conflicting credential helper; remove it explicitly before installing")
+		if v, ok := f[key]; ok {
+			if !mcpOwnedHelper(v, entry, id) {
+				return nil, errors.New("conflicting credential helper; remove it explicitly before installing")
+			}
+			delete(f, key)
 		}
 	}
 	if tool == "antigravity" {
 		// Every address must name this endpoint, so adoption never repoints
-		// another server's entry. The bridge then replaces the remote fields
-		// (component-cli-onboarding invariants 6 and 9; DEC-145).
+		// another server's entry. The mode's transport then replaces the
+		// remote fields and the bridge (component-cli-onboarding invariants
+		// 6 and 9; DEC-146(5)).
 		for _, address := range antigravityEntryAddresses(f, adopt) {
 			if address != id.endpoint {
 				return nil, errors.New("registration names a different or unresolved endpoint, and the installer does not repoint it")
 			}
 		}
-		delete(f, "url")
-		delete(f, "serverUrl")
-		delete(f, "headers")
-		f["command"] = id.binary
-		f["args"] = id.antigravityBridgeArgs()
+		for _, key := range []string{"url", "serverUrl", "headers", "command", "args"} {
+			delete(f, key)
+		}
+		if id.oauth() {
+			f["serverUrl"] = id.endpoint
+		} else {
+			f["command"] = id.binary
+			f["args"] = id.antigravityBridgeArgs()
+		}
 		return f, nil
 	}
 	f["url"] = id.endpoint
 	switch tool {
 	case "codex":
-		f["http_headers_helper"] = id.helper()
+		if !id.oauth() {
+			f["http_headers_helper"] = id.helper()
+		}
 	case "claude":
 		f["type"] = "http"
-		f["headersHelper"] = id.helper()
+		if !id.oauth() {
+			f["headersHelper"] = id.helper()
+		}
 	case "cursor", "opencode":
+		if tool == "opencode" {
+			f["type"] = "remote"
+			delete(f, "oauth")
+		}
+		if id.oauth() {
+			break
+		}
 		headers, _ := f["headers"].(map[string]any)
 		if headers == nil {
 			headers = map[string]any{}
@@ -338,7 +507,6 @@ func updateMCPFields(entry mcpEntry, tool string, id mcpIdentity, adopt bool) (m
 		headers["Authorization"] = "Bearer ${env:" + id.tokenEnv + "}"
 		if tool == "opencode" {
 			headers["Authorization"] = "Bearer {env:" + id.tokenEnv + "}"
-			f["type"] = "remote"
 			f["oauth"] = false
 		}
 		f["headers"] = headers

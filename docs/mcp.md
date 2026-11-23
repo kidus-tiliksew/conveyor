@@ -6,14 +6,18 @@ token: the personal access token of the person who started the agent
 session. Every work order is claimed by such a session over MCP; Conveyor
 launches no agent and has no worker or run-order plane (DEC-97(1)).
 `conveyor mcp install`
-creates a named personal connection for each saved server. Codex and Claude
-retrieve the saved credential through native header helpers; Cursor and OpenCode
-use separate server-specific token variables. Antigravity runs the local
-[stdio bridge](#stdio-bridge), which reads the saved credential for each
-request. The four remote registrations use literal canonical endpoint URLs.
+creates a named personal connection for each server. By default
+(`--auth oauth`), each of the five clients registers only the remote
+`<base>/mcp` endpoint and signs in through
+[MCP OAuth 2.1](auth.md#mcp-oauth-21) in a browser. The registration holds no
+token, helper, export, or bridge. `--auth pat` keeps the stored-credential
+registrations. Codex and Claude then retrieve the saved credential through
+native header helpers. Cursor and OpenCode use separate server-specific token
+variables. Antigravity runs the local [stdio bridge](#stdio-bridge), which
+reads the saved credential for each request.
 [Personal connections](#personal-connections) describes naming,
-two-server installation, migration, restart, and native connection
-troubleshooting. Config/parser acceptance is separate from native
+two-server installation, the two modes, migration, restart, and native
+connection troubleshooting. Config/parser acceptance is separate from native
 initialization and tools-list results.
 
 Workspace scope follows the same rule as REST: pass `workspace_id`, or omit
@@ -49,6 +53,17 @@ connections. OpenCode can be selected before its binary is installed; the
 output then reports parser validation as skipped. Skills and MCP registrations
 are separate installations.
 
+`--auth oauth`, the default, writes an OAuth registration. `--auth pat` writes
+a stored-credential registration. The installer refuses every other value,
+such as `OAuth` or `PAT`, before it detects tools or writes a file. The server
+comes from `--server`, then `CONVEYOR_ADDR`, then the sole server in the
+credential file. With `--auth oauth`, `--server` or `CONVEYOR_ADDR` needs no
+stored token, and the installer does not read the credential file. Without
+them, OAuth uses the sole stored server, with or without a token. With
+`--auth pat`, the selected server must have a stored token. Both modes refuse
+an invalid server address, several stored servers, or no server, before any
+write.
+
 ### Two servers and stable names
 
 Each saved server gets its own connection and credential:
@@ -76,13 +91,44 @@ name.
 
 ### Credential retrieval and client configuration
 
-| Client | Personal config | Credential reference |
-|---|---|---|
-| Codex | `~/.codex/config.toml` | Native `http_headers_helper` command |
-| Claude Code | `~/.claude.json` | Native `headersHelper` command |
-| Cursor | `~/.cursor/mcp.json` | `Bearer ${env:CONVEYOR_MCP_TOKEN_<HASH>}` |
-| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`, default `~/.config/opencode/opencode.json` | `Bearer {env:CONVEYOR_MCP_TOKEN_<HASH>}` with `oauth: false` |
-| Antigravity (`agy`) | `~/.gemini/config/mcp_config.json`, under `mcpServers` | Stdio entry: `command` and `args` run `conveyor mcp stdio` |
+| Client | Personal config | `--auth oauth` (default) | `--auth pat` credential reference |
+|---|---|---|---|
+| Codex | `~/.codex/config.toml` | `url` only | Native `http_headers_helper` command |
+| Claude Code | `~/.claude.json` | `type: http` and `url` only | Native `headersHelper` command |
+| Cursor | `~/.cursor/mcp.json` | `url` only | `Bearer ${env:CONVEYOR_MCP_TOKEN_<HASH>}` |
+| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`, default `~/.config/opencode/opencode.json` | `type: remote` and `url` only | `Bearer {env:CONVEYOR_MCP_TOKEN_<HASH>}` with `oauth: false` |
+| Antigravity (`agy`) | `~/.gemini/config/mcp_config.json`, under `mcpServers` | `serverUrl` only | Stdio entry: `command` and `args` run `conveyor mcp stdio` |
+
+### OAuth sign-in
+
+An OAuth registration holds the canonical `<base>/mcp` endpoint and no
+credential. The installer prints no export line. It names OAuth 2.1 as the
+credential source and prints the client's sign-in step for the registration
+name:
+
+| Client | Sign-in step |
+|---|---|
+| Codex | `codex mcp login <name>` |
+| Claude Code | `claude mcp login <name>` |
+| OpenCode | `opencode mcp auth <name>` |
+| Cursor | The Connect control for the server in Cursor's MCP settings |
+| Antigravity | The Authenticate control for the server, or `/mcp` |
+
+The client then finds the server's OAuth metadata from the `/mcp` challenge.
+It opens the dashboard consent page in a browser and gets a token that works
+only on `/mcp`. The server must have a valid `CONVEYOR_PUBLIC_URL`, and the
+token's `resource` is `<CONVEYOR_PUBLIC_URL>/mcp`. Install with the same base
+URL, so the registered endpoint equals that resource. See
+[MCP OAuth 2.1](auth.md#mcp-oauth-21) for discovery, client identification,
+consent, and token rules. The installer does not probe the server for OAuth,
+exchange a token, or change to PAT by itself. A server without OAuth answers
+the sign-in with `oauth_unavailable`. Then install again with `--auth pat`.
+
+Use `--auth pat` on a headless machine where an agent tool cannot open a
+browser for consent. The PAT registrations below work there without a
+sign-in step.
+
+### PAT registrations
 
 The Codex, Claude Code, Cursor, and OpenCode registrations use a literal
 canonical endpoint. `<HASH>` in the table is
@@ -101,7 +147,7 @@ reference also supports a nondefault configuration directory on desktop
 launches.
 
 Antigravity sends a header value literally and has no header helper, so its
-registration is a local stdio entry (DEC-145). `command` is the absolute path
+PAT registration is a local stdio entry (DEC-146(5)). `command` is the absolute path
 of the installed Conveyor executable. `args` is `mcp`, `stdio`, `--server`,
 `<base>`, `--credentials-file`, and the absolute credential file. The entry has
 no `env`, `url`, `serverUrl`, or `headers`, and it holds no token. The
@@ -110,7 +156,8 @@ installer prints no export line for Antigravity. The root
 
 An entry that `agy mcp add <name> <base>/mcp` writes is a manual registration.
 The installer refuses it unless you run `--name <name> --adopt`. Adoption
-replaces its `url`, `serverUrl`, and `headers` with the bridge and keeps its
+replaces its `url`, `serverUrl`, and `headers` with the fields of the mode:
+`serverUrl` for `--auth oauth`, or the bridge for `--auth pat`. It keeps the
 other fields. The installer refuses an entry with a foreign `Authorization`
 header, with `env`, or with a `command` and `args` that are not this bridge.
 
@@ -152,6 +199,34 @@ into the named file after you log in.
 
 ### Migration and connection checks
 
+A rerun in the other mode changes an owned registration in place. It keeps the
+name, the ownership marker, and every unrelated setting, such as tool
+policies, timeouts, `enabled`, `disabled`, and other headers. The OAuth mode
+removes the PAT fields: `http_headers_helper`, `headersHelper`, the owned
+`CONVEYOR_MCP_TOKEN_<HASH>` Authorization header, `oauth: false`, and the
+Antigravity bridge `command` and `args`. The PAT mode writes them again. An
+Antigravity entry has only its mode's fields: `serverUrl` for OAuth, or the
+bridge for PAT, and no `headers`. The installer refuses a foreign
+`Authorization` header, a foreign helper, or a command that is not the bridge.
+
+The installer can find an owned helper or bridge after the `conveyor`
+executable or the credential file moves. It accepts the old helper or bridge
+only when all of these are true:
+
+- The ownership marker names the same endpoint.
+- The helper or bridge has the exact form that the installer writes.
+- It names the same server.
+- Its executable is the current executable, or an absolute path whose file
+  name is `conveyor` or `conveyor.exe`.
+- Its credential file path is absolute.
+
+The installer never runs or resolves the old command. The PAT mode then writes
+the current paths, and the OAuth mode removes the helper or bridge. An entry
+without the marker needs `--adopt` and the exact current helper or bridge. The
+OAuth mode does not resolve the current executable, so it removes a helper or
+bridge only when its file name is `conveyor` or `conveyor.exe`. Remove any
+other one by hand.
+
 Only installer-marked registrations are migrated automatically. A matching
 legacy `conveyor` registration moves to the selected name while nested tool
 policies, timeouts, and enablement survive. Manual registrations remain
@@ -169,21 +244,30 @@ inside each entry and refuses comments it cannot preserve.
 
 Installation reports the name, endpoint, credential source, file result,
 parser result, restart requirement, and native connection result separately.
+An OAuth installation also reports the sign-in step.
 A client loads a new registration after a restart. Codex and Claude parser
 checks and OpenCode's staged `debug config` check do not initialize MCP.
+With `--auth oauth`, `codex mcp get <name> --json` must report the registered
+URL. With `--auth pat`, it must report `http_headers_helper`.
 When `agy` is on `PATH`, the installer runs `agy mcp list` on a copy in an
 isolated home before it writes the Antigravity file. It then publishes the
-file only when `agy` exits with status 0 and lists the exact name as a
-`stdio` server. `agy mcp list` does not start the bridge. When `agy` is not on
+file only when `agy` exits with status 0 and lists the exact name as an
+`http` server for `--auth oauth`, or as a `stdio` server for `--auth pat`.
+`agy mcp list` does not start the bridge or sign in. When `agy` is not on
 `PATH`, the installer runs no parser check. It reports
-`skipped: agy is not on PATH` and publishes the file without that check. The
+`skipped: agy is not on PATH` and publishes the file without that check.
+Cursor has no parser check, and the installer reports
+`skipped: cursor has no parser check` in both modes. A parser check does not
+prove a browser sign-in or a connection. The
 installer reports native initialize and tools-list as **not run**; the named
 connection in the client shows the native result. The controlled repository
 checks exercise actual native initialization and `tools/list` without
 production credentials. Unsupported clients require an upgrade, not a
 shared-token fallback.
 
-After rotation, log in again for that server. Codex caches helper headers for
+An OAuth client refreshes its own token. To stop its access, revoke the grant
+in the dashboard settings, then sign in again from the client. For a PAT
+registration, after rotation, log in again for that server. Codex caches helper headers for
 a connection and can refresh once after an authentication rejection; Claude
 reads its helper at connection and reconnection. Cursor and OpenCode need
 their individual exports refreshed and the client restarted. The Antigravity
@@ -193,7 +277,7 @@ credential produces a non-secret login instruction. A revoked credential is
 rejected by the server on use; a native 401 or 403 means the selected server's
 saved credential or export needs checking, without switching tokens.
 
-Client references: [Codex HTTP helpers](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
+Client references: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
 [Claude dynamic headers](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication),
 [Cursor MCP](https://cursor.com/docs/mcp), and
 [OpenCode remote MCP](https://opencode.ai/docs/mcp-servers/).
