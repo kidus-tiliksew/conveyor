@@ -191,7 +191,7 @@ test: $(TEST_PREREQUISITES)
 # CI splits make test into test-go and PLAYWRIGHT_SHARD_COUNT Playwright
 # shards. Together they run the same prerequisites, Go tests, Biome lint, and
 # Playwright suite; make test stays the local aggregate.
-PLAYWRIGHT_SHARD_COUNT = 4
+PLAYWRIGHT_SHARD_COUNT = 1
 PLAYWRIGHT_SHARD ?=
 .PHONY: test-go test-playwright-shard
 test-go: $(TEST_PREREQUISITES)
