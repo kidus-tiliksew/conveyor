@@ -315,9 +315,14 @@ func (s *Server) deleteWorkspaceGitHubApp(w http.ResponseWriter, r *http.Request
 func githubAppRequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		logged := r
-		if strings.Contains(r.URL.Path, "/github-app") {
-			w.Header().Set("Referrer-Policy", "no-referrer")
-			w.Header().Set("Cache-Control", "no-store")
+		githubApp := strings.Contains(r.URL.Path, "/github-app")
+		// OAuth paths carry client state and codes in their query, so the
+		// access log keeps only their path (oauth.go).
+		if githubApp || oauthLoggedPath(r.URL.Path) {
+			if githubApp {
+				w.Header().Set("Referrer-Policy", "no-referrer")
+				w.Header().Set("Cache-Control", "no-store")
+			}
 			logged = r.Clone(r.Context())
 			u := *r.URL
 			u.RawQuery = ""

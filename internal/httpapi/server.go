@@ -18,6 +18,7 @@ import (
 	"maps"
 	"mime/multipart"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -177,6 +178,24 @@ type Server struct {
 	crateBriefingJobs sync.WaitGroup
 	// crateBriefingJobsStarted counts those starts.
 	crateBriefingJobsStarted atomic.Int64
+
+	// OAuth is the backend's OAuth store for the built-in `/mcp`
+	// authorization server. OAuth is enabled only when it is set and
+	// InvitationDelivery.PublicURL is a canonical origin (oauth.go;
+	// req-mcp-oauth REQ-1; DEC-146(1)).
+	OAuth store.OAuthStore
+	// TrustedProxies are the proxies whose X-Forwarded-For header the
+	// registration limiter believes (component-identity-membership
+	// invariants 32 and 51). NewServer reads CONVEYOR_TRUSTED_PROXIES.
+	TrustedProxies []netip.Prefix
+	// oauthResolver fetches Client ID Metadata Documents; tests install
+	// one with controlled DNS, dialing, and TLS (oauth_cimd.go).
+	oauthResolver     *oauthMetadataResolver
+	oauthResolverOnce sync.Once
+	oauthLimiterOnce  sync.Once
+	oauthLimiter      *oauthAttemptLimiter
+	oauthCleanupMu    sync.Mutex
+	oauthCleanupAt    time.Time
 }
 
 type CredentialVerifier interface {
@@ -218,6 +237,10 @@ func NewServer(s store.Store) *Server {
 	if sessions, ok := s.(store.InvitationSessionStore); ok {
 		server.InvitationSessions = sessions
 	}
+	if oauth, ok := s.(store.OAuthStore); ok {
+		server.OAuth = oauth
+	}
+	server.TrustedProxies = trustedProxiesFromEnvironment()
 	if source, ok := s.(interface{ Changes() *changes.Hub }); ok {
 		server.Changes = source.Changes()
 	}
@@ -241,11 +264,29 @@ func NewServer(s store.Store) *Server {
 
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, githubAppRequestLogger, s.serverTiming, middleware.Recoverer)
+	// An OAuth bearer is refused on every route except /mcp before routing
+	// (req-security-boundaries AC-1.4; component-http-api invariant 6).
+	r.Use(middleware.RequestID, githubAppRequestLogger, refuseOAuthBearerOutsideMCP, s.serverTiming, middleware.Recoverer)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+
+	// MCP OAuth 2.1 open routes, gated on the public URL (req-mcp-oauth
+	// REQ-1, REQ-2, REQ-4; component-identity-membership invariants 50 to
+	// 54). They are mounted before the dashboard catch-all, so none answers
+	// dashboard HTML. The authorization page itself is the dashboard's
+	// /oauth/authorize route (DEC-146(3)).
+	r.Get("/.well-known/oauth-protected-resource", s.getOAuthProtectedResource)
+	r.Get("/.well-known/oauth-protected-resource/mcp", s.getOAuthProtectedResource)
+	r.Get("/.well-known/oauth-authorization-server", s.getOAuthAuthorizationServer)
+	r.HandleFunc("/.well-known/*", notFoundJSON)
+	// Each POST endpoint is mounted for every method, as /mcp is, so a
+	// probe with another method gets 405 and never dashboard HTML
+	// (component-http-api invariant 2).
+	r.With(oauthNoStore).HandleFunc("/oauth/register", oauthPostOnly(s.registerOAuthClient))
+	r.With(oauthNoStore).HandleFunc("/oauth/token", oauthPostOnly(s.exchangeOAuthToken))
+	r.With(oauthNoStore).HandleFunc("/oauth/revoke", oauthPostOnly(s.revokeOAuthToken))
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/version", func(w http.ResponseWriter, _ *http.Request) {
@@ -280,6 +321,14 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireSelfServiceCredential).Get("/tokens", s.listOwnPersonalAccessTokens)
 		r.With(s.requireSelfServiceCredential).Post("/tokens", s.issueOwnPersonalAccessToken)
 		r.With(s.requireSelfServiceCredential).Delete("/tokens/{token_id}", s.revokeOwnPersonalAccessToken)
+		// OAuth consent and grant management are dashboard-session only, as
+		// approved plan v1 states, and keep the owner scope of the
+		// self-service class (component-identity-membership invariants 52
+		// and 54).
+		r.With(oauthNoStore, s.requireOAuthEnabled, refuseAuthorizationHeader, s.requireSelfServiceCredential, requireDashboardSession).Get("/oauth/authorize", s.getOAuthAuthorization)
+		r.With(oauthNoStore, s.requireOAuthEnabled, refuseAuthorizationHeader, s.requireSelfServiceCredential, requireDashboardSession).Post("/oauth/authorize", s.postOAuthAuthorization)
+		r.With(oauthNoStore, s.requireOAuthStore, refuseAuthorizationHeader, s.requireSelfServiceCredential, requireDashboardSession).Get("/oauth/grants", s.listOwnOAuthGrants)
+		r.With(oauthNoStore, s.requireOAuthStore, refuseAuthorizationHeader, s.requireSelfServiceCredential, requireDashboardSession).Delete("/oauth/grants/{grant_id}", s.revokeOwnOAuthGrant)
 		r.With(s.requireWorkspaceCreation).Post("/workspaces", s.createWorkspace)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
@@ -449,7 +498,10 @@ func (s *Server) Handler() http.Handler {
 	// All methods route to the handler so non-POST gets a spec-correct 405
 	// (streamable-HTTP clients probe GET for an SSE stream); registering
 	// only Post would let GET fall through to the SPA catch-all as 200 HTML.
-	r.With(s.requireMCPAuth).HandleFunc("/mcp", s.handleMCP)
+	// /mcp admits a personal access token or an OAuth access token; the
+	// claim-bound delivery routes below keep requireMCPAuth, which admits a
+	// personal access token only (component-mcp-protocol invariant 4).
+	r.With(s.requireMCPEndpointAuth).HandleFunc("/mcp", s.handleMCP)
 	r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace), s.requireMutationCapability(core.CapabilityOperateGates)).Post("/v1/work-orders/{id}/verification/permissions", s.grantVerificationPermissions)
 	// The operator grant projection is user-only and registered before the
 	// generic MCP-authenticated operation routes (component-verification-runner).
@@ -693,11 +745,18 @@ func (s *Server) withHumanCredential(w http.ResponseWriter, r *http.Request) (*h
 // requireSelfServiceCredential authenticates the human credential that owns a
 // self-service request. It never resolves a workspace and never consults a
 // capability bundle: the caller's authority over the resource is the fact that
-// the resource is theirs.
+// the resource is theirs. A verification failure that is not a refused
+// credential, such as a store failure while a dashboard session is checked,
+// is logged redacted with the request ID before the unchanged generic 500,
+// because the rule for store failures applies before the handler too
+// (DEC-105(1), (5); component-http-api invariant 16).
 func (s *Server) requireSelfServiceCredential(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		credential, err := s.authenticateHumanCredential(w, r)
 		if err != nil {
+			if !errors.Is(err, core.ErrInvalidCredential) {
+				log.Printf("httpapi: credential verification failed: request_id=%q method=%s path=%q error=%q", middleware.GetReqID(r.Context()), r.Method, r.URL.Path, redactedErrorLogText(err))
+			}
 			writeCredentialVerificationError(w, err)
 			return
 		}
