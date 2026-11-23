@@ -1286,37 +1286,226 @@ func TestOAuthRefreshRotatesAndReuseRevokesTheGrant(t *testing.T) {
 	}
 }
 
-func TestOAuthTokenStoreFailuresAreGeneric(t *testing.T) {
+// faultOAuthStore fails exactly one named OAuthStore method with err and
+// passes every other call to the real store.
+type faultOAuthStore struct {
+	store.OAuthStore
+	method string
+	err    error
+}
+
+func (f faultOAuthStore) fail(method string) error {
+	if f.method == method {
+		return f.err
+	}
+	return nil
+}
+
+func (f faultOAuthStore) RegisterOAuthClient(ctx context.Context, registration store.OAuthClientRegistration) (core.OAuthClient, error) {
+	if err := f.fail("RegisterOAuthClient"); err != nil {
+		return core.OAuthClient{}, err
+	}
+	return f.OAuthStore.RegisterOAuthClient(ctx, registration)
+}
+
+func (f faultOAuthStore) GetOAuthClient(ctx context.Context, clientID string) (core.OAuthClient, error) {
+	if err := f.fail("GetOAuthClient"); err != nil {
+		return core.OAuthClient{}, err
+	}
+	return f.OAuthStore.GetOAuthClient(ctx, clientID)
+}
+
+func (f faultOAuthStore) DeleteExpiredOAuthClients(ctx context.Context) (int, error) {
+	if err := f.fail("DeleteExpiredOAuthClients"); err != nil {
+		return 0, err
+	}
+	return f.OAuthStore.DeleteExpiredOAuthClients(ctx)
+}
+
+func (f faultOAuthStore) IssueOAuthAuthorizationCode(ctx context.Context, request store.OAuthCodeRequest) (core.OAuthAuthorizationCode, string, error) {
+	if err := f.fail("IssueOAuthAuthorizationCode"); err != nil {
+		return core.OAuthAuthorizationCode{}, "", err
+	}
+	return f.OAuthStore.IssueOAuthAuthorizationCode(ctx, request)
+}
+
+func (f faultOAuthStore) ExchangeOAuthAuthorizationCode(ctx context.Context, exchange store.OAuthCodeExchange) (core.IssuedOAuthTokenPair, error) {
+	if err := f.fail("ExchangeOAuthAuthorizationCode"); err != nil {
+		return core.IssuedOAuthTokenPair{}, err
+	}
+	return f.OAuthStore.ExchangeOAuthAuthorizationCode(ctx, exchange)
+}
+
+func (f faultOAuthStore) RefreshOAuthTokens(ctx context.Context, exchange store.OAuthRefreshExchange) (core.IssuedOAuthTokenPair, error) {
+	if err := f.fail("RefreshOAuthTokens"); err != nil {
+		return core.IssuedOAuthTokenPair{}, err
+	}
+	return f.OAuthStore.RefreshOAuthTokens(ctx, exchange)
+}
+
+func (f faultOAuthStore) VerifyOAuthAccessToken(ctx context.Context, value string) (core.AuthenticatedCredential, error) {
+	if err := f.fail("VerifyOAuthAccessToken"); err != nil {
+		return core.AuthenticatedCredential{}, err
+	}
+	return f.OAuthStore.VerifyOAuthAccessToken(ctx, value)
+}
+
+func (f faultOAuthStore) ListOwnOAuthGrants(ctx context.Context, userID string) ([]core.OAuthGrant, error) {
+	if err := f.fail("ListOwnOAuthGrants"); err != nil {
+		return nil, err
+	}
+	return f.OAuthStore.ListOwnOAuthGrants(ctx, userID)
+}
+
+func (f faultOAuthStore) RevokeOwnOAuthGrant(ctx context.Context, userID, grantID string) (core.OAuthGrant, error) {
+	if err := f.fail("RevokeOwnOAuthGrant"); err != nil {
+		return core.OAuthGrant{}, err
+	}
+	return f.OAuthStore.RevokeOwnOAuthGrant(ctx, userID, grantID)
+}
+
+func (f faultOAuthStore) RevokeOAuthToken(ctx context.Context, clientID, token string) error {
+	if err := f.fail("RevokeOAuthToken"); err != nil {
+		return err
+	}
+	return f.OAuthStore.RevokeOAuthToken(ctx, clientID, token)
+}
+
+// failingCallerIdentities fails the consent page's identity read.
+type failingCallerIdentities struct{ err error }
+
+func (f failingCallerIdentities) GetCallerIdentity(context.Context, string, string) (core.CallerIdentity, error) {
+	return core.CallerIdentity{}, f.err
+}
+
+// TestOAuthStoreFailuresAreGeneric injects a store failure into every
+// store-backed OAuth route, once as an ordinary error that carries a
+// credential and once as store.ErrRetryable. Each answer is the generic 500
+// with no internal detail, and the log holds the redacted cause with the
+// request ID (DEC-105(1), (5); component-http-api invariant 16). /mcp
+// admission answers the 500 "credential verification failed" that
+// component-http-api invariant 4 names, with the same log.
+func TestOAuthStoreFailuresAreGeneric(t *testing.T) {
 	h := newOAuthHarness(t)
 	clientID, pair := h.grant()
-	logs := captureOAuthLogs(t)
-	h.server.OAuth = failingOAuthStore{OAuthStore: h.oauth, err: errors.New("database said " + pair.RefreshToken)}
-	response := h.token(refreshForm(pair.RefreshToken, clientID))
-	body := expectOAuthError(t, response, http.StatusInternalServerError, "server_error")
-	if strings.Contains(fmt.Sprint(body), "database") || strings.Contains(logs.String(), pair.RefreshToken) {
-		t.Fatalf("store failure leaked: body=%v logs=%s", body, logs.String())
+	grants, err := h.st.ListOwnOAuthGrants(t.Context(), h.member.ID)
+	if err != nil || len(grants) != 1 {
+		t.Fatal(grants, err)
 	}
-	h.server.OAuth = failingOAuthStore{OAuthStore: h.oauth, err: store.ErrRetryable}
-	retry := h.token(refreshForm(pair.RefreshToken, clientID))
-	expectOAuthError(t, retry, http.StatusServiceUnavailable, "temporarily_unavailable")
-	if retry.Header().Get("Retry-After") == "" {
-		t.Fatal("retryable failure has no Retry-After")
+	grantID := grants[0].ID
+	code := h.approve(h.memberSession, clientID, oauthTestRedirect, "s").Query().Get("code")
+	registration := `{"redirect_uris":["https://app.example/cb"],"token_endpoint_auth_method":"none"}`
+	query := "/v1/oauth/authorize?" + oauthAuthorizeQuery(clientID, oauthTestRedirect, "s")
+	type route struct {
+		name, method string
+		request      func() oauthRequest
+		mcp          bool
+		identities   bool
 	}
-	// A verification failure on /mcp is a server failure, not a refusal.
-	h.server.OAuth = h.oauth
-	h.oauth.verifyErr = errors.New("database offline")
-	if result := h.mcp(pair.AccessToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); result.status != http.StatusInternalServerError || !strings.Contains(result.text, "credential verification failed") {
-		t.Fatalf("verification failure: %+v", result)
+	routes := []route{
+		{name: "registration", method: "RegisterOAuthClient", request: func() oauthRequest {
+			return oauthRequest{method: http.MethodPost, path: "/oauth/register", body: registration, contentType: "application/json", remote: h.nextSource()}
+		}},
+		{name: "registration cleanup", method: "DeleteExpiredOAuthClients", request: func() oauthRequest {
+			h.server.oauthCleanupMu.Lock()
+			h.server.oauthCleanupAt = time.Time{}
+			h.server.oauthCleanupMu.Unlock()
+			return oauthRequest{method: http.MethodPost, path: "/oauth/register", body: registration, contentType: "application/json", remote: h.nextSource()}
+		}},
+		{name: "consent GET client lookup", method: "GetOAuthClient", request: func() oauthRequest {
+			return oauthRequest{method: http.MethodGet, path: query, session: h.memberSession}
+		}},
+		{name: "consent GET identity", identities: true, request: func() oauthRequest {
+			return oauthRequest{method: http.MethodGet, path: query, session: h.memberSession}
+		}},
+		{name: "consent POST client lookup", method: "GetOAuthClient", request: func() oauthRequest {
+			return oauthRequest{method: http.MethodPost, path: "/v1/oauth/authorize", body: oauthDecisionBody("approve", clientID, oauthTestRedirect, "s"), contentType: "application/json", session: h.memberSession, proof: true}
+		}},
+		{name: "consent POST code issue", method: "IssueOAuthAuthorizationCode", request: func() oauthRequest {
+			return oauthRequest{method: http.MethodPost, path: "/v1/oauth/authorize", body: oauthDecisionBody("approve", clientID, oauthTestRedirect, "s"), contentType: "application/json", session: h.memberSession, proof: true}
+		}},
+		{name: "token code exchange", method: "ExchangeOAuthAuthorizationCode", request: func() oauthRequest {
+			return oauthRequest{method: http.MethodPost, path: "/oauth/token", body: codeExchangeForm(code, clientID, oauthTestRedirect).Encode(), contentType: "application/x-www-form-urlencoded"}
+		}},
+		{name: "token refresh", method: "RefreshOAuthTokens", request: func() oauthRequest {
+			return oauthRequest{method: http.MethodPost, path: "/oauth/token", body: refreshForm(pair.RefreshToken, clientID).Encode(), contentType: "application/x-www-form-urlencoded"}
+		}},
+		{name: "revocation", method: "RevokeOAuthToken", request: func() oauthRequest {
+			return oauthRequest{method: http.MethodPost, path: "/oauth/revoke", body: url.Values{"token": {pair.AccessToken}, "client_id": {clientID}}.Encode(), contentType: "application/x-www-form-urlencoded"}
+		}},
+		{name: "grant list", method: "ListOwnOAuthGrants", request: func() oauthRequest {
+			return oauthRequest{method: http.MethodGet, path: "/v1/oauth/grants", session: h.memberSession}
+		}},
+		{name: "grant delete", method: "RevokeOwnOAuthGrant", request: func() oauthRequest {
+			return oauthRequest{method: http.MethodDelete, path: "/v1/oauth/grants/" + grantID, session: h.memberSession, proof: true}
+		}},
+		{name: "mcp token verification", method: "VerifyOAuthAccessToken", mcp: true},
+		{name: "mcp grant audience read", method: "ListOwnOAuthGrants", mcp: true},
 	}
-}
-
-type failingOAuthStore struct {
-	store.OAuthStore
-	err error
-}
-
-func (f failingOAuthStore) RefreshOAuthTokens(context.Context, store.OAuthRefreshExchange) (core.IssuedOAuthTokenPair, error) {
-	return core.IssuedOAuthTokenPair{}, f.err
+	secret := pair.RefreshToken
+	for _, tc := range routes {
+		for errName, injected := range map[string]error{
+			"store error": errors.New("database refused query for " + secret),
+			"retryable":   fmt.Errorf("serialization conflict: %w", store.ErrRetryable),
+		} {
+			t.Run(tc.name+"/"+errName, func(t *testing.T) {
+				logs := captureOAuthLogs(t)
+				h.server.OAuth = faultOAuthStore{OAuthStore: h.oauth, method: tc.method, err: injected}
+				identities := h.server.CallerIdentities
+				if tc.identities {
+					h.server.CallerIdentities = failingCallerIdentities{err: injected}
+				}
+				t.Cleanup(func() {
+					h.server.OAuth = h.oauth
+					h.server.CallerIdentities = identities
+				})
+				requestID := "req-" + strings.ReplaceAll(tc.name, " ", "-") + "-" + strings.ReplaceAll(errName, " ", "-")
+				var status int
+				var body string
+				var header http.Header
+				if tc.mcp {
+					request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_stage_preferences","arguments":{"workspace_id":"alpha"}}}`))
+					request.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+					request.Header.Set("X-Request-Id", requestID)
+					response := httptest.NewRecorder()
+					h.server.Handler().ServeHTTP(response, request)
+					status, body, header = response.Code, response.Body.String(), response.Header()
+					if strings.TrimSpace(body) != "credential verification failed" {
+						t.Fatalf("body=%q", body)
+					}
+				} else {
+					request := tc.request()
+					request.header = map[string]string{"X-Request-Id": requestID}
+					response := h.do(request)
+					status, body, header = response.Code, response.Body.String(), response.Header()
+					if strings.TrimSpace(body) != "internal server error" {
+						t.Fatalf("body=%q", body)
+					}
+					expectNoStore(t, response)
+				}
+				if status != http.StatusInternalServerError || header.Get("Retry-After") != "" {
+					t.Fatalf("status=%d retry-after=%q body=%q", status, header.Get("Retry-After"), body)
+				}
+				text := logs.String()
+				if !strings.Contains(text, `request_id="`+requestID+`"`) || strings.Contains(text, secret) {
+					t.Fatalf("log does not hold the redacted cause with the request ID: %s", text)
+				}
+				cause := "serialization conflict"
+				if errName == "store error" {
+					cause = "database refused query for"
+				}
+				if !strings.Contains(text, cause) {
+					t.Fatalf("log does not hold the cause %q: %s", cause, text)
+				}
+			})
+		}
+	}
+	// Nothing changed: the grant and its pair still work, and the code still
+	// exchanges once.
+	if result := h.mcp(pair.AccessToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); result.status != http.StatusOK {
+		t.Fatalf("token after injected failures: %+v", result)
+	}
+	decodeTokenPair(t, h.token(codeExchangeForm(code, clientID, oauthTestRedirect)))
 }
 
 func withForm(form url.Values, key, value string) url.Values {

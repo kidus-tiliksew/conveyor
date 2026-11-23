@@ -661,13 +661,6 @@ func writeOAuthError(w http.ResponseWriter, status int, code, description string
 	writeJSON(w, status, body)
 }
 
-// writeOAuthServerError logs a redacted cause with the request ID and
-// answers a generic OAuth server error (DEC-105(1)).
-func writeOAuthServerError(w http.ResponseWriter, r *http.Request, err error) {
-	log.Printf("httpapi: oauth store failure: request_id=%q method=%s path=%q error=%q", middleware.GetReqID(r.Context()), r.Method, r.URL.Path, redactedErrorLogText(err))
-	writeOAuthError(w, http.StatusInternalServerError, "server_error", "")
-}
-
 func (s *Server) registerOAuthClient(w http.ResponseWriter, r *http.Request) {
 	provider, ok := s.oauth()
 	if !ok {
@@ -726,7 +719,10 @@ func (s *Server) registerOAuthClient(w http.ResponseWriter, r *http.Request) {
 	if len(grantTypes) == 0 {
 		grantTypes = []string{"authorization_code"}
 	}
-	s.cleanupExpiredOAuthClients(r.Context(), provider)
+	if err := s.cleanupExpiredOAuthClients(r.Context(), provider); err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
 	client, err := provider.store.RegisterOAuthClient(r.Context(), store.OAuthClientRegistration{Name: request.ClientName, RedirectURIs: request.RedirectURIs, GrantTypes: grantTypes})
 	if err != nil {
 		switch {
@@ -737,7 +733,10 @@ func (s *Server) registerOAuthClient(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, store.ErrRefusal):
 			writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "the client metadata was refused")
 		default:
-			writeOAuthServerError(w, r, err)
+			// A store failure, a retryable conflict included, is logged
+			// redacted with the request ID and answers a generic 500
+			// (DEC-105(1); component-http-api invariant 16).
+			writeStoreFailure(w, r, err)
 		}
 		return
 	}
@@ -763,20 +762,21 @@ func hasOAuthControl(value string) bool {
 
 // cleanupExpiredOAuthClients removes expired unused registrations at most
 // once per oauthClientCleanupInterval per process. The store never removes a
-// client that backs a grant (req-mcp-oauth AC-2.3). A failure is logged and
-// never fails the registration.
-func (s *Server) cleanupExpiredOAuthClients(ctx context.Context, provider oauthServer) {
+// client that backs a grant (req-mcp-oauth AC-2.3). A store failure is
+// returned, and the registration answers it as a store failure.
+func (s *Server) cleanupExpiredOAuthClients(ctx context.Context, provider oauthServer) error {
 	now := time.Now()
 	s.oauthCleanupMu.Lock()
 	if !s.oauthCleanupAt.IsZero() && now.Sub(s.oauthCleanupAt) < oauthClientCleanupInterval {
 		s.oauthCleanupMu.Unlock()
-		return
+		return nil
 	}
 	s.oauthCleanupAt = now
 	s.oauthCleanupMu.Unlock()
 	if _, err := provider.store.DeleteExpiredOAuthClients(ctx); err != nil {
-		log.Printf("httpapi: delete expired OAuth clients: %q", redactedErrorLogText(err))
+		return fmt.Errorf("delete expired OAuth clients: %w", err)
 	}
+	return nil
 }
 
 // oauthAttemptLimiter is a process-local fixed-window limiter with a bounded
@@ -972,6 +972,9 @@ type oauthConsentError struct {
 	code        string
 	description string
 	redirectTo  string
+	// storeFailure is set when the request failed because of the store, not
+	// because of the request. The handler answers it with writeStoreFailure.
+	storeFailure error
 }
 
 func writeOAuthConsentError(w http.ResponseWriter, failure *oauthConsentError) {
@@ -1022,7 +1025,7 @@ func (s *Server) verifyOAuthAuthorizationRequest(ctx context.Context, provider o
 	if err != nil {
 		var lookup errOAuthClientLookup
 		if errors.As(err, &lookup) {
-			return oauthVerifiedClient{}, store.OAuthCodeRequest{}, &oauthConsentError{status: http.StatusInternalServerError, code: "server_error", description: "the client could not be read"}
+			return oauthVerifiedClient{}, store.OAuthCodeRequest{}, &oauthConsentError{storeFailure: lookup.err}
 		}
 		return oauthVerifiedClient{}, store.OAuthCodeRequest{}, pageError("invalid_client", "the client could not be verified")
 	}
@@ -1178,6 +1181,10 @@ func (s *Server) getOAuthAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client, codeRequest, failure := s.verifyOAuthAuthorizationRequest(r.Context(), provider, credential.OwnerUserID, request)
+	if failure != nil && failure.storeFailure != nil {
+		writeStoreFailure(w, r, failure.storeFailure)
+		return
+	}
 	if failure != nil {
 		writeOAuthConsentError(w, failure)
 		return
@@ -1238,6 +1245,10 @@ func (s *Server) postOAuthAuthorization(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	_, codeRequest, failure := s.verifyOAuthAuthorizationRequest(r.Context(), provider, credential.OwnerUserID, decision.oauthAuthorizationRequest)
+	if failure != nil && failure.storeFailure != nil {
+		writeStoreFailure(w, r, failure.storeFailure)
+		return
+	}
 	if failure != nil {
 		writeOAuthConsentError(w, failure)
 		return
@@ -1373,6 +1384,11 @@ func (s *Server) exchangeOAuthToken(w http.ResponseWriter, r *http.Request) {
 		// store holds no registration for it (req-mcp-oauth AC-2.1).
 		if core.IsOAuthMetadataDocumentClientID(clientID) {
 			client, err := s.verifyOAuthClient(ctx, provider, clientID)
+			var lookup errOAuthClientLookup
+			if errors.As(err, &lookup) {
+				writeStoreFailure(w, r, lookup.err)
+				return
+			}
 			if err != nil {
 				writeOAuthError(w, http.StatusBadRequest, "invalid_client", "the client could not be verified")
 				return
@@ -1391,7 +1407,7 @@ func (s *Server) exchangeOAuthToken(w http.ResponseWriter, r *http.Request) {
 				writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the authorization code is invalid")
 				return
 			}
-			s.writeOAuthTokenStoreFailure(w, r, err)
+			writeStoreFailure(w, r, err)
 			return
 		}
 		writeOAuthTokenPair(w, pair)
@@ -1416,24 +1432,12 @@ func (s *Server) exchangeOAuthToken(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(err, store.ErrOAuthTokenInvalid):
 				writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the refresh token is invalid, expired, or revoked")
 			default:
-				s.writeOAuthTokenStoreFailure(w, r, err)
+				writeStoreFailure(w, r, err)
 			}
 			return
 		}
 		writeOAuthTokenPair(w, pair)
 	}
-}
-
-// writeOAuthTokenStoreFailure answers a retryable store conflict with 503,
-// after which the unchanged request can be sent again, and every other
-// failure with a generic server error.
-func (s *Server) writeOAuthTokenStoreFailure(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, store.ErrRetryable) {
-		w.Header().Set("Retry-After", "1")
-		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "try the request again")
-		return
-	}
-	writeOAuthServerError(w, r, err)
 }
 
 // revokeOAuthToken implements RFC 7009 for public clients. An access or
@@ -1460,7 +1464,7 @@ func (s *Server) revokeOAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := provider.store.RevokeOAuthToken(store.WithActor(r.Context(), oauthActor()), clientID, token); err != nil {
-		s.writeOAuthTokenStoreFailure(w, r, err)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)

@@ -417,9 +417,20 @@ failure, the outcome depends on where the first request stopped:
 Two refreshes of one token sent at the same time also count as reuse. Other refusals are `invalid_grant` without detail (an unknown,
 expired, revoked, or mismatched code or token), `invalid_target` (a wrong or
 missing `resource`), `invalid_client`, `invalid_request`, and
-`unsupported_grant_type`. A brief storage conflict answers `503`
-`temporarily_unavailable` with `Retry-After`, and the same request can be sent
-again.
+`unsupported_grant_type`.
+
+### Server failures
+
+Every OAuth route answers a store failure the same way as the rest of the
+REST API. A brief storage conflict counts as a store failure. The response is
+`500` with the generic text `internal server error` and no detail. The server
+log holds the cause, with credentials redacted, and the request ID. This
+applies to registration and its expired-client cleanup, both consent requests
+(client lookup, identity read, and code issue), token exchange and refresh,
+revocation, and grant listing and revocation. `/mcp` answers a failure while
+it verifies a token, or while it reads the token's grant, with `500` and the
+text `credential verification failed`, and logs the same way. Each refusal
+in these sections is a fixed client error and never hides a store failure.
 
 ### Revoking access
 
