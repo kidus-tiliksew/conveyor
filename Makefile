@@ -66,6 +66,10 @@ RUN_GO_UNIT_TESTS = echo "CONVEYOR_REVIEW_SUMMARY_STRESS_ROUNDS=$(REVIEW_SUMMARY
 # that selected no test (component-verification-strategy, "CI shards").
 # GO_INTEGRATION_FLAGS follows each shard's own flags, so a later -run wins.
 GO_TEST_REQUIRE_TESTS = $(VALIDATION_CHILD_ENV) bash scripts/go-test-require-tests.sh
+# Build every selected package at Go's default parallelism before the serial
+# test wrapper. This avoids compiling later packages under the wrapper's -p=1.
+# -exec=true runs no test binary or TestMain. A build failure stops the recipe.
+go_test_compile = $(VALIDATION_CHILD_ENV) go test -exec=true -count=1 $(1)
 GO_INTEGRATION_FLAGS ?=
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
@@ -260,6 +264,7 @@ _test-integration-postgres:
 
 _test-postgres-shard:
 	@test -n "$(POSTGRES_INTEGRATION_PACKAGES_$(POSTGRES_INTEGRATION_SHARD))" || (echo "unknown POSTGRES_INTEGRATION_SHARD '$(POSTGRES_INTEGRATION_SHARD)'; expected one of: $(POSTGRES_INTEGRATION_SHARDS)" >&2; exit 1)
+	$(call go_test_compile,$(POSTGRES_INTEGRATION_PACKAGES_$(POSTGRES_INTEGRATION_SHARD)))
 	$(GO_TEST_REQUIRE_TESTS) -v -p=1 $(call postgres_integration_args,$(POSTGRES_INTEGRATION_SHARD)) -count=1 -timeout=10m $(GO_INTEGRATION_FLAGS)
 
 # Keep the accepted work-order validation command explicit while sharing the
@@ -327,7 +332,7 @@ dev: db-up
 # make singlestore-shard-union-check proves the union.
 SINGLESTORE_INTEGRATION_SHARDS = conformance-1 conformance-2 packages commands
 SINGLESTORE_CONFORMANCE_TEST = ^TestSingleStoreConformanceIntegration$$
-SINGLESTORE_CONFORMANCE_FIRST = ^(Verification|Requirements|NextAction|SystemDesignDrift)$$
+SINGLESTORE_CONFORMANCE_FIRST = ^(Verification|Requirements|NextAction|SystemDesignDrift|Lineage|OAuth)$$
 SINGLESTORE_INTEGRATION_PACKAGES_conformance-1 = ./internal/store/singlestore
 SINGLESTORE_INTEGRATION_RUN_conformance-1 = $(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)
 SINGLESTORE_INTEGRATION_TIMEOUT_conformance-1 = 20m
@@ -373,6 +378,7 @@ _test-integration-singlestore:
 
 _test-singlestore-shard:
 	@test -n "$(SINGLESTORE_INTEGRATION_PACKAGES_$(SINGLESTORE_INTEGRATION_SHARD))" || (echo "unknown SINGLESTORE_INTEGRATION_SHARD '$(SINGLESTORE_INTEGRATION_SHARD)'; expected one of: $(SINGLESTORE_INTEGRATION_SHARDS)" >&2; exit 1)
+	$(call go_test_compile,$(SINGLESTORE_INTEGRATION_PACKAGES_$(SINGLESTORE_INTEGRATION_SHARD)))
 	$(GO_TEST_REQUIRE_TESTS) -v -p=1 $(call singlestore_integration_args,$(SINGLESTORE_INTEGRATION_SHARD)) -count=1 $(GO_INTEGRATION_FLAGS)
 
 # Prints the CI shard matrices as JSON for the workflow's plan job, so every
@@ -397,8 +403,8 @@ ci-shard-matrix:
 # so a misspelt name cannot silently move a test. The whole packages and the
 # required command cases' packages are always listed, so a package dropped
 # from every shard still fails as running in no shard, and each required
-# command case must run in exactly one shard. The Plan CI shards job runs it
-# on every CI run.
+# command case must run in exactly one shard. The Build, vet, and formatting
+# job runs it on every CI run.
 define singlestore_shard_union_awk
 function split_top(s, sep, out,    n, i, c, cs, cp, cur) {
 	n = 0; cs = 0; cp = 0; cur = ""

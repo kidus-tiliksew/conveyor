@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,6 +39,9 @@ var sharedDatabase struct {
 	tables []string
 	store  *Store
 }
+
+// resetWorkers bounds the tables one fixture reset empties at the same time.
+const resetWorkers = 8
 
 func TestMain(m *testing.M) {
 	code := m.Run()
@@ -71,6 +76,9 @@ func openSharedDatabase() error {
 		return err
 	}
 	admin := sql.OpenDB(connector)
+	// Every reset worker keeps its connection between fixtures.
+	admin.SetMaxOpenConns(resetWorkers)
+	admin.SetMaxIdleConns(resetWorkers)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	name := fmt.Sprintf("conveyor_%d_test", time.Now().UnixNano())
@@ -136,6 +144,12 @@ func openOwnedStore(t *testing.T, compress ...bool) *Store {
 	return st
 }
 
+// resetSharedDatabase empties every table but the migration ledger. SingleStore
+// enforces no foreign keys, so tables empty in any order.
+//
+// DELETE, not TRUNCATE: truncation is distributed DDL that costs hundreds of
+// milliseconds per table on SingleStore, while a compiled DELETE on an empty
+// rowstore table returns in a few milliseconds.
 func resetSharedDatabase(t *testing.T) {
 	t.Helper()
 	if os.Getenv("CONVEYOR_TEST_SINGLESTORE_URL") == "" {
@@ -146,16 +160,147 @@ func resetSharedDatabase(t *testing.T) {
 		t.Fatal(sharedDatabase.err)
 	}
 	started := time.Now()
-	// DELETE, not TRUNCATE: truncation is distributed DDL that costs hundreds
-	// of milliseconds per table on SingleStore, while a compiled DELETE on an
-	// empty rowstore table returns in a few milliseconds.
-	for _, table := range sharedDatabase.tables {
-		if _, err := sharedDatabase.admin.ExecContext(t.Context(), "DELETE FROM `"+sharedDatabase.name+"`.`"+table+"`"); err != nil {
-			t.Fatalf("reset %s: %v", table, err)
-		}
+	err := resetTables(t.Context(), sharedDatabase.tables, resetWorkers, func(ctx context.Context, table string) error {
+		_, err := sharedDatabase.admin.ExecContext(ctx, "DELETE FROM `"+sharedDatabase.name+"`.`"+table+"`")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	t.Logf("fixture reset %d tables in %s", len(sharedDatabase.tables), time.Since(started).Round(time.Millisecond))
 }
+
+// resetTables calls reset for every table on at most workers goroutines. The
+// first failure cancels every table not yet started, and resetTables returns
+// that failure, naming its table. A reset already running gets the caller's
+// context and finishes first, because a DELETE the client abandons can still
+// run on the server and empty a table under the next fixture.
+func resetTables(ctx context.Context, tables []string, workers int, reset func(context.Context, string) error) error {
+	dispatch, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	queue := make(chan string)
+	var running sync.WaitGroup
+	for range min(workers, len(tables)) {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			for table := range queue {
+				if dispatch.Err() != nil {
+					return
+				}
+				if err := reset(ctx, table); err != nil {
+					// The context keeps only its first cause.
+					cancel(fmt.Errorf("reset %s: %w", table, err))
+					return
+				}
+			}
+		}()
+	}
+feed:
+	for _, table := range tables {
+		select {
+		case queue <- table:
+		case <-dispatch.Done():
+			break feed
+		}
+	}
+	close(queue)
+	running.Wait()
+	return context.Cause(dispatch)
+}
+
+func TestResetTablesEmptiesEveryTableWithBoundedWorkers(t *testing.T) {
+	tables := make([]string, 50)
+	for i := range tables {
+		tables[i] = fmt.Sprintf("table_%d", i)
+	}
+	var mu sync.Mutex
+	seen := map[string]int{}
+	active, peak := 0, 0
+	release := make(chan struct{})
+	err := resetTables(t.Context(), tables, 4, func(_ context.Context, table string) error {
+		mu.Lock()
+		seen[table]++
+		active++
+		peak = max(peak, active)
+		if active == 4 {
+			select {
+			case <-release:
+			default:
+				close(release)
+			}
+		}
+		mu.Unlock()
+		<-release // holds the first workers until all four run at once
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peak != 4 {
+		t.Errorf("peak concurrent resets = %d, want 4", peak)
+	}
+	for _, table := range tables {
+		if seen[table] != 1 {
+			t.Errorf("table %s reset %d times, want 1", table, seen[table])
+		}
+	}
+}
+
+func TestResetTablesStopsAtFirstFailure(t *testing.T) {
+	failure := errors.New("delete refused")
+	var started []string
+	err := resetTables(t.Context(), []string{"emptied", "broken", "later_1", "later_2"}, 1, func(_ context.Context, table string) error {
+		started = append(started, table)
+		if table == "broken" {
+			return failure
+		}
+		return nil
+	})
+	if !errors.Is(err, failure) || !strings.Contains(err.Error(), "reset broken") {
+		t.Errorf("error = %v, want the broken table's failure", err)
+	}
+	if got := strings.Join(started, " "); got != "emptied broken" {
+		t.Errorf("started %q, want no table after the failure", got)
+	}
+}
+
+func TestResetTablesFailureWaitsForRunningResets(t *testing.T) {
+	failure := errors.New("delete refused")
+	running, failed := make(chan struct{}), make(chan struct{})
+	var finished atomic.Bool
+	err := resetTables(t.Context(), []string{"slow", "broken"}, 2, func(ctx context.Context, table string) error {
+		if table == "broken" {
+			<-running
+			defer close(failed)
+			return failure
+		}
+		close(running)
+		<-failed
+		time.Sleep(20 * time.Millisecond) // resetTables must outwait this
+		finished.Store(true)
+		return ctx.Err() // nil: the failure leaves a running reset its context
+	})
+	if !errors.Is(err, failure) {
+		t.Errorf("error = %v, want %v", err, failure)
+	}
+	if !finished.Load() {
+		t.Error("resetTables returned before a running reset finished")
+	}
+}
+
+func TestResetTablesReportsCancelledCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := resetTables(ctx, []string{"a", "b"}, 2, func(ctx context.Context, _ string) error { return ctx.Err() })
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context.Canceled", err)
+	}
+}
+
 func TestSingleStoreConformanceIntegration(t *testing.T) {
 	storetest.RunAll(t, storetest.Factory{
 		ClaimService: func(st store.Store, cfg *config.Config) func(context.Context, string, core.WorkOrderClaim) (core.WorkOrder, error) {
