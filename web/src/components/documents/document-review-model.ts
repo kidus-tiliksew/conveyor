@@ -28,9 +28,12 @@ export type ReviewRow = {
 }
 export type ReviewSource = { content: string; statements?: RequirementVersion['statements'] }
 
-// component-web-document-surfaces "Block comparison and bounds": bound work before
-// allocating matrices or parsing Markdown.
-const maxCharacters = 120_000
+// component-web-document-surfaces "Block comparison" rule 15: bound work before
+// allocating matrices or parsing Markdown. The source bound counts the combined
+// UTF-16 code units of both compared texts, inclusive. It only caps the text
+// that is split into blocks: unchanged blocks cost no matrix, and the section
+// and document cell limits below bound the changed work.
+const maxCharacters = 500_000
 const maxBlocks = 400
 // Largest single matrix: one paragraph alignment, one list item alignment, or
 // one paragraph or list item token diff.

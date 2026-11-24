@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
+import { compareDocuments, reviewText } from '../src/components/documents/document-review-model'
 import { callerIdentity } from './helpers/caller-identity'
 
 const first = {
@@ -801,4 +802,470 @@ test('System Design pending attention revises through the shared dialog and refr
   await expect(page.getByRole('button', { name: 'Revise', exact: true })).toHaveCount(0)
   await expect(page.getByText('Corrected dispatch design', { exact: true })).toBeVisible()
   expect(calls).toEqual(['propose', 'confirm'])
+})
+
+// Comparison fixtures (component-web-document-surfaces "Block comparison"
+// rules 13 to 15). Every text is deterministic, so a spec can run in any order.
+const fillerWords =
+  'each recorded transition keeps its owner and the store replays it in order so a later reader can trace why the lease moved between sessions without another source'.split(
+    ' ',
+  )
+
+function fillerParagraph(seed: number, words: number) {
+  const text = Array.from({ length: words }, (_, index) => fillerWords[(seed * 7 + index * 5) % fillerWords.length])
+  return `Paragraph ${seed} says that ${text.join(' ')}.`
+}
+
+const largeSectionCount = 25
+const largeChangedSections = [3, 12, 22]
+const largeSectionTitle = (index: number) => `Section ${String(index).padStart(2, '0')}`
+
+function largeSection(index: number, target: boolean) {
+  const body = Array.from({ length: 8 }, (_, paragraph) => fillerParagraph(index * 10 + paragraph, 60))
+  if (largeChangedSections.includes(index)) {
+    // Padding stays in the paragraphs that do not change.
+    body[3] = `The store holds every ${target ? 'archived' : 'retained'} record of section ${index}.`
+    if (target) body.push(`Section ${index} also states one new rule about recovery.`)
+  }
+  return [`## ${largeSectionTitle(index)}`, ...body].join('\n\n')
+}
+
+// 26 headings and about 74,000 characters on each side.
+function largeDocument(target: boolean) {
+  const intro = `# Large design\n\n${fillerParagraph(1, 40)}`
+  const sections = Array.from({ length: largeSectionCount }, (_, index) => largeSection(index + 1, target))
+  return [intro, ...sections].join('\n\n')
+}
+
+function comparisonVersions(base: string, target: string) {
+  return {
+    confirmed: { ...first, content: base },
+    proposed: { ...pending, content: target, governs: first.governs },
+  }
+}
+
+function comparisonDesign(base: string, target: string): typeof design {
+  const { confirmed, proposed } = comparisonVersions(base, target)
+  return {
+    ...design,
+    current_version: confirmed,
+    pending_versions: [proposed],
+    versions: [confirmed, proposed],
+    drift: [],
+  }
+}
+
+async function openComparison(page: Page, base: string, target: string) {
+  await initialize(page)
+  const view = comparisonDesign(base, target)
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(view)] })
+    if (path === '/v1/system-designs/design-dispatch') return route.fulfill({ json: view })
+    if (path === '/v1/system-designs/design-dispatch/events') return route.fulfill({ json: documentEventPage([]) })
+    return route.fulfill({ json: [] })
+  })
+  await page.goto('/w/demo/system-design?document=design-dispatch&tab=changes&base=1&target=2')
+  const comparison = page.getByRole('region', { name: 'Version comparison', exact: true })
+  await expect(comparison).toBeVisible()
+  return comparison
+}
+
+// A paragraph of `count` words and the spaces between them: 2 * count - 1
+// tokens, so a fully rewritten pair costs (2 * count) ** 2 cells.
+const wordParagraph = (word: string, count: number) => Array.from({ length: count }, () => word).join(' ')
+
+test('the comparison source bound admits exactly 500,000 combined UTF-16 units of compared text', () => {
+  // "\u{1F600}" is two UTF-16 units and one character, so a count by character
+  // admits more than the bound.
+  const emoji = '\u{1F600}'
+  const side = (units: number, word: string) => {
+    const head = `# Title\n\n${word}\n\n## Padding\n\n`
+    const rest = units - head.length
+    return `${head}${emoji.repeat(Math.floor(rest / 2))}${rest % 2 ? 'x' : ''}`
+  }
+  const base = { content: side(250_000, 'retained') }
+  expect(base.content).toHaveLength(250_000)
+  const admitted = { content: side(250_000, 'archived') }
+  const atBound = compareDocuments(base, admitted)
+  expect(atBound.limited).toBe(false)
+  expect(atBound.rows.map((row) => [row.title, row.changed, row.limited])).toEqual([
+    ['Title', true, false],
+    ['Padding', false, false],
+  ])
+  const rejected = { content: side(250_001, 'archived') }
+  expect(base.content.length + rejected.content.length).toBe(500_001)
+  const overBound = compareDocuments(base, rejected)
+  expect(overBound.limited).toBe(true)
+  expect(overBound.rows).toEqual([])
+  expect(overBound.leftText === base.content && overBound.rightText === rejected.content).toBe(true)
+
+  // The bound is combined, not per side.
+  const lopsided = { content: `# Title\n\n${'x'.repeat(499_991)}` }
+  expect(lopsided.content).toHaveLength(500_000)
+  expect(compareDocuments({ content: '' }, lopsided).limited).toBe(false)
+  expect(compareDocuments({ content: ' ' }, lopsided).limited).toBe(true)
+
+  // A requirement counts its projected prose and statements, not its raw fence.
+  const requirementSource = (statement: string) => ({
+    content: `Intro.\n\n\`\`\`conveyor:requirements\n${'x'.repeat(400_000)}\n\`\`\``,
+    statements: [{ id: 'REQ-1', statement }],
+  })
+  const before = requirementSource('Retries stop.')
+  const after = requirementSource('Retries stop after a limit.')
+  expect(reviewText(after)).toBe('Intro.\n\nREQ-1: Retries stop after a limit.')
+  const projected = compareDocuments(before, after)
+  expect(projected.limited).toBe(false)
+  expect(projected.rows.map((row) => [row.id, row.changed])).toEqual([
+    ['heading:Overview:1', false],
+    ['REQ-1', true],
+  ])
+  const longStatement = requirementSource('x'.repeat(500_000))
+  const limitedRequirement = compareDocuments(before, longStatement)
+  expect(limitedRequirement.limited).toBe(true)
+  expect(limitedRequirement.leftText === reviewText(before)).toBe(true)
+  expect(limitedRequirement.rightText === reviewText(longStatement)).toBe(true)
+})
+
+test('the comparison block and cell bounds still fall back below the source bound', () => {
+  const sections = (count: number, body: (index: number) => string) => ({
+    content: Array.from({ length: count }, (_, index) => `## Part ${index}\n\n${body(index)}`).join('\n\n'),
+  })
+
+  const blocks = (count: number) => sections(count, () => 'Same text.')
+  expect(compareDocuments(blocks(200), blocks(200)).limited).toBe(false)
+  const overBlocks = compareDocuments(blocks(201), blocks(200))
+  expect(reviewText(blocks(201)).length + reviewText(blocks(200)).length).toBeLessThan(120_000)
+  expect(overBlocks.limited).toBe(true)
+  expect(overBlocks.rows).toEqual([])
+  expect(overBlocks.leftText).toBe(blocks(201).content)
+  expect(overBlocks.rightText).toBe(blocks(200).content)
+
+  // Each row rewrites 345 words for 476,104 cells, below the section limit alone.
+  const rewritten = (count: number, word: string) => sections(count, () => wordParagraph(word, 345))
+  const fourRows = compareDocuments(rewritten(4, 'alpha'), rewritten(4, 'beta'))
+  expect(fourRows.limited).toBe(false)
+  expect(fourRows.rows.map((row) => row.limited)).toEqual([false, false, false, false])
+  expect(compareDocuments(rewritten(5, 'alpha'), rewritten(5, 'beta')).limited).toBe(true)
+
+  // A section over its own limit spends none of the document budget.
+  const oversized = (word: string) =>
+    sections(6, (index) => (index < 5 ? wordParagraph(word, 500) : `A short ${word} text.`))
+  const limitedRows = compareDocuments(oversized('alpha'), oversized('beta'))
+  expect(limitedRows.limited).toBe(false)
+  expect(limitedRows.rows.map((row) => row.limited)).toEqual([true, true, true, true, true, false])
+})
+
+test('a large System Design with localized edits renders section navigation and highlights', async ({ page }) => {
+  const base = largeDocument(false)
+  const target = largeDocument(true)
+  for (const content of [base, target]) {
+    expect(content.length).toBeGreaterThan(72_000)
+    expect(content.length).toBeLessThan(76_000)
+    expect(content.match(/^#{1,2} /gm)).toHaveLength(26)
+  }
+  expect(base.length + target.length).toBeGreaterThan(120_000)
+
+  const comparison = await openComparison(page, base, target)
+  await expect(comparison.getByText('3 changed sections', { exact: true })).toBeVisible()
+  await expect(page.getByText('Diff too large')).toHaveCount(0)
+  const titles = largeChangedSections.map(largeSectionTitle)
+  const navigator = comparison.getByRole('navigation', { name: 'Changed sections' })
+  const entries = navigator.getByRole('button', { name: /^Section \d\d$/ })
+  await expect(entries).toHaveText(titles)
+  const row = (title: string) => comparison.getByRole('region', { name: title, exact: true })
+
+  const marksInEveryRow = async () => {
+    for (const [index, title] of titles.entries()) {
+      const marks = row(title)
+      await expect(marks.locator('del').filter({ hasText: /^retained$/ })).toBeVisible()
+      await expect(marks.locator('ins').filter({ hasText: /^archived$/ })).toBeVisible()
+      await expect(
+        marks.locator('ins').filter({ hasText: `Section ${largeChangedSections[index]} also states one new rule` }),
+      ).toBeVisible()
+      await expect(marks.getByText(/Detailed highlighting unavailable/)).toHaveCount(0)
+    }
+  }
+  await marksInEveryRow()
+
+  for (const title of [titles[2], titles[0]]) {
+    await entries.filter({ hasText: title }).click()
+    await expect(row(title)).toBeFocused()
+    await expect(entries.filter({ hasText: title })).toHaveAttribute('aria-current', 'true')
+  }
+  await navigator.getByRole('button', { name: 'Next' }).click()
+  await expect(row(titles[1])).toBeFocused()
+
+  // A closed run mounts none of its Markdown.
+  const runs = comparison.locator('details')
+  await expect(runs.locator('summary')).toHaveText([
+    'Show 3 unchanged sections',
+    'Show 8 unchanged sections',
+    'Show 9 unchanged sections',
+    'Show 3 unchanged sections',
+  ])
+  await expect(comparison.locator('details[open]')).toHaveCount(0)
+  await expect(runs.locator('.markdown')).toHaveCount(0)
+
+  // The keyboard opens a run, which then shows its complete sections.
+  const run = runs.nth(1)
+  const summary = run.locator('summary')
+  await summary.focus()
+  await page.keyboard.press('Enter')
+  const bodies = run.locator('.markdown')
+  await expect(bodies).toHaveCount(8)
+  for (let index = 4; index <= 11; index++) {
+    const body = bodies.nth(index - 4)
+    await expect(body.getByRole('heading', { name: largeSectionTitle(index) })).toBeVisible()
+    const expected = [largeSectionTitle(index), ...largeSection(index, true).split('\n\n').slice(1)]
+    expect(await body.locator('h2, p').allTextContents()).toEqual(expected)
+  }
+  await expect(runs.nth(0).locator('.markdown')).toHaveCount(0)
+
+  // Expansion and highlights survive a mode change.
+  await comparison.getByRole('button', { name: 'Side by side', exact: true }).click()
+  await expect(bodies).toHaveCount(8)
+  await expect(run).toHaveAttribute('open', '')
+  await marksInEveryRow()
+  await expect(row(titles[0]).getByText('Target', { exact: true }).first()).toBeVisible()
+  await comparison.getByRole('button', { name: 'Inline', exact: true }).click()
+  await expect(bodies).toHaveCount(8)
+
+  await summary.focus()
+  await page.keyboard.press('Space')
+  await expect(run).not.toHaveAttribute('open', '')
+  await expect(bodies).toHaveCount(0)
+
+  // Another version pair starts with every run collapsed.
+  await page.keyboard.press('Space')
+  await expect(bodies).toHaveCount(8)
+  await page.getByLabel('Base version', { exact: true }).selectOption('0')
+  await expect(comparison.getByText('26 changed sections', { exact: true })).toBeVisible()
+  await page.getByLabel('Base version', { exact: true }).selectOption('1')
+  await expect(comparison.getByText('3 changed sections', { exact: true })).toBeVisible()
+  await expect(comparison.locator('details[open]')).toHaveCount(0)
+  await expect(runs.locator('.markdown')).toHaveCount(0)
+})
+
+test('a System Design over the source bound shows both complete versions as literal text', async ({ page }) => {
+  const markup = '<script>window.injected = true</script>\n\n<b>bold</b> & **strong** [link](https://example.test)\n\n'
+  const document = (word: string, length: number) => {
+    const head = `# Oversized\n\n${markup}The ${word} text.\n\n`
+    const filler = `${fillerParagraph(2, 60)}\n\n`
+    const tail = `The last ${word} line.`
+    return `${head}${filler.repeat(Math.ceil(length / filler.length))}`.slice(0, length - tail.length) + tail
+  }
+  const base = document('retained', 250_000)
+  const target = document('archived', 250_001)
+  expect(base.length + target.length).toBe(500_001)
+  const comparison = await openComparison(page, base, target)
+  await expect(comparison.getByRole('status')).toContainText(
+    'Diff too large; showing both complete versions without highlighting.',
+  )
+  await expect(comparison.getByRole('heading', { name: 'Base version' })).toBeVisible()
+  const sources = comparison.locator('pre')
+  await expect(sources).toHaveCount(2)
+  // Compare as booleans: a failed string match prints both 250,000-character texts.
+  const texts = await sources.evaluateAll((elements) => elements.map((element) => element.textContent))
+  expect(texts.map((text) => text?.length)).toEqual([base.length, target.length])
+  expect([texts[0] === base, texts[1] === target]).toEqual([true, true])
+  expect(texts[1]).toContain(markup)
+  await expect(sources.locator('*')).toHaveCount(0)
+  expect(await page.evaluate(() => 'injected' in window)).toBe(false)
+  await expect(comparison.getByRole('navigation')).toHaveCount(0)
+  await expect(comparison.getByText(/changed sections?/)).toHaveCount(0)
+  await expect(comparison.locator('ins, del')).toHaveCount(0)
+})
+
+test('an oversized section and an unhighlighted block degrade alone', async ({ page }) => {
+  // 500 words cost 1,000,000 cells: over the section limit and below the
+  // single-matrix limit. 800 words cost 2,560,000, over the matrix limit, so
+  // that pair renders whole and its section stays eligible.
+  const document = (word: string) =>
+    [
+      '# Bounds\n\nThe opening text stays the same.',
+      `## Oversized section\n\n${wordParagraph(word, 500)}\n\nThe ${word} end of the oversized section.`,
+      `## Cheap section\n\nThis line names the ${word} record.`,
+      `## Unsafe block\n\nA safe ${word} neighbour.\n\nA <kbd>${word}</kbd> key in raw markup.`,
+      `## Large block\n\nA second safe ${word} neighbour.\n\n${wordParagraph(word, 800)}`,
+    ].join('\n\n')
+  const base = document('retained')
+  const target = document('archived')
+  const model = compareDocuments({ content: base }, { content: target })
+  expect(model.limited).toBe(false)
+  expect(model.rows.map((row) => [row.title, row.changed, row.limited])).toEqual([
+    ['Bounds', false, false],
+    ['Oversized section', true, true],
+    ['Cheap section', true, false],
+    ['Unsafe block', true, false],
+    ['Large block', true, false],
+  ])
+
+  const comparison = await openComparison(page, base, target)
+  await expect(page.getByText('Diff too large')).toHaveCount(0)
+  await expect(comparison.getByText('4 changed sections', { exact: true })).toBeVisible()
+  const entries = comparison.getByRole('navigation', { name: 'Changed sections' })
+  const row = (title: string) => comparison.getByRole('region', { name: title, exact: true })
+  for (const mode of ['Inline', 'Side by side']) {
+    await comparison.getByRole('button', { name: mode, exact: true }).click()
+
+    const oversized = row('Oversized section')
+    await entries.getByRole('button', { name: 'Oversized section', exact: true }).click()
+    await expect(oversized).toBeFocused()
+    await expect(oversized.getByText(/Detailed highlighting unavailable for this block/)).toHaveCount(1)
+    await expect(oversized.locator('ins, del')).toHaveCount(0)
+    await expect(oversized.locator('.markdown')).toHaveCount(2)
+    for (const [index, word] of ['retained', 'archived'].entries())
+      expect(await oversized.locator('.markdown').nth(index).locator('p').allTextContents()).toEqual([
+        wordParagraph(word, 500),
+        `The ${word} end of the oversized section.`,
+      ])
+
+    await expect(row('Cheap section').locator('del')).toHaveText(['retained'])
+    await expect(row('Cheap section').locator('ins')).toHaveText(['archived'])
+    for (const [title, whole] of [
+      ['Unsafe block', (word: string) => `A <kbd>${word}</kbd> key in raw markup.`],
+      ['Large block', (word: string) => wordParagraph(word, 800)],
+    ] as const) {
+      await expect(row(title).getByText(/Detailed highlighting unavailable for this block/)).toHaveCount(1)
+      expect(await row(title).locator('.markdown').allTextContents()).toEqual([whole('retained'), whole('archived')])
+      // The safe neighbour in the same section still carries its marks.
+      await expect(row(title).locator('del')).toHaveText(['retained'])
+      await expect(row(title).locator('ins')).toHaveText(['archived'])
+    }
+  }
+})
+
+// Requirements Changes and the Inbox preview draw the same comparison
+// (req-document-operating-surfaces AC-1.1; req-260810-23b69f AC-1.2).
+test('a large requirement compares on Requirements Changes and in the Inbox preview', async ({ page }) => {
+  await initialize(page)
+  // 180 criteria on each side, two of them changed.
+  const changedCriteria = ['AC-4.2', 'AC-9.5']
+  const requirementVersion = (version: number, target: boolean) => {
+    const statements = Array.from({ length: 10 }, (_, requirement) => ({
+      id: `REQ-${requirement + 1}`,
+      statement: `Requirement ${requirement + 1} keeps every record.`,
+      acceptance_criteria: Array.from({ length: 18 }, (_, criterion) => {
+        const id = `AC-${requirement + 1}.${criterion + 1}`
+        const word = changedCriteria.includes(id) && target ? 'archived' : 'retained'
+        return { id, statement: `The ${word} record. ${fillerParagraph(requirement * 20 + criterion, 64)}` }
+      }),
+    }))
+    return {
+      requirement_id: 'req-large',
+      version,
+      content: '# Large requirement\n\nThe intent stays the same.',
+      statements,
+      origin: 'operator',
+      confirmed: !target,
+      workspace: 'demo',
+      created_at: '2026-08-05T09:00:00Z',
+    }
+  }
+  const confirmed = requirementVersion(1, false)
+  const proposed = requirementVersion(2, true)
+  expect(reviewText(confirmed).length + reviewText(proposed).length).toBeGreaterThan(120_000)
+  const requirement = {
+    id: 'req-large',
+    slug: 'large-requirement',
+    title: 'Large requirement',
+    statement_high_water_mark: 10,
+    workspace: 'demo',
+    created_at: '2026-08-05T08:00:00Z',
+    updated_at: '2026-08-05T09:00:00Z',
+  }
+  const staleness = { delivery_after_intent: false, deliveries: [], active_drift: [] }
+  const view = {
+    requirement,
+    current_version: confirmed,
+    pending_versions: [proposed],
+    serving_blueprints: [],
+    serving_tasks: [],
+    planning_sessions: [],
+    artifacts: [],
+    staleness,
+    migrated_seed: false,
+    confirmation_eligible: true,
+  }
+  const { content: _content, statements: _statements, ...summaryVersion } = confirmed
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/requirements')
+      return route.fulfill({
+        json: [
+          {
+            requirement,
+            current_version: summaryVersion,
+            pending_version_count: 1,
+            serving_tasks: [],
+            staleness,
+            confirmation_eligible: true,
+          },
+        ],
+      })
+    if (path === '/v1/requirements/req-large') return route.fulfill({ json: view })
+    if (path === '/v1/requirements/req-large/versions') return route.fulfill({ json: [confirmed, proposed] })
+    if (path === '/v1/requirements/req-large/events') return route.fulfill({ json: documentEventPage([]) })
+    if (path === '/v1/next-actions')
+      return route.fulfill({
+        json: {
+          items: [
+            {
+              band: 'decisions',
+              kind: 'document_proposal',
+              label: 'Requirement proposal',
+              question: 'Confirm or dismiss this proposed version?',
+              if_ignored: 'The proposal stays pending.',
+              proposal: {
+                id: 'req-large',
+                title: 'Large requirement',
+                tier: 'requirement',
+                version: 2,
+                origin_type: 'operator',
+                proposed_at: '2026-08-05T09:00:00Z',
+                age_seconds: 3600,
+              },
+            },
+          ],
+          acts: [],
+        },
+        headers: { 'X-Conveyor-Total': '1' },
+      })
+    if (path === '/v1/pending-proposals')
+      return route.fulfill({
+        json: {
+          items: [],
+          attention: { task_count: 0, pending_proposal_count: 1, operator_decisions: 1, total: 1 },
+        },
+      })
+    return route.fulfill({ json: [] })
+  })
+
+  const showsComparison = async () => {
+    const comparison = page.getByRole('region', { name: 'Version comparison', exact: true })
+    await expect(comparison.getByText('2 changed sections', { exact: true })).toBeVisible()
+    await expect(page.getByText('Diff too large')).toHaveCount(0)
+    await expect(
+      comparison.getByRole('navigation', { name: 'Changed sections' }).getByRole('button', { name: /^AC-/ }),
+    ).toHaveText(changedCriteria)
+    for (const id of changedCriteria) {
+      const row = comparison.getByRole('region', { name: id, exact: true })
+      await expect(row.locator('del')).toHaveText(['retained'])
+      await expect(row.locator('ins')).toHaveText(['archived'])
+    }
+    await expect(comparison.locator('details .markdown')).toHaveCount(0)
+  }
+  await page.goto('/w/demo/requirements?requirement=req-large&tab=changes&base=1&target=2')
+  await expect(page.getByLabel('Target version', { exact: true })).toHaveValue('2')
+  await showsComparison()
+
+  await page.goto('/w/demo/inbox')
+  await expect(page.getByRole('region', { name: 'Proposed changes' })).toBeVisible()
+  await expect(page.locator('[data-comparison-base]')).toHaveText('Confirmed v1 compared with proposed v2.')
+  await showsComparison()
 })
