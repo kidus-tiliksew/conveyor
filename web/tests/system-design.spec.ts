@@ -1,4 +1,4 @@
-import { expect, type Page, type Route, test } from '@playwright/test'
+import { expect, type Locator, type Page, type Route, type TestInfo, test } from '@playwright/test'
 import { compareDocuments, reviewText } from '../src/components/documents/document-review-model'
 import { callerIdentity } from './helpers/caller-identity'
 
@@ -873,6 +873,24 @@ async function openComparison(page: Page, base: string, target: string) {
   return comparison
 }
 
+// Attaches the view at both review widths to the Playwright report, which CI
+// uploads, centred on `at`. No page scrolls sideways at either width.
+async function attachScreens(page: Page, testInfo: TestInfo, name: string, at: Locator) {
+  const desktop = page.viewportSize()
+  for (const [width, height] of [
+    [1280, 900],
+    [375, 812],
+  ]) {
+    await page.setViewportSize({ width, height })
+    // At 375 px the Inbox shows its list until a row is chosen.
+    if (!(await at.isVisible())) await page.locator('[data-inbox-row]').first().click()
+    await at.evaluate((element) => element.scrollIntoView({ block: 'center' }))
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0)
+    await testInfo.attach(`${name}-${width}.png`, { body: await page.screenshot(), contentType: 'image/png' })
+  }
+  if (desktop) await page.setViewportSize(desktop)
+}
+
 // A paragraph of `count` words and the spaces between them: 2 * count - 1
 // tokens, so a fully rewritten pair costs (2 * count) ** 2 cells.
 const wordParagraph = (word: string, count: number) => Array.from({ length: count }, () => word).join(' ')
@@ -958,7 +976,9 @@ test('the comparison block and cell bounds still fall back below the source boun
   expect(limitedRows.rows.map((row) => row.limited)).toEqual([true, true, true, true, true, false])
 })
 
-test('a large System Design with localized edits renders section navigation and highlights', async ({ page }) => {
+test('a large System Design with localized edits renders section navigation and highlights', async ({
+  page,
+}, testInfo) => {
   const base = largeDocument(false)
   const target = largeDocument(true)
   for (const content of [base, target]) {
@@ -1009,6 +1029,8 @@ test('a large System Design with localized edits renders section navigation and 
   await expect(comparison.locator('details[open]')).toHaveCount(0)
   await expect(runs.locator('.markdown')).toHaveCount(0)
 
+  await attachScreens(page, testInfo, 'design-inline', row(titles[0]).locator('ins').first())
+
   // The keyboard opens a run, which then shows its complete sections.
   const run = runs.nth(1)
   const summary = run.locator('summary')
@@ -1030,6 +1052,8 @@ test('a large System Design with localized edits renders section navigation and 
   await expect(run).toHaveAttribute('open', '')
   await marksInEveryRow()
   await expect(row(titles[0]).getByText('Target', { exact: true }).first()).toBeVisible()
+  await attachScreens(page, testInfo, 'design-side-by-side', row(titles[0]).locator('ins').first())
+  await attachScreens(page, testInfo, 'design-open-run', summary)
   await comparison.getByRole('button', { name: 'Inline', exact: true }).click()
   await expect(bodies).toHaveCount(8)
 
@@ -1049,7 +1073,9 @@ test('a large System Design with localized edits renders section navigation and 
   await expect(runs.locator('.markdown')).toHaveCount(0)
 })
 
-test('a System Design over the source bound shows both complete versions as literal text', async ({ page }) => {
+test('a System Design over the source bound shows both complete versions as literal text', async ({
+  page,
+}, testInfo) => {
   const markup = '<script>window.injected = true</script>\n\n<b>bold</b> & **strong** [link](https://example.test)\n\n'
   const document = (word: string, length: number) => {
     const head = `# Oversized\n\n${markup}The ${word} text.\n\n`
@@ -1077,9 +1103,10 @@ test('a System Design over the source bound shows both complete versions as lite
   await expect(comparison.getByRole('navigation')).toHaveCount(0)
   await expect(comparison.getByText(/changed sections?/)).toHaveCount(0)
   await expect(comparison.locator('ins, del')).toHaveCount(0)
+  await attachScreens(page, testInfo, 'design-document-fallback', comparison.getByRole('status'))
 })
 
-test('an oversized section and an unhighlighted block degrade alone', async ({ page }) => {
+test('an oversized section and an unhighlighted block degrade alone', async ({ page }, testInfo) => {
   // 500 words cost 1,000,000 cells: over the section limit and below the
   // single-matrix limit. 800 words cost 2,560,000, over the matrix limit, so
   // that pair renders whole and its section stays eligible.
@@ -1136,11 +1163,14 @@ test('an oversized section and an unhighlighted block degrade alone', async ({ p
       await expect(row(title).locator('ins')).toHaveText(['archived'])
     }
   }
+  await comparison.getByRole('button', { name: 'Inline', exact: true }).click()
+  await attachScreens(page, testInfo, 'design-section-fallback', row('Cheap section').locator('ins'))
+  await attachScreens(page, testInfo, 'design-block-fallback', row('Unsafe block').locator('ins'))
 })
 
 // Requirements Changes and the Inbox preview draw the same comparison
 // (req-document-operating-surfaces AC-1.1; req-260810-23b69f AC-1.2).
-test('a large requirement compares on Requirements Changes and in the Inbox preview', async ({ page }) => {
+test('a large requirement compares on Requirements Changes and in the Inbox preview', async ({ page }, testInfo) => {
   await initialize(page)
   // 180 criteria on each side, two of them changed.
   const changedCriteria = ['AC-4.2', 'AC-9.5']
@@ -1263,9 +1293,12 @@ test('a large requirement compares on Requirements Changes and in the Inbox prev
   await page.goto('/w/demo/requirements?requirement=req-large&tab=changes&base=1&target=2')
   await expect(page.getByLabel('Target version', { exact: true })).toHaveValue('2')
   await showsComparison()
+  const marks = page.getByRole('region', { name: changedCriteria[0], exact: true }).locator('ins')
+  await attachScreens(page, testInfo, 'requirements-changes', marks)
 
   await page.goto('/w/demo/inbox')
   await expect(page.getByRole('region', { name: 'Proposed changes' })).toBeVisible()
   await expect(page.locator('[data-comparison-base]')).toHaveText('Confirmed v1 compared with proposed v2.')
   await showsComparison()
+  await attachScreens(page, testInfo, 'inbox-preview', marks)
 })
