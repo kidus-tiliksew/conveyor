@@ -26,6 +26,17 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
+	// The OpenCode check starts its executable again as the namespace helper,
+	// and its fixtures start it again as a client.
+	if len(os.Args) > 1 && os.Args[1] == openCodeInitArg {
+		os.Exit(runOpenCodeInit(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == openCodeFixtureArg {
+		os.Exit(runOpenCodeFixture(os.Args[2:]))
+	}
+	// Parser tests run their stubs without containment, so that they do not
+	// depend on host namespaces. useOpenCodeContainment restores it.
+	openCodeContain = openCodeUncontained
 	os.Exit(m.Run())
 }
 

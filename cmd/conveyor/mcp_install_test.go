@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -256,6 +258,23 @@ func openCodeValidationBinary(t *testing.T, body string) string {
 	return path
 }
 
+// openCodeUncontained runs a stub as a direct child and reports the ready
+// state that the namespace helper reports in production.
+func openCodeUncontained(binary string, args []string, status *os.File) (*exec.Cmd, error) {
+	if _, err := status.Write([]byte{openCodeReady}); err != nil {
+		return nil, err
+	}
+	return exec.Command(binary, args...), nil
+}
+
+// openCodeVersionBinary writes an `opencode` stub that answers the version
+// probe with version and runs body for each other command.
+func openCodeVersionBinary(t *testing.T, version, body string) string {
+	t.Helper()
+	return openCodeValidationBinary(t, `if [ "$*" = --version ]; then echo '`+version+`'; exit 0; fi
+`+body)
+}
+
 func TestOpenCodeMCPStagedValidation(t *testing.T) {
 	for _, failure := range []string{"", "exit 7", "echo 'Unrecognized key resolved-secret' >&2", "echo 'ConfigInvalid resolved-secret' >&2"} {
 		for _, exists := range []bool{false, true} {
@@ -269,7 +288,7 @@ func TestOpenCodeMCPStagedValidation(t *testing.T) {
 			}
 			t.Setenv("ORIGINAL_CONFIG", path)
 			t.Setenv("OPENCODE_CONFIG_CONTENT", `{"invalid":"must not be loaded"}`)
-			binary := openCodeValidationBinary(t, `
+			binary := openCodeVersionBinary(t, "1.19.6", `
 [ "$*" = 'debug config' ]
 [ -f "$OPENCODE_CONFIG" ]
 [ "$OPENCODE_CONFIG" != "$ORIGINAL_CONFIG" ]
@@ -278,6 +297,7 @@ func TestOpenCodeMCPStagedValidation(t *testing.T) {
 [ "$HOME" = "$PWD" ]
 [ "$XDG_CONFIG_HOME" = "$HOME/config" ]
 [ "$XDG_DATA_HOME" = "$HOME/data" ]
+[ "$(/usr/bin/readlink "$XDG_DATA_HOME/opencode/log/opencode.log")" = /dev/null ]
 if read -r ignored; then exit 8; fi
 /usr/bin/grep -q '"type":"remote"' "$OPENCODE_CONFIG"
 /usr/bin/grep -q '{env:CONVEYOR_MCP_TOKEN_' "$OPENCODE_CONFIG"
@@ -303,7 +323,7 @@ echo '{"rewritten":true}' > "$OPENCODE_CONFIG"
 				if !exists && !os.IsNotExist(readErr) {
 					t.Fatalf("failed validation created file: %v", readErr)
 				}
-			} else if err != nil || result.status != "created" || result.validation != "validated with opencode debug config" || bytes.Contains(got, []byte("rewritten")) {
+			} else if err != nil || result.status != "created" || result.validation != "validated with opencode debug config (not a native connection check)" || bytes.Contains(got, []byte("rewritten")) {
 				t.Fatalf("validation result=%+v err=%v content=%s", result, err, got)
 			}
 			leftovers, _ := filepath.Glob(filepath.Join(home, ".conveyor-*"))
@@ -320,17 +340,34 @@ func TestOpenCodeMCPValidationTimeoutAndSplitMarkers(t *testing.T) {
 	if err := os.WriteFile(staged, []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	binary := openCodeValidationBinary(t, "while :; do :; done")
-	start := time.Now()
-	err := validateOpenCodeMCP(binary, staged, 50*time.Millisecond)
-	if err == nil || !strings.Contains(err.Error(), "timed out") || time.Since(start) > 3*time.Second {
-		t.Fatalf("timeout=%v elapsed=%s", err, time.Since(start))
+	id := testMCPOAuthIdentity(t, "https://factory.example", "")
+	// The probe and the parser share one deadline.
+	for _, binary := range []string{
+		openCodeValidationBinary(t, "while :; do :; done"),
+		openCodeVersionBinary(t, "1.19.6", "while :; do :; done"),
+		openCodeVersionBinary(t, "opencode v2.4.1", "while :; do :; done"),
+	} {
+		start := time.Now()
+		command, err := validateOpenCodeMCP(binary, staged, id.name, id, time.Second)
+		if !errors.Is(err, errOpenCodeTimeout) || !strings.Contains(err.Error(), "timed out") || command != "" || time.Since(start) > 10*time.Second {
+			t.Fatalf("timeout=%v elapsed=%s", err, time.Since(start))
+		}
 	}
 	var stderr openCodeValidationStderr
 	_, _ = stderr.Write([]byte("Unrecognized "))
 	_, _ = stderr.Write([]byte("key"))
 	if !stderr.invalid {
 		t.Fatal("lost marker across stderr chunks")
+	}
+	for _, marker := range []string{"ConfigInvalid", "Server process exited", "Managed service port"} {
+		for split := 1; split < len(marker); split++ {
+			var stderr openCodeValidationStderr
+			_, _ = stderr.Write([]byte("noise " + marker[:split]))
+			_, _ = stderr.Write([]byte(marker[split:] + " noise"))
+			if stderr.invalid != (marker == "ConfigInvalid") || stderr.serverStart == stderr.invalid {
+				t.Fatalf("marker %q split at %d: %+v", marker, split, stderr)
+			}
+		}
 	}
 }
 
@@ -341,7 +378,7 @@ func TestOpenCodeMCPDetectedInstallSuppressesValidationOutput(t *testing.T) {
 	t.Setenv("CONVEYOR_API_TOKEN", "bridge-present")
 	setMCPTestCredentials(t, "https://factory.example", "stored-secret")
 	t.Setenv("CONVEYOR_ADDR", "https://factory.example/mcp")
-	binary := openCodeValidationBinary(t, "echo resolved-secret; echo resolved-secret >&2")
+	binary := openCodeVersionBinary(t, "1.19.6", "echo resolved-secret; echo resolved-secret >&2")
 	cmd := mcpInstallCmdWithLookPath(func(name string) (string, error) {
 		if name == "opencode" {
 			return binary, nil
@@ -365,9 +402,338 @@ func TestOpenCodeMCPDetectedInstallSuppressesValidationOutput(t *testing.T) {
 	}
 }
 
-// Opt in with an absolute binary path to check a locally installed OpenCode
-// version. The ordinary gate uses the deterministic subprocess fixtures above.
+// useOpenCodeContainment runs the check of the test in the production
+// containment.
+func useOpenCodeContainment(t *testing.T) {
+	t.Helper()
+	previous := openCodeContain
+	openCodeContain = openCodeContained
+	t.Cleanup(func() { openCodeContain = previous })
+}
 
+// openCodeFixtureArg starts the test binary as a client fixture. The Linux
+// tests set the fixture.
+const openCodeFixtureArg = "__opencode-fixture"
+
+var openCodeFixture = func([]string) int { return 125 }
+
+func runOpenCodeFixture(args []string) int { return openCodeFixture(args) }
+
+// openCodePortOwner names the process that listens on a loopback TCP port by
+// PID, kernel start time, and command line.
+func openCodePortOwner(t *testing.T, port string) string {
+	t.Helper()
+	number, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := os.ReadFile("/proc/net/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(table), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 10 || fields[3] != "0A" || !strings.HasSuffix(fields[1], fmt.Sprintf(":%04X", number)) {
+			continue
+		}
+		descriptors, _ := filepath.Glob("/proc/[0-9]*/fd/*")
+		for _, descriptor := range descriptors {
+			if link, _ := os.Readlink(descriptor); link != "socket:["+fields[9]+"]" {
+				continue
+			}
+			process := filepath.Dir(filepath.Dir(descriptor))
+			stat, _ := os.ReadFile(filepath.Join(process, "stat"))
+			command, _ := os.ReadFile(filepath.Join(process, "cmdline"))
+			after := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+			return fmt.Sprintf("pid=%s start=%s command=%s", filepath.Base(process), after[19], bytes.ReplaceAll(command, []byte{0}, []byte{' '}))
+		}
+	}
+	t.Fatalf("no process listens on port %s", port)
+	return ""
+}
+
+func TestOpenCodeVersionLine(t *testing.T) {
+	for output, want := range map[string]string{
+		"1.19.6\n": "1", "opencode v2.4.1\n": "2", "v2.4.1": "2", "opencode 2.4.1\r\n": "2",
+		"2.5.0-beta.1\n": "2", "2.5.0+build.7\n": "2", "opencode v2.5.0-rc-1.x+abc\n": "2",
+		"0.0.0-beta-19507\n": "0", "3.0.0\n": "3", "12.0.0\n": "12",
+		"": "", "\n": "", "opencode\n": "", "2\n": "", "2.4\n": "", "2.4.1.0\n": "", "02.4.1\n": "", "vv2.4.1\n": "",
+		"2.4.1\n1.19.6\n": "", "1.19.6 2.4.1\n": "", "notice\n2.4.1\n": "", "2.4.1\n\n": "", " 2.4.1\n": "", "2.4.1-\n": "", "2.4.1-01\n": "",
+		"other v2.4.1\n": "", "opencode v2.4.1 resolved-secret\n": "", "\x00\xff2.4.1\n": "",
+	} {
+		if got := openCodeMajor([]byte(output)); got != want {
+			t.Errorf("major(%q)=%q, want %q", output, got, want)
+		}
+	}
+}
+
+// TestOpenCodeMCPVersionDispatch covers the refused probes: each one stops
+// before the parser, with no fallback and no publication.
+func TestOpenCodeMCPVersionDispatch(t *testing.T) {
+	for label, c := range map[string]struct {
+		probe string
+		want  error
+	}{
+		"failed":      {"echo 1.19.6; echo resolved-secret >&2; exit 3", errOpenCodeVersion},
+		"empty":       {"exit 0", errOpenCodeVersion},
+		"stderr only": {"echo 2.4.1 >&2; exit 0", errOpenCodeVersion},
+		"two lines":   {"echo resolved-secret; echo 2.4.1; exit 0", errOpenCodeVersion},
+		"old major":   {"echo 0.15.0; exit 0", errOpenCodeVersion},
+		"new major":   {"echo opencode v3.0.0; exit 0", errOpenCodeVersion},
+		"too large":   {"while :; do echo resolved-secret; done", errOpenCodeOutputSize},
+	} {
+		t.Run(label, func(t *testing.T) {
+			binary := openCodeValidationBinary(t, `echo "$*" >> "$ARGUMENT_LOG"
+if [ "$*" = --version ]; then `+c.probe+`; fi`)
+			checkOpenCodeRefusal(t, mcpAuthOAuth, binary, c.want, "--version\n")
+		})
+	}
+}
+
+// checkOpenCodeRefusal proves at the install boundary that a check refuses
+// with the fixed message alone, keeps prior bytes and mode or an absent
+// destination, leaves no staging file, and ran exactly the given commands.
+func checkOpenCodeRefusal(t *testing.T, mode, binary string, want error, commands string) {
+	t.Helper()
+	for _, exists := range []bool{false, true} {
+		home := t.TempDir()
+		path := filepath.Join(home, "opencode.json")
+		prior := []byte(`{"model" : "old"}`)
+		if exists {
+			if err := os.WriteFile(path, prior, 0o640); err != nil {
+				t.Fatal(err)
+			}
+		}
+		log := filepath.Join(t.TempDir(), "arguments")
+		t.Setenv("ARGUMENT_LOG", log)
+		id := testMCPModeIdentity(t, mode, "https://factory.example", "")
+		result, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "opencode", path: path}, id, false, true, func(string) (string, error) { return binary, nil })
+		if !errors.Is(err, want) || err.Error() != "validate MCP config "+path+": "+want.Error() || result != (mcpInstallResult{}) {
+			t.Fatalf("result=%+v err=%v, want %v", result, err, want)
+		}
+		for _, forbidden := range []string{"resolved-secret", openCodePlaceholder} {
+			if strings.Contains(err.Error(), forbidden) {
+				t.Fatalf("refusal carries %q: %v", forbidden, err)
+			}
+		}
+		after, readErr := os.ReadFile(path)
+		if exists {
+			info, _ := os.Stat(path)
+			if readErr != nil || !bytes.Equal(after, prior) || info.Mode().Perm() != 0o640 {
+				t.Fatalf("refusal changed the prior file: %s %v", after, readErr)
+			}
+		} else if !os.IsNotExist(readErr) {
+			t.Fatalf("refusal created a file: %v", readErr)
+		}
+		if leftovers, _ := filepath.Glob(filepath.Join(home, ".conveyor-*")); len(leftovers) != 0 {
+			t.Fatalf("staging leftovers: %v", leftovers)
+		}
+		if got, _ := os.ReadFile(log); string(got) != commands {
+			t.Fatalf("commands=%q, want %q", got, commands)
+		}
+	}
+}
+
+// openCodeV2Binary writes an OpenCode 2 stub. body runs for the standalone
+// check. STAGED_COPY and ENTRY_NAME are available to it.
+func openCodeV2Binary(t *testing.T, body string) string {
+	t.Helper()
+	return openCodeValidationBinary(t, `[ -z "${ARGUMENT_LOG-}" ] || echo "$*" >> "$ARGUMENT_LOG"
+if [ "$*" = --version ]; then echo 'opencode v2.4.1'; exit 0; fi
+[ "$*" = 'debug config --standalone' ]
+[ "$HOME" = "$PWD" ]
+[ "$(/usr/bin/readlink "$XDG_DATA_HOME/opencode/log/opencode.log")" = /dev/null ]
+STAGED_COPY=$OPENCODE_CONFIG
+echo 'resolved-secret stderr' >&2
+`+body)
+}
+
+// openCodeV2Rows prints a result with the given server members. Each other
+// row and field is unrelated to the registration.
+func openCodeV2Rows(servers string) string {
+	return `printf '[{"type":"directory","path":"%s"},{"type":"document","path":"/elsewhere.json","info":{"mcp":{"servers":{}}}},{"type":"document","path":"%s","info":{"model":"resolved-secret","mcp":{"servers":{` + servers + `}}}}]\n' "$XDG_CONFIG_HOME/opencode" "$STAGED_COPY"`
+}
+
+func TestOpenCodeMCPV2Accepted(t *testing.T) {
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		for _, prior := range []string{"", `{"unknown_top_level_key":true,"mcp":{"other":{"type":"local","command":["other"]}}}`} {
+			t.Run(fmt.Sprintf("%s/prior=%t", mode, prior != ""), func(t *testing.T) {
+				home := t.TempDir()
+				path := filepath.Join(home, "opencode.json")
+				if prior != "" {
+					if err := os.WriteFile(path, []byte(prior), 0o640); err != nil {
+						t.Fatal(err)
+					}
+				}
+				id := testMCPModeIdentity(t, mode, "https://factory.example", "")
+				entry := `"other":{"type":"local","command":["other"]},"` + id.name + `":{"type":"remote","url":"` + id.endpoint + `","disabled":false`
+				if mode == mcpAuthPAT {
+					entry += `,"headers":{"Authorization":"***"},"oauth":false`
+				}
+				binary := openCodeV2Binary(t, openCodeV2Rows(entry+"}")+`
+echo '{"rewritten":true}' > "$OPENCODE_CONFIG"`)
+				result, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "opencode", path: path}, id, false, true, func(string) (string, error) { return binary, nil })
+				if err != nil || result.status != "created" || result.validation != "validated with opencode debug config --standalone (not a native connection check)" {
+					t.Fatalf("result=%+v err=%v", result, err)
+				}
+				got, _ := os.ReadFile(path)
+				want, _, _, err := reconcileNamedJSON([]byte(prior), "opencode", id, false)
+				if err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("published=%s want=%s err=%v", got, want, err)
+				}
+				if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+					t.Fatalf("mode=%v", info.Mode())
+				}
+				if leftovers, _ := filepath.Glob(filepath.Join(home, ".conveyor-*")); len(leftovers) != 0 {
+					t.Fatalf("staging leftovers: %v", leftovers)
+				}
+			})
+		}
+	}
+}
+
+// TestOpenCodeMCPV2Refusals covers each refused result of the OpenCode 2
+// check at the install boundary (req-mcp-oauth AC-5.3).
+func TestOpenCodeMCPV2Refusals(t *testing.T) {
+	const ran = "--version\ndebug config --standalone\n"
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		id := testMCPModeIdentity(t, mode, "https://factory.example", "")
+		credential, wrongCredential := "", `,"oauth":false`
+		if mode == mcpAuthPAT {
+			credential, wrongCredential = `,"oauth":false`, ""
+		}
+		fields := `"type":"remote","url":"` + id.endpoint + `"`
+		valid := `"` + id.name + `":{` + fields + credential + `}`
+		document := func(row string) string {
+			return `printf '[` + row + `]'` + strings.Repeat(` "$STAGED_COPY"`, strings.Count(row, "%s"))
+		}
+		info := `"info":{"mcp":{"servers":{` + valid + `}}}`
+		good := `{"type":"document","path":"%s",` + info + `}`
+		for label, c := range map[string]struct {
+			body string
+			want error
+		}{
+			"dropped entry":        {document(`{"type":"document","path":"%s","info":{}}`), errOpenCodeNoEntry},
+			"no servers":           {document(`{"type":"document","path":"%s","info":{"mcp":{}}}`), errOpenCodeNoEntry},
+			"wrong name":           {openCodeV2Rows(`"x` + id.name + `":{` + fields + credential + `}`), errOpenCodeNoEntry},
+			"v1 layout":            {document(`{"type":"document","path":"%s","info":{"mcp":{` + valid + `}}}`), errOpenCodeNoEntry},
+			"no rows":              {`echo '[]'`, errOpenCodeNoDocument},
+			"directory row":        {document(`{"type":"directory","path":"%s",` + info + `}`), errOpenCodeNoDocument},
+			"other document":       {document(`{"type":"document","path":"%s.other",` + info + `}`), errOpenCodeNoDocument},
+			"base name":            {`printf '[{"type":"document","path":"%s",` + info + `}]' "${STAGED_COPY##*/}"`, errOpenCodeNoDocument},
+			"symlink to the copy":  {`/bin/ln -s "$STAGED_COPY" "$HOME/link.json"; printf '[` + good + `]' "$HOME/link.json"`, errOpenCodeNoDocument},
+			"path not a string":    {`echo '[{"type":"document","path":5,` + info + `}]'`, errOpenCodeNoDocument},
+			"no path":              {`echo '[{"type":"document",` + info + `}]'`, errOpenCodeNoDocument},
+			"duplicate document":   {document(good + `,` + good), errOpenCodeAmbiguous},
+			"wrong type":           {openCodeV2Rows(`"` + id.name + `":{"type":"local","url":"` + id.endpoint + `"` + credential + `}`), errOpenCodeMismatch},
+			"no type":              {openCodeV2Rows(`"` + id.name + `":{"url":"` + id.endpoint + `"` + credential + `}`), errOpenCodeMismatch},
+			"wrong endpoint":       {openCodeV2Rows(`"` + id.name + `":{"type":"remote","url":"` + id.endpoint + `/"` + credential + `}`), errOpenCodeMismatch},
+			"endpoint not string":  {openCodeV2Rows(`"` + id.name + `":{"type":"remote","url":["` + id.endpoint + `"]` + credential + `}`), errOpenCodeMismatch},
+			"wrong OAuth field":    {openCodeV2Rows(`"` + id.name + `":{` + fields + wrongCredential + `}`), errOpenCodeMismatch},
+			"null OAuth field":     {openCodeV2Rows(`"` + id.name + `":{` + fields + `,"oauth":null}`), errOpenCodeMismatch},
+			"true OAuth field":     {openCodeV2Rows(`"` + id.name + `":{` + fields + `,"oauth":true}`), errOpenCodeMismatch},
+			"string OAuth field":   {openCodeV2Rows(`"` + id.name + `":{` + fields + `,"oauth":"false"}`), errOpenCodeMismatch},
+			"object OAuth field":   {openCodeV2Rows(`"` + id.name + `":{` + fields + `,"oauth":{}}`), errOpenCodeMismatch},
+			"duplicate endpoint":   {openCodeV2Rows(`"` + id.name + `":{` + fields + credential + `,"url":"` + id.endpoint + `"}`), errOpenCodeMismatch},
+			"null entry":           {openCodeV2Rows(`"` + id.name + `":null`), errOpenCodeMismatch},
+			"duplicate entry":      {openCodeV2Rows(valid + `,` + valid), errOpenCodeMalformed},
+			"null info":            {document(`{"type":"document","path":"%s","info":null}`), errOpenCodeMalformed},
+			"duplicate row type":   {document(`{"type":"directory","type":"document","path":"%s",` + info + `}`), errOpenCodeMalformed},
+			"row not an object":    {document(`5,` + good), errOpenCodeMalformed},
+			"null":                 {`echo null`, errOpenCodeMalformed},
+			"object":               {`echo '{"resolved-secret":1}'`, errOpenCodeMalformed},
+			"no output":            {`:`, errOpenCodeMalformed},
+			"not JSON":             {`echo resolved-secret`, errOpenCodeMalformed},
+			"truncated":            {`printf '[` + good + `' "$STAGED_COPY"`, errOpenCodeMalformed},
+			"trailing data":        {document(good) + `; echo resolved-secret`, errOpenCodeMalformed},
+			"second array":         {document(good) + `; echo '[]'`, errOpenCodeMalformed},
+			"over the limit":       {document(good) + `; while :; do echo '          resolved-secret          '; done`, errOpenCodeOutputSize},
+			"over the limit, exit": {document(good) + `; /usr/bin/head -c 4194305 /dev/zero`, errOpenCodeOutputSize},
+			"server start":         {`echo 'Error: Server process exited with code 1 resolved-secret' >&2; exit 1`, errOpenCodeServerStart},
+			"managed service port": {`echo 'Error: Managed service port 49374 on 127.0.0.1 is already in use by resolved-secret' >&2; exit 1`, errOpenCodeServerStart},
+			"nonzero exit":         {document(good) + `; exit 7`, errOpenCodeV2Failed},
+			"v1 marker, exit":      {`echo 'ConfigInvalid resolved-secret' >&2; exit 1`, errOpenCodeV2Failed},
+		} {
+			t.Run(mode+"/"+label, func(t *testing.T) {
+				checkOpenCodeRefusal(t, mode, openCodeV2Binary(t, c.body), c.want, ran)
+			})
+		}
+	}
+}
+
+// TestOpenCodeMCPContainmentRefusal covers a host without containment, such
+// as macOS or a Linux host that denies namespaces. Both majors refuse before
+// a client starts, and the message suggests neither removing the client nor
+// weaker host security.
+func TestOpenCodeMCPContainmentRefusal(t *testing.T) {
+	previous := openCodeContain
+	openCodeContain = func(string, []string, *os.File) (*exec.Cmd, error) { return nil, errOpenCodeContainment }
+	t.Cleanup(func() { openCodeContain = previous })
+	for _, version := range []string{"1.19.6", "opencode v2.4.1"} {
+		binary := openCodeValidationBinary(t, `echo "$*" >> "$ARGUMENT_LOG"; echo '`+version+`'`)
+		checkOpenCodeRefusal(t, mcpAuthOAuth, binary, errOpenCodeContainment, "")
+	}
+	for _, forbidden := range []string{"remove", "uninstall", "disable", "sysctl", "sudo", "apparmor", "root"} {
+		if strings.Contains(strings.ToLower(errOpenCodeContainment.Error()), forbidden) {
+			t.Errorf("containment message suggests %q", forbidden)
+		}
+	}
+	if !strings.Contains(errOpenCodeContainment.Error(), "Linux with user, PID, and network namespaces") {
+		t.Errorf("containment message=%v", errOpenCodeContainment)
+	}
+}
+
+// TestOpenCodeEnvironmentProtectsIsolation proves that a staged reference
+// receives a placeholder and never replaces an isolation variable or a loader
+// setting.
+func TestOpenCodeEnvironmentProtectsIsolation(t *testing.T) {
+	t.Setenv("AMBIENT_KEY", "resolved-secret")
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "resolved-secret")
+	t.Setenv("OPENCODE_API_KEY", "resolved-secret")
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/resolved-secret")
+	t.Setenv("CONVEYOR_MCP_TOKEN_FIXTURE", "resolved-secret")
+	t.Setenv("LD_PRELOAD", "")
+	reserved := []string{"HOME", "PWD", "PATH", "BASH_ENV", "TMPDIR", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_DISABLE_PROJECT_CONFIG", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "NODE_OPTIONS", "BUN_OPTIONS", mcpAddressEnv}
+	values := []string{"AMBIENT_KEY", "OPENCODE_API_KEY", "NODE_AUTH_TOKEN", "CONVEYOR_MCP_TOKEN_FIXTURE", "UNSET_REFERENCE", mcpTokenEnv}
+	var content strings.Builder
+	for _, name := range append(append([]string{}, reserved...), values...) {
+		fmt.Fprintf(&content, "{env:%s} ", name)
+	}
+	cmd := exec.Command("env")
+	cmd.Env = openCodeEnvironment("/isolated", "/config/copy.json", []byte(content.String()))
+	resolved := map[string]string{}
+	for _, item := range cmd.Environ() {
+		key, value, _ := strings.Cut(item, "=")
+		resolved[key] = value
+	}
+	for key, want := range map[string]string{
+		"HOME": "/isolated", "PWD": "/isolated", "PATH": os.Getenv("PATH"), "LD_PRELOAD": "",
+		"XDG_CONFIG_HOME": "/isolated/config", "XDG_DATA_HOME": "/isolated/data", "XDG_STATE_HOME": "/isolated/state", "XDG_CACHE_HOME": "/isolated/cache",
+		"OPENCODE_CONFIG": "/config/copy.json", "OPENCODE_DISABLE_PROJECT_CONFIG": "true", mcpAddressEnv: "https://conveyor.invalid/mcp",
+	} {
+		if resolved[key] != want {
+			t.Errorf("%s=%q, want %q", key, resolved[key], want)
+		}
+	}
+	for _, key := range values {
+		if resolved[key] != openCodePlaceholder {
+			t.Errorf("%s=%q, want the placeholder", key, resolved[key])
+		}
+	}
+	for key, value := range resolved {
+		if strings.Contains(value, "resolved-secret") || (value == openCodePlaceholder && openCodeReservedEnv(key)) {
+			t.Errorf("%s=%q crossed the isolation", key, value)
+		}
+	}
+}
+
+// TestOpenCodeMCPInstalledBinary checks a locally installed OpenCode 1 or 2
+// in the real containment. Opt in with an absolute binary path. The ordinary
+// gate uses the deterministic subprocess fixtures above.
+//
+// CONVEYOR_TEST_OPENCODE_SERVICE_PORT names the port of an OpenCode service
+// that the caller started outside the check. The test then proves that the
+// same process holds the port before and after each install.
 func TestOpenCodeMCPInstalledBinary(t *testing.T) {
 	binary := os.Getenv("CONVEYOR_TEST_OPENCODE_BIN")
 	if binary == "" {
@@ -376,32 +742,132 @@ func TestOpenCodeMCPInstalledBinary(t *testing.T) {
 	if !filepath.IsAbs(binary) {
 		t.Fatal("CONVEYOR_TEST_OPENCODE_BIN must be absolute")
 	}
-	home := t.TempDir()
-	path := filepath.Join(home, "opencode.json")
-	lookup := func(string) (string, error) { return binary, nil }
-	result, err := reconcileMCPRegistrationWithLookPath(home, mcpInstallTarget{tool: "opencode", path: path}, "https://factory.example/mcp", false, true, lookup)
-	if err != nil || result.status != "created" {
-		t.Fatalf("native create=%+v err=%v", result, err)
-	}
-	got, err := os.ReadFile(path)
+	useOpenCodeContainment(t)
+	version, err := exec.Command(binary, "--version").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(got, []byte("$schema")) || bytes.Contains(got, []byte("conveyor-install-validation")) {
-		t.Fatalf("native loader changes or resolved values published: %s", got)
+	major := openCodeMajor(version)
+	t.Logf("client opencode %s (major %s)", strings.TrimSpace(string(version)), major)
+	if port := os.Getenv("CONVEYOR_TEST_OPENCODE_SERVICE_PORT"); port != "" {
+		before := openCodePortOwner(t, port)
+		t.Logf("service before: %s", before)
+		t.Cleanup(func() {
+			after := openCodePortOwner(t, port)
+			t.Logf("service after: %s", after)
+			if after != before {
+				t.Errorf("service on port %s changed from %q to %q", port, before, after)
+			}
+		})
 	}
-	invalidPath := filepath.Join(home, "invalid.json")
-	prior := []byte(`{"unknown_top_level_key":true}`)
-	if err := os.WriteFile(invalidPath, prior, 0o600); err != nil {
-		t.Fatal(err)
+	lookup := func(string) (string, error) { return binary, nil }
+	command := map[string]string{"1": openCodeConfigCommand, "2": openCodeConfigCommandV2}[major]
+	for _, mode := range []string{mcpAuthOAuth, mcpAuthPAT} {
+		t.Run("create/"+mode, func(t *testing.T) {
+			home := t.TempDir()
+			path := filepath.Join(home, "opencode.json")
+			id := testMCPModeIdentity(t, mode, "https://factory.example", "")
+			result, err := reconcileNamedMCPRegistration(home, mcpInstallTarget{tool: "opencode", path: path}, id, false, true, lookup)
+			if err != nil || result.status != "created" || result.validation != "validated with "+command+" (not a native connection check)" {
+				t.Fatalf("native create=%+v err=%v", result, err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(got, []byte("$schema")) || bytes.Contains(got, []byte(openCodePlaceholder)) {
+				t.Fatalf("native loader changes or resolved values published: %s", got)
+			}
+			if leftovers, _ := filepath.Glob(filepath.Join(home, ".conveyor-*")); len(leftovers) != 0 {
+				t.Fatalf("staging leftovers: %v", leftovers)
+			}
+		})
 	}
-	_, err = reconcileMCPRegistrationWithLookPath(home, mcpInstallTarget{tool: "opencode", path: invalidPath}, "https://factory.example/mcp", false, true, lookup)
-	if err == nil || !strings.Contains(err.Error(), invalidPath) {
-		t.Fatalf("native invalid config accepted: %v", err)
+	// install runs the transaction on a prior file and returns the bytes after it.
+	install := func(t *testing.T, prior string) (string, error) {
+		path := filepath.Join(t.TempDir(), "prior.json")
+		if err := os.WriteFile(path, []byte(prior), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := reconcileMCPRegistrationWithLookPath(filepath.Dir(path), mcpInstallTarget{tool: "opencode", path: path}, "https://factory.example/mcp", false, true, lookup)
+		if err != nil && !strings.Contains(err.Error(), path) {
+			t.Fatalf("refusal names no path: %v", err)
+		}
+		after, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		return string(after), err
 	}
-	after, _ := os.ReadFile(invalidPath)
-	if !bytes.Equal(prior, after) {
-		t.Fatalf("native failure changed prior bytes: %s", after)
+	// OpenCode 1 up to 1.18.0 refuses an unknown top-level key, and 1.18.35
+	// and 1.19.6 ignore it. So the check of a major 1 client must agree with
+	// the client itself. OpenCode 2 drops the key and keeps the registration.
+	t.Run("unknown top-level key", func(t *testing.T) {
+		const prior = `{"unknown_top_level_key":true}`
+		refuses := false
+		if major == "1" {
+			isolated := t.TempDir()
+			config := filepath.Join(isolated, "config.json")
+			if err := os.WriteFile(config, []byte(prior), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			control := exec.Command(binary, "debug", "config")
+			control.Dir, control.Env = isolated, openCodeEnvironment(isolated, config, nil)
+			var stderr openCodeValidationStderr
+			control.Stderr = &stderr
+			refuses = control.Run() != nil || stderr.invalid
+			t.Logf("client refuses an unknown top-level key: %t", refuses)
+		}
+		after, err := install(t, prior)
+		if refuses {
+			if err == nil || after != prior {
+				t.Fatalf("native invalid config accepted: err=%v after=%s", err, after)
+			}
+			return
+		}
+		if err != nil || !strings.Contains(after, "unknown_top_level_key") || !strings.Contains(after, "https://factory.example/mcp") {
+			t.Fatalf("native ignored key refused: err=%v after=%s", err, after)
+		}
+	})
+	if major == "1" {
+		t.Run("invalid value", func(t *testing.T) {
+			const prior = `{"model":5}`
+			if after, err := install(t, prior); err == nil || after != prior {
+				t.Fatalf("native invalid config accepted: err=%v after=%s", err, after)
+			}
+		})
+	}
+	if major != "2" {
+		return
+	}
+	// The staged files of the transaction are valid, so the refusals read
+	// staged files that OpenCode 2 drops or resolves to another value.
+	id := testMCPOAuthIdentity(t, "https://factory.example", "conveyor")
+	pat := testMCPModeIdentity(t, mcpAuthPAT, "https://factory.example", "conveyor")
+	valid := `{"mcp":{"conveyor":{"type":"remote","url":"https://factory.example/mcp"}}}`
+	for label, c := range map[string]struct {
+		staged string
+		id     mcpIdentity
+		want   error
+	}{
+		"accepted":       {valid, id, nil},
+		"number URL":     {`{"mcp":{"conveyor":{"type":"remote","url":5}}}`, id, errOpenCodeNoEntry},
+		"malformed JSON": {`{"mcp":`, id, errOpenCodeNoDocument},
+		"missing entry":  {`{"mcp":{"other":{"type":"remote","url":"https://factory.example/mcp"}}}`, id, errOpenCodeNoEntry},
+		"wrong endpoint": {`{"mcp":{"conveyor":{"type":"remote","url":"https://other.example/mcp"}}}`, id, errOpenCodeMismatch},
+		"local type":     {`{"mcp":{"conveyor":{"type":"local","command":["true"]}}}`, id, errOpenCodeMismatch},
+		"OAuth as PAT":   {valid, pat, errOpenCodeMismatch},
+		"PAT as OAuth":   {`{"mcp":{"conveyor":{"type":"remote","url":"https://factory.example/mcp","oauth":false}}}`, id, errOpenCodeMismatch},
+	} {
+		t.Run("staged "+label, func(t *testing.T) {
+			staged := filepath.Join(t.TempDir(), "staged.json")
+			if err := os.WriteFile(staged, []byte(c.staged), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := validateOpenCodeMCP(binary, staged, c.id.name, c.id, openCodeCheckTimeout); !errors.Is(err, c.want) {
+				t.Fatalf("native check=%v, want %v", err, c.want)
+			}
+		})
 	}
 }
 
@@ -882,7 +1348,7 @@ func openCodeModeBinary(t *testing.T, mode, body string) string {
 /usr/bin/grep -q '"oauth":false' "$OPENCODE_CONFIG"
 `
 	}
-	return openCodeValidationBinary(t, script+body)
+	return openCodeVersionBinary(t, "1.19.6", script+body)
 }
 
 // mcpModeLookup returns parser stubs for every client that accept the staged
@@ -978,7 +1444,7 @@ func TestMCPInstallDefaultAndExplicitOAuthMatchAllClients(t *testing.T) {
 	validation := map[string]string{
 		"codex":       "Parser: accepted by codex mcp get (not a native connection check)\n",
 		"claude":      "Parser: accepted by claude mcp get (not a native connection check)\n",
-		"opencode":    "Parser: validated with opencode debug config\n",
+		"opencode":    "Parser: validated with opencode debug config (not a native connection check)\n",
 		"cursor":      "Parser: skipped: cursor has no parser check\n",
 		"antigravity": "Parser: accepted by agy mcp list (not a native connection check)\n",
 	}
@@ -1234,7 +1700,7 @@ func TestMCPParserChecksBothModesAllClients(t *testing.T) {
 	accepted := map[string]string{
 		"codex":       "accepted by codex mcp get (not a native connection check)",
 		"claude":      "accepted by claude mcp get (not a native connection check)",
-		"opencode":    "validated with opencode debug config",
+		"opencode":    "validated with opencode debug config (not a native connection check)",
 		"cursor":      "skipped: cursor has no parser check",
 		"antigravity": "accepted by agy mcp list (not a native connection check)",
 	}

@@ -1,16 +1,13 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -405,10 +402,13 @@ func reconcileNamedMCPRegistration(home string, target mcpInstallTarget, identit
 		if lookupErr != nil {
 			validation = "validation skipped: opencode is not on PATH"
 		} else {
+			// The check runs inside the write callback, so a refusal
+			// publishes nothing (component-cli-onboarding invariant 11).
 			validate = func(staged string) error {
-				return validateOpenCodeMCP(binary, staged, 30*time.Second)
+				command, checkErr := validateOpenCodeMCP(binary, staged, name, identity, openCodeCheckTimeout)
+				validation = "validated with " + command + " (not a native connection check)"
+				return checkErr
 			}
-			validation = "validated with opencode debug config"
 		}
 	}
 	if target.tool == "codex" || target.tool == "claude" {
@@ -524,91 +524,6 @@ func atomicWriteMCPConfigValidated(home, path string, content []byte, mode fs.Fi
 		return fmt.Errorf("publish %s: %w", path, err)
 	}
 	return os.Chmod(path, mode.Perm())
-}
-
-// Validate a copy because OpenCode may add $schema while loading a file.
-// Isolation keeps existing global/project configuration and stored accounts out
-// of this config check. Only the original staged bytes can be published.
-func validateOpenCodeMCP(binary, staged string, timeout time.Duration) error {
-	content, err := os.ReadFile(staged)
-	if err != nil {
-		return err
-	}
-	isolated, err := os.MkdirTemp(filepath.Dir(staged), ".conveyor-opencode-*")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(isolated)
-	// Keep file references relative to the real config directory.
-	copy, err := os.CreateTemp(filepath.Dir(staged), ".conveyor-opencode-*.json")
-	if err != nil {
-		return err
-	}
-	configPath := copy.Name()
-	defer os.Remove(configPath)
-	_, err = copy.Write(content)
-	closeErr := copy.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "debug", "config")
-	cmd.Dir = isolated
-	for _, item := range os.Environ() {
-		key, _, _ := strings.Cut(item, "=")
-		if strings.HasPrefix(key, "OPENCODE_") || strings.HasPrefix(key, "XDG_") || key == "HOME" || key == mcpAddressEnv || key == mcpTokenEnv || strings.HasPrefix(key, "CONVEYOR_MCP_TOKEN_") {
-			continue
-		}
-		cmd.Env = append(cmd.Env, item)
-	}
-	cmd.Env = append(cmd.Env,
-		"HOME="+isolated,
-		"XDG_CONFIG_HOME="+filepath.Join(isolated, "config"),
-		"XDG_DATA_HOME="+filepath.Join(isolated, "data"),
-		"XDG_STATE_HOME="+filepath.Join(isolated, "state"),
-		"XDG_CACHE_HOME="+filepath.Join(isolated, "cache"),
-		"OPENCODE_CONFIG="+configPath,
-		"OPENCODE_DISABLE_PROJECT_CONFIG=true",
-		mcpAddressEnv+"=https://conveyor.invalid/mcp",
-		mcpTokenEnv+"=conveyor-install-validation",
-	)
-	for _, match := range regexp.MustCompile(`\{env:([A-Za-z_][A-Za-z0-9_]*)\}`).FindAllSubmatch(content, -1) {
-		cmd.Env = append(cmd.Env, string(match[1])+"=conveyor-install-validation")
-	}
-	// A nil stdin reads from os.DevNull. Debug stdout resolves env values.
-	cmd.Stdout = io.Discard
-	var stderr openCodeValidationStderr
-	cmd.Stderr = &stderr
-	cmd.WaitDelay = time.Second
-	if err = cmd.Run(); ctx.Err() != nil {
-		return errors.New("opencode debug config timed out")
-	} else if err != nil {
-		return fmt.Errorf("opencode debug config failed: %w", err)
-	} else if stderr.invalid {
-		return errors.New("opencode debug config reported an invalid configuration")
-	}
-	return nil
-}
-
-// Retain only enough stderr to recognize markers split across writes. Never
-// include debug output in diagnostics, since it can contain resolved values.
-type openCodeValidationStderr struct {
-	tail    string
-	invalid bool
-}
-
-func (w *openCodeValidationStderr) Write(p []byte) (int, error) {
-	text := w.tail + string(p)
-	w.invalid = w.invalid || strings.Contains(text, "Unrecognized key") || strings.Contains(text, "ConfigInvalid")
-	if len(text) > 32 {
-		text = text[len(text)-32:]
-	}
-	w.tail = text
-	return len(p), nil
 }
 
 type jsonMember struct {

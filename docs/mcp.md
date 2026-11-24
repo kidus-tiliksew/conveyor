@@ -274,6 +274,33 @@ parser result, restart requirement, and native connection result separately.
 An OAuth installation also reports the sign-in step.
 A client loads a new registration after a restart. Codex and Claude parser
 checks and OpenCode's staged `debug config` check do not initialize MCP.
+When `opencode` is on `PATH`, the installer reads `opencode --version` and
+checks a copy of the staged file in an isolated home:
+
+- OpenCode 1 runs `opencode debug config`. A nonzero exit status or a reported
+  invalid configuration refuses the write.
+- OpenCode 2 runs `opencode debug config --standalone`, which uses a private
+  server. OpenCode 2 also exits with status 0 when it ignores an entry. So the
+  resolved document of the copy must hold the exact name with type `remote`
+  and the exact endpoint. The entry must hold `oauth: false` with `--auth pat`
+  and no `oauth` field with `--auth oauth`. A top-level key that OpenCode 2
+  ignores does not refuse the write.
+- Another version, or a version that the installer cannot read, refuses the
+  write.
+
+Both commands run in new Linux user, PID, and network namespaces with a private
+loopback. The check does not contact, stop, or change your OpenCode service,
+does not need its port, and leaves no process. When one of these conditions
+applies, the installer refuses the write before it starts OpenCode:
+
+- The host is not Linux. This includes macOS.
+- The Linux host denies the namespaces or their private loopback.
+
+In both cases, run the install on a Linux host that has these namespaces. A
+refusal names its cause, keeps the prior file, and prints no OpenCode output.
+When `opencode` is not on `PATH`, the installer reports
+`validation skipped: opencode is not on PATH` and publishes the file without
+that check. `--list` runs no OpenCode command.
 With `--auth oauth`, `codex mcp get <name> --json` must report the registered
 URL in `transport.url`. With `--auth pat`, it must report
 `http_headers_helper`.
