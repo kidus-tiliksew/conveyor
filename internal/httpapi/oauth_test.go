@@ -2156,7 +2156,8 @@ func TestOAuthMetadataResolverFetchesOverCheckedAddresses(t *testing.T) {
 		t.Fatal(err)
 	}
 	if document.ClientID != clientID || document.ClientName != "Metadata Agent" || !document.allowsRedirect("https://app.example/cb") ||
-		document.allowsRedirect("https://app.example/cb/") || document.allowsRedirect("https://app.example/CB") || document.allowsRedirect("http://127.0.0.1:33419/callback") {
+		document.allowsRedirect("https://app.example/cb/") || document.allowsRedirect("https://app.example/CB") ||
+		!document.allowsRedirect("http://127.0.0.1:33419/callback") || document.allowsRedirect("http://127.0.0.1:33418/other") {
 		t.Fatalf("document = %+v", document)
 	}
 	// The dial went to the checked address, not to the hostname, and TLS
@@ -2323,7 +2324,7 @@ func TestOAuthMetadataDocumentClientCompletesTheFlow(t *testing.T) {
 	if view.Client.Kind != oauthClientKindMetadataDocument || view.Client.Name != "Metadata Agent" || view.Client.Origin != "https://example.com:"+fixture.port || view.RedirectHost != "127.0.0.1:33418" {
 		t.Fatalf("consent view = %+v", view)
 	}
-	unlisted := h.do(oauthRequest{method: http.MethodGet, path: "/v1/oauth/authorize?" + oauthAuthorizeQuery(clientID, "http://127.0.0.1:33419/callback", "cimd"), session: h.memberSession})
+	unlisted := h.do(oauthRequest{method: http.MethodGet, path: "/v1/oauth/authorize?" + oauthAuthorizeQuery(clientID, "http://127.0.0.1:33418/other", "cimd"), session: h.memberSession})
 	if body := expectOAuthError(t, unlisted, http.StatusBadRequest, "invalid_redirect_uri"); body["redirect_to"] != nil {
 		t.Fatalf("unlisted redirect: %v", body)
 	}
@@ -2340,4 +2341,207 @@ func TestOAuthMetadataDocumentClientCompletesTheFlow(t *testing.T) {
 		t.Fatalf("grants = %+v, %v", grants, err)
 	}
 	decodeTokenPair(t, h.token(refreshForm(pair.RefreshToken, clientID)))
+}
+
+// --- Redirect URI membership (AC-2.1, AC-2.4) ---
+
+// oauthRedirectMismatches are requested redirect URIs that a client with
+// http://localhost/callback and https://app.example/cb must not use.
+var oauthRedirectMismatches = map[string]string{
+	"port 0":                   "http://localhost:0/callback",
+	"port above the range":     "http://localhost:65536/callback",
+	"port far above the range": "http://localhost:99999999999999999999/callback",
+	"empty port":               "http://localhost:/callback",
+	"signed port":              "http://localhost:+80/callback",
+	"letters in port":          "http://localhost:8a/callback",
+	"two ports":                "http://localhost:80:81/callback",
+	"other loopback host":      "http://127.0.0.1:61742/callback",
+	"IPv6 loopback host":       "http://[::1]:61742/callback",
+	"other 127/8 host":         "http://127.0.0.2:61742/callback",
+	"long IPv6 loopback":       "http://[0:0:0:0:0:0:0:1]:61742/callback",
+	"lookalike suffix":         "http://localhost.example:61742/callback",
+	"lookalike prefix":         "http://xlocalhost:61742/callback",
+	"lookalike without port":   "http://localhostx/callback",
+	"host case":                "http://LOCALHOST:61742/callback",
+	"host percent-encoding":    "http://local%68ost:61742/callback",
+	"trailing dot host":        "http://localhost.:61742/callback",
+	"user information":         "http://user@localhost:61742/callback",
+	"host as user information": "http://localhost:61742@attacker.example/callback",
+	"backslash":                "http://localhost:61742\\@attacker.example/callback",
+	"fragment":                 "http://localhost:61742/callback#x",
+	"empty fragment":           "http://localhost:61742/callback#",
+	"https scheme":             "https://localhost:61742/callback",
+	"scheme case":              "HTTP://localhost:61742/callback",
+	"path":                     "http://localhost:61742/other",
+	"longer path":              "http://localhost:61742/callback/more",
+	"empty path":               "http://localhost:61742",
+	"path case":                "http://localhost:61742/Callback",
+	"path percent-encoding":    "http://localhost:61742/c%61llback",
+	"dot segment":              "http://localhost:61742/./callback",
+	"parent segment":           "http://localhost:61742/x/../callback",
+	"doubled slash":            "http://localhost:61742//callback",
+	"trailing slash":           "http://localhost:61742/callback/",
+	"query":                    "http://localhost:61742/callback?x=1",
+	"empty query":              "http://localhost:61742/callback?",
+	"https port":               "https://app.example:8443/cb",
+	"https default port":       "https://app.example:443/cb",
+	"http on an https host":    "http://app.example:61742/cb",
+}
+
+func TestOAuthRedirectURIMatchesIgnoresOnlyALoopbackPort(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "[::1]", "localhost"} {
+		for _, pair := range [][2]string{
+			{"", ""}, {"", ":61742"}, {":61742", ""}, {":61742", ":61743"}, {"", ":1"}, {"", ":65535"}, {":1", ":65535"}, {"", ":80"},
+		} {
+			for _, tail := range []string{"", "/", "/callback", "/callback?a=%2F&b", "?a=1"} {
+				listed, requested := "http://"+host+pair[0]+tail, "http://"+host+pair[1]+tail
+				if !oauthRedirectURIMatches(listed, requested) {
+					t.Errorf("listed %q refused %q", listed, requested)
+				}
+			}
+		}
+		// The three loopback hosts never match each other.
+		for _, other := range []string{"127.0.0.1", "[::1]", "localhost"} {
+			for _, pair := range [][2]string{{"", ""}, {"", ":61742"}, {":61742", ":61742"}, {":61742", ":61743"}} {
+				if other != host && oauthRedirectURIMatches("http://"+host+pair[0]+"/callback", "http://"+other+pair[1]+"/callback") {
+					t.Errorf("host %s%s matched %s%s", host, pair[0], other, pair[1])
+				}
+			}
+		}
+	}
+	listed := []string{"http://localhost/callback", "https://app.example/cb"}
+	for name, requested := range oauthRedirectMismatches {
+		if oauthRedirectURIListed(listed, requested) {
+			t.Errorf("%s: %q matched", name, requested)
+		}
+		// The rule is symmetric, and equality accepts any identical string.
+		if oauthRedirectURIListed([]string{requested}, listed[0]) || oauthRedirectURIListed([]string{requested}, listed[1]) {
+			t.Errorf("%s: listed %q matched", name, requested)
+		}
+		if !oauthRedirectURIMatches(requested, requested) {
+			t.Errorf("%s: %q did not match itself", name, requested)
+		}
+	}
+	// A difference that only the listed URI's tail can carry.
+	for _, pair := range [][2]string{
+		{"http://localhost/callback?a=1", "http://localhost:61742/callback?a=2"},
+		{"http://localhost/callback?a=%2f", "http://localhost:61742/callback?a=%2F"},
+		{"http://localhost/callback?a=1&b=2", "http://localhost:61742/callback?b=2&a=1"},
+		{"http://localhost/callback%2fx", "http://localhost:61742/callback%2Fx"},
+		{"http://localhost/", "http://localhost:61742"},
+		{"http://localhost:/callback", "http://localhost:61742/callback"},
+		{"http://localhost:0/callback", "http://localhost:61742/callback"},
+		{"http://localhost:65536/callback", "http://localhost:61742/callback"},
+		{"http://localhost:65536/callback", "http://localhost:65537/callback"},
+		{"https://localhost/callback", "https://localhost:8443/callback"},
+		{"https://127.0.0.1:8443/callback", "https://127.0.0.1:8444/callback"},
+		{"http://app.example/cb", "http://app.example:8080/cb"},
+	} {
+		if oauthRedirectURIMatches(pair[0], pair[1]) || oauthRedirectURIMatches(pair[1], pair[0]) {
+			t.Errorf("%q matched %q", pair[0], pair[1])
+		}
+	}
+}
+
+// loopbackClients returns one client of each kind that lists redirects.
+func (h *oauthHarness) loopbackClients(redirects ...string) map[string]string {
+	h.t.Helper()
+	fixture := newMetadataFixture(h.t)
+	clientID := fixture.url("example.com", "/client.json")
+	fixture.document("/client.json", clientID, "none", redirects...)
+	h.server.oauthResolver = fixture.resolver(true)
+	return map[string]string{"metadata document": clientID, "dynamic registration": h.register(redirects...)}
+}
+
+func TestOAuthConsentRefusesEveryOtherRedirectDifference(t *testing.T) {
+	h := newOAuthHarness(t)
+	for kind, clientID := range h.loopbackClients("http://localhost/callback", "https://app.example/cb") {
+		for name, requested := range oauthRedirectMismatches {
+			for method, request := range map[string]oauthRequest{
+				"GET":  {method: http.MethodGet, path: "/v1/oauth/authorize?" + oauthAuthorizeQuery(clientID, requested, "s"), session: h.memberSession},
+				"POST": {method: http.MethodPost, path: "/v1/oauth/authorize", body: oauthDecisionBody("approve", clientID, requested, "s"), contentType: "application/json", session: h.memberSession, proof: true},
+			} {
+				t.Run(kind+"/"+name+"/"+method, func(t *testing.T) {
+					response := h.do(request)
+					if body := expectOAuthError(t, response, http.StatusBadRequest, "invalid_redirect_uri"); body["redirect_to"] != nil || response.Header().Get("Location") != "" {
+						t.Fatalf("%q offered a redirect: %v", requested, body)
+					}
+				})
+			}
+		}
+	}
+	if len(h.oauth.issued) != 0 {
+		t.Fatalf("refused redirects minted %d codes", len(h.oauth.issued))
+	}
+}
+
+// An identical string with an invalid port is still accepted, because AC-2.4
+// accepts identical strings before it looks at ports.
+func TestOAuthConsentAcceptsAnIdenticalStringWithAnInvalidPort(t *testing.T) {
+	h := newOAuthHarness(t)
+	redirect := "http://localhost:/callback"
+	for kind, clientID := range h.loopbackClients(redirect) {
+		consent := h.do(oauthRequest{method: http.MethodGet, path: "/v1/oauth/authorize?" + oauthAuthorizeQuery(clientID, redirect, "s"), session: h.memberSession})
+		if consent.Code != http.StatusOK {
+			t.Fatalf("%s: consent status=%d body=%s", kind, consent.Code, consent.Body.String())
+		}
+		other := h.do(oauthRequest{method: http.MethodGet, path: "/v1/oauth/authorize?" + oauthAuthorizeQuery(clientID, "http://localhost:61742/callback", "s"), session: h.memberSession})
+		if body := expectOAuthError(t, other, http.StatusBadRequest, "invalid_redirect_uri"); body["redirect_to"] != nil {
+			t.Fatalf("%s: %v", kind, body)
+		}
+	}
+}
+
+// Claude Code's published document lists two loopback URIs without a port and
+// requests a random port at each login (AC-2.1, AC-2.4, AC-3.2 to AC-3.4,
+// AC-4.1 to AC-4.3). A dynamically registered client follows the same rule.
+func TestOAuthLoopbackClientsCompleteTheFlowOnAnyPort(t *testing.T) {
+	h := newOAuthHarness(t)
+	clients := h.loopbackClients("http://localhost/callback", "http://127.0.0.1/callback")
+	clients["dynamic registration on another port"] = h.register("http://localhost:33418/callback")
+	const requested, otherPort = "http://localhost:61742/callback", "http://localhost:61743/callback"
+	for kind, clientID := range clients {
+		t.Run(kind, func(t *testing.T) {
+			consent := h.do(oauthRequest{method: http.MethodGet, path: "/v1/oauth/authorize?" + oauthAuthorizeQuery(clientID, requested, "s"), session: h.memberSession})
+			if consent.Code != http.StatusOK {
+				t.Fatalf("consent status=%d body=%s", consent.Code, consent.Body.String())
+			}
+			var view oauthConsentView
+			if err := json.Unmarshal(consent.Body.Bytes(), &view); err != nil || view.Client.ID != clientID || view.RedirectHost != "localhost:61742" {
+				t.Fatalf("consent view = %+v, %v", view, err)
+			}
+			denied := h.do(oauthRequest{method: http.MethodPost, path: "/v1/oauth/authorize", body: oauthDecisionBody("deny", clientID, requested, "s"), contentType: "application/json", session: h.memberSession, proof: true})
+			if denied.Code != http.StatusOK {
+				t.Fatalf("deny status=%d body=%s", denied.Code, denied.Body.String())
+			}
+			if got := decodeOAuthJSON(t, denied)["redirect_to"]; got != requested+"?error=access_denied&state=s" {
+				t.Fatalf("deny redirect_to = %v", got)
+			}
+			target := h.approve(h.memberSession, clientID, requested, "s")
+			code := target.Query().Get("code")
+			if target.Scheme+"://"+target.Host+target.Path != requested || !strings.HasPrefix(code, "cv_oac_") || target.Query().Get("state") != "s" || target.Query().Get("error") != "" {
+				t.Fatalf("approve redirect_to = %s", target)
+			}
+			if issued := h.oauth.issued[len(h.oauth.issued)-1]; issued.ClientID != clientID || issued.RedirectURI != requested {
+				t.Fatalf("code bindings = %+v", issued)
+			}
+			// Both ports pass membership, but the code is bound to the requested
+			// URI (AC-3.3). The refusal does not consume the code.
+			other := h.do(oauthRequest{method: http.MethodGet, path: "/v1/oauth/authorize?" + oauthAuthorizeQuery(clientID, otherPort, "s"), session: h.memberSession})
+			if other.Code != http.StatusOK {
+				t.Fatalf("other port consent status=%d body=%s", other.Code, other.Body.String())
+			}
+			for _, mismatch := range []string{otherPort, "http://localhost/callback", "http://127.0.0.1:61742/callback"} {
+				expectOAuthError(t, h.token(codeExchangeForm(code, clientID, mismatch)), http.StatusBadRequest, "invalid_grant")
+			}
+			pair := decodeTokenPair(t, h.token(codeExchangeForm(code, clientID, requested)))
+			if result := h.mcp(pair.AccessToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); result.status != http.StatusOK || result.isError {
+				t.Fatalf("token on /mcp: %+v", result)
+			}
+			refreshed := decodeTokenPair(t, h.token(refreshForm(pair.RefreshToken, clientID)))
+			if result := h.mcp(refreshed.AccessToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); result.status != http.StatusOK || result.isError {
+				t.Fatalf("refreshed token on /mcp: %+v", result)
+			}
+		})
+	}
 }

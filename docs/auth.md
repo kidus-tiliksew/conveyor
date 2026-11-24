@@ -325,9 +325,23 @@ A client identifies itself in one of two ways.
   process. Removal never touches a client that has a grant.
 
 A redirect URI must be `https://`, or `http://` on `127.0.0.1`, `[::1]`, or
-`localhost`, with no fragment or user information. Conveyor compares redirect
-URIs as exact strings. Client metadata that holds a credential-shaped value is
-refused.
+`localhost`, with no fragment or user information. Client metadata that holds a
+credential-shaped value is refused.
+
+Conveyor accepts a requested redirect URI only when it is identical to one of
+the client's `redirect_uris`, with one exception for native clients that listen
+on a random port. When both are `http://` URIs on the same loopback host,
+Conveyor ignores a port from 1 to 65535 in either one, whether or not the other
+names a port. For example, `http://localhost/callback` in `redirect_uris`
+accepts `http://localhost:61742/callback`. Every other part must be identical
+as written, so a difference in letter case, percent-encoding, dot segments, a
+trailing slash, or the query is refused. The three loopback hosts never match
+each other, and an `https://` URI must keep its port. An empty port, or a port
+outside 1 to 65535, is accepted only as an identical string.
+
+This exception decides only which redirect URIs a client may use. The
+authorization code stays bound to the exact requested redirect URI, port
+included, so an exchange that names another port is refused.
 
 ### Consent
 
