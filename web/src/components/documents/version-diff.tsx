@@ -279,23 +279,29 @@ function rowRuns(rows: ReviewRow[]) {
   return runs
 }
 
+// A closed run mounts no Markdown, so a large document with few changes parses
+// only its changed sections on the first render. The native details element
+// owns the open state, which the state below follows.
 function UnchangedRun({ rows }: { rows: ReviewRow[] }) {
+  const [open, setOpen] = useState(false)
   return (
-    <details className="min-w-0 border-b border-border py-2">
+    <details className="min-w-0 border-b border-border py-2" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary className="cursor-pointer text-xs text-muted hover:text-foreground">
         {rows.length === 1 ? `Show unchanged section · ${rows[0].title}` : `Show ${rows.length} unchanged sections`}
       </summary>
-      <div className="mt-4 min-w-0 space-y-5 overflow-auto">
-        {rows.map((row) => (
-          <div key={row.id} className="min-w-0">
-            {/* Headed Markdown names itself; a requirement statement does not. */}
-            {rows.length > 1 && !row.after?.content.trimStart().startsWith('#') && (
-              <p className="mb-1 text-xs font-medium text-muted">{row.title}</p>
-            )}
-            <MarkdownProse>{row.after?.content ?? ''}</MarkdownProse>
-          </div>
-        ))}
-      </div>
+      {open && (
+        <div className="mt-4 min-w-0 space-y-5 overflow-auto">
+          {rows.map((row) => (
+            <div key={row.id} className="min-w-0">
+              {/* Headed Markdown names itself; a requirement statement does not. */}
+              {rows.length > 1 && !row.after?.content.trimStart().startsWith('#') && (
+                <p className="mb-1 text-xs font-medium text-muted">{row.title}</p>
+              )}
+              <MarkdownProse>{row.after?.content ?? ''}</MarkdownProse>
+            </div>
+          ))}
+        </div>
+      )}
     </details>
   )
 }
