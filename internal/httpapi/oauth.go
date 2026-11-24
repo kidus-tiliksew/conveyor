@@ -523,8 +523,8 @@ func notFoundJSON(w http.ResponseWriter, _ *http.Request) {
 
 // validateOAuthRedirectURI refuses a redirect URI that is not an absolute
 // `https://` URI or a loopback `http://` URI, or that has a fragment, user
-// information, or an oversized value. Matching always compares the original
-// strings exactly; parsing only classifies.
+// information, or an oversized value. It only classifies: oauthRedirectURIMatches
+// decides membership on the original strings.
 func validateOAuthRedirectURI(redirectURI string) error {
 	if redirectURI == "" || len(redirectURI) > oauthRedirectURIMaxBytes || strings.ContainsAny(redirectURI, "#\\") || hasOAuthControlOrSpace(redirectURI) {
 		return errors.New("redirect URI must be an https or loopback http URI without a fragment")
@@ -542,6 +542,68 @@ func validateOAuthRedirectURI(redirectURI string) error {
 		}
 	}
 	return errors.New("redirect URI must be an https or loopback http URI without a fragment")
+}
+
+// oauthRedirectURIListed reports whether one of the client's redirect URIs
+// matches requested. It is the one membership matcher for metadata-document
+// and dynamically registered clients (component-identity-membership invariant
+// 51). An authorization code stays bound to the exact requested string
+// (req-mcp-oauth AC-3.3).
+func oauthRedirectURIListed(listed []string, requested string) bool {
+	for _, candidate := range listed {
+		if oauthRedirectURIMatches(candidate, requested) {
+			return true
+		}
+	}
+	return false
+}
+
+// oauthRedirectURIMatches accepts identical strings, or two loopback HTTP URIs
+// that differ only in port (req-mcp-oauth AC-2.4; RFC 8252 section 7.3).
+func oauthRedirectURIMatches(listed, requested string) bool {
+	if listed == requested {
+		return true
+	}
+	listedPortless, ok := oauthLoopbackURIWithoutPort(listed)
+	if !ok {
+		return false
+	}
+	requestedPortless, ok := oauthLoopbackURIWithoutPort(requested)
+	return ok && listedPortless == requestedPortless
+}
+
+// oauthLoopbackURIWithoutPort removes the port from a loopback HTTP URI and
+// keeps every other byte as written. It reports false for any other URI, and
+// for a port that is empty or outside 1 to 65535. It reads the original text,
+// because a parsed URI decodes the host and path and does not tell an empty
+// port from an absent one.
+func oauthLoopbackURIWithoutPort(uri string) (string, bool) {
+	const scheme = "http://"
+	rest, ok := strings.CutPrefix(uri, scheme)
+	if !ok {
+		return "", false
+	}
+	authority, tail := rest, ""
+	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
+		authority, tail = rest[:end], rest[end:]
+	}
+	for _, host := range []string{"127.0.0.1", "[::1]", "localhost"} {
+		suffix, ok := strings.CutPrefix(authority, host)
+		if !ok {
+			continue
+		}
+		if suffix != "" {
+			port, ok := strings.CutPrefix(suffix, ":")
+			if !ok {
+				return "", false
+			}
+			if number, err := strconv.ParseUint(port, 10, 16); err != nil || number == 0 {
+				return "", false
+			}
+		}
+		return scheme + host + tail, true
+	}
+	return "", false
 }
 
 // validateOAuthGrantTypes admits authorization_code with optional
@@ -600,13 +662,10 @@ type oauthVerifiedClient struct {
 	RedirectURIs []string
 }
 
+// allowsRedirect reports whether redirectURI is one of the client's redirect
+// URIs (req-mcp-oauth AC-2.4).
 func (client oauthVerifiedClient) allowsRedirect(redirectURI string) bool {
-	for _, candidate := range client.RedirectURIs {
-		if candidate == redirectURI {
-			return true
-		}
-	}
-	return false
+	return oauthRedirectURIListed(client.RedirectURIs, redirectURI)
 }
 
 // errOAuthClientLookup marks a store failure during client verification, so

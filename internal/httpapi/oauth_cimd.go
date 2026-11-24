@@ -56,14 +56,9 @@ type oauthMetadataDocument struct {
 }
 
 // allowsRedirect reports whether redirectURI is one of the document's
-// redirect URIs, compared as exact strings.
+// redirect URIs, under the shared matcher (req-mcp-oauth AC-2.1, AC-2.4).
 func (document oauthMetadataDocument) allowsRedirect(redirectURI string) bool {
-	for _, candidate := range document.RedirectURIs {
-		if candidate == redirectURI {
-			return true
-		}
-	}
-	return false
+	return oauthRedirectURIListed(document.RedirectURIs, redirectURI)
 }
 
 // oauthMetadataResolver fetches and verifies metadata documents. The zero
