@@ -162,6 +162,7 @@ func TestMCPNativeClients(t *testing.T) {
 	if os.Getenv("CONVEYOR_TEST_NATIVE_MCP") != "1" {
 		t.Skip("set CONVEYOR_TEST_NATIVE_MCP=1 for installed parser and controlled native runtime checks")
 	}
+	useOpenCodeContainment(t)
 	for _, tool := range []string{"codex", "claude", "opencode", "cursor"} {
 		t.Run(tool, func(t *testing.T) {
 			lookup := tool

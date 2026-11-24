@@ -45,6 +45,12 @@ func main() {
 		}
 		return
 	}
+	// The OpenCode check starts this executable as its namespace init, before
+	// any environment file can change the client environment
+	// (component-cli-onboarding invariant 11).
+	if len(os.Args) > 1 && os.Args[1] == openCodeInitArg {
+		os.Exit(runOpenCodeInit(os.Args[2:]))
+	}
 	if err := envfile.LoadDefault(); err != nil {
 		fmt.Fprintln(os.Stderr, "error: load local environment:", err)
 		os.Exit(1)
