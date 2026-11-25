@@ -392,12 +392,16 @@ func (s *Server) writeEnvironmentRows(w http.ResponseWriter, r *http.Request, pa
 	for i, record := range records {
 		ids[i] = record.ID
 	}
+	signals, err := backend.ListFeedbackSignals(r.Context(), ids)
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
 	state, err := backend.ReadFeedbackInputs(r.Context(), ids)
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return
 	}
-	signals := state.Signals
 	unresolved := feedbackNewestUnresolved(state, ids)
 	now := s.feedbackNow()
 	rows := make([]environmentListRow, len(records))

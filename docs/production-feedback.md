@@ -134,7 +134,8 @@ earlier one too, so the server keeps each accepted signal: the arrival, the
 key's label, and which services it named. These rows are never removed while the
 environment exists.
 
-A version is stored as it was sent and is unresolved. No forge is asked.
+A version is stored as it was sent. It stays unresolved until the background
+work in [Resolving a version](#resolving-a-version) resolves it.
 
 ## Listening
 
@@ -149,3 +150,125 @@ An environment is listening from an accepted signal until twice that signal's
 
 `last_signal_at` stays when the environment is no longer listening. No timer
 runs.
+
+Each row also holds `newest_unresolved`: the running version deployed last
+that has no resolved commit, or `null` when every running version is resolved.
+
+| Field | Meaning |
+| --- | --- |
+| `service` | The service that runs the version |
+| `repository`, `commit`, `version` | The version as the signal stated it. An empty member is left out |
+| `deployed_at` | When the version was deployed |
+| `reason` | Why it is unresolved. See the reasons below |
+
+## Resolving a version
+
+After the route answers, a background step resolves each version that the
+signal names and that has no stored answer. The route never waits for it, and
+no forge call runs before the answer is sent.
+
+1. A stated `commit` is read first. With a `repository`, only that repository
+   is read. Without one, the commit must be in exactly one configured
+   repository.
+2. Without a commit, the environment's version rule is applied to `version`.
+   A commit pattern reads a commit of 7 to 40 hexadecimal characters: each `*`
+   matches any text and every other character is literal. A tag template
+   replaces `{version}` and `{service}` once and reads that tag.
+3. The read is `GET repos/{repository}/commits/{ref}` with the workspace
+   GitHub App's installation token. conveyord runs no git command and holds no
+   clone.
+
+A resolved version holds its repository and its full commit ID, and it is never
+resolved again. An unresolved version keeps one reason:
+
+| Reason | Meaning |
+| --- | --- |
+| `pending` | No attempt has finished yet |
+| `no_github_app` | The workspace has no connected GitHub App |
+| `no_repository` | No configured repository has a GitHub slug, or the named one has none |
+| `no_version_rule` | The version states no commit, and the environment has no version rule |
+| `version_rule_mismatch` | The version does not fit the version rule |
+| `no_match` | No candidate repository holds the commit or the tag |
+| `ambiguous` | Two or more repositories hold it, even with one commit ID |
+| `forge_request`, `forge_status`, `forge_response`, `forge_rate_limited`, `forge_permission` | A GitHub read failed with that category. A failure in one candidate repository proves neither absence nor uniqueness |
+
+An unresolved version is tried again only when a later accepted signal names
+it, at least 10 minutes after the last attempt. When GitHub names a later time
+for the next request, the version waits until then. Reads and timers never try
+again.
+
+## Live status
+
+A merged task's merge commit is the `merge_commit_sha` of its latest
+`merge.confirmed` or `merge.reconciled` event. A resolved version contains a
+task when the version's repository is the task's repository and the version's
+commit equals the merge commit or descends from it. An unresolved version
+contains no task.
+
+The relevant environments of a merged task are the unarchived environments
+that hold a deploy for its repository or track a branch for it.
+
+| Status | Meaning |
+| --- | --- |
+| `live` | At least one service runs a version that contains the task |
+| `no_longer_live` | A past deploy contained the task, and no running version does |
+| `not_live_yet` | No deploy contained the task |
+| `unknown` | GitHub reports the merge commit missing from the repository |
+
+### Comparing commits
+
+The server stores GitHub's answer for each pair of commits it compares and
+never asks for that pair again. Every comparison runs in the background:
+
+- When a version resolves and descends from the service's previous version,
+  one comparison of the previous commit with the new one lists up to 100
+  commits that arrived. A merged task whose merge commit arrived, equals the
+  previous commit, or was in the previous version is contained. A list that is
+  not complete proves only the commits it lists.
+- A service's first version, a version that does not descend from the
+  previous one, and every pair still unproven are compared directly with each
+  merged task of the repository, newest merge first.
+- A workspace asks for at most 60 comparisons and branch reads in any minute,
+  across every environment, read, and server. A pair already in flight is not
+  asked twice. Work past the allowance waits for a later signal or read.
+- For `not_live_yet`, the head of the environment's tracked branch is read in
+  the background and compared by its full commit ID. A read asks for a new
+  head when the stored one is 10 minutes old or older.
+
+### The fields
+
+A read asks GitHub nothing. When a stored answer that a status needs is
+missing, the read asks the background work for it and leaves that status out.
+A later read serves it. A workspace with no unarchived environment, or a task
+with no relevant environment, gets no new field.
+
+`GET /v1/tasks/{id}` and MCP `get_task` add `environments` to a merged task:
+
+| Field | Meaning |
+| --- | --- |
+| `environment` | `id` and `name` |
+| `status` | `live`, `not_live_yet`, `no_longer_live`, or `unknown` |
+| `services` | For `live`, the services that run a containing version. Otherwise empty |
+| `live_since` | For `live`, the earliest deploy time of a containing version that runs now. Otherwise `null` |
+| `on_tracked_branch` | For `not_live_yet`, `true` when the tracked branch holds the merge commit |
+| `as_of` | The newest signal or GitHub deployment report of the environment, or `null` |
+
+`GET /v1/crates/{id}` and MCP `get_crate` add `environments`, one line for each
+environment relevant to at least one merged member:
+
+| Field | Meaning |
+| --- | --- |
+| `environment` | `id` and `name` |
+| `live_task_count` | Merged members that are `live` there |
+| `merged_task_count` | Every merged member of the crate |
+| `newest_live_at` | The latest `live_since` among them, or `null` |
+| `listening`, `last_signal_at` | As on `GET /v1/environments` |
+| `as_of` | As on the task read |
+
+Each merged member row of `GET /v1/crates/{id}` adds `live_in`, the names of
+the environments where it is live. MCP `get_crate` adds `live_in` as an object
+from task ID to those names, for the members that `task_ids` lists. Its lines
+count every merged member, also when `task_ids` is truncated.
+
+Live status is a record for people to read. No gate, queue, claim, merge,
+review, next action, or work order reads it, and it changes no task.

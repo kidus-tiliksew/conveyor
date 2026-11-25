@@ -25,7 +25,7 @@ hold no setup procedure (DEC-93).
 - [Writing requirements and designs](writing-documents.md): what a good requirement and a good System Design look like, and when to write a component design or a feature design
 - [Tasks](tasks.md): how work is created, given context, executed, reviewed, and linked
 - [Environments](environments.md): the routes, fields, key format, and events of the places the software runs
-- [Production feedback](production-feedback.md): the signal route, its body, its refusals, and the listening state
+- [Production feedback](production-feedback.md): the signal route, its body, its refusals, the listening state, resolving versions, and live status
 - [Misalignment](misalignment.md): drift, staleness, and pending proposals
 
 ## Operations
