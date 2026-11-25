@@ -600,7 +600,11 @@ func TestFeedbackSignalRepositoryBesideValidSignal(t *testing.T) {
 		}})
 		invalid := make(chan *httptest.ResponseRecorder, 1)
 		go func() { invalid <- h.send(feedbackGhostSignal) }()
-		<-entered
+		select {
+		case <-entered:
+		case response := <-invalid:
+			t.Fatalf("the invalid signal was answered before its check: status=%d body=%s", response.Code, response.Body)
+		}
 		valid := h.send(feedbackAppSignal)
 		close(release)
 		h.requireGhostRefusal(<-invalid, "beside a valid signal")
