@@ -769,29 +769,35 @@ func TestFeedbackLimiter(t *testing.T) {
 	l := newFeedbackLimiter(2)
 	admit := func(id string, arrived time.Time) {
 		t.Helper()
-		if wait, full := l.reserve(key(id), arrived); wait != 0 || full {
+		if wait, full := l.reserve(key(id), arrived, arrived); wait != 0 || full {
 			t.Fatalf("%s at %v: wait=%v full=%v", id, arrived, wait, full)
 		}
 	}
 	admit("one", at)
 	admit("two", at)
 	// Pending entries are never forgotten, whatever the time.
-	if _, full := l.reserve(key("three"), at.Add(time.Hour)); !full {
+	if _, full := l.reserve(key("three"), at.Add(time.Hour), at.Add(time.Hour)); !full {
 		t.Fatal("a pending entry was forgotten")
 	}
 	l.settle(key("one"), at, true)
 	l.settle(key("two"), at, true)
 	// Live windows are never forgotten.
-	if _, full := l.reserve(key("three"), at.Add(feedbackSignalWindow-time.Nanosecond)); !full || len(l.entries) != 2 {
+	if _, full := l.reserve(key("three"), at.Add(feedbackSignalWindow-time.Nanosecond), at.Add(feedbackSignalWindow-time.Nanosecond)); !full || len(l.entries) != 2 {
 		t.Fatalf("a live window was forgotten: full=%v entries=%v", full, l.entries)
 	}
 	// A held key is judged by its own window while the limiter is full.
-	if wait, full := l.reserve(key("one"), at.Add(time.Second)); wait != 4*time.Second || full {
+	if wait, full := l.reserve(key("one"), at.Add(time.Second), at.Add(time.Second)); wait != 4*time.Second || full {
 		t.Fatalf("held key: wait=%v full=%v", wait, full)
 	}
 	// A signal that arrived before the accepted one waits at most the window.
-	if wait, _ := l.reserve(key("one"), at.Add(-time.Minute)); wait != feedbackSignalWindow {
+	if wait, _ := l.reserve(key("one"), at.Add(-time.Minute), at.Add(-time.Minute)); wait != feedbackSignalWindow {
 		t.Fatalf("earlier arrival: wait=%v", wait)
+	}
+	// A delayed signal is judged by its arrival and waits from now.
+	for now, want := range map[time.Duration]time.Duration{time.Second: 4 * time.Second, 4500 * time.Millisecond: 500 * time.Millisecond, 5 * time.Second: 1, time.Minute: 1} {
+		if wait, full := l.reserve(key("one"), at.Add(time.Second), at.Add(now)); wait != want || full {
+			t.Fatalf("delayed to %v: wait=%v full=%v, want %v", now, wait, full, want)
+		}
 	}
 	// Ended windows make room.
 	admit("three", at.Add(feedbackSignalWindow))
@@ -805,7 +811,7 @@ func TestFeedbackLimiter(t *testing.T) {
 	}
 	// The same key ID of another workspace is another key.
 	admit("one", at)
-	if wait, full := l.reserve(feedbackLimiterKey{workspace: "beta", keyID: "one"}, at); wait != 0 || full {
+	if wait, full := l.reserve(feedbackLimiterKey{workspace: "beta", keyID: "one"}, at, at); wait != 0 || full {
 		t.Fatalf("another workspace: wait=%v full=%v", wait, full)
 	}
 	// The bound holds under concurrent reservations.
@@ -817,7 +823,7 @@ func TestFeedbackLimiter(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if wait, full := l.reserve(key(fmt.Sprint(i)), at); wait == 0 && !full {
+			if wait, full := l.reserve(key(fmt.Sprint(i)), at, at); wait == 0 && !full {
 				mu.Lock()
 				admitted++
 				mu.Unlock()
@@ -827,6 +833,175 @@ func TestFeedbackLimiter(t *testing.T) {
 	wg.Wait()
 	if admitted != 8 || len(l.entries) != 8 {
 		t.Fatalf("admitted=%d entries=%d, want the bound 8", admitted, len(l.entries))
+	}
+}
+
+// TestFeedbackLimiterKeepsWindowsInUse proves that a request in progress keeps
+// the window it can still need: each window while its key is not verified, and
+// then only the window of its key.
+func TestFeedbackLimiterKeepsWindowsInUse(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	key := func(id string) feedbackLimiterKey { return feedbackLimiterKey{workspace: "alpha", keyID: id} }
+	l := newFeedbackLimiter(2)
+	arrive := func(offset time.Duration) *feedbackArrival {
+		return l.arrive(func() time.Time { return at.Add(offset) })
+	}
+	accept := func(id string, offset time.Duration) {
+		t.Helper()
+		if wait, full := l.reserve(key(id), at.Add(offset), at.Add(offset)); wait != 0 || full {
+			t.Fatalf("%s at %v: wait=%v full=%v", id, offset, wait, full)
+		}
+		l.settle(key(id), at.Add(offset), true)
+	}
+	requireFull := func(offset time.Duration, what string) {
+		t.Helper()
+		if wait, full := l.reserve(key("new"), at.Add(offset), at.Add(offset)); wait != 0 || !full || len(l.entries) != 2 {
+			t.Fatalf("%s: wait=%v full=%v entries=%v, want a full limiter", what, wait, full, l.entries)
+		}
+	}
+	accept("one", 0)
+	accept("two", 0)
+	// Two requests arrive inside the windows. Neither key is verified yet.
+	first, second := arrive(time.Second), arrive(2*time.Second)
+	requireFull(6*time.Second, "unverified requests")
+	l.identify(first, key("one"))
+	l.identify(second, key("two"))
+	requireFull(6*time.Second, "a request of each key")
+	// A request of another key keeps no window of these.
+	other := arrive(time.Second)
+	l.identify(other, key("other"))
+	l.leave(second)
+	accept("new", 6*time.Second)
+	if _, held := l.entries[key("one")]; !held || len(l.entries) != 2 {
+		t.Fatalf("entries=%v, want the window in use and the new key", l.entries)
+	}
+	if wait, full := l.reserve(key("one"), first.at, at.Add(6*time.Second)); wait != 1 || full {
+		t.Fatalf("the delayed signal: wait=%v full=%v, want a refusal", wait, full)
+	}
+	// A request keeps a window that opened after it arrived, and a request
+	// that arrived after the window keeps nothing.
+	l.leave(first)
+	early := arrive(10 * time.Second)
+	l.identify(early, key("new"))
+	late := arrive(16 * time.Second)
+	l.identify(late, key("one"))
+	accept("new", 11*time.Second)
+	accept("third", 16*time.Second)
+	if _, held := l.entries[key("new")]; !held || len(l.entries) != 2 {
+		t.Fatalf("entries=%v, want the window that opened later and the third key", l.entries)
+	}
+	for _, arrival := range []*feedbackArrival{other, early, late} {
+		l.leave(arrival)
+	}
+	if len(l.waiting) != 0 {
+		t.Fatalf("waiting=%v, want none", l.waiting)
+	}
+	accept("fourth", 21*time.Second)
+}
+
+// TestFeedbackSignalDelayedRequestKeepsWindow holds a signal in its repository
+// check while a later signal of another key needs room in a one-entry limiter.
+// The window that applies to the held signal stays, so it is refused when it
+// goes on.
+func TestFeedbackSignalDelayedRequestKeepsWindow(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	h.server.feedbackLimiter = newFeedbackLimiter(1)
+	second := h.issue(h.environment.ID)
+	if response := h.send(feedbackMinimalSignal); response.Code != http.StatusAccepted {
+		t.Fatalf("first signal: status=%d body=%s", response.Code, response.Body)
+	}
+	before := h.stored()
+	h.advance(time.Second)
+	delayedAt := store.EnvironmentTime(h.clock())
+	entered, release := make(chan struct{}), make(chan struct{})
+	h.use(feedbackSignalStore{Backend: h.st, check: func(ctx context.Context, signal store.FeedbackSignal) error {
+		err := h.st.CheckFeedbackRepositories(ctx, signal)
+		if signal.ArrivedAt.Equal(delayedAt) && err == nil {
+			close(entered)
+			<-release
+		}
+		return err
+	}})
+	delayed := make(chan *httptest.ResponseRecorder, 1)
+	go func() { delayed <- h.send(feedbackAppSignal) }()
+	select {
+	case <-entered:
+	case response := <-delayed:
+		t.Fatalf("the delayed signal did not wait: status=%d body=%s", response.Code, response.Body)
+	}
+	// Six seconds after the first signal its window is over for a new arrival,
+	// but not for the one that waits. The cap stays, so the other key waits.
+	h.advance(5 * time.Second)
+	other := h.signal(second.Value, feedbackMinimalSignal)
+	// An invalid signal still gets its own refusal, under either key.
+	invalid, otherInvalid := h.send(feedbackGhostSignal), h.signal(second.Value, feedbackGhostSignal)
+	close(release)
+	response := <-delayed
+	if other.Code != http.StatusServiceUnavailable || strings.TrimSpace(other.Body.String()) != "temporarily unavailable" {
+		t.Fatalf("the other key: status=%d body=%s, want 503", other.Code, other.Body)
+	}
+	h.requireGhostRefusal(invalid, "beside the delayed signal")
+	h.requireGhostRefusal(otherInvalid, "under the other key")
+	// The window is over now, so the retry can come after the least wait.
+	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "1" || strings.TrimSpace(response.Body.String()) != "too many signals" {
+		t.Fatalf("the delayed signal: status=%d Retry-After=%q body=%s, want 429 and 1", response.Code, response.Header().Get("Retry-After"), response.Body)
+	}
+	if after := h.stored(); after != before {
+		t.Fatalf("a refused signal changed a record:\nbefore %s\nafter  %s", before, after)
+	}
+	// With no request in progress the window makes room.
+	if response := h.signal(second.Value, feedbackMinimalSignal); response.Code != http.StatusAccepted {
+		t.Fatalf("the other key afterward: status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+// feedbackKeyStore blocks the key check of one value.
+type feedbackKeyStore struct {
+	store.Backend
+	value            string
+	entered, release chan struct{}
+}
+
+func (f feedbackKeyStore) CheckEnvironmentKey(ctx context.Context, value string) (store.VerifiedEnvironmentKey, error) {
+	if value == f.value {
+		close(f.entered)
+		<-f.release
+	}
+	return f.Backend.CheckEnvironmentKey(ctx, value)
+}
+
+// TestFeedbackSignalDelayedKeyCheckKeepsWindow is the same for a signal that
+// waits in its key check, before the limiter knows its key.
+func TestFeedbackSignalDelayedKeyCheckKeepsWindow(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	h.server.feedbackLimiter = newFeedbackLimiter(1)
+	second := h.issue(h.environment.ID)
+	if response := h.send(feedbackMinimalSignal); response.Code != http.StatusAccepted {
+		t.Fatalf("first signal: status=%d body=%s", response.Code, response.Body)
+	}
+	before := h.stored()
+	h.advance(time.Second)
+	blocked := feedbackKeyStore{Backend: h.st, value: h.key.Value, entered: make(chan struct{}), release: make(chan struct{})}
+	h.use(blocked)
+	delayed := make(chan *httptest.ResponseRecorder, 1)
+	go func() { delayed <- h.send(feedbackMinimalSignal) }()
+	<-blocked.entered
+	h.advance(2500 * time.Millisecond)
+	other := h.signal(second.Value, feedbackMinimalSignal)
+	h.advance(2500 * time.Millisecond)
+	later := h.signal(second.Value, feedbackMinimalSignal)
+	close(blocked.release)
+	if response := <-delayed; response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "1" {
+		t.Fatalf("the delayed signal: status=%d Retry-After=%q, want 429 and 1", response.Code, response.Header().Get("Retry-After"))
+	}
+	if other.Code != http.StatusServiceUnavailable || later.Code != http.StatusServiceUnavailable {
+		t.Fatalf("the other key: status=%d and %d, want 503", other.Code, later.Code)
+	}
+	if after := h.stored(); after != before {
+		t.Fatalf("a refused signal changed a record:\nbefore %s\nafter  %s", before, after)
 	}
 }
 

@@ -64,7 +64,9 @@ func refuseFeedbackCredential(w http.ResponseWriter) {
 // use. Only the verified key sets the workspace of the request.
 func (s *Server) requireFeedbackKey(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		arrived := s.feedbackNow()
+		limiter := s.feedbackSignals()
+		arrival := limiter.arrive(s.feedbackNow)
+		defer limiter.leave(arrival)
 		headers := r.Header.Values("Authorization")
 		if len(headers) != 1 {
 			refuseFeedbackCredential(w)
@@ -89,8 +91,9 @@ func (s *Server) requireFeedbackKey(next http.Handler) http.Handler {
 			http.Error(w, "credential verification failed", http.StatusInternalServerError)
 			return
 		}
+		limiter.identify(arrival, feedbackLimiterKey{workspace: key.Workspace, keyID: key.KeyID})
 		ctx := store.WithWorkspace(store.WithActor(r.Context(), store.SystemActor()), key.Workspace)
-		ctx = context.WithValue(ctx, feedbackScopeKey{}, feedbackScope{key: key, arrived: arrived})
+		ctx = context.WithValue(ctx, feedbackScopeKey{}, feedbackScope{key: key, arrived: arrival.at})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -134,7 +137,7 @@ func (s *Server) receiveFeedbackSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limiter, key := s.feedbackSignals(), feedbackLimiterKey{workspace: scope.key.Workspace, keyID: scope.key.KeyID}
-	wait, full := limiter.reserve(key, scope.arrived)
+	wait, full := limiter.reserve(key, scope.arrived, s.feedbackNow())
 	if full {
 		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 		return

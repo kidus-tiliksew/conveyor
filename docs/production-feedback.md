@@ -81,9 +81,9 @@ A signal that breaks a rule is refused whole and records nothing.
 | 400 `invalid_signal` | `field` names the field by its path, such as `services[0].versions[1].commit`, and `message` states the rule. `body` names the whole body |
 | 401 | The credential is missing, is not an environment key, is revoked, or belongs to an archived environment. The answer does not say which |
 | 413 | The body is over 256 KiB |
-| 429 | The key sent an accepted signal less than 5 seconds earlier, or another signal of the key is in progress. `Retry-After` holds whole seconds |
+| 429 | The key sent an accepted signal less than 5 seconds earlier, or another signal of the key is in progress. `Retry-After` holds the whole seconds to wait from the answer, at least 1 |
 | 500 | The store failed. The answer holds no detail |
-| 503 | The server holds the most keys it can, and each one is inside its 5 seconds. Try again |
+| 503 | The server holds the most keys it can, and each one is inside its 5 seconds or has a request in progress that arrived inside them. Try again |
 
 Each rule of the body is checked before the 5 seconds. An invalid signal gets 400
 inside them, and it never delays a valid signal of the same key.
@@ -92,7 +92,9 @@ A refused or failed signal does not start the 5 seconds and does not change the
 key's `last_used_at`.
 
 The 5-second rule is kept in the memory of each `conveyord` process for at most
-4,096 keys. A restart forgets it, and two processes each apply their own.
+4,096 keys. A restart forgets it, and two processes each apply their own. The
+arrival time decides, so a request that a later one overtakes is still refused
+when it arrived inside the 5 seconds.
 
 ## Deploys and running versions
 
