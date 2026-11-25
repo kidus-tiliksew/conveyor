@@ -293,8 +293,8 @@ func (s *Store) ListFeedbackBranchHeads(ctx context.Context) ([]store.FeedbackBr
 }
 
 // ListFeedbackMergedTasks implements store.FeedbackStatusStore. The latest
-// merge.confirmed or merge.reconciled event of each merged task gives its
-// merge commit and time.
+// merge.confirmed or merge.reconciled event of each merged task that records a
+// usable merge commit gives its merge commit and time.
 func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.FeedbackMergedTaskQuery) ([]store.FeedbackMergedTask, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackMergedTasks")
 	ids := query.TaskIDs
@@ -306,6 +306,7 @@ FROM tasks t
 LEFT JOIN LATERAL (
   SELECT e.payload_json->>'merge_commit_sha' AS sha, e.at, e.id FROM events e
   WHERE e.workspace_id=t.workspace_id AND e.task_id=t.id AND e.kind IN ('merge.confirmed', 'merge.reconciled')
+    AND lower(btrim(COALESCE(e.payload_json->>'merge_commit_sha', ''))) ~ '^[0-9a-f]{40}$'
   ORDER BY e.at DESC, e.id DESC LIMIT 1
 ) m ON true
 WHERE t.workspace_id=$1 AND t.state='merged'

@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"slices"
@@ -19,10 +21,9 @@ import (
 // Bounds of the background feedback work (component-production-feedback
 // invariants 8 and 20; feature-production-feedback-live FB-3).
 const (
-	feedbackWorkQueue     = 256
-	feedbackWorkers       = 2
-	feedbackJobTimeout    = 2 * time.Minute
-	feedbackJobComparison = store.FeedbackComparisonsPerMinute
+	feedbackWorkQueue  = 256
+	feedbackWorkers    = 2
+	feedbackJobTimeout = 2 * time.Minute
 )
 
 // feedbackJob is one unit of background work for one workspace: an accepted
@@ -122,13 +123,12 @@ func (s *Server) enqueueFeedbackSignal(workspace string, signal store.FeedbackSi
 }
 
 // requestFeedbackAnswers asks the background work for the answers a read
-// found missing, at most one minute's allowance of comparisons per job
-// (component-production-feedback invariant 20). The read does not wait.
+// found missing (component-production-feedback invariant 20). The read does
+// not wait. Every candidate goes to the store's admission, which skips stored
+// and in-flight pairs and admits at most the workspace allowance, so a pair
+// that keeps failing never holds back the pairs after it.
 func (s *Server) requestFeedbackAnswers(workspace string, missing feedback.Missing) {
 	comparisons := store.NormalizeFeedbackComparisonKeys(missing.Comparisons)
-	if len(comparisons) > feedbackJobComparison {
-		comparisons = comparisons[:feedbackJobComparison]
-	}
 	branches := []feedback.BranchRef{}
 	seen := map[feedback.BranchRef]bool{}
 	for _, branch := range missing.Branches {
@@ -148,7 +148,8 @@ func (s *Server) requestFeedbackAnswers(workspace string, missing feedback.Missi
 		parts = append(parts, branch.Slug+"@"+branch.Branch)
 	}
 	sort.Strings(parts)
-	key := "read:" + workspace + ":" + strings.Join(parts, ",")
+	digest := sha256.Sum256([]byte(strings.Join(parts, ",")))
+	key := "read:" + workspace + ":" + hex.EncodeToString(digest[:])
 	s.feedbackWorker().enqueue(feedbackJob{key: key, workspace: workspace, missing: feedback.Missing{Comparisons: comparisons, Branches: branches}, env: s.feedbackJobEnv()})
 }
 

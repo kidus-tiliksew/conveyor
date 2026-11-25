@@ -1196,7 +1196,10 @@ func fullCommitID(sha string) bool {
 // through repos/{repository}/commits/{ref} (component-production-feedback
 // invariant 9; DEC-149(4)). ref is a commit ID, heads/<branch>, or
 // tags/<tag>, and it is escaped as one path segment. A ref the repository
-// does not hold answers ErrCommitNotFound.
+// does not hold answers ErrCommitNotFound. GitHub also answers 404 for a
+// repository the token cannot read, so a 404 proves absence only when a read
+// of the repository itself succeeds. Otherwise the answer is a permission
+// failure, which proves neither absence nor uniqueness.
 func ReadCommit(ctx context.Context, repo, ref string) (string, error) {
 	return readCommit(ctx, repo, ref, gh)
 }
@@ -1208,7 +1211,18 @@ func readCommit(ctx context.Context, repo, ref string, run ghRunner) (string, er
 	raw, err := run(ctx, "api", "repos/"+repo+"/commits/"+url.PathEscape(ref))
 	if err != nil {
 		failure := forgeCallError(err)
-		if status := HTTPStatus(failure); status == http.StatusNotFound || status == http.StatusUnprocessableEntity {
+		switch HTTPStatus(failure) {
+		case http.StatusUnprocessableEntity:
+			// GitHub names a readable repository that holds no such commit.
+			return "", CommitNotFoundError(ref)
+		case http.StatusNotFound:
+			if _, repoErr := run(ctx, "api", "repos/"+repo); repoErr != nil {
+				repoFailure := forgeCallError(repoErr)
+				if HTTPStatus(repoFailure) == http.StatusNotFound {
+					return "", &Error{Category: ForgePermission, status: http.StatusNotFound, Err: errors.New("read commit: the repository is missing or the token cannot read it")}
+				}
+				return "", fmt.Errorf("read commit: %w", repoFailure)
+			}
 			return "", CommitNotFoundError(ref)
 		}
 		return "", fmt.Errorf("read commit: %w", failure)

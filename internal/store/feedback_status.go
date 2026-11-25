@@ -111,8 +111,9 @@ type FeedbackBranchHead struct {
 
 // FeedbackMergedTask is one merged task with its configured repository and
 // the merge commit and time of its latest merge.confirmed or merge.reconciled
-// event. MergeCommit is empty and MergedAt is zero when the ledger holds no
-// usable merge commit for it.
+// event that records a usable merge commit, so a later event without one does
+// not hide it. MergeCommit is empty and MergedAt is zero when the ledger holds
+// no usable merge commit for it.
 type FeedbackMergedTask struct {
 	TaskID      string
 	Repository  string

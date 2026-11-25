@@ -20,6 +20,8 @@ func TestApplyVersionRule(t *testing.T) {
 		{"commit pattern with literal text", store.EnvironmentCommitPattern, "build-{commit}", "build-0123456789abcdef", RuleTarget{Commit: "0123456789abcdef"}, true},
 		{"commit pattern with *", store.EnvironmentCommitPattern, "v*-{commit}", "v1.2.3-abc1234", RuleTarget{Commit: "abc1234"}, true},
 		{"commit pattern with * on both sides", store.EnvironmentCommitPattern, "*+{commit}.*", "2026.11+deadbeef.linux", RuleTarget{Commit: "deadbeef"}, true},
+		{"a * right before the commit leaves the whole commit", store.EnvironmentCommitPattern, "*{commit}", "build-0123456789abcdef0123456789abcdef01234567", RuleTarget{Commit: "0123456789abcdef0123456789abcdef01234567"}, true},
+		{"a * right after the commit leaves the whole commit", store.EnvironmentCommitPattern, "{commit}*", "0123456789abcdef0123456789abcdef01234567-linux", RuleTarget{Commit: "0123456789abcdef0123456789abcdef01234567"}, true},
 		{"literal dot is not a wildcard", store.EnvironmentCommitPattern, "v1.{commit}", "v1x abc1234", RuleTarget{}, false},
 		{"too short a commit", store.EnvironmentCommitPattern, "{commit}", "abc123", RuleTarget{}, false},
 		{"too long a commit", store.EnvironmentCommitPattern, "{commit}", "0123456789abcdef0123456789abcdef012345678", RuleTarget{}, false},

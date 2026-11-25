@@ -66,12 +66,14 @@ func compileCommitPattern(text string) (*regexp.Regexp, error) {
 	if !found {
 		return nil, fmt.Errorf("a commit pattern must hold {commit}")
 	}
-	literal := func(part string) string {
+	literal := func(part, wildcard string) string {
 		pieces := strings.Split(part, "*")
 		for i, piece := range pieces {
 			pieces[i] = regexp.QuoteMeta(piece)
 		}
-		return strings.Join(pieces, ".*")
+		return strings.Join(pieces, wildcard)
 	}
-	return regexp.Compile(`(?s)^` + literal(prefix) + commitInPattern + literal(suffix) + `$`)
+	// A * before {commit} takes as little as it can, so it never takes a
+	// leading part of the commit.
+	return regexp.Compile(`(?s)^` + literal(prefix, ".*?") + commitInPattern + literal(suffix, ".*") + `$`)
 }

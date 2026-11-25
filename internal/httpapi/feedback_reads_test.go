@@ -36,16 +36,18 @@ func newReadsForge(history ...string) *readsForge {
 	return &readsForge{history: history, gate: gate, entered: make(chan struct{}, 1024)}
 }
 
-func (f *readsForge) hold() {
+// hold closes the gate and returns its release, which is safe to call more
+// than once. The test registers it for cleanup, so a failed assertion never
+// leaves a forge call blocked.
+func (f *readsForge) hold(t *testing.T) func() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.gate = make(chan struct{})
-}
-
-func (f *readsForge) open() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	close(f.gate)
+	gate := make(chan struct{})
+	f.gate = gate
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	return release
 }
 
 func (f *readsForge) wait() {
@@ -199,7 +201,7 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 	}
 
 	// The route answers while the forge is held, so no forge call holds it.
-	h.forge.hold()
+	release := h.forge.hold(t)
 	answered := make(chan int, 1)
 	go func() {
 		h.advance(feedbackSignalWindow)
@@ -218,7 +220,7 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the background work made no forge call")
 	}
-	h.forge.open()
+	release()
 	h.settle()
 	arrival := h.clock()
 
@@ -274,13 +276,24 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 	// the comparisons ran is read at once without a status, and the missing
 	// comparison is requested in the background.
 	fresh := h.merged(h.ctx, early, "")
-	h.forge.hold()
+	release = h.forge.hold(t)
 	calls := h.forge.count()
-	read := make(chan map[string]json.RawMessage, 1)
-	go func() { read <- h.taskRead(fresh.ID) }()
+	type response struct {
+		code int
+		body []byte
+	}
+	read := make(chan response, 1)
+	// The goroutine only sends the answer; every assertion runs here.
+	go func() {
+		recorded := h.do(h.manager(), http.MethodGet, "/v1/tasks/"+fresh.ID, "")
+		read <- response{code: recorded.Code, body: recorded.Body.Bytes()}
+	}()
 	select {
-	case fields := <-read:
-		if _, found := fields["environments"]; found {
+	case got := <-read:
+		if got.code != http.StatusOK {
+			t.Fatalf("task read status=%d body=%s", got.code, got.body)
+		}
+		if fields := decodeFields(t, got.body); fields["environments"] != nil {
 			t.Fatalf("a status that needs a missing comparison was served: %s", fields["environments"])
 		}
 	case <-time.After(10 * time.Second):
@@ -291,7 +304,7 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the read requested no comparison")
 	}
-	h.forge.open()
+	release()
 	h.settle()
 	if h.forge.count() <= calls {
 		t.Fatal("no background comparison ran")

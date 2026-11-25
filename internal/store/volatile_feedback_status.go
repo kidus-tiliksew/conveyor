@@ -257,22 +257,18 @@ func (m *volatileMemory) ListFeedbackMergedTasks(ctx context.Context, query Feed
 		}
 		merged := FeedbackMergedTask{TaskID: task.ID, Repository: task.Repo}
 		var latest core.Event
-		found := false
 		for _, event := range m.events[task.ID] {
 			if event.Kind != "merge.confirmed" && event.Kind != "merge.reconciled" {
 				continue
 			}
-			if !found || TaskEventBefore(latest, event) {
-				latest, found = event, true
-			}
-		}
-		if found {
 			var payload struct {
 				MergeCommitSHA string `json:"merge_commit_sha"`
 			}
-			_ = json.Unmarshal(latest.Payload, &payload)
-			if commit := FeedbackMergeCommit(payload.MergeCommitSHA); commit != "" {
-				merged.MergeCommit, merged.MergedAt, merged.EventID = commit, latest.At.UTC(), latest.ID
+			_ = json.Unmarshal(event.Payload, &payload)
+			commit := FeedbackMergeCommit(payload.MergeCommitSHA)
+			if commit != "" && (merged.MergeCommit == "" || TaskEventBefore(latest, event)) {
+				latest = event
+				merged.MergeCommit, merged.MergedAt, merged.EventID = commit, event.At.UTC(), event.ID
 			}
 		}
 		out = append(out, merged)

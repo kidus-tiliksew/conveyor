@@ -398,7 +398,7 @@ func (s *Store) ListFeedbackBranchHeads(ctx context.Context) ([]store.FeedbackBr
 
 // ListFeedbackMergedTasks implements store.FeedbackStatusStore. It reads the
 // merged tasks, then the merge events of those tasks, and keeps the latest
-// event of each.
+// event of each that records a usable merge commit.
 func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.FeedbackMergedTaskQuery) ([]store.FeedbackMergedTask, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackMergedTasks")
 	ws, err := workspace(ctx)
@@ -461,6 +461,9 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 			var id int64
 			if err := rows.Scan(&taskID, &sha, &at, &id); err != nil {
 				return err
+			}
+			if store.FeedbackMergeCommit(sha) == "" {
+				continue
 			}
 			current, seen := latest[taskID]
 			if !seen || at.After(current.at) || (at.Equal(current.at) && id > current.id) {

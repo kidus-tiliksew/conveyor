@@ -24,10 +24,14 @@ func TestReadCommit(t *testing.T) {
 		want     string
 		notFound bool
 		category ForgeErrorCategory
+		// repoStatus answers the repository read that a 404 makes; 0 is 200.
+		repoStatus int
 	}{
 		{name: "commit", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", body: `{"sha":"` + strings.ToUpper(feedbackSHA) + `"}`, want: feedbackSHA},
 		{name: "tag with a slash", ref: "tags/api/v1.2", path: "/repos/acme/app/commits/tags%2Fapi%2Fv1.2", body: `{"sha":"` + feedbackSHA + `"}`, want: feedbackSHA},
-		{name: "not found", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 404, body: `{"message":"Not Found"}`, notFound: true},
+		{name: "not found in a readable repository", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 404, body: `{"message":"Not Found"}`, notFound: true},
+		{name: "not found in a repository the token cannot read", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 404, body: `{"message":"Not Found"}`, repoStatus: 404, category: ForgePermission},
+		{name: "not found and the repository read fails", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 404, body: `{"message":"Not Found"}`, repoStatus: 502, category: ForgeStatus},
 		{name: "no commit for the SHA", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 422, body: `{"message":"No commit found for SHA: abc1234"}`, notFound: true},
 		{name: "malformed", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", body: `{"sha":"abc"}`, category: ForgeResponse},
 		{name: "server failure", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 502, body: `{"message":"bad gateway"}`, category: ForgeStatus},
@@ -36,6 +40,13 @@ func TestReadCommit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.EscapedPath() == "/repos/acme/app" && tc.status == 404 {
+					if tc.repoStatus != 0 {
+						w.WriteHeader(tc.repoStatus)
+					}
+					fmt.Fprint(w, `{"full_name":"acme/app"}`)
+					return
+				}
 				if r.Header.Get("Authorization") != "Bearer workspace-token" || r.URL.EscapedPath() != tc.path {
 					t.Errorf("request %s", r.URL.EscapedPath())
 				}
