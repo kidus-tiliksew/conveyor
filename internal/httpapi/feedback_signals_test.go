@@ -210,6 +210,7 @@ func TestFeedbackSignalBounds(t *testing.T) {
 		"longest version":         feedbackService(`"name":"a","versions":[{"version":"` + strings.Repeat("é", 200) + `"}]`),
 		"a digest as the version": feedbackService(`"name":"a","versions":[{"version":"sha256:` + strings.Repeat("ab", 32) + `"}]`),
 		"a repository":            feedbackService(`"name":"a","repository":"app","versions":[{"commit":"abcdef0","version":"1"}]`),
+		"escaped text":            feedbackService(`"name":"\ud83d\ude80\\ud800\u00e9\"","versions":[{"version":"\ufffd"}]`),
 		"trailing whitespace":     feedbackMinimalSignal + " \n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -279,6 +280,9 @@ func TestFeedbackSignalBounds(t *testing.T) {
 		{"null body", "body", "null"},
 		{"array body", "body", "[]"},
 		{"broken JSON", "body", `{"next_signal_seconds":`},
+		{"half a surrogate pair in a name", "services[0].name", feedbackService(`"name":"a\ud800",` + two)},
+		{"low half first in a version", "services[0].versions[0].version", feedbackService(`"name":"a","versions":[{"version":"\udc00\ud800"}]`)},
+		{"half a pair before text", "services[0].versions[0].version", feedbackService(`"name":"a","versions":[{"version":"\ud83dx"}]`)},
 		{"invalid UTF-8", "body", feedbackService("\"name\":\"a\xff\"," + two)},
 	} {
 		t.Run(c.name, func(t *testing.T) {

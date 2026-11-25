@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -278,7 +279,48 @@ func feedbackText(path string, raw json.RawMessage) (string, error) {
 	if environmentNull(raw) || json.Unmarshal(raw, &text) != nil || text == "" {
 		return "", feedbackRefusal(path, "must be a string that is not empty")
 	}
+	if feedbackUnpairedSurrogate(raw) {
+		return "", feedbackRefusal(path, "must be valid Unicode text")
+	}
 	return text, nil
+}
+
+// feedbackUnpairedSurrogate reports whether a valid JSON string escapes half
+// of a surrogate pair. encoding/json replaces each such half with the same
+// character, which could make two names equal.
+func feedbackUnpairedSurrogate(raw []byte) bool {
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '\\' {
+			continue
+		}
+		i++
+		if raw[i] != 'u' {
+			continue
+		}
+		unit := feedbackEscapedUnit(raw[i-1:])
+		i += 4
+		if !utf16.IsSurrogate(unit) {
+			continue
+		}
+		if utf16.DecodeRune(unit, feedbackEscapedUnit(raw[i+1:])) == utf8.RuneError {
+			return true
+		}
+		i += 6
+	}
+	return false
+}
+
+// feedbackEscapedUnit reads one \uXXXX escape, or 0 when raw opens with
+// none.
+func feedbackEscapedUnit(raw []byte) rune {
+	if len(raw) < 6 || raw[0] != '\\' || raw[1] != 'u' {
+		return 0
+	}
+	unit, err := strconv.ParseUint(string(raw[2:6]), 16, 16)
+	if err != nil {
+		return 0
+	}
+	return rune(unit)
 }
 
 // environmentListRow is one row of GET /v1/environments: the environment row
