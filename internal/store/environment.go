@@ -215,6 +215,11 @@ type EnvironmentStore interface {
 	// ErrInvalidEnvironmentKey. Any other error is a store failure. It
 	// records the key's last use at most once a minute.
 	VerifyEnvironmentKey(ctx context.Context, value string) (VerifiedEnvironmentKey, error)
+	// CheckEnvironmentKey is VerifyEnvironmentKey without the last use, so it
+	// writes nothing. Its caller records the use with what it accepts: a
+	// signal's refusal records nothing (component-production-feedback
+	// invariant 3).
+	CheckEnvironmentKey(ctx context.Context, value string) (VerifiedEnvironmentKey, error)
 	// RecordEnvironmentReport records the suggestion a deployment report
 	// makes and reports whether it did. A repository outside the workspace
 	// configuration, a name an unarchived environment lists, an ignored name,

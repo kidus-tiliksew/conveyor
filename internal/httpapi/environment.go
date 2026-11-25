@@ -20,8 +20,8 @@ import (
 // (component-http-api invariant 17).
 const environmentBodyLimit = 256 << 10
 
-// environmentSignalPath is the one route that will admit an environment key
-// (component-environments invariant 15). It is not mounted yet.
+// environmentSignalPath is the one route that admits an environment key, with
+// POST only (component-environments invariant 15).
 const environmentSignalPath = "/v1/feedback/signals"
 
 // environmentKeyPresented reports whether any Authorization header of the
@@ -35,7 +35,7 @@ func environmentKeyPresented(r *http.Request) bool {
 }
 
 // refuseEnvironmentKeyOutsideSignals refuses an environment key on every
-// route but the signal route, before routing, so no open route, REST route,
+// route and method but POST of the signal route, before routing, so no open route, REST route,
 // claim-bound delivery route, /mcp, or dashboard path can admit it, even
 // beside a session cookie (component-environments invariant 15;
 // req-security-boundaries AC-1.5; DEC-148(6)). The exception compares the
@@ -43,7 +43,7 @@ func environmentKeyPresented(r *http.Request) bool {
 // signal path that the router would send elsewhere is refused too.
 func (s *Server) refuseEnvironmentKeyOutsideSignals(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.EscapedPath() == environmentSignalPath || !environmentKeyPresented(r) {
+		if (r.Method == http.MethodPost && r.URL.EscapedPath() == environmentSignalPath) || !environmentKeyPresented(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -98,7 +98,7 @@ func (s *Server) listEnvironments(w http.ResponseWriter, r *http.Request) {
 		writeEnvironmentError(w, r, err)
 		return
 	}
-	writeEnvironmentPage(w, page, records)
+	s.writeEnvironmentRows(w, r, page, records)
 }
 
 // createEnvironment serves POST /v1/environments. It answers 201 with the
@@ -231,12 +231,17 @@ func (s *Server) ignoreEnvironmentSuggestion(w http.ResponseWriter, r *http.Requ
 
 func writeEnvironmentPage[T any](w http.ResponseWriter, page listPage, items []T) {
 	total := len(items)
-	if page.Paged {
-		start := min(page.Offset, total)
-		items = items[start:min(start+page.Limit, total)]
-	}
+	items = environmentPageItems(page, items)
 	page.writeHeaders(w, total)
 	writeJSON(w, http.StatusOK, items)
+}
+
+func environmentPageItems[T any](page listPage, items []T) []T {
+	if !page.Paged {
+		return items
+	}
+	start := min(page.Offset, len(items))
+	return items[start:min(start+page.Limit, len(items))]
 }
 
 func environmentFieldRefusal(field, message string) error {

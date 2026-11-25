@@ -249,9 +249,24 @@ func (m *volatileMemory) RevokeEnvironmentKey(ctx context.Context, environmentID
 // VerifyEnvironmentKey implements EnvironmentStore. The check and the last
 // use stamp share the write mutex.
 func (m *volatileMemory) VerifyEnvironmentKey(_ context.Context, value string) (VerifiedEnvironmentKey, error) {
-	hash := EnvironmentKeyDigest(value)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	verified, err := m.checkEnvironmentKeyLocked(value)
+	if err == nil {
+		m.touchEnvironmentKeyLocked(memoryScopedKey{workspace: verified.Workspace, id: verified.KeyID})
+	}
+	return verified, err
+}
+
+// CheckEnvironmentKey implements EnvironmentStore.
+func (m *volatileMemory) CheckEnvironmentKey(_ context.Context, value string) (VerifiedEnvironmentKey, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.checkEnvironmentKeyLocked(value)
+}
+
+func (m *volatileMemory) checkEnvironmentKeyLocked(value string) (VerifiedEnvironmentKey, error) {
+	hash := EnvironmentKeyDigest(value)
 	for key, record := range m.environmentState.keys {
 		if subtle.ConstantTimeCompare(record.Hash, hash) != 1 {
 			continue
@@ -260,14 +275,20 @@ func (m *volatileMemory) VerifyEnvironmentKey(_ context.Context, value string) (
 		if !ok || environment.Archived || record.RevokedAt != nil {
 			return VerifiedEnvironmentKey{}, ErrInvalidEnvironmentKey
 		}
-		now := EnvironmentTime(time.Now())
-		if record.LastUsedAt == nil || now.Sub(*record.LastUsedAt) > EnvironmentKeyUseGranularity {
-			record.LastUsedAt = &now
-			m.environmentState.keys[key] = record
-		}
 		return VerifiedEnvironmentKey{Workspace: key.workspace, EnvironmentID: record.EnvironmentID, KeyID: record.ID, Label: record.Label}, nil
 	}
 	return VerifiedEnvironmentKey{}, ErrInvalidEnvironmentKey
+}
+
+// touchEnvironmentKeyLocked records a key's last use at most once a minute
+// (component-environments invariant 14).
+func (m *volatileMemory) touchEnvironmentKeyLocked(key memoryScopedKey) {
+	record := m.environmentState.keys[key]
+	now := EnvironmentTime(time.Now())
+	if record.LastUsedAt == nil || now.Sub(*record.LastUsedAt) > EnvironmentKeyUseGranularity {
+		record.LastUsedAt = &now
+		m.environmentState.keys[key] = record
+	}
 }
 
 // RecordEnvironmentReport implements EnvironmentStore.

@@ -17,7 +17,7 @@ a dashboard session and the workspace context that
 
 | Route | Request | Answer |
 | --- | --- | --- |
-| `GET /v1/environments` | `archived`: `false` (default) or `true` | 200 with an array of environment rows, ordered by name without regard to case |
+| `GET /v1/environments` | `archived`: `false` (default) or `true` | 200 with an array of environment rows, ordered by name without regard to case. Each row also holds [`listening` and `last_signal_at`](production-feedback.md#listening) |
 | `POST /v1/environments` | `name`, and optionally each other field of the next route | 201 with the environment row |
 | `PATCH /v1/environments/{id}` | Any of `name`, `tracked_branches`, `github_environments`, `version_rule`, `timing_window_minutes`, and `archived` | 200 with the environment row |
 | `POST /v1/environments/{id}/keys` | `label` | 201 with the key row and `value`, with `Cache-Control: no-store` |
@@ -102,7 +102,7 @@ no user, role, capability, or session (DEC-148).
 | `id` | `envkey_<12 random bytes in URL-safe base64>` |
 | `label` | 1 to 60 characters after trimming |
 | `created_by`, `created_at` | Set by the server |
-| `last_used_at` | `null` before the first use. Written at most once a minute |
+| `last_used_at` | `null` before the first use. Written at most once a minute. A refused signal does not write it |
 | `value` | `cv_env_<key id>_<32 random bytes in URL-safe base64>` |
 
 `value` is only in the answer to `POST /v1/environments/{id}/keys`. The server
@@ -112,15 +112,17 @@ events hold neither, and the credential redactor covers the shape.
 A revoked key is refused at its next use. Revocation is final. A revoked key is
 in no read.
 
-The server refuses a bearer with the `cv_env_` prefix with 401 on every path
-except `/v1/feedback/signals`, before routing and even beside a session cookie
-(`req-security-boundaries` AC-1.5). That path is not mounted yet, so a key is
-accepted nowhere today.
+The server refuses a bearer with the `cv_env_` prefix with 401 on every method
+and path except `POST /v1/feedback/signals`, before routing and even beside a
+session cookie (`req-security-boundaries` AC-1.5).
+[Production feedback](production-feedback.md) describes that route.
 
 Other server components verify a presented value with
 `EnvironmentStore.VerifyEnvironmentKey`. It returns the workspace ID, the
 environment ID, the key ID, and the label. Every value that is not valid gets
 the one refusal `ErrInvalidEnvironmentKey`. Any other error is a store failure.
+`EnvironmentStore.CheckEnvironmentKey` does the same and writes no last use. Its
+caller records the use with what it accepts.
 
 ## Suggestions
 

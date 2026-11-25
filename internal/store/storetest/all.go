@@ -268,6 +268,7 @@ func RunAll(t *testing.T, factory Factory) {
 	run("ChangeNotices", func(t *testing.T) { RunChangeNoticeConformance(t, factory.fresh(t, nil)) })
 	run("Crates", func(t *testing.T) { runCrates(t, factory) })
 	run("Environments", func(t *testing.T) { runEnvironments(t, factory) })
+	run("Feedback", func(t *testing.T) { runFeedback(t, factory) })
 	run("OAuth", func(t *testing.T) { runOAuth(t, factory) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })

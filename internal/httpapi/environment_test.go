@@ -664,8 +664,8 @@ func TestEnvironmentCapabilities(t *testing.T) {
 
 // TestEnvironmentKeyIsRefusedOnEveryRoute proves component-environments
 // invariant 15 and req-security-boundaries AC-1.5: a live key is refused on
-// every route before any admission, a session cookie beside it changes
-// nothing, and the unmounted signal route accepts nothing.
+// every route and method but POST of the signal route before any admission,
+// and a session cookie beside it changes nothing.
 func TestEnvironmentKeyIsRefusedOnEveryRoute(t *testing.T) {
 	t.Parallel()
 	h := newEnvironmentHarness(t)
@@ -679,7 +679,8 @@ func TestEnvironmentKeyIsRefusedOnEveryRoute(t *testing.T) {
 		{http.MethodGet, "/v1/work-orders"}, {http.MethodGet, "/v1/work-orders/any/pull-request-template"}, {http.MethodPost, "/v1/work-orders/any/submit-for-review"}, {http.MethodPost, "/v1/work-orders/any/context-refresh"}, {http.MethodPost, "/v1/work-orders/any/verification/submit-verification"},
 		{http.MethodGet, "/healthz"}, {http.MethodGet, "/v1/version"}, {http.MethodPost, "/v1/sign-in/password"}, {http.MethodPost, "/v1/github/webhook/alpha"}, {http.MethodGet, "/.well-known/oauth-protected-resource"}, {http.MethodPost, "/oauth/token"},
 		{http.MethodGet, "/"}, {http.MethodGet, "/assets/any.js"}, {http.MethodGet, "/v1/unknown"},
-		// Near matches of the signal path.
+		// Other methods and near matches of the signal path.
+		{http.MethodGet, environmentSignalPath}, {http.MethodHead, environmentSignalPath}, {http.MethodPut, environmentSignalPath}, {http.MethodPatch, environmentSignalPath}, {http.MethodDelete, environmentSignalPath}, {http.MethodOptions, environmentSignalPath}, {"post", environmentSignalPath},
 		{http.MethodPost, "/v1/feedback/signals/"}, {http.MethodPost, "/v1/feedback/signals/more"}, {http.MethodPost, "/v1/feedback/signal"}, {http.MethodPost, "/v1/feedback"}, {http.MethodPost, "/v1/feedback/%73ignals"}, {http.MethodPost, "/v1/feedback%2Fsignals"}, {http.MethodPost, "//v1/feedback/signals"}, {http.MethodPost, "/V1/feedback/signals"}, {http.MethodPost, "/v1/./feedback/signals"},
 	}
 	for _, path := range environmentReads {
@@ -728,13 +729,10 @@ func TestEnvironmentKeyIsRefusedOnEveryRoute(t *testing.T) {
 			}
 		}
 	}
-	// The exact signal path is not mounted, so it admits nothing.
-	for _, method := range []string{http.MethodPost, http.MethodGet} {
-		request := httptest.NewRequest(method, environmentSignalPath, strings.NewReader(`{}`))
-		request.Header.Set("Authorization", "Bearer "+key.Value)
-		if response := h.serve(request); response.Code != http.StatusNotFound {
-			t.Fatalf("%s signal path: status=%d body=%s, want 404", method, response.Code, response.Body)
-		}
+	// The signal route admits the key and refuses the body, which records
+	// nothing.
+	if response := h.do(key.Value, http.MethodPost, environmentSignalPath, "{}"); response.Code != http.StatusBadRequest {
+		t.Fatalf("signal path: status=%d body=%s, want 400", response.Code, response.Body)
 	}
 	// A key in the session cookie is no session.
 	request := httptest.NewRequest(http.MethodGet, "/v1/environments", nil)

@@ -69,6 +69,11 @@ type Server struct {
 	planningBundleDispatched map[string]struct{}
 	passwordLimiterOnce      sync.Once
 	passwordLimiter          *passwordAttemptLimiter
+	// feedbackLimiter keeps the 5-second rule of the signal route, and
+	// feedbackClock replaces its clock in tests.
+	feedbackLimiterOnce sync.Once
+	feedbackLimiter     *feedbackLimiter
+	feedbackClock       func() time.Time
 	// historyCursors signs task history cursors under a key drawn once per
 	// process; tests may install a codec before first use (task 261015-3721c6).
 	historyCursorsOnce sync.Once
@@ -298,6 +303,11 @@ func (s *Server) Handler() http.Handler {
 		// GitHub authenticates a delivery with its signature; the route
 		// reads no credential (component-http-api, GitHub webhook receiver).
 		r.Post("/github/webhook/{workspace}", s.receiveGitHubWebhook)
+		// An environment key is the signal route's only credential, so the
+		// route is outside the workspace group and its scope is the key's
+		// (component-production-feedback invariant 2; req-security-boundaries
+		// AC-1.5).
+		r.With(s.requireFeedbackKey).Post("/feedback/signals", s.receiveFeedbackSignal)
 		r.Post("/sign-in/redeem", s.redeemSignInLink)
 		r.Post("/sign-in/password", s.signInWithPassword)
 		r.With(s.requireSelfServiceCredential).Post("/sign-out", s.signOutDashboardSession)

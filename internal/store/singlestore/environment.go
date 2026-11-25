@@ -547,6 +547,13 @@ func (s *Store) VerifyEnvironmentKey(ctx context.Context, value string) (store.V
 	return verified, err
 }
 
+// CheckEnvironmentKey implements store.EnvironmentStore.
+func (s *Store) CheckEnvironmentKey(ctx context.Context, value string) (store.VerifiedEnvironmentKey, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CheckEnvironmentKey")
+	verified, _, err := s.readEnvironmentKey(ctx, store.EnvironmentKeyDigest(value))
+	return verified, err
+}
+
 // environmentSuggestionRow is one stored suggestion. reportedAt is not valid
 // when the name was ignored before any report.
 type environmentSuggestionRow struct {
