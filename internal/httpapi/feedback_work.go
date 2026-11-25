@@ -33,6 +33,28 @@ type feedbackJob struct {
 	workspace string
 	signal    *store.FeedbackSignal
 	missing   feedback.Missing
+	env       feedbackJobEnv
+}
+
+// feedbackJobEnv is what a job uses, taken from the server when the job is
+// handed off, so a job reads no server field while it runs.
+type feedbackJobEnv struct {
+	store  store.Store
+	forge  feedback.Forge
+	apps   github.AppStore
+	client *github.AppClient
+	clock  func() time.Time
+}
+
+func (s *Server) feedbackJobEnv() feedbackJobEnv {
+	env := feedbackJobEnv{store: s.Store, forge: s.feedbackForge, client: s.appClient(), clock: time.Now}
+	if s.WorkspaceGitHubApps != nil {
+		env.apps = s.WorkspaceGitHubApps
+	}
+	if s.feedbackClock != nil {
+		env.clock = s.feedbackClock
+	}
+	return env
 }
 
 // feedbackWorker runs feedback jobs on a bounded queue. A job whose key is
@@ -52,7 +74,7 @@ func (s *Server) feedbackWorker() *feedbackWorker {
 		for range feedbackWorkers {
 			go func() {
 				for job := range worker.jobs {
-					s.runFeedbackJob(job)
+					runFeedbackJob(job)
 					worker.mu.Lock()
 					delete(worker.pending, job.key)
 					worker.mu.Unlock()
@@ -96,7 +118,7 @@ func (s *Server) enqueueFeedbackSignal(workspace string, signal store.FeedbackSi
 		copied.Services[i].Versions = slices.Clone(service.Versions)
 	}
 	key := "signal:" + workspace + ":" + signal.EnvironmentID + ":" + signal.ArrivedAt.Format(time.RFC3339Nano)
-	s.feedbackWorker().enqueue(feedbackJob{key: key, workspace: workspace, signal: &copied})
+	s.feedbackWorker().enqueue(feedbackJob{key: key, workspace: workspace, signal: &copied, env: s.feedbackJobEnv()})
 }
 
 // requestFeedbackAnswers asks the background work for the answers a read
@@ -127,24 +149,24 @@ func (s *Server) requestFeedbackAnswers(workspace string, missing feedback.Missi
 	}
 	sort.Strings(parts)
 	key := "read:" + workspace + ":" + strings.Join(parts, ",")
-	s.feedbackWorker().enqueue(feedbackJob{key: key, workspace: workspace, missing: feedback.Missing{Comparisons: comparisons, Branches: branches}})
+	s.feedbackWorker().enqueue(feedbackJob{key: key, workspace: workspace, missing: feedback.Missing{Comparisons: comparisons, Branches: branches}, env: s.feedbackJobEnv()})
 }
 
 // runFeedbackJob runs one job under a fresh, bounded context that carries the
 // job's workspace and the system actor, never a request's credential.
-func (s *Server) runFeedbackJob(job feedbackJob) {
+func runFeedbackJob(job feedbackJob) {
 	ctx, cancel := context.WithTimeout(store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), job.workspace), feedbackJobTimeout)
 	defer cancel()
-	backend, ok := s.Store.(store.FeedbackStore)
+	backend, ok := job.env.store.(store.FeedbackStore)
 	if !ok {
 		return
 	}
-	forge, noApp, err := s.feedbackForgeFor(ctx, job.workspace)
+	forge, noApp, err := job.env.forgeFor(ctx, job.workspace)
 	if err != nil {
 		log.Printf("feedback_work workspace=%s outcome=deferred category=%s", job.workspace, github.ErrorCategory(github.CategorizeError(err)))
 		return
 	}
-	work := feedback.Work{Store: backend, Forge: forge, Now: s.feedbackNow, Logf: log.Printf}
+	work := feedback.Work{Store: backend, Forge: forge, Now: job.env.clock, Logf: log.Printf}
 	if job.signal == nil {
 		if noApp {
 			return
@@ -158,7 +180,7 @@ func (s *Server) runFeedbackJob(job feedbackJob) {
 		}
 		return
 	}
-	request, err := s.feedbackSignalRequest(ctx, *job.signal)
+	request, err := feedbackSignalRequest(ctx, job.env.store, *job.signal)
 	if err != nil {
 		log.Printf("feedback_work workspace=%s outcome=failed step=load error=%v", job.workspace, err)
 		return
@@ -171,9 +193,9 @@ func (s *Server) runFeedbackJob(job feedbackJob) {
 
 // feedbackSignalRequest loads the signal's environment and the workspace's
 // repositories as they are now.
-func (s *Server) feedbackSignalRequest(ctx context.Context, signal store.FeedbackSignal) (feedback.SignalRequest, error) {
+func feedbackSignalRequest(ctx context.Context, backend store.Store, signal store.FeedbackSignal) (feedback.SignalRequest, error) {
 	request := feedback.SignalRequest{Signal: signal}
-	if environments, ok := s.Store.(store.EnvironmentStore); ok {
+	if environments, ok := backend.(store.EnvironmentStore); ok {
 		listed, err := environments.ListEnvironments(ctx, store.EnvironmentListQuery{})
 		if err != nil {
 			return request, err
@@ -184,7 +206,7 @@ func (s *Server) feedbackSignalRequest(ctx context.Context, signal store.Feedbac
 			}
 		}
 	}
-	repositories, err := s.feedbackRepositories(ctx)
+	repositories, err := feedbackRepositories(ctx, backend)
 	if err != nil {
 		return request, err
 	}
@@ -194,8 +216,8 @@ func (s *Server) feedbackSignalRequest(ctx context.Context, signal store.Feedbac
 
 // feedbackRepositories returns the configured repositories of the context's
 // workspace with their GitHub slugs.
-func (s *Server) feedbackRepositories(ctx context.Context) ([]feedback.Repository, error) {
-	reader, ok := s.Store.(interface {
+func feedbackRepositories(ctx context.Context, backend store.Store) ([]feedback.Repository, error) {
+	reader, ok := backend.(interface {
 		WorkspaceConfig(context.Context) (config.VersionedDocument, error)
 	})
 	if !ok {
@@ -212,14 +234,14 @@ func (s *Server) feedbackRepositories(ctx context.Context) ([]feedback.Repositor
 	return repositories, nil
 }
 
-// feedbackForgeFor binds the workspace App's installation token to the GitHub
-// reads (component-production-feedback invariant 9; DEC-59(3)). noApp is true
-// when the workspace has no usable App.
-func (s *Server) feedbackForgeFor(ctx context.Context, workspace string) (feedback.Forge, bool, error) {
-	if s.feedbackForge != nil {
-		return s.feedbackForge, false, nil
+// forgeFor binds the workspace App's installation token to the GitHub reads
+// (component-production-feedback invariant 9; DEC-59(3)). noApp is true when
+// the workspace has no usable App.
+func (env feedbackJobEnv) forgeFor(ctx context.Context, workspace string) (feedback.Forge, bool, error) {
+	if env.forge != nil {
+		return env.forge, false, nil
 	}
-	token, err := s.appClient().WorkspaceToken(ctx, s.WorkspaceGitHubApps, workspace)
+	token, err := env.client.WorkspaceToken(ctx, env.apps, workspace)
 	if err != nil {
 		if github.ErrorCategory(err) == github.ForgePermission {
 			return nil, true, nil

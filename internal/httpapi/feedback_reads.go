@@ -39,7 +39,7 @@ func (s *Server) feedbackStatusInputs(ctx context.Context, tasks []store.Feedbac
 	if err != nil {
 		return feedback.Inputs{}, false, err
 	}
-	repositories, err := s.feedbackRepositories(ctx)
+	repositories, err := feedbackRepositories(ctx, s.Store)
 	if err != nil {
 		return feedback.Inputs{}, false, err
 	}
