@@ -12,7 +12,7 @@
 
 -- The stored answer for each version, keyed by the FB-2 version identity. A
 -- resolved row holds the repository and the full commit ID and is never
--- changed; an unresolved row keeps its reason and the earliest time a later
+-- changed. An unresolved row keeps its reason and the earliest time a later
 -- signal can try it again (invariants 7 and 8).
 CREATE ROWSTORE TABLE IF NOT EXISTS feedback_resolutions (
  workspace_id VARCHAR(255) NOT NULL,
