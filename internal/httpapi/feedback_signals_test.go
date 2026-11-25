@@ -498,14 +498,160 @@ func TestFeedbackSignalWindow(t *testing.T) {
 	}
 }
 
-// feedbackSignalStore replaces the signal write.
+// feedbackSignalStore replaces the signal write and the repository check, each
+// when it is set.
 type feedbackSignalStore struct {
 	store.Backend
 	record func(context.Context, store.FeedbackSignal) error
+	check  func(context.Context, store.FeedbackSignal) error
+}
+
+func (f feedbackSignalStore) CheckFeedbackRepositories(ctx context.Context, signal store.FeedbackSignal) error {
+	if f.check == nil {
+		return f.Backend.CheckFeedbackRepositories(ctx, signal)
+	}
+	return f.check(ctx, signal)
 }
 
 func (f feedbackSignalStore) RecordFeedbackSignal(ctx context.Context, signal store.FeedbackSignal) error {
+	if f.record == nil {
+		return f.Backend.RecordFeedbackSignal(ctx, signal)
+	}
 	return f.record(ctx, signal)
+}
+
+const (
+	feedbackGhostSignal = `{"next_signal_seconds":60,"services":[{"name":"api","versions":[{"version":"1"}]},{"name":"ghost","repository":"ghost","versions":[{"version":"1"}]}]}`
+	feedbackAppSignal   = `{"next_signal_seconds":60,"services":[{"name":"api","repository":"app","versions":[{"version":"1"}]}]}`
+)
+
+// use puts a store in front of the harness's backend.
+func (h *feedbackHarness) use(st store.Backend) {
+	h.server.Store = st
+	h.handler = h.server.Handler()
+}
+
+// send serves one signal of the harness's key and can run in any goroutine.
+func (h *feedbackHarness) send(body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, environmentSignalPath, strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+h.key.Value)
+	response := httptest.NewRecorder()
+	h.handler.ServeHTTP(response, request)
+	return response
+}
+
+func (h *feedbackHarness) requireGhostRefusal(response *httptest.ResponseRecorder, what string) {
+	h.t.Helper()
+	var refusal map[string]string
+	if response.Code != http.StatusBadRequest {
+		h.t.Fatalf("%s: status=%d body=%s, want 400", what, response.Code, response.Body)
+	}
+	decodeEnvironmentBody(h.t, response, &refusal)
+	if refusal["error"] != "invalid_signal" || refusal["field"] != "services[1].repository" || response.Header().Get("Retry-After") != "" || strings.Contains(response.Body.String(), "ghost") {
+		h.t.Fatalf("%s: headers=%v body=%s, want invalid_signal naming the repository", what, response.Header(), response.Body)
+	}
+}
+
+// TestFeedbackSignalRepositoryInsideWindow proves that a repository outside
+// the workspace is refused as invalid inside a live window, beside a full
+// limiter, and without a change to either (component-production-feedback
+// invariant 3).
+func TestFeedbackSignalRepositoryInsideWindow(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	h.server.feedbackLimiter = newFeedbackLimiter(1)
+	second := h.issue(h.environment.ID)
+	h.accept(feedbackMinimalSignal)
+	before := h.stored()
+	for _, after := range []time.Duration{0, time.Second, 3999 * time.Millisecond} {
+		h.advance(after)
+		h.requireGhostRefusal(h.send(feedbackGhostSignal), "inside a live window")
+		if response := h.send(feedbackAppSignal); response.Code != http.StatusTooManyRequests {
+			t.Fatalf("a valid signal inside the window: status=%d", response.Code)
+		}
+		h.requireGhostRefusal(h.signal(second.Value, feedbackGhostSignal), "beside a full limiter")
+	}
+	if after := h.stored(); after != before {
+		t.Fatalf("a refused signal changed a record:\nbefore %s\nafter  %s", before, after)
+	}
+	// The refusals did not move the end of the window.
+	h.advance(time.Millisecond)
+	if response := h.send(feedbackAppSignal); response.Code != http.StatusAccepted {
+		t.Fatalf("at the boundary: status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+// TestFeedbackSignalRepositoryBesideValidSignal holds an invalid signal and a
+// valid one of the same key open at once, in both orders. Neither answer
+// depends on the other.
+func TestFeedbackSignalRepositoryBesideValidSignal(t *testing.T) {
+	t.Parallel()
+	t.Run("invalid first", func(t *testing.T) {
+		t.Parallel()
+		h := newFeedbackHarness(t)
+		entered, release := make(chan struct{}), make(chan struct{})
+		h.use(feedbackSignalStore{Backend: h.st, check: func(ctx context.Context, signal store.FeedbackSignal) error {
+			err := h.st.CheckFeedbackRepositories(ctx, signal)
+			if err != nil {
+				close(entered)
+				<-release
+			}
+			return err
+		}})
+		invalid := make(chan *httptest.ResponseRecorder, 1)
+		go func() { invalid <- h.send(feedbackGhostSignal) }()
+		<-entered
+		valid := h.send(feedbackAppSignal)
+		close(release)
+		h.requireGhostRefusal(<-invalid, "beside a valid signal")
+		if valid.Code != http.StatusAccepted {
+			t.Fatalf("valid signal beside an invalid one: status=%d body=%s", valid.Code, valid.Body)
+		}
+		if deploys := h.deploys(); len(deploys) != 1 || deploys[0].Repository != "app" {
+			t.Fatalf("deploys=%+v, want the valid signal's", deploys)
+		}
+	})
+	t.Run("valid first", func(t *testing.T) {
+		t.Parallel()
+		h := newFeedbackHarness(t)
+		entered, release := make(chan struct{}), make(chan struct{})
+		h.use(feedbackSignalStore{Backend: h.st, record: func(ctx context.Context, signal store.FeedbackSignal) error {
+			close(entered)
+			<-release
+			return h.st.RecordFeedbackSignal(ctx, signal)
+		}})
+		valid := make(chan *httptest.ResponseRecorder, 1)
+		go func() { valid <- h.send(feedbackAppSignal) }()
+		<-entered
+		invalid := h.send(feedbackGhostSignal)
+		close(release)
+		if response := <-valid; response.Code != http.StatusAccepted {
+			t.Fatalf("valid signal: status=%d body=%s", response.Code, response.Body)
+		}
+		h.requireGhostRefusal(invalid, "while a valid signal is in the store")
+	})
+}
+
+// TestFeedbackSignalRepositoryRemovedAfterCheck proves that the store still
+// refuses a repository that leaves the configuration after the check, and
+// that neither that refusal nor a failed check opens a window.
+func TestFeedbackSignalRepositoryRemovedAfterCheck(t *testing.T) {
+	h := newFeedbackHarness(t)
+	captureStandardLog(t)
+	before := h.stored()
+	h.use(feedbackSignalStore{Backend: h.st, check: func(context.Context, store.FeedbackSignal) error { return nil }})
+	h.requireGhostRefusal(h.send(feedbackGhostSignal), "after the check")
+	h.use(feedbackSignalStore{Backend: h.st, check: func(context.Context, store.FeedbackSignal) error { return errors.New("driver detail") }})
+	if response := h.send(feedbackAppSignal); response.Code != http.StatusInternalServerError || strings.TrimSpace(response.Body.String()) != "internal server error" {
+		t.Fatalf("failed check: status=%d body=%s", response.Code, response.Body)
+	}
+	if h.stored() != before {
+		t.Fatal("a refused signal changed a record")
+	}
+	h.use(h.st)
+	if response := h.send(feedbackAppSignal); response.Code != http.StatusAccepted {
+		t.Fatalf("after the refusals: status=%d body=%s", response.Code, response.Body)
+	}
 }
 
 func TestFeedbackSignalStoreFailure(t *testing.T) {

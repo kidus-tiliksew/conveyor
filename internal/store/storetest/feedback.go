@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -34,6 +35,9 @@ func runFeedback(t *testing.T, factory Factory) {
 		{"Source", runFeedbackSource},
 		{"NewestSignal", runFeedbackNewestSignal},
 		{"EarlierArrival", runFeedbackEarlierArrival},
+		{"ArrivalOrder", runFeedbackArrivalOrder},
+		{"RecentWindow", runFeedbackRecentWindow},
+		{"RepositoryCheck", runFeedbackRepositoryCheck},
 		{"RefusalsRecordNothing", runFeedbackRefusals},
 		{"KeyValidityAtTheWrite", runFeedbackKeyValidity},
 		{"KeyCheckAndLastUse", runFeedbackLastUse},
@@ -475,29 +479,225 @@ func runFeedbackNewestSignal(t *testing.T, x Fixture) {
 	}
 }
 
-// runFeedbackEarlierArrival stores a signal after a later arrival committed.
-// It moves nothing back, and a service the later one did not name is recorded
-// at its own arrival.
+// runFeedbackEarlierArrival stores signals after a later arrival committed.
+// Each one records its deploys and stops at its own arrival and ends at the
+// next arrival that names the service. What runs now and the newest signal
+// stay (component-production-feedback invariants 4 and 5;
+// req-production-feedback AC-1.3).
 func runFeedbackEarlierArrival(t *testing.T, x Fixture) {
-	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	e := newFeedbackEnvironment(t, x, "Production", "on time")
+	second, err := x.Backend.IssueEnvironmentKey(x.Context, e.id, "overtaken")
+	requireOK(t, err)
+	late := e
+	late.key = second
+	origin := func(label string) store.FeedbackOrigin {
+		return store.FeedbackOrigin{Source: store.FeedbackSourceSignal, Label: label, Actor: core.SystemActorID}
+	}
+	// requireOrigins names who started and who stopped the deploy of a version
+	// at an offset. An empty stopped means that it still runs.
+	requireOrigins := func(version string, offset time.Duration, started, stopped string) {
+		t.Helper()
+		for _, d := range e.deploys(t) {
+			if d.Version != version || !d.DeployedAt.Equal(feedbackTime(offset)) {
+				continue
+			}
+			if d.Origin != origin(started) || (stopped == "") != (d.StopOrigin == nil) || (d.StopOrigin != nil && *d.StopOrigin != origin(stopped)) {
+				t.Fatalf("deploy=%+v stop=%+v, want started by %q and stopped by %q", d, d.StopOrigin, started, stopped)
+			}
+			return
+		}
+		t.Fatalf("no deploy of %s at %v", version, offset)
+	}
+	requireNewest := func(offset time.Duration, seconds int) {
+		t.Helper()
+		if newest, _ := e.newest(t); !newest.LastSignalAt.Equal(feedbackTime(offset)) || newest.NextSignalSeconds != seconds || newest.Origin != origin("on time") {
+			t.Fatalf("newest=%+v, want the arrival at %v", newest, offset)
+		}
+	}
 	e.send(t, 0, feedbackService("api", "@1"))
 	later := e.signal(20*time.Second, feedbackService("api", "@2"))
 	later.NextSignalSeconds = 120
 	requireOK(t, x.Backend.RecordFeedbackSignal(x.Context, later))
-	e.send(t, 10*time.Second, feedbackService("api", "@1", "@3"), feedbackService("web", "@1"))
+	// A version only the earlier arrival names ran from 10 to 20 seconds. A
+	// version it keeps is unchanged, and a service it alone names runs on.
+	late.send(t, 10*time.Second, feedbackService("api", "@1", "@3"), feedbackService("web", "@1"))
 	e.requireRunning(t, "api=@2+20", "web=@1+10")
-	e.requireDeploys(t, "api=@1+0-20", "api=@2+20", "web=@1+10")
-	if newest, _ := e.newest(t); !newest.LastSignalAt.Equal(feedbackTime(20*time.Second)) || newest.NextSignalSeconds != 120 {
-		t.Fatalf("newest=%+v, want the later arrival", newest)
-	}
-	// A repeat with no change also protects the service.
+	e.requireDeploys(t, "api=@1+0-20", "api=@3+10-20", "api=@2+20", "web=@1+10")
+	requireOrigins("3", 10*time.Second, "overtaken", "on time")
+	requireOrigins("1", 0, "on time", "on time")
+	requireNewest(20*time.Second, 120)
+	// A version the earlier arrival drops stops there. It runs now, so it came
+	// back with the next arrival, which changed nothing when it was stored.
 	e.send(t, 40*time.Second, feedbackService("api", "@2"))
-	e.send(t, 30*time.Second, feedbackService("api", "@1"))
-	e.requireRunning(t, "api=@2+20", "web=@1+10")
+	late.send(t, 30*time.Second, feedbackService("api", "@1"))
+	e.requireRunning(t, "api=@2+40", "web=@1+10")
+	e.requireDeploys(t, "api=@1+0-20", "api=@3+10-20", "api=@2+20-30", "api=@1+30-40", "api=@2+40", "web=@1+10")
+	requireOrigins("2", 20*time.Second, "on time", "overtaken")
+	requireOrigins("2", 40*time.Second, "on time", "")
+	requireNewest(40*time.Second, 60)
+	// The next arrival is the first one after it, not the newest one, and an
+	// arrival that does not name the service is not one.
+	e.send(t, 55*time.Second, feedbackService("web", "@1"))
+	e.send(t, 60*time.Second, feedbackService("api", "@2"))
+	e.send(t, 80*time.Second, feedbackService("api", "@2"))
+	late.send(t, 50*time.Second, feedbackService("api", "@9"))
+	e.requireRunning(t, "api=@2+60", "web=@1+10")
+	e.requireDeploys(t, "api=@1+0-20", "api=@3+10-20", "api=@2+20-30", "api=@1+30-40", "api=@2+40-50", "api=@9+50-60", "api=@2+60", "web=@1+10")
+	// An overtaken signal can be overtaken in turn, and it then ends a record
+	// that an earlier pass wrote.
+	late.send(t, 55*time.Second, feedbackService("api", "@8"))
+	e.requireDeploys(t, "api=@1+0-20", "api=@3+10-20", "api=@2+20-30", "api=@1+30-40", "api=@2+40-50", "api=@9+50-55", "api=@8+55-60", "api=@2+60", "web=@1+10")
+	// A version that the next arrival deploys was deployed here.
+	e.send(t, 100*time.Second, feedbackService("api", "@5"))
+	late.send(t, 90*time.Second, feedbackService("api", "@2", "@5"))
+	e.requireRunning(t, "api=@5+90", "web=@1+10")
+	e.requireDeploys(t, "api=@1+0-20", "api=@3+10-20", "api=@2+20-30", "api=@1+30-40", "api=@2+40-50", "api=@9+50-55", "api=@8+55-60", "api=@2+60-100", "api=@5+90", "web=@1+10")
+	requireOrigins("5", 90*time.Second, "overtaken", "")
+	requireNewest(100*time.Second, 60)
 	// The same arrival applies, in the order the store takes it.
-	e.send(t, 40*time.Second, feedbackService("api", "@4"))
-	e.requireRunning(t, "api=@4+40", "web=@1+10")
-	e.requireDeploys(t, "api=@1+0-20", "api=@2+20-40", "api=@4+40", "web=@1+10")
+	e.send(t, 100*time.Second, feedbackService("api", "@4"))
+	e.requireRunning(t, "api=@4+100", "web=@1+10")
+	// An arrival before the first report of a service ends at that report.
+	late.send(t, 5*time.Second, feedbackService("web", "@0"))
+	e.requireRunning(t, "api=@4+100", "web=@1+10")
+	for _, d := range e.deploys(t) {
+		if d.Service == "web" && d.Version == "0" && (!d.DeployedAt.Equal(feedbackTime(5*time.Second)) || d.StoppedAt == nil || !d.StoppedAt.Equal(feedbackTime(10*time.Second))) {
+			t.Fatalf("deploy=%+v, want 5 to 10 seconds", d)
+		}
+	}
+	requireNewest(100*time.Second, 60)
+}
+
+// runFeedbackArrivalOrder stores the same signals in their arrival order and
+// in a shuffled order. Both leave the same deploys, stops, origins, running
+// versions, and newest signal.
+func runFeedbackArrivalOrder(t *testing.T, x Fixture) {
+	labels := []string{"first", "second", "third"}
+	render := func(e feedbackEnvironment) string {
+		t.Helper()
+		var lines []string
+		for _, d := range e.deploys(t) {
+			line := fmt.Sprintf("deploy %s=%s %v %+v", d.Service, renderFeedbackVersion(d.FeedbackVersion), d.DeployedAt, d.Origin)
+			if d.StoppedAt != nil {
+				line += fmt.Sprintf(" to %v %+v", d.StoppedAt, *d.StopOrigin)
+			}
+			lines = append(lines, line)
+		}
+		for _, v := range e.running(t) {
+			lines = append(lines, fmt.Sprintf("running %s=%s %v %v %s", v.Service, renderFeedbackVersion(v.FeedbackVersion), v.DeployedAt, v.ReportedAt, v.ReportedLabel))
+		}
+		newest, _ := e.newest(t)
+		newest.EnvironmentID = ""
+		slices.Sort(lines)
+		return strings.Join(append(lines, fmt.Sprintf("newest %+v", newest)), "\n")
+	}
+	type target struct {
+		e    feedbackEnvironment
+		keys []string
+	}
+	newTarget := func(name string) target {
+		t.Helper()
+		made := target{e: newFeedbackEnvironment(t, x, name, labels[0])}
+		made.keys = append(made.keys, made.e.key.ID)
+		for _, label := range labels[1:] {
+			key, err := x.Backend.IssueEnvironmentKey(x.Context, made.e.id, label)
+			requireOK(t, err)
+			made.keys = append(made.keys, key.ID)
+		}
+		return made
+	}
+	ordered, shuffled := newTarget("Ordered"), newTarget("Shuffled")
+	for seed := range 24 {
+		random := rand.New(rand.NewPCG(uint64(seed), 261125))
+		type planned struct {
+			key      int
+			offset   time.Duration
+			seconds  int
+			services []store.FeedbackSignalService
+		}
+		var signals []planned
+		for i := range 8 {
+			p := planned{key: random.IntN(len(labels)), offset: time.Duration(100*seed+10*i) * time.Second, seconds: 10 + random.IntN(100)}
+			// One signal in three names each service alone.
+			omitted := random.IntN(3)
+			for j, name := range []string{"api", "web"} {
+				if j == omitted {
+					continue
+				}
+				var versions []string
+				for _, version := range []string{"@1", "@2", "@3"} {
+					if random.IntN(2) == 0 {
+						versions = append(versions, version)
+					}
+				}
+				if len(versions) == 0 {
+					versions = []string{"@1"}
+				}
+				p.services = append(p.services, feedbackService(fmt.Sprintf("%s-%d", name, seed), versions...))
+			}
+			signals = append(signals, p)
+		}
+		record := func(to target, order []int) string {
+			t.Helper()
+			for _, i := range order {
+				signal := to.e.signal(signals[i].offset, signals[i].services...)
+				signal.KeyID, signal.NextSignalSeconds = to.keys[signals[i].key], signals[i].seconds
+				requireOK(t, x.Backend.RecordFeedbackSignal(x.Context, signal))
+			}
+			return render(to.e)
+		}
+		want := record(ordered, []int{0, 1, 2, 3, 4, 5, 6, 7})
+		order := random.Perm(len(signals))
+		if got := record(shuffled, order); got != want {
+			t.Fatalf("seed %d order %v:\n%s\nwant the records of the arrival order:\n%s\nsignals %+v", seed, order, got, want, signals)
+		}
+	}
+}
+
+// runFeedbackRecentWindow proves which arrivals still end an earlier one: any
+// arrival within FeedbackRecentWindow of the newest signal, and past it the
+// ones that changed the service.
+func runFeedbackRecentWindow(t *testing.T, x Fixture) {
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	for _, offset := range []time.Duration{0, 300, 900, 1200} {
+		e.send(t, offset*time.Second, feedbackService("api", "@1"))
+	}
+	e.send(t, 720*time.Second, feedbackService("api", "@3"))
+	e.requireRunning(t, "api=@1+900")
+	e.requireDeploys(t, "api=@1+0-720", "api=@3+720-900", "api=@1+900")
+	// The arrival at 300 seconds changed nothing and left the window.
+	e.send(t, 60*time.Second, feedbackService("api", "@2"))
+	e.requireRunning(t, "api=@1+900")
+	e.requireDeploys(t, "api=@1+0-60", "api=@2+60-720", "api=@3+720-900", "api=@1+900")
+	if newest, _ := e.newest(t); !newest.LastSignalAt.Equal(feedbackTime(1200 * time.Second)) {
+		t.Fatalf("newest=%+v", newest)
+	}
+}
+
+// runFeedbackRepositoryCheck proves that the read-only check answers what the
+// write answers, for the bound workspace's current configuration.
+func runFeedbackRepositoryCheck(t *testing.T, x Fixture) {
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	before := e.state(t)
+	signal := func(repository string) store.FeedbackSignal {
+		second := feedbackService("web", "@1")
+		second.Repository = repository
+		return e.signal(0, feedbackService("api", "@1"), second)
+	}
+	for _, repository := range []string{"", "app", "conveyor"} {
+		requireOK(t, x.Backend.CheckFeedbackRepositories(x.Context, signal(repository)))
+	}
+	for _, repository := range []string{"ghost", "App", "app "} {
+		requireFeedbackField(t, x.Backend.CheckFeedbackRepositories(x.Context, signal(repository)), "services[1].repository")
+		requireFeedbackField(t, x.Backend.RecordFeedbackSignal(x.Context, signal(repository)), "services[1].repository")
+	}
+	missing := store.WithWorkspace(x.Context, x.Workspace+"-missing")
+	if err := x.Backend.CheckFeedbackRepositories(missing, signal("app")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing workspace err=%v", err)
+	}
+	if after := e.state(t); after != before {
+		t.Fatalf("a check changed the stored state:\nbefore %s\nafter  %s", before, after)
+	}
 }
 
 func runFeedbackRefusals(t *testing.T, x Fixture) {
@@ -683,7 +883,8 @@ func runFeedbackObservesOnly(t *testing.T, x Fixture) {
 }
 
 // runFeedbackConcurrent sends first and later signals at once. Each version
-// keeps one deploy, and the running set is one signal's whole set.
+// keeps one deploy, the latest arrival's versions run, and the deploys are
+// those of the arrival order.
 func runFeedbackConcurrent(t *testing.T, x Fixture) {
 	e := newFeedbackEnvironment(t, x, "Production", "watcher")
 	second, err := x.Backend.IssueEnvironmentKey(x.Context, e.id, "second")
@@ -727,17 +928,17 @@ func runFeedbackConcurrent(t *testing.T, x Fixture) {
 	if !slices.Equal(running, []string{"next-7", "other-7"}) {
 		t.Fatalf("running=%v, want the latest arrival's versions", running)
 	}
-	open := 0
-	for _, d := range e.deploys(t) {
-		if d.Service == "api" && d.StoppedAt == nil {
-			open++
+	want = append(want[2:], "api=@1+0-10", "api=@2+0-10")
+	for i := range 8 {
+		stop := fmt.Sprintf("-%d", 11+i)
+		if i == 7 {
+			stop = ""
 		}
-		if d.StoppedAt != nil && d.StoppedAt.Before(d.DeployedAt) {
-			t.Fatalf("deploy=%+v stopped before it started", d)
-		}
+		want = append(want, fmt.Sprintf("api=@next-%d+%d%s", i, 10+i, stop), fmt.Sprintf("api=@other-%d+%d%s", i, 10+i, stop))
 	}
-	if newest, _ := e.newest(t); open != 2 || !newest.LastSignalAt.Equal(feedbackTime(17*time.Second)) {
-		t.Fatalf("open deploys=%d newest=%+v", open, newest)
+	e.requireDeploys(t, want...)
+	if newest, _ := e.newest(t); !newest.LastSignalAt.Equal(feedbackTime(17 * time.Second)) {
+		t.Fatalf("newest=%+v", newest)
 	}
 }
 

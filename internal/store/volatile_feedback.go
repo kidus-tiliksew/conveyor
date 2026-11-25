@@ -5,7 +5,7 @@ import (
 	"slices"
 )
 
-// The volatile feedback state mirrors the three feedback tables of the
+// The volatile feedback state mirrors the four feedback tables of the
 // durable backends. Every mutation runs under the memory write mutex, the
 // volatile backend's critical section. Each map is keyed by workspace and
 // environment ID.
@@ -13,6 +13,7 @@ type feedbackState struct {
 	signals map[memoryScopedKey]FeedbackSignalState
 	deploys map[memoryScopedKey][]FeedbackDeploy
 	running map[memoryScopedKey][]FeedbackRunningVersion
+	recent  map[memoryScopedKey][]FeedbackRecentSignal
 }
 
 func newFeedbackState() feedbackState {
@@ -20,10 +21,22 @@ func newFeedbackState() feedbackState {
 		signals: map[memoryScopedKey]FeedbackSignalState{},
 		deploys: map[memoryScopedKey][]FeedbackDeploy{},
 		running: map[memoryScopedKey][]FeedbackRunningVersion{},
+		recent:  map[memoryScopedKey][]FeedbackRecentSignal{},
 	}
 }
 
 var _ FeedbackStore = (*volatileMemory)(nil)
+
+// CheckFeedbackRepositories implements FeedbackStore.
+func (m *volatileMemory) CheckFeedbackRepositories(ctx context.Context, signal FeedbackSignal) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	repositories, err := m.environmentRepositoriesLocked(workspaceOrDefault(ctx, ""))
+	if err != nil {
+		return err
+	}
+	return CheckFeedbackRepositories(signal, repositories)
+}
 
 // RecordFeedbackSignal implements FeedbackStore. Every check runs before the
 // first write.
@@ -50,7 +63,8 @@ func (m *volatileMemory) RecordFeedbackSignal(ctx context.Context, signal Feedba
 		return err
 	}
 	origin := FeedbackSignalOrigin(key.Label)
-	changes, err := PlanFeedbackChanges(signal, origin, m.feedbackState.running[scope])
+	// The plan reads the memory's own slices and returns new values.
+	changes, err := PlanFeedbackChanges(signal, origin, FeedbackHistory{Running: m.feedbackState.running[scope], Recent: m.feedbackState.recent[scope], Deploys: m.feedbackState.deploys[scope]})
 	if err != nil {
 		return err
 	}
@@ -60,17 +74,31 @@ func (m *volatileMemory) RecordFeedbackSignal(ctx context.Context, signal Feedba
 	for _, version := range changes.Stopped {
 		stopped[version.DeployID] = true
 	}
+	updated := make(map[string]FeedbackDeploy, len(changes.Updated))
+	for _, deploy := range changes.Updated {
+		updated[deploy.ID] = deploy
+	}
 	for i := range deploys {
 		if stopped[deploys[i].ID] {
 			at, by := signal.ArrivedAt, origin
 			deploys[i].StoppedAt, deploys[i].StopOrigin = &at, &by
 		}
+		if deploy, ok := updated[deploys[i].ID]; ok {
+			deploys[i] = deploy
+		}
 	}
 	running = slices.DeleteFunc(running, func(v FeedbackRunningVersion) bool { return stopped[v.DeployID] })
+	for i := range running {
+		for _, moved := range changes.Moved {
+			if running[i].Service == moved.Service && running[i].FeedbackVersion == moved.FeedbackVersion {
+				running[i] = moved
+			}
+		}
+	}
 	running = append(running, changes.Started...)
 	for i := range running {
 		if slices.Contains(changes.Reported, running[i].Service) {
-			running[i].ReportedAt = signal.ArrivedAt
+			running[i].ReportedAt, running[i].ReportedLabel = signal.ArrivedAt, origin.Label
 		}
 	}
 	m.feedbackState.deploys[scope] = append(deploys, changes.Deploys...)
@@ -78,6 +106,9 @@ func (m *volatileMemory) RecordFeedbackSignal(ctx context.Context, signal Feedba
 	if newest, exists := m.feedbackState.signals[scope]; !exists || !newest.LastSignalAt.After(signal.ArrivedAt) {
 		m.feedbackState.signals[scope] = FeedbackSignalState{EnvironmentID: signal.EnvironmentID, LastSignalAt: signal.ArrivedAt, NextSignalSeconds: signal.NextSignalSeconds, Origin: origin}
 	}
+	oldest := m.feedbackState.signals[scope].LastSignalAt.Add(-FeedbackRecentWindow)
+	recent := append(slices.Clone(m.feedbackState.recent[scope]), NewFeedbackRecentSignal(signal, origin))
+	m.feedbackState.recent[scope] = slices.DeleteFunc(recent, func(r FeedbackRecentSignal) bool { return r.ArrivedAt.Before(oldest) })
 	m.touchEnvironmentKeyLocked(keyScope)
 	return nil
 }

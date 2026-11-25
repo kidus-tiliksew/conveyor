@@ -61,8 +61,26 @@ CREATE TABLE IF NOT EXISTS feedback_running_versions (
     resolved boolean NOT NULL DEFAULT false,
     deploy_id text NOT NULL,
     deployed_at timestamptz NOT NULL,
+    -- The arrival and the key's label of the newest signal naming the service.
     reported_at timestamptz NOT NULL,
+    reported_label text NOT NULL,
     PRIMARY KEY (workspace_id, environment_id, service_digest, version_digest),
     FOREIGN KEY (workspace_id, environment_id) REFERENCES environments(workspace_id, id) ON DELETE CASCADE,
     FOREIGN KEY (workspace_id, deploy_id) REFERENCES feedback_deploys(workspace_id, id) ON DELETE CASCADE
+);
+
+-- The accepted signals of the last ten minutes before the newest one, each
+-- with the digests of the services it named. A signal that reaches the store
+-- after a later arrival ends at the next arrival that named its service, which
+-- can be one that changed nothing (component-production-feedback invariants 4
+-- and 5).
+CREATE TABLE IF NOT EXISTS feedback_recent_signals (
+    workspace_id text NOT NULL,
+    environment_id text NOT NULL,
+    arrived_at timestamptz NOT NULL,
+    id text NOT NULL,
+    source_label text NOT NULL,
+    service_digests jsonb NOT NULL CHECK (jsonb_typeof(service_digests) = 'array'),
+    PRIMARY KEY (workspace_id, environment_id, arrived_at, id),
+    FOREIGN KEY (workspace_id, environment_id) REFERENCES environments(workspace_id, id) ON DELETE CASCADE
 );

@@ -123,6 +123,12 @@ func (s *Server) receiveFeedbackSignal(w http.ResponseWriter, r *http.Request) {
 		signal.EnvironmentID, signal.KeyID, signal.ArrivedAt = scope.key.EnvironmentID, scope.key.KeyID, scope.arrived
 		signal, err = store.NormalizeFeedbackSignal(signal)
 	}
+	// Every rule is checked before the reservation, so an invalid signal gets
+	// its own refusal inside a window and never holds the key against a valid
+	// one. The store checks the repositories again when it records.
+	if err == nil && slices.ContainsFunc(signal.Services, func(service store.FeedbackSignalService) bool { return service.Repository != "" }) {
+		err = backend.CheckFeedbackRepositories(r.Context(), signal)
+	}
 	if err != nil {
 		writeFeedbackError(w, r, err)
 		return

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
@@ -50,14 +51,14 @@ func feedbackKeyLabel(ctx context.Context, tx *sql.Tx, ws string, signal store.F
 	return label, err
 }
 
-const feedbackRunningSQL = `SELECT environment_id,service,reported_repository,reported_commit,reported_version,resolved,deploy_id,deployed_at,reported_at FROM feedback_running_versions WHERE workspace_id=? AND environment_id=?`
+const feedbackRunningSQL = `SELECT environment_id,service,reported_repository,reported_commit,reported_version,resolved,deploy_id,deployed_at,reported_at,reported_label FROM feedback_running_versions WHERE workspace_id=? AND environment_id=?`
 
 func collectFeedbackRunning(rows environmentRows) ([]store.FeedbackRunningVersion, error) {
 	defer rows.Close()
 	running := []store.FeedbackRunningVersion{}
 	for rows.Next() {
 		var version store.FeedbackRunningVersion
-		if err := rows.Scan(&version.EnvironmentID, &version.Service, &version.Repository, &version.Commit, &version.Version, &version.Resolved, &version.DeployID, &version.DeployedAt, &version.ReportedAt); err != nil {
+		if err := rows.Scan(&version.EnvironmentID, &version.Service, &version.Repository, &version.Commit, &version.Version, &version.Resolved, &version.DeployID, &version.DeployedAt, &version.ReportedAt, &version.ReportedLabel); err != nil {
 			return nil, err
 		}
 		version.DeployedAt, version.ReportedAt = store.EnvironmentTime(version.DeployedAt), store.EnvironmentTime(version.ReportedAt)
@@ -82,39 +83,181 @@ func stopFeedbackVersions(ctx context.Context, tx *sql.Tx, ws string, signal sto
 	})
 }
 
-// startFeedbackVersions inserts the new deploys with their running versions.
-func startFeedbackVersions(ctx context.Context, tx *sql.Tx, ws string, signal store.FeedbackSignal, origin store.FeedbackOrigin, deploys []store.FeedbackDeploy) error {
-	return eachFeedbackChunk(deploys, func(part []store.FeedbackDeploy) error {
-		var deployArgs, runningArgs []any
+func feedbackStopColumns(deploy store.FeedbackDeploy) []any {
+	if deploy.StoppedAt == nil || deploy.StopOrigin == nil {
+		return []any{nil, nil, nil, nil}
+	}
+	return []any{*deploy.StoppedAt, deploy.StopOrigin.Source, deploy.StopOrigin.Label, deploy.StopOrigin.Actor}
+}
+
+func feedbackRowList(row string, count int) string {
+	return strings.TrimSuffix(strings.Repeat(row+",", count), ",")
+}
+
+// startFeedbackVersions inserts the new deploys and running versions.
+func startFeedbackVersions(ctx context.Context, tx *sql.Tx, ws string, signal store.FeedbackSignal, changes store.FeedbackChanges) error {
+	if err := eachFeedbackChunk(changes.Deploys, func(part []store.FeedbackDeploy) error {
+		var args []any
 		for _, deploy := range part {
-			deployArgs = append(deployArgs, ws, deploy.ID, signal.EnvironmentID, deploy.Service, deploy.Repository, deploy.Commit, deploy.Version, signal.ArrivedAt, origin.Source, origin.Label, origin.Actor)
-			runningArgs = append(runningArgs, ws, signal.EnvironmentID, store.FeedbackServiceDigest(deploy.Service), deploy.Digest(), deploy.Service, deploy.Repository, deploy.Commit, deploy.Version, deploy.ID, signal.ArrivedAt, signal.ArrivedAt)
+			args = append(args, ws, deploy.ID, signal.EnvironmentID, deploy.Service, deploy.Repository, deploy.Commit, deploy.Version, deploy.Resolved, deploy.DeployedAt, deploy.Origin.Source, deploy.Origin.Label, deploy.Origin.Actor)
+			args = append(args, feedbackStopColumns(deploy)...)
 		}
-		rows := func(row string) string { return strings.TrimSuffix(strings.Repeat(row+",", len(part)), ",") }
-		if _, err := tx.ExecContext(ctx, `INSERT INTO feedback_deploys (workspace_id,id,environment_id,service,reported_repository,reported_commit,reported_version,resolved,deployed_at,source,source_label,actor_id) VALUES `+rows(`(?,?,?,?,?,?,?,0,?,?,?,?)`), deployArgs...); err != nil {
-			return err
+		_, err := tx.ExecContext(ctx, `INSERT INTO feedback_deploys (workspace_id,id,environment_id,service,reported_repository,reported_commit,reported_version,resolved,deployed_at,source,source_label,actor_id,stopped_at,stop_source,stop_source_label,stop_actor_id) VALUES `+feedbackRowList(`(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, len(part)), args...)
+		return err
+	}); err != nil {
+		return err
+	}
+	return eachFeedbackChunk(changes.Started, func(part []store.FeedbackRunningVersion) error {
+		var args []any
+		for _, version := range part {
+			args = append(args, ws, signal.EnvironmentID, store.FeedbackServiceDigest(version.Service), version.Digest(), version.Service, version.Repository, version.Commit, version.Version, version.DeployID, version.DeployedAt, version.ReportedAt, version.ReportedLabel)
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO feedback_running_versions (workspace_id,environment_id,service_digest,version_digest,service,reported_repository,reported_commit,reported_version,resolved,deploy_id,deployed_at,reported_at) VALUES `+rows(`(?,?,?,?,?,?,?,?,0,?,?,?)`), runningArgs...)
+		_, err := tx.ExecContext(ctx, `INSERT INTO feedback_running_versions (workspace_id,environment_id,service_digest,version_digest,service,reported_repository,reported_commit,reported_version,resolved,deploy_id,deployed_at,reported_at,reported_label) VALUES `+feedbackRowList(`(?,?,?,?,?,?,?,?,0,?,?,?,?)`, len(part)), args...)
 		return err
 	})
 }
 
-// recordFeedbackNewest keeps the newest signal of the environment. The caller
-// holds the workspace environment claim, so the read and the write are one
-// decision.
-func recordFeedbackNewest(ctx context.Context, tx *sql.Tx, ws string, signal store.FeedbackSignal, origin store.FeedbackOrigin) error {
+// moveFeedbackRecords writes the earlier records that an overtaken signal
+// changes.
+func moveFeedbackRecords(ctx context.Context, tx *sql.Tx, ws string, signal store.FeedbackSignal, changes store.FeedbackChanges) error {
+	for _, deploy := range changes.Updated {
+		args := append([]any{deploy.DeployedAt, deploy.Origin.Source, deploy.Origin.Label, deploy.Origin.Actor}, feedbackStopColumns(deploy)...)
+		if _, err := tx.ExecContext(ctx, `UPDATE feedback_deploys SET deployed_at=?,source=?,source_label=?,actor_id=?,stopped_at=?,stop_source=?,stop_source_label=?,stop_actor_id=? WHERE workspace_id=? AND id=?`, append(args, ws, deploy.ID)...); err != nil {
+			return err
+		}
+	}
+	for _, version := range changes.Moved {
+		if _, err := tx.ExecContext(ctx, `UPDATE feedback_running_versions SET deploy_id=?,deployed_at=? WHERE workspace_id=? AND environment_id=? AND service_digest=? AND version_digest=?`,
+			version.DeployID, version.DeployedAt, ws, signal.EnvironmentID, store.FeedbackServiceDigest(version.Service), version.Digest()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const feedbackDeploySQL = `SELECT id,environment_id,service,reported_repository,reported_commit,reported_version,resolved,deployed_at,source,source_label,actor_id,stopped_at,stop_source,stop_source_label,stop_actor_id FROM feedback_deploys WHERE workspace_id=? AND environment_id=?`
+
+func collectFeedbackDeploys(rows environmentRows) ([]store.FeedbackDeploy, error) {
+	defer rows.Close()
+	deploys := []store.FeedbackDeploy{}
+	for rows.Next() {
+		var deploy store.FeedbackDeploy
+		var stoppedAt sql.NullTime
+		var stopSource, stopLabel, stopActor sql.NullString
+		if err := rows.Scan(&deploy.ID, &deploy.EnvironmentID, &deploy.Service, &deploy.Repository, &deploy.Commit, &deploy.Version, &deploy.Resolved, &deploy.DeployedAt,
+			&deploy.Origin.Source, &deploy.Origin.Label, &deploy.Origin.Actor, &stoppedAt, &stopSource, &stopLabel, &stopActor); err != nil {
+			return nil, err
+		}
+		deploy.DeployedAt = store.EnvironmentTime(deploy.DeployedAt)
+		if stoppedAt.Valid {
+			if !stopSource.Valid || !stopLabel.Valid || !stopActor.Valid {
+				return nil, fmt.Errorf("a stopped deploy names no origin")
+			}
+			at := store.EnvironmentTime(stoppedAt.Time)
+			deploy.StoppedAt, deploy.StopOrigin = &at, &store.FeedbackOrigin{Source: stopSource.String, Label: stopLabel.String, Actor: stopActor.String}
+		}
+		deploys = append(deploys, deploy)
+	}
+	return deploys, rows.Err()
+}
+
+// readFeedbackHistory reads what PlanFeedbackChanges needs. Only a signal that
+// a later arrival overtook reads the recent signals and the deploys.
+func readFeedbackHistory(ctx context.Context, tx *sql.Tx, ws string, signal store.FeedbackSignal) (store.FeedbackHistory, error) {
+	var history store.FeedbackHistory
+	digests := make([]string, len(signal.Services))
+	for i, service := range signal.Services {
+		digests[i] = store.FeedbackServiceDigest(service.Name)
+	}
+	list, args := feedbackList(digests)
+	rows, err := tx.QueryContext(ctx, feedbackRunningSQL+` AND service_digest IN (`+list+`)`, append([]any{ws, signal.EnvironmentID}, args...)...)
+	if err != nil {
+		return history, err
+	}
+	if history.Running, err = collectFeedbackRunning(rows); err != nil || !store.FeedbackArrivedLate(signal, history.Running) {
+		return history, err
+	}
+	if rows, err = tx.QueryContext(ctx, feedbackDeploySQL+` AND (stopped_at IS NULL OR stopped_at>?)`, ws, signal.EnvironmentID, signal.ArrivedAt); err != nil {
+		return history, err
+	}
+	if history.Deploys, err = collectFeedbackDeploys(rows); err != nil {
+		return history, err
+	}
+	if rows, err = tx.QueryContext(ctx, `SELECT arrived_at,source_label,service_digests FROM feedback_recent_signals WHERE workspace_id=? AND environment_id=? AND arrived_at>?`, ws, signal.EnvironmentID, signal.ArrivedAt); err != nil {
+		return history, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var recent store.FeedbackRecentSignal
+		var services string
+		if err := rows.Scan(&recent.ArrivedAt, &recent.Label, &services); err != nil {
+			return history, err
+		}
+		recent.ArrivedAt = store.EnvironmentTime(recent.ArrivedAt)
+		if err := store.ApplyFeedbackRecentServices(&recent, []byte(services)); err != nil {
+			return history, err
+		}
+		history.Recent = append(history.Recent, recent)
+	}
+	return history, rows.Err()
+}
+
+// recordFeedbackRecent adds the signal to the recent ones and drops those
+// before the window of the newest signal.
+func recordFeedbackRecent(ctx context.Context, tx *sql.Tx, ws string, signal store.FeedbackSignal, origin store.FeedbackOrigin, newest time.Time) error {
+	id, err := store.NewFeedbackRecentSignalID()
+	if err != nil {
+		return err
+	}
+	recent := store.NewFeedbackRecentSignal(signal, origin)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO feedback_recent_signals (workspace_id,environment_id,arrived_at,id,source_label,service_digests) VALUES (?,?,?,?,?,?)`,
+		ws, signal.EnvironmentID, recent.ArrivedAt, id, recent.Label, store.FeedbackRecentServices(recent)); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM feedback_recent_signals WHERE workspace_id=? AND environment_id=? AND arrived_at<?`, ws, signal.EnvironmentID, newest.Add(-store.FeedbackRecentWindow))
+	return err
+}
+
+// recordFeedbackNewest keeps the newest signal of the environment and returns
+// its arrival. The caller holds the workspace environment claim, so the read
+// and the write are one decision.
+func recordFeedbackNewest(ctx context.Context, tx *sql.Tx, ws string, signal store.FeedbackSignal, origin store.FeedbackOrigin) (time.Time, error) {
 	var newest sql.NullTime
 	err := tx.QueryRowContext(ctx, `SELECT last_signal_at FROM feedback_signals WHERE workspace_id=? AND environment_id=?`, ws, signal.EnvironmentID).Scan(&newest)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		_, err = tx.ExecContext(ctx, `INSERT INTO feedback_signals (workspace_id,environment_id,last_signal_at,next_signal_seconds,source,source_label,actor_id) VALUES (?,?,?,?,?,?,?)`,
 			ws, signal.EnvironmentID, signal.ArrivedAt, signal.NextSignalSeconds, origin.Source, origin.Label, origin.Actor)
-	case err != nil || store.EnvironmentTime(newest.Time).After(signal.ArrivedAt):
+	case err != nil:
+	case store.EnvironmentTime(newest.Time).After(signal.ArrivedAt):
+		return store.EnvironmentTime(newest.Time), nil
 	default:
 		_, err = tx.ExecContext(ctx, `UPDATE feedback_signals SET last_signal_at=?,next_signal_seconds=?,source=?,source_label=?,actor_id=? WHERE workspace_id=? AND environment_id=?`,
 			signal.ArrivedAt, signal.NextSignalSeconds, origin.Source, origin.Label, origin.Actor, ws, signal.EnvironmentID)
 	}
-	return err
+	return signal.ArrivedAt, err
+}
+
+// CheckFeedbackRepositories implements store.FeedbackStore.
+func (s *Store) CheckFeedbackRepositories(ctx context.Context, signal store.FeedbackSignal) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CheckFeedbackRepositories")
+	ws, err := workspace(ctx)
+	if err != nil {
+		return err
+	}
+	var configYAML string
+	err = backendRow(ctx, s.db, `SELECT config_yaml FROM workspaces WHERE id=?`, ws).Scan(&configYAML)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: workspace %s", store.ErrNotFound, ws)
+	}
+	if err != nil {
+		return translateBackendConflict(err)
+	}
+	repositories, err := store.EnvironmentRepositories(configYAML)
+	if err != nil {
+		return err
+	}
+	return store.CheckFeedbackRepositories(signal, repositories)
 }
 
 // RecordFeedbackSignal implements store.FeedbackStore. It holds the workspace
@@ -152,28 +295,22 @@ func (s *Store) RecordFeedbackSignal(ctx context.Context, signal store.FeedbackS
 		if err := store.CheckFeedbackRepositories(signal, repositories); err != nil {
 			return err
 		}
-		digests := make([]string, len(signal.Services))
-		for i, service := range signal.Services {
-			digests[i] = store.FeedbackServiceDigest(service.Name)
-		}
-		list, args := feedbackList(digests)
-		rows, err := tx.QueryContext(ctx, feedbackRunningSQL+` AND service_digest IN (`+list+`)`, append([]any{ws, signal.EnvironmentID}, args...)...)
-		if err != nil {
-			return err
-		}
-		running, err := collectFeedbackRunning(rows)
+		history, err := readFeedbackHistory(ctx, tx, ws, signal)
 		if err != nil {
 			return err
 		}
 		origin := store.FeedbackSignalOrigin(label)
-		changes, err := store.PlanFeedbackChanges(signal, origin, running)
+		changes, err := store.PlanFeedbackChanges(signal, origin, history)
 		if err != nil {
 			return err
 		}
 		if err := stopFeedbackVersions(ctx, tx, ws, signal, origin, changes.Stopped); err != nil {
 			return err
 		}
-		if err := startFeedbackVersions(ctx, tx, ws, signal, origin, changes.Deploys); err != nil {
+		if err := startFeedbackVersions(ctx, tx, ws, signal, changes); err != nil {
+			return err
+		}
+		if err := moveFeedbackRecords(ctx, tx, ws, signal, changes); err != nil {
 			return err
 		}
 		if len(changes.Reported) > 0 {
@@ -182,8 +319,8 @@ func (s *Store) RecordFeedbackSignal(ctx context.Context, signal store.FeedbackS
 				reported[i] = store.FeedbackServiceDigest(service)
 			}
 			list, args := feedbackList(reported)
-			if _, err := tx.ExecContext(ctx, `UPDATE feedback_running_versions SET reported_at=? WHERE workspace_id=? AND environment_id=? AND reported_at<? AND service_digest IN (`+list+`)`,
-				append([]any{signal.ArrivedAt, ws, signal.EnvironmentID, signal.ArrivedAt}, args...)...); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE feedback_running_versions SET reported_at=?,reported_label=? WHERE workspace_id=? AND environment_id=? AND service_digest IN (`+list+`)`,
+				append([]any{signal.ArrivedAt, origin.Label, ws, signal.EnvironmentID}, args...)...); err != nil {
 				return err
 			}
 		}
@@ -191,7 +328,11 @@ func (s *Store) RecordFeedbackSignal(ctx context.Context, signal store.FeedbackS
 			ws, signal.KeyID, store.EnvironmentKeyUseGranularity.Microseconds()); err != nil {
 			return err
 		}
-		if err := recordFeedbackNewest(ctx, tx, ws, signal, origin); err != nil {
+		newest, err := recordFeedbackNewest(ctx, tx, ws, signal, origin)
+		if err != nil {
+			return err
+		}
+		if err := recordFeedbackRecent(ctx, tx, ws, signal, origin, newest); err != nil {
 			return err
 		}
 		return claim.touchEnvironment(ctx, tx, signal.EnvironmentID)
@@ -255,31 +396,12 @@ func (s *Store) ListFeedbackDeploys(ctx context.Context, environmentID string) (
 	if err != nil {
 		return nil, err
 	}
-	rows, err := documentRows(ctx, s.db, `SELECT id,environment_id,service,reported_repository,reported_commit,reported_version,resolved,deployed_at,source,source_label,actor_id,stopped_at,stop_source,stop_source_label,stop_actor_id FROM feedback_deploys WHERE workspace_id=? AND environment_id=?`, ws, environmentID)
+	rows, err := documentRows(ctx, s.db, feedbackDeploySQL, ws, environmentID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	deploys := []store.FeedbackDeploy{}
-	for rows.Next() {
-		var deploy store.FeedbackDeploy
-		var stoppedAt sql.NullTime
-		var stopSource, stopLabel, stopActor sql.NullString
-		if err := rows.Scan(&deploy.ID, &deploy.EnvironmentID, &deploy.Service, &deploy.Repository, &deploy.Commit, &deploy.Version, &deploy.Resolved, &deploy.DeployedAt,
-			&deploy.Origin.Source, &deploy.Origin.Label, &deploy.Origin.Actor, &stoppedAt, &stopSource, &stopLabel, &stopActor); err != nil {
-			return nil, err
-		}
-		deploy.DeployedAt = store.EnvironmentTime(deploy.DeployedAt)
-		if stoppedAt.Valid {
-			if !stopSource.Valid || !stopLabel.Valid || !stopActor.Valid {
-				return nil, fmt.Errorf("a stopped deploy names no origin")
-			}
-			at := store.EnvironmentTime(stoppedAt.Time)
-			deploy.StoppedAt, deploy.StopOrigin = &at, &store.FeedbackOrigin{Source: stopSource.String, Label: stopLabel.String, Actor: stopActor.String}
-		}
-		deploys = append(deploys, deploy)
-	}
-	if err := rows.Err(); err != nil {
+	deploys, err := collectFeedbackDeploys(rows)
+	if err != nil {
 		return nil, err
 	}
 	store.SortFeedbackDeploys(deploys)

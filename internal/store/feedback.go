@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 )
 
@@ -92,17 +93,18 @@ type FeedbackOrigin struct {
 	Actor  string
 }
 
-// FeedbackRunningVersion is one version a service runs. ReportedAt is the
-// arrival of the newest signal that named the service. A version is stored
-// unresolved.
+// FeedbackRunningVersion is one version a service runs. ReportedAt and
+// ReportedLabel are the arrival and the key's label of the newest signal that
+// named the service. A version is stored unresolved.
 type FeedbackRunningVersion struct {
 	EnvironmentID string
 	Service       string
 	FeedbackVersion
-	DeployID   string
-	DeployedAt time.Time
-	ReportedAt time.Time
-	Resolved   bool
+	DeployID      string
+	DeployedAt    time.Time
+	ReportedAt    time.Time
+	ReportedLabel string
+	Resolved      bool
 }
 
 // FeedbackDeploy is one deploy record. StoppedAt and StopOrigin are nil while
@@ -139,6 +141,12 @@ func (s FeedbackSignalState) Listening(now time.Time) bool {
 // component-persistence). It appends no event and changes no task, work
 // order, or notice (invariant 1; DEC-149(1)).
 type FeedbackStore interface {
+	// CheckFeedbackRepositories refuses a signal that states a repository
+	// outside the current workspace configuration, with the FeedbackFieldError
+	// that RecordFeedbackSignal would answer. It writes nothing.
+	// RecordFeedbackSignal checks again, because the configuration can change
+	// in between.
+	CheckFeedbackRepositories(ctx context.Context, signal FeedbackSignal) error
 	// RecordFeedbackSignal records one signal in one transaction: its deploys
 	// and stops, the newest signal, and the key's last use at most once a
 	// minute. Signals of one environment are serialized. A key that is
@@ -267,82 +275,253 @@ func FeedbackSignalOrigin(label string) FeedbackOrigin {
 	return FeedbackOrigin{Source: FeedbackSourceSignal, Label: label, Actor: SystemActor().ID}
 }
 
-// FeedbackSignalServices returns the names of the services a signal names.
-func FeedbackSignalServices(signal FeedbackSignal) []string {
-	names := make([]string, len(signal.Services))
+// FeedbackRecentWindow is how far behind the newest signal of an environment
+// a signal can arrive and still find every later signal in
+// FeedbackHistory.Recent.
+const FeedbackRecentWindow = 10 * time.Minute
+
+// FeedbackRecentSignal is one accepted signal of the recent window: when it
+// arrived, who sent it, and the digests of the services it named. A signal
+// that changes nothing leaves no deploy, so this is what dates the end of an
+// earlier arrival's versions.
+type FeedbackRecentSignal struct {
+	ArrivedAt time.Time
+	Label     string
+	Services  []string
+}
+
+// NewFeedbackRecentSignal is the recent form of a normalized signal.
+func NewFeedbackRecentSignal(signal FeedbackSignal, origin FeedbackOrigin) FeedbackRecentSignal {
+	recent := FeedbackRecentSignal{ArrivedAt: signal.ArrivedAt, Label: origin.Label, Services: make([]string, len(signal.Services))}
 	for i, service := range signal.Services {
-		names[i] = service.Name
+		recent.Services[i] = FeedbackServiceDigest(service.Name)
 	}
-	return names
+	return recent
+}
+
+// FeedbackRecentServices renders the digests for a durable backend's row, and
+// ApplyFeedbackRecentServices reads them back.
+func FeedbackRecentServices(recent FeedbackRecentSignal) string {
+	return string(core.JSONPayload(recent.Services))
+}
+
+func ApplyFeedbackRecentServices(recent *FeedbackRecentSignal, services []byte) error {
+	if err := json.Unmarshal(services, &recent.Services); err != nil {
+		return fmt.Errorf("decode recent signal services: %w", err)
+	}
+	return nil
+}
+
+// FeedbackHistory is the stored state PlanFeedbackChanges reads.
+type FeedbackHistory struct {
+	// Running are the running versions of the services the signal names.
+	Running []FeedbackRunningVersion
+	// Recent and Deploys are needed only when FeedbackArrivedLate reports
+	// true: the recent signals that arrived after this one, and the deploys
+	// that had not stopped at its arrival. Other services can be among them.
+	Recent  []FeedbackRecentSignal
+	Deploys []FeedbackDeploy
+}
+
+// FeedbackArrivedLate reports whether a later arrival already reported a
+// service that the signal names.
+func FeedbackArrivedLate(signal FeedbackSignal, running []FeedbackRunningVersion) bool {
+	return slices.ContainsFunc(running, func(v FeedbackRunningVersion) bool { return v.ReportedAt.After(signal.ArrivedAt) })
 }
 
 // FeedbackChanges is what one signal changes.
 type FeedbackChanges struct {
-	// Deploys are the new deploy records, each still running, with the
-	// running version of the same index in Started.
+	// Deploys are the new deploy records. One of an earlier arrival can be
+	// stopped already.
 	Deploys []FeedbackDeploy
+	// Started are the new running versions, each with its deploy in Deploys.
 	Started []FeedbackRunningVersion
 	// Stopped are the running versions the signal no longer names.
 	Stopped []FeedbackRunningVersion
 	// Reported are the services whose newest report is this signal.
 	Reported []string
+	// Updated are stored deploys with a new deploy time, stop time, or origin,
+	// and Moved are stored running versions with a new deploy or deploy time.
+	// Only an earlier arrival has either.
+	Updated []FeedbackDeploy
+	Moved   []FeedbackRunningVersion
 }
 
-// PlanFeedbackChanges compares a normalized signal with the running versions
-// of the services it names. Every backend records exactly this result. A
-// version named twice is one version, and a version that comes back after it
-// stopped is a new deploy. A service that a later arrival already reported
-// keeps that report, so a signal that was delayed on the way to the store
-// never moves a service back (component-production-feedback invariant 5;
+// PlanFeedbackChanges compares a normalized signal with the stored state of
+// the services it names. Every backend records exactly this result. A version
+// named twice is one version, and a version that comes back after it stopped
+// is a new deploy. The records are those of the arrival order, whatever order
+// the signals reach the store in: a signal that a later arrival overtook
+// records its deploys and stops at its own arrival, and the next arrival that
+// names the service ends what it reported. It changes no version that runs now
+// and not the newest signal (component-production-feedback invariants 4 and 5;
 // req-production-feedback AC-1.3).
-func PlanFeedbackChanges(signal FeedbackSignal, origin FeedbackOrigin, running []FeedbackRunningVersion) (FeedbackChanges, error) {
+func PlanFeedbackChanges(signal FeedbackSignal, origin FeedbackOrigin, history FeedbackHistory) (FeedbackChanges, error) {
 	current := map[string][]FeedbackRunningVersion{}
-	for _, version := range running {
+	for _, version := range history.Running {
 		current[version.Service] = append(current[version.Service], version)
 	}
 	var changes FeedbackChanges
 	for _, service := range signal.Services {
-		before := current[service.Name]
-		if slices.ContainsFunc(before, func(v FeedbackRunningVersion) bool { return v.ReportedAt.After(signal.ArrivedAt) }) {
-			continue
-		}
-		named := map[FeedbackVersion]bool{}
+		named := []FeedbackVersion{}
 		for _, entry := range service.Versions {
 			version := FeedbackVersion{Repository: service.Repository, Commit: entry.Commit, Version: entry.Version}
-			if named[version] {
-				continue
-			}
-			named[version] = true
-			if slices.ContainsFunc(before, func(v FeedbackRunningVersion) bool { return v.FeedbackVersion == version }) {
-				continue
-			}
-			id, err := newFeedbackDeployID()
-			if err != nil {
-				return FeedbackChanges{}, err
-			}
-			changes.Deploys = append(changes.Deploys, FeedbackDeploy{
-				ID: id, EnvironmentID: signal.EnvironmentID, Service: service.Name, FeedbackVersion: version, DeployedAt: signal.ArrivedAt, Origin: origin,
-			})
-			changes.Started = append(changes.Started, FeedbackRunningVersion{
-				EnvironmentID: signal.EnvironmentID, Service: service.Name, FeedbackVersion: version, DeployID: id, DeployedAt: signal.ArrivedAt, ReportedAt: signal.ArrivedAt,
-			})
-		}
-		for _, version := range before {
-			if !named[version.FeedbackVersion] {
-				changes.Stopped = append(changes.Stopped, version)
+			if !slices.Contains(named, version) {
+				named = append(named, version)
 			}
 		}
-		changes.Reported = append(changes.Reported, service.Name)
+		plan := changes.planNewest
+		if FeedbackArrivedLate(signal, current[service.Name]) {
+			plan = changes.planEarlier
+		}
+		if err := plan(signal, origin, service.Name, named, current[service.Name], history); err != nil {
+			return FeedbackChanges{}, err
+		}
 	}
 	return changes, nil
 }
 
-func newFeedbackDeployID() (string, error) {
+// planNewest records a service whose newest report is this signal.
+func (c *FeedbackChanges) planNewest(signal FeedbackSignal, origin FeedbackOrigin, service string, named []FeedbackVersion, running []FeedbackRunningVersion, _ FeedbackHistory) error {
+	for _, version := range named {
+		if slices.ContainsFunc(running, func(v FeedbackRunningVersion) bool { return v.FeedbackVersion == version }) {
+			continue
+		}
+		deploy, err := c.addDeploy(FeedbackDeploy{EnvironmentID: signal.EnvironmentID, Service: service, FeedbackVersion: version, DeployedAt: signal.ArrivedAt, Origin: origin})
+		if err != nil {
+			return err
+		}
+		c.Started = append(c.Started, FeedbackRunningVersion{
+			EnvironmentID: signal.EnvironmentID, Service: service, FeedbackVersion: version, DeployID: deploy.ID, DeployedAt: deploy.DeployedAt, ReportedAt: signal.ArrivedAt, ReportedLabel: origin.Label,
+		})
+	}
+	for _, version := range running {
+		if !slices.Contains(named, version.FeedbackVersion) {
+			c.Stopped = append(c.Stopped, version)
+		}
+	}
+	c.Reported = append(c.Reported, service)
+	return nil
+}
+
+// planEarlier records a service that a later arrival already reported. From
+// the signal's arrival to the next arrival that names the service, the
+// service ran what the signal names. Before and after that span the records
+// stay as they are.
+func (c *FeedbackChanges) planEarlier(signal FeedbackSignal, origin FeedbackOrigin, service string, named []FeedbackVersion, running []FeedbackRunningVersion, history FeedbackHistory) error {
+	at := signal.ArrivedAt
+	next, nextOrigin := feedbackNextReport(at, service, running, history)
+	ran := map[FeedbackVersion]bool{}
+	resumed := map[FeedbackVersion]FeedbackDeploy{}
+	for _, deploy := range history.Deploys {
+		switch {
+		case deploy.Service != service:
+		case deploy.DeployedAt.Equal(next):
+			resumed[deploy.FeedbackVersion] = deploy
+		case deploy.DeployedAt.After(at) || (deploy.StoppedAt != nil && !deploy.StoppedAt.After(at)):
+		case slices.Contains(named, deploy.FeedbackVersion):
+			ran[deploy.FeedbackVersion] = true
+		default:
+			// The service ran this version and the signal drops it. When it
+			// ran on after the next arrival, it came back then.
+			if deploy.StoppedAt == nil || deploy.StoppedAt.After(next) {
+				again := deploy
+				again.DeployedAt, again.Origin = next, nextOrigin
+				again, err := c.addDeploy(again)
+				if err != nil {
+					return err
+				}
+				c.move(running, deploy.ID, again)
+			}
+			deploy.StoppedAt, deploy.StopOrigin = &at, &origin
+			c.Updated = append(c.Updated, deploy)
+		}
+	}
+	for _, version := range named {
+		if ran[version] {
+			continue
+		}
+		if deploy, ok := resumed[version]; ok {
+			// The next arrival kept this version, so it was deployed here.
+			deploy.DeployedAt, deploy.Origin = at, origin
+			c.Updated = append(c.Updated, deploy)
+			c.move(running, deploy.ID, deploy)
+			continue
+		}
+		if _, err := c.addDeploy(FeedbackDeploy{EnvironmentID: signal.EnvironmentID, Service: service, FeedbackVersion: version, DeployedAt: at, Origin: origin, StoppedAt: &next, StopOrigin: &nextOrigin}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// feedbackNextReport returns the first known arrival after at that named the
+// service, and its origin: a recent signal, the service's newest report, or a
+// deploy or stop. Past the recent window only an arrival that changed the
+// service, or its newest one, is still known.
+func feedbackNextReport(at time.Time, service string, running []FeedbackRunningVersion, history FeedbackHistory) (time.Time, FeedbackOrigin) {
+	var next time.Time
+	var origin FeedbackOrigin
+	consider := func(report time.Time, by FeedbackOrigin) {
+		if report.After(at) && (next.IsZero() || report.Before(next)) {
+			next, origin = report, by
+		}
+	}
+	for _, version := range running {
+		consider(version.ReportedAt, FeedbackSignalOrigin(version.ReportedLabel))
+	}
+	for _, deploy := range history.Deploys {
+		if deploy.Service != service {
+			continue
+		}
+		consider(deploy.DeployedAt, deploy.Origin)
+		if deploy.StoppedAt != nil {
+			consider(*deploy.StoppedAt, *deploy.StopOrigin)
+		}
+	}
+	digest := FeedbackServiceDigest(service)
+	for _, recent := range history.Recent {
+		if slices.Contains(recent.Services, digest) {
+			consider(recent.ArrivedAt, FeedbackSignalOrigin(recent.Label))
+		}
+	}
+	return next, origin
+}
+
+// addDeploy gives the deploy a new ID and adds it to the new records.
+func (c *FeedbackChanges) addDeploy(deploy FeedbackDeploy) (FeedbackDeploy, error) {
+	id, err := newFeedbackDeployID()
+	if err != nil {
+		return FeedbackDeploy{}, err
+	}
+	deploy.ID = id
+	c.Deploys = append(c.Deploys, deploy)
+	return deploy, nil
+}
+
+// move points the running version of a stored deploy, if it still runs, at
+// the deploy that now holds it.
+func (c *FeedbackChanges) move(running []FeedbackRunningVersion, deployID string, deploy FeedbackDeploy) {
+	for _, version := range running {
+		if version.DeployID == deployID {
+			version.DeployID, version.DeployedAt = deploy.ID, deploy.DeployedAt
+			c.Moved = append(c.Moved, version)
+		}
+	}
+}
+
+func newFeedbackDeployID() (string, error) { return newFeedbackID("deploy_") }
+
+// NewFeedbackRecentSignalID tells two signals of one arrival apart in a
+// durable backend's rows.
+func NewFeedbackRecentSignalID() (string, error) { return newFeedbackID("signal_") }
+
+func newFeedbackID(prefix string) (string, error) {
 	random := make([]byte, 12)
 	if _, err := rand.Read(random); err != nil {
-		return "", fmt.Errorf("generate deploy ID: %w", err)
+		return "", fmt.Errorf("generate feedback ID: %w", err)
 	}
-	return "deploy_" + base64.RawURLEncoding.EncodeToString(random), nil
+	return prefix + base64.RawURLEncoding.EncodeToString(random), nil
 }
 
 func compareFeedbackVersions(serviceA string, a FeedbackVersion, serviceB string, b FeedbackVersion) int {

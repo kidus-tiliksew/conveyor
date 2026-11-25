@@ -51,7 +51,7 @@ func TestFeedbackMigrationRestartIntegration(t *testing.T) {
 	})
 	requireComplete := func(label string) {
 		t.Helper()
-		rows, err := st.db.QueryContext(ctx, "SELECT table_name,storage_type FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('feedback_signals','feedback_deploys','feedback_running_versions')")
+		rows, err := st.db.QueryContext(ctx, "SELECT table_name,storage_type FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('feedback_signals','feedback_deploys','feedback_running_versions','feedback_recent_signals')")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -68,8 +68,8 @@ func TestFeedbackMigrationRestartIntegration(t *testing.T) {
 			}
 			found++
 		}
-		if err := rows.Err(); err != nil || found != 3 {
-			t.Fatalf("%s: %d tables err=%v, want three", label, found, err)
+		if err := rows.Err(); err != nil || found != 4 {
+			t.Fatalf("%s: %d tables err=%v, want four", label, found, err)
 		}
 		var ledger int
 		if err := st.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM conveyor_singlestore_migrations WHERE version=?", feedbackMigrationVersion).Scan(&ledger); err != nil || ledger != 1 {
@@ -93,7 +93,7 @@ func TestFeedbackMigrationRestartIntegration(t *testing.T) {
 		}
 	}
 	requireComplete("fresh schema")
-	for _, statement := range []string{fmt.Sprintf("DELETE FROM conveyor_singlestore_migrations WHERE version=%d", feedbackMigrationVersion), "DROP TABLE feedback_signals"} {
+	for _, statement := range []string{fmt.Sprintf("DELETE FROM conveyor_singlestore_migrations WHERE version=%d", feedbackMigrationVersion), "DROP TABLE feedback_recent_signals"} {
 		if _, err := st.db.ExecContext(ctx, statement); err != nil {
 			t.Fatalf("%s: %v", statement, err)
 		}

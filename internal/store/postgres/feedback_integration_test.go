@@ -62,6 +62,8 @@ func TestFeedbackMigrationIntegration(t *testing.T) {
 	requireCode("23514", "a stop without its origin", `UPDATE feedback_deploys SET stopped_at=now()`)
 	requireCode("23503", "a signal of a missing environment", `UPDATE feedback_signals SET environment_id='env-missing'`)
 	requireCode("23503", "a running version without a deploy", `UPDATE feedback_running_versions SET deploy_id='deploy_missing'`)
+	requireCode("23503", "a recent signal of a missing environment", `UPDATE feedback_recent_signals SET environment_id='env-missing'`)
+	requireCode("23514", "recent services that are not a list", `UPDATE feedback_recent_signals SET service_digests='{}'`)
 	requireCode("23505", "a second row for one version", `INSERT INTO feedback_running_versions SELECT * FROM feedback_running_versions`)
 }
 
@@ -70,7 +72,9 @@ func TestFeedbackMigrationIntegration(t *testing.T) {
 // and failure).
 func TestFeedbackFailureRollsBackIntegration(t *testing.T) {
 	st, ctx, signal := feedbackIntegration(t)
-	if _, err := st.pool.Exec(ctx, `ALTER TABLE feedback_signals ADD CONSTRAINT feedback_refused CHECK (next_signal_seconds <> 61)`); err != nil {
+	// The recent signal is the last row a signal writes, so every other write
+	// has run when this constraint refuses it.
+	if _, err := st.pool.Exec(ctx, `ALTER TABLE feedback_recent_signals ADD CONSTRAINT feedback_refused CHECK (jsonb_array_length(service_digests) <> 2)`); err != nil {
 		t.Fatal(err)
 	}
 	counts := func() (deploys, running, stopped, signals, used int) {
@@ -89,8 +93,11 @@ func TestFeedbackFailureRollsBackIntegration(t *testing.T) {
 			}
 		}
 	}
+	two := func(api string) []store.FeedbackSignalService {
+		return []store.FeedbackSignalService{{Name: "api", Versions: []store.FeedbackSignalVersion{{Version: api}}}, {Name: "web", Versions: []store.FeedbackSignalVersion{{Version: "1"}}}}
+	}
 	refused := signal
-	refused.NextSignalSeconds = 61
+	refused.Services = two("1")
 	if err := st.RecordFeedbackSignal(ctx, refused); !errors.Is(err, store.ErrBackendOperation) {
 		t.Fatalf("err=%v, want the generic store failure", err)
 	}
@@ -100,11 +107,18 @@ func TestFeedbackFailureRollsBackIntegration(t *testing.T) {
 	}
 	require("an accepted signal", 1, 1, 0, 1, 1)
 	refused.ArrivedAt = signal.ArrivedAt.Add(10 * time.Second)
-	refused.Services = []store.FeedbackSignalService{{Name: "api", Versions: []store.FeedbackSignalVersion{{Version: "2"}}}}
+	refused.Services = two("2")
 	if err := st.RecordFeedbackSignal(ctx, refused); !errors.Is(err, store.ErrBackendOperation) {
 		t.Fatalf("err=%v, want the generic store failure", err)
 	}
 	require("a failed later signal", 1, 1, 0, 1, 1)
+	// A signal that a later arrival overtook changes earlier records, and a
+	// failure leaves those as they were too.
+	refused.ArrivedAt = signal.ArrivedAt.Add(-10 * time.Second)
+	if err := st.RecordFeedbackSignal(ctx, refused); !errors.Is(err, store.ErrBackendOperation) {
+		t.Fatalf("err=%v, want the generic store failure", err)
+	}
+	require("a failed earlier signal", 1, 1, 0, 1, 1)
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	if err := st.RecordFeedbackSignal(cancelled, signal); !errors.Is(err, context.Canceled) {

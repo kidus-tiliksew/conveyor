@@ -85,6 +85,9 @@ A signal that breaks a rule is refused whole and records nothing.
 | 500 | The store failed. The answer holds no detail |
 | 503 | The server holds the most keys it can, and each one is inside its 5 seconds. Try again |
 
+Each rule of the body is checked before the 5 seconds. An invalid signal gets 400
+inside them, and it never delays a valid signal of the same key.
+
 A refused or failed signal does not start the 5 seconds and does not change the
 key's `last_used_at`.
 
@@ -108,8 +111,23 @@ Each deploy and each stop holds the arrival time, the source `signal` with the
 key's label, and the system as the actor. Everything one signal causes is
 recorded in one transaction.
 
-When a signal reaches the store after a later arrival, it changes no service
-that the later arrival named. It also does not replace the newest signal.
+The records are those of the arrival order, whatever order signals reach the
+store in. When a signal reaches the store after a later arrival that named the
+same service:
+
+- It records its deploys and its stops at its own arrival.
+- The next arrival that names the service ends what it reported. A version that
+  it alone names is stopped then. A version that it dropped and that the next
+  arrival names is deployed again then.
+- The versions that run now and the newest signal stay. The deploy time of a
+  version that runs now can change, for example when the late signal shows that
+  the version was deployed earlier.
+
+For this, the server keeps the accepted signals of the 10 minutes before the
+newest signal of the environment: the arrival, the key's label, and which
+services each one named. A signal that is later than that still records its
+deploys and stops. It ends at the next arrival that changed the service, at the
+newest arrival that named it, or at a kept signal, whichever is first.
 
 A version is stored as it was sent and is unresolved. No forge is asked.
 

@@ -1,6 +1,6 @@
 -- component-production-feedback, feature-production-feedback-live FB-2,
 -- req-production-feedback REQ-1 and REQ-2, req-environments AC-2.4,
--- DEC-149(1), and DEC-139(2). The three tables share the workspace as shard
+-- DEC-149(1), and DEC-139(2). The four tables share the workspace as shard
 -- key with the environment tables, so every row of one signal is on one
 -- partition, beside the environments row that the workspace environment claim
 -- names as its witness (component-persistence invariant 8). The Go writers
@@ -61,6 +61,23 @@ CREATE ROWSTORE TABLE IF NOT EXISTS feedback_running_versions (
  deploy_id VARCHAR(64) NOT NULL,
  deployed_at DATETIME(6) NOT NULL,
  reported_at DATETIME(6) NOT NULL,
+ reported_label VARCHAR(255) NOT NULL,
  PRIMARY KEY (workspace_id, environment_id, service_digest, version_digest),
+ SHARD KEY (workspace_id)
+) COLLATE utf8mb4_bin;
+
+-- The accepted signals of the last ten minutes before the newest one, each
+-- with the digests of the services it named. A signal that reaches the store
+-- after a later arrival ends at the next arrival that named its service, which
+-- can be one that changed nothing (component-production-feedback invariants 4
+-- and 5).
+CREATE ROWSTORE TABLE IF NOT EXISTS feedback_recent_signals (
+ workspace_id VARCHAR(255) NOT NULL,
+ environment_id VARCHAR(64) NOT NULL,
+ arrived_at DATETIME(6) NOT NULL,
+ id VARCHAR(64) NOT NULL,
+ source_label VARCHAR(255) NOT NULL,
+ service_digests LONGTEXT NOT NULL,
+ PRIMARY KEY (workspace_id, environment_id, arrived_at, id),
  SHARD KEY (workspace_id)
 ) COLLATE utf8mb4_bin;
