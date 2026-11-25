@@ -1091,27 +1091,139 @@ func CompareAncestry(ctx context.Context, repo, base, head string) (CompareAnces
 }
 
 func compareAncestry(ctx context.Context, repo, base, head string, run ghRunner) (CompareAncestryResult, error) {
-	if strings.TrimSpace(head) == "" || strings.TrimSpace(base) == "" {
-		return CompareAncestryResult{}, fmt.Errorf("compare ancestry of %q: base and head SHA are required", head)
-	}
-	raw, err := run(ctx, "api", "repos/"+repo+"/compare/"+url.PathEscape(base)+"..."+url.PathEscape(head)+"?per_page=1&page=1")
+	result, _, err := compareCommits(ctx, repo, base, head, 0, run)
+	return result, err
+}
+
+// MaxArrivedCommits bounds the commits that one CompareArrived request lists.
+const MaxArrivedCommits = 100
+
+// CompareArrivedResult is GitHub's comparison of base with head with the
+// commits that head holds and base lacks. Commits lists at most the bound
+// that the caller asked for; Complete is true only when it lists every such
+// commit, so a partial list proves each listed commit and nothing about the
+// others (component-production-feedback invariant 14).
+type CompareArrivedResult struct {
+	CompareAncestryResult
+	Commits  []string
+	Complete bool
+}
+
+// CompareArrived reads GitHub's comparison of base with head through the
+// endpoint CompareAncestry calls, in one request, and also lists up to limit
+// of the commits that arrived in head (feature-production-feedback-live FB-3;
+// component-git-delivery). Each listed commit is a full lower-case commit ID.
+func CompareArrived(ctx context.Context, repo, base, head string, limit int) (CompareArrivedResult, error) {
+	return compareArrived(ctx, repo, base, head, limit, gh)
+}
+
+func compareArrived(ctx context.Context, repo, base, head string, limit int, run ghRunner) (CompareArrivedResult, error) {
+	limit = min(max(limit, 1), MaxArrivedCommits)
+	result, commits, err := compareCommits(ctx, repo, base, head, limit, run)
 	if err != nil {
-		return CompareAncestryResult{}, fmt.Errorf("compare ancestry of %s: %w", head, forgeCallError(err))
+		return CompareArrivedResult{}, err
+	}
+	arrived := CompareArrivedResult{CompareAncestryResult: result, Commits: commits}
+	arrived.Complete = (result.Status == "ahead" || result.Status == "identical") && len(commits) == result.AheadBy
+	return arrived, nil
+}
+
+// compareCommits reads one page of GitHub's comparison of base with head.
+// With arrived 0 it asks for one commit and decodes none, which is the
+// ancestry-only read that review submission uses. Otherwise it asks for that
+// many commits on the first page and decodes each commit ID.
+func compareCommits(ctx context.Context, repo, base, head string, arrived int, run ghRunner) (CompareAncestryResult, []string, error) {
+	if strings.TrimSpace(head) == "" || strings.TrimSpace(base) == "" {
+		return CompareAncestryResult{}, nil, fmt.Errorf("compare ancestry of %q: base and head SHA are required", head)
+	}
+	perPage := 1
+	if arrived > 0 {
+		perPage = arrived
+	}
+	raw, err := run(ctx, "api", "repos/"+repo+"/compare/"+url.PathEscape(base)+"..."+url.PathEscape(head)+"?per_page="+strconv.Itoa(perPage)+"&page=1")
+	if err != nil {
+		return CompareAncestryResult{}, nil, fmt.Errorf("compare ancestry of %s: %w", head, forgeCallError(err))
 	}
 	var comparison struct {
 		Status   *string `json:"status"`
 		AheadBy  *int    `json:"ahead_by"`
 		BehindBy *int    `json:"behind_by"`
+		Commits  []struct {
+			SHA string `json:"sha"`
+		} `json:"commits"`
 	}
 	if json.Unmarshal(raw, &comparison) != nil || comparison.Status == nil || comparison.AheadBy == nil || comparison.BehindBy == nil || *comparison.AheadBy < 0 || *comparison.BehindBy < 0 {
-		return CompareAncestryResult{}, fmt.Errorf("compare ancestry of %s: %w", head, forgeResponseError("missing or malformed status, ahead_by, or behind_by"))
+		return CompareAncestryResult{}, nil, fmt.Errorf("compare ancestry of %s: %w", head, forgeResponseError("missing or malformed status, ahead_by, or behind_by"))
 	}
 	switch *comparison.Status {
 	case "ahead", "behind", "identical", "diverged":
 	default:
-		return CompareAncestryResult{}, fmt.Errorf("compare ancestry of %s: %w", head, forgeResponseError("unknown comparison status"))
+		return CompareAncestryResult{}, nil, fmt.Errorf("compare ancestry of %s: %w", head, forgeResponseError("unknown comparison status"))
 	}
-	return CompareAncestryResult{Status: *comparison.Status, AheadBy: *comparison.AheadBy, BehindBy: *comparison.BehindBy}, nil
+	result := CompareAncestryResult{Status: *comparison.Status, AheadBy: *comparison.AheadBy, BehindBy: *comparison.BehindBy}
+	if arrived == 0 {
+		return result, nil, nil
+	}
+	if len(comparison.Commits) > arrived {
+		return CompareAncestryResult{}, nil, fmt.Errorf("compare ancestry of %s: %w", head, forgeResponseError("more commits than the page holds"))
+	}
+	commits := make([]string, 0, len(comparison.Commits))
+	for _, commit := range comparison.Commits {
+		sha := strings.ToLower(commit.SHA)
+		if !fullCommitID(sha) {
+			return CompareAncestryResult{}, nil, fmt.Errorf("compare ancestry of %s: %w", head, forgeResponseError("malformed commit ID"))
+		}
+		commits = append(commits, sha)
+	}
+	return result, commits, nil
+}
+
+// ErrCommitNotFound marks a commit read that GitHub answers with no such
+// commit, tag, or branch in the repository.
+var ErrCommitNotFound = errors.New("commit not found")
+
+// CommitNotFoundError is the failure ReadCommit returns for a ref that the
+// repository does not hold. Forge stubs use it to answer the same way.
+func CommitNotFoundError(ref string) error {
+	return &Error{Category: ForgeStatus, status: http.StatusNotFound, Err: fmt.Errorf("%w: %s", ErrCommitNotFound, ref)}
+}
+
+func fullCommitID(sha string) bool {
+	return len(sha) == 40 && strings.Trim(sha, "0123456789abcdef") == ""
+}
+
+// ReadCommit returns the full commit ID that ref names in the repository,
+// through repos/{repository}/commits/{ref} (component-production-feedback
+// invariant 9; DEC-149(4)). ref is a commit ID, heads/<branch>, or
+// tags/<tag>, and it is escaped as one path segment. A ref the repository
+// does not hold answers ErrCommitNotFound.
+func ReadCommit(ctx context.Context, repo, ref string) (string, error) {
+	return readCommit(ctx, repo, ref, gh)
+}
+
+func readCommit(ctx context.Context, repo, ref string, run ghRunner) (string, error) {
+	if strings.TrimSpace(repo) == "" || strings.TrimSpace(ref) == "" {
+		return "", &Error{Category: ForgeRequest, Err: errors.New("a commit read needs a repository and a ref")}
+	}
+	raw, err := run(ctx, "api", "repos/"+repo+"/commits/"+url.PathEscape(ref))
+	if err != nil {
+		failure := forgeCallError(err)
+		if status := HTTPStatus(failure); status == http.StatusNotFound || status == http.StatusUnprocessableEntity {
+			return "", CommitNotFoundError(ref)
+		}
+		return "", fmt.Errorf("read commit: %w", failure)
+	}
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	sha := ""
+	if json.Unmarshal(raw, &commit) == nil {
+		sha = strings.ToLower(commit.SHA)
+	}
+	if !fullCommitID(sha) {
+		return "", fmt.Errorf("read commit: %w", forgeResponseError("missing or malformed commit ID"))
+	}
+	return sha, nil
 }
 
 // SubmissionPullRequest is the existing open PR observed for a submission.

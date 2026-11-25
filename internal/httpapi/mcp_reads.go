@@ -534,6 +534,15 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 			if risk != nil {
 				read["risk"] = risk
 			}
+			// The same live status the REST task read serves
+			// (req-production-feedback AC-10.1).
+			statuses, e := s.feedbackTaskEnvironments(ctx, task)
+			if e != nil {
+				return nil, e
+			}
+			if len(statuses) > 0 {
+				read["environments"] = statuses
+			}
 			return []any{read}, nil
 		}
 		task.Context, e = store.TaskContextForTask(ctx, s.Store, task.ID)

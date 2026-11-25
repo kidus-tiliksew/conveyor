@@ -34,6 +34,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/feedback"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
@@ -76,6 +77,12 @@ type Server struct {
 	feedbackLimiter     *feedbackLimiter
 	feedbackClock       func() time.Time
 	feedbackKeyTimeout  time.Duration
+	// feedbackWork runs resolving and comparing in the background, after the
+	// signal route answers and when a read finds an answer missing.
+	// feedbackForge replaces the workspace App's GitHub reads in tests.
+	feedbackWorkOnce sync.Once
+	feedbackWork     *feedbackWorker
+	feedbackForge    feedback.Forge
 	// historyCursors signs task history cursors under a key drawn once per
 	// process; tests may install a codec before first use (task 261015-3721c6).
 	historyCursorsOnce sync.Once
@@ -1609,6 +1616,16 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	}
 	response, ok := s.taskResponse(w, r, t)
 	if !ok {
+		return
+	}
+	// A merged task carries its live status in each relevant environment
+	// (component-production-feedback, Public surfaces; invariant 19).
+	statuses, err := s.feedbackTaskEnvironments(r.Context(), t)
+	if err == nil {
+		response, err = withFeedbackEnvironments(response, statuses)
+	}
+	if err != nil {
+		writeStoreFailure(w, r, err)
 		return
 	}
 	rendered, err := renderMCPReadItem(response, redactor)

@@ -196,6 +196,9 @@ type FeedbackStore interface {
 	// first, then in the order of their reports, and then by service and
 	// version.
 	ListFeedbackDeploys(ctx context.Context, environmentID string) ([]FeedbackDeploy, error)
+	// FeedbackStatusStore keeps resolved versions and comparisons and reads
+	// merged tasks (feature-production-feedback-live FB-3).
+	FeedbackStatusStore
 }
 
 // FeedbackFieldError names the field of a signal, as a path, that holds a

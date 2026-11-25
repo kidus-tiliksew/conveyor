@@ -14,6 +14,8 @@ type feedbackState struct {
 	deploys  map[memoryScopedKey][]FeedbackDeploy
 	running  map[memoryScopedKey][]FeedbackRunningVersion
 	accepted map[memoryScopedKey][]FeedbackAcceptedSignal
+	// status holds what resolving and comparing learn (FB-3).
+	status feedbackStatusState
 }
 
 func newFeedbackState() feedbackState {
@@ -22,6 +24,7 @@ func newFeedbackState() feedbackState {
 		deploys:  map[memoryScopedKey][]FeedbackDeploy{},
 		running:  map[memoryScopedKey][]FeedbackRunningVersion{},
 		accepted: map[memoryScopedKey][]FeedbackAcceptedSignal{},
+		status:   newFeedbackStatusState(),
 	}
 }
 
