@@ -112,7 +112,8 @@ key's label, and the system as the actor. Everything one signal causes is
 recorded in one transaction.
 
 The records are those of the arrival order, whatever order signals reach the
-store in. When a signal reaches the store after a later arrival that named the
+store in. Signals with the same arrival time keep the order in which the server
+accepted them, and each one stays a report of its own. When a signal reaches the store after a later arrival that named the
 same service:
 
 - It records its deploys and its stops at its own arrival.

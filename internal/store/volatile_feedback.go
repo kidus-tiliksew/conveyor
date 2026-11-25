@@ -62,7 +62,8 @@ func (m *volatileMemory) RecordFeedbackSignal(ctx context.Context, signal Feedba
 	if err := CheckFeedbackRepositories(signal, repositories); err != nil {
 		return err
 	}
-	origin := FeedbackSignalOrigin(key.Label)
+	// Each accepted signal adds one, so the count numbers this one.
+	origin := FeedbackSignalOrigin(key.Label, int64(len(m.feedbackState.accepted[scope]))+1)
 	// The plan reads the memory's own slices and returns new values.
 	changes, err := PlanFeedbackChanges(signal, origin, FeedbackHistory{Running: m.feedbackState.running[scope], Later: m.feedbackState.accepted[scope], Deploys: m.feedbackState.deploys[scope]})
 	if err != nil {
@@ -104,7 +105,7 @@ func (m *volatileMemory) RecordFeedbackSignal(ctx context.Context, signal Feedba
 	m.feedbackState.deploys[scope] = append(deploys, changes.Deploys...)
 	m.feedbackState.running[scope] = running
 	if newest, exists := m.feedbackState.signals[scope]; !exists || !newest.LastSignalAt.After(signal.ArrivedAt) {
-		m.feedbackState.signals[scope] = FeedbackSignalState{EnvironmentID: signal.EnvironmentID, LastSignalAt: signal.ArrivedAt, NextSignalSeconds: signal.NextSignalSeconds, Origin: origin}
+		m.feedbackState.signals[scope] = FeedbackSignalState{EnvironmentID: signal.EnvironmentID, LastSignalAt: signal.ArrivedAt, NextSignalSeconds: signal.NextSignalSeconds, Origin: FeedbackSignalOrigin(key.Label, 0)}
 	}
 	m.feedbackState.accepted[scope] = append(m.feedbackState.accepted[scope], NewFeedbackAcceptedSignal(signal, origin))
 	m.touchEnvironmentKeyLocked(keyScope)

@@ -7,6 +7,8 @@
 
 -- The newest accepted signal of each environment. The listening state is
 -- computed from it at each read (component-production-feedback invariant 13).
+-- last_report numbers the accepted reports of the environment from 1, in the
+-- order of acceptance.
 CREATE TABLE IF NOT EXISTS feedback_signals (
     workspace_id text NOT NULL,
     environment_id text NOT NULL,
@@ -15,12 +17,15 @@ CREATE TABLE IF NOT EXISTS feedback_signals (
     source text NOT NULL CHECK (source = 'signal'),
     source_label text NOT NULL,
     actor_id text NOT NULL,
+    last_report bigint NOT NULL CHECK (last_report > 0),
     PRIMARY KEY (workspace_id, environment_id),
     FOREIGN KEY (workspace_id, environment_id) REFERENCES environments(workspace_id, id) ON DELETE CASCADE
 );
 
 -- One row for each deploy. A version that comes back after it stopped is a
--- new deploy (component-production-feedback invariants 5 and 6).
+-- new deploy (component-production-feedback invariants 5 and 6). report and
+-- stop_report number the reports that started and stopped it, so two reports
+-- with one stored time stay apart.
 CREATE TABLE IF NOT EXISTS feedback_deploys (
     workspace_id text NOT NULL,
     id text NOT NULL,
@@ -34,13 +39,15 @@ CREATE TABLE IF NOT EXISTS feedback_deploys (
     source text NOT NULL CHECK (source IN ('signal', 'github')),
     source_label text NOT NULL,
     actor_id text NOT NULL,
+    report bigint NOT NULL CHECK (report > 0),
     stopped_at timestamptz NULL,
     stop_source text NULL CHECK (stop_source IN ('signal', 'github')),
     stop_source_label text NULL,
     stop_actor_id text NULL,
+    stop_report bigint NULL CHECK (stop_report > 0),
     PRIMARY KEY (workspace_id, id),
     FOREIGN KEY (workspace_id, environment_id) REFERENCES environments(workspace_id, id) ON DELETE CASCADE,
-    CHECK (num_nonnulls(stopped_at, stop_source, stop_source_label, stop_actor_id) IN (0, 4))
+    CHECK (num_nonnulls(stopped_at, stop_source, stop_source_label, stop_actor_id, stop_report) IN (0, 5))
 );
 
 CREATE INDEX IF NOT EXISTS feedback_deploys_environment_idx
@@ -76,9 +83,9 @@ CREATE TABLE IF NOT EXISTS feedback_accepted_signals (
     workspace_id text NOT NULL,
     environment_id text NOT NULL,
     arrived_at timestamptz NOT NULL,
-    id text NOT NULL,
+    report bigint NOT NULL CHECK (report > 0),
     source_label text NOT NULL,
     service_digests jsonb NOT NULL CHECK (jsonb_typeof(service_digests) = 'array'),
-    PRIMARY KEY (workspace_id, environment_id, arrived_at, id),
+    PRIMARY KEY (workspace_id, environment_id, arrived_at, report),
     FOREIGN KEY (workspace_id, environment_id) REFERENCES environments(workspace_id, id) ON DELETE CASCADE
 );

@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,7 @@ func runFeedback(t *testing.T, factory Factory) {
 		{"Source", runFeedbackSource},
 		{"NewestSignal", runFeedbackNewestSignal},
 		{"EarlierArrival", runFeedbackEarlierArrival},
+		{"SameArrival", runFeedbackSameArrival},
 		{"ArrivalOrder", runFeedbackArrivalOrder},
 		{"RecentWindow", runFeedbackRecentWindow},
 		{"RepositoryCheck", runFeedbackRepositoryCheck},
@@ -185,6 +187,13 @@ func (e feedbackEnvironment) requireDeploys(t *testing.T, want ...string) {
 	if len(open) != 0 {
 		t.Fatalf("running=%+v, want a version for each deploy that has not stopped: %+v", running, open)
 	}
+}
+
+// unnumbered is the origin without its report number, which depends on the
+// order of acceptance.
+func unnumbered(origin store.FeedbackOrigin) store.FeedbackOrigin {
+	origin.Report = 0
+	return origin
 }
 
 func requireFeedbackField(t *testing.T, err error, field string) {
@@ -427,7 +436,7 @@ func runFeedbackSource(t *testing.T, x Fixture) {
 		return store.FeedbackOrigin{Source: store.FeedbackSourceSignal, Label: label, Actor: core.SystemActorID}
 	}
 	deploys := e.deploys(t)
-	if len(deploys) != 2 || deploys[0].Origin != origin("first watcher") || deploys[0].StopOrigin == nil || *deploys[0].StopOrigin != origin("second watcher") || deploys[1].Origin != origin("second watcher") || deploys[1].StopOrigin != nil {
+	if len(deploys) != 2 || unnumbered(deploys[0].Origin) != origin("first watcher") || deploys[0].StopOrigin == nil || unnumbered(*deploys[0].StopOrigin) != origin("second watcher") || unnumbered(deploys[1].Origin) != origin("second watcher") || deploys[1].StopOrigin != nil {
 		t.Fatalf("deploys=%+v", deploys)
 	}
 	if newest, ok := e.newest(t); !ok || newest.Origin != origin("second watcher") || newest.EnvironmentID != e.id {
@@ -436,7 +445,7 @@ func runFeedbackSource(t *testing.T, x Fixture) {
 	// Everything recorded under a revoked key stays (req-environments
 	// AC-2.2).
 	requireOK(t, x.Backend.RevokeEnvironmentKey(x.Context, e.id, e.key.ID))
-	if again := e.deploys(t); len(again) != 2 || again[0].Origin != origin("first watcher") {
+	if again := e.deploys(t); len(again) != 2 || unnumbered(again[0].Origin) != origin("first watcher") {
 		t.Fatalf("deploys after the revocation=%+v", again)
 	}
 }
@@ -502,7 +511,7 @@ func runFeedbackEarlierArrival(t *testing.T, x Fixture) {
 			if d.Version != version || !d.DeployedAt.Equal(feedbackTime(offset)) {
 				continue
 			}
-			if d.Origin != origin(started) || (stopped == "") != (d.StopOrigin == nil) || (d.StopOrigin != nil && *d.StopOrigin != origin(stopped)) {
+			if unnumbered(d.Origin) != origin(started) || (stopped == "") != (d.StopOrigin == nil) || (d.StopOrigin != nil && unnumbered(*d.StopOrigin) != origin(stopped)) {
 				t.Fatalf("deploy=%+v stop=%+v, want started by %q and stopped by %q", d, d.StopOrigin, started, stopped)
 			}
 			return
@@ -577,21 +586,112 @@ func runFeedbackEarlierArrival(t *testing.T, x Fixture) {
 	requireNewest(100*time.Second, 60)
 }
 
-// runFeedbackArrivalOrder stores the same signals, four minutes apart, in
-// their arrival order and in a shuffled order. Both leave the same deploys, stops, origins, running
-// versions, and newest signal.
+// runFeedbackSameArrival proves that reports with one stored time stay apart:
+// a delayed signal ends at the first of them, and what a later one of them
+// starts is its own deploy (component-production-feedback invariants 4 to 6;
+// req-production-feedback AC-1.3).
+func runFeedbackSameArrival(t *testing.T, x Fixture) {
+	send := func(keys map[string]feedbackEnvironment, label string, offset time.Duration, versions ...string) {
+		t.Helper()
+		keys[label].send(t, offset, feedbackService("api", versions...))
+	}
+	setup := func(name string) (feedbackEnvironment, map[string]feedbackEnvironment) {
+		t.Helper()
+		e := newFeedbackEnvironment(t, x, name, "first")
+		keys := map[string]feedbackEnvironment{"first": e}
+		for _, label := range []string{"second", "delayed"} {
+			key, err := x.Backend.IssueEnvironmentKey(x.Context, e.id, label)
+			requireOK(t, err)
+			other := e
+			other.key = key
+			keys[label] = other
+		}
+		return e, keys
+	}
+	// require compares each deploy as "version from started" or "version
+	// from-to started stopped", with the labels of the keys.
+	require := func(e feedbackEnvironment, want ...string) {
+		t.Helper()
+		var got []string
+		seconds := func(at time.Time) int { return int(at.Sub(feedbackTime(0)).Seconds()) }
+		for _, d := range e.deploys(t) {
+			line := fmt.Sprintf("%s %d %s", d.Version, seconds(d.DeployedAt), d.Origin.Label)
+			if d.StoppedAt != nil {
+				line = fmt.Sprintf("%s %d-%d %s %s", d.Version, seconds(d.DeployedAt), seconds(*d.StoppedAt), d.Origin.Label, d.StopOrigin.Label)
+			}
+			if d.Origin.Source != store.FeedbackSourceSignal || d.Origin.Actor != core.SystemActorID || d.Origin.Report < 1 {
+				t.Fatalf("deploy=%+v, want a numbered report of a signal by the system", d)
+			}
+			got = append(got, line)
+		}
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Fatalf("deploys=%q, want %q", got, want)
+		}
+	}
+	// The first report at 1 second drops B, so the delayed B stops there under
+	// its label. The second report starts another B, which runs now.
+	e, keys := setup("Start")
+	send(keys, "first", time.Second, "@A")
+	send(keys, "second", time.Second, "@B")
+	send(keys, "delayed", 0, "@A", "@B")
+	require(e, "A 0-1 delayed second", "B 0-1 delayed first", "B 1 second")
+	e.requireRunning(t, "api=@B+1")
+	if newest, _ := e.newest(t); !newest.LastSignalAt.Equal(feedbackTime(time.Second)) || newest.Origin.Label != "second" {
+		t.Fatalf("newest=%+v, want the second report", newest)
+	}
+	// The reports keep their order of acceptance, so swapped reports end the
+	// delayed A instead.
+	e, keys = setup("Swapped")
+	send(keys, "second", time.Second, "@B")
+	send(keys, "first", time.Second, "@A")
+	send(keys, "delayed", 0, "@A", "@B")
+	require(e, "A 0-1 delayed second", "A 1 first", "B 0-1 delayed first")
+	e.requireRunning(t, "api=@A+1")
+	// A delayed signal drops a version that the first report names and the
+	// second stops. It comes back with the first report.
+	e, keys = setup("Stop")
+	send(keys, "first", 0, "@A")
+	send(keys, "first", 10*time.Second, "@A")
+	send(keys, "second", 10*time.Second, "@B")
+	send(keys, "delayed", 5*time.Second, "@C")
+	require(e, "A 0-5 first delayed", "C 5-10 delayed first", "A 10-10 first second", "B 10 second")
+	e.requireRunning(t, "api=@B+10")
+	// A delayed signal with the arrival of stored reports comes after them.
+	e, keys = setup("Tie")
+	send(keys, "first", 5*time.Second, "@A")
+	send(keys, "second", 5*time.Second, "@B")
+	send(keys, "first", 10*time.Second, "@A")
+	send(keys, "delayed", 5*time.Second, "@C")
+	require(e, "A 5-5 first second", "B 5-5 second delayed", "C 5-10 delayed first", "A 10 first")
+	e.requireRunning(t, "api=@A+10")
+	// Three reports of one later arrival stay three boundaries.
+	e, keys = setup("Three")
+	send(keys, "first", 10*time.Second, "@A")
+	send(keys, "second", 10*time.Second, "@B")
+	send(keys, "first", 10*time.Second, "@A")
+	send(keys, "delayed", 0, "@A")
+	require(e, "A 0-10 delayed second", "B 10-10 second first", "A 10 first")
+	e.requireRunning(t, "api=@A+10")
+}
+
+// runFeedbackArrivalOrder stores the same signals in their arrival order and in
+// a shuffled order. They are four minutes apart, and some share an arrival, for
+// which both orders keep the order of acceptance. Both leave the same deploys,
+// stops, origins, running versions, and newest signal.
 func runFeedbackArrivalOrder(t *testing.T, x Fixture) {
 	labels := []string{"first", "second", "third"}
 	render := func(e feedbackEnvironment) string {
 		t.Helper()
 		var lines []string
 		for _, d := range e.deploys(t) {
-			line := fmt.Sprintf("deploy %s=%s %v %+v", d.Service, renderFeedbackVersion(d.FeedbackVersion), d.DeployedAt, d.Origin)
+			line := fmt.Sprintf("deploy %s=%s %v %+v", d.Service, renderFeedbackVersion(d.FeedbackVersion), d.DeployedAt, unnumbered(d.Origin))
 			if (d.StoppedAt == nil) != (d.StopOrigin == nil) {
 				t.Fatalf("deploy=%+v, want a stop time with its origin or neither", d)
 			}
 			if d.StoppedAt != nil {
-				line += fmt.Sprintf(" to %v %+v", d.StoppedAt, *d.StopOrigin)
+				line += fmt.Sprintf(" to %v %+v", d.StoppedAt, unnumbered(*d.StopOrigin))
 			}
 			lines = append(lines, line)
 		}
@@ -629,7 +729,7 @@ func runFeedbackArrivalOrder(t *testing.T, x Fixture) {
 		}
 		var signals []planned
 		for i := range 8 {
-			p := planned{key: random.IntN(len(labels)), offset: time.Duration(2000*seed+240*i) * time.Second, seconds: 10 + random.IntN(100)}
+			p := planned{key: random.IntN(len(labels)), offset: time.Duration(2000*seed+240*min(i, random.IntN(8))) * time.Second, seconds: 10 + random.IntN(100)}
 			// One signal in three names each service alone.
 			omitted := random.IntN(3)
 			for j, name := range []string{"api", "web"} {
@@ -658,8 +758,10 @@ func runFeedbackArrivalOrder(t *testing.T, x Fixture) {
 			}
 			return render(to.e)
 		}
-		want := record(ordered, []int{0, 1, 2, 3, 4, 5, 6, 7})
 		order := random.Perm(len(signals))
+		arrival := slices.Clone(order)
+		slices.SortStableFunc(arrival, func(a, b int) int { return cmp.Compare(signals[a].offset, signals[b].offset) })
+		want := record(ordered, arrival)
 		if got := record(shuffled, order); got != want {
 			t.Fatalf("seed %d order %v:\n%s\nwant the records of the arrival order:\n%s\nsignals %+v", seed, order, got, want, signals)
 		}

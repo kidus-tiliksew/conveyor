@@ -9,6 +9,9 @@
 -- value was not stated. No dispatch, claim, gate, review, merge, next-action,
 -- lineage, or work-order query reads these tables (component-production-feedback
 -- invariant 1). Restart-safe: every statement is IF NOT EXISTS. No backfill.
+
+-- last_report numbers the accepted reports of the environment from 1, in the
+-- order of acceptance, and report and stop_report hold that number.
 CREATE ROWSTORE TABLE IF NOT EXISTS feedback_signals (
  workspace_id VARCHAR(255) NOT NULL,
  environment_id VARCHAR(64) NOT NULL,
@@ -17,6 +20,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS feedback_signals (
  source VARCHAR(32) NOT NULL,
  source_label VARCHAR(255) NOT NULL,
  actor_id VARCHAR(255) NOT NULL,
+ last_report BIGINT NOT NULL,
  PRIMARY KEY (workspace_id, environment_id),
  SHARD KEY (workspace_id)
 ) COLLATE utf8mb4_bin;
@@ -36,10 +40,12 @@ CREATE ROWSTORE TABLE IF NOT EXISTS feedback_deploys (
  source VARCHAR(32) NOT NULL,
  source_label VARCHAR(255) NOT NULL,
  actor_id VARCHAR(255) NOT NULL,
+ report BIGINT NOT NULL,
  stopped_at DATETIME(6) NULL,
  stop_source VARCHAR(32) NULL,
  stop_source_label VARCHAR(255) NULL,
  stop_actor_id VARCHAR(255) NULL,
+ stop_report BIGINT NULL,
  PRIMARY KEY (workspace_id, id),
  KEY feedback_deploys_environment_idx (workspace_id, environment_id, deployed_at),
  SHARD KEY (workspace_id)
@@ -75,10 +81,10 @@ CREATE TABLE IF NOT EXISTS feedback_accepted_signals (
  workspace_id VARCHAR(255) NOT NULL,
  environment_id VARCHAR(64) NOT NULL,
  arrived_at DATETIME(6) NOT NULL,
- id VARCHAR(64) NOT NULL,
+ report BIGINT NOT NULL,
  source_label VARCHAR(255) NOT NULL,
  service_digests LONGTEXT NOT NULL,
- SORT KEY (workspace_id, environment_id, arrived_at, id),
- PRIMARY KEY (workspace_id, environment_id, arrived_at, id) USING HASH,
+ SORT KEY (workspace_id, environment_id, arrived_at, report),
+ PRIMARY KEY (workspace_id, environment_id, arrived_at, report) USING HASH,
  SHARD KEY (workspace_id)
 ) COLLATE utf8mb4_bin;

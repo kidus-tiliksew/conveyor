@@ -167,7 +167,7 @@ func TestFeedbackSignalAccepted(t *testing.T) {
 	if !answer.AcceptedAt.Equal(arrived) {
 		t.Fatalf("accepted_at=%v, want the arrival %v", answer.AcceptedAt, arrived)
 	}
-	origin := store.FeedbackOrigin{Source: "signal", Label: "deploy", Actor: core.SystemActorID}
+	origin := store.FeedbackOrigin{Source: "signal", Label: "deploy", Actor: core.SystemActorID, Report: 1}
 	deploys := h.deploys()
 	if len(deploys) != 3 {
 		t.Fatalf("deploys=%+v, want three", deploys)
@@ -185,6 +185,7 @@ func TestFeedbackSignalAccepted(t *testing.T) {
 	// A dropped version stops, at the arrival of the signal that drops it.
 	h.accept(feedbackService(`"name":"api","repository":"app","versions":[{"commit":"abcdef1"}]`))
 	deploys = h.deploys()
+	origin.Report = 2
 	if deploys[0].StoppedAt != nil || deploys[2].StoppedAt != nil || deploys[1].StoppedAt == nil || !deploys[1].StoppedAt.Equal(store.EnvironmentTime(h.clock())) || *deploys[1].StopOrigin != origin {
 		t.Fatalf("deploys after a drop=%+v", deploys)
 	}
