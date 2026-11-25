@@ -1,0 +1,142 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+)
+
+// feedbackIntegration returns a migrated store with one environment and key,
+// and a signal of it.
+func feedbackIntegration(t *testing.T) (*Store, context.Context, store.FeedbackSignal) {
+	t.Helper()
+	st := newIdentityIntegrationStore(t, 124)
+	ctx := store.WithActor(store.WithWorkspace(t.Context(), "feedback"), store.SystemActor())
+	for range 2 {
+		if err := Migrate(ctx, st.pool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "feedback"}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := st.CreateEnvironment(ctx, store.EnvironmentInput{Name: "Production"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := st.IssueEnvironmentKey(ctx, record.ID, "watcher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, ctx, store.FeedbackSignal{
+		EnvironmentID: record.ID, KeyID: key.ID, ArrivedAt: time.Now(), NextSignalSeconds: 60,
+		Services: []store.FeedbackSignalService{{Name: "api", Versions: []store.FeedbackSignalVersion{{Version: "1"}}}},
+	}
+}
+
+// TestFeedbackMigrationIntegration proves migration 178: the tables hold the
+// rules that PostgreSQL can hold, and a second run changes nothing
+// (component-production-feedback invariants 3 and 6).
+func TestFeedbackMigrationIntegration(t *testing.T) {
+	st, ctx, signal := feedbackIntegration(t)
+	if err := st.RecordFeedbackSignal(ctx, signal); err != nil {
+		t.Fatal(err)
+	}
+	requireCode := func(code, what, sql string, args ...any) {
+		t.Helper()
+		_, err := st.pool.Exec(ctx, sql, args...)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != code {
+			t.Fatalf("%s err=%v, want SQLSTATE %s", what, err, code)
+		}
+	}
+	requireCode("23514", "an interval under the bound", `UPDATE feedback_signals SET next_signal_seconds=9`)
+	requireCode("23514", "an interval over the bound", `UPDATE feedback_signals SET next_signal_seconds=86401`)
+	requireCode("23514", "an unknown source", `UPDATE feedback_deploys SET source='person'`)
+	requireCode("23514", "a stop without its origin", `UPDATE feedback_deploys SET stopped_at=now()`)
+	requireCode("23503", "a signal of a missing environment", `UPDATE feedback_signals SET environment_id='env-missing'`)
+	requireCode("23503", "a running version without a deploy", `UPDATE feedback_running_versions SET deploy_id='deploy_missing'`)
+	requireCode("23503", "an accepted signal of a missing environment", `UPDATE feedback_accepted_signals SET environment_id='env-missing'`)
+	requireCode("23514", "accepted services that are not a list", `UPDATE feedback_accepted_signals SET service_digests='{}'`)
+	requireCode("23505", "a second row for one version", `INSERT INTO feedback_running_versions SELECT * FROM feedback_running_versions`)
+}
+
+// TestFeedbackFailureRollsBackIntegration proves that a signal whose last
+// write fails records nothing partial (component-production-feedback, State
+// and failure).
+func TestFeedbackFailureRollsBackIntegration(t *testing.T) {
+	st, ctx, signal := feedbackIntegration(t)
+	// The accepted signal is the last row a signal writes, so every other write
+	// has run when this constraint refuses it.
+	if _, err := st.pool.Exec(ctx, `ALTER TABLE feedback_accepted_signals ADD CONSTRAINT feedback_refused CHECK (jsonb_array_length(service_digests) <> 2)`); err != nil {
+		t.Fatal(err)
+	}
+	counts := func() (deploys, running, stopped, signals, used int) {
+		t.Helper()
+		if err := st.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM feedback_deploys), (SELECT count(*) FROM feedback_running_versions), (SELECT count(*) FROM feedback_deploys WHERE stopped_at IS NOT NULL), (SELECT count(*) FROM feedback_signals), (SELECT count(*) FROM environment_keys WHERE last_used_at IS NOT NULL)`).Scan(&deploys, &running, &stopped, &signals, &used); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	require := func(what string, want ...int) {
+		t.Helper()
+		deploys, running, stopped, signals, used := counts()
+		for i, got := range []int{deploys, running, stopped, signals, used} {
+			if got != want[i] {
+				t.Fatalf("%s: deploys=%d running=%d stopped=%d signals=%d used=%d, want %v", what, deploys, running, stopped, signals, used, want)
+			}
+		}
+	}
+	two := func(api string) []store.FeedbackSignalService {
+		return []store.FeedbackSignalService{{Name: "api", Versions: []store.FeedbackSignalVersion{{Version: api}}}, {Name: "web", Versions: []store.FeedbackSignalVersion{{Version: "1"}}}}
+	}
+	refused := signal
+	refused.Services = two("1")
+	if err := st.RecordFeedbackSignal(ctx, refused); !errors.Is(err, store.ErrBackendOperation) {
+		t.Fatalf("err=%v, want the generic store failure", err)
+	}
+	require("a failed first signal", 0, 0, 0, 0, 0)
+	if err := st.RecordFeedbackSignal(ctx, signal); err != nil {
+		t.Fatal(err)
+	}
+	require("an accepted signal", 1, 1, 0, 1, 1)
+	refused.ArrivedAt = signal.ArrivedAt.Add(10 * time.Second)
+	refused.Services = two("2")
+	if err := st.RecordFeedbackSignal(ctx, refused); !errors.Is(err, store.ErrBackendOperation) {
+		t.Fatalf("err=%v, want the generic store failure", err)
+	}
+	require("a failed later signal", 1, 1, 0, 1, 1)
+	// A signal that a later arrival overtook changes earlier records, and a
+	// failure leaves those as they were too.
+	// This one moves the start of the stored deploy and its running version.
+	records := func() string {
+		t.Helper()
+		var text string
+		if err := st.pool.QueryRow(ctx, `SELECT (SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM feedback_deploys d)::text || (SELECT jsonb_agg(to_jsonb(r) ORDER BY r.version_digest) FROM feedback_running_versions r)::text`).Scan(&text); err != nil {
+			t.Fatal(err)
+		}
+		return text
+	}
+	before := records()
+	refused.Services = two("1")
+	refused.ArrivedAt = signal.ArrivedAt.Add(-10 * time.Second)
+	if err := st.RecordFeedbackSignal(ctx, refused); !errors.Is(err, store.ErrBackendOperation) {
+		t.Fatalf("err=%v, want the generic store failure", err)
+	}
+	require("a failed earlier signal", 1, 1, 0, 1, 1)
+	if after := records(); after != before {
+		t.Fatalf("a failed earlier signal changed the records:\nbefore %s\nafter  %s", before, after)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := st.RecordFeedbackSignal(cancelled, signal); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled err=%v", err)
+	}
+	require("a cancelled signal", 1, 1, 0, 1, 1)
+}

@@ -31,7 +31,10 @@ type volatileMemory struct {
 	oauth oauthState
 	// environmentState holds the environment tables under the memory mutex
 	// (component-environments).
-	environmentState       environmentState
+	environmentState environmentState
+	// feedbackState holds the feedback tables under the memory mutex
+	// (component-production-feedback).
+	feedbackState          feedbackState
 	orgName                string
 	gitHubAppEncryptionKey []byte
 	log                    eventlog.Store
@@ -56,6 +59,7 @@ func NewVolatileBackend() Backend {
 		stagePreferences: map[string]StagePreferences{},
 		oauth:            newOAuthState(),
 		environmentState: newEnvironmentState(),
+		feedbackState:    newFeedbackState(),
 		orgName:          "Conveyor",
 		log:              logqueue.Notify(memlog.New(), mem.changes),
 	}

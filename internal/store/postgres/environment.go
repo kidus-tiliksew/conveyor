@@ -393,6 +393,13 @@ WHERE k.workspace_id=$1 AND k.id=$2 AND k.key_hash=$3 AND k.revoked_at IS NULL
 	return verified, err
 }
 
+// CheckEnvironmentKey implements store.EnvironmentStore.
+func (s *Store) CheckEnvironmentKey(ctx context.Context, value string) (store.VerifiedEnvironmentKey, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CheckEnvironmentKey")
+	verified, _, err := s.readEnvironmentKey(ctx, store.EnvironmentKeyDigest(value))
+	return verified, err
+}
+
 // RecordEnvironmentReport implements store.EnvironmentStore.
 func (s *Store) RecordEnvironmentReport(ctx context.Context, report store.EnvironmentReport) (bool, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "RecordEnvironmentReport")
