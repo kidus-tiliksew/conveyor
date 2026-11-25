@@ -1,9 +1,11 @@
 package storetest
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +32,7 @@ func runFeedbackStatus(t *testing.T, factory Factory) {
 		{"MergedTasks", runFeedbackMergedTasks},
 		{"Isolation", runFeedbackStatusIsolation},
 		{"ObservesOnly", runFeedbackStatusObservesOnly},
+		{"ConcurrentClaimsAndAdmissions", runFeedbackStatusConcurrent},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.run(t, factory.fresh(t, nil)) })
 	}
@@ -421,5 +424,91 @@ func runFeedbackStatusObservesOnly(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	if after.State != before.State || after.PlanState != before.PlanState || after.GateKind != before.GateKind || after.NextStage != before.NextStage || len(afterEvents) != len(beforeEvents) || len(afterOrders) != len(beforeOrders) {
 		t.Fatalf("task changed: before=%+v after=%+v events %d->%d orders %d->%d", before, after, len(beforeEvents), len(afterEvents), len(beforeOrders), len(afterOrders))
+	}
+}
+
+// runFeedbackStatusConcurrent proves that concurrent signals or replicas
+// never both run one attempt, and that concurrent admissions never pass the
+// workspace allowance or admit one pair twice.
+func runFeedbackStatusConcurrent(t *testing.T, x Fixture) {
+	environment := newFeedbackEnvironment(t, x, "Production", "watcher")
+	ref := feedbackRef(environment.id, "api", "abc1234")
+	const claimers = 8
+	var wg sync.WaitGroup
+	wins := make(chan bool, claimers)
+	failures := make(chan error, claimers)
+	for range claimers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			claimed, err := x.Backend.ClaimFeedbackResolution(x.Context, ref, feedbackTime(0), feedbackTime(0))
+			if err != nil && !errors.Is(err, store.ErrRetryable) {
+				failures <- err
+				return
+			}
+			wins <- claimed && err == nil
+		}()
+	}
+	wg.Wait()
+	close(wins)
+	close(failures)
+	for err := range failures {
+		t.Fatal(err)
+	}
+	won := 0
+	for claimed := range wins {
+		if claimed {
+			won++
+		}
+	}
+	if won != 1 {
+		t.Fatalf("%d concurrent claims won, want one", won)
+	}
+	const admitters = 4
+	head := feedbackCommit("ee")
+	admitted := make(chan []store.FeedbackComparisonKey, admitters)
+	errs := make(chan error, admitters)
+	for i := range admitters {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			keys := make([]store.FeedbackComparisonKey, 30)
+			for j := range keys {
+				// Each admitter asks for 10 pairs the next one asks for too.
+				keys[j] = store.FeedbackComparisonKey{Repository: "acme/app", Base: feedbackCommit(fmt.Sprintf("%02x", i*20+j)), Head: head}
+			}
+			for attempt := 0; ; attempt++ {
+				got, err := x.Backend.AdmitFeedbackComparisons(x.Context, keys, feedbackTime(0))
+				if errors.Is(err, store.ErrRetryable) && attempt < 20 {
+					continue
+				}
+				if err != nil {
+					errs <- err
+					return
+				}
+				admitted <- got
+				return
+			}
+		}()
+	}
+	wg.Wait()
+	close(admitted)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	seen := map[store.FeedbackComparisonKey]bool{}
+	total := 0
+	for keys := range admitted {
+		for _, key := range keys {
+			if seen[key] {
+				t.Fatalf("pair %v admitted twice", key)
+			}
+			seen[key] = true
+			total++
+		}
+	}
+	if total != store.FeedbackComparisonsPerMinute {
+		t.Fatalf("%d pairs admitted, want the allowance of %d", total, store.FeedbackComparisonsPerMinute)
 	}
 }
