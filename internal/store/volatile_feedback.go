@@ -56,15 +56,17 @@ func (m *volatileMemory) RecordFeedbackSignal(ctx context.Context, signal Feedba
 	}
 	deploys := slices.Clone(m.feedbackState.deploys[scope])
 	running := slices.Clone(m.feedbackState.running[scope])
-	for _, stopped := range changes.Stopped {
-		for i := range deploys {
-			if deploys[i].ID == stopped.DeployID {
-				at, by := signal.ArrivedAt, origin
-				deploys[i].StoppedAt, deploys[i].StopOrigin = &at, &by
-			}
-		}
-		running = slices.DeleteFunc(running, func(v FeedbackRunningVersion) bool { return v.DeployID == stopped.DeployID })
+	stopped := make(map[string]bool, len(changes.Stopped))
+	for _, version := range changes.Stopped {
+		stopped[version.DeployID] = true
 	}
+	for i := range deploys {
+		if stopped[deploys[i].ID] {
+			at, by := signal.ArrivedAt, origin
+			deploys[i].StoppedAt, deploys[i].StopOrigin = &at, &by
+		}
+	}
+	running = slices.DeleteFunc(running, func(v FeedbackRunningVersion) bool { return stopped[v.DeployID] })
 	running = append(running, changes.Started...)
 	for i := range running {
 		if slices.Contains(changes.Reported, running[i].Service) {

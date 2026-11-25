@@ -149,12 +149,16 @@ func (e feedbackEnvironment) requireRunning(t *testing.T, want ...string) {
 func (e feedbackEnvironment) requireDeploys(t *testing.T, want ...string) {
 	t.Helper()
 	var got []string
-	ids := map[string]bool{}
+	open := map[string]store.FeedbackDeploy{}
+	seen := map[string]bool{}
 	for _, d := range e.deploys(t) {
-		if d.EnvironmentID != e.id || d.Resolved || d.ID == "" || ids[d.ID] {
+		if d.EnvironmentID != e.id || d.Resolved || d.ID == "" || seen[d.ID] {
 			t.Fatalf("deploy=%+v, want an unresolved deploy of %s with its own ID", d, e.id)
 		}
-		ids[d.ID] = true
+		seen[d.ID] = true
+		if d.StoppedAt == nil {
+			open[d.ID] = d
+		}
 		line := fmt.Sprintf("%s=%s+%d", d.Service, renderFeedbackVersion(d.FeedbackVersion), int(d.DeployedAt.Sub(feedbackTime(0)).Seconds()))
 		if d.StoppedAt != nil {
 			line += fmt.Sprintf("-%d", int(d.StoppedAt.Sub(feedbackTime(0)).Seconds()))
@@ -166,11 +170,15 @@ func (e feedbackEnvironment) requireDeploys(t *testing.T, want ...string) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("deploys=%v, want %v", got, want)
 	}
-	// Each running version points at its own deploy, which has not stopped.
-	for _, v := range e.running(t) {
-		if !ids[v.DeployID] {
-			t.Fatalf("running version=%+v names no deploy", v)
+	// The running versions are exactly the deploys that have not stopped.
+	running := e.running(t)
+	for _, v := range running {
+		if d, ok := open[v.DeployID]; !ok || d.Service != v.Service || d.FeedbackVersion != v.FeedbackVersion || !d.DeployedAt.Equal(v.DeployedAt) {
+			t.Fatalf("running version=%+v names deploy=%+v, want its own deploy that has not stopped", v, d)
 		}
+	}
+	if len(running) != len(open) {
+		t.Fatalf("running=%d versions, want one for each of %d deploys that have not stopped", len(running), len(open))
 	}
 }
 
