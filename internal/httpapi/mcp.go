@@ -585,6 +585,7 @@ var mcpCapabilities = map[string]core.Capability{
 	"get_verification_publication":     core.CapabilityViewWorkspace,
 
 	"get_decision":               core.CapabilityViewWorkspace,
+	"list_environments":          core.CapabilityViewWorkspace,
 	"list_crates":                core.CapabilityViewWorkspace,
 	"get_crate":                  core.CapabilityViewWorkspace,
 	"get_lineage":                core.CapabilityViewWorkspace,

@@ -172,6 +172,13 @@ type Fixture struct {
 	OAuthDeploymentEvents func(t *testing.T, ctx context.Context) []core.Event
 	AgeOAuthRecord        func(t *testing.T, ctx context.Context, table OAuthTable, id string, by time.Duration)
 	OAuthStoredRows       func(t *testing.T, ctx context.Context) []OAuthStoredRow
+	// AgeEnvironmentKey moves one environment key's stored last use back by
+	// the given duration, and StoredEnvironmentKey returns the key's stored
+	// row. No public writer or read exposes either, so each test binary
+	// supplies both. The Environments cases require them and never skip
+	// (component-environments invariants 11 and 14).
+	AgeEnvironmentKey    func(t *testing.T, ctx context.Context, keyID string, by time.Duration)
+	StoredEnvironmentKey func(t *testing.T, ctx context.Context, keyID string) EnvironmentStoredKey
 }
 
 // requireStoredTaskHoldSeed returns the fixture's historical hold seed or
@@ -260,6 +267,7 @@ func RunAll(t *testing.T, factory Factory) {
 	})
 	run("ChangeNotices", func(t *testing.T) { RunChangeNoticeConformance(t, factory.fresh(t, nil)) })
 	run("Crates", func(t *testing.T) { runCrates(t, factory) })
+	run("Environments", func(t *testing.T) { runEnvironments(t, factory) })
 	run("OAuth", func(t *testing.T) { runOAuth(t, factory) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })

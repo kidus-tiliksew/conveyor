@@ -187,7 +187,7 @@ var credentialPatternSources = []string{
 	// (component-identity-membership invariant 46; req-security-boundaries
 	// REQ-2, REQ-3). The non-Conveyor shapes keep their leading boundary,
 	// because ordinary text such as a task-<id> name would match sk-.
-	`cv_(?:pat|agent|session|signin|oac|oat|ort)_[A-Za-z0-9_-]{16,}`,
+	`cv_(?:pat|agent|session|signin|oac|oat|ort|env)_[A-Za-z0-9_-]{16,}`,
 	// A bearer credential of any other shape. A 64-hex value stays allowed
 	// alone, because artifact IDs and content digests have that shape.
 	`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}`,

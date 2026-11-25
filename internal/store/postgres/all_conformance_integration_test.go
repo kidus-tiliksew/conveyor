@@ -407,6 +407,10 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				ageOAuthRecord(t, ctx, st, table, id, by)
 			}, OAuthStoredRows: func(t *testing.T, ctx context.Context) []storetest.OAuthStoredRow {
 				return oauthStoredRows(t, ctx, st)
+			}, AgeEnvironmentKey: func(t *testing.T, ctx context.Context, keyID string, by time.Duration) {
+				ageEnvironmentKey(t, ctx, st, keyID, by)
+			}, StoredEnvironmentKey: func(t *testing.T, ctx context.Context, keyID string) storetest.EnvironmentStoredKey {
+				return storedEnvironmentKey(t, ctx, st, keyID)
 			}, LineageHTTP: func(*testing.T) http.Handler {
 				// The shared-token operator fixture (component-lineage).
 				server := httpapi.NewServer(st)

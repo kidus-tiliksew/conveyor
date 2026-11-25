@@ -24,6 +24,7 @@ hold no setup procedure (DEC-93).
 - [Planning guide](planning-guide.md): plan a feature with an agent, from open decisions to filed tasks
 - [Writing requirements and designs](writing-documents.md): what a good requirement and a good System Design look like, and when to write a component design or a feature design
 - [Tasks](tasks.md): how work is created, given context, executed, reviewed, and linked
+- [Environments](environments.md): the routes, fields, key format, and events of the places the software runs
 - [Misalignment](misalignment.md): drift, staleness, and pending proposals
 
 ## Operations

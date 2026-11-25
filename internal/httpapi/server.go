@@ -266,7 +266,10 @@ func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	// An OAuth bearer is refused on every route except /mcp before routing
 	// (req-security-boundaries AC-1.4; component-http-api invariant 6).
-	r.Use(middleware.RequestID, githubAppRequestLogger, refuseOAuthBearerOutsideMCP, s.serverTiming, middleware.Recoverer)
+	// An environment key is refused on every route but the signal route in the
+	// same way (component-environments invariant 15; req-security-boundaries
+	// AC-1.5).
+	r.Use(middleware.RequestID, githubAppRequestLogger, refuseOAuthBearerOutsideMCP, s.refuseEnvironmentKeyOutsideSignals, s.serverTiming, middleware.Recoverer)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -461,6 +464,16 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Patch("/crates/{id}", s.patchCrate)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Put("/tasks/{id}/crate", s.setTaskCrate)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Delete("/tasks/{id}/crate", s.clearTaskCrate)
+			// Environments: reads need view_workspace, which this group
+			// requires, and every mutation needs manage_workspace
+			// (component-environments invariant 2).
+			r.Get("/environments", s.listEnvironments)
+			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/environments", s.createEnvironment)
+			r.Get("/environments/suggestions", s.listEnvironmentSuggestions)
+			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/environments/suggestions/ignore", s.ignoreEnvironmentSuggestion)
+			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Patch("/environments/{id}", s.patchEnvironment)
+			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/environments/{id}/keys", s.issueEnvironmentKey)
+			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Delete("/environments/{id}/keys/{key_id}", s.revokeEnvironmentKey)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/monitor/observations", s.observeMonitorSignal)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/monitor/drift/{id}/resolve", s.resolveMonitorDrift)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/redispatch", s.redispatchTask)
