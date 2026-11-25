@@ -1100,15 +1100,27 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	requestMerge := d.RequestMerge
 	// The forge merges only the approved head (DEC-64(5); component-submission-merge step 6).
 	ctx = github.WithExpectedHead(github.WithMergeMessage(ctx, mergeMessage), approvedHead)
-	if err := requestMerge(ctx, repo.GitHub, pr.Number); err != nil {
-		return d.recordMergeFailureWithAuthor(ctx, current, "forge_merge_failed", store.Refuse(fmt.Errorf("GitHub could not merge pull request %s#%d; resolve required checks or branch protection and retry: %w", repo.GitHub, pr.Number, err)), author)
-	}
-	confirmed, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
-	if err != nil {
-		return d.recordMergeFailureWithAuthor(ctx, current, "merge_verification_failed", store.Refuse(fmt.Errorf("GitHub accepted the merge request but Conveyor could not verify pull request %s#%d; inspect it and retry reconciliation: %w", repo.GitHub, pr.Number, err)), author)
-	}
-	if !confirmed.Merged {
-		return d.recordMergeFailureWithAuthor(ctx, current, "merge_unconfirmed", store.Refusef("GitHub did not confirm pull request %s#%d as merged; inspect checks or merge-queue status and retry", repo.GitHub, pr.Number), author)
+	var confirmed github.PullRequest
+	if requestErr := requestMerge(ctx, repo.GitHub, pr.Number); requestErr != nil {
+		if github.MergeRefused(requestErr) {
+			return d.recordMergeFailureWithAuthor(ctx, current, "forge_merge_failed", store.Refuse(fmt.Errorf("GitHub could not merge pull request %s#%d; resolve required checks or branch protection and retry: %w", repo.GitHub, pr.Number, requestErr)), author)
+		}
+		// Any other failure can hide a landed merge, so one read settles the
+		// request and nothing repeats it (DEC-64(6);
+		// req-delivery-and-forge AC-3.6; component-submission-merge, State and
+		// failure).
+		var reason string
+		if confirmed, reason, err = d.readUncertainMerge(ctx, current, repo.GitHub, pr.Number, approvedHead, requestErr); err != nil {
+			return d.recordMergeFailureWithAuthor(ctx, current, reason, err, author)
+		}
+	} else {
+		confirmed, err = d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
+		if err != nil {
+			return d.recordMergeFailureWithAuthor(ctx, current, "merge_verification_failed", store.Refuse(fmt.Errorf("GitHub accepted the merge request but Conveyor could not verify pull request %s#%d; inspect it and retry reconciliation: %w", repo.GitHub, pr.Number, err)), author)
+		}
+		if !confirmed.Merged {
+			return d.recordMergeFailureWithAuthor(ctx, current, "merge_unconfirmed", store.Refusef("GitHub did not confirm pull request %s#%d as merged; inspect checks or merge-queue status and retry", repo.GitHub, pr.Number), author)
+		}
 	}
 	if held {
 		// The override is written before the confirmation. A crash before it
@@ -1125,6 +1137,29 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	}
 	d.observeConfirmedMerge(ctx, current, repo.GitHub, confirmed, "merge.confirmed")
 	return d.confirmTaskMergedWithApproval(ctx, current.ID, final)
+}
+
+// readUncertainMerge reads the pull request once after a merge request failed
+// with no definitive refusal. It returns the pull request when GitHub merged it
+// at expectedHead with a merge commit, and otherwise the merge.failed reason
+// code and the error to record. An empty expectedHead binds no head, as for a
+// task approved before it recorded one. The error wraps requestErr and only
+// prints a read failure, so the recorded forge category stays the merge
+// request's (req-delivery-and-forge AC-2.3). Neither reason code ends
+// the in-flight merge.requested (monitor.EndsMergeFlight).
+func (d *Dispatcher) readUncertainMerge(ctx context.Context, task core.Task, githubRepo string, number int, expectedHead string, requestErr error) (github.PullRequest, string, error) {
+	confirmed, readErr := d.ViewPullRequest(ctx, githubRepo, task.Branch)
+	switch {
+	case readErr != nil:
+		return confirmed, "merge_unconfirmed", store.Refuse(fmt.Errorf("GitHub did not confirm the merge. The pull request can already be merged. Merge request for %s#%d: %w. Pull request read: %v", githubRepo, number, requestErr, readErr))
+	case !confirmed.Merged:
+		return confirmed, "merge_unconfirmed", store.Refuse(fmt.Errorf("GitHub did not confirm the merge. The pull request can already be merged. Merge request for %s#%d: %w", githubRepo, number, requestErr))
+	case expectedHead != "" && confirmed.HeadSHA != expectedHead:
+		return confirmed, "merge_verification_failed", store.Refuse(fmt.Errorf("GitHub merged pull request %s#%d at head %q, not at approved head %s. Merge request: %w", githubRepo, number, confirmed.HeadSHA, expectedHead, requestErr))
+	case confirmed.MergeCommitSHA == "":
+		return confirmed, "merge_verification_failed", store.Refuse(fmt.Errorf("GitHub reports pull request %s#%d as merged but names no merge commit. Merge request: %w", githubRepo, number, requestErr))
+	}
+	return confirmed, "", nil
 }
 
 // ReconcileObservedPullRequest records a forge merge at the reviewed head.
