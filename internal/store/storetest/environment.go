@@ -289,7 +289,7 @@ func runEnvironmentVersionRules(t *testing.T, x Fixture) {
 	}
 	for _, accepted := range [][2]string{
 		{"commit_pattern", "{commit}"}, {"commit_pattern", "*-{commit}-*"}, {"commit_pattern", strings.Repeat("é", 192) + "{commit}"},
-		{"tag_template", "{version}"}, {"tag_template", "{service}/v{version}"}, {"tag_template", strings.Repeat("a", 191) + "{version}"},
+		{"tag_template", "{version}"}, {"tag_template", "{service}/v{version}"}, {"tag_template", "@{service}/app@{version}"}, {"tag_template", "refs/heads/{version}"}, {"tag_template", strings.Repeat("a", 191) + "{version}"},
 	} {
 		updated := updateEnvironment(t, x, environment.ID, rule(accepted[0], accepted[1]))
 		if updated.VersionRule == nil || updated.VersionRule.Kind != accepted[0] || updated.VersionRule.Text != accepted[1] {
@@ -300,6 +300,11 @@ func runEnvironmentVersionRules(t *testing.T, x Fixture) {
 	for _, refused := range [][2]string{
 		{"commit_pattern", ""}, {"commit_pattern", "*"}, {"commit_pattern", "{commit}{commit}"}, {"commit_pattern", "{Commit}"}, {"commit_pattern", strings.Repeat("a", 193) + "{commit}"},
 		{"tag_template", ""}, {"tag_template", "{service}"}, {"tag_template", "{version}{version}"}, {"tag_template", "{service}{service}{version}"}, {"tag_template", strings.Repeat("a", 192) + "{version}"},
+		// Each of these holds the right placeholders and names no valid tag.
+		{"tag_template", "release {version}"}, {"tag_template", " {version}"}, {"tag_template", "{version} "}, {"tag_template", "{service} {version}"}, {"tag_template", "v{version}\t"}, {"tag_template", "v{version}\x7f"},
+		{"tag_template", "v..{version}"}, {"tag_template", "{version}."}, {"tag_template", ".{version}"}, {"tag_template", "{service}/.{version}"}, {"tag_template", "{version}.lock"}, {"tag_template", "{service}.lock/{version}"},
+		{"tag_template", "/{version}"}, {"tag_template", "{version}/"}, {"tag_template", "{service}//{version}"}, {"tag_template", "-{version}"}, {"tag_template", "v@{{version}"},
+		{"tag_template", "v~{version}"}, {"tag_template", "v^{version}"}, {"tag_template", "v:{version}"}, {"tag_template", "v?{version}"}, {"tag_template", "v*{version}"}, {"tag_template", "v[{version}"}, {"tag_template", `v\{version}`},
 		{"", "{commit}"}, {"regex", "{commit}"}, {"COMMIT_PATTERN", "{commit}"}, {"commit_pattern", "{commit}\x00"},
 	} {
 		_, err := x.Backend.UpdateEnvironment(x.Context, environment.ID, rule(refused[0], refused[1]))
@@ -802,8 +807,9 @@ func runEnvironmentKeyLastUse(t *testing.T, x Fixture) {
 
 // runEnvironmentKeySecrets proves that the server keeps the SHA-256 of a key
 // value and nothing else of it, and that no read and no event holds the value
-// or the hash (component-environments invariants 9 and 11;
-// req-security-boundaries AC-2.8).
+// or the hash, also when a person sends the live value, or another
+// credential, back in any field (component-environments invariants 9 and 11;
+// req-security-boundaries REQ-2, REQ-3, AC-2.8).
 func runEnvironmentKeySecrets(t *testing.T, x Fixture) {
 	if x.StoredEnvironmentKey == nil {
 		t.Fatal("conformance fixture must provide StoredEnvironmentKey for the secrets case")
@@ -824,6 +830,53 @@ func runEnvironmentKeySecrets(t *testing.T, x Fixture) {
 	if _, err := x.Backend.VerifyEnvironmentKey(x.Context, key.Value); err != nil {
 		t.Fatal(err)
 	}
+	// Forty characters, so it fits a name and a label.
+	const token = "ghp_Conformance0123456789abcdefABCDEF012"
+	forbidden = append(forbidden, token, percentEncoded(key.Value))
+	before := environmentState(t, x)
+	requireRefused := func(err error, field, what string) {
+		t.Helper()
+		requireEnvironmentField(t, err, field, "credential")
+		for _, value := range forbidden {
+			if strings.Contains(err.Error(), value) {
+				t.Fatalf("%s: the refusal repeats the secret", what)
+			}
+		}
+	}
+	for _, secret := range []string{key.Value, "x" + key.Value, token, percentEncoded(key.Value), "token=conformanceassigned0123456789"} {
+		create := func(input store.EnvironmentInput) error {
+			if input.Name == "" {
+				input.Name = "Other"
+			}
+			_, err := x.Backend.CreateEnvironment(x.Context, input)
+			return err
+		}
+		update := func(patch store.EnvironmentPatch) error {
+			_, err := x.Backend.UpdateEnvironment(x.Context, environment.ID, patch)
+			return err
+		}
+		rules := []*store.EnvironmentVersionRule{{Kind: store.EnvironmentCommitPattern, Text: secret + "{commit}"}, {Kind: store.EnvironmentTagTemplate, Text: "{service}/" + secret + "/{version}"}}
+		requireRefused(create(store.EnvironmentInput{Name: secret}), "name", "create name")
+		requireRefused(update(store.EnvironmentPatch{Name: &secret}), "name", "update name")
+		for _, branches := range []map[string]string{{"app": secret}, {secret: "main"}} {
+			requireRefused(create(store.EnvironmentInput{TrackedBranches: branches}), "tracked_branches", "create branches")
+			requireRefused(update(store.EnvironmentPatch{TrackedBranches: &branches}), "tracked_branches", "update branches")
+		}
+		requireRefused(create(store.EnvironmentInput{GitHubEnvironments: []string{"prod", secret}}), "github_environments", "create GitHub names")
+		requireRefused(update(store.EnvironmentPatch{GitHubEnvironments: &[]string{"prod", secret}}), "github_environments", "update GitHub names")
+		for _, rule := range rules {
+			requireRefused(create(store.EnvironmentInput{VersionRule: rule}), "version_rule", "create rule")
+			requireRefused(update(store.EnvironmentPatch{VersionRuleSet: true, VersionRule: rule}), "version_rule", "update rule")
+		}
+		_, err := x.Backend.IssueEnvironmentKey(x.Context, environment.ID, secret)
+		requireRefused(err, "label", "key label")
+		_, err = x.Backend.RecordEnvironmentReport(x.Context, store.EnvironmentReport{GitHubEnvironment: secret, Repository: "app", ReportedAt: time.Now()})
+		requireRefused(err, "github_environment", "report name")
+		requireRefused(x.Backend.IgnoreEnvironmentSuggestion(x.Context, secret), "github_environment", "ignored name")
+	}
+	requireEnvironmentUnchanged(t, x, before, "secret-shaped text")
+	// A name that only mentions the prefix is ordinary text.
+	updateEnvironment(t, x, environment.ID, store.EnvironmentPatch{GitHubEnvironments: &[]string{"cv_env_ keys"}})
 	requireOK(t, x.Backend.RevokeEnvironmentKey(x.Context, environment.ID, key.ID))
 	requireInvalidEnvironmentKey(t, x, key.Value, "a revoked key")
 	if kept := x.StoredEnvironmentKey(t, x.Context, key.ID); !bytes.Equal(kept.Digest, digest[:]) {
@@ -838,6 +891,15 @@ func runEnvironmentKeySecrets(t *testing.T, x Fixture) {
 			t.Fatal("a read or an event holds the key value or its hash")
 		}
 	}
+}
+
+// percentEncoded encodes every byte of value as %XX.
+func percentEncoded(value string) string {
+	var out strings.Builder
+	for i := range len(value) {
+		fmt.Fprintf(&out, "%%%02X", value[i])
+	}
+	return out.String()
 }
 
 func recordReport(t *testing.T, x Fixture, name, repository string, at time.Time, want bool) {

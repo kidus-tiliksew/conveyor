@@ -26,12 +26,15 @@ a dashboard session and the workspace context that
 | `POST /v1/environments/suggestions/ignore` | `github_environment` | 204 |
 
 The two `GET` routes also take `limit` and `offset`, as every list route does.
+`GET /v1/environments/suggestions` returns at most 100 rows when the request
+sends no `limit`. A paged answer carries `X-Conveyor-Total`,
+`X-Conveyor-Limit`, and `X-Conveyor-Offset`.
 A body is one JSON object of at most 256 KiB. A body that is not one JSON object
 answers 400 in plain text, and a larger body answers 413. A field that the route
 does not take, or a field that appears twice, is refused.
 
 `PATCH` leaves an omitted field unchanged. Only `version_rule` accepts `null`,
-which clears it. An edit to the stored values records nothing.
+which clears it. A request that changes no field records no event.
 
 A second `DELETE` of one key answers 204 and records nothing.
 
@@ -61,14 +64,23 @@ nothing.
 | `created_by`, `created_at` | Set by the server |
 | `keys` | The keys that are not revoked, oldest first |
 
-Text fields refuse the NUL character.
+Text fields refuse the NUL character. They also refuse text that the credential
+redactor changes or that holds a credential shape, such as a token or an
+environment key value, as given or after one percent-decoding. This rule covers
+`name`, the repositories and branches of `tracked_branches`,
+`github_environments`, the `version_rule` text, a key `label`, and the name in
+an ignore request or a deployment report. The refusal names the field and never
+repeats the text, so no record, read, or event holds it
+(`req-security-boundaries` REQ-2 and REQ-3).
 
 A version rule text is at most 200 characters:
 
 - `commit_pattern`: the text holds exactly one `{commit}`, and `*` matches any
   run of characters. An example is `v*-{commit}`.
 - `tag_template`: the text holds exactly one `{version}` and at most one
-  `{service}`. An example is `{service}/v{version}`.
+  `{service}`. An example is `{service}/v{version}`. The text names a valid Git
+  tag when its placeholders are replaced, so a template with a space, or one such
+  as `v..{version}`, is refused.
 
 ### Archive and restore
 

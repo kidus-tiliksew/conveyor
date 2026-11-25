@@ -191,13 +191,15 @@ func (s *Server) revokeEnvironmentKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // listEnvironmentSuggestions serves GET /v1/environments/suggestions
-// (component-environments invariant 16; req-environments AC-1.6).
+// (component-environments invariant 16; req-environments AC-1.6). Its rows
+// grow with each name GitHub reports, so it has a default page
+// (component-http-api invariant 19).
 func (s *Server) listEnvironmentSuggestions(w http.ResponseWriter, r *http.Request) {
 	backend, ok := s.environmentStore(w)
 	if !ok {
 		return
 	}
-	page, ok := readListPage(w, r, 0)
+	page, ok := readListPage(w, r, defaultHistoryPageLimit)
 	if !ok {
 		return
 	}

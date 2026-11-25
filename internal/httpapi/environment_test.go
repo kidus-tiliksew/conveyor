@@ -339,6 +339,93 @@ func TestEnvironmentSuggestionRoutes(t *testing.T) {
 	}
 }
 
+// TestEnvironmentSuggestionDefaultPage proves that the suggestions list is
+// bounded without a limit and pages through every row
+// (component-http-api invariant 19).
+func TestEnvironmentSuggestionDefaultPage(t *testing.T) {
+	t.Parallel()
+	h := newEnvironmentHarness(t)
+	const total = 2*defaultHistoryPageLimit + 5
+	for i := range total {
+		if recorded, err := h.st.RecordEnvironmentReport(h.ctx, store.EnvironmentReport{GitHubEnvironment: fmt.Sprintf("preview-%04d", i), Repository: "app", ReportedAt: time.Now()}); err != nil || !recorded {
+			t.Fatalf("report recorded=%v err=%v", recorded, err)
+		}
+	}
+	for _, c := range []struct {
+		query               string
+		first, count        int
+		limit, offset, name string
+	}{
+		{"", 0, defaultHistoryPageLimit, "100", "0", "default page"},
+		{"?limit=200", 0, 200, "200", "0", "largest page"},
+		{"?limit=100&offset=200", 200, 5, "100", "200", "last page"},
+		{"?limit=100&offset=300", 0, 0, "100", "300", "page past the end"},
+	} {
+		response := h.want(http.StatusOK, http.MethodGet, "/v1/environments/suggestions"+c.query, "")
+		var rows []store.EnvironmentSuggestion
+		decodeEnvironmentBody(t, response, &rows)
+		header := response.Header()
+		if len(rows) != c.count || header.Get("X-Conveyor-Total") != fmt.Sprint(total) || header.Get("X-Conveyor-Limit") != c.limit || header.Get("X-Conveyor-Offset") != c.offset {
+			t.Fatalf("%s: rows=%d headers=%v", c.name, len(rows), header)
+		}
+		if c.count > 0 && rows[0].GitHubEnvironment != fmt.Sprintf("preview-%04d", c.first) {
+			t.Fatalf("%s starts at %s", c.name, rows[0].GitHubEnvironment)
+		}
+	}
+	for _, query := range []string{"?limit=0", "?limit=201", "?offset=1"} {
+		h.want(http.StatusBadRequest, http.MethodGet, "/v1/environments/suggestions"+query, "")
+	}
+}
+
+// TestEnvironmentFieldsRefuseCredentials sends a live key value and another
+// credential in every text field. Each request is refused without the text,
+// records nothing, and leaves the key valid (req-security-boundaries REQ-2,
+// REQ-3; component-identity-membership invariant 45).
+func TestEnvironmentFieldsRefuseCredentials(t *testing.T) {
+	t.Parallel()
+	h := newEnvironmentHarness(t)
+	environment := h.create(`{"name":"Production"}`)
+	key := h.issue(environment.ID)
+	path := "/v1/environments/" + environment.ID
+	before := h.recorded()
+	for _, secret := range []string{key.Value, "ghp_Conformance0123456789abcdefABCDEF012"} {
+		fields := map[string]string{
+			`"name":"` + secret + `"`:                                                            "name",
+			`"github_environments":["prod","` + secret + `"]`:                                    "github_environments",
+			`"version_rule":{"kind":"commit_pattern","text":"` + secret + `{commit}"}`:           "version_rule",
+			`"version_rule":{"kind":"tag_template","text":"{service}/` + secret + `/{version}"}`: "version_rule",
+			`"tracked_branches":{"app":"` + secret + `"}`:                                        "tracked_branches",
+			`"tracked_branches":{"` + secret + `":"main"}`:                                       "tracked_branches",
+		}
+		type request struct{ method, path, body, field string }
+		requests := []request{
+			{http.MethodPost, path + "/keys", `{"label":"` + secret + `"}`, "label"},
+			{http.MethodPost, "/v1/environments/suggestions/ignore", `{"github_environment":"` + secret + `"}`, "github_environment"},
+		}
+		for body, field := range fields {
+			requests = append(requests, request{http.MethodPatch, path, "{" + body + "}", field})
+			if field != "name" {
+				body = `"name":"Other",` + body
+			}
+			requests = append(requests, request{http.MethodPost, "/v1/environments", "{" + body + "}", field})
+		}
+		for _, c := range requests {
+			response := h.want(http.StatusBadRequest, c.method, c.path, c.body)
+			var body map[string]string
+			decodeEnvironmentBody(t, response, &body)
+			if body["error"] != "invalid_environment" || body["field"] != c.field || !strings.Contains(body["message"], "credential") || strings.Contains(response.Body.String(), secret) {
+				t.Fatalf("%s %s field %s: %v", c.method, c.path, c.field, body["message"])
+			}
+		}
+	}
+	if after := h.recorded(); after != before {
+		t.Fatal("a refused credential changed a record or an event")
+	}
+	if _, err := h.st.VerifyEnvironmentKey(t.Context(), key.Value); err != nil {
+		t.Fatalf("the key after the refusals: %v", err)
+	}
+}
+
 func TestEnvironmentRefusals(t *testing.T) {
 	t.Parallel()
 	h := newEnvironmentHarness(t)
@@ -389,6 +476,7 @@ func TestEnvironmentRefusals(t *testing.T) {
 		invalid("long GitHub name", "PATCH", path, `{"github_environments":["`+long(256)+`"]}`, "github_environments", ""),
 		invalid("taken GitHub name", "PATCH", "/v1/environments/"+full.ID, `{"github_environments":["PROD"]}`, "github_environments", "Production"),
 		invalid("rule without a placeholder", "PATCH", path, `{"version_rule":{"kind":"commit_pattern","text":"v1"}}`, "version_rule", ""),
+		invalid("tag template that names no tag", "PATCH", path, `{"version_rule":{"kind":"tag_template","text":"release {version}"}}`, "version_rule", "Git tag"),
 		invalid("rule of another kind", "PATCH", path, `{"version_rule":{"kind":"regex","text":"{commit}"}}`, "version_rule", ""),
 		invalid("rule without a text", "PATCH", path, `{"version_rule":{"kind":"commit_pattern"}}`, "version_rule", ""),
 		invalid("rule with another field", "PATCH", path, `{"version_rule":{"kind":"commit_pattern","text":"{commit}","flags":"i"}}`, "version_rule", ""),

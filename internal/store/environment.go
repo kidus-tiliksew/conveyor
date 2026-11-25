@@ -20,6 +20,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 )
 
 // Environment event kinds (component-environments, Events). Each is a
@@ -331,8 +332,26 @@ func checkEnvironmentText(field, value string) error {
 	return nil
 }
 
+// checkEnvironmentSecret refuses text that the shared redactor would change
+// or that holds a credential shape, before any write, as
+// refuseSecretShapedOAuthMetadata does for client metadata. Clean text is
+// stored exactly, and no stored row, read, or event can carry a credential a
+// person pasted into a field. The refusal never repeats the text
+// (req-security-boundaries REQ-2, REQ-3; component-identity-membership
+// invariant 45).
+func checkEnvironmentSecret(field, value string) error {
+	clean, _ := redact.New(nil).Redact(value)
+	if clean != value || redact.HoldsCredentialShape(value) {
+		return environmentFieldError(field, "%s must not hold a credential or other secret", field)
+	}
+	return nil
+}
+
 func normalizeEnvironmentText(field, value string, most int) (string, error) {
 	if err := checkEnvironmentText(field, value); err != nil {
+		return "", err
+	}
+	if err := checkEnvironmentSecret(field, value); err != nil {
 		return "", err
 	}
 	value = strings.TrimSpace(value)
@@ -360,6 +379,9 @@ func normalizeEnvironmentVersionRule(rule *EnvironmentVersionRule) (*Environment
 	if err := checkEnvironmentText(field, rule.Text); err != nil {
 		return nil, err
 	}
+	if err := checkEnvironmentSecret(field, rule.Text); err != nil {
+		return nil, err
+	}
 	if utf8.RuneCountInString(rule.Text) > environmentRuleMaxCharacters {
 		return nil, environmentFieldError(field, "version_rule text must be at most %d characters", environmentRuleMaxCharacters)
 	}
@@ -372,11 +394,24 @@ func normalizeEnvironmentVersionRule(rule *EnvironmentVersionRule) (*Environment
 		if strings.Count(rule.Text, "{version}") != 1 || strings.Count(rule.Text, "{service}") > 1 {
 			return nil, environmentFieldError(field, "a tag template must hold exactly one {version} and at most one {service}")
 		}
+		if !environmentTemplateNamesTag(rule.Text) {
+			return nil, environmentFieldError(field, "a tag template must name a valid Git tag when its placeholders are replaced")
+		}
 	default:
 		return nil, environmentFieldError(field, "version_rule kind must be %s or %s", EnvironmentCommitPattern, EnvironmentTagTemplate)
 	}
 	copied := *rule
 	return &copied, nil
+}
+
+// environmentTemplateNamesTag reports whether a tag template names a valid Git
+// tag once each placeholder holds a safe sample value. Text that makes a tag
+// invalid for the samples makes it invalid for every value (req-environments
+// AC-1.2). The fixed first component leaves the form of a tag, which unlike a
+// branch can be named refs/heads/..., and git refuses a tag that opens with -.
+func environmentTemplateNamesTag(template string) bool {
+	tag := strings.NewReplacer("{version}", "1.2.3", "{service}", "api").Replace(template)
+	return !strings.HasPrefix(tag, "-") && gitx.LegalBranchName("tag/"+tag)
 }
 
 func checkEnvironmentTimingWindow(minutes int) error {
@@ -391,8 +426,13 @@ func normalizeEnvironmentBranches(branches map[string]string) (map[string]string
 	out := make(map[string]string, len(branches))
 	for _, repository := range slices.Sorted(maps.Keys(branches)) {
 		branch := branches[repository]
-		if err := checkEnvironmentText(field, repository+branch); err != nil {
-			return nil, err
+		for _, text := range []string{repository, branch} {
+			if err := checkEnvironmentText(field, text); err != nil {
+				return nil, err
+			}
+			if err := checkEnvironmentSecret(field, text); err != nil {
+				return nil, err
+			}
 		}
 		if utf8.RuneCountInString(branch) > environmentBranchMaxCharacters || !gitx.LegalBranchName(branch) {
 			return nil, environmentFieldError(field, "the branch of repository %q is not a legal branch name of at most %d characters", repository, environmentBranchMaxCharacters)
