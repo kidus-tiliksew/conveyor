@@ -988,7 +988,11 @@ func TestFeedbackSignalDelayedKeyCheckKeepsWindow(t *testing.T) {
 	h.use(blocked)
 	delayed := make(chan *httptest.ResponseRecorder, 1)
 	go func() { delayed <- h.send(feedbackMinimalSignal) }()
-	<-blocked.entered
+	select {
+	case <-blocked.entered:
+	case response := <-delayed:
+		t.Fatalf("the delayed signal did not wait: status=%d body=%s", response.Code, response.Body)
+	}
 	h.advance(2500 * time.Millisecond)
 	other := h.signal(second.Value, feedbackMinimalSignal)
 	h.advance(2500 * time.Millisecond)
@@ -1002,6 +1006,40 @@ func TestFeedbackSignalDelayedKeyCheckKeepsWindow(t *testing.T) {
 	}
 	if after := h.stored(); after != before {
 		t.Fatalf("a refused signal changed a record:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// stalledFeedbackKeyStore answers no key check until its context ends.
+type stalledFeedbackKeyStore struct{ store.Backend }
+
+func (stalledFeedbackKeyStore) CheckEnvironmentKey(ctx context.Context, _ string) (store.VerifiedEnvironmentKey, error) {
+	<-ctx.Done()
+	return store.VerifiedEnvironmentKey{}, ctx.Err()
+}
+
+// TestFeedbackSignalKeyCheckIsBounded proves that a stalled key check ends with
+// the generic failure and keeps no window after that.
+func TestFeedbackSignalKeyCheckIsBounded(t *testing.T) {
+	h := newFeedbackHarness(t)
+	captureStandardLog(t)
+	h.server.feedbackLimiter = newFeedbackLimiter(1)
+	second := h.issue(h.environment.ID)
+	h.accept(feedbackMinimalSignal)
+	before := h.stored()
+	h.advance(time.Second)
+	h.server.feedbackKeyTimeout = time.Millisecond
+	h.use(stalledFeedbackKeyStore{Backend: h.st})
+	if response := h.send(feedbackMinimalSignal); response.Code != http.StatusInternalServerError || strings.TrimSpace(response.Body.String()) != "credential verification failed" {
+		t.Fatalf("stalled key check: status=%d body=%s", response.Code, response.Body)
+	}
+	if h.stored() != before || len(h.server.feedbackLimiter.waiting) != 0 {
+		t.Fatalf("a stalled key check changed a record or is still held: %v", h.server.feedbackLimiter.waiting)
+	}
+	h.server.feedbackKeyTimeout = 0
+	h.use(h.st)
+	h.advance(4 * time.Second)
+	if response := h.signal(second.Value, feedbackMinimalSignal); response.Code != http.StatusAccepted {
+		t.Fatalf("the other key afterward: status=%d body=%s", response.Code, response.Body)
 	}
 }
 

@@ -82,7 +82,7 @@ A signal that breaks a rule is refused whole and records nothing.
 | 401 | The credential is missing, is not an environment key, is revoked, or belongs to an archived environment. The answer does not say which |
 | 413 | The body is over 256 KiB |
 | 429 | The key sent an accepted signal less than 5 seconds earlier, or another signal of the key is in progress. `Retry-After` holds the whole seconds to wait from the answer, at least 1 |
-| 500 | The store failed. The answer holds no detail |
+| 500 | The store failed, or the check of the key took more than 10 seconds. The answer holds no detail |
 | 503 | The server holds the most keys it can, and each one is inside its 5 seconds or has a request in progress that arrived inside them. Try again |
 
 Each rule of the body is checked before the 5 seconds. An invalid signal gets 400

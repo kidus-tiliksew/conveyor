@@ -23,6 +23,11 @@ import (
 // (component-production-feedback, Refusals).
 const feedbackSignalBodyLimit = 256 << 10
 
+// feedbackKeyCheckTimeout bounds the key check of a signal. Until it ends the
+// limiter keeps every window for the request, so a stalled store must not hold
+// it.
+const feedbackKeyCheckTimeout = 10 * time.Second
+
 // feedbackScope is what a verified environment key decides about a request,
 // with the server's time of arrival (component-production-feedback invariants
 // 2 and 4). It holds no user, role, or capability.
@@ -38,6 +43,13 @@ func (s *Server) feedbackNow() time.Time {
 		return s.feedbackClock()
 	}
 	return time.Now()
+}
+
+func (s *Server) feedbackKeyCheckLimit() time.Duration {
+	if s.feedbackKeyTimeout > 0 {
+		return s.feedbackKeyTimeout
+	}
+	return feedbackKeyCheckTimeout
 }
 
 func (s *Server) feedbackSignals() *feedbackLimiter {
@@ -81,7 +93,9 @@ func (s *Server) requireFeedbackKey(next http.Handler) http.Handler {
 		if !ok {
 			return
 		}
-		key, err := backend.CheckEnvironmentKey(r.Context(), value)
+		checkCtx, cancel := context.WithTimeout(r.Context(), s.feedbackKeyCheckLimit())
+		key, err := backend.CheckEnvironmentKey(checkCtx, value)
+		cancel()
 		if errors.Is(err, store.ErrInvalidEnvironmentKey) {
 			refuseFeedbackCredential(w)
 			return

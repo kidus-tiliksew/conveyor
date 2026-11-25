@@ -69,11 +69,13 @@ type Server struct {
 	planningBundleDispatched map[string]struct{}
 	passwordLimiterOnce      sync.Once
 	passwordLimiter          *passwordAttemptLimiter
-	// feedbackLimiter keeps the 5-second rule of the signal route, and
-	// feedbackClock replaces its clock in tests.
+	// feedbackLimiter keeps the 5-second rule of the signal route.
+	// feedbackClock and feedbackKeyTimeout replace the route's clock and the
+	// bound of its key check in tests.
 	feedbackLimiterOnce sync.Once
 	feedbackLimiter     *feedbackLimiter
 	feedbackClock       func() time.Time
+	feedbackKeyTimeout  time.Duration
 	// historyCursors signs task history cursors under a key drawn once per
 	// process; tests may install a codec before first use (task 261015-3721c6).
 	historyCursorsOnce sync.Once
