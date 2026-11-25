@@ -134,10 +134,6 @@ func (m *volatileMemory) UpdateEnvironment(ctx context.Context, id string, patch
 	if _, err := RequireActor(ctx); err != nil {
 		return EnvironmentRecord{}, err
 	}
-	patch, err := NormalizeEnvironmentPatch(patch)
-	if err != nil {
-		return EnvironmentRecord{}, err
-	}
 	workspace := workspaceOrDefault(ctx, "")
 	key := memoryScopedKey{workspace: workspace, id: strings.TrimSpace(id)}
 	m.mu.Lock()
@@ -146,10 +142,14 @@ func (m *volatileMemory) UpdateEnvironment(ctx context.Context, id string, patch
 	if !ok {
 		return EnvironmentRecord{}, &EnvironmentNotFoundError{ID: key.id}
 	}
-	next, kind, payload, err := ApplyEnvironmentPatch(current, patch)
+	if err := CheckEnvironmentEditable(current, patch); err != nil {
+		return EnvironmentRecord{}, err
+	}
+	patch, err := NormalizeEnvironmentPatch(patch)
 	if err != nil {
 		return EnvironmentRecord{}, err
 	}
+	next, kind, payload := ApplyEnvironmentPatch(current, patch)
 	if patch.TrackedBranches != nil {
 		repositories, err := m.environmentRepositoriesLocked(workspace)
 		if err != nil {

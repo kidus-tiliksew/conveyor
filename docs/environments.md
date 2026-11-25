@@ -48,7 +48,9 @@ A second `DELETE` of one key answers 204 and records nothing.
 | 409 `environment_key_limit` | The environment holds five keys that are not revoked |
 
 Each refusal is JSON with `error` and `message`. A refused request records
-nothing.
+nothing. `PATCH` checks the JSON fields and their types first, then that the
+environment exists, then that it is not archived, and then the field values. A
+refused value on an archived environment therefore answers 409.
 
 ## Fields
 

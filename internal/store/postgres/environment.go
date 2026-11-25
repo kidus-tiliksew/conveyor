@@ -176,9 +176,6 @@ func (s *Store) UpdateEnvironment(ctx context.Context, id string, patch store.En
 	if err != nil {
 		return store.EnvironmentRecord{}, err
 	}
-	if patch, err = store.NormalizeEnvironmentPatch(patch); err != nil {
-		return store.EnvironmentRecord{}, err
-	}
 	workspaceID := workspace(ctx)
 	id = strings.TrimSpace(id)
 	var result store.EnvironmentRecord
@@ -194,10 +191,14 @@ func (s *Store) UpdateEnvironment(ctx context.Context, id string, patch store.En
 		if err != nil {
 			return err
 		}
-		next, kind, payload, err := store.ApplyEnvironmentPatch(current, patch)
+		if err := store.CheckEnvironmentEditable(current, patch); err != nil {
+			return err
+		}
+		patch, err := store.NormalizeEnvironmentPatch(patch)
 		if err != nil {
 			return err
 		}
+		next, kind, payload := store.ApplyEnvironmentPatch(current, patch)
 		if patch.TrackedBranches != nil {
 			if err := store.CheckEnvironmentRepositories(*patch.TrackedBranches, repositories); err != nil {
 				return err

@@ -195,7 +195,8 @@ func (q EnvironmentListQuery) Matches(archived bool) bool {
 type EnvironmentStore interface {
 	CreateEnvironment(ctx context.Context, input EnvironmentInput) (EnvironmentRecord, error)
 	// UpdateEnvironment edits, archives, or restores one environment. A patch
-	// that changes nothing records nothing.
+	// that changes nothing records nothing. A missing record answers first,
+	// then an archived record's refusal, and then a field value's.
 	UpdateEnvironment(ctx context.Context, id string, patch EnvironmentPatch) (EnvironmentRecord, error)
 	// ListEnvironments returns the selected environments without keys,
 	// ordered by name without regard to case and then by ID. It reads no key.
@@ -768,15 +769,23 @@ func EnvironmentSuggestionIgnoredPayload(workspace, github string) json.RawMessa
 	}})
 }
 
+// CheckEnvironmentEditable refuses a patch that names a field other than
+// archived on an archived environment (component-environments invariant 10).
+// A backend runs it on the record it holds under its write guard, before
+// NormalizeEnvironmentPatch, so the refusal does not depend on the values the
+// patch carries.
+func CheckEnvironmentEditable(current Environment, patch EnvironmentPatch) error {
+	if current.Archived && patch.EditsFields() {
+		return &EnvironmentArchivedError{ID: current.ID}
+	}
+	return nil
+}
+
 // ApplyEnvironmentPatch applies a normalized patch to the current
 // environment and returns the next environment, the event kind, and the
 // event payload. An empty kind means the patch changes nothing and records
-// nothing. An archived environment refuses a patch that names a field other
-// than archived (component-environments invariant 10).
-func ApplyEnvironmentPatch(current Environment, patch EnvironmentPatch) (Environment, string, json.RawMessage, error) {
-	if current.Archived && patch.EditsFields() {
-		return Environment{}, "", nil, &EnvironmentArchivedError{ID: current.ID}
-	}
+// nothing.
+func ApplyEnvironmentPatch(current Environment, patch EnvironmentPatch) (Environment, string, json.RawMessage) {
 	current = CloneEnvironment(current)
 	next := CloneEnvironment(current)
 	changes := map[string]EnvironmentChange{}
@@ -801,7 +810,7 @@ func ApplyEnvironmentPatch(current Environment, patch EnvironmentPatch) (Environ
 		changes["timing_window_minutes"] = EnvironmentChange{Old: current.TimingWindowMinutes, New: next.TimingWindowMinutes}
 	}
 	if len(changes) == 0 && (patch.Archived == nil || *patch.Archived == current.Archived) {
-		return current, "", nil, nil
+		return current, "", nil
 	}
 	kind := EnvironmentUpdatedEvent
 	if patch.Archived != nil && *patch.Archived != current.Archived {
@@ -813,7 +822,7 @@ func ApplyEnvironmentPatch(current Environment, patch EnvironmentPatch) (Environ
 		}
 	}
 	next = CloneEnvironment(next)
-	return next, kind, core.JSONPayload(EnvironmentEventPayload{WorkspaceID: current.Workspace, EnvironmentID: current.ID, Changes: changes}), nil
+	return next, kind, core.JSONPayload(EnvironmentEventPayload{WorkspaceID: current.Workspace, EnvironmentID: current.ID, Changes: changes})
 }
 
 func sameEnvironmentRule(a, b *EnvironmentVersionRule) bool {

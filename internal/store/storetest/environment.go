@@ -46,6 +46,7 @@ func runEnvironments(t *testing.T, factory Factory) {
 		{"GitHubNames", runEnvironmentGitHubNames},
 		{"EditsRecordOldAndNew", runEnvironmentEdits},
 		{"RefusalsRecordNothing", runEnvironmentRefusals},
+		{"RefusalOrder", runEnvironmentRefusalOrder},
 		{"ArchiveAndRestore", runEnvironmentArchive},
 		{"ListOrderAndFilter", runEnvironmentList},
 		{"WorkspaceIsolation", runEnvironmentIsolation},
@@ -475,6 +476,53 @@ func runEnvironmentRefusals(t *testing.T, x Fixture) {
 	_, err = x.Backend.RecordEnvironmentReport(x.Context, store.EnvironmentReport{GitHubEnvironment: "prod", Repository: "app"})
 	requireEnvironmentField(t, err, "reported_at")
 	requireEnvironmentUnchanged(t, x, before, "a refused request")
+}
+
+// runEnvironmentRefusalOrder sends field values the rules refuse. A missing
+// or foreign record answers not found, an archived one answers archived, and
+// only an unarchived one answers for the value. No refusal records anything
+// (component-environments invariants 2, 8, and 10).
+func runEnvironmentRefusalOrder(t *testing.T, x Fixture) {
+	other := x.Workspace + "-other"
+	y := x
+	y.Workspace, y.Context = other, store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), other)
+	if _, err := x.Backend.BootstrapWorkspaceConfig(y.Context, &config.Config{Workspace: other, Repos: []config.Repo{{Name: "app", URL: "https://example.test/app", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	active := createEnvironment(t, x, store.EnvironmentInput{Name: "Active"})
+	archived := createEnvironment(t, x, store.EnvironmentInput{Name: "Archived", Archived: true})
+	foreign := createEnvironment(t, y, store.EnvironmentInput{Name: "Foreign"})
+	foreignArchived := createEnvironment(t, y, store.EnvironmentInput{Name: "Foreign archived", Archived: true})
+	before, beforeOther := environmentState(t, x), environmentState(t, y)
+	for _, c := range []struct {
+		field string
+		patch store.EnvironmentPatch
+	}{
+		{"timing_window_minutes", store.EnvironmentPatch{TimingWindowMinutes: ptr(0)}},
+		{"timing_window_minutes", store.EnvironmentPatch{TimingWindowMinutes: ptr(1441)}},
+		{"name", store.EnvironmentPatch{Name: ptr("")}},
+		{"name", store.EnvironmentPatch{Name: ptr(strings.Repeat("a", 41))}},
+		{"name", store.EnvironmentPatch{Name: ptr("ghp_Conformance0123456789abcdefABCDEF012")}},
+		{"tracked_branches", store.EnvironmentPatch{TrackedBranches: &map[string]string{"app": "two words"}}},
+		{"tracked_branches", store.EnvironmentPatch{TrackedBranches: &map[string]string{"missing": "main"}}},
+		{"github_environments", store.EnvironmentPatch{GitHubEnvironments: &[]string{""}}},
+		{"version_rule", store.EnvironmentPatch{VersionRuleSet: true, VersionRule: &store.EnvironmentVersionRule{Kind: store.EnvironmentTagTemplate, Text: "release {version}"}}},
+	} {
+		for _, archive := range []*bool{nil, ptr(true), ptr(false)} {
+			patch := c.patch
+			patch.Archived = archive
+			_, err := x.Backend.UpdateEnvironment(x.Context, archived.ID, patch)
+			requireEnvironmentArchived(t, err)
+			for _, id := range []string{"env-000000-000000", foreign.ID, foreignArchived.ID} {
+				_, err = x.Backend.UpdateEnvironment(x.Context, id, patch)
+				requireEnvironmentNotFound(t, err)
+			}
+			_, err = x.Backend.UpdateEnvironment(x.Context, active.ID, patch)
+			requireEnvironmentField(t, err, c.field)
+		}
+	}
+	requireEnvironmentUnchanged(t, x, before, "a refused value")
+	requireEnvironmentUnchanged(t, y, beforeOther, "a refused value")
 }
 
 func runEnvironmentArchive(t *testing.T, x Fixture) {

@@ -542,6 +542,59 @@ func TestEnvironmentRefusals(t *testing.T) {
 	}
 }
 
+// TestEnvironmentPatchRefusalOrder sends well-formed edits whose values the
+// rules refuse. The record decides first: 404 for a missing or foreign one,
+// 409 for an archived one, and 400 only for an unarchived one. A malformed
+// body or a value of another type stays 400 for every record
+// (component-environments invariants 2, 8, and 10).
+func TestEnvironmentPatchRefusalOrder(t *testing.T) {
+	t.Parallel()
+	h := newEnvironmentHarness(t)
+	active := h.create(`{"name":"Active"}`)
+	archived := h.create(`{"name":"Archived","archived":true}`)
+	foreign, err := h.st.CreateEnvironment(h.betaCtx, store.EnvironmentInput{Name: "Foreign"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := h.recorded()
+	want := func(id, body string, status int, code, field string) {
+		t.Helper()
+		response := h.want(status, http.MethodPatch, "/v1/environments/"+id, body)
+		var refusal map[string]string
+		decodeEnvironmentBody(t, response, &refusal)
+		if refusal["error"] != code || refusal["field"] != field {
+			t.Fatalf("%s %s: %s, want %s", id, body, response.Body, code)
+		}
+	}
+	for _, c := range []struct{ field, value string }{
+		{"timing_window_minutes", `0`},
+		{"timing_window_minutes", `1441`},
+		{"name", `""`},
+		{"name", `"` + strings.Repeat("a", 41) + `"`},
+		{"tracked_branches", `{"app":"two words"}`},
+		{"tracked_branches", `{"elsewhere":"main"}`},
+		{"github_environments", `[""]`},
+		{"version_rule", `{"kind":"tag_template","text":"release {version}"}`},
+	} {
+		for _, suffix := range []string{"", `,"archived":true`, `,"archived":false`} {
+			body := `{"` + c.field + `":` + c.value + suffix + `}`
+			want("env-000000-000000", body, http.StatusNotFound, "environment_not_found", "")
+			want(foreign.ID, body, http.StatusNotFound, "environment_not_found", "")
+			want(archived.ID, body, http.StatusConflict, "environment_archived", "")
+			want(active.ID, body, http.StatusBadRequest, "invalid_environment", c.field)
+		}
+	}
+	for _, id := range []string{"env-000000-000000", foreign.ID, archived.ID, active.ID} {
+		want(id, `{"timing_window_minutes":"0"}`, http.StatusBadRequest, "invalid_environment", "timing_window_minutes")
+		want(id, `{"unknown":0}`, http.StatusBadRequest, "invalid_environment", "unknown")
+		h.want(http.StatusBadRequest, http.MethodPatch, "/v1/environments/"+id, `{"timing_window_minutes":`)
+		h.want(http.StatusRequestEntityTooLarge, http.MethodPatch, "/v1/environments/"+id, `{"name":"`+strings.Repeat("a", environmentBodyLimit)+`"}`)
+	}
+	if after := h.recorded(); after != before {
+		t.Fatalf("a refused edit changed a record or an event:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
 func TestEnvironmentCapabilities(t *testing.T) {
 	t.Parallel()
 	h := newEnvironmentHarness(t)

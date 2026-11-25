@@ -277,10 +277,6 @@ func (s *Store) UpdateEnvironment(ctx context.Context, id string, patch store.En
 	if _, err := store.RequireActor(ctx); err != nil {
 		return store.EnvironmentRecord{}, err
 	}
-	patch, err := store.NormalizeEnvironmentPatch(patch)
-	if err != nil {
-		return store.EnvironmentRecord{}, err
-	}
 	ws, err := workspace(ctx)
 	if err != nil {
 		return store.EnvironmentRecord{}, err
@@ -305,10 +301,14 @@ func (s *Store) UpdateEnvironment(ctx context.Context, id string, patch store.En
 		if !found {
 			return &store.EnvironmentNotFoundError{ID: id}
 		}
-		next, kind, payload, err := store.ApplyEnvironmentPatch(current, patch)
+		if err := store.CheckEnvironmentEditable(current, patch); err != nil {
+			return err
+		}
+		patch, err := store.NormalizeEnvironmentPatch(patch)
 		if err != nil {
 			return err
 		}
+		next, kind, payload := store.ApplyEnvironmentPatch(current, patch)
 		if patch.TrackedBranches != nil {
 			repositories, err := environmentRepositoriesTx(ctx, tx, ws)
 			if err != nil {
