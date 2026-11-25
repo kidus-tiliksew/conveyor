@@ -76,20 +76,21 @@ func TestFeedbackMigrationRestartIntegration(t *testing.T) {
 			t.Fatalf("%s: ledger rows=%d err=%v, want one", label, ledger, err)
 		}
 	}
-	require := func(label string, wantDeploys, wantRunning, wantUsed int) {
+	require := func(label string, wantDeploys, wantRunning, wantUsed, wantSignals int) {
 		t.Helper()
-		var deploys, running, used int
+		var deploys, running, used, signals int
 		for target, query := range map[*int]string{
 			&deploys: "SELECT COUNT(*) FROM feedback_deploys WHERE workspace_id=?",
 			&running: "SELECT COUNT(*) FROM feedback_running_versions WHERE workspace_id=?",
 			&used:    "SELECT COUNT(*) FROM environment_keys WHERE workspace_id=? AND last_used_at IS NOT NULL",
+			&signals: "SELECT COUNT(*) FROM feedback_signals WHERE workspace_id=?",
 		} {
 			if err := st.db.QueryRowContext(ctx, query, ws).Scan(target); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if deploys != wantDeploys || running != wantRunning || used != wantUsed {
-			t.Fatalf("%s: deploys=%d running=%d used=%d, want %d %d %d", label, deploys, running, used, wantDeploys, wantRunning, wantUsed)
+		if deploys != wantDeploys || running != wantRunning || used != wantUsed || signals != wantSignals {
+			t.Fatalf("%s: deploys=%d running=%d used=%d signals=%d, want %d %d %d %d", label, deploys, running, used, signals, wantDeploys, wantRunning, wantUsed, wantSignals)
 		}
 	}
 	requireComplete("fresh schema")
@@ -102,7 +103,7 @@ func TestFeedbackMigrationRestartIntegration(t *testing.T) {
 	if err := st.RecordFeedbackSignal(ctx, signal); !errors.Is(err, store.ErrBackendOperation) {
 		t.Fatalf("err=%v, want the generic store failure", err)
 	}
-	require("a failed signal", 0, 0, 0)
+	require("a failed signal", 0, 0, 0, 0)
 	if got := claimHolder(t, st, environmentClaimKey(ws)); got != holder {
 		t.Fatalf("a failed signal moved the claim from %q to %q", holder, got)
 	}
@@ -115,7 +116,7 @@ func TestFeedbackMigrationRestartIntegration(t *testing.T) {
 	if err := st.RecordFeedbackSignal(ctx, signal); err != nil {
 		t.Fatal(err)
 	}
-	require("an accepted signal", 1, 1, 1)
+	require("an accepted signal", 1, 1, 1, 1)
 }
 
 // TestFeedbackClaimWaitsForPredecessorIntegration models a predecessor whose

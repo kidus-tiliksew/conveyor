@@ -114,11 +114,25 @@ func TestFeedbackFailureRollsBackIntegration(t *testing.T) {
 	require("a failed later signal", 1, 1, 0, 1, 1)
 	// A signal that a later arrival overtook changes earlier records, and a
 	// failure leaves those as they were too.
+	// This one moves the start of the stored deploy and its running version.
+	records := func() string {
+		t.Helper()
+		var text string
+		if err := st.pool.QueryRow(ctx, `SELECT (SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM feedback_deploys d)::text || (SELECT jsonb_agg(to_jsonb(r) ORDER BY r.version_digest) FROM feedback_running_versions r)::text`).Scan(&text); err != nil {
+			t.Fatal(err)
+		}
+		return text
+	}
+	before := records()
+	refused.Services = two("1")
 	refused.ArrivedAt = signal.ArrivedAt.Add(-10 * time.Second)
 	if err := st.RecordFeedbackSignal(ctx, refused); !errors.Is(err, store.ErrBackendOperation) {
 		t.Fatalf("err=%v, want the generic store failure", err)
 	}
 	require("a failed earlier signal", 1, 1, 0, 1, 1)
+	if after := records(); after != before {
+		t.Fatalf("a failed earlier signal changed the records:\nbefore %s\nafter  %s", before, after)
+	}
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	if err := st.RecordFeedbackSignal(cancelled, signal); !errors.Is(err, context.Canceled) {

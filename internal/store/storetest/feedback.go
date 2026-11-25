@@ -180,9 +180,10 @@ func (e feedbackEnvironment) requireDeploys(t *testing.T, want ...string) {
 		if d, ok := open[v.DeployID]; !ok || d.Service != v.Service || d.FeedbackVersion != v.FeedbackVersion || !d.DeployedAt.Equal(v.DeployedAt) {
 			t.Fatalf("running version=%+v names deploy=%+v, want its own deploy that has not stopped", v, d)
 		}
+		delete(open, v.DeployID)
 	}
-	if len(running) != len(open) {
-		t.Fatalf("running=%d versions, want one for each of %d deploys that have not stopped", len(running), len(open))
+	if len(open) != 0 {
+		t.Fatalf("running=%+v, want a version for each deploy that has not stopped: %+v", running, open)
 	}
 }
 
@@ -560,16 +561,24 @@ func runFeedbackEarlierArrival(t *testing.T, x Fixture) {
 	// An arrival before the first report of a service ends at that report.
 	late.send(t, 5*time.Second, feedbackService("web", "@0"))
 	e.requireRunning(t, "api=@4+100", "web=@1+10")
+	found := 0
 	for _, d := range e.deploys(t) {
-		if d.Service == "web" && d.Version == "0" && (!d.DeployedAt.Equal(feedbackTime(5*time.Second)) || d.StoppedAt == nil || !d.StoppedAt.Equal(feedbackTime(10*time.Second))) {
+		if d.Service != "web" || d.Version != "0" {
+			continue
+		}
+		found++
+		if !d.DeployedAt.Equal(feedbackTime(5*time.Second)) || d.StoppedAt == nil || !d.StoppedAt.Equal(feedbackTime(10*time.Second)) {
 			t.Fatalf("deploy=%+v, want 5 to 10 seconds", d)
 		}
+	}
+	if found != 1 {
+		t.Fatalf("%d deploys of web version 0, want one", found)
 	}
 	requireNewest(100*time.Second, 60)
 }
 
-// runFeedbackArrivalOrder stores the same signals in their arrival order and
-// in a shuffled order. Both leave the same deploys, stops, origins, running
+// runFeedbackArrivalOrder stores the same signals, four minutes apart, in
+// their arrival order and in a shuffled order. Both leave the same deploys, stops, origins, running
 // versions, and newest signal.
 func runFeedbackArrivalOrder(t *testing.T, x Fixture) {
 	labels := []string{"first", "second", "third"}
@@ -578,6 +587,9 @@ func runFeedbackArrivalOrder(t *testing.T, x Fixture) {
 		var lines []string
 		for _, d := range e.deploys(t) {
 			line := fmt.Sprintf("deploy %s=%s %v %+v", d.Service, renderFeedbackVersion(d.FeedbackVersion), d.DeployedAt, d.Origin)
+			if (d.StoppedAt == nil) != (d.StopOrigin == nil) {
+				t.Fatalf("deploy=%+v, want a stop time with its origin or neither", d)
+			}
 			if d.StoppedAt != nil {
 				line += fmt.Sprintf(" to %v %+v", d.StoppedAt, *d.StopOrigin)
 			}
@@ -617,7 +629,7 @@ func runFeedbackArrivalOrder(t *testing.T, x Fixture) {
 		}
 		var signals []planned
 		for i := range 8 {
-			p := planned{key: random.IntN(len(labels)), offset: time.Duration(100*seed+10*i) * time.Second, seconds: 10 + random.IntN(100)}
+			p := planned{key: random.IntN(len(labels)), offset: time.Duration(2000*seed+240*i) * time.Second, seconds: 10 + random.IntN(100)}
 			// One signal in three names each service alone.
 			omitted := random.IntN(3)
 			for j, name := range []string{"api", "web"} {
@@ -711,6 +723,9 @@ func runFeedbackRepositoryCheck(t *testing.T, x Fixture) {
 	}
 	if after := e.state(t); after != before {
 		t.Fatalf("a check changed the stored state:\nbefore %s\nafter  %s", before, after)
+	}
+	for _, repository := range []string{"", "app", "conveyor"} {
+		requireOK(t, x.Backend.RecordFeedbackSignal(x.Context, signal(repository)))
 	}
 }
 
