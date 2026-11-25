@@ -51,7 +51,7 @@ func TestFeedbackMigrationRestartIntegration(t *testing.T) {
 	})
 	requireComplete := func(label string) {
 		t.Helper()
-		rows, err := st.db.QueryContext(ctx, "SELECT table_name,storage_type FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('feedback_signals','feedback_deploys','feedback_running_versions','feedback_recent_signals')")
+		rows, err := st.db.QueryContext(ctx, "SELECT table_name,storage_type FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('feedback_signals','feedback_deploys','feedback_running_versions','feedback_accepted_signals')")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,8 +63,8 @@ func TestFeedbackMigrationRestartIntegration(t *testing.T) {
 			if err := rows.Scan(&name, &storage); err != nil {
 				t.Fatal(err)
 			}
-			if storage.String == "" || strings.Contains(strings.ToUpper(storage.String), "COLUMNSTORE") {
-				t.Fatalf("%s: %s is not rowstore", label, name)
+			if columnstore := strings.Contains(strings.ToUpper(storage.String), "COLUMNSTORE"); storage.String == "" || columnstore != (name == "feedback_accepted_signals") {
+				t.Fatalf("%s: %s storage is %q", label, name, storage.String)
 			}
 			found++
 		}
@@ -93,7 +93,7 @@ func TestFeedbackMigrationRestartIntegration(t *testing.T) {
 		}
 	}
 	requireComplete("fresh schema")
-	for _, statement := range []string{fmt.Sprintf("DELETE FROM conveyor_singlestore_migrations WHERE version=%d", feedbackMigrationVersion), "DROP TABLE feedback_recent_signals"} {
+	for _, statement := range []string{fmt.Sprintf("DELETE FROM conveyor_singlestore_migrations WHERE version=%d", feedbackMigrationVersion), "DROP TABLE feedback_accepted_signals"} {
 		if _, err := st.db.ExecContext(ctx, statement); err != nil {
 			t.Fatalf("%s: %v", statement, err)
 		}

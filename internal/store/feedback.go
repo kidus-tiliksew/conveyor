@@ -93,18 +93,17 @@ type FeedbackOrigin struct {
 	Actor  string
 }
 
-// FeedbackRunningVersion is one version a service runs. ReportedAt and
-// ReportedLabel are the arrival and the key's label of the newest signal that
-// named the service. A version is stored unresolved.
+// FeedbackRunningVersion is one version a service runs. ReportedAt is the
+// arrival of the newest signal that named the service. A version is stored
+// unresolved.
 type FeedbackRunningVersion struct {
 	EnvironmentID string
 	Service       string
 	FeedbackVersion
-	DeployID      string
-	DeployedAt    time.Time
-	ReportedAt    time.Time
-	ReportedLabel string
-	Resolved      bool
+	DeployID   string
+	DeployedAt time.Time
+	ReportedAt time.Time
+	Resolved   bool
 }
 
 // FeedbackDeploy is one deploy record. StoppedAt and StopOrigin are nil while
@@ -275,39 +274,35 @@ func FeedbackSignalOrigin(label string) FeedbackOrigin {
 	return FeedbackOrigin{Source: FeedbackSourceSignal, Label: label, Actor: SystemActor().ID}
 }
 
-// FeedbackRecentWindow is how far behind the newest signal of an environment
-// a signal can arrive and still find every later signal in
-// FeedbackHistory.Recent.
-const FeedbackRecentWindow = 10 * time.Minute
-
-// FeedbackRecentSignal is one accepted signal of the recent window: when it
-// arrived, who sent it, and the digests of the services it named. A signal
-// that changes nothing leaves no deploy, so this is what dates the end of an
-// earlier arrival's versions.
-type FeedbackRecentSignal struct {
+// FeedbackAcceptedSignal is one accepted signal: when it arrived, who sent it,
+// and the digests of the services it named. A signal that changes nothing
+// leaves no deploy, so this is what dates the end of an earlier arrival's
+// versions. Every accepted signal is kept, because the time that a request
+// takes to reach the store has no limit.
+type FeedbackAcceptedSignal struct {
 	ArrivedAt time.Time
 	Label     string
 	Services  []string
 }
 
-// NewFeedbackRecentSignal is the recent form of a normalized signal.
-func NewFeedbackRecentSignal(signal FeedbackSignal, origin FeedbackOrigin) FeedbackRecentSignal {
-	recent := FeedbackRecentSignal{ArrivedAt: signal.ArrivedAt, Label: origin.Label, Services: make([]string, len(signal.Services))}
+// NewFeedbackAcceptedSignal is the kept form of a normalized signal.
+func NewFeedbackAcceptedSignal(signal FeedbackSignal, origin FeedbackOrigin) FeedbackAcceptedSignal {
+	accepted := FeedbackAcceptedSignal{ArrivedAt: signal.ArrivedAt, Label: origin.Label, Services: make([]string, len(signal.Services))}
 	for i, service := range signal.Services {
-		recent.Services[i] = FeedbackServiceDigest(service.Name)
+		accepted.Services[i] = FeedbackServiceDigest(service.Name)
 	}
-	return recent
+	return accepted
 }
 
-// FeedbackRecentServices renders the digests for a durable backend's row, and
-// ApplyFeedbackRecentServices reads them back.
-func FeedbackRecentServices(recent FeedbackRecentSignal) string {
-	return string(core.JSONPayload(recent.Services))
+// FeedbackAcceptedServices renders the digests for a durable backend's row, and
+// ApplyFeedbackAcceptedServices reads them back.
+func FeedbackAcceptedServices(accepted FeedbackAcceptedSignal) string {
+	return string(core.JSONPayload(accepted.Services))
 }
 
-func ApplyFeedbackRecentServices(recent *FeedbackRecentSignal, services []byte) error {
-	if err := json.Unmarshal(services, &recent.Services); err != nil {
-		return fmt.Errorf("decode recent signal services: %w", err)
+func ApplyFeedbackAcceptedServices(accepted *FeedbackAcceptedSignal, services []byte) error {
+	if err := json.Unmarshal(services, &accepted.Services); err != nil {
+		return fmt.Errorf("decode accepted signal services: %w", err)
 	}
 	return nil
 }
@@ -316,17 +311,41 @@ func ApplyFeedbackRecentServices(recent *FeedbackRecentSignal, services []byte) 
 type FeedbackHistory struct {
 	// Running are the running versions of the services the signal names.
 	Running []FeedbackRunningVersion
-	// Recent and Deploys are needed only when FeedbackArrivedLate reports
-	// true: the recent signals that arrived after this one, and the deploys
-	// that had not stopped at its arrival. Other services can be among them.
-	Recent  []FeedbackRecentSignal
+	// Later and Deploys are needed only when FeedbackLateServices names a
+	// service: the first accepted signal after this one that named each such
+	// service, and the deploys that had not stopped at its arrival. Others can
+	// be among them.
+	Later   []FeedbackAcceptedSignal
 	Deploys []FeedbackDeploy
 }
 
-// FeedbackArrivedLate reports whether a later arrival already reported a
-// service that the signal names.
-func FeedbackArrivedLate(signal FeedbackSignal, running []FeedbackRunningVersion) bool {
-	return slices.ContainsFunc(running, func(v FeedbackRunningVersion) bool { return v.ReportedAt.After(signal.ArrivedAt) })
+// FeedbackLateServices returns the digests of the services that a later
+// arrival than the signal already reported.
+func FeedbackLateServices(signal FeedbackSignal, running []FeedbackRunningVersion) map[string]bool {
+	late := map[string]bool{}
+	for _, version := range running {
+		if version.ReportedAt.After(signal.ArrivedAt) {
+			late[FeedbackServiceDigest(version.Service)] = true
+		}
+	}
+	return late
+}
+
+// AddLater keeps an accepted signal that is the first to name a late service.
+// A backend passes the signals after the late one, oldest first, and stops
+// when done reports that every late service has its next report.
+func (h *FeedbackHistory) AddLater(late map[string]bool, accepted FeedbackAcceptedSignal) (done bool) {
+	first := false
+	for _, digest := range accepted.Services {
+		if late[digest] {
+			delete(late, digest)
+			first = true
+		}
+	}
+	if first {
+		h.Later = append(h.Later, accepted)
+	}
+	return len(late) == 0
 }
 
 // FeedbackChanges is what one signal changes.
@@ -371,7 +390,7 @@ func PlanFeedbackChanges(signal FeedbackSignal, origin FeedbackOrigin, history F
 			}
 		}
 		plan := changes.planNewest
-		if FeedbackArrivedLate(signal, current[service.Name]) {
+		if len(FeedbackLateServices(signal, current[service.Name])) > 0 {
 			plan = changes.planEarlier
 		}
 		if err := plan(signal, origin, service.Name, named, current[service.Name], history); err != nil {
@@ -392,7 +411,7 @@ func (c *FeedbackChanges) planNewest(signal FeedbackSignal, origin FeedbackOrigi
 			return err
 		}
 		c.Started = append(c.Started, FeedbackRunningVersion{
-			EnvironmentID: signal.EnvironmentID, Service: service, FeedbackVersion: version, DeployID: deploy.ID, DeployedAt: deploy.DeployedAt, ReportedAt: signal.ArrivedAt, ReportedLabel: origin.Label,
+			EnvironmentID: signal.EnvironmentID, Service: service, FeedbackVersion: version, DeployID: deploy.ID, DeployedAt: deploy.DeployedAt, ReportedAt: signal.ArrivedAt,
 		})
 	}
 	for _, version := range running {
@@ -410,7 +429,7 @@ func (c *FeedbackChanges) planNewest(signal FeedbackSignal, origin FeedbackOrigi
 // stay as they are.
 func (c *FeedbackChanges) planEarlier(signal FeedbackSignal, origin FeedbackOrigin, service string, named []FeedbackVersion, running []FeedbackRunningVersion, history FeedbackHistory) error {
 	at := signal.ArrivedAt
-	next, nextOrigin := feedbackNextReport(at, service, running, history)
+	next, nextOrigin := feedbackNextReport(at, service, history)
 	ran := map[FeedbackVersion]bool{}
 	resumed := map[FeedbackVersion]FeedbackDeploy{}
 	for _, deploy := range history.Deploys {
@@ -455,20 +474,16 @@ func (c *FeedbackChanges) planEarlier(signal FeedbackSignal, origin FeedbackOrig
 	return nil
 }
 
-// feedbackNextReport returns the first known arrival after at that named the
-// service, and its origin: a recent signal, the service's newest report, or a
-// deploy or stop. Past the recent window only an arrival that changed the
-// service, or its newest one, is still known.
-func feedbackNextReport(at time.Time, service string, running []FeedbackRunningVersion, history FeedbackHistory) (time.Time, FeedbackOrigin) {
+// feedbackNextReport returns the first arrival after at that named the
+// service, and its origin: an accepted signal, or a deploy or stop of the
+// service.
+func feedbackNextReport(at time.Time, service string, history FeedbackHistory) (time.Time, FeedbackOrigin) {
 	var next time.Time
 	var origin FeedbackOrigin
 	consider := func(report time.Time, by FeedbackOrigin) {
 		if report.After(at) && (next.IsZero() || report.Before(next)) {
 			next, origin = report, by
 		}
-	}
-	for _, version := range running {
-		consider(version.ReportedAt, FeedbackSignalOrigin(version.ReportedLabel))
 	}
 	for _, deploy := range history.Deploys {
 		if deploy.Service != service {
@@ -480,9 +495,9 @@ func feedbackNextReport(at time.Time, service string, running []FeedbackRunningV
 		}
 	}
 	digest := FeedbackServiceDigest(service)
-	for _, recent := range history.Recent {
-		if slices.Contains(recent.Services, digest) {
-			consider(recent.ArrivedAt, FeedbackSignalOrigin(recent.Label))
+	for _, accepted := range history.Later {
+		if slices.Contains(accepted.Services, digest) {
+			consider(accepted.ArrivedAt, FeedbackSignalOrigin(accepted.Label))
 		}
 	}
 	return next, origin
@@ -512,9 +527,9 @@ func (c *FeedbackChanges) move(running []FeedbackRunningVersion, deployID string
 
 func newFeedbackDeployID() (string, error) { return newFeedbackID("deploy_") }
 
-// NewFeedbackRecentSignalID tells two signals of one arrival apart in a
+// NewFeedbackAcceptedSignalID tells two signals of one arrival apart in a
 // durable backend's rows.
-func NewFeedbackRecentSignalID() (string, error) { return newFeedbackID("signal_") }
+func NewFeedbackAcceptedSignalID() (string, error) { return newFeedbackID("signal_") }
 
 func newFeedbackID(prefix string) (string, error) {
 	random := make([]byte, 12)

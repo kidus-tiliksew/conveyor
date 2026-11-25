@@ -584,7 +584,7 @@ func runFeedbackArrivalOrder(t *testing.T, x Fixture) {
 			lines = append(lines, line)
 		}
 		for _, v := range e.running(t) {
-			lines = append(lines, fmt.Sprintf("running %s=%s %v %v %s", v.Service, renderFeedbackVersion(v.FeedbackVersion), v.DeployedAt, v.ReportedAt, v.ReportedLabel))
+			lines = append(lines, fmt.Sprintf("running %s=%s %v %v", v.Service, renderFeedbackVersion(v.FeedbackVersion), v.DeployedAt, v.ReportedAt))
 		}
 		newest, _ := e.newest(t)
 		newest.EnvironmentID = ""
@@ -654,23 +654,37 @@ func runFeedbackArrivalOrder(t *testing.T, x Fixture) {
 	}
 }
 
-// runFeedbackRecentWindow proves which arrivals still end an earlier one: any
-// arrival within FeedbackRecentWindow of the newest signal, and past it the
-// ones that changed the service.
+// runFeedbackRecentWindow proves that no window limits which arrivals end an
+// earlier one: an arrival that changed nothing ends it too, however late it
+// reaches the store (req-production-feedback AC-1.3).
 func runFeedbackRecentWindow(t *testing.T, x Fixture) {
 	e := newFeedbackEnvironment(t, x, "Production", "watcher")
 	for _, offset := range []time.Duration{0, 300, 900, 1200} {
 		e.send(t, offset*time.Second, feedbackService("api", "@1"))
 	}
+	requireNewest := func() {
+		t.Helper()
+		if newest, _ := e.newest(t); !newest.LastSignalAt.Equal(feedbackTime(1200 * time.Second)) {
+			t.Fatalf("newest=%+v, want the arrival at 1200 seconds", newest)
+		}
+	}
 	e.send(t, 720*time.Second, feedbackService("api", "@3"))
 	e.requireRunning(t, "api=@1+900")
 	e.requireDeploys(t, "api=@1+0-720", "api=@3+720-900", "api=@1+900")
-	// The arrival at 300 seconds changed nothing and left the window.
 	e.send(t, 60*time.Second, feedbackService("api", "@2"))
 	e.requireRunning(t, "api=@1+900")
-	e.requireDeploys(t, "api=@1+0-60", "api=@2+60-720", "api=@3+720-900", "api=@1+900")
-	if newest, _ := e.newest(t); !newest.LastSignalAt.Equal(feedbackTime(1200 * time.Second)) {
-		t.Fatalf("newest=%+v", newest)
+	e.requireDeploys(t, "api=@1+0-60", "api=@2+60-300", "api=@1+300-720", "api=@3+720-900", "api=@1+900")
+	requireNewest()
+	// A day later, a delayed signal still ends at the first arrival after it,
+	// whether that one changed nothing or was overtaken itself.
+	day := 24 * 60 * 60 * time.Second
+	e.send(t, day, feedbackService("api", "@1"))
+	e.send(t, 1000*time.Second, feedbackService("api", "@4"))
+	e.send(t, 30*time.Second, feedbackService("api", "@5"))
+	e.requireRunning(t, "api=@1+1200")
+	e.requireDeploys(t, "api=@1+0-30", "api=@5+30-60", "api=@2+60-300", "api=@1+300-720", "api=@3+720-900", "api=@1+900-1000", "api=@4+1000-1200", "api=@1+1200")
+	if newest, _ := e.newest(t); !newest.LastSignalAt.Equal(feedbackTime(day)) {
+		t.Fatalf("newest=%+v, want the arrival a day later", newest)
 	}
 }
 

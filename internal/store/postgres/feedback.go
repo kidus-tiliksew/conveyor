@@ -38,7 +38,7 @@ func lockFeedbackKey(ctx context.Context, tx pgx.Tx, workspaceID string, signal 
 	return label, err
 }
 
-const feedbackRunningSQL = `SELECT environment_id, service, reported_repository, reported_commit, reported_version, resolved, deploy_id, deployed_at, reported_at, reported_label FROM feedback_running_versions WHERE workspace_id=$1 AND environment_id=$2`
+const feedbackRunningSQL = `SELECT environment_id, service, reported_repository, reported_commit, reported_version, resolved, deploy_id, deployed_at, reported_at FROM feedback_running_versions WHERE workspace_id=$1 AND environment_id=$2`
 
 func queryFeedbackRunning(ctx context.Context, q environmentQuerier, sql string, args ...any) ([]store.FeedbackRunningVersion, error) {
 	rows, err := q.Query(ctx, sql, args...)
@@ -49,7 +49,7 @@ func queryFeedbackRunning(ctx context.Context, q environmentQuerier, sql string,
 	running := []store.FeedbackRunningVersion{}
 	for rows.Next() {
 		var version store.FeedbackRunningVersion
-		if err := rows.Scan(&version.EnvironmentID, &version.Service, &version.Repository, &version.Commit, &version.Version, &version.Resolved, &version.DeployID, &version.DeployedAt, &version.ReportedAt, &version.ReportedLabel); err != nil {
+		if err := rows.Scan(&version.EnvironmentID, &version.Service, &version.Repository, &version.Commit, &version.Version, &version.Resolved, &version.DeployID, &version.DeployedAt, &version.ReportedAt); err != nil {
 			return nil, err
 		}
 		version.DeployedAt, version.ReportedAt = store.EnvironmentTime(version.DeployedAt), store.EnvironmentTime(version.ReportedAt)
@@ -86,7 +86,7 @@ func queryFeedbackDeploys(ctx context.Context, q environmentQuerier, sql string,
 }
 
 // readFeedbackHistory reads what PlanFeedbackChanges needs. Only a signal that
-// a later arrival overtook reads the recent signals and the deploys.
+// a later arrival overtook reads the accepted signals and the deploys.
 func readFeedbackHistory(ctx context.Context, tx pgx.Tx, workspaceID string, signal store.FeedbackSignal) (store.FeedbackHistory, error) {
 	var history store.FeedbackHistory
 	digests := make([]string, len(signal.Services))
@@ -94,28 +94,34 @@ func readFeedbackHistory(ctx context.Context, tx pgx.Tx, workspaceID string, sig
 		digests[i] = store.FeedbackServiceDigest(service.Name)
 	}
 	var err error
-	if history.Running, err = queryFeedbackRunning(ctx, tx, feedbackRunningSQL+` AND service_digest=ANY($3::text[])`, workspaceID, signal.EnvironmentID, digests); err != nil || !store.FeedbackArrivedLate(signal, history.Running) {
+	if history.Running, err = queryFeedbackRunning(ctx, tx, feedbackRunningSQL+` AND service_digest=ANY($3::text[])`, workspaceID, signal.EnvironmentID, digests); err != nil {
 		return history, err
+	}
+	late := store.FeedbackLateServices(signal, history.Running)
+	if len(late) == 0 {
+		return history, nil
 	}
 	if history.Deploys, err = queryFeedbackDeploys(ctx, tx, feedbackDeploySQL+` AND (stopped_at IS NULL OR stopped_at > $3)`, workspaceID, signal.EnvironmentID, signal.ArrivedAt); err != nil {
 		return history, err
 	}
-	rows, err := tx.Query(ctx, `SELECT arrived_at, source_label, service_digests::text FROM feedback_recent_signals WHERE workspace_id=$1 AND environment_id=$2 AND arrived_at > $3`, workspaceID, signal.EnvironmentID, signal.ArrivedAt)
+	rows, err := tx.Query(ctx, `SELECT arrived_at, source_label, service_digests::text FROM feedback_accepted_signals WHERE workspace_id=$1 AND environment_id=$2 AND arrived_at > $3 ORDER BY arrived_at, id`, workspaceID, signal.EnvironmentID, signal.ArrivedAt)
 	if err != nil {
 		return history, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var recent store.FeedbackRecentSignal
+		var accepted store.FeedbackAcceptedSignal
 		var services string
-		if err := rows.Scan(&recent.ArrivedAt, &recent.Label, &services); err != nil {
+		if err := rows.Scan(&accepted.ArrivedAt, &accepted.Label, &services); err != nil {
 			return history, err
 		}
-		recent.ArrivedAt = store.EnvironmentTime(recent.ArrivedAt)
-		if err := store.ApplyFeedbackRecentServices(&recent, []byte(services)); err != nil {
+		accepted.ArrivedAt = store.EnvironmentTime(accepted.ArrivedAt)
+		if err := store.ApplyFeedbackAcceptedServices(&accepted, []byte(services)); err != nil {
 			return history, err
 		}
-		history.Recent = append(history.Recent, recent)
+		if history.AddLater(late, accepted) {
+			break
+		}
 	}
 	return history, rows.Err()
 }
@@ -171,9 +177,9 @@ SELECT $1::text, $2::text, d.* FROM unnest($3::text[], $4::text[], $5::text[], $
 			serviceDigests, versionDigests = append(serviceDigests, store.FeedbackServiceDigest(version.Service)), append(versionDigests, version.Digest())
 			repositories, commits, versions = append(repositories, version.Repository), append(commits, version.Commit), append(versions, version.Version)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO feedback_running_versions (workspace_id, environment_id, deployed_at, reported_at, reported_label, deploy_id, service_digest, version_digest, service, reported_repository, reported_commit, reported_version)
-SELECT $1::text, $2::text, $3::timestamptz, $3::timestamptz, $4::text, d.* FROM unnest($5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::text[]) AS d`,
-			workspaceID, signal.EnvironmentID, signal.ArrivedAt, origin.Label, ids, serviceDigests, versionDigests, services, repositories, commits, versions); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO feedback_running_versions (workspace_id, environment_id, deployed_at, reported_at, deploy_id, service_digest, version_digest, service, reported_repository, reported_commit, reported_version)
+SELECT $1::text, $2::text, $3::timestamptz, $3::timestamptz, d.* FROM unnest($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[]) AS d`,
+			workspaceID, signal.EnvironmentID, signal.ArrivedAt, ids, serviceDigests, versionDigests, services, repositories, commits, versions); err != nil {
 			return err
 		}
 	}
@@ -194,25 +200,19 @@ SELECT $1::text, $2::text, $3::timestamptz, $3::timestamptz, $4::text, d.* FROM 
 	for i, service := range changes.Reported {
 		reported[i] = store.FeedbackServiceDigest(service)
 	}
-	_, err := tx.Exec(ctx, `UPDATE feedback_running_versions SET reported_at=$4, reported_label=$5 WHERE workspace_id=$1 AND environment_id=$2 AND service_digest=ANY($3::text[])`, workspaceID, signal.EnvironmentID, reported, signal.ArrivedAt, origin.Label)
+	_, err := tx.Exec(ctx, `UPDATE feedback_running_versions SET reported_at=$4 WHERE workspace_id=$1 AND environment_id=$2 AND service_digest=ANY($3::text[])`, workspaceID, signal.EnvironmentID, reported, signal.ArrivedAt)
 	return err
 }
 
-// recordFeedbackRecent adds the signal to the recent ones and drops those
-// before the window of the newest signal.
-func recordFeedbackRecent(ctx context.Context, tx pgx.Tx, workspaceID string, signal store.FeedbackSignal, origin store.FeedbackOrigin) error {
-	id, err := store.NewFeedbackRecentSignalID()
+// recordFeedbackAccepted keeps the signal as a boundary of the deploy history.
+func recordFeedbackAccepted(ctx context.Context, tx pgx.Tx, workspaceID string, signal store.FeedbackSignal, origin store.FeedbackOrigin) error {
+	id, err := store.NewFeedbackAcceptedSignalID()
 	if err != nil {
 		return err
 	}
-	recent := store.NewFeedbackRecentSignal(signal, origin)
-	if _, err := tx.Exec(ctx, `INSERT INTO feedback_recent_signals (workspace_id, environment_id, arrived_at, id, source_label, service_digests) VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)`,
-		workspaceID, signal.EnvironmentID, recent.ArrivedAt, id, recent.Label, store.FeedbackRecentServices(recent)); err != nil {
-		return err
-	}
-	_, err = tx.Exec(ctx, `DELETE FROM feedback_recent_signals r USING feedback_signals f
-WHERE r.workspace_id=$1 AND r.environment_id=$2 AND f.workspace_id=r.workspace_id AND f.environment_id=r.environment_id AND r.arrived_at < f.last_signal_at - $3::bigint * interval '1 microsecond'`,
-		workspaceID, signal.EnvironmentID, store.FeedbackRecentWindow.Microseconds())
+	accepted := store.NewFeedbackAcceptedSignal(signal, origin)
+	_, err = tx.Exec(ctx, `INSERT INTO feedback_accepted_signals (workspace_id, environment_id, arrived_at, id, source_label, service_digests) VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)`,
+		workspaceID, signal.EnvironmentID, accepted.ArrivedAt, id, accepted.Label, store.FeedbackAcceptedServices(accepted))
 	return err
 }
 
@@ -282,7 +282,7 @@ WHERE f.last_signal_at <= EXCLUDED.last_signal_at`,
 			workspaceID, signal.EnvironmentID, signal.ArrivedAt, signal.NextSignalSeconds, origin.Source, origin.Label, origin.Actor); err != nil {
 			return err
 		}
-		return recordFeedbackRecent(ctx, tx, workspaceID, signal, origin)
+		return recordFeedbackAccepted(ctx, tx, workspaceID, signal, origin)
 	})
 }
 

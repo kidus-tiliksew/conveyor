@@ -61,20 +61,18 @@ CREATE TABLE IF NOT EXISTS feedback_running_versions (
     resolved boolean NOT NULL DEFAULT false,
     deploy_id text NOT NULL,
     deployed_at timestamptz NOT NULL,
-    -- The arrival and the key's label of the newest signal naming the service.
+    -- The arrival of the newest signal that named the service.
     reported_at timestamptz NOT NULL,
-    reported_label text NOT NULL,
     PRIMARY KEY (workspace_id, environment_id, service_digest, version_digest),
     FOREIGN KEY (workspace_id, environment_id) REFERENCES environments(workspace_id, id) ON DELETE CASCADE,
     FOREIGN KEY (workspace_id, deploy_id) REFERENCES feedback_deploys(workspace_id, id) ON DELETE CASCADE
 );
 
--- The accepted signals of the last ten minutes before the newest one, each
--- with the digests of the services it named. A signal that reaches the store
--- after a later arrival ends at the next arrival that named its service, which
--- can be one that changed nothing (component-production-feedback invariants 4
--- and 5).
-CREATE TABLE IF NOT EXISTS feedback_recent_signals (
+-- Every accepted signal, with the digests of the services it named. A signal
+-- that reaches the store after a later arrival ends at the next arrival that
+-- named its service, which can be one that changed nothing, and no limit on
+-- that delay exists (component-production-feedback invariants 4 and 5).
+CREATE TABLE IF NOT EXISTS feedback_accepted_signals (
     workspace_id text NOT NULL,
     environment_id text NOT NULL,
     arrived_at timestamptz NOT NULL,

@@ -4,10 +4,10 @@
 -- key with the environment tables, so every row of one signal is on one
 -- partition, beside the environments row that the workspace environment claim
 -- names as its witness (component-persistence invariant 8). The Go writers
--- hold that claim and keep the length and reference rules. They update rows
--- in place, so the tables are rowstore. An empty reported value was not
--- stated. No dispatch, claim, gate, review, merge, next-action, lineage, or
--- work-order query reads these tables (component-production-feedback
+-- hold that claim and keep the length and reference rules. They update rows of
+-- the first three tables in place, so those are rowstore. An empty reported
+-- value was not stated. No dispatch, claim, gate, review, merge, next-action,
+-- lineage, or work-order query reads these tables (component-production-feedback
 -- invariant 1). Restart-safe: every statement is IF NOT EXISTS. No backfill.
 CREATE ROWSTORE TABLE IF NOT EXISTS feedback_signals (
  workspace_id VARCHAR(255) NOT NULL,
@@ -61,23 +61,24 @@ CREATE ROWSTORE TABLE IF NOT EXISTS feedback_running_versions (
  deploy_id VARCHAR(64) NOT NULL,
  deployed_at DATETIME(6) NOT NULL,
  reported_at DATETIME(6) NOT NULL,
- reported_label VARCHAR(255) NOT NULL,
  PRIMARY KEY (workspace_id, environment_id, service_digest, version_digest),
  SHARD KEY (workspace_id)
 ) COLLATE utf8mb4_bin;
 
--- The accepted signals of the last ten minutes before the newest one, each
--- with the digests of the services it named. A signal that reaches the store
--- after a later arrival ends at the next arrival that named its service, which
--- can be one that changed nothing (component-production-feedback invariants 4
--- and 5).
-CREATE ROWSTORE TABLE IF NOT EXISTS feedback_recent_signals (
+-- Every accepted signal, with the digests of the services it named. A signal
+-- that reaches the store after a later arrival ends at the next arrival that
+-- named its service, which can be one that changed nothing, and no limit on
+-- that delay exists (component-production-feedback invariants 4 and 5). Rows
+-- are only added, so the table is columnstore (component-persistence invariant
+-- 44).
+CREATE TABLE IF NOT EXISTS feedback_accepted_signals (
  workspace_id VARCHAR(255) NOT NULL,
  environment_id VARCHAR(64) NOT NULL,
  arrived_at DATETIME(6) NOT NULL,
  id VARCHAR(64) NOT NULL,
  source_label VARCHAR(255) NOT NULL,
  service_digests LONGTEXT NOT NULL,
- PRIMARY KEY (workspace_id, environment_id, arrived_at, id),
+ SORT KEY (workspace_id, environment_id, arrived_at, id),
+ PRIMARY KEY (workspace_id, environment_id, arrived_at, id) USING HASH,
  SHARD KEY (workspace_id)
 ) COLLATE utf8mb4_bin;

@@ -123,11 +123,10 @@ same service:
   version that runs now can change, for example when the late signal shows that
   the version was deployed earlier.
 
-For this, the server keeps the accepted signals of the 10 minutes before the
-newest signal of the environment: the arrival, the key's label, and which
-services each one named. A signal that is later than that still records its
-deploys and stops. It ends at the next arrival that changed the service, at the
-newest arrival that named it, or at a kept signal, whichever is first.
+This holds however late the signal is. An arrival that changed nothing ends an
+earlier one too, so the server keeps each accepted signal: the arrival, the
+key's label, and which services it named. These rows are never removed while the
+environment exists.
 
 A version is stored as it was sent and is unresolved. No forge is asked.
 
