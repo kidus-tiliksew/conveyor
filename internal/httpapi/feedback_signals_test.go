@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -769,34 +770,61 @@ func TestFeedbackLimiter(t *testing.T) {
 	l := newFeedbackLimiter(2)
 	admit := func(id string, arrived time.Time) {
 		t.Helper()
-		if wait, full := l.reserve(key(id), arrived, arrived); wait != 0 || full {
-			t.Fatalf("%s at %v: wait=%v full=%v", id, arrived, wait, full)
+		if d := l.reserve(key(id), arrived, arrived); d.wait != 0 || d.full {
+			t.Fatalf("%s at %v: wait=%v full=%v", id, arrived, d.wait, d.full)
 		}
 	}
 	admit("one", at)
 	admit("two", at)
 	// Pending entries are never forgotten, whatever the time.
-	if _, full := l.reserve(key("three"), at.Add(time.Hour), at.Add(time.Hour)); !full {
+	if d := l.reserve(key("three"), at.Add(time.Hour), at.Add(time.Hour)); !d.full {
 		t.Fatal("a pending entry was forgotten")
 	}
-	l.settle(key("one"), at, true)
-	l.settle(key("two"), at, true)
+	l.settle(key("one"), true)
+	l.settle(key("two"), true)
 	// Live windows are never forgotten.
-	if _, full := l.reserve(key("three"), at.Add(feedbackSignalWindow-time.Nanosecond), at.Add(feedbackSignalWindow-time.Nanosecond)); !full || len(l.entries) != 2 {
-		t.Fatalf("a live window was forgotten: full=%v entries=%v", full, l.entries)
+	if d := l.reserve(key("three"), at.Add(feedbackSignalWindow-time.Nanosecond), at.Add(feedbackSignalWindow-time.Nanosecond)); !d.full || len(l.entries) != 2 {
+		t.Fatalf("a live window was forgotten: full=%v entries=%v", d.full, l.entries)
 	}
 	// A held key is judged by its own window while the limiter is full.
-	if wait, full := l.reserve(key("one"), at.Add(time.Second), at.Add(time.Second)); wait != 4*time.Second || full {
-		t.Fatalf("held key: wait=%v full=%v", wait, full)
+	if d := l.reserve(key("one"), at.Add(time.Second), at.Add(time.Second)); d.wait != 4*time.Second || d.full {
+		t.Fatalf("held key: wait=%v full=%v", d.wait, d.full)
 	}
-	// A signal that arrived before the accepted one waits at most the window.
-	if wait, _ := l.reserve(key("one"), at.Add(-time.Minute), at.Add(-time.Minute)); wait != feedbackSignalWindow {
-		t.Fatalf("earlier arrival: wait=%v", wait)
+	// The distance decides in both directions. A signal that arrived a window
+	// or more before the accepted one is admitted and replaces nothing.
+	if d := l.reserve(key("one"), at.Add(-feedbackSignalWindow+time.Nanosecond), at.Add(time.Second)); d.wait != 4*time.Second || d.full {
+		t.Fatalf("just inside, earlier: wait=%v full=%v", d.wait, d.full)
+	}
+	earlier := at.Add(-feedbackSignalWindow)
+	if d := l.reserve(key("one"), earlier, at.Add(time.Second)); d != (feedbackDecision{}) {
+		t.Fatalf("a window earlier: %+v, want admission", d)
+	}
+	// One signal of a key is on its way at a time. A signal near it is
+	// refused, and one a window away waits for it.
+	if d := l.reserve(key("one"), earlier.Add(time.Second-feedbackSignalWindow), at.Add(time.Second)); d.wait != 4*time.Second || d.busy != nil {
+		t.Fatalf("near the signal on its way: %+v", d)
+	}
+	waiting := l.reserve(key("one"), earlier.Add(-feedbackSignalWindow), at.Add(time.Second))
+	if waiting.busy == nil || waiting.wait != 0 || waiting.full {
+		t.Fatalf("a window from the signal on its way: %+v, want a wait for it", waiting)
+	}
+	select {
+	case <-waiting.busy:
+		t.Fatal("the signal on its way settled early")
+	default:
+	}
+	l.settle(key("one"), true)
+	<-waiting.busy
+	if got := l.entries[key("one")].accepted; !slices.Equal(got, []time.Time{at}) {
+		t.Fatalf("accepted=%v, want the newest only with no request in progress", got)
+	}
+	if d := l.reserve(key("one"), at.Add(4*time.Second), at.Add(4*time.Second)); d.wait != time.Second {
+		t.Fatalf("the newer window after the older acceptance: %+v", d)
 	}
 	// A delayed signal is judged by its arrival and waits from now.
 	for now, want := range map[time.Duration]time.Duration{time.Second: 4 * time.Second, 4500 * time.Millisecond: 500 * time.Millisecond, 5 * time.Second: 1, time.Minute: 1} {
-		if wait, full := l.reserve(key("one"), at.Add(time.Second), at.Add(now)); wait != want || full {
-			t.Fatalf("delayed to %v: wait=%v full=%v, want %v", now, wait, full, want)
+		if d := l.reserve(key("one"), at.Add(time.Second), at.Add(now)); d.wait != want || d.full {
+			t.Fatalf("delayed to %v: wait=%v full=%v, want %v", now, d.wait, d.full, want)
 		}
 	}
 	// Ended windows make room.
@@ -805,14 +833,14 @@ func TestFeedbackLimiter(t *testing.T) {
 		t.Fatalf("entries=%v, want the new key only", l.entries)
 	}
 	// A failed first signal leaves nothing.
-	l.settle(key("three"), at.Add(feedbackSignalWindow), false)
+	l.settle(key("three"), false)
 	if len(l.entries) != 0 {
 		t.Fatalf("entries=%v, want none", l.entries)
 	}
 	// The same key ID of another workspace is another key.
 	admit("one", at)
-	if wait, full := l.reserve(feedbackLimiterKey{workspace: "beta", keyID: "one"}, at, at); wait != 0 || full {
-		t.Fatalf("another workspace: wait=%v full=%v", wait, full)
+	if d := l.reserve(feedbackLimiterKey{workspace: "beta", keyID: "one"}, at, at); d.wait != 0 || d.full {
+		t.Fatalf("another workspace: wait=%v full=%v", d.wait, d.full)
 	}
 	// The bound holds under concurrent reservations.
 	l = newFeedbackLimiter(8)
@@ -823,7 +851,7 @@ func TestFeedbackLimiter(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if wait, full := l.reserve(key(fmt.Sprint(i)), at, at); wait == 0 && !full {
+			if d := l.reserve(key(fmt.Sprint(i)), at, at); d.wait == 0 && !d.full {
 				mu.Lock()
 				admitted++
 				mu.Unlock()
@@ -849,15 +877,15 @@ func TestFeedbackLimiterKeepsWindowsInUse(t *testing.T) {
 	}
 	accept := func(id string, offset time.Duration) {
 		t.Helper()
-		if wait, full := l.reserve(key(id), at.Add(offset), at.Add(offset)); wait != 0 || full {
-			t.Fatalf("%s at %v: wait=%v full=%v", id, offset, wait, full)
+		if d := l.reserve(key(id), at.Add(offset), at.Add(offset)); d.wait != 0 || d.full {
+			t.Fatalf("%s at %v: wait=%v full=%v", id, offset, d.wait, d.full)
 		}
-		l.settle(key(id), at.Add(offset), true)
+		l.settle(key(id), true)
 	}
 	requireFull := func(offset time.Duration, what string) {
 		t.Helper()
-		if wait, full := l.reserve(key("new"), at.Add(offset), at.Add(offset)); wait != 0 || !full || len(l.entries) != 2 {
-			t.Fatalf("%s: wait=%v full=%v entries=%v, want a full limiter", what, wait, full, l.entries)
+		if d := l.reserve(key("new"), at.Add(offset), at.Add(offset)); d.wait != 0 || !d.full || len(l.entries) != 2 {
+			t.Fatalf("%s: wait=%v full=%v entries=%v, want a full limiter", what, d.wait, d.full, l.entries)
 		}
 	}
 	accept("one", 0)
@@ -876,8 +904,8 @@ func TestFeedbackLimiterKeepsWindowsInUse(t *testing.T) {
 	if _, held := l.entries[key("one")]; !held || len(l.entries) != 2 {
 		t.Fatalf("entries=%v, want the window in use and the new key", l.entries)
 	}
-	if wait, full := l.reserve(key("one"), first.at, at.Add(6*time.Second)); wait != 1 || full {
-		t.Fatalf("the delayed signal: wait=%v full=%v, want a refusal", wait, full)
+	if d := l.reserve(key("one"), first.at, at.Add(6*time.Second)); d.wait != 1 || d.full {
+		t.Fatalf("the delayed signal: wait=%v full=%v, want a refusal", d.wait, d.full)
 	}
 	// A request keeps a window that opened after it arrived, and a request
 	// that arrived after the window keeps nothing.
@@ -898,6 +926,277 @@ func TestFeedbackLimiterKeepsWindowsInUse(t *testing.T) {
 		t.Fatalf("waiting=%v, want none", l.waiting)
 	}
 	accept("fourth", 21*time.Second)
+}
+
+// TestFeedbackLimiterArrivalOrders runs random requests of three keys through a
+// limiter of two entries: they arrive, are verified, ask, and settle in any
+// order. Every decision is compared with the whole history: a signal is refused
+// exactly when one of its key that was accepted, or is on its way, arrived
+// nearer than the window, and it waits exactly when another one is on its way.
+func TestFeedbackLimiterArrivalOrders(t *testing.T) {
+	t.Parallel()
+	type request struct {
+		arrival  *feedbackArrival
+		key      feedbackLimiterKey
+		verified bool
+		reserved bool
+	}
+	accepted, refused, full, busy := 0, 0, 0, 0
+	for seed := range uint64(400) {
+		random := rand.New(rand.NewPCG(seed, 261125))
+		l := newFeedbackLimiter(2)
+		now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+		history, onWay := map[feedbackLimiterKey][]time.Time{}, map[feedbackLimiterKey]*request{}
+		var open []*request
+		near := func(a, b time.Time) bool { return a.Sub(b).Abs() < 5*time.Second }
+		for range 400 {
+			now = now.Add(time.Duration(random.IntN(1500)) * time.Millisecond)
+			if len(open) < 6 && random.IntN(3) == 0 {
+				open = append(open, &request{key: feedbackLimiterKey{workspace: "alpha", keyID: fmt.Sprint(random.IntN(3))}, arrival: l.arrive(func() time.Time { return now })})
+				continue
+			}
+			if len(open) == 0 {
+				continue
+			}
+			i := random.IntN(len(open))
+			r := open[i]
+			leave := func() {
+				l.leave(r.arrival)
+				open = slices.Delete(open, i, i+1)
+			}
+			if !r.verified {
+				l.identify(r.arrival, r.key)
+				r.verified = true
+				continue
+			}
+			if r.reserved {
+				commits := random.IntN(4) > 0
+				l.settle(r.key, commits)
+				onWay[r.key] = nil
+				if commits {
+					history[r.key] = append(history[r.key], r.arrival.at)
+					accepted++
+				}
+				leave()
+				continue
+			}
+			d := l.reserve(r.key, r.arrival.at, now)
+			wantRefusal := slices.ContainsFunc(history[r.key], func(at time.Time) bool { return near(at, r.arrival.at) })
+			current := onWay[r.key]
+			if current != nil && near(current.arrival.at, r.arrival.at) {
+				wantRefusal = true
+			}
+			switch {
+			case d.full:
+				// The cap never decides for a key that is held, and it refuses
+				// only while no held key can be forgotten.
+				full++
+				if len(l.entries) != 2 || l.entries[r.key] != nil || wantRefusal {
+					t.Fatalf("seed %d: full with entries=%v refusal=%v", seed, l.entries, wantRefusal)
+				}
+				for key := range l.entries {
+					needed := onWay[key] != nil
+					for _, at := range history[key] {
+						needed = needed || now.Sub(at) < 5*time.Second
+						for _, other := range open {
+							needed = needed || ((!other.verified || other.key == key) && near(other.arrival.at, at))
+						}
+					}
+					if !needed {
+						t.Fatalf("seed %d: full while key %v can be forgotten", seed, key)
+					}
+				}
+				leave()
+			case d.wait > 0:
+				refused++
+				if !wantRefusal || d.wait > 5*time.Second {
+					t.Fatalf("seed %d: refused %v for %v, history=%v", seed, r.arrival.at, d.wait, history[r.key])
+				}
+				leave()
+			case d.busy != nil:
+				busy++
+				if wantRefusal || current == nil {
+					t.Fatalf("seed %d: waits without another signal on its way, or inside a window", seed)
+				}
+			default:
+				if wantRefusal || current != nil {
+					t.Fatalf("seed %d: admitted %v, history=%v on its way=%v", seed, r.arrival.at, history[r.key], current)
+				}
+				onWay[r.key], r.reserved = r, true
+			}
+			if len(l.entries) > 2 {
+				t.Fatalf("seed %d: %d entries over the cap", seed, len(l.entries))
+			}
+			for key, entry := range l.entries {
+				if len(entry.accepted) > 1+2*6 {
+					t.Fatalf("seed %d: key %v holds %d arrivals for at most 6 requests", seed, key, len(entry.accepted))
+				}
+			}
+		}
+		for key, arrivals := range history {
+			slices.SortFunc(arrivals, time.Time.Compare)
+			for i := 1; i < len(arrivals); i++ {
+				if near(arrivals[i-1], arrivals[i]) {
+					t.Fatalf("seed %d: key %v accepted %v and %v", seed, key, arrivals[i-1], arrivals[i])
+				}
+			}
+		}
+	}
+	if accepted == 0 || refused == 0 || full == 0 || busy == 0 {
+		t.Fatalf("accepted=%d refused=%d full=%d busy=%d, want each", accepted, refused, full, busy)
+	}
+}
+
+// TestFeedbackSignalOlderArrivalIsAccepted sends two signals of one key six
+// seconds apart. The older one waits in its repository check until the newer
+// one committed. Both are accepted, at their arrivals, and neither window is
+// lost.
+func TestFeedbackSignalOlderArrivalIsAccepted(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	start := store.EnvironmentTime(h.clock())
+	type gate struct{ entered, release chan struct{} }
+	gates := map[time.Time]gate{}
+	for _, offset := range []time.Duration{0, time.Second} {
+		gates[start.Add(offset)] = gate{make(chan struct{}), make(chan struct{})}
+	}
+	h.use(feedbackSignalStore{Backend: h.st, check: func(ctx context.Context, signal store.FeedbackSignal) error {
+		if g, held := gates[signal.ArrivedAt]; held {
+			close(g.entered)
+			<-g.release
+		}
+		return h.st.CheckFeedbackRepositories(ctx, signal)
+	}})
+	body := func(version string, seconds int) string {
+		return fmt.Sprintf(`{"next_signal_seconds":%d,"services":[{"name":"api","repository":"app","versions":[{"version":%q}]}]}`, seconds, version)
+	}
+	// hold sends a signal and returns once it is in its repository check.
+	hold := func(body string) (gate, chan *httptest.ResponseRecorder) {
+		t.Helper()
+		g, answer := gates[store.EnvironmentTime(h.clock())], make(chan *httptest.ResponseRecorder, 1)
+		go func() { answer <- h.send(body) }()
+		select {
+		case <-g.entered:
+		case response := <-answer:
+			t.Fatalf("the held signal was answered: status=%d body=%s", response.Code, response.Body)
+		}
+		return g, answer
+	}
+	acceptedAt := func(response *httptest.ResponseRecorder, want time.Duration, what string) {
+		t.Helper()
+		var answer struct {
+			AcceptedAt time.Time `json:"accepted_at"`
+		}
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("%s: status=%d Retry-After=%q body=%s, want 202", what, response.Code, response.Header().Get("Retry-After"), response.Body)
+		}
+		decodeEnvironmentBody(t, response, &answer)
+		if !answer.AcceptedAt.Equal(start.Add(want)) {
+			t.Fatalf("%s: accepted_at=%v, want its arrival %v", what, answer.AcceptedAt, start.Add(want))
+		}
+	}
+	refused := func(response *httptest.ResponseRecorder, retry, what string) {
+		t.Helper()
+		if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != retry {
+			t.Fatalf("%s: status=%d Retry-After=%q, want 429 and %s", what, response.Code, response.Header().Get("Retry-After"), retry)
+		}
+	}
+	newest := func() store.FeedbackSignalState {
+		t.Helper()
+		signals, err := h.st.ListFeedbackSignals(h.ctx, []string{h.environment.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signals[h.environment.ID]
+	}
+	older, olderAnswer := hold(body("1", 30))
+	// A third signal arrives near the older one only, and waits too.
+	h.advance(time.Second)
+	between, betweenAnswer := hold(body("3", 30))
+	h.advance(5 * time.Second)
+	acceptedAt(h.send(body("2", 600)), 6*time.Second, "the newer signal")
+	metadata := newest()
+	if !metadata.LastSignalAt.Equal(start.Add(6*time.Second)) || metadata.NextSignalSeconds != 600 {
+		t.Fatalf("newest=%+v, want the newer signal", metadata)
+	}
+	h.advance(2 * time.Second)
+	close(older.release)
+	acceptedAt(<-olderAnswer, 0, "the older signal")
+	if got := newest(); got != metadata {
+		t.Fatalf("newest=%+v after the older write, want %+v", got, metadata)
+	}
+	deploys := h.deploys()
+	if len(deploys) != 2 || deploys[0].Version != "1" || !deploys[0].DeployedAt.Equal(start) || deploys[0].StoppedAt == nil || !deploys[0].StoppedAt.Equal(start.Add(6*time.Second)) ||
+		deploys[1].Version != "2" || !deploys[1].DeployedAt.Equal(start.Add(6*time.Second)) || deploys[1].StoppedAt != nil {
+		t.Fatalf("deploys=%+v, want version 1 from 0 to 6 seconds and version 2 from 6", deploys)
+	}
+	before := h.stored()
+	// The newer window is intact, and the older acceptance has its own.
+	refused(h.send(body("4", 30)), "3", "inside the newer window")
+	close(between.release)
+	refused(<-betweenAnswer, "3", "near the older signal")
+	if after := h.stored(); after != before {
+		t.Fatalf("a refused signal changed a record:\nbefore %s\nafter  %s", before, after)
+	}
+	h.advance(3 * time.Second)
+	acceptedAt(h.send(body("2", 600)), 11*time.Second, "at the end of the newer window")
+}
+
+// TestFeedbackSignalWaitsForTheOneOnItsWay holds a signal in the store. A
+// signal that is near it is refused at once. One a window away waits for it and
+// is accepted, and one whose client leaves stops waiting.
+func TestFeedbackSignalWaitsForTheOneOnItsWay(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	start := store.EnvironmentTime(h.clock())
+	entered, release, asked := make(chan struct{}), make(chan struct{}), make(chan struct{}, 2)
+	h.use(feedbackSignalStore{Backend: h.st,
+		check: func(ctx context.Context, signal store.FeedbackSignal) error {
+			asked <- struct{}{}
+			return h.st.CheckFeedbackRepositories(ctx, signal)
+		},
+		record: func(ctx context.Context, signal store.FeedbackSignal) error {
+			if signal.ArrivedAt.Equal(start) {
+				close(entered)
+				<-release
+			}
+			return h.st.RecordFeedbackSignal(ctx, signal)
+		}})
+	first := make(chan *httptest.ResponseRecorder, 1)
+	go func() { first <- h.send(feedbackMinimalSignal) }()
+	<-entered
+	h.advance(3 * time.Second)
+	if response := h.send(feedbackMinimalSignal); response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "2" {
+		t.Fatalf("near the signal on its way: status=%d Retry-After=%q, want 429 and 2", response.Code, response.Header().Get("Retry-After"))
+	}
+	h.advance(3 * time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
+	left := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		request := httptest.NewRequest(http.MethodPost, environmentSignalPath, strings.NewReader(feedbackAppSignal)).WithContext(ctx)
+		request.Header.Set("Authorization", "Bearer "+h.key.Value)
+		response := httptest.NewRecorder()
+		h.handler.ServeHTTP(response, request)
+		left <- response
+	}()
+	<-asked
+	cancel()
+	if response := <-left; response.Code == http.StatusAccepted || response.Code == http.StatusTooManyRequests {
+		t.Fatalf("a signal whose client left: status=%d", response.Code)
+	}
+	second := make(chan *httptest.ResponseRecorder, 1)
+	go func() { second <- h.send(feedbackAppSignal) }()
+	<-asked
+	close(release)
+	for name, answer := range map[string]chan *httptest.ResponseRecorder{"first": first, "second": second} {
+		if response := <-answer; response.Code != http.StatusAccepted {
+			t.Fatalf("%s signal: status=%d body=%s", name, response.Code, response.Body)
+		}
+	}
+	signals, err := h.st.ListFeedbackSignals(h.ctx, []string{h.environment.ID})
+	if err != nil || !signals[h.environment.ID].LastSignalAt.Equal(start.Add(6*time.Second)) {
+		t.Fatalf("signals=%+v err=%v, want the second signal as the newest", signals, err)
+	}
 }
 
 // TestFeedbackSignalDelayedRequestKeepsWindow holds a signal in its repository

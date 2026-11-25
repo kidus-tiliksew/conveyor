@@ -151,18 +151,29 @@ func (s *Server) receiveFeedbackSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limiter, key := s.feedbackSignals(), feedbackLimiterKey{workspace: scope.key.Workspace, keyID: scope.key.KeyID}
-	wait, full := limiter.reserve(key, scope.arrived, s.feedbackNow())
-	if full {
+	decision := limiter.reserve(key, scope.arrived, s.feedbackNow())
+	for decision.busy != nil {
+		// The store takes the signals of an environment one at a time, so this
+		// signal would wait there too.
+		select {
+		case <-decision.busy:
+			decision = limiter.reserve(key, scope.arrived, s.feedbackNow())
+		case <-r.Context().Done():
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	if decision.full {
 		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if wait > 0 {
-		w.Header().Set("Retry-After", strconv.FormatInt(int64((wait+time.Second-1)/time.Second), 10))
+	if decision.wait > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(int64((decision.wait+time.Second-1)/time.Second), 10))
 		http.Error(w, "too many signals", http.StatusTooManyRequests)
 		return
 	}
 	accepted := false
-	defer func() { limiter.settle(key, scope.arrived, accepted) }()
+	defer func() { limiter.settle(key, accepted) }()
 	if err := backend.RecordFeedbackSignal(r.Context(), signal); err != nil {
 		writeFeedbackError(w, r, err)
 		return
