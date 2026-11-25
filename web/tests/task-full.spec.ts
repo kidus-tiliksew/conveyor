@@ -2650,6 +2650,96 @@ for (const width of [375, 1280]) {
   })
 }
 
+// The forge-failure fixture with one merge.failed per reason the timeline
+// titles apart. Each error repeats the text internal/dispatch records.
+const mergeFailures = [
+  {
+    reason: 'merge_unconfirmed',
+    title: 'Conveyor could not confirm the merge',
+    category: 'forge_status',
+    error:
+      'GitHub did not confirm the merge. The pull request can already be merged. Merge request for acme/conveyor#482: GitHub REST status 502: Server Error',
+  },
+  {
+    reason: 'merge_verification_failed',
+    title: 'Conveyor could not confirm the merge',
+    category: 'forge_request',
+    error:
+      'GitHub merged pull request acme/conveyor#482 at head "beef123", not at approved head ca7ca70. Merge request: connection reset',
+  },
+  {
+    reason: 'forge_merge_failed',
+    title: 'Merge needs operator action',
+    category: 'forge_status',
+    error:
+      'GitHub could not merge pull request acme/conveyor#482; resolve required checks or branch protection and retry: GitHub REST status 405',
+  },
+  {
+    reason: 'pull_request_lookup_failed',
+    title: 'Merge needs operator action',
+    category: 'forge_permission',
+    error: 'could not read the pull request for branch conveyor/task-482: resource not accessible',
+  },
+]
+
+function mergeFailureItem() {
+  const item = activity('forge-failure', false)
+  return {
+    ...item,
+    events: [
+      ...(item.events ?? []),
+      ...mergeFailures.map((failure, index) => ({
+        id: 10 + index,
+        task_id: 'forge-failure',
+        kind: 'merge.failed',
+        actor_id: 'system',
+        actor_role: 'system' as const,
+        payload: { reason_code: failure.reason, forge_error_category: failure.category, error: failure.error },
+        at: `2026-07-15T12:1${index}:00Z`,
+      })),
+    ],
+  }
+}
+
+// DEC-64(6): an unconfirmed merge can have landed, so its entry claims no refusal.
+test('the timeline titles an unconfirmed merge apart from a refused merge', async ({ page }) => {
+  await page.route('**/v1/tasks/forge-failure/activity*', (route) => route.fulfill({ json: mergeFailureItem() }))
+  await page.goto('/w/demo/tasks/forge-failure/full')
+  const entries = page.getByLabel('Execution event timeline').locator('li')
+  for (const failure of mergeFailures) {
+    const entry = entries.filter({ hasText: failure.error })
+    await expect(entry).toHaveCount(1)
+    await expect(entry.getByText(failure.title, { exact: true })).toHaveClass(/text-attention/)
+    await expect(entry.getByText(`${failure.category} · ${failure.error}`, { exact: true })).toBeVisible()
+    await expect(entry.locator('.bg-attention-dot')).toHaveCount(1)
+  }
+  await expect(entries.filter({ hasText: 'Conveyor could not confirm the merge' })).toHaveCount(2)
+  // The forge_merge_failed event of the shared fixture keeps the refusal title.
+  await expect(entries.filter({ hasText: 'Merge needs operator action' })).toHaveCount(3)
+})
+
+// Visual record for the pull request, kept as the risk card screenshots above are.
+for (const width of [375, 1280]) {
+  test(`merge failure timeline screenshots at ${width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 1000 })
+    await page.route('**/v1/tasks/forge-failure/activity*', (route) => route.fulfill({ json: mergeFailureItem() }))
+    await page.goto('/w/demo/tasks/forge-failure/full')
+    const timeline = page.getByLabel('Execution event timeline')
+    await expect(timeline.getByText('Conveyor could not confirm the merge', { exact: true })).toHaveCount(2)
+    await page.evaluate(() => document.fonts.ready)
+    if (width === 375) expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375)
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    for (const [target, name] of [
+      [timeline, 'merge-failure-timeline'],
+      [page, 'merge-failure-page'],
+    ] as const) {
+      const file = `${name}-${width}.png`
+      const image = await target.screenshot({ path: shots ? `${shots}/${file}` : undefined })
+      await testInfo.attach(file, { body: image, contentType: 'image/png' })
+    }
+  })
+}
+
 // The checkpoint shape of task 261015-3721c6: seven citations across four
 // System Design documents, each with one pending task-authored proposal
 // (component-web-task-surfaces, Implementation checkpoints).

@@ -1530,7 +1530,16 @@ function noteContent(
         href: typeof payload.url === 'string' ? payload.url : undefined,
       }
     case 'merge.failed':
-      return { title: 'Merge needs operator action', detail: forgeFailureDetail(payload, 'error'), alarm: true }
+      // GitHub can hold a landed merge behind either of these reasons, so the
+      // entry names the missing confirmation and no refusal (DEC-64(6)).
+      return {
+        title:
+          payload.reason_code === 'merge_unconfirmed' || payload.reason_code === 'merge_verification_failed'
+            ? 'Conveyor could not confirm the merge'
+            : 'Merge needs operator action',
+        detail: forgeFailureDetail(payload, 'error'),
+        alarm: true,
+      }
     case 'merge.blocked':
       return {
         title: 'Merge blocked — conflict fix required',

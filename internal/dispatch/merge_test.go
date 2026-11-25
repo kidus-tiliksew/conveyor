@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +16,9 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -431,10 +435,10 @@ func TestMergeApprovedTaskFailuresStayApprovedAndAreAudited(t *testing.T) {
 		{name: "missing pull request", githubRepo: "acme/app", reason: "missing_pull_request", category: githubtrigger.ForgeStatus, view: func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 			return githubtrigger.PullRequest{}, &githubtrigger.Error{Category: githubtrigger.ForgeStatus, Err: githubtrigger.ErrPullRequestNotFound}
 		}},
-		{name: "forge merge failure", githubRepo: "acme/app", reason: "forge_merge_failed", category: githubtrigger.ForgePermission, view: func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		{name: "forge merge failure", githubRepo: "acme/app", reason: "forge_merge_failed", category: githubtrigger.ForgeStatus, view: func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 			return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE"}, nil
 		}, merge: func(context.Context, string, int) error {
-			return &githubtrigger.Error{Category: githubtrigger.ForgePermission, Err: errors.New("branch protection")}
+			return githubtrigger.StatusError(http.StatusMethodNotAllowed, errors.New("branch protection"))
 		}},
 		{name: "unconfirmed result", githubRepo: "acme/app", reason: "merge_unconfirmed", view: func() func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 			calls := 0
@@ -475,6 +479,357 @@ func TestMergeApprovedTaskFailuresStayApprovedAndAreAudited(t *testing.T) {
 			}
 		})
 	}
+}
+
+const uncertainHead = "approved-head"
+
+// uncertainMergeForge scripts one merge request that fails with requestErr and
+// the pull request read that follows it.
+type uncertainMergeForge struct {
+	before, after githubtrigger.PullRequest
+	requestErr    error
+	readErr       error
+	requests      int
+	readsAfter    int
+}
+
+func (f *uncertainMergeForge) view(context.Context, string, string) (githubtrigger.PullRequest, error) {
+	if f.requests == 0 {
+		return f.before, nil
+	}
+	f.readsAfter++
+	return f.after, f.readErr
+}
+
+func (f *uncertainMergeForge) merge(context.Context, string, int) error {
+	f.requests++
+	return f.requestErr
+}
+
+func uncertainMergeFixture(t *testing.T, id, head string, requestErr error) (context.Context, store.Store, core.Task, *Dispatcher, *uncertainMergeForge) {
+	t.Helper()
+	ctx := forgeReconcileCtx()
+	st := mergeIdentityStore{store.NewMemory()}
+	task := core.Task{ID: id, Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/" + id, State: core.TaskApproved, ReviewedHeadSHA: head, ApprovedHeadSHA: head, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	openPullRequest(t, st, ctx, task.ID, 12, head)
+	d := newForgeDispatcher(st)
+	open := githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: "open", Mergeable: "MERGEABLE", BaseSHA: "base", HeadSHA: head, HeadRef: task.Branch}
+	forge := &uncertainMergeForge{before: open, after: open, requestErr: requestErr}
+	d.ViewPullRequest, d.RequestMerge = forge.view, forge.merge
+	return ctx, st, task, d, forge
+}
+
+// approvedMergeActs are the two entry points of the approved-task merge.
+var approvedMergeActs = map[string]func(context.Context, *Dispatcher, core.Task) error{
+	"automatic": func(ctx context.Context, d *Dispatcher, task core.Task) error {
+		return d.MergeApprovedTaskAutomatically(ctx, task)
+	},
+	"operator": func(ctx context.Context, d *Dispatcher, task core.Task) error {
+		return d.MergeApprovedTask(store.WithActor(ctx, gateOperator), task, gateOperator)
+	},
+}
+
+var errMergeTransport = errors.New("connection reset")
+
+// uncertainMergeErrors are the request failures that can hide a landed merge.
+var uncertainMergeErrors = map[string]struct {
+	err      error
+	category githubtrigger.ForgeErrorCategory
+}{
+	"502":          {githubtrigger.StatusError(http.StatusBadGateway, errors.New("GitHub REST status 502: Server Error")), githubtrigger.ForgeStatus},
+	"transport":    {&githubtrigger.Error{Category: githubtrigger.ForgeRequest, Err: errMergeTransport}, githubtrigger.ForgeRequest},
+	"rate limited": {githubtrigger.RateLimitedError(time.Time{}, errors.New("API rate limit exceeded")), githubtrigger.ForgeRateLimited},
+}
+
+func requireUncertainMergeCalls(t *testing.T, forge *uncertainMergeForge, readsAfter int) {
+	t.Helper()
+	if forge.requests != 1 || forge.readsAfter != readsAfter {
+		t.Fatalf("merge requests=%d reads after the request=%d, want 1 and %d", forge.requests, forge.readsAfter, readsAfter)
+	}
+}
+
+// requireMergeFlight reports whether the task's last merge.failed leaves its
+// merge.requested in flight.
+func requireMergeFlight(t *testing.T, ctx context.Context, st store.Store, taskID string, inFlight bool) {
+	t.Helper()
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := 0
+	for _, event := range events {
+		if event.Kind != "merge.failed" {
+			continue
+		}
+		failed++
+		if monitor.EndsMergeFlight(event) == inFlight {
+			t.Fatalf("merge flight ended=%t by %s", inFlight, event.Payload)
+		}
+	}
+	if failed != 1 {
+		t.Fatalf("merge.failed events=%d, want 1", failed)
+	}
+}
+
+func requireApprovedWithoutCompletion(t *testing.T, ctx context.Context, st store.Store, taskID string) {
+	t.Helper()
+	current, err := st.GetTask(ctx, taskID)
+	if err != nil || current.State != core.TaskApproved {
+		t.Fatalf("task state=%s err=%v, want approved", current.State, err)
+	}
+	kinds := eventKinds(t, st, ctx, taskID)
+	for _, kind := range []string{"merge.confirmed", "merge.reconciled", store.EventCheckOverride} {
+		if countKind(kinds, kind) != 0 {
+			t.Fatalf("unexpected %s in %v", kind, kinds)
+		}
+	}
+}
+
+// A request failure that is no refusal, followed by a read of the landed merge,
+// completes the task with no merge.failed (req-delivery-and-forge AC-3.6;
+// component-submission-merge invariant 43).
+func TestMergeApprovedTaskConfirmsLandedMergeAfterUncertainRequest(t *testing.T) {
+	for actName, act := range approvedMergeActs {
+		for errName, failure := range uncertainMergeErrors {
+			for headName, head := range map[string]string{"approved head": uncertainHead, "no recorded head": ""} {
+				t.Run(actName+"/"+errName+"/"+headName, func(t *testing.T) {
+					ctx, st, task, d, forge := uncertainMergeFixture(t, "uncertain-landed", head, failure.err)
+					forge.after = mergedPull(task, 12, uncertainHead, "landed", "conveyor-app")
+					if err := act(ctx, d, task); err != nil {
+						t.Fatal(err)
+					}
+					requireUncertainMergeCalls(t, forge, 1)
+					if current, err := st.GetTask(ctx, task.ID); err != nil || current.State != core.TaskMerged {
+						t.Fatalf("task state=%s err=%v", current.State, err)
+					}
+					kinds := eventKinds(t, st, ctx, task.ID)
+					requested, confirmed := slices.Index(kinds, "merge.requested"), slices.Index(kinds, "merge.confirmed")
+					if requested < 0 || confirmed < requested || countKind(kinds, "merge.confirmed") != 1 || countKind(kinds, "merge.failed") != 0 {
+						t.Fatalf("events=%v", kinds)
+					}
+					payload := lastPayload(t, st, ctx, task.ID, "merge.confirmed")
+					if payload["head_sha"] != uncertainHead || payload["merge_commit_sha"] != "landed" {
+						t.Fatalf("merge.confirmed=%v", payload)
+					}
+					// A repeated act on the merged task asks GitHub nothing.
+					if err := act(ctx, d, task); err != nil {
+						t.Fatal(err)
+					}
+					requireUncertainMergeCalls(t, forge, 1)
+				})
+			}
+		}
+	}
+}
+
+// With no confirmed merge the task stays approved and the request stays in
+// flight, so a later observation at the approved head completes it once
+// (component-submission-merge, State and failure).
+func TestMergeApprovedTaskUnconfirmedRequestReconcilesLater(t *testing.T) {
+	// The read failure carries its own category, which must not replace the
+	// merge request's.
+	readFailure := githubtrigger.PermissionError(errors.New("read unavailable"))
+	for actName, act := range approvedMergeActs {
+		for errName, failure := range uncertainMergeErrors {
+			for readName, readErr := range map[string]error{"not merged": nil, "read fails": readFailure} {
+				t.Run(actName+"/"+errName+"/"+readName, func(t *testing.T) {
+					ctx, st, task, d, forge := uncertainMergeFixture(t, "uncertain-open", uncertainHead, failure.err)
+					forge.readErr = readErr
+					err := act(ctx, d, task)
+					if !errors.Is(err, failure.err) || !errors.Is(err, store.ErrRefusal) || !MergeRouteRefusal(err) {
+						t.Fatalf("err=%v, want a refusal that wraps the request failure", err)
+					}
+					if errors.Is(err, readFailure) || errors.Is(err, ErrCheckStatusUnread) {
+						t.Fatalf("err=%v carries the read failure", err)
+					}
+					requireUncertainMergeCalls(t, forge, 1)
+					requireApprovedWithoutCompletion(t, ctx, st, task.ID)
+					failed := lastPayload(t, st, ctx, task.ID, "merge.failed")
+					if failed["reason_code"] != "merge_unconfirmed" || failed["forge_error_category"] != string(failure.category) {
+						t.Fatalf("merge.failed=%v", failed)
+					}
+					requested := lastPayload(t, st, ctx, task.ID, "merge.requested")
+					if failed["forge_author_class"] != requested["forge_author_class"] || failed["forge_author_user_id"] != requested["forge_author_user_id"] {
+						t.Fatalf("merge.failed=%v names another author than merge.requested=%v", failed, requested)
+					}
+					if operator := actName == "operator"; operator != (failed["forge_author_user_id"] == "usr-approver") {
+						t.Fatalf("merge.failed=%v", failed)
+					}
+					detail, _ := failed["error"].(string)
+					if !strings.Contains(detail, "GitHub did not confirm the merge. The pull request can already be merged.") || !strings.Contains(detail, failure.err.Error()) {
+						t.Fatalf("merge.failed error=%q", detail)
+					}
+					for _, wrong := range []string{"branch protection", "required checks", "retry"} {
+						if strings.Contains(detail, wrong) {
+							t.Fatalf("merge.failed error=%q names %q", detail, wrong)
+						}
+					}
+					if readErr != nil && !strings.Contains(detail, "read unavailable") {
+						t.Fatalf("merge.failed error=%q omits the read failure", detail)
+					}
+					requireMergeFlight(t, ctx, st, task.ID, true)
+
+					observed := mergedPull(task, 12, uncertainHead, "landed", "conveyor-app")
+					for range 2 {
+						if matched, err := d.ReconcileObservedPullRequest(ctx, "app", "acme/app", task.ID, observed); err != nil || !matched {
+							t.Fatalf("matched=%t err=%v", matched, err)
+						}
+					}
+					if current, err := st.GetTask(ctx, task.ID); err != nil || current.State != core.TaskMerged {
+						t.Fatalf("task state=%s err=%v", current.State, err)
+					}
+					kinds := eventKinds(t, st, ctx, task.ID)
+					if countKind(kinds, "merge.reconciled") != 1 || countKind(kinds, "merge.confirmed") != 0 || countKind(kinds, "merge.failed") != 1 {
+						t.Fatalf("events=%v", kinds)
+					}
+					requireUncertainMergeCalls(t, forge, 1)
+				})
+			}
+		}
+	}
+}
+
+// A merge at another head, or with no merge commit, is not the approved merge.
+func TestMergeApprovedTaskUncertainRequestVerifiesHeadAndCommit(t *testing.T) {
+	for actName, act := range approvedMergeActs {
+		for errName, failure := range uncertainMergeErrors {
+			for name, tc := range map[string]struct{ approved, merged, commit, detail string }{
+				"another head":                   {uncertainHead, "other-head", "landed", "other-head"},
+				"unnamed head":                   {uncertainHead, "", "landed", uncertainHead},
+				"no merge commit":                {uncertainHead, uncertainHead, "", "no merge commit"},
+				"no merge commit, no bound head": {"", uncertainHead, "", "no merge commit"},
+			} {
+				t.Run(actName+"/"+errName+"/"+name, func(t *testing.T) {
+					ctx, st, task, d, forge := uncertainMergeFixture(t, "uncertain-mismatch", tc.approved, failure.err)
+					if tc.approved != "" {
+						holdCheckStatus(t, ctx, st, task.ID, tc.approved)
+					}
+					forge.after = mergedPull(task, 12, tc.merged, tc.commit, "conveyor-app")
+					if err := act(ctx, d, task); !errors.Is(err, failure.err) || !MergeRouteRefusal(err) {
+						t.Fatalf("err=%v, want a refusal that wraps the request failure", err)
+					}
+					requireUncertainMergeCalls(t, forge, 1)
+					requireApprovedWithoutCompletion(t, ctx, st, task.ID)
+					failed := lastPayload(t, st, ctx, task.ID, "merge.failed")
+					if failed["reason_code"] != "merge_verification_failed" || failed["forge_error_category"] != string(failure.category) || !strings.Contains(failed["error"].(string), tc.detail) {
+						t.Fatalf("merge.failed=%v", failed)
+					}
+					requireMergeFlight(t, ctx, st, task.ID, true)
+				})
+			}
+		}
+	}
+}
+
+// A definitive refusal answers the request, so nothing reads the pull request
+// again (DEC-64(6)).
+func TestMergeApprovedTaskDefinitiveRefusalReadsNothing(t *testing.T) {
+	for actName, act := range approvedMergeActs {
+		for _, status := range []int{http.StatusForbidden, http.StatusMethodNotAllowed, http.StatusConflict, http.StatusUnprocessableEntity} {
+			t.Run(fmt.Sprintf("%s/%d", actName, status), func(t *testing.T) {
+				refusal := githubtrigger.StatusError(status, errors.New("merge refused"))
+				ctx, st, task, d, forge := uncertainMergeFixture(t, "refused", uncertainHead, refusal)
+				// A read would find the merge landed, so it would complete the task.
+				forge.after = mergedPull(task, 12, uncertainHead, "landed", "conveyor-app")
+				if err := act(ctx, d, task); !errors.Is(err, refusal) || !MergeRouteRefusal(err) {
+					t.Fatalf("err=%v", err)
+				}
+				requireUncertainMergeCalls(t, forge, 0)
+				requireApprovedWithoutCompletion(t, ctx, st, task.ID)
+				failed := lastPayload(t, st, ctx, task.ID, "merge.failed")
+				if failed["reason_code"] != "forge_merge_failed" || failed["forge_error_category"] != string(githubtrigger.ForgeStatus) || !strings.Contains(failed["error"].(string), "required checks or branch protection") {
+					t.Fatalf("merge.failed=%v", failed)
+				}
+				requireMergeFlight(t, ctx, st, task.ID, false)
+			})
+		}
+	}
+}
+
+func holdCheckStatus(t *testing.T, ctx context.Context, st store.Store, taskID, head string) {
+	t.Helper()
+	if err := st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: store.EventCheckHold, Payload: core.JSONPayload(map[string]any{
+		"workspace": "test", "task_id": taskID, "head_sha": head, "reason": nextaction.CheckHoldFailed,
+		"checks": []nextaction.CheckRef{{Name: "e2e", State: githubtrigger.CheckFailed}},
+	})}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An operator's merge past a check hold keeps its override and its credit when
+// the read after the failed request finds the merge landed, and records neither
+// before that (component-submission-merge invariant 58).
+func TestMergeApprovedTaskUncertainOperatorMergeKeepsOverride(t *testing.T) {
+	for errName, failure := range uncertainMergeErrors {
+		t.Run(errName, func(t *testing.T) {
+			ctx, st, task, d, forge := uncertainMergeFixture(t, "uncertain-held", uncertainHead, failure.err)
+			holdCheckStatus(t, ctx, st, task.ID, uncertainHead)
+			forge.after = mergedPull(task, 12, uncertainHead, "landed", "conveyor-app")
+			if err := approvedMergeActs["operator"](ctx, d, task); err != nil {
+				t.Fatal(err)
+			}
+			requireUncertainMergeCalls(t, forge, 1)
+			kinds := eventKinds(t, st, ctx, task.ID)
+			override, confirmed := slices.Index(kinds, store.EventCheckOverride), slices.Index(kinds, "merge.confirmed")
+			if override < 0 || confirmed < override || countKind(kinds, store.EventCheckOverride) != 1 || countKind(kinds, "merge.failed") != 0 {
+				t.Fatalf("events=%v", kinds)
+			}
+			if payload := lastPayload(t, st, ctx, task.ID, store.EventCheckOverride); payload["operator_user_id"] != "usr-approver" || payload["head_sha"] != uncertainHead {
+				t.Fatalf("merge.check_override=%v", payload)
+			}
+			if payload := lastPayload(t, st, ctx, task.ID, "merge.confirmed"); payload["approving_operator_user_id"] != "usr-approver" {
+				t.Fatalf("merge.confirmed=%v", payload)
+			}
+		})
+	}
+	t.Run("no override before confirmation", func(t *testing.T) {
+		ctx, st, task, d, _ := uncertainMergeFixture(t, "uncertain-held-open", uncertainHead, uncertainMergeErrors["502"].err)
+		holdCheckStatus(t, ctx, st, task.ID, uncertainHead)
+		if err := approvedMergeActs["operator"](ctx, d, task); err == nil {
+			t.Fatal("the unconfirmed merge reported success")
+		}
+		requireApprovedWithoutCompletion(t, ctx, st, task.ID)
+		if matched, err := d.ReconcileObservedPullRequest(ctx, "app", "acme/app", task.ID, mergedPull(task, 12, uncertainHead, "landed", "conveyor-app")); err != nil || !matched {
+			t.Fatalf("matched=%t err=%v", matched, err)
+		}
+		if payload := lastPayload(t, st, ctx, task.ID, store.EventCheckOverride); payload["operator_user_id"] != "usr-approver" {
+			t.Fatalf("merge.check_override=%v", payload)
+		}
+	})
+}
+
+// An enforcing task's final approval is recorded only with the confirmed merge
+// (req-risk-based-review AC-8.7).
+func TestMergeApprovedTaskUncertainMergeKeepsFinalApproval(t *testing.T) {
+	medium := riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierMedium, 0}
+	ctx, st, task, d, forge := riskApprovedTask(t, "risk-uncertain", medium)
+	forge.answer = func(pr *githubtrigger.PullRequest) error {
+		pr.Merged, pr.State, pr.MergeCommitSHA, pr.MergedBy = true, "closed", "landed", "conveyor-app"
+		return uncertainMergeErrors["502"].err
+	}
+	if err := d.MergeApprovedTask(ctx, task, gateOperator); err != nil || forge.merges != 1 {
+		t.Fatalf("err=%v merges=%d", err, forge.merges)
+	}
+	assertFinalApprovals(t, ctx, st, d, task.ID, 1, "usr-approver")
+
+	ctx, st, task, d, forge = riskApprovedTask(t, "risk-uncertain-open", medium)
+	forge.answer = func(*githubtrigger.PullRequest) error { return uncertainMergeErrors["502"].err }
+	if err := d.MergeApprovedTask(ctx, task, gateOperator); err == nil {
+		t.Fatal("the unconfirmed merge reported success")
+	}
+	records, err := st.ListTaskApprovals(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if record.Kind == core.TaskApprovalPerson {
+			t.Fatalf("approval recorded without a confirmed merge: %+v", record)
+		}
+	}
+	requireApprovedWithoutCompletion(t, ctx, st, task.ID)
 }
 
 func TestMergeApprovedTaskSerializesConcurrentRequests(t *testing.T) {
