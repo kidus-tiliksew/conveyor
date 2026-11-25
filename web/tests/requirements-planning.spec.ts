@@ -954,9 +954,16 @@ test('requirements deep-link exact versions, render statements, diff pending int
   const diff = page.getByRole('region', { name: 'Version comparison', exact: true })
   await expect(diff.locator('ins').filter({ hasText: 'and observable' })).toBeVisible()
   await page.getByRole('tab', { name: 'document', exact: true }).click()
-  await expect(
-    page.getByRole('region', { name: 'Requirement statements' }).getByRole('link', { name: 'Link to REQ-1' }),
-  ).toBeVisible()
+  const statements = page.getByRole('region', { name: 'Requirement statements' })
+  await expect(statements.getByRole('link', { name: 'Link to REQ-1' })).toBeVisible()
+  const statement = statements
+    .getByRole('listitem')
+    .filter({ has: page.getByRole('link', { name: 'Link to REQ-1', exact: true }) })
+    .getByRole('paragraph')
+    .filter({ hasText: /^Retries stop after a finite limit\.$/ })
+  await expect(statement).toBeVisible()
+  // The statement fills its card's measure instead of balancing its lines (REQ-2 AC-2.1).
+  await expect(statement).not.toHaveCSS('text-wrap', /\bbalance\b/)
   await expect(page.getByText('conveyor:requirements')).toHaveCount(0)
   await page.getByRole('tab', { name: 'history', exact: true }).click()
   await page.getByRole('button', { name: 'Compare version 2', exact: true }).click()
@@ -966,6 +973,52 @@ test('requirements deep-link exact versions, render statements, diff pending int
   await expect.poll(() => confirmedVersion).toBe(2)
   expect(ifMatch).toBe('"1"')
 })
+
+// Visual record for the pull request: a requirement statement that spans
+// several lines, with a criterion beneath it, at 375 px and a desktop width.
+// The task scratch directory named by CONVEYOR_SCREENSHOT_DIR keeps a local
+// copy, and the Playwright report carries each attachment.
+for (const width of [375, 1280]) {
+  test(`a multi-line requirement statement screenshot at ${width} px`, async ({ page }, testInfo) => {
+    const statement =
+      'When a delivery attempt fails with a retryable error, the system shall schedule another attempt after a growing delay, record the failed attempt with its cause, and stop after the workspace retry limit so that an operator can see why the delivery ended.'
+    const criterion =
+      'When an attempt fails and the workspace retry limit is not reached, the system shall show the next attempt time, the number of attempts that remain, and the recorded cause of the failure on the delivery record before the next attempt starts.'
+    const confirmed = {
+      ...requirement.pending_versions[0],
+      confirmed: true,
+      confirmed_at: '2026-07-30T10:06:00Z',
+      content: 'Keep retries bounded.',
+      statements: [{ id: 'REQ-1', statement, acceptance_criteria: [{ id: 'AC-1.1', statement: criterion }] }],
+    }
+    const view = { ...requirement, current_version: confirmed, pending_versions: [], migrated_seed: false }
+    await page.setViewportSize({ width, height: 900 })
+    await initShell(page)
+    await page.route('**/v1/**', async (route) => {
+      const shell = shellResponse(route)
+      if (shell) return await shell
+      const url = new URL(route.request().url())
+      if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(view)] })
+      if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view })
+      if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [confirmed] })
+      if (url.pathname === '/v1/requirements/req-retries/events')
+        return route.fulfill({ json: documentEventPage(requirementEvents) })
+      return route.fulfill({ json: [] })
+    })
+
+    await page.goto('/w/demo/requirements?requirement=req-retries')
+    const statements = page.getByRole('region', { name: 'Requirement statements' })
+    await expect(statements.getByText(statement, { exact: true })).toBeVisible()
+    await expect(statements.getByText(criterion, { exact: true })).toBeVisible()
+    await page.evaluate(() => document.fonts.ready)
+    await statements.evaluate((element) => element.scrollIntoView({ block: 'center' }))
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0)
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const file = `requirement-statement-${width}.png`
+    const image = await page.screenshot({ path: shots ? `${shots}/${file}` : undefined })
+    await testInfo.attach(file, { body: image, contentType: 'image/png' })
+  })
+}
 
 test('requirement confirmation explains superseded versions separately from If-Match races', async ({ page }) => {
   await initShell(page)
