@@ -71,6 +71,7 @@ func mcpReadDefinitions() []mcpReadDefinition {
 		{"get_decision", "Read a decision by stable DEC identifier. Superseded records require include_history=true; pending decisions are not confirmed authority. The complete single-item result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"decision_id": str(), "include_history": boolean}, []string{"decision_id"}},
 		{"list_crates", listCratesDescription, map[string]any{"state": enum("open", "closed", "all")}, nil},
 		{"get_crate", getCrateDescription, map[string]any{"crate_id": str()}, []string{"crate_id"}},
+		{"list_environments", listEnvironmentsDescription, nil, nil},
 		{"get_lineage", "Walk the lineage graph from one root under the operator read budget. Items are the reached nodes in walk order, each with label, depth, the edge_path that admitted it, and status (task or work-order state, version status, verdict outcome and seat). traversal reports the budget, truncation, omissions per axis, and the reached link count. root_type is a lineage node type such as requirement, task, or system_design_version. direction is out, in, or both; edge_kind and node_type take comma-separated edge kinds and node types. The graph is read-only: no tool accepts a link.", map[string]any{"root_type": str(), "root_id": str(), "direction": enum("out", "in", "both"), "edge_kind": str(), "node_type": str(), "max_depth": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadDepth}, "max_nodes": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadNodes}, "max_links": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadNodes * config.DefaultLineageContextLinksPerNode}}, []string{"root_type", "root_id"}},
 	}
 }
@@ -575,6 +576,8 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 		}
 	case "list_crates", "get_crate":
 		return s.mcpCrateRead(ctx, name, a)
+	case "list_environments":
+		return s.mcpEnvironmentRead(ctx)
 	case "list_documents":
 		return s.mcpDocumentList(ctx, a)
 	case "get_document":

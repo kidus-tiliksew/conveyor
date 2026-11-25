@@ -142,6 +142,8 @@ func TestRedactsTokenShapesAndKeepsDigests(t *testing.T) {
 		{"retired agent token", "cv_agent_fixtureid_" + tail},
 		{"session token", "cv_session_fixtureid_" + tail},
 		{"sign-in token", "cv_signin_fixtureid_" + tail},
+		{"environment key", "cv_env_envkey_Ab3dE6g-9jK2mN_p_" + tail},
+		{"environment key ending in a dash", "cv_env_envkey_Ab3dE6g-9jK2mN_p_" + tail + "-"},
 		{"fine-grained GitHub token", "github_pat_11AAAAAAA0fixture_" + tail},
 	}
 	for _, token := range tokens {
@@ -191,6 +193,8 @@ func TestRedactsTokenShapesAndKeepsDigests(t *testing.T) {
 		{"OAuth prefixes after word characters", "xcv_oac_, 9cv_oat_, and _cv_ort_ are prefixes"},
 		{"short OAuth identifier after a letter", "xcv_ort_short_value"},
 		{"short identifier", "cv_pat_short"},
+		{"environment key prefix", "the cv_env_ prefix, xcv_env_, and cv_env_short"},
+		{"environment key ID", "envkey_Ab3dE6g-9jK2mN_p"},
 		{"bearer in prose", "the bearer token and Bearer authentication"},
 		{"github_pat prefix alone", "a github_pat_ value"},
 	} {
@@ -271,6 +275,7 @@ var credentialShapeFixtures = []struct{ name, value string }{
 	{"Conveyor sign-in token", "cv_signin_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
 	{"OAuth authorization code", "cv_oac_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
 	{"OAuth access token", "cv_oat_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
+	{"environment key", "cv_env_envkey_Ab3dE6gH9jK2mN5p_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
 	{"OAuth refresh token", "cv_ort_fixtureidAb3dE6g_Ab3dE6gH9jK2mN5pQ8sT1vW4y"},
 	{"bearer credential", "Bearer conformanceopaquevalue0123456789"},
 	{"PEM private key", "-----BEGIN PRIVATE KEY-----MIIBconformance-----END PRIVATE KEY-----"},
@@ -330,7 +335,7 @@ func TestHoldsCredentialShapeAnywhere(t *testing.T) {
 		"Conformance Client",
 		"https://client.example.test/oauth/client.json",
 		"http://127.0.0.1:43123/callback",
-		"the cv_pat_, cv_agent_, cv_session_, cv_signin_, cv_oac_, cv_oat_, and cv_ort_ prefixes",
+		"the cv_pat_, cv_agent_, cv_session_, cv_signin_, cv_oac_, cv_oat_, cv_ort_, and cv_env_ prefixes",
 		"xcv_pat_, 9cv_session_, and _cv_ort_ are prefixes",
 		"cv_pat_short and xcv_oat_short_value",
 		"the sk- prefix, ghp_ tokens, and Bearer authentication",
@@ -357,7 +362,7 @@ func TestHoldsCredentialShapeAnywhere(t *testing.T) {
 	if clean, stats := New(nil).Redact("task-0123456789abcdefghij"); clean != "task-0123456789abcdefghij" || stats.Total() != 0 {
 		t.Fatalf("redaction changed a task name: %q %+v", clean, stats)
 	}
-	for _, kind := range []string{"pat", "agent", "session", "signin"} {
+	for _, kind := range []string{"pat", "agent", "session", "signin", "env"} {
 		value := "xcv_" + kind + "_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4y"
 		if clean, stats := New(nil).Redact(value); clean != "x"+patternPlaceholder || stats.Pattern != 1 {
 			t.Errorf("glued %s token: clean=%q stats=%+v", kind, clean, stats)
@@ -425,5 +430,31 @@ func TestRegisterSecretIgnoresEmptyValue(t *testing.T) {
 	processSecrets.Unlock()
 	if registered {
 		t.Fatal("an empty value was registered")
+	}
+}
+
+// TestRedactsEnvironmentKeys covers the environment key shape,
+// cv_env_<key id>_<secret>, in each place a value could be pasted. The bare
+// prefix and a key ID stay readable (component-environments invariant 9;
+// req-security-boundaries REQ-2, AC-2.8).
+func TestRedactsEnvironmentKeys(t *testing.T) {
+	t.Parallel()
+	const secret = "Ab3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hJ6kM9nP2-"
+	const value = "cv_env_envkey_Ab3dE6g-9jK2mN_p_" + secret
+	for _, text := range []string{
+		value, "glued" + value, "label " + value + ", here", `{"label":"` + value + `"}`, "Authorization: Bearer " + value, "/v1/environments/env-261125-a1b2c3/keys/" + value,
+	} {
+		clean, stats := New(nil).Redact(text)
+		if strings.Contains(clean, secret) || strings.Contains(clean, "cv_env_envkey_") || stats.Pattern != 1 {
+			t.Fatalf("environment key survived redaction: stats=%+v", stats)
+		}
+		if !HoldsCredentialShape(text) {
+			t.Fatal("environment key shape not found")
+		}
+	}
+	for _, kept := range []string{"a cv_env_ bearer", "cv_env_", "envkey_Ab3dE6g-9jK2mN_p", "env-261125-a1b2c3"} {
+		if clean, stats := New(nil).Redact(kept); clean != kept || stats.Total() != 0 {
+			t.Fatalf("redaction changed %q to %q", kept, clean)
+		}
 	}
 }

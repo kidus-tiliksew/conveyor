@@ -28,7 +28,10 @@ type volatileMemory struct {
 	stagePreferences        map[string]StagePreferences
 	// oauth holds the deployment OAuth tables (component-persistence
 	// invariant 21) under the memory mutex.
-	oauth                  oauthState
+	oauth oauthState
+	// environmentState holds the environment tables under the memory mutex
+	// (component-environments).
+	environmentState       environmentState
 	orgName                string
 	gitHubAppEncryptionKey []byte
 	log                    eventlog.Store
@@ -52,6 +55,7 @@ func NewVolatileBackend() Backend {
 		// stagePreferences is keyed by user ID (component-stage-preferences).
 		stagePreferences: map[string]StagePreferences{},
 		oauth:            newOAuthState(),
+		environmentState: newEnvironmentState(),
 		orgName:          "Conveyor",
 		log:              logqueue.Notify(memlog.New(), mem.changes),
 	}

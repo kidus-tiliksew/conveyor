@@ -33,6 +33,7 @@ type Backend interface {
 	WorkspaceControlStore
 	StagePreferenceStore
 	CrateStore
+	EnvironmentStore
 	OAuthStore
 	Close()
 	ConfigureGitHubAppKeyEncryptionKey([]byte)

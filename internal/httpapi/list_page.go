@@ -15,7 +15,8 @@ const (
 	// defaultInboxPageLimit is the default page of the operator inbox and its
 	// act log.
 	defaultInboxPageLimit = 50
-	// defaultHistoryPageLimit is the default page of a task's jobs and events.
+	// defaultHistoryPageLimit is the default page of a task's jobs and events
+	// and of the suggested environments.
 	defaultHistoryPageLimit = 100
 )
 

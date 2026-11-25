@@ -111,6 +111,11 @@ func TestMemoryConformance(t *testing.T) {
 					rows = append(rows, storetest.OAuthStoredRow{Table: storetest.OAuthTable(row.Table), ID: row.ID, Digest: row.Digest, Text: row.Text})
 				}
 				return rows
+			}, AgeEnvironmentKey: func(t *testing.T, ctx context.Context, keyID string, by time.Duration) {
+				store.AgeEnvironmentKeyForTest(t, st, ctx, keyID, by)
+			}, StoredEnvironmentKey: func(t *testing.T, ctx context.Context, keyID string) storetest.EnvironmentStoredKey {
+				digest, text := store.StoredEnvironmentKeyForTest(t, st, ctx, keyID)
+				return storetest.EnvironmentStoredKey{Digest: digest, Text: text}
 			}, LineageHTTP: func(*testing.T) http.Handler {
 				// The shared-token operator fixture (component-lineage).
 				server := httpapi.NewServer(st)
