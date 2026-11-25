@@ -872,6 +872,8 @@ func runEnvironmentKeySecrets(t *testing.T, x Fixture) {
 		requireRefused(err, "label", "key label")
 		_, err = x.Backend.RecordEnvironmentReport(x.Context, store.EnvironmentReport{GitHubEnvironment: secret, Repository: "app", ReportedAt: time.Now()})
 		requireRefused(err, "github_environment", "report name")
+		_, err = x.Backend.RecordEnvironmentReport(x.Context, store.EnvironmentReport{GitHubEnvironment: "preview", Repository: secret, ReportedAt: time.Now()})
+		requireRefused(err, "repository", "report repository")
 		requireRefused(x.Backend.IgnoreEnvironmentSuggestion(x.Context, secret), "github_environment", "ignored name")
 	}
 	requireEnvironmentUnchanged(t, x, before, "secret-shaped text")

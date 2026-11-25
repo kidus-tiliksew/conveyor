@@ -68,8 +68,8 @@ Text fields refuse the NUL character. They also refuse text that the credential
 redactor changes or that holds a credential shape, such as a token or an
 environment key value, as given or after one percent-decoding. This rule covers
 `name`, the repositories and branches of `tracked_branches`,
-`github_environments`, the `version_rule` text, a key `label`, and the name in
-an ignore request or a deployment report. The refusal names the field and never
+`github_environments`, the `version_rule` text, a key `label`, the name in an
+ignore request, and the name and repository of a deployment report. The refusal names the field and never
 repeats the text, so no record, read, or event holds it
 (`req-security-boundaries` REQ-2 and REQ-3).
 

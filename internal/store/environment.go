@@ -545,6 +545,13 @@ func NormalizeEnvironmentReport(report EnvironmentReport) (EnvironmentReport, er
 	if report.GitHubEnvironment, err = NormalizeEnvironmentGitHubName("github_environment", report.GitHubEnvironment); err != nil {
 		return EnvironmentReport{}, err
 	}
+	// The repository is stored with the suggestion, so it meets the same rule.
+	if err := checkEnvironmentText("repository", report.Repository); err != nil {
+		return EnvironmentReport{}, err
+	}
+	if err := checkEnvironmentSecret("repository", report.Repository); err != nil {
+		return EnvironmentReport{}, err
+	}
 	if report.ReportedAt.IsZero() {
 		return EnvironmentReport{}, environmentFieldError("reported_at", "reported_at is required")
 	}
