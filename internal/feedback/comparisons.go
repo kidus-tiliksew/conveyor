@@ -93,6 +93,22 @@ func (w Work) ProcessSignal(ctx context.Context, request SignalRequest) error {
 	return w.compareSignal(ctx, request, refs)
 }
 
+// ready reports whether the forge can start a request. A forge that cannot,
+// such as one whose installation token request failed, is logged once, and
+// no comparison is charged for it. The comparisons stay eligible for a later
+// signal or read.
+func (w Work) ready(ctx context.Context) error {
+	forge, ok := w.Forge.(ReadyForge)
+	if !ok {
+		return nil
+	}
+	err := forge.Ready(ctx)
+	if err != nil && !errors.Is(err, ErrNoGitHubApp) {
+		w.logf("feedback_work outcome=deferred category=%s", github.ErrorCategory(github.CategorizeError(err)))
+	}
+	return err
+}
+
 // compareSignal compares each resolved version the signal names with the
 // merged tasks of its repository.
 func (w Work) compareSignal(ctx context.Context, request SignalRequest, refs []store.FeedbackVersionRef) error {
@@ -217,7 +233,7 @@ func (w Work) CompareVersion(ctx context.Context, repository Repository, head, p
 	if previous != "" && previous != head {
 		answer, ok := stored[descent]
 		arrived := map[string]bool{}
-		if !ok {
+		if !ok && w.ready(ctx) == nil {
 			// The one request is charged just before it starts.
 			admitted, err := w.Store.AdmitFeedbackComparisons(ctx, []store.FeedbackComparisonKey{descent}, w.now(), 1)
 			if err != nil {
@@ -300,6 +316,9 @@ func (w Work) admitNext(ctx context.Context, remaining *[]store.FeedbackComparis
 // answered stays eligible for a later signal or read.
 func (w Work) CompareDirect(ctx context.Context, keys []store.FeedbackComparisonKey) error {
 	remaining := store.NormalizeFeedbackComparisonKeys(keys)
+	if len(remaining) == 0 || w.ready(ctx) != nil {
+		return nil
+	}
 	for {
 		key, ok, err := w.admitNext(ctx, &remaining)
 		if err != nil || !ok {
@@ -346,6 +365,9 @@ func (w Work) RefreshBranches(ctx context.Context, branches []BranchRef) error {
 		keys[i] = store.FeedbackComparisonKey{Repository: branch.Slug, Head: branch.Branch}
 	}
 	remaining := store.NormalizeFeedbackComparisonKeys(keys)
+	if w.ready(ctx) != nil {
+		return nil
+	}
 	for {
 		key, ok, err := w.admitNext(ctx, &remaining)
 		if err != nil || !ok {

@@ -83,6 +83,9 @@ type Server struct {
 	feedbackWorkOnce sync.Once
 	feedbackWork     *feedbackWorker
 	feedbackForge    feedback.Forge
+	// feedbackForgeFor replaces the token-bound GitHub reads in tests that
+	// exercise the installation token request.
+	feedbackForgeFor func(token, identity string) feedback.Forge
 	// historyCursors signs task history cursors under a key drawn once per
 	// process; tests may install a codec before first use (task 261015-3721c6).
 	historyCursorsOnce sync.Once

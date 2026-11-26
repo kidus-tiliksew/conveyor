@@ -197,6 +197,13 @@ it, at least 10 minutes after the last attempt. When GitHub names a later time
 for the next request, the version waits until then. Reads and timers never try
 again.
 
+The installation token is requested only after a version's attempt is
+claimed. A failed token request is that attempt's outcome: the version keeps
+the failure's category as its reason, and a rate-limited token request keeps
+GitHub's retry time. After a failed token request, no background work of the
+workspace asks for a token again until that retry time, or for one minute
+when GitHub named none.
+
 ## Live status
 
 A merged task's merge commit is the `merge_commit_sha` of its latest
@@ -210,7 +217,7 @@ that hold a deploy for its repository or track a branch for it.
 
 | Status | Meaning |
 | --- | --- |
-| `live` | At least one service runs a version that contains the task |
+| `live` | At least one service runs a version that contains the task. When every running version has its answer, a missing answer for a stopped version does not hold this status back |
 | `no_longer_live` | A past deploy contained the task, and no running version does |
 | `not_live_yet` | No deploy contained the task |
 | `unknown` | GitHub reports the merge commit missing from the repository |
@@ -228,9 +235,13 @@ never asks for that pair again. Every comparison runs in the background:
 - A service's first version, a version that does not descend from the
   previous one, and every pair still unproven are compared directly with each
   merged task of the repository, newest merge first.
-- A workspace asks for at most 60 comparisons and branch reads in any minute,
-  across every environment, read, and server. A pair already in flight is not
+- A workspace starts at most 60 comparisons and branch reads in any minute,
+  across every environment, read, worker, and server. Each request is counted
+  when it starts, however long it takes. A pair already in flight is not
   asked twice. Work past the allowance waits for a later signal or read.
+- Pairs never tried go before pairs tried earlier, and those go oldest
+  attempt first. A pair that keeps failing therefore never holds back the
+  pairs after it.
 - For `not_live_yet`, the head of the environment's tracked branch is read in
   the background and compared by its full commit ID. A read asks for a new
   head when the stored one is 10 minutes old or older.

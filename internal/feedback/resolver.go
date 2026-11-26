@@ -26,6 +26,19 @@ type CompareResult struct {
 	Complete bool
 }
 
+// ErrNoGitHubApp marks a forge whose workspace has no usable GitHub App. A
+// version that a claim lets resolve keeps reason no_github_app.
+var ErrNoGitHubApp = errors.New("the workspace has no usable GitHub App")
+
+// ReadyForge is a forge that can report, before any request, that it
+// cannot read GitHub, for example because the installation token request
+// failed. The background work then charges no comparison for a request that
+// cannot start.
+type ReadyForge interface {
+	Forge
+	Ready(ctx context.Context) error
+}
+
 // Forge is the GitHub boundary the background work reads through. Its
 // implementation binds the workspace App's installation token
 // (component-production-feedback invariant 9; DEC-59(3); DEC-95). It runs no
@@ -126,8 +139,13 @@ func Resolve(ctx context.Context, forge Forge, request ResolveRequest) Resolutio
 }
 
 // forgeFailure is the unresolved outcome of a forge failure: its category,
-// and the time GitHub allows the next request when it named one.
+// and the time GitHub allows the next request when it named one. A failure
+// to get the installation token is a forge failure too, so it records the
+// same outcome under the version's claim.
 func forgeFailure(err error) Resolution {
+	if errors.Is(err, ErrNoGitHubApp) {
+		return Resolution{Reason: store.FeedbackReasonNoGitHubApp}
+	}
 	category := github.ErrorCategory(github.CategorizeError(err))
 	if category == "" {
 		category = github.ForgeRequest

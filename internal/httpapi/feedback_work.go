@@ -40,15 +40,22 @@ type feedbackJob struct {
 // feedbackJobEnv is what a job uses, taken from the server when the job is
 // handed off, so a job reads no server field while it runs.
 type feedbackJobEnv struct {
-	store  store.Store
-	forge  feedback.Forge
-	apps   github.AppStore
-	client *github.AppClient
-	clock  func() time.Time
+	store     store.Store
+	forge     feedback.Forge
+	makeForge func(token, identity string) feedback.Forge
+	apps      github.AppStore
+	client    *github.AppClient
+	clock     func() time.Time
+	backoff   *feedbackTokenBackoff
 }
 
 func (s *Server) feedbackJobEnv() feedbackJobEnv {
-	env := feedbackJobEnv{store: s.Store, forge: s.feedbackForge, client: s.appClient(), clock: time.Now}
+	env := feedbackJobEnv{store: s.Store, forge: s.feedbackForge, makeForge: s.feedbackForgeFor, client: s.appClient(), clock: time.Now, backoff: s.feedbackWorker().backoff}
+	if env.makeForge == nil {
+		env.makeForge = func(token, identity string) feedback.Forge {
+			return githubFeedbackForge{token: token, identity: identity}
+		}
+	}
 	if s.WorkspaceGitHubApps != nil {
 		env.apps = s.WorkspaceGitHubApps
 	}
@@ -67,11 +74,12 @@ type feedbackWorker struct {
 	mu      sync.Mutex
 	pending map[string]bool
 	running sync.WaitGroup
+	backoff *feedbackTokenBackoff
 }
 
 func (s *Server) feedbackWorker() *feedbackWorker {
 	s.feedbackWorkOnce.Do(func() {
-		worker := &feedbackWorker{jobs: make(chan feedbackJob, feedbackWorkQueue), pending: map[string]bool{}}
+		worker := &feedbackWorker{jobs: make(chan feedbackJob, feedbackWorkQueue), pending: map[string]bool{}, backoff: &feedbackTokenBackoff{until: map[string]feedbackTokenFailure{}}}
 		for range feedbackWorkers {
 			go func() {
 				for job := range worker.jobs {
@@ -162,16 +170,14 @@ func runFeedbackJob(job feedbackJob) {
 	if !ok {
 		return
 	}
-	forge, noApp, err := job.env.forgeFor(ctx, job.workspace)
-	if err != nil {
-		log.Printf("feedback_work workspace=%s outcome=deferred category=%s", job.workspace, github.ErrorCategory(github.CategorizeError(err)))
-		return
-	}
+	// The forge gets the installation token at its first request. For a
+	// signal that request comes after a version's claim, so a token failure
+	// is recorded as that version's attempt, with its reason and any later
+	// retry time GitHub named (component-production-feedback invariants 7
+	// to 9; req-production-feedback AC-1.4).
+	forge := job.env.lazyForge(job.workspace)
 	work := feedback.Work{Store: backend, Forge: forge, Now: job.env.clock, Logf: log.Printf}
 	if job.signal == nil {
-		if noApp {
-			return
-		}
 		if err := work.RefreshBranches(ctx, job.missing.Branches); err != nil {
 			log.Printf("feedback_work workspace=%s outcome=failed step=branches error=%v", job.workspace, err)
 			return
@@ -186,7 +192,6 @@ func runFeedbackJob(job feedbackJob) {
 		log.Printf("feedback_work workspace=%s outcome=failed step=load error=%v", job.workspace, err)
 		return
 	}
-	request.NoApp = noApp
 	if err := work.ProcessSignal(ctx, request); err != nil {
 		log.Printf("feedback_work workspace=%s outcome=failed step=signal error=%v", job.workspace, err)
 	}
@@ -235,21 +240,113 @@ func feedbackRepositories(ctx context.Context, backend store.Store) ([]feedback.
 	return repositories, nil
 }
 
-// forgeFor binds the workspace App's installation token to the GitHub reads
-// (component-production-feedback invariant 9; DEC-59(3)). noApp is true when
-// the workspace has no usable App.
-func (env feedbackJobEnv) forgeFor(ctx context.Context, workspace string) (feedback.Forge, bool, error) {
+// feedbackTokenFailure is a failed installation token request and the time
+// before which no job of the workspace asks again.
+type feedbackTokenFailure struct {
+	err   error
+	until time.Time
+}
+
+// feedbackTokenBackoff remembers failed token requests per workspace, so a
+// rate-limited or failing token exchange is not asked again by every job
+// before GitHub's retry time.
+type feedbackTokenBackoff struct {
+	mu    sync.Mutex
+	until map[string]feedbackTokenFailure
+}
+
+// feedbackTokenRetry is the wait after a failed token request when GitHub
+// named no retry time.
+const feedbackTokenRetry = time.Minute
+
+func (b *feedbackTokenBackoff) failure(workspace string, now time.Time) error {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if failure, ok := b.until[workspace]; ok && now.Before(failure.until) {
+		return failure.err
+	}
+	delete(b.until, workspace)
+	return nil
+}
+
+func (b *feedbackTokenBackoff) record(workspace string, err error, now time.Time) {
+	if b == nil {
+		return
+	}
+	until := now.Add(feedbackTokenRetry)
+	if retryAt, ok := github.RateLimitRetryAt(err); ok && retryAt.After(until) {
+		until = retryAt
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.until[workspace] = feedbackTokenFailure{err: err, until: until}
+}
+
+// lazyForge returns the job's forge. A test forge is used as is. Otherwise
+// the forge binds the workspace App's installation token at its first
+// request (DEC-59(3)).
+func (env feedbackJobEnv) lazyForge(workspace string) feedback.Forge {
 	if env.forge != nil {
-		return env.forge, false, nil
+		return env.forge
 	}
-	token, err := env.client.WorkspaceToken(ctx, env.apps, workspace)
-	if err != nil {
-		if github.ErrorCategory(err) == github.ForgePermission {
-			return nil, true, nil
+	return &lazyFeedbackForge{env: env, workspace: workspace}
+}
+
+// lazyFeedbackForge gets the installation token once, at the first request
+// or readiness check of its job. A permission failure means the workspace
+// has no usable App and answers feedback.ErrNoGitHubApp. Any other failure
+// keeps its category and GitHub's retry time.
+type lazyFeedbackForge struct {
+	env       feedbackJobEnv
+	workspace string
+	once      sync.Once
+	forge     feedback.Forge
+	err       error
+}
+
+func (f *lazyFeedbackForge) acquire(ctx context.Context) (feedback.Forge, error) {
+	f.once.Do(func() {
+		if f.err = f.env.backoff.failure(f.workspace, f.env.clock()); f.err != nil {
+			return
 		}
-		return nil, false, err
+		token, err := f.env.client.WorkspaceToken(ctx, f.env.apps, f.workspace)
+		switch {
+		case err == nil:
+			f.forge = f.env.makeForge(token, github.AppIdentity(f.workspace))
+			return
+		case github.ErrorCategory(err) == github.ForgePermission:
+			f.err = fmt.Errorf("%w: %w", feedback.ErrNoGitHubApp, err)
+		default:
+			f.err = err
+			f.env.backoff.record(f.workspace, err, f.env.clock())
+		}
+	})
+	return f.forge, f.err
+}
+
+// Ready implements feedback.ReadyForge.
+func (f *lazyFeedbackForge) Ready(ctx context.Context) error {
+	_, err := f.acquire(ctx)
+	return err
+}
+
+func (f *lazyFeedbackForge) ReadCommit(ctx context.Context, slug, ref string) (string, error) {
+	forge, err := f.acquire(ctx)
+	if err != nil {
+		return "", err
 	}
-	return githubFeedbackForge{token: token, identity: github.AppIdentity(workspace)}, false, nil
+	return forge.ReadCommit(ctx, slug, ref)
+}
+
+func (f *lazyFeedbackForge) Compare(ctx context.Context, slug, base, head string, arrived int) (feedback.CompareResult, error) {
+	forge, err := f.acquire(ctx)
+	if err != nil {
+		return feedback.CompareResult{}, err
+	}
+	return forge.Compare(ctx, slug, base, head, arrived)
 }
 
 // githubFeedbackForge reads GitHub through the REST boundary with one
