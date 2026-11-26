@@ -455,13 +455,23 @@ test('a failed timed crate read keeps the page and its open dialog', async ({ pa
   await page.getByRole('menuitem', { name: 'Edit crate' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
-  await page.clock.runFor(1_000)
   const base = crateReads(state)
   state.failCrate = true
-  // The timed read and its three default retries all fail.
-  await page.clock.runFor(61_000)
-  await page.clock.runFor(15_000)
-  await expect.poll(() => crateReads(state)).toBeGreaterThan(base)
+  // The timed read and the dashboard's one retry both fail. fastForward
+  // reaches the 60-second read without running every animation frame of the
+  // line's scene in between. Each failed answer arrives in real time, so the
+  // poll waits between the short clock steps that cover the retry backoff.
+  await page.clock.fastForward(60_000)
+  await expect
+    .poll(
+      async () => {
+        await page.clock.runFor(1_000)
+        return crateReads(state)
+      },
+      { timeout: 20_000 },
+    )
+    .toBeGreaterThanOrEqual(base + 2)
+  await page.clock.runFor(1_000)
   await expect(page.getByText('This crate did not load')).toHaveCount(0)
   await expect(dialog).toBeVisible()
   await expect(page.getByRole('region', { name: 'Live status' })).toBeVisible()
