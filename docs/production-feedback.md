@@ -202,8 +202,9 @@ commit from an earlier time, the report is a redeploy. The earlier deploy stops
 at the report's time, and a new deploy of the same commit starts then. The
 `as_of` time of the environment's live status therefore follows the newest
 report. A repeat of a report that the server already holds, with the same
-service, commit, and time, writes nothing. A repeated delivery with the same
-delivery ID is refused before it reaches the store.
+service, commit, and time, writes nothing, also when a report of another
+commit came between them. A repeated delivery with the same delivery ID is
+refused before it reaches the store.
 
 The order in which reports arrive does not change this. A GitHub deploy keeps
 its time and its `github` source when an earlier report of the same commit
@@ -211,8 +212,13 @@ arrives after it, from GitHub or from a watcher. The earlier report's span is
 recorded as its own deploy that stops at the GitHub report's time. For
 example, GitHub reports a commit at 10:30 and then, after a redelivery, the
 same commit at 09:30. The result is the same as in the other order: one deploy
-from 09:30 to 10:30 and one from 10:30 that still runs. Signals of a watcher
-keep the rules in [Deploys and running versions](#deploys-and-running-versions).
+from 09:30 to 10:30 and one from 10:30 that still runs. When a late GitHub
+report falls inside a deploy of the same commit, that deploy stops at the
+report's time and the report starts its own deploy, which ends where the
+earlier one ended. Reports at 09:00, 10:30, and 09:30 therefore give deploys
+from 09:00 to 09:30, from 09:30 to 10:30, and from 10:30, in any arrival
+order. Signals of a watcher keep the rules in
+[Deploys and running versions](#deploys-and-running-versions).
 
 An archived environment records nothing from GitHub. Conveyor runs no git
 command and writes nothing to GitHub for a report.

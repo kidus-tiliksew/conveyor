@@ -92,21 +92,27 @@ func runFeedbackGitHubDeploy(t *testing.T, x Fixture) {
 // times with no signal between them. Each keeps its own deploy record and
 // time, both come from GitHub, and a repeat of either writes nothing.
 func runFeedbackGitHubRedeploy(t *testing.T, x Fixture) {
-	// The same two reports give the same records in either arrival order.
+	// The same reports give the same records in every arrival order.
+	a := feedbackCommit("a")
 	for _, c := range []struct {
-		name  string
-		order []time.Duration
+		name    string
+		order   []time.Duration
+		deploys []string
 	}{
-		{"OldestFirst", []time.Duration{20 * time.Second, 50 * time.Second}},
-		{"NewestFirst", []time.Duration{50 * time.Second, 20 * time.Second}},
+		{"OldestFirst", []time.Duration{20 * time.Second, 50 * time.Second}, []string{"app=" + a + "+20-50", "app=" + a + "+50"}},
+		{"NewestFirst", []time.Duration{50 * time.Second, 20 * time.Second}, []string{"app=" + a + "+20-50", "app=" + a + "+50"}},
+		{"ThreeInOrder", []time.Duration{10 * time.Second, 20 * time.Second, 50 * time.Second}, []string{"app=" + a + "+10-20", "app=" + a + "+20-50", "app=" + a + "+50"}},
+		{"ThreeMiddleLast", []time.Duration{10 * time.Second, 50 * time.Second, 20 * time.Second}, []string{"app=" + a + "+10-20", "app=" + a + "+20-50", "app=" + a + "+50"}},
+		{"ThreeNewestFirst", []time.Duration{50 * time.Second, 20 * time.Second, 10 * time.Second}, []string{"app=" + a + "+10-20", "app=" + a + "+20-50", "app=" + a + "+50"}},
+		{"ThreeOldestLast", []time.Duration{20 * time.Second, 10 * time.Second, 50 * time.Second}, []string{"app=" + a + "+10-20", "app=" + a + "+20-50", "app=" + a + "+50"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := newFeedbackEnvironment(t, x, "Production "+c.name, "watcher")
 			for _, at := range c.order {
-				e.report(t, e.github(at, "app", feedbackCommit("a")), true)
+				e.report(t, e.github(at, "app", a), true)
 			}
-			e.requireRunning(t, "app="+feedbackCommit("a")+"+50")
-			e.requireDeploys(t, "app="+feedbackCommit("a")+"+20-50", "app="+feedbackCommit("a")+"+50")
+			e.requireRunning(t, "app="+a+"+50")
+			e.requireDeploys(t, c.deploys...)
 			github := store.FeedbackOrigin{Source: store.FeedbackSourceGitHub, Actor: core.SystemActorID}
 			for _, deploy := range e.deploys(t) {
 				if unnumbered(deploy.Origin) != github || (deploy.StopOrigin != nil && unnumbered(*deploy.StopOrigin) != github) {
@@ -120,13 +126,28 @@ func runFeedbackGitHubRedeploy(t *testing.T, x Fixture) {
 				t.Fatal("a GitHub report recorded a newest signal")
 			}
 			before := e.state(t)
-			e.report(t, e.github(50*time.Second, "app", feedbackCommit("a")), false)
-			e.report(t, e.github(20*time.Second, "app", feedbackCommit("a")), false)
+			for _, at := range c.order {
+				e.report(t, e.github(at, "app", a), false)
+			}
 			if after := e.state(t); after != before {
 				t.Fatalf("a repeated report changed the stored state:\nbefore %s\nafter  %s", before, after)
 			}
 		})
 	}
+	// A repeat writes nothing even when a report of another commit at the
+	// same time came between them.
+	t.Run("RepeatAfterAnotherCommit", func(t *testing.T) {
+		e := newFeedbackEnvironment(t, x, "Production repeat", "watcher")
+		b := feedbackCommit("b")
+		e.report(t, e.github(20*time.Second, "app", a), true)
+		e.report(t, e.github(20*time.Second, "app", b), true)
+		e.requireRunning(t, "app="+b+"+20")
+		before := e.state(t)
+		e.report(t, e.github(20*time.Second, "app", a), false)
+		if after := e.state(t); after != before {
+			t.Fatalf("a repeated report changed the stored state:\nbefore %s\nafter  %s", before, after)
+		}
+	})
 }
 
 // runFeedbackGitHubBoundaries proves that a GitHub report is a boundary of

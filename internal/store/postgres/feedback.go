@@ -368,6 +368,10 @@ func (s *Store) RecordFeedbackGitHubDeploy(ctx context.Context, deploy store.Fee
 		if !repositories[deploy.Repository] {
 			return nil
 		}
+		repeats, err := queryFeedbackDeploys(ctx, tx, feedbackDeploySQL+` AND service=$3 AND deployed_at=$4 AND source=$5`, workspaceID, signal.EnvironmentID, deploy.Repository, signal.ArrivedAt, store.FeedbackSourceGitHub)
+		if err != nil || store.FeedbackGitHubDeployRepeat(signal, repeats) {
+			return err
+		}
 		history, err := readFeedbackHistory(ctx, tx, workspaceID, signal)
 		if err != nil {
 			return err
