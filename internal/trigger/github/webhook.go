@@ -251,12 +251,18 @@ func parseWebhook(event string, body []byte) (webhookAction, error) {
 // stands in when the status omits it. The time is the status's creation time,
 // never the deployment's or the receipt's. A delivery without a state, an
 // environment name, a full commit ID, or a creation time is malformed.
+//
+// Every error it returns is fixed text that names at most the field, never a
+// value or a part of the payload, because the applier writes the error to the
+// log (component-identity-membership invariants 45 and 46). The decoder's own
+// error and the time parser's error quote payload text, so neither is
+// returned or wrapped.
 func parseDeploymentStatus(body []byte) (DeploymentStatus, string, error) {
 	var payload struct {
 		DeploymentStatus struct {
-			State       string    `json:"state"`
-			Environment string    `json:"environment"`
-			CreatedAt   time.Time `json:"created_at"`
+			State       string `json:"state"`
+			Environment string `json:"environment"`
+			CreatedAt   string `json:"created_at"`
 		} `json:"deployment_status"`
 		Deployment struct {
 			SHA         string `json:"sha"`
@@ -264,10 +270,15 @@ func parseDeploymentStatus(body []byte) (DeploymentStatus, string, error) {
 		} `json:"deployment"`
 		Repository webhookRepository `json:"repository"`
 	}
-	if err := webhookPayload(body, &payload); err != nil {
-		return DeploymentStatus{}, "", err
+	if err := decodeDeploymentStatus(body, &payload); err != nil {
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) && deploymentStatusFields[typeErr.Field] {
+			// Field is a path of the struct above, not payload text.
+			return DeploymentStatus{}, "", fmt.Errorf("%w: deployment_status delivery field %s has the wrong JSON type", errMalformedDelivery, typeErr.Field)
+		}
+		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment_status payload is not a JSON object", errMalformedDelivery)
 	}
-	status := DeploymentStatus{State: payload.DeploymentStatus.State, Environment: payload.DeploymentStatus.Environment, Commit: strings.ToLower(payload.Deployment.SHA), ReportedAt: payload.DeploymentStatus.CreatedAt}
+	status := DeploymentStatus{State: payload.DeploymentStatus.State, Environment: payload.DeploymentStatus.Environment, Commit: strings.ToLower(payload.Deployment.SHA)}
 	if status.Environment == "" {
 		status.Environment = payload.Deployment.Environment
 	}
@@ -278,12 +289,49 @@ func parseDeploymentStatus(body []byte) (DeploymentStatus, string, error) {
 		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment_status names no environment", errMalformedDelivery)
 	case !fullCommitID(status.Commit):
 		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment has no full commit ID", errMalformedDelivery)
-	case status.ReportedAt.IsZero():
+	case payload.DeploymentStatus.CreatedAt == "":
+		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment_status has no creation time", errMalformedDelivery)
+	}
+	reportedAt, err := time.Parse(time.RFC3339Nano, payload.DeploymentStatus.CreatedAt)
+	switch {
+	case err != nil:
+		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment_status delivery field deployment_status.created_at is not an RFC 3339 time", errMalformedDelivery)
+	case reportedAt.IsZero():
 		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment_status has no creation time", errMalformedDelivery)
 	case payload.Repository.FullName == "":
 		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment_status names no repository", errMalformedDelivery)
 	}
+	status.ReportedAt = reportedAt
 	return status, payload.Repository.FullName, nil
+}
+
+// decodeDeploymentStatus decodes a JSON body, or a form body's payload
+// field, as webhookPayload does, but returns the decoder's own error so that
+// parseDeploymentStatus can replace it with fixed text.
+func decodeDeploymentStatus(body []byte, into any) error {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) > 0 && trimmed[0] != '{' {
+		values, err := url.ParseQuery(string(trimmed))
+		if err != nil || values.Get("payload") == "" {
+			return errMalformedDelivery
+		}
+		trimmed = []byte(values.Get("payload"))
+	}
+	return json.Unmarshal(trimmed, into)
+}
+
+// deploymentStatusFields are the decoded field paths of a deployment_status
+// payload, the only field names a malformed-delivery error may print.
+var deploymentStatusFields = map[string]bool{
+	"deployment_status":             true,
+	"deployment_status.state":       true,
+	"deployment_status.environment": true,
+	"deployment_status.created_at":  true,
+	"deployment":                    true,
+	"deployment.sha":                true,
+	"deployment.environment":        true,
+	"repository":                    true,
+	"repository.full_name":          true,
 }
 
 func checksAction(repository, sha string, branches []string) webhookAction {

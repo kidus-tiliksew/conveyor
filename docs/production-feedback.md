@@ -150,8 +150,9 @@ access and for the steps that the owner of an existing App takes.
 Conveyor reads four values from a report: the status's state, the status's
 GitHub environment name, the deployment's commit, and the status's creation
 time. When the status does not name an environment, the deployment's
-environment name is used. A report that does not hold all four values is
-malformed and records nothing.
+environment name is used. A report that does not hold all four values, or
+whose creation time is not an RFC 3339 time, is malformed and records nothing.
+The log line for a malformed report names the field and never its value.
 
 The report's `repository.full_name` must match the GitHub slug of a repository
 in the workspace configuration. Case does not count. A report from any other
