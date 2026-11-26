@@ -673,6 +673,47 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 				t.Fatalf("get_crate description promises every member task: %q", description)
 			}
 		}
+		// get_task and get_crate name the live status fields they serve, what
+		// environments_pending means, and that live status is no authority
+		// (req-production-feedback AC-10.1, AC-11.1;
+		// component-production-feedback, Public surfaces, invariants 1 and 20).
+		for tool, phrases := range map[string][]string{
+			"get_task": {
+				"A merged task also carries environments, one entry for each relevant environment.",
+				"environment (id and name), status, services, live_since, on_tracked_branch, and as_of",
+				"live, not_live_yet, no_longer_live, or unknown",
+				"A task that is not merged has no environments.",
+				"It is true when the read leaves out the status of at least one relevant environment.",
+				"while a comparison or tracked branch head that it needs is not stored yet",
+				"A stored branch head, even an old one, does not make it true.",
+				"An empty list can be pending or not pending.",
+				"The read asks GitHub nothing.",
+				"Live status is a record for people. It is not authority",
+				"next_action carries the server-stated label",
+			},
+			"get_crate": {
+				"one line for each environment that is relevant to a merged member",
+				"environment (id and name), live_task_count, merged_task_count, newest_live_at, listening, last_signal_at, and as_of",
+				"The lines count every merged member of the crate, also when task_ids_truncated is true.",
+				"live_in is an object from task ID to the names of the environments where that task is live.",
+				"It has an entry for each merged member that task_ids lists.",
+				"The entry is [] when the task is live nowhere.",
+				"It is true when the read leaves out the status of a merged member in at least one relevant environment.",
+				"while a comparison or tracked branch head that it needs is not stored yet",
+				"A stored branch head, even an old one, does not make it true.",
+				"The read asks GitHub nothing.",
+				"Live status is a record for people. It is not authority",
+			},
+		} {
+			if name != tool {
+				continue
+			}
+			for _, phrase := range phrases {
+				if !strings.Contains(envelope.Result.Tools[i].Description, phrase) {
+					t.Fatalf("%s description lacks %q: %q", tool, phrase, envelope.Result.Tools[i].Description)
+				}
+			}
+		}
 		if name == "create_task" && !strings.Contains(envelope.Result.Tools[i].Description, "invalid_agent_gate_override") {
 			t.Fatalf("create_task description omits the mistyped gate rule: %q", envelope.Result.Tools[i].Description)
 		}
