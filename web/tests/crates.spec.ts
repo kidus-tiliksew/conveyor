@@ -11,6 +11,7 @@ import type {
   CrateBriefingView,
   CrateDetail,
   CrateInsight,
+  CrateInsightDependency,
   CrateInsightTask,
   CrateListRow,
   CratePhase,
@@ -347,6 +348,9 @@ function insightTask(
     review_rounds: 0,
     merged_at: null,
     closed_at: null,
+    depends_on: [],
+    wait_depth: 0,
+    waited_on_by: [],
     ...extra,
   }
 }
@@ -456,6 +460,142 @@ function plainInsight(crate: CrateDetail): CrateInsight {
   }
 }
 
+// A crate whose members depend on each other, as internal/crateinsight
+// serves the dependency values (component-crates invariant 38): a chain of
+// three members with the first merged (price index, then basket price, then
+// basket total), a dependency outside the crate, a member that closed
+// without merging, and a sibling that waits on the same member. Every
+// waiting flag, depth, and reverse list is the server's.
+const deps = {
+  index: '261120-a01',
+  price: '261120-b02',
+  total: '261120-c03',
+  history: '261120-d04',
+  coupon: '261120-e05',
+  tax: '261120-f06',
+  exporter: '261120-x07',
+  keys: '261101-out1',
+  legacy: '261101-out2',
+}
+
+const depsCrate: CrateDetail = {
+  ...crateRow({
+    id: 'crate-deps',
+    name: 'Checkout rebuild',
+    open_task_count: 4,
+    merged_task_count: 2,
+    total_task_count: 7,
+  }),
+  requirements: [],
+  undeclared_requirements: [],
+  tasks: [
+    member(deps.price, 'Price the basket', 'running', 'Agent building (served)'),
+    member(deps.total, 'Show the basket total', 'running', 'Agent reviewing (served)'),
+    member(deps.history, 'Export the order history', 'running', 'Agent reviewing (served)'),
+    {
+      ...member(deps.coupon, 'Apply the coupon rules', 'queued', 'Blocked by another task (served)'),
+      next_action: {
+        label: 'Blocked by another task (served)',
+        actor: 'dependency',
+        kind: 'blocked',
+        judgment: false,
+        summary: 'Blocked',
+        deadline: null,
+      },
+    },
+    member(deps.index, 'Add the price index', 'merged', 'Merged'),
+    member(deps.tax, 'Load the tax tables', 'merged', 'Merged'),
+    member(deps.exporter, 'Try the old exporter', 'closed', 'Closed'),
+  ],
+}
+
+function dependency(
+  id: string,
+  title: string,
+  state: CrateInsightDependency['state'],
+  member: boolean,
+  waiting: boolean,
+): CrateInsightDependency {
+  return { id, title, state, member, waiting }
+}
+
+const depsInsight: CrateInsight = {
+  tasks: [
+    insightTask(deps.price, 'building', 'build', '2026-11-12T09:00:00Z', {
+      depends_on: [
+        dependency(deps.legacy, 'Retire the v1 API', 'closed', false, true),
+        dependency(deps.index, 'Add the price index', 'merged', true, false),
+      ],
+      waited_on_by: [deps.total, deps.coupon],
+    }),
+    insightTask(deps.total, 'review', 'review', '2026-11-13T09:00:00Z', {
+      pull_request_opened_at: ['2026-11-17T10:00:00Z'],
+      depends_on: [
+        dependency(deps.keys, 'Rotate the API keys', 'running', false, true),
+        dependency(deps.price, 'Price the basket', 'running', true, true),
+      ],
+      wait_depth: 1,
+    }),
+    insightTask(deps.history, 'review', 'review', '2026-11-11T09:00:00Z', {
+      pull_request_opened_at: ['2026-11-17T12:00:00Z'],
+      depends_on: [dependency(deps.exporter, 'Try the old exporter', 'closed', true, true)],
+      wait_depth: 1,
+    }),
+    // Created after the price index merged, so that merge is no mark on
+    // its line.
+    insightTask(deps.coupon, 'blocked', 'build', '2026-11-15T09:00:00Z', {
+      depends_on: [
+        dependency(deps.index, 'Add the price index', 'merged', true, false),
+        dependency(deps.price, 'Price the basket', 'running', true, true),
+      ],
+      wait_depth: 1,
+    }),
+    // Merged before the tax tables it names, so that later merge is no mark
+    // on its line.
+    insightTask(deps.index, 'merged', 'crate', '2026-11-10T09:00:00Z', {
+      merged_at: '2026-11-14T09:00:00Z',
+      review_rounds: 1,
+      depends_on: [dependency(deps.tax, 'Load the tax tables', 'merged', true, false)],
+    }),
+    insightTask(deps.tax, 'merged', 'crate', '2026-11-10T12:00:00Z', {
+      merged_at: '2026-11-16T09:00:00Z',
+      review_rounds: 1,
+    }),
+    insightTask(deps.exporter, 'closed', 'aside', '2026-11-11T12:00:00Z', {
+      closed_at: '2026-11-13T09:00:00Z',
+      waited_on_by: [deps.history],
+    }),
+  ],
+  branches: ['main'],
+  whereabouts: [
+    { key: 'task_branch', branch: null, task_ids: [deps.price, deps.total, deps.history, deps.coupon] },
+    { key: 'merged', branch: 'main', task_ids: [deps.index, deps.tax] },
+  ],
+  progress: { ...emptyProgress(), delivered: 2, total: 6, open: 4 },
+  first_review: { approved: 2, reviewed: 2 },
+  forecast_days_before_target: null,
+  replay: {
+    start: '2026-11-10T09:00:00Z',
+    end: lineNow,
+    steps: [
+      step('2026-11-10T09:00:00Z', deps.index, 'queued', 'intake'),
+      step('2026-11-10T12:00:00Z', deps.tax, 'queued', 'intake'),
+      step('2026-11-11T09:00:00Z', deps.history, 'queued', 'intake'),
+      step('2026-11-11T12:00:00Z', deps.exporter, 'queued', 'intake'),
+      step('2026-11-12T09:00:00Z', deps.price, 'queued', 'intake'),
+      step('2026-11-12T15:00:00Z', deps.price, 'building', 'build'),
+      step('2026-11-13T09:00:00Z', deps.total, 'queued', 'intake'),
+      step('2026-11-13T09:00:00Z', deps.exporter, 'closed', 'aside'),
+      step('2026-11-14T09:00:00Z', deps.index, 'merged', 'crate'),
+      step('2026-11-15T09:00:00Z', deps.coupon, 'queued', 'intake'),
+      step('2026-11-16T09:00:00Z', deps.tax, 'merged', 'crate'),
+      step('2026-11-17T10:00:00Z', deps.total, 'review', 'review'),
+      step('2026-11-17T12:00:00Z', deps.history, 'review', 'review'),
+      step('2026-11-18T09:00:00Z', deps.coupon, 'blocked', 'build'),
+    ],
+  },
+}
+
 type Role = 'viewer' | 'maintainer' | 'operator'
 
 const memberNextAction = {
@@ -504,6 +644,8 @@ async function serveCrates(
   options: {
     role?: Role
     insight?: 'fail'
+    // The insight read answers only once this settles.
+    insightHold?: Promise<void>
     insights?: Record<string, CrateInsight>
     openList?: Crate[]
     closedList?: Crate[]
@@ -524,6 +666,7 @@ async function serveCrates(
     [closedUndated.id]: structuredClone(closedUndated),
     [lineCrate.id]: structuredClone(lineCrate),
     [emptyCrate.id]: structuredClone(emptyCrate),
+    [depsCrate.id]: structuredClone(depsCrate),
   }
   const insightRequests: string[] = []
   const listRequests: string[] = []
@@ -580,7 +723,10 @@ async function serveCrates(
       const crate = details[id]
       if (!crate) return route.fulfill({ status: 404, json: { error: 'crate_not_found', crate_id: id } })
       if (options.insight === 'fail') return route.fulfill({ status: 500, json: { error: 'internal error' } })
-      const served = options.insights?.[id] ?? (id === lineCrate.id ? lineInsight : plainInsight(crate))
+      await options.insightHold
+      const served =
+        options.insights?.[id] ??
+        (id === lineCrate.id ? lineInsight : id === depsCrate.id ? depsInsight : plainInsight(crate))
       return route.fulfill({ json: served })
     }
     // The briefing routes of component-crates, Public surfaces.
@@ -1342,5 +1488,335 @@ for (const width of [375, 1280]) {
     const file = `crate-task-sheet-${width}.png`
     const image = await page.screenshot({ path: shots ? `${shots}/${file}` : undefined })
     await testInfo.attach(file, { body: image, contentType: 'image/png' })
+  })
+}
+
+// Dependencies between member tasks on the crate page (req-crate-insights
+// REQ-6; component-crates invariants 33, 38, and 39; DEC-151). The fake
+// server serves every dependency value, and the page prints them.
+const memberRow = (page: Page, id: string) => page.locator(`[data-crate-task="${id}"]`)
+const branchLine = (page: Page, id: string) => page.locator(`[data-branch-task="${id}"]`)
+
+// The task reads the page makes. The dependency display reads none.
+function recordTaskReads(page: Page) {
+  const reads: string[] = []
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname
+    if (path.startsWith('/v1/tasks/')) reads.push(path)
+  })
+  return reads
+}
+
+test('a member row names what it waits on, marks outside and unmerged tasks, and counts its waiters', async ({
+  page,
+}) => {
+  let release = () => {}
+  const insightHold = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const server = await serveCrates(page, { insightHold })
+  const taskReads = recordTaskReads(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(memberRow(page, deps.price)).toBeVisible()
+  // Until the insight view answers, no row shows a dependency line.
+  await expect(page.locator('[data-crate-task] [data-dependency-details]')).toHaveCount(0)
+  release()
+  await expect(memberRow(page, deps.total).locator('[data-waits-on]')).toHaveCount(2)
+  expect(server.insightRequests).toEqual([depsCrate.id])
+
+  // The served entries in the served order, with their marks.
+  const total = memberRow(page, deps.total)
+  await expect(total.locator('[data-waits-on]')).toHaveText([
+    'Waits on Rotate the API keys (outside this crate)',
+    'Waits on Price the basket',
+  ])
+  await expect(total.locator(`[data-waits-on="${deps.keys}"]`)).toHaveAttribute('data-outside', 'true')
+  await expect(total.locator(`[data-waits-on="${deps.keys}"] button`)).toHaveCount(0)
+  await expect(total.locator(`[data-waits-on="${deps.price}"] button`)).toHaveCount(1)
+  await expect(total.locator('[data-waited-on-by]')).toHaveCount(0)
+
+  const price = memberRow(page, deps.price)
+  await expect(price.locator('[data-waits-on]')).toHaveText([
+    'Waits on Retire the v1 API (outside this crate, closed without merging)',
+  ])
+  await expect(price.locator('[data-waited-on-by]')).toHaveText('2 tasks wait on this')
+
+  await expect(memberRow(page, deps.history).locator('[data-waits-on]')).toHaveText([
+    'Waits on Try the old exporter (closed without merging)',
+  ])
+  // A merged entry is no line, and a merged member with no waiter has none.
+  await expect(memberRow(page, deps.coupon).locator('[data-waits-on]')).toHaveText(['Waits on Price the basket'])
+  await expect(memberRow(page, deps.index).locator('[data-dependency-details]')).toHaveCount(0)
+  await page.getByRole('button', { name: /Show all 7 tasks/ }).click()
+  await expect(memberRow(page, deps.exporter).locator('[data-waited-on-by]')).toHaveText('1 task waits on this')
+  // The task facts stay in each row.
+  await expect(memberRow(page, deps.price).locator('[data-task-branch]')).toHaveText(`conveyor/task-${deps.price}`)
+  expect(taskReads).toEqual([])
+
+  // A member line opens that task in the sheet over the crate page.
+  await total.locator(`[data-waits-on="${deps.price}"] button`).click()
+  await expect(page).toHaveURL(new RegExp(`/w/demo/crates/crate-deps\\?task=${deps.price}$`))
+  await expect(taskSheet(page).getByRole('heading', { level: 2 }).first()).toHaveText('Price the basket')
+  await expect(memberRow(page, deps.total)).toBeVisible()
+  expect(server.insightRequests).toEqual([depsCrate.id])
+})
+
+test('the branch map orders lines by wait depth, links waiting lines, and marks the merge a line waited for', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  const map = page.locator('[data-branch-map]')
+  await expect(map.locator('[data-branch-task]')).toHaveCount(7)
+
+  // The served depth comes before the station order, which alone would put
+  // both review lines above the basket price.
+  const open = await map
+    .locator('[data-branch-task][data-ends="open"]')
+    .evaluateAll((lines) => lines.map((line) => line.getAttribute('data-branch-task')))
+  expect(open).toEqual([deps.price, deps.history, deps.total, deps.coupon])
+  // An open line's row is where its label stands.
+  const row = async (id: string) => (await branchLine(page, id).locator('[data-open-label]').boundingBox())?.y ?? 0
+  expect(await row(deps.total)).toBeGreaterThan(await row(deps.price))
+
+  // One link from the basket price to each open line that waits on it, with
+  // the arrow at the line that waits. The closed exporter and the outside
+  // tasks draw none.
+  const links = map.locator('[data-dependency-link]')
+  await expect(links).toHaveCount(2)
+  expect(await links.evaluateAll((paths) => paths.map((path) => path.getAttribute('data-dependency-link')))).toEqual([
+    `${deps.price}>${deps.total}`,
+    `${deps.price}>${deps.coupon}`,
+  ])
+  await expect(links.first()).toHaveAttribute('marker-end', 'url(#crate-dependency-arrow)')
+
+  // One merge mark: the price index merged while the basket price was open.
+  // The coupon rules came after that merge, the index merged before the tax
+  // tables, and the exporter closed without merging, so none of those marks.
+  const marks = map.locator('[data-dependency-merge]')
+  await expect(marks).toHaveAttribute('data-dependency-merge', `${deps.index}>${deps.price}`)
+  const ring = await marks.locator('circle').boundingBox()
+  const indexMerge = await branchLine(page, deps.index).locator('[data-merge-mark]').boundingBox()
+  expect(
+    Math.abs((ring?.x ?? 0) + (ring?.width ?? 0) / 2 - ((indexMerge?.x ?? 0) + (indexMerge?.width ?? 0) / 2)),
+  ).toBeLessThan(1)
+
+  await expect(map.locator('[data-legend="waits"]')).toHaveText('Waits for that task to merge')
+  await expect(map.locator('[data-legend="dependency-merged"]')).toHaveText('A task it waited on merged')
+
+  // The card of a line states what it waits on and how many wait on it.
+  await branchLine(page, deps.price).focus()
+  const card = map.locator(`[data-branch-card="${deps.price}"]`)
+  await expect(card.locator('[data-waits-on]')).toHaveText([
+    'Waits on Retire the v1 API (outside this crate, closed without merging)',
+  ])
+  await expect(card.locator('[data-waited-on-by]')).toHaveText('2 tasks wait on this')
+  await branchLine(page, deps.total).focus()
+  await expect(map.locator(`[data-branch-card="${deps.total}"] [data-waits-on]`)).toHaveText([
+    'Waits on Rotate the API keys (outside this crate)',
+    'Waits on Price the basket',
+  ])
+
+  // Emphasis keeps the chain lit through the merged members, in both
+  // directions, and dims the rest, including a sibling that only shares a
+  // dependency.
+  const dimmed = () =>
+    map
+      .locator('[data-branch-task][data-dimmed]')
+      .evaluateAll((lines) => lines.map((line) => line.getAttribute('data-branch-task')).sort())
+  await expect.poll(dimmed).toEqual([deps.history, deps.coupon, deps.exporter].sort())
+  await expect(map.locator(`[data-dependency-link="${deps.price}>${deps.coupon}"]`)).toHaveAttribute(
+    'data-dimmed',
+    'true',
+  )
+  await expect(map.locator(`[data-dependency-link="${deps.price}>${deps.total}"]`)).not.toHaveAttribute(
+    'data-dimmed',
+    'true',
+  )
+  await branchLine(page, deps.index).focus()
+  await expect.poll(dimmed).toEqual([deps.history, deps.exporter].sort())
+  await branchLine(page, deps.history).focus()
+  await expect.poll(dimmed).toEqual([deps.price, deps.total, deps.coupon, deps.index, deps.tax].sort())
+  // Clearing the emphasis lights every line again, and a count group still
+  // emphasizes its own lines.
+  await page.locator('body').click({ position: { x: 2, y: 2 } })
+  await expect.poll(dimmed).toEqual([])
+  await map.locator('[data-whereabouts="merged"]').hover()
+  await expect.poll(dimmed).toEqual([deps.price, deps.total, deps.history, deps.coupon, deps.exporter].sort())
+})
+
+test('a crate with no dependency shows no dependency mark or legend entry', async ({ page }) => {
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-line')
+  const map = page.locator('[data-branch-map]')
+  await expect(map.locator('[data-branch-task]')).toHaveCount(8)
+  await expect(map.locator('[data-dependency-link], [data-dependency-merge]')).toHaveCount(0)
+  await expect(map.locator('[data-legend="waits"], [data-legend="dependency-merged"]')).toHaveCount(0)
+  await expect(page.locator('[data-dependency-details]')).toHaveCount(0)
+})
+
+test('a narrow branch map opens scrolled to the present', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 900 })
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  const scroller = page.locator('[data-branch-map-scroll]')
+  await expect(scroller.locator('[data-dependency-link]')).toHaveCount(2)
+  await expect
+    .poll(() => scroller.evaluate((element) => element.scrollWidth - element.clientWidth - element.scrollLeft))
+    .toBeLessThanOrEqual(1)
+  expect(await scroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0)
+  // The present's mark sits inside the scrolled view.
+  const view = await scroller.boundingBox()
+  const now = await scroller.locator('[data-now]').boundingBox()
+  expect(now?.x ?? -1).toBeGreaterThanOrEqual(view?.x ?? 0)
+  expect((now?.x ?? 0) + (now?.width ?? 0)).toBeLessThanOrEqual((view?.x ?? 0) + (view?.width ?? 0))
+})
+
+// The line's link and card (req-crate-insights AC-6.5; DEC-151(3), (4)).
+// The scene draws on demand under reduced motion, so every block stands at
+// its place in the frame each change draws. The scene renders only while it
+// is on screen, so the window is tall enough to hold the line and the task
+// list together.
+const lineLinks = (page: Page) => page.locator('[data-line-scene] [data-line-link]')
+
+// The start and end points of a link's projected curve.
+async function linkEnds(page: Page, key: string) {
+  const path = page.locator(`[data-line-link="${key}"] [data-line-link-path]`)
+  await expect(path).toHaveAttribute('d', /^M[\d.-]+,[\d.-]+ C/)
+  const d = (await path.getAttribute('d')) ?? ''
+  const numbers = (d.match(/-?\d+(\.\d+)?/g) ?? []).map(Number)
+  return { start: { x: numbers[0], y: numbers[1] }, end: { x: numbers[6], y: numbers[7] } }
+}
+
+test('the line links the pointed-at task to the members it waits on, only at the present', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1800 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-line-mode="scene"] [data-line-scene]')).toBeVisible()
+  await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+  // At rest the line holds no link.
+  await expect(lineLinks(page)).toHaveCount(0)
+
+  // Pointing at the basket total draws one link, from the basket price.
+  // The outside task it waits on has no block and no link.
+  await memberRow(page, deps.total).hover()
+  await expect(lineLinks(page)).toHaveCount(1)
+  await expect(lineLinks(page)).toHaveAttribute('data-line-link', `${deps.price}>${deps.total}`)
+  await linkEnds(page, `${deps.price}>${deps.total}`)
+  const card = page.locator(`[data-line-card="${deps.total}"]`)
+  await expect(card.locator('[data-waits-on]')).toHaveText([
+    'Waits on Rotate the API keys (outside this crate)',
+    'Waits on Price the basket',
+  ])
+
+  // The coupon rules wait on the basket price at the same station, so they
+  // stand behind it on the belt and the link runs back along it.
+  await memberRow(page, deps.coupon).hover()
+  await expect(lineLinks(page)).toHaveAttribute('data-line-link', `${deps.price}>${deps.coupon}`)
+  const along = await linkEnds(page, `${deps.price}>${deps.coupon}`)
+  expect(along.start.x - along.end.x).toBeGreaterThan(20)
+
+  // The basket price waits on no member, so it draws no link, and its card
+  // counts the members that wait on it.
+  await memberRow(page, deps.price).hover()
+  await expect(page.locator(`[data-line-card="${deps.price}"] [data-waited-on-by]`)).toHaveText('2 tasks wait on this')
+  await expect(lineLinks(page)).toHaveCount(0)
+
+  // Leaving the row clears the link.
+  await memberRow(page, deps.total).hover()
+  await expect(lineLinks(page)).toHaveCount(1)
+  await page.locator('[data-crate-side]').getByRole('heading', { name: 'Tasks' }).hover()
+  await expect(lineLinks(page)).toHaveCount(0)
+
+  // During a replay the line draws no link, and the card still shows.
+  await page.locator('[data-replay] input[type="range"]').evaluate((input: HTMLInputElement) => {
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setValue?.call(input, String(Date.parse('2026-11-18T12:00:00Z')))
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await expect(page.locator('[data-replay-time]')).not.toHaveText('Now')
+  await memberRow(page, deps.total).hover()
+  await expect(page.locator(`[data-line-card="${deps.total}"]`)).toBeVisible()
+  await expect(lineLinks(page)).toHaveCount(0)
+})
+
+test('the line dims every member the pointed-at task has no dependency path to', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1800 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+  // The line and the branch map share one emphasis, so the line's lit set
+  // is the map's: pointing at a row lights the chain in both.
+  await memberRow(page, deps.total).hover()
+  await expect(page.locator(`[data-line-card="${deps.total}"]`)).toBeVisible()
+  await expect
+    .poll(() =>
+      page
+        .locator('[data-branch-task][data-dimmed]')
+        .evaluateAll((lines) => lines.map((line) => line.getAttribute('data-branch-task')).sort()),
+    )
+    .toEqual([deps.history, deps.coupon, deps.exporter].sort())
+})
+
+test('the line draws no link when the browser cannot draw the scene', async ({ page }) => {
+  await page.addInitScript(() => {
+    // Every WebGL context request answers null, as in a browser without it.
+    const original = HTMLCanvasElement.prototype.getContext
+    Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
+      value(this: HTMLCanvasElement, type: string, ...rest: unknown[]) {
+        return type.startsWith('webgl') ? null : Reflect.apply(original, this, [type, ...rest])
+      },
+    })
+  })
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-line-mode="text"]')).toBeVisible()
+  await memberRow(page, deps.total).hover()
+  await expect(memberRow(page, deps.total)).toHaveAttribute('data-emphasized', 'true')
+  await expect(page.locator('[data-line-links], [data-line-link]')).toHaveCount(0)
+  await expect(memberRow(page, deps.total).locator('[data-waits-on]')).toHaveCount(2)
+})
+
+// Visual record for the pull request: the dependency rows, the branch map
+// with its links and merge mark, and both cards of the basket total, at
+// 375 px and a desktop width. CONVEYOR_SCREENSHOT_DIR keeps a local copy,
+// and the Playwright report carries each attachment.
+for (const width of [375, 1280]) {
+  test(`the crate dependencies screenshot at ${width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: width < 768 ? 2600 : 1800 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await serveCrates(page)
+    await page.goto('/w/demo/crates/crate-deps')
+    await expect(page.locator('[data-dependency-link]')).toHaveCount(2)
+    await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+    await page.evaluate(() => document.fonts.ready)
+    await expectNoHorizontalScroll(page)
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const shoot = async (name: string, image: Buffer) => {
+      await testInfo.attach(name, { body: image, contentType: 'image/png' })
+      if (shots) {
+        const { writeFile } = await import('node:fs/promises')
+        await writeFile(`${shots}/${name}`, image)
+      }
+    }
+    // The member rows.
+    await shoot(`crate-deps-rows-${width}.png`, await page.locator('[data-crate-side]').screenshot())
+    // The line's card and link while a row points at the basket total.
+    await memberRow(page, deps.total).hover()
+    await expect(lineLinks(page)).toHaveCount(1)
+    await expect(page.locator(`[data-line-link="${deps.price}>${deps.total}"] [data-line-link-path]`)).toHaveAttribute(
+      'd',
+      /^M/,
+    )
+    await page.locator('[data-line-mode]').scrollIntoViewIfNeeded()
+    await shoot(`crate-deps-line-${width}.png`, await page.locator('[data-line-mode]').screenshot())
+    // The branch map with the basket total's card.
+    await branchLine(page, deps.total).focus()
+    await expect(page.locator(`[data-branch-card="${deps.total}"]`)).toBeVisible()
+    await page.locator('[data-branch-map]').scrollIntoViewIfNeeded()
+    await shoot(`crate-deps-map-${width}.png`, await page.locator('[data-branch-map]').screenshot())
   })
 }

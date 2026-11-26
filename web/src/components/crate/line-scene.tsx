@@ -9,14 +9,20 @@
 // The scene is built in code from primitive shapes and ships no model,
 // texture, or font file (DEC-143(1)). The station signs and the card of the
 // pointed-at task are page elements placed from scene positions (DEC-143(4)).
+// So is each dependency link: it shows only at the present, only while the
+// emphasized task waits on a member, from the block of each member it waits
+// on to the emphasized block (req-crate-insights AC-6.5; component-crates
+// invariant 39; DEC-151(3), (4)).
 // The page loads this file on demand, so three.js stays out of every other
 // route's bundle (DEC-143(2)).
 import { ContactShadows, RoundedBox } from '@react-three/drei'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
+import { DependencyDetails } from './dependency-details'
+import { linksKey, type WaitLink } from './dependency-model'
 import { type LineBlock, type LineStation, phaseMeta } from './line-model'
-import type { CratePhase, CrateStation } from '../../lib/types'
+import type { CrateInsightTask, CratePhase, CrateStation } from '../../lib/types'
 
 export interface LineSceneProps {
   blocks: LineBlock[]
@@ -29,6 +35,15 @@ export interface LineSceneProps {
   dark: boolean
   reducedMotion: boolean
   emphasizedId: string | null
+  // The emphasized task as the insight view serves it, for what its card
+  // states about its dependencies (req-crate-insights AC-6.1, AC-6.2).
+  emphasizedTask?: CrateInsightTask
+  // The members left undimmed while a task is emphasized: that task and the
+  // members its dependencies connect it to (AC-6.6). Null with no emphasis.
+  related: Set<string> | null
+  // Each served `waiting` entry that names a member, at the present. Empty
+  // during a replay (AC-6.5).
+  links: WaitLink[]
   onEmphasize: (id: string | null) => void
   onSelect: (id: string) => void
   // Called when the browser takes the canvas's WebGL context away, so the
@@ -80,15 +95,32 @@ type Place = {
 }
 
 // Where every block sits. Belt blocks fill their zone from the end nearest
-// the next station, two abreast, then stack.
-function place(blocks: LineBlock[], layout: Layout): Map<string, Place> {
+// the next station, two abreast, then stack. At the present, a member that
+// waits on a member at the same station stands behind it on the belt when
+// the station has room for every block in file (req-crate-insights AC-6.5).
+function place(blocks: LineBlock[], layout: Layout, links: WaitLink[]): Map<string, Place> {
   const places = new Map<string, Place>()
   const by = (station: CrateStation) => blocks.filter((block) => block.station === station)
 
   for (const zone of zones) {
     const [from, to] = layout.zones[zone]
     const columns = Math.max(1, Math.floor((to - from) / (MODULE + 0.16)))
-    by(zone).forEach((block, index) => {
+    const here = by(zone)
+    const inFile = fileSpots(here, links, to - from)
+    if (inFile) {
+      for (const spot of inFile.spots)
+        places.set(spot.id, {
+          kind: 'belt',
+          size: MODULE,
+          position: new THREE.Vector3(
+            to - MODULE / 2 - 0.05 - spot.column * inFile.gap,
+            BELT_Y + 0.05 + MODULE / 2,
+            inFile.single ? 0 : spot.row === 0 ? 0.36 : -0.36,
+          ),
+        })
+      continue
+    }
+    here.forEach((block, index) => {
       const perLayer = columns * 2
       const layer = Math.floor(index / perLayer)
       const slot = index % perLayer
@@ -150,6 +182,42 @@ function place(blocks: LineBlock[], layout: Layout): Map<string, Place> {
     })
   })
   return places
+}
+
+// The places of one station's blocks in file: each member that no other
+// member here holds back heads a file, and the members that wait on it stand
+// behind it, toward the station before. Files fill the belt's two rows. Null
+// when no two blocks here are linked, when a link loop leaves a block out, or
+// when the files do not fit the station without stacking.
+function fileSpots(here: LineBlock[], links: WaitLink[], length: number) {
+  const ids = new Set(here.map((block) => block.id))
+  const inZone = links.filter((link) => ids.has(link.from) && ids.has(link.to))
+  if (inZone.length === 0) return null
+  const waits = new Set(inZone.map((link) => link.to))
+  const seen = new Set<string>()
+  const walk = (id: string, file: string[]) => {
+    if (seen.has(id)) return
+    seen.add(id)
+    file.push(id)
+    for (const link of inZone) if (link.from === id) walk(link.to, file)
+  }
+  const files: string[][] = []
+  for (const block of here) {
+    if (waits.has(block.id)) continue
+    const file: string[] = []
+    walk(block.id, file)
+    if (file.length > 0) files.push(file)
+  }
+  const used = [0, 0]
+  const spots: Array<{ id: string; row: number; column: number }> = []
+  for (const file of files) {
+    const row = used[0] <= used[1] ? 0 : 1
+    for (const id of file) spots.push({ id, row, column: used[row]++ })
+  }
+  const longest = Math.max(...used)
+  const gap = longest > 1 ? Math.min(MODULE + 0.3, (length - MODULE) / (longest - 1)) : MODULE + 0.3
+  if (spots.length !== here.length || gap < MODULE + 0.08) return null
+  return { spots, gap, single: used[1] === 0 }
 }
 
 interface Palette {
@@ -614,11 +682,22 @@ interface Anchor {
 
 const CARD_MARGIN = 4
 
+// A dependency link the line shows, with the heights over its two blocks'
+// centres where it starts and ends.
+interface ShownLink extends WaitLink {
+  key: string
+  liftFrom: number
+  liftTo: number
+}
+
 function Projector({
   anchors,
   card,
   groups,
   elements,
+  links,
+  paths,
+  minRise,
 }: {
   anchors: Anchor[]
   // The emphasized block and the height over its centre where its card
@@ -626,6 +705,10 @@ function Projector({
   card: { id: string; lift: number } | null
   groups: RefObject<Map<string, THREE.Group>>
   elements: RefObject<Record<string, HTMLElement | null>>
+  links: ShownLink[]
+  paths: RefObject<Record<string, SVGPathElement | null>>
+  // The least height, in pixels, that a link rises over its two ends.
+  minRise: number
 }) {
   const origin = useRef<THREE.Group>(null)
   const point = useMemo(() => new THREE.Vector3(), [])
@@ -643,6 +726,29 @@ function Projector({
       const { x, y } = project()
       element.style.transform = `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`
       element.style.visibility = 'visible'
+    }
+    // Each link is a curve from the top of the block waited on, up and over,
+    // down onto the top of the block that waits. It keeps one height over
+    // the belt at both ends, so it follows the belt's slope on screen and
+    // stays under the station signs.
+    for (const link of links) {
+      const from = groups.current.get(link.from)
+      const to = groups.current.get(link.to)
+      if (!from || !to) continue
+      point.copy(from.position)
+      point.y += link.liftFrom * from.scale.y
+      const a = project()
+      point.copy(to.position)
+      point.y += link.liftTo * to.scale.y
+      const b = project()
+      const span = Math.hypot(b.x - a.x, b.y - a.y)
+      const rise = Math.min(Math.max(minRise, span * 0.42), minRise * 1.75)
+      const d = `M${a.x.toFixed(1)},${(a.y - 2).toFixed(1)} C${(a.x + (b.x - a.x) * 0.12).toFixed(1)},${(a.y - rise).toFixed(1)} ${(b.x - (b.x - a.x) * 0.12).toFixed(1)},${(b.y - rise).toFixed(1)} ${b.x.toFixed(1)},${(b.y - 5).toFixed(1)}`
+      for (const layer of ['halo', 'line']) paths.current[`${layer}:${link.key}`]?.setAttribute('d', d)
+      paths.current[`dot:${link.key}`]?.setAttribute(
+        'transform',
+        `translate(${a.x.toFixed(1)},${(a.y - 2).toFixed(1)})`,
+      )
     }
     const element = elements.current.card
     const node = card ? groups.current.get(card.id) : undefined
@@ -682,21 +788,26 @@ function ContextLossWatch({ onLost }: { onLost: () => void }) {
 function DrawOnChange({
   blocks,
   emphasizedId,
+  related,
+  links,
   shipped,
   closed,
   dark,
 }: {
   blocks: LineBlock[]
   emphasizedId: string | null
+  related: Set<string> | null
+  // The key of the shown links, so a link that appears or goes is placed.
+  links: string
   shipped: boolean
   closed: boolean
   dark: boolean
 }) {
   const invalidate = useThree((state) => state.invalidate)
   useEffect(() => {
-    void [blocks, emphasizedId, shipped, closed, dark]
+    void [blocks, emphasizedId, related, links, shipped, closed, dark]
     invalidate()
-  }, [invalidate, blocks, emphasizedId, shipped, closed, dark])
+  }, [invalidate, blocks, emphasizedId, related, links, shipped, closed, dark])
   return null
 }
 
@@ -762,6 +873,9 @@ export default function LineScene({
   dark,
   reducedMotion,
   emphasizedId,
+  emphasizedTask,
+  related,
+  links,
   onEmphasize,
   onSelect,
   onContextLost,
@@ -769,7 +883,7 @@ export default function LineScene({
   padBottom,
 }: LineSceneProps) {
   const layout = useMemo(() => layoutFor(compact), [compact])
-  const places = useMemo(() => place(blocks, layout), [blocks, layout])
+  const places = useMemo(() => place(blocks, layout, links), [blocks, layout, links])
   const palette = useMemo(() => readPalette(dark), [dark])
   // The camera fits the line and every block on it, so a long row of
   // closed tasks or a tall stack at a station stays in view.
@@ -838,9 +952,24 @@ export default function LineScene({
   const emphasized = emphasizedId ? blocks.find((block) => block.id === emphasizedId) : undefined
   const emphasizedSpot = emphasized ? places.get(emphasized.id) : undefined
   const anchors: Anchor[] = signs.map((sign) => ({ id: sign.id, position: sign.position }))
-  const card = emphasized && emphasizedSpot ? { id: emphasized.id, lift: emphasizedSpot.size / 2 + 0.2 } : null
+  // The links the line draws: one for each served `waiting` member entry of
+  // the emphasized task, and none at rest (component-crates invariant 39).
+  const shownLinks: ShownLink[] = emphasized
+    ? links.flatMap((link) => {
+        const a = places.get(link.from)
+        const b = places.get(link.to)
+        if (link.to !== emphasized.id || !a || !b) return []
+        return [{ ...link, key: `${link.from}>${link.to}`, liftFrom: a.size / 2, liftTo: b.size / 2 }]
+      })
+    : []
+  // The card moves up to clear the links that end on its block.
+  const card =
+    emphasized && emphasizedSpot
+      ? { id: emphasized.id, lift: emphasizedSpot.size / 2 + (shownLinks.length > 0 ? 0.95 : 0.2) }
+      : null
   const groups = useRef(new Map<string, THREE.Group>())
   const elements = useRef<Record<string, HTMLElement | null>>({})
+  const paths = useRef<Record<string, SVGPathElement | null>>({})
 
   return (
     <div className="relative size-full" data-line-scene data-motion={reducedMotion ? 'still' : 'moving'}>
@@ -890,7 +1019,7 @@ export default function LineScene({
                 index={index}
                 color={tone(block.phase)}
                 emphasized={emphasizedId === block.id}
-                dimmed={emphasizedId !== null && emphasizedId !== block.id}
+                dimmed={related !== null && !related.has(block.id)}
                 reducedMotion={reducedMotion}
                 onEmphasize={onEmphasize}
                 groups={groups}
@@ -898,9 +1027,25 @@ export default function LineScene({
               />
             )
           })}
-          <Projector anchors={anchors} card={card} groups={groups} elements={elements} />
+          <Projector
+            anchors={anchors}
+            card={card}
+            groups={groups}
+            elements={elements}
+            links={shownLinks}
+            paths={paths}
+            minRise={compact ? 13 : 26}
+          />
           <ContextLossWatch onLost={onContextLost} />
-          <DrawOnChange blocks={blocks} emphasizedId={emphasizedId} shipped={shipped} closed={closed} dark={dark} />
+          <DrawOnChange
+            blocks={blocks}
+            emphasizedId={emphasizedId}
+            related={related}
+            links={linksKey(shownLinks)}
+            shipped={shipped}
+            closed={closed}
+            dark={dark}
+          />
           <ContactShadows
             position={[0, 0.005, 0]}
             opacity={palette.shadow}
@@ -914,6 +1059,64 @@ export default function LineScene({
       {/* The page's text list states the same counts to assistive technology,
           so the signs and the card stay out of its reach. */}
       <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+        <svg data-line-links aria-hidden="true" className="absolute inset-0 size-full overflow-visible">
+          <defs>
+            <marker
+              id="crate-line-link-arrow"
+              viewBox="0 0 10 10"
+              refX="8"
+              refY="5"
+              markerWidth="8"
+              markerHeight="8"
+              orient="auto"
+              markerUnits="userSpaceOnUse"
+            >
+              <path
+                d="M2,2 L8,5 L2,8"
+                fill="none"
+                stroke="var(--color-foreground)"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </marker>
+          </defs>
+          {shownLinks.map((link) => {
+            const ref = (layer: string) => (element: SVGPathElement | null) => {
+              paths.current[`${layer}:${link.key}`] = element
+            }
+            return (
+              <g key={link.key} data-line-link={link.key}>
+                <path
+                  ref={ref('halo')}
+                  fill="none"
+                  stroke="var(--color-card)"
+                  strokeOpacity={0.55}
+                  strokeWidth={4.5}
+                  strokeLinecap="round"
+                />
+                <path
+                  ref={ref('line')}
+                  data-line-link-path
+                  fill="none"
+                  stroke="var(--color-foreground)"
+                  strokeWidth={1.75}
+                  strokeLinecap="round"
+                  markerEnd="url(#crate-line-link-arrow)"
+                />
+                {/* Off the canvas until the first frame places it. */}
+                <path
+                  ref={ref('dot')}
+                  transform="translate(-100,-100)"
+                  d="M-2.6,0 a2.6,2.6 0 1,0 5.2,0 a2.6,2.6 0 1,0 -5.2,0"
+                  fill="var(--color-foreground)"
+                  stroke="var(--color-card)"
+                  strokeWidth={1}
+                />
+              </g>
+            )
+          })}
+        </svg>
         {signs.map((sign) => (
           <div
             key={sign.id}
@@ -955,6 +1158,7 @@ export default function LineScene({
                 {emphasized.label !== undefined && <span data-line-card-label>{emphasized.label}</span>}
                 <span className="font-mono text-faint">→ {emphasized.baseBranch}</span>
               </p>
+              <DependencyDetails task={emphasizedTask} className="mt-1 border-t border-border pt-1" />
             </div>
           </div>
         )}

@@ -8,6 +8,14 @@
 // ID. The page places each mark at its served time and derives no value
 // (component-crates invariant 21; DEC-61). Ported from the approved prototype
 // without its release marks (feature-crate-insights CI-4).
+//
+// Dependencies (req-crate-insights AC-6.3, AC-6.4; component-crates invariant
+// 39; DEC-151(2)): a lane's open lines take rows by the served `wait_depth`
+// first, a link joins the end of an open member's line to the end of each
+// open line whose `waiting` entry names it, and a mark on a member's line
+// stands at the served merge time of each member it depends on. Every line
+// and mark stays at its recorded time: the map places nothing after the
+// present.
 import { ArrowRight, GitBranch, RotateCw } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CrateDetail, CrateInsight, CrateInsightTask, CrateTask, CrateWhereabouts } from '../../lib/types'
@@ -16,6 +24,8 @@ import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
 import { Skeleton } from '../ui/skeleton'
 import type { CrateEmphasis, EmphasisTarget } from './crate-emphasis'
+import { DependencyDetails, dependencyLineCount } from './dependency-details'
+import { relatedMembers } from './dependency-model'
 import { phaseMeta } from './line-model'
 
 const DAY = 86_400_000
@@ -26,8 +36,10 @@ const TOP = 30
 const GUTTER_LEFT = 92
 // Below this width the map keeps it and scrolls sideways inside its card.
 const MIN_WIDTH = 680
-// The hover card's height, used to keep the card inside the map.
+// The hover card's height, used to keep the card inside the map, and the
+// height each dependency line adds to it.
 const CARD_ROOM = 64
+const CARD_DEPENDENCY_LINE = 16
 // The order in which a lane's open lines take rows, nearest the merge first.
 const OPEN_ORDER = ['gate', 'review', 'build', 'plan', 'intake', 'crate', 'aside']
 
@@ -52,6 +64,25 @@ interface Spur extends LineShape {
   path: string
   // Each change-request mark: its served x and the line's y there.
   changes: Array<{ x: number; y: number }>
+}
+
+// A link from the open member that is waited on (`from`) to the open member
+// that waits on it (`to`). The arrowhead is at the task that waits.
+interface DependencyLink {
+  from: string
+  to: string
+  d: string
+}
+
+// The merge of member `from` on the line of member `to`, which depends on
+// it: a dotted drop from the merge to the dependent line, and a ring where it
+// meets the line.
+interface DependencyMergeMark {
+  from: string
+  to: string
+  x: number
+  y: number
+  d: string | null
 }
 
 // A bend is the cubic curve from (x0, ya) to (x0 + bend, yb) whose control
@@ -223,6 +254,9 @@ function BranchMapChart({
         .filter((task) => endOf(task) === null)
         .sort(
           (a, b) =>
+            // A task takes a row below every task of the lane it waits on
+            // (req-crate-insights AC-6.3).
+            a.wait_depth - b.wait_depth ||
             OPEN_ORDER.indexOf(a.station) - OPEN_ORDER.indexOf(b.station) ||
             (served(a.created_at) ?? 0) - (served(b.created_at) ?? 0),
         )
@@ -279,7 +313,60 @@ function BranchMapChart({
     for (let day = Math.ceil(t0 / DAY) * DAY; day <= now; day += DAY) days.push(day)
     const step = Math.max(1, Math.ceil(days.length / 8))
     const ticks = days.filter((_, index) => index % step === 0)
-    return { lanes, height, x, xNow, ticks, spurs: lanes.flatMap((lane) => lane.spurs) }
+    const spurs = lanes.flatMap((lane) => lane.spurs)
+
+    // The dependency links and merge marks (AC-6.3, AC-6.4), from the
+    // served entries only.
+    const byId = new Map(spurs.map((spur) => [spur.task.id, spur]))
+    const links: DependencyLink[] = []
+    const marks: DependencyMergeMark[] = []
+    // Brackets that leave the same end step left, so they stay apart.
+    const bracketDepth = new Map<number, number>()
+    for (const waiter of spurs) {
+      for (const entry of waiter.task.depends_on) {
+        if (!entry.member) continue
+        const source = byId.get(entry.id)
+        if (!source) continue
+        if (entry.waiting && source.ends === 'open' && waiter.ends === 'open') {
+          // A bracket left of the two ends, from the task waited on to the
+          // task that waits, with the arrowhead at the task that waits.
+          const fx = source.xe
+          const fy = source.y1
+          const tx = waiter.xe
+          const ty = waiter.y1
+          const level = bracketDepth.get(Math.round(fx)) ?? 0
+          bracketDepth.set(Math.round(fx), level + 1)
+          const bx = Math.min(fx, tx) - 11 - (level % 3) * 4
+          const dir = ty > fy ? 1 : -1
+          links.push({
+            from: source.task.id,
+            to: waiter.task.id,
+            d: `M${fx - 6},${fy} H${bx + 4} Q${bx},${fy} ${bx},${fy + 4 * dir} V${ty - 4 * dir} Q${bx},${ty} ${bx + 4},${ty} H${tx - 6}`,
+          })
+          continue
+        }
+        // The merge it depends on, when that merge falls after the task's
+        // creation and before its merge or close, and no later than the
+        // present. The bounds compare served times, never positions.
+        const merged = served(source.task.merged_at)
+        const created = served(waiter.task.created_at)
+        const finished = served(waiter.task.merged_at) ?? served(waiter.task.closed_at)
+        if (merged === null || created === null || merged <= created || merged > now) continue
+        if (finished !== null && merged >= finished) continue
+        const xm = x(merged)
+        const yLine = lineYAt(waiter, xm)
+        const yFrom = source.y0
+        const dir = yLine > yFrom ? 1 : -1
+        marks.push({
+          from: source.task.id,
+          to: waiter.task.id,
+          x: xm,
+          y: yLine,
+          d: Math.abs(yLine - yFrom) > 12 ? `M${xm},${yFrom + 5 * dir} V${yLine - 4 * dir}` : null,
+        })
+      }
+    }
+    return { lanes, height, x, xNow, ticks, spurs, links, marks }
   }, [insight, width, gutterRight, rows])
 
   // Pointing at a count emphasizes the lines of its served task IDs (AC-2.4).
@@ -288,7 +375,10 @@ function BranchMapChart({
     return found ? new Set(found.task_ids) : null
   }, [insight, emphasis.emphasizedGroup])
   const { emphasizedId } = emphasis
-  const lit = (id: string) => (emphasizedId ? emphasizedId === id : groupIds ? groupIds.has(id) : true)
+  // An emphasized task keeps the members its dependencies connect it to lit,
+  // in either direction and through any number of members (AC-6.6).
+  const related = useMemo(() => relatedMembers(insight.tasks, emphasizedId), [insight.tasks, emphasizedId])
+  const lit = (id: string) => (related ? related.has(id) : groupIds ? groupIds.has(id) : true)
   const shown = emphasizedId ? model.spurs.find((spur) => spur.task.id === emphasizedId) : undefined
   const labelChars = Math.floor((gutterRight - 26) / 6.4)
 
@@ -303,7 +393,8 @@ function BranchMapChart({
   const focus = (target: EmphasisTarget) => emphasis.focus(target)
   const blur = (target: EmphasisTarget) => emphasis.blur(target)
 
-  const cardBelow = shown ? shown.y1 + 12 + CARD_ROOM <= model.height : true
+  const cardRoom = shown ? CARD_ROOM + dependencyLineCount(shown.task) * CARD_DEPENDENCY_LINE : CARD_ROOM
+  const cardBelow = shown ? shown.y1 + 12 + cardRoom <= model.height : true
   // Below 680 px the map scrolls sideways, so a line that takes keyboard
   // focus brings its card into view. A pointer never scrolls the map.
   const card = useRef<HTMLDivElement>(null)
@@ -311,6 +402,16 @@ function BranchMapChart({
   useEffect(() => {
     if (focusedCard) card.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
   }, [focusedCard, focusedId])
+  // A map that scrolls sideways opens scrolled to the present, where the
+  // open lines and their links end. It does so once, after its first
+  // measure, and later refreshes keep the user's scroll.
+  const openedAtPresent = useRef(false)
+  useLayoutEffect(() => {
+    const element = wrapper.current
+    if (openedAtPresent.current || !element || measured === 0) return
+    openedAtPresent.current = true
+    if (element.scrollWidth > element.clientWidth) element.scrollLeft = element.scrollWidth
+  }, [measured, wrapper])
 
   return (
     <section aria-label="Where the work is" data-branch-map className="min-w-0 rounded-lg border border-border bg-card">
@@ -443,6 +544,83 @@ function BranchMapChart({
               </foreignObject>
             </g>
           ))}
+
+          {(model.links.length > 0 || model.marks.length > 0) && (
+            <g data-dependency-links aria-hidden>
+              <defs>
+                <marker
+                  id="crate-dependency-arrow"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path
+                    d="M1,1 L7,4 L1,7"
+                    fill="none"
+                    stroke="var(--color-muted)"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </marker>
+              </defs>
+              {model.links.map((link) => {
+                const on = lit(link.from) && lit(link.to)
+                const strong = emphasizedId !== null && on
+                return (
+                  <path
+                    key={`${link.from}>${link.to}`}
+                    data-dependency-link={`${link.from}>${link.to}`}
+                    data-dimmed={on ? undefined : true}
+                    d={link.d}
+                    fill="none"
+                    stroke={strong ? 'var(--color-foreground)' : 'var(--color-muted)'}
+                    strokeWidth={strong ? 1.75 : 1.25}
+                    strokeLinecap="round"
+                    opacity={on ? 0.9 : 0.12}
+                    markerEnd="url(#crate-dependency-arrow)"
+                    className="transition-opacity"
+                  />
+                )
+              })}
+              {model.marks.map((mark) => {
+                const on = lit(mark.from) && lit(mark.to)
+                const strong = emphasizedId !== null && on
+                const stroke = strong ? 'var(--color-foreground)' : 'var(--color-muted)'
+                return (
+                  <g
+                    key={`${mark.from}>${mark.to}`}
+                    data-dependency-merge={`${mark.from}>${mark.to}`}
+                    data-dimmed={on ? undefined : true}
+                    opacity={on ? (strong ? 0.95 : 0.7) : 0.12}
+                    className="transition-opacity"
+                  >
+                    {mark.d && (
+                      <path
+                        d={mark.d}
+                        fill="none"
+                        stroke={stroke}
+                        strokeWidth={1.25}
+                        strokeDasharray="1 3"
+                        strokeLinecap="round"
+                      />
+                    )}
+                    <circle
+                      cx={mark.x}
+                      cy={mark.y}
+                      r={2.75}
+                      fill="var(--color-card)"
+                      stroke={stroke}
+                      strokeWidth={1.5}
+                    />
+                  </g>
+                )
+              })}
+            </g>
+          )}
 
           {model.spurs.map((spur, index) => {
             const { task, row } = spur
@@ -616,6 +794,9 @@ function BranchMapChart({
                 {`${shown.row ? ' · ' : ''}${shown.task.review_rounds} review ${shown.task.review_rounds === 1 ? 'round' : 'rounds'}`}
               </span>
             </p>
+            {/* What the task waits on and how many members wait on it
+                (AC-6.1, AC-6.2). */}
+            <DependencyDetails task={shown.task} className="mt-1 border-t border-border pt-1" />
             <p data-branch-card-branch className="font-mono text-[11px] leading-4 text-faint">
               {shown.ends === 'merged'
                 ? `in ${shown.task.base_branch} since ${timeLabel.format(new Date(shown.task.merged_at as string))}`
@@ -654,6 +835,31 @@ function BranchMapChart({
           </svg>
           Not started
         </span>
+        {/* Each dependency mark is named only while the map draws one. */}
+        {model.links.length > 0 && (
+          <span data-legend="waits" className="inline-flex items-center gap-1.5">
+            <svg width="22" height="12" aria-hidden="true">
+              <path d="M2,1 V5 Q2,9 6,9 H19" fill="none" stroke="var(--color-muted)" strokeWidth="1.25" />
+              <path d="M16,6.5 L19,9 L16,11.5" fill="none" stroke="var(--color-muted)" strokeWidth="1.25" />
+            </svg>
+            Waits for that task to merge
+          </span>
+        )}
+        {model.marks.length > 0 && (
+          <span data-legend="dependency-merged" className="inline-flex items-center gap-1.5">
+            <svg width="10" height="14" aria-hidden="true">
+              <path
+                d="M5,1 V7"
+                stroke="var(--color-muted)"
+                strokeWidth="1.25"
+                strokeDasharray="1 3"
+                strokeLinecap="round"
+              />
+              <circle cx="5" cy="10.5" r="2.5" fill="var(--color-card)" stroke="var(--color-muted)" strokeWidth="1.5" />
+            </svg>
+            A task it waited on merged
+          </span>
+        )}
       </footer>
     </section>
   )

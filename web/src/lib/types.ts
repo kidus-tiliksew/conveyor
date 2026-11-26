@@ -375,6 +375,27 @@ export interface CrateInsightTask {
   review_rounds: number
   merged_at: string | null
   closed_at: string | null
+  // One entry for each task the member depends on, in ID order, a task
+  // outside the crate included (component-crates invariant 38).
+  depends_on: CrateInsightDependency[]
+  // 0 for a member with no entry that is both `waiting` and `member`, and
+  // otherwise one more than the highest `wait_depth` among those tasks.
+  wait_depth: number
+  // The IDs of the members with a `waiting` entry that names this member,
+  // in ID order.
+  waited_on_by: string[]
+}
+
+// One task a crate member depends on, as internal/crateinsight writes it
+// (component-crates invariant 38). `member` is true when that task is a
+// current member of the crate. `waiting` is true when the member is neither
+// merged nor closed and that task is not merged.
+export interface CrateInsightDependency {
+  id: string
+  title: string
+  state: TaskState
+  member: boolean
+  waiting: boolean
 }
 
 // One group of the branch map's counts (component-crates invariant 26).

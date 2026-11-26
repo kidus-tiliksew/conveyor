@@ -12,6 +12,7 @@ import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
 import type { CrateEmphasis } from './crate-emphasis'
 import { formatTargetDate, targetDateHint } from './crate-parts'
+import { linksKey, relatedMembers, type WaitLink, waitLinks } from './dependency-model'
 import { type LineBlock, lineStations, phaseMeta, phasesInUse, placesAt, replaySpan, stationCounts } from './line-model'
 
 // three.js and its React bindings load with this chunk only (DEC-143(2)).
@@ -157,6 +158,26 @@ export function CrateStage({
   const counts = useMemo(() => stationCounts(blocks), [blocks])
   const legend = useMemo(() => phasesInUse(blocks), [blocks])
 
+  // The served dependencies, kept apart from the block cache above so a
+  // change to them alone reaches the scene. At the present the scene stands
+  // a member behind the member it waits on at the same station, and draws a
+  // link for each `waiting` member entry of the emphasized task. A replay
+  // shows neither (req-crate-insights AC-6.5; component-crates invariant
+  // 39; DEC-151(3), (4)). The dimming holds at every moment (AC-6.6).
+  const presentLinks = useRef<{ key: string; links: WaitLink[] }>({ key: '', links: [] })
+  const links = useMemo(() => {
+    const next = insight && at === null ? waitLinks(insight.tasks) : []
+    const key = linksKey(next)
+    if (key !== presentLinks.current.key) presentLinks.current = { key, links: next }
+    return presentLinks.current.links
+  }, [insight, at])
+  const emphasizedId = emphasis.emphasizedId
+  const related = useMemo(() => relatedMembers(insight?.tasks ?? [], emphasizedId), [insight, emphasizedId])
+  const emphasizedTask = useMemo(
+    () => (emphasizedId ? insight?.tasks.find((task) => task.id === emphasizedId) : undefined),
+    [insight, emphasizedId],
+  )
+
   const textMode = sceneFailed
   const sceneShown = Boolean(insight) && !textMode
 
@@ -203,7 +224,10 @@ export function CrateStage({
                       compact={compact}
                       dark={dark}
                       reducedMotion={reducedMotion}
-                      emphasizedId={emphasis.emphasizedId}
+                      emphasizedId={emphasizedId}
+                      emphasizedTask={emphasizedTask}
+                      related={related}
+                      links={links}
                       onEmphasize={emphasis.emphasize}
                       onSelect={onSelect}
                       onContextLost={onContextLost}
