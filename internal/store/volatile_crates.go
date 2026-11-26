@@ -402,8 +402,11 @@ func cloneCrate(crate Crate) Crate {
 
 // ReadCrateInsightInputs is the memory backend's read under one read lock.
 // It gathers the same rows the SQL backends read: the crate, its current
-// member tasks, and their events of the listed kinds, each claim with the
-// stage of the order it names.
+// member tasks, each member's dependencies with the target's ID, title, and
+// state, and their events of the listed kinds, each claim with the stage of
+// the order it names. It runs no SQL, so invariant 22's statement bound
+// applies to the SQL backends only: this read is one locked pass over the
+// members, their dependency edges, and their events.
 func (m *memory) ReadCrateInsightInputs(ctx context.Context, id string) (CrateInsightInputs, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -416,6 +419,7 @@ func (m *memory) ReadCrateInsightInputs(ctx context.Context, id string) (CrateIn
 	members := m.crateMembersLocked(crate)
 	tasks := make([]core.Task, len(members))
 	var rows []CrateInsightEventRow
+	var dependencies []CrateInsightDependencyRow
 	for i, member := range members {
 		// The SQL backends read no body: no part of the insight view or the
 		// next-action projection reads it.
@@ -430,6 +434,19 @@ func (m *memory) ReadCrateInsightInputs(ctx context.Context, id string) (CrateIn
 			member.Crate = &crateRef
 		}
 		tasks[i] = member
+		// The edge map and the task map are read under the same lock. Only
+		// the three target fields are copied, as the SQL backends' join
+		// reads them: the task hydrator would also fill blockers and scan
+		// children. Dependency writes keep both tasks in one workspace, as
+		// the SQL foreign keys do, and a target that is missing or in
+		// another workspace is left out as those joins leave it out.
+		for dependencyID := range m.dependencies[member.ID] {
+			target, ok := m.tasks[dependencyID]
+			if !ok || target.Workspace != crate.Workspace {
+				continue
+			}
+			dependencies = append(dependencies, CrateInsightDependencyRow{TaskID: member.ID, Dependency: CrateInsightDependency{ID: target.ID, Title: target.Title, State: target.State}})
+		}
 		for _, event := range m.events[member.ID] {
 			if !slices.Contains(CrateInsightEventKinds, event.Kind) {
 				continue
@@ -445,7 +462,7 @@ func (m *memory) ReadCrateInsightInputs(ctx context.Context, id string) (CrateIn
 			rows = append(rows, row)
 		}
 	}
-	return AssembleCrateInsightInputs(crate, tasks, rows), nil
+	return AssembleCrateInsightInputs(crate, tasks, dependencies, rows), nil
 }
 
 // GetCrateBriefing implements CrateStore with a copy of the stored row.

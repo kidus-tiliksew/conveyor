@@ -21,6 +21,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -860,7 +861,7 @@ func TestCrateInsightRoute(t *testing.T) {
 		raw  json.RawMessage
 		want []string
 	}{
-		{"task", shape.Tasks[0], crateSortedStrings("id", "phase", "station", "base_branch", "created_at", "pull_request_opened_at", "changes_requested_at", "review_rounds", "merged_at", "closed_at")},
+		{"task", shape.Tasks[0], crateSortedStrings("id", "phase", "station", "base_branch", "created_at", "pull_request_opened_at", "changes_requested_at", "review_rounds", "merged_at", "closed_at", "depends_on", "wait_depth", "waited_on_by")},
 		{"whereabouts", shape.Whereabouts[0], crateSortedStrings("key", "branch", "task_ids")},
 		{"step", shape.Replay.Steps[0], crateSortedStrings("at", "task_id", "phase", "station")},
 		{"first_review", shape.FirstReview, crateSortedStrings("approved", "reviewed")},
@@ -961,6 +962,155 @@ func crateJSONEqual(t *testing.T, a, b []byte) bool {
 		t.Fatal(err)
 	}
 	return reflect.DeepEqual(left, right)
+}
+
+// TestCrateInsightRouteDependencies serves each member's depends_on,
+// wait_depth, and waited_on_by as component-crates invariant 38 defines
+// them, with every empty list as [] (req-crate-insights AC-6.1, AC-6.2;
+// DEC-151(5)). The view is the computation over the store's inputs. The
+// crate read's task rows gain none of these fields (invariants 14 and 15).
+func TestCrateInsightRouteDependencies(t *testing.T) {
+	f := newCrateFixture(t)
+	readAt := time.Now().UTC().Truncate(time.Second)
+	f.server.nextActionClock = func() time.Time { return readAt }
+	crate := f.createCrate(t, f.editor, map[string]any{"name": "Dependency insight"})
+	base := readAt.Add(-24 * time.Hour)
+	queued := func(crateID string, offset time.Duration) core.Task {
+		t.Helper()
+		return f.insightMember(t, crateID, core.TaskQueued, core.StageImplement, "", core.PlanNotRequired, "main", base.Add(offset))
+	}
+	depend := func(task, on core.Task) {
+		t.Helper()
+		if _, err := f.store.AddTaskDependency(f.ctx, store.DependencyAdditionRequest{TaskID: task.ID, DependsOnTaskID: on.ID, Reason: "insight dependency", RequestID: "insight-" + task.ID + "-" + on.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	perform := func(task core.Task, command core.TaskCommand) {
+		t.Helper()
+		if _, err := taskops.New(f.store).Perform(f.ctx, task.ID, taskops.Command{Kind: command}); err != nil {
+			t.Fatalf("%s %s: %v", task.ID, command, err)
+		}
+	}
+	first := queued(crate.ID, 0)
+	second := queued(crate.ID, time.Minute)
+	third := queued(crate.ID, 2*time.Minute)
+	dropped := queued(crate.ID, 3*time.Minute)
+	afterDropped := queued(crate.ID, 4*time.Minute)
+	shipped := queued(crate.ID, 5*time.Minute)
+	afterShipped := queued(crate.ID, 6*time.Minute)
+	loner := queued(crate.ID, 7*time.Minute)
+	outside := queued("", 8*time.Minute)
+	depend(second, first)
+	depend(third, second)
+	depend(second, outside)
+	depend(afterDropped, dropped)
+	depend(afterShipped, shipped)
+	perform(dropped, core.TaskCancel)
+	perform(shipped, core.TaskMergeRecover)
+
+	status, raw := f.do(t, f.viewer, http.MethodGet, "/v1/crates/"+crate.ID+"/insight", nil)
+	if status != http.StatusOK {
+		t.Fatalf("insight status=%d body=%s", status, raw)
+	}
+	var shape struct {
+		Tasks []map[string]json.RawMessage `json:"tasks"`
+	}
+	if err := json.Unmarshal(raw, &shape); err != nil {
+		t.Fatal(err)
+	}
+	served := map[string]map[string]json.RawMessage{}
+	for _, row := range shape.Tasks {
+		var id string
+		if err := json.Unmarshal(row["id"], &id); err != nil {
+			t.Fatal(err)
+		}
+		served[id] = row
+	}
+	if got := string(served[loner.ID]["depends_on"]) + " " + string(served[loner.ID]["wait_depth"]) + " " + string(served[loner.ID]["waited_on_by"]); got != "[] 0 []" {
+		t.Fatalf("member with no edge serves %s, want [] 0 []", got)
+	}
+	var secondEntries []map[string]json.RawMessage
+	if err := json.Unmarshal(served[second.ID]["depends_on"], &secondEntries); err != nil || len(secondEntries) != 2 {
+		t.Fatalf("depends_on of %s = %s (%v), want two entries", second.ID, served[second.ID]["depends_on"], err)
+	}
+	for _, entry := range secondEntries {
+		keys := slices.Sorted(maps.Keys(entry))
+		if want := crateSortedStrings("id", "title", "state", "member", "waiting"); !slices.Equal(keys, want) {
+			t.Fatalf("depends_on entry keys %v, want %v", keys, want)
+		}
+	}
+
+	var view crateinsight.View
+	if err := json.Unmarshal(raw, &view); err != nil {
+		t.Fatal(err)
+	}
+	entries := map[string]crateinsight.Task{}
+	for _, entry := range view.Tasks {
+		entries[entry.ID] = entry
+	}
+	on := func(task core.Task, state core.TaskState, member, waiting bool) crateinsight.DependsOn {
+		return crateinsight.DependsOn{ID: task.ID, Title: task.Title, State: state, Member: member, Waiting: waiting}
+	}
+	sorted := func(values ...crateinsight.DependsOn) []crateinsight.DependsOn {
+		slices.SortFunc(values, func(a, b crateinsight.DependsOn) int { return strings.Compare(a.ID, b.ID) })
+		return values
+	}
+	for _, check := range []struct {
+		task       core.Task
+		dependsOn  []crateinsight.DependsOn
+		depth      int
+		waitedOnBy []string
+	}{
+		{first, []crateinsight.DependsOn{}, 0, []string{second.ID}},
+		{second, sorted(on(first, core.TaskQueued, true, true), on(outside, core.TaskQueued, false, true)), 1, []string{third.ID}},
+		{third, []crateinsight.DependsOn{on(second, core.TaskQueued, true, true)}, 2, []string{}},
+		{dropped, []crateinsight.DependsOn{}, 0, []string{afterDropped.ID}},
+		{afterDropped, []crateinsight.DependsOn{on(dropped, core.TaskClosed, true, true)}, 1, []string{}},
+		{shipped, []crateinsight.DependsOn{}, 0, []string{}},
+		{afterShipped, []crateinsight.DependsOn{on(shipped, core.TaskMerged, true, false)}, 0, []string{}},
+		{loner, []crateinsight.DependsOn{}, 0, []string{}},
+	} {
+		got := entries[check.task.ID]
+		if !reflect.DeepEqual(got.DependsOn, check.dependsOn) || got.WaitDepth != check.depth || !reflect.DeepEqual(got.WaitedOnBy, check.waitedOnBy) {
+			t.Fatalf("member %s serves depends_on %+v, wait_depth %d, waited_on_by %v; want %+v, %d, %v", check.task.ID, got.DependsOn, got.WaitDepth, got.WaitedOnBy, check.dependsOn, check.depth, check.waitedOnBy)
+		}
+	}
+	if _, ok := entries[outside.ID]; ok {
+		t.Fatalf("the task outside the crate %s is served as a member", outside.ID)
+	}
+
+	// The served view is the pure computation over the store's inputs.
+	_, actions := f.crateReadTasks(t, crate.ID)
+	inputs, err := f.store.(store.CrateStore).ReadCrateInsightInputs(f.ctx, crate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(crateinsight.Compute(inputs, actions, readAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !crateJSONEqual(t, raw, want) {
+		t.Fatalf("served view differs from the computation:\n got %s\nwant %s", raw, want)
+	}
+
+	// The crate read's task rows keep their fields.
+	status, detail := f.do(t, f.viewer, http.MethodGet, "/v1/crates/"+crate.ID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("crate read status=%d body=%s", status, detail)
+	}
+	var rows struct {
+		Tasks []map[string]json.RawMessage `json:"tasks"`
+	}
+	if err := json.Unmarshal(detail, &rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows.Tasks {
+		for _, key := range []string{"depends_on", "wait_depth", "waited_on_by"} {
+			if _, ok := row[key]; ok {
+				t.Fatalf("crate read task row %s carries %s", row["id"], key)
+			}
+		}
+	}
 }
 
 // TestCrateInsightRouteEmptyCrate serves an empty crate's view with empty

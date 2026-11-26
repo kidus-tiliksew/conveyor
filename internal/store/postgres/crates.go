@@ -561,10 +561,11 @@ SELECT $1, $2, requirement_id FROM unnest($3::text[]) AS wanted(requirement_id)`
 // projection reads it.
 var crateInsightTaskColumns = strings.Replace(requirementInsightTaskColumns, "t.body,", "''::text AS body,", 1)
 
-// ReadCrateInsightInputs implements store.CrateStore in four set-based
+// ReadCrateInsightInputs implements store.CrateStore in five set-based
 // statements whatever the member count: the crate row, the current member
-// rows, and then the assignees and the events of the listed kinds for the
-// member IDs those rows hold. Each claim's
+// rows, and then the assignees, the dependency edges with each target's ID,
+// title, and state, and the events of the listed kinds for the member IDs
+// those rows hold. Each claim's
 // stage comes from the order the claim records, or from the order row the
 // claim names when the recorded payload carries no stage (component-crates
 // invariant 22).
@@ -589,7 +590,7 @@ FROM tasks t WHERE t.workspace_id=$1 AND t.crate_id=$2 ORDER BY t.created_at, t.
 		return store.CrateInsightInputs{}, err
 	}
 	if len(persisted) == 0 {
-		return store.AssembleCrateInsightInputs(crate, nil, nil), nil
+		return store.AssembleCrateInsightInputs(crate, nil, nil, nil), nil
 	}
 	tasks := make([]core.Task, len(persisted))
 	ids := make([]string, len(persisted))
@@ -600,11 +601,38 @@ FROM tasks t WHERE t.workspace_id=$1 AND t.crate_id=$2 ORDER BY t.created_at, t.
 	store.RunCrateInsightMembersReadHook()
 	// Every later statement reads the member IDs the member-row statement
 	// returned, scoped by workspace, so a member that leaves the crate
-	// meanwhile keeps its assignee and its events (invariant 22). Events
-	// match by task ID, whatever crate an older membership event names.
+	// meanwhile keeps its assignee, its dependencies, and its events
+	// (invariant 22). Events match by task ID, whatever crate an older
+	// membership event names.
 	if err = s.hydrateTaskAssignees(ctx, tasks); err != nil {
 		return store.CrateInsightInputs{}, err
 	}
+	// Every dependency is read whatever its target's state or crate: the
+	// insight view keeps merged and closed targets and targets outside the
+	// crate (invariants 22 and 38).
+	dependencyRows, err := s.boundary.Query(ctx, `SELECT d.task_id, t.id, t.title, t.state
+FROM task_dependencies d
+JOIN tasks t ON t.workspace_id = d.workspace_id AND t.id = d.depends_on_task_id
+WHERE d.workspace_id = $1 AND d.task_id = ANY($2::text[])
+ORDER BY d.task_id, t.id`, workspaceID, ids)
+	if err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	defer dependencyRows.Close()
+	var dependencies []store.CrateInsightDependencyRow
+	for dependencyRows.Next() {
+		var row store.CrateInsightDependencyRow
+		var state string
+		if err = dependencyRows.Scan(&row.TaskID, &row.Dependency.ID, &row.Dependency.Title, &state); err != nil {
+			return store.CrateInsightInputs{}, err
+		}
+		row.Dependency.State = core.TaskState(state)
+		dependencies = append(dependencies, row)
+	}
+	if err = dependencyRows.Err(); err != nil {
+		return store.CrateInsightInputs{}, err
+	}
+	dependencyRows.Close()
 	eventRows, err := s.boundary.Query(ctx, `SELECT e.task_id, e.id, e.kind, e.at,
 	CASE WHEN e.kind = 'work_order.claimed' THEN NULL ELSE e.payload_json END,
 	CASE WHEN e.kind = 'work_order.claimed' THEN COALESCE(NULLIF(e.payload_json->>'stage', ''), w.stage, '') ELSE '' END
@@ -630,5 +658,5 @@ ORDER BY e.task_id, e.at, e.id`, workspaceID, ids, store.CrateInsightEventKinds)
 	if err = eventRows.Err(); err != nil {
 		return store.CrateInsightInputs{}, err
 	}
-	return store.AssembleCrateInsightInputs(crate, tasks, events), nil
+	return store.AssembleCrateInsightInputs(crate, tasks, dependencies, events), nil
 }
