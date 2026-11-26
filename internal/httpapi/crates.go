@@ -14,6 +14,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/crateinsight"
+	"github.com/kidus-tiliksew/conveyor/internal/feedback"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -45,6 +46,9 @@ type crateDetailResponse struct {
 	Requirements           []store.CrateRequirementCoverage `json:"requirements"`
 	UndeclaredRequirements []store.CrateRequirementCoverage `json:"undeclared_requirements"`
 	Tasks                  []crateTaskRow                   `json:"tasks"`
+	// Environments holds one line per relevant environment, and [] when no
+	// environment is relevant (component-production-feedback invariant 18).
+	Environments []feedback.CrateLine `json:"environments"`
 }
 
 // crateTaskRow is one member task on the crate read (req-crates AC-5.3).
@@ -55,6 +59,10 @@ type crateTaskRow struct {
 	Branch      string             `json:"branch"`
 	PullRequest *cratePullRequest  `json:"pull_request"`
 	NextAction  nextaction.Compact `json:"next_action"`
+	// LiveIn names the environments where a merged member is live, [] when
+	// it is live nowhere. A member that is not merged has no live_in
+	// (component-production-feedback, Public surfaces).
+	LiveIn *[]string `json:"live_in,omitempty"`
 }
 
 // cratePullRequest names a member task's latest pull request.
@@ -236,11 +244,19 @@ func (s *Server) getCrate(w http.ResponseWriter, r *http.Request) {
 		actions[task.ID] = nextaction.CompactFrom(projected[task.ID])
 	}
 	crateinsight.SortTasks(detail.Tasks, actions)
-	response := crateDetailResponse{Crate: detail.Crate, Requirements: detail.Requirements, UndeclaredRequirements: detail.UndeclaredRequirements, Tasks: make([]crateTaskRow, 0, len(detail.Tasks))}
+	lines, liveIn, err := s.feedbackCrateEnvironments(r.Context(), detail.Crate.ID)
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	response := crateDetailResponse{Crate: detail.Crate, Requirements: detail.Requirements, UndeclaredRequirements: detail.UndeclaredRequirements, Tasks: make([]crateTaskRow, 0, len(detail.Tasks)), Environments: lines}
 	for _, task := range detail.Tasks {
 		row := crateTaskRow{
 			ID: task.ID, Title: task.Title, State: task.State, Branch: task.Branch,
 			NextAction: actions[task.ID],
+		}
+		if names, merged := liveIn[task.ID]; merged {
+			row.LiveIn = &names
 		}
 		if event, found := pulls[task.ID]; found {
 			row.PullRequest = cratePullRequestFrom(event.Payload)

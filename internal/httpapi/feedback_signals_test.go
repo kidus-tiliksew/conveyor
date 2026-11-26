@@ -1381,7 +1381,7 @@ func TestFeedbackListening(t *testing.T) {
 		var raw []json.RawMessage
 		decodeEnvironmentBody(t, response, &raw)
 		rows := map[string]row{}
-		want := slices.Sorted(slices.Values(append([]string{"last_signal_at", "listening"}, environmentRowFields...)))
+		want := slices.Sorted(slices.Values(append([]string{"last_signal_at", "listening", "newest_unresolved"}, environmentRowFields...)))
 		for _, entry := range raw {
 			if got := environmentBodyKeys(t, entry); !slices.Equal(got, want) {
 				t.Fatalf("row fields=%v, want %v", got, want)

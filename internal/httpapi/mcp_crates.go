@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kidus-tiliksew/conveyor/internal/feedback"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -42,6 +43,11 @@ type mcpCrateDetailRow struct {
 	mcpCrateListRow
 	TaskIDs          []string `json:"task_ids"`
 	TaskIDsTruncated bool     `json:"task_ids_truncated"`
+	// Environments are the whole-crate environment lines, and LiveIn names
+	// where each merged member listed in TaskIDs is live
+	// (req-production-feedback AC-10.1).
+	Environments []feedback.CrateLine `json:"environments"`
+	LiveIn       map[string][]string  `json:"live_in"`
 }
 
 // mcpCrateRead serves list_crates and get_crate from the lean crate reads:
@@ -55,7 +61,7 @@ func (s *Server) mcpCrateRead(ctx context.Context, name string, args map[string]
 		return nil, fmt.Errorf("%s: crates are not available on this store", name)
 	}
 	if name == "get_crate" {
-		return mcpGetCrate(ctx, crates, strings.TrimSpace(readString(args, "crate_id")))
+		return s.mcpGetCrateWithFeedback(ctx, crates, strings.TrimSpace(readString(args, "crate_id")))
 	}
 	query := store.CrateListQuery{State: store.CrateOpen}
 	switch readString(args, "state") {
@@ -100,6 +106,35 @@ func mcpGetCrate(ctx context.Context, crates crateBackend, id string) ([]any, er
 		return []any{mcpCrateDetailRow{mcpCrateListRow: newMCPCrateListRow(crate), TaskIDs: taskIDs, TaskIDsTruncated: more}}, nil
 	}
 	return nil, fmt.Errorf("crate_not_found: %s", (&store.CrateNotFoundError{ID: id}).Error())
+}
+
+// mcpGetCrateWithFeedback adds the crate's environment lines to the bounded
+// crate detail. The lines count every merged member by crate scope, so a
+// truncated task_ids list never truncates them. live_in names only members
+// that task_ids lists.
+func (s *Server) mcpGetCrateWithFeedback(ctx context.Context, crates crateBackend, id string) ([]any, error) {
+	items, err := mcpGetCrate(ctx, crates, id)
+	if err != nil || len(items) != 1 {
+		return items, err
+	}
+	row, ok := items[0].(mcpCrateDetailRow)
+	if !ok {
+		return items, nil
+	}
+	lines, liveIn, err := s.feedbackCrateEnvironments(ctx, row.ID)
+	if err != nil {
+		return nil, err
+	}
+	row.Environments = lines
+	// Each merged member that task_ids lists has a list, [] when it is live
+	// nowhere. Members that are not merged, or outside task_ids, have none.
+	row.LiveIn = map[string][]string{}
+	for _, taskID := range row.TaskIDs {
+		if names, merged := liveIn[taskID]; merged {
+			row.LiveIn[taskID] = names
+		}
+	}
+	return []any{row}, nil
 }
 
 func newMCPCrateListRow(crate store.Crate) mcpCrateListRow {

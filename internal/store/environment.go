@@ -377,6 +377,14 @@ func NormalizeEnvironmentKeyLabel(label string) (string, error) {
 	return normalizeEnvironmentText("label", label, environmentKeyLabelMaxCharacters)
 }
 
+// NormalizeEnvironmentVersionRule applies the version rule's form rules
+// (component-environments invariant 4; req-environments AC-1.2). Writers and
+// the resolver in internal/feedback share it, so a stored rule is always one
+// the resolver can apply.
+func NormalizeEnvironmentVersionRule(rule *EnvironmentVersionRule) (*EnvironmentVersionRule, error) {
+	return normalizeEnvironmentVersionRule(rule)
+}
+
 func normalizeEnvironmentVersionRule(rule *EnvironmentVersionRule) (*EnvironmentVersionRule, error) {
 	const field = "version_rule"
 	if rule == nil {
@@ -396,9 +404,17 @@ func normalizeEnvironmentVersionRule(rule *EnvironmentVersionRule) (*Environment
 		if strings.Count(rule.Text, "{commit}") != 1 {
 			return nil, environmentFieldError(field, "a commit pattern must hold exactly one {commit}")
 		}
+		// Every other character is literal text or *, so a brace outside the
+		// placeholder is a malformed or foreign placeholder (FB-3).
+		if strings.ContainsAny(strings.Replace(rule.Text, "{commit}", "", 1), "{}") {
+			return nil, environmentFieldError(field, "a commit pattern must hold no placeholder other than {commit}")
+		}
 	case EnvironmentTagTemplate:
 		if strings.Count(rule.Text, "{version}") != 1 || strings.Count(rule.Text, "{service}") > 1 {
 			return nil, environmentFieldError(field, "a tag template must hold exactly one {version} and at most one {service}")
+		}
+		if strings.ContainsAny(strings.NewReplacer("{version}", "", "{service}", "").Replace(rule.Text), "{}") {
+			return nil, environmentFieldError(field, "a tag template must hold no placeholder other than {version} and {service}")
 		}
 		if !environmentTemplateNamesTag(rule.Text) {
 			return nil, environmentFieldError(field, "a tag template must name a valid Git tag when its placeholders are replaced")

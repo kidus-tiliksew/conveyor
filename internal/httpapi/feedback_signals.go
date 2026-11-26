@@ -180,6 +180,13 @@ func (s *Server) receiveFeedbackSignal(w http.ResponseWriter, r *http.Request) {
 	}
 	accepted = true
 	writeJSON(w, http.StatusAccepted, map[string]time.Time{"accepted_at": signal.ArrivedAt})
+	// The answer is written and flushed before the background work starts,
+	// so no forge call holds the signal (component-production-feedback
+	// invariant 8; feature-production-feedback-live FB-3).
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	s.enqueueFeedbackSignal(scope.key.Workspace, signal)
 }
 
 func feedbackRefusal(field, message string) error {
@@ -363,6 +370,10 @@ type environmentListRow struct {
 	store.EnvironmentRecord
 	Listening    bool       `json:"listening"`
 	LastSignalAt *time.Time `json:"last_signal_at"`
+	// NewestUnresolved is the running version deployed last that has no
+	// resolved answer, with its reason (component-production-feedback
+	// invariant 21; req-production-feedback AC-2.3).
+	NewestUnresolved *feedbackUnresolvedRow `json:"newest_unresolved"`
 }
 
 // writeEnvironmentRows answers the environment list with the listening state
@@ -386,6 +397,12 @@ func (s *Server) writeEnvironmentRows(w http.ResponseWriter, r *http.Request, pa
 		writeStoreFailure(w, r, err)
 		return
 	}
+	state, err := backend.ReadFeedbackInputs(r.Context(), ids)
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	unresolved := feedbackNewestUnresolved(state, ids)
 	now := s.feedbackNow()
 	rows := make([]environmentListRow, len(records))
 	for i, record := range records {
@@ -393,6 +410,7 @@ func (s *Server) writeEnvironmentRows(w http.ResponseWriter, r *http.Request, pa
 		if signal, signalled := signals[record.ID]; signalled {
 			rows[i].Listening, rows[i].LastSignalAt = signal.Listening(now), &signal.LastSignalAt
 		}
+		rows[i].NewestUnresolved = unresolved[record.ID]
 	}
 	page.writeHeaders(w, total)
 	writeJSON(w, http.StatusOK, rows)
