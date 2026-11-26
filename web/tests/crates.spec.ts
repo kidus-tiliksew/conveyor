@@ -1950,6 +1950,116 @@ test('at 375 x 667 a pointer on a branch map line reads every title of its tall 
   await expect(card).toHaveCount(0)
 })
 
+// Short scroll areas, each split around the pointed-at block or line: the
+// first number is the room over it and the second the room under it, in
+// pixels of the crate page's scroll area. The first split leaves neither
+// side 96 px. The page scrolls there, and then a real pointer points.
+const splits: Array<[number, number]> = [
+  [64, 40],
+  [40, 140],
+  [160, 60],
+]
+
+// The card, its first and last waiting titles, and the checks every split
+// shares: the whole card box inside the seen part, the first title whole
+// in view, and the pointer moving onto the card and wheeling the last
+// title into view while the card stays inside the seen part.
+async function readTallCard(page: Page, card: ReturnType<Page['locator']>, box: ReturnType<Page['locator']>) {
+  const titles = card.locator('[data-waits-on]')
+  await expect(titles).toHaveCount(21)
+  await expectSeen(page, box)
+  await expect(titles.first()).toBeInViewport({ ratio: 1 })
+  const cardBox = await box.boundingBox()
+  if (!cardBox) throw new Error('no card box')
+  await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2, { steps: 8 })
+  await expect(card).toBeVisible()
+  await page.mouse.wheel(0, 3000)
+  await expect(titles.last()).toHaveText('Waits on Price the basket')
+  await expect(titles.last()).toBeInViewport({ ratio: 1 })
+  await expectSeen(page, box)
+  return cardBox
+}
+
+for (const [above, below] of splits) {
+  test(`a pointer reads every title of a tall line card with ${above} px over its block and ${below} px under it`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 900 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+    await page.goto('/w/demo/crates/crate-deps')
+    await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+    const scroller = page.locator('[data-crate-scroll]')
+    const port = await scroller.boundingBox()
+    if (!port) throw new Error('no scroll area')
+    // The block's top is 7 px over the point blockUnder names, and a block
+    // on a 375 px line stands about 18 px tall.
+    const block = await blockUnder(page, deps.total, `${deps.price}>${deps.total}`)
+    const top = block.y - 7
+    const scrollTop = Math.round(top - (port.y + above))
+    await page.setViewportSize({ width: 375, height: Math.round(port.y + above + 18 + below) })
+    await scroller.evaluate((element, value) => {
+      element.scrollTop = value
+    }, scrollTop)
+    await expect(scroller).toHaveJSProperty('scrollTop', scrollTop)
+    await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+
+    await page.mouse.move(block.x, block.y - scrollTop)
+    const card = page.locator(`[data-line-card="${deps.total}"]`)
+    const box = card.locator(':scope > div')
+    await expect(card).toHaveAttribute('data-line-card-scrolls', 'true')
+    await expect(card).toBeVisible()
+    const cardBox = await readTallCard(page, card, box)
+    if (above < 96 && below < 96) expect(cardBox.height).toBeLessThan(96)
+
+    // The card covers no part of the link to the basket price.
+    const curve = await page.locator('[data-line-link-path]').boundingBox()
+    if (curve)
+      expect(
+        curve.x + curve.width <= cardBox.x ||
+          cardBox.x + cardBox.width <= curve.x ||
+          curve.y + curve.height <= cardBox.y ||
+          cardBox.y + cardBox.height <= curve.y,
+        `curve ${JSON.stringify(curve)} card ${JSON.stringify(cardBox)}`,
+      ).toBe(true)
+    else expect(curve).not.toBeNull()
+
+    // Back on the block, a press still opens the task.
+    await page.mouse.move(block.x, block.y - scrollTop, { steps: 8 })
+    await page.mouse.click(block.x, block.y - scrollTop)
+    await expect(page).toHaveURL(new RegExp(`/w/demo/crates/crate-deps\\?task=${deps.total}$`))
+  })
+
+  test(`a pointer reads every title of a tall branch map card with ${above} px over its line and ${below} px under it`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 900 })
+    await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+    await page.goto('/w/demo/crates/crate-deps')
+    const scroller = page.locator('[data-crate-scroll]')
+    const port = await scroller.boundingBox()
+    const label = branchLine(page, deps.total).locator('[data-open-label]')
+    await expect(label).toHaveCount(1)
+    const start = await label.boundingBox()
+    if (!port || !start) throw new Error('no scroll area or label')
+    // The line runs through the middle of its label.
+    const line = start.y + start.height / 2
+    const scrollTop = Math.round(line - (port.y + above))
+    await page.setViewportSize({ width: 375, height: Math.round(port.y + above + below) })
+    await scroller.evaluate((element, value) => {
+      element.scrollTop = value
+    }, scrollTop)
+    await expect(scroller).toHaveJSProperty('scrollTop', scrollTop)
+    const seen = await label.boundingBox()
+    if (!seen) throw new Error('no label')
+    await page.mouse.move(seen.x + seen.width / 2, seen.y + seen.height / 2)
+    const card = page.locator(`[data-branch-card="${deps.total}"]`)
+    await expect(card).toHaveAttribute('data-branch-card-scrolls', 'true')
+    const cardBox = await readTallCard(page, card, card)
+    if (above < 96 && below < 96) expect(cardBox.height).toBeLessThan(96)
+  })
+}
+
 test('at 375 x 667 keyboard focus on a branch map line keeps its whole card, which the page scrolls to', async ({
   page,
 }) => {
@@ -2078,7 +2188,7 @@ for (const width of [375, 1280]) {
     // The point test skips an element that takes no pointer, so the card
     // takes it while the test reads.
     const covered = await titles.evaluateAll((lines) => {
-      const card = lines[0]?.closest<HTMLElement>('[data-line-card]')
+      const card = lines[0]?.closest<HTMLElement>('[data-line-card] > div')
       const before = card?.style.pointerEvents ?? ''
       if (card) card.style.pointerEvents = 'auto'
       const hidden = lines.flatMap((line) => {

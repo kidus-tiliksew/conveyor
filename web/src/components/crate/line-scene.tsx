@@ -310,7 +310,8 @@ function Block({
   dimmed: boolean
   reducedMotion: boolean
   groups: RefObject<Map<string, THREE.Group>>
-  onEmphasize: (id: string | null) => void
+  // `left` names the block the pointer leaves.
+  onEmphasize: (id: string | null, left?: string) => void
   onSelect: (id: string) => void
 }) {
   const group = useRef<THREE.Group>(null)
@@ -399,7 +400,7 @@ function Block({
           document.body.style.cursor = 'pointer'
         }}
         onPointerOut={() => {
-          onEmphasize(null)
+          onEmphasize(null, block.id)
           document.body.style.cursor = ''
         }}
         onClick={(event) => {
@@ -702,8 +703,9 @@ interface Anchor {
 const CARD_MARGIN = 4
 // The space between a block's foot and a card that stands under it.
 const CARD_GAP = 8
-// The least height of a card that scrolls.
-const CARD_MIN_HEIGHT = 96
+// The least room in which a card shows at all: one line of text and its
+// border. With less room on both sides of its block, the card hides.
+const CARD_LEAST_ROOM = 20
 // How long a card stays after the pointer leaves its block or the card, so
 // the pointer can cross the gap between them.
 const CARD_REACH_MS = 250
@@ -809,32 +811,52 @@ function Projector({
     const port = canvas.closest('[data-crate-scroll]')?.getBoundingClientRect()
     const seenTop = Math.max(port?.top ?? 0, 0) - frame.top
     const seenBottom = Math.min(port?.bottom ?? window.innerHeight, window.innerHeight) - frame.top
-    // The card stands over its block when it fits there, inside the scene
-    // and the seen part. Otherwise it stands under the block's foot when it
-    // fits there. The links rise over the blocks, so a card under the block
-    // covers none of them. A card that fits on neither side takes the side
-    // with more room, keeps to that room, and scrolls, so every line it
-    // states stays readable (req-crate-insights AC-6.1). Only then does it
-    // take the pointer, which can move onto it from the block.
-    const above = Math.min(y, size.height - CARD_MARGIN) - Math.max(seenTop, 0) - CARD_MARGIN
-    const below = seenBottom - CARD_MARGIN - (foot + CARD_GAP)
+    // The card's whole box stays inside the seen part (req-crate-insights
+    // AC-6.1). Over its block, it runs from the seen part's top, or the
+    // scene's top, down to the point over the block. Under its block, it runs
+    // from the block's foot down to the seen part's foot. The links rise over
+    // the blocks and the card stands clear over them or under the block, so
+    // it covers none of them. The card stands over its block when it fits
+    // there, else under the block when it fits there. Otherwise it takes the
+    // side with more room, keeps to exactly that room, and scrolls, and only
+    // then does it take the pointer, which can move onto it from the block.
+    // It opens scrolled just far enough to show its first waiting task. With
+    // less than one line of room on both sides, it hides.
+    const overTop = Math.max(seenTop, 0) + CARD_MARGIN
+    const overFoot = Math.min(y, size.height - CARD_MARGIN, seenBottom - CARD_MARGIN)
+    const underTop = Math.max(foot + CARD_GAP, seenTop + CARD_MARGIN)
+    const underFoot = seenBottom - CARD_MARGIN
+    const above = overFoot - overTop
+    const below = underFoot - underTop
     const full = inner.scrollHeight + 2
     const over = full <= above || (full > below && above >= below)
     const room = over ? above : below
     const scrolls = full > room
-    const cap = `${Math.max(room, CARD_MIN_HEIGHT).toFixed(0)}px`
+    const shows = room >= CARD_LEAST_ROOM
+    const cap = `${Math.floor(room)}px`
     if (inner.style.maxHeight !== (scrolls ? cap : '')) inner.style.maxHeight = scrolls ? cap : ''
-    element.style.pointerEvents = scrolls ? 'auto' : 'none'
+    // Only the card's own box takes the pointer. The element around it is
+    // centred on the anchor, so its box reaches past the card over the block.
+    inner.style.pointerEvents = scrolls && shows ? 'auto' : 'none'
     element.dataset.lineCardScrolls = String(scrolls)
+    if (scrolls && element.dataset.lineCardOpened !== card.id) {
+      element.dataset.lineCardOpened = card.id
+      const first = inner.querySelector('[data-waits-on]')
+      if (first) {
+        const end =
+          first.getBoundingClientRect().bottom - inner.getBoundingClientRect().top - inner.clientTop + inner.scrollTop
+        inner.scrollTop = Math.max(0, end - inner.clientHeight)
+      }
+    }
     // The card's box runs from half its width either side of x, and from
     // its full height above y down to y.
     const width = element.offsetWidth
     const height = element.offsetHeight
     if (size.width >= width + 2 * CARD_MARGIN)
       x = THREE.MathUtils.clamp(x, width / 2 + CARD_MARGIN, size.width - width / 2 - CARD_MARGIN)
-    y = over ? Math.min(y, size.height - CARD_MARGIN) : foot + CARD_GAP + height
+    y = over ? overFoot : underTop + height
     element.style.transform = `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`
-    element.style.visibility = 'visible'
+    element.style.visibility = shows ? 'visible' : 'hidden'
   })
   return <group ref={origin} />
 }
@@ -975,37 +997,67 @@ export default function LineScene({
   // A pointer that leaves a block clears the emphasis at once, so no late
   // clear undoes what another part of the page emphasizes. A card that
   // scrolls stays a moment longer, so the pointer can reach it, and
-  // entering it emphasizes its task again. While the pointer is on a block
+  // entering it emphasizes its task again. On its way, the pointer can
+  // cross another block: that block takes the emphasis only if the pointer
+  // still rests on it when the moment ends. While the pointer is on a block
   // or on the card, the card stands over the branch map's card of the same
   // task, which the shared emphasis also shows. Otherwise the branch map's
   // card stands over it.
   const leaving = useRef<number | undefined>(undefined)
+  const held = useRef<string | null>(null)
+  const hovered = useRef<string | null>(null)
+  // The scene can report leaving a block after the pointer has reached the
+  // card. While the pointer is on the card, such a late leave changes
+  // nothing.
+  const onCard = useRef(false)
   const [lingering, setLingering] = useState<string | null>(null)
   const [pointerHere, setPointerHere] = useState(false)
   const emphasizeBlock = useCallback(
-    (id: string | null) => {
-      window.clearTimeout(leaving.current)
+    (id: string | null, left?: string) => {
       if (id !== null) {
+        hovered.current = id
+        if (held.current !== null && held.current !== id) return
+        window.clearTimeout(leaving.current)
+        held.current = null
         setLingering(null)
         setPointerHere(true)
         onEmphasize(id)
         return
       }
+      if (left !== undefined && hovered.current === left) hovered.current = null
+      if (held.current !== null || (left !== undefined && onCard.current)) return
+      window.clearTimeout(leaving.current)
       onEmphasize(null)
       const element = elements.current.card
-      const held = element?.dataset.lineCardScrolls === 'true' ? element.dataset.lineCard : undefined
-      if (!held) {
+      const stays = element?.dataset.lineCardScrolls === 'true' ? element.dataset.lineCard : undefined
+      if (!stays) {
         setPointerHere(false)
         return
       }
-      setLingering(held)
+      held.current = stays
+      setLingering(stays)
       leaving.current = window.setTimeout(() => {
+        held.current = null
         setLingering(null)
-        setPointerHere(false)
+        const next = hovered.current
+        setPointerHere(next !== null)
+        if (next !== null) onEmphasize(next)
       }, CARD_REACH_MS)
     },
     [onEmphasize],
   )
+  // The pointer reaches the card: its task takes the emphasis again.
+  const enterCard = useCallback(() => {
+    onCard.current = true
+    window.clearTimeout(leaving.current)
+    const task = held.current
+    held.current = null
+    hovered.current = null
+    if (task === null) return
+    setLingering(null)
+    setPointerHere(true)
+    onEmphasize(task)
+  }, [onEmphasize])
   // A pointer that leaves with the scene leaves no pointer cursor behind,
   // and no clear waits after it.
   useEffect(
@@ -1265,11 +1317,11 @@ export default function LineScene({
             data-line-card={cardBlock.id}
             style={{ visibility: 'hidden' }}
             className={cn('absolute top-0 left-0', pointerHere ? 'z-20' : 'z-10')}
-            onPointerEnter={() => {
-              window.clearTimeout(leaving.current)
-              if (lingering) emphasizeBlock(lingering)
+            onPointerEnter={enterCard}
+            onPointerLeave={() => {
+              onCard.current = false
+              emphasizeBlock(null)
             }}
-            onPointerLeave={() => emphasizeBlock(null)}
           >
             <div className="w-max max-w-64 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-md border border-border bg-card px-2.5 py-1.5 text-left shadow-md">
               {cardBlock.title && (
