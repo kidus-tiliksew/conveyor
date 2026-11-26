@@ -49,6 +49,7 @@ func runFeedback(t *testing.T, factory Factory) {
 		{"GitHubDeploy", runFeedbackGitHubDeploy},
 		{"GitHubRedeploy", runFeedbackGitHubRedeploy},
 		{"GitHubBoundaries", runFeedbackGitHubBoundaries},
+		{"GitHubSameTime", runFeedbackGitHubSameTime},
 		{"GitHubReportNumbers", runFeedbackGitHubReportNumbers},
 		{"GitHubRecordsNothing", runFeedbackGitHubRecordsNothing},
 		{"GitHubObservesOnly", runFeedbackGitHubObservesOnly},

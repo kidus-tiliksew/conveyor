@@ -217,7 +217,10 @@ report falls inside a deploy of the same commit, that deploy stops at the
 report's time and the report starts its own deploy, which ends where the
 earlier one ended. Reports at 09:00, 10:30, and 09:30 therefore give deploys
 from 09:00 to 09:30, from 09:30 to 10:30, and from 10:30, in any arrival
-order. Signals of a watcher keep the rules in
+order. A GitHub report at the same time as a watcher deploy of the same
+commit also gets its own deploy with the `github` source: the server takes
+the report as the later one, so the watcher deploy stops at that time and the
+GitHub deploy starts then. Signals of a watcher keep the rules in
 [Deploys and running versions](#deploys-and-running-versions).
 
 An archived environment records nothing from GitHub. Conveyor runs no git

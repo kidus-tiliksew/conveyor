@@ -701,11 +701,18 @@ func FeedbackGitHubDeploySignal(deploy FeedbackGitHubDeploy) (FeedbackSignal, er
 // report's time, and a new deploy of the same commit starts then, so the
 // deploy records keep the time of every successful deployment report
 // (component-production-feedback invariants 10 and 17; req-production-feedback
-// AC-1.5 and AC-3.6). A report at the time the running deploy started is a
-// repeat and plans no redeploy. A report that a later report already
-// overtook is planned as PlanFeedbackChanges plans an earlier arrival, which
-// never moves the start or origin of a GitHub deploy: the overtaken report's
-// span is its own deploy that stops at the next report.
+// AC-1.5 and AC-3.6). A running deploy that a watcher signal started at the
+// report's own time is also redeployed: the report boundary orders the two,
+// so the watcher deploy stops at that time and the GitHub deploy starts
+// then, and the report keeps a deploy with the GitHub source (invariants 6
+// and 10). A report that a later report already overtook is planned as
+// PlanFeedbackChanges plans an earlier arrival, which never moves the start
+// or origin of a GitHub deploy: the overtaken report's span is its own
+// deploy that stops at the next report, and a covering deploy of the same
+// commit is split at the report's time. The caller refuses a repeat with
+// FeedbackGitHubDeployRepeat before it plans, so a running deploy or a
+// covering deploy that starts at the report's time is never a GitHub deploy
+// of the same commit.
 func PlanFeedbackGitHubDeploy(signal FeedbackSignal, origin FeedbackOrigin, history FeedbackHistory) (FeedbackChanges, error) {
 	changes, err := PlanFeedbackChanges(signal, origin, history)
 	if err != nil || len(signal.Services) != 1 || len(signal.Services[0].Versions) != 1 {
@@ -723,7 +730,7 @@ func PlanFeedbackGitHubDeploy(signal FeedbackSignal, origin FeedbackOrigin, hist
 		return changes, changes.splitCoveringDeploy(signal, origin, service.Name, reported, running, history.Deploys)
 	}
 	for _, version := range running {
-		if version.FeedbackVersion != reported || !version.DeployedAt.Before(signal.ArrivedAt) {
+		if version.FeedbackVersion != reported || version.DeployedAt.After(signal.ArrivedAt) {
 			continue
 		}
 		deploy, err := changes.addDeploy(FeedbackDeploy{EnvironmentID: signal.EnvironmentID, Service: service.Name, FeedbackVersion: reported, DeployedAt: signal.ArrivedAt, Origin: origin})
@@ -743,12 +750,16 @@ func PlanFeedbackGitHubDeploy(signal FeedbackSignal, origin FeedbackOrigin, hist
 // stops at the report's time, and a new GitHub deploy starts then and ends
 // where the covering deploy ended, or runs on in its place. Without it the
 // report would leave no record and no time (component-production-feedback
-// invariants 10 and 17). A covering deploy that starts at the report's time
-// is a repeat, and nothing is split.
+// invariants 10 and 17). A watcher deploy that starts at the report's time
+// and has an earlier report number covers it too, so it is split. A GitHub
+// deploy that starts at the report's time is a repeat, and nothing is split.
 func (c *FeedbackChanges) splitCoveringDeploy(signal FeedbackSignal, origin FeedbackOrigin, service string, reported FeedbackVersion, running []FeedbackRunningVersion, deploys []FeedbackDeploy) error {
 	at := FeedbackBoundary{At: signal.ArrivedAt, Report: origin.Report}
 	for _, deploy := range deploys {
-		if deploy.Service != service || deploy.FeedbackVersion != reported || !deploy.DeployedAt.Before(signal.ArrivedAt) || slices.ContainsFunc(c.Updated, func(d FeedbackDeploy) bool { return d.ID == deploy.ID }) {
+		if deploy.Service != service || deploy.FeedbackVersion != reported || deploy.DeployedAt.After(signal.ArrivedAt) || slices.ContainsFunc(c.Updated, func(d FeedbackDeploy) bool { return d.ID == deploy.ID }) {
+			continue
+		}
+		if deploy.DeployedAt.Equal(signal.ArrivedAt) && deploy.Origin.Source == FeedbackSourceGitHub {
 			continue
 		}
 		stop, runs := deploy.Stop()
