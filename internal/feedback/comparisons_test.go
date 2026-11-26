@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -372,5 +373,143 @@ func TestPreviousVersion(t *testing.T) {
 	}
 	if _, ok := PreviousVersion(deploys[:1], store.FeedbackVersionRef{Service: "api", FeedbackVersion: v("a")}); ok {
 		t.Fatal("a first version has a previous one")
+	}
+}
+
+// slowForge records when each comparison starts. A comparison of a pair in
+// slow takes two seconds of the fixture clock, and crossing passes 61
+// seconds closes reached.
+type slowForge struct {
+	*stubForge
+	f       *workFixture
+	slow    map[string]bool
+	mu      sync.Mutex
+	starts  []time.Time
+	reached chan struct{}
+	once    sync.Once
+}
+
+func (s *slowForge) Compare(ctx context.Context, slug, base, head string, arrived int) (CompareResult, error) {
+	s.mu.Lock()
+	s.starts = append(s.starts, s.f.clock())
+	s.mu.Unlock()
+	if s.slow[base] {
+		s.f.advance(2 * time.Second)
+		if s.f.clock().After(statusBase.Add(61 * time.Second)) {
+			s.once.Do(func() { close(s.reached) })
+		}
+	}
+	return s.stubForge.Compare(ctx, slug, base, head, arrived)
+}
+
+// mostInAMinute returns the largest number of starts in any minute.
+func mostInAMinute(starts []time.Time) int {
+	most := 0
+	for _, end := range starts {
+		count := 0
+		for _, start := range starts {
+			if start.After(end.Add(-store.FeedbackComparisonWindow)) && !start.After(end) {
+				count++
+			}
+		}
+		most = max(most, count)
+	}
+	return most
+}
+
+// TestComparisonLimitHoldsAcrossSlowWorkers covers the FB-3 bound: each
+// comparison is charged when it starts, so a slow pass that runs past a
+// minute and a second worker together never start more than 60 comparisons
+// in any minute for the workspace.
+func TestComparisonLimitHoldsAcrossSlowWorkers(t *testing.T) {
+	f := newWorkFixture(t)
+	head := sha("aa00aa00aa00")
+	slowPairs, fastPairs := line("51", 60), line("fa", 60)
+	f.forge.chain("acme/conveyor", "", append(append(slices.Clone(slowPairs), fastPairs...), head)...)
+	forge := &slowForge{stubForge: f.forge, f: f, slow: map[string]bool{}, reached: make(chan struct{})}
+	keys := func(bases []string) []store.FeedbackComparisonKey {
+		out := make([]store.FeedbackComparisonKey, len(bases))
+		for i, base := range bases {
+			forge.slow[base] = slices.Contains(slowPairs, base)
+			out[i] = store.FeedbackComparisonKey{Repository: "acme/conveyor", Base: base, Head: head}
+		}
+		return out
+	}
+	slowKeys, fastKeys := keys(slowPairs), keys(fastPairs)
+	work := f.work()
+	work.Forge = forge
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs <- work.CompareDirect(f.ctx, slowKeys)
+	}()
+	go func() {
+		defer wg.Done()
+		// The second worker starts after the first has run past a minute.
+		<-forge.reached
+		errs <- work.CompareDirect(f.ctx, fastKeys)
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	forge.mu.Lock()
+	defer forge.mu.Unlock()
+	if most := mostInAMinute(forge.starts); most > store.FeedbackComparisonsPerMinute {
+		t.Fatalf("%d comparisons started in one minute, want at most %d", most, store.FeedbackComparisonsPerMinute)
+	}
+	fast := 0
+	for _, key := range fastKeys {
+		if _, ok := f.comparison(key.Base, head); ok {
+			fast++
+		}
+	}
+	if fast == 0 || fast == len(fastKeys) {
+		t.Fatalf("the second worker answered %d of %d pairs, want some held back by the bound", fast, len(fastKeys))
+	}
+}
+
+// TestFailingPairsDoNotHoldBackLaterPairs covers FB-3 fairness: when the
+// first 60 missing pairs keep failing, a later read more than the in-flight
+// lease after the first tries the pairs never tried before them.
+func TestFailingPairsDoNotHoldBackLaterPairs(t *testing.T) {
+	f := newWorkFixture(t)
+	head := sha("bb00bb00bb00")
+	bases := line("0f", 70)
+	f.forge.chain("acme/conveyor", "", append(slices.Clone(bases), head)...)
+	keys := make([]store.FeedbackComparisonKey, len(bases))
+	for i, base := range bases {
+		keys[i] = store.FeedbackComparisonKey{Repository: "acme/conveyor", Base: base, Head: head}
+		if i < 60 {
+			f.forge.fail["compare|acme/conveyor|"+base+"|"+head] = github.StatusError(502, errors.New("bad gateway"))
+		}
+	}
+	if err := f.work().CompareDirect(f.ctx, keys); err != nil {
+		t.Fatal(err)
+	}
+	if _, compares := f.forge.calls(); compares != 60 {
+		t.Fatalf("first read compares=%d", compares)
+	}
+	for _, key := range keys[60:] {
+		if _, ok := f.comparison(key.Base, head); ok {
+			t.Fatal("a pair past the allowance was compared in the first minute")
+		}
+	}
+	f.advance(3 * time.Minute)
+	if err := f.work().CompareDirect(f.ctx, keys); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range keys[60:] {
+		if got, ok := f.comparison(key.Base, head); !ok || got.Status != store.FeedbackCompareAhead {
+			t.Fatalf("pair %s after the failing pairs=%+v ok=%v", key.Base, got, ok)
+		}
+	}
+	if _, compares := f.forge.calls(); compares != 120 {
+		t.Fatalf("compares=%d, want the 10 new pairs and 50 retries", compares)
 	}
 }

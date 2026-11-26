@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -217,7 +218,8 @@ func (w Work) CompareVersion(ctx context.Context, repository Repository, head, p
 		answer, ok := stored[descent]
 		arrived := map[string]bool{}
 		if !ok {
-			admitted, err := w.Store.AdmitFeedbackComparisons(ctx, []store.FeedbackComparisonKey{descent}, now)
+			// The one request is charged just before it starts.
+			admitted, err := w.Store.AdmitFeedbackComparisons(ctx, []store.FeedbackComparisonKey{descent}, w.now(), 1)
 			if err != nil {
 				return err
 			}
@@ -268,20 +270,41 @@ func (w Work) storedComparisons(ctx context.Context, keys []store.FeedbackCompar
 	return out, nil
 }
 
-// CompareDirect asks GitHub for each pair the store admits, in order, and
-// stores each answer. A pair GitHub cannot compare because a commit is
-// missing is stored as missing only when a read of the base commit proves it
-// absent. A rate-limited answer stops the pass, and every pair not answered
-// stays eligible for a later signal or read.
+// admitNext charges the next request the store admits among remaining, at
+// the time it starts, and removes it from remaining. ok is false when the
+// store admits none: every request is stored, in flight, or past the
+// workspace allowance. Charging each request when it starts keeps the
+// requests that actually start at most 60 in any minute, however long each
+// takes and however many workers share the workspace.
+func (w Work) admitNext(ctx context.Context, remaining *[]store.FeedbackComparisonKey) (store.FeedbackComparisonKey, bool, error) {
+	if len(*remaining) == 0 {
+		return store.FeedbackComparisonKey{}, false, nil
+	}
+	admitted, err := w.Store.AdmitFeedbackComparisons(ctx, *remaining, w.now(), 1)
+	if err != nil || len(admitted) == 0 {
+		return store.FeedbackComparisonKey{}, false, err
+	}
+	key := admitted[0]
+	*remaining = slices.DeleteFunc(*remaining, func(candidate store.FeedbackComparisonKey) bool {
+		return store.NormalizeFeedbackComparisonKeys([]store.FeedbackComparisonKey{candidate})[0] == key
+	})
+	return key, true, nil
+}
+
+// CompareDirect asks GitHub for each pair the store admits and stores each
+// answer. Each pair is admitted just before its request starts. The store
+// puts pairs never tried before pairs tried earlier, so pairs that keep
+// failing never hold back the others. A pair GitHub cannot compare because a
+// commit is missing is stored as missing only when a read of the base commit
+// proves it absent. A rate-limited answer stops the pass, and every pair not
+// answered stays eligible for a later signal or read.
 func (w Work) CompareDirect(ctx context.Context, keys []store.FeedbackComparisonKey) error {
-	if len(keys) == 0 {
-		return nil
-	}
-	admitted, err := w.Store.AdmitFeedbackComparisons(ctx, keys, w.now())
-	if err != nil {
-		return err
-	}
-	for _, key := range admitted {
+	remaining := store.NormalizeFeedbackComparisonKeys(keys)
+	for {
+		key, ok, err := w.admitNext(ctx, &remaining)
+		if err != nil || !ok {
+			return err
+		}
 		result, err := w.Forge.Compare(ctx, key.Repository, key.Base, key.Head, 0)
 		status := result.Status
 		if err != nil {
@@ -304,7 +327,6 @@ func (w Work) CompareDirect(ctx context.Context, keys []store.FeedbackComparison
 			return err
 		}
 	}
-	return nil
 }
 
 // BranchRef names a tracked branch of a repository.
@@ -323,11 +345,12 @@ func (w Work) RefreshBranches(ctx context.Context, branches []BranchRef) error {
 	for i, branch := range branches {
 		keys[i] = store.FeedbackComparisonKey{Repository: branch.Slug, Head: branch.Branch}
 	}
-	admitted, err := w.Store.AdmitFeedbackComparisons(ctx, keys, w.now())
-	if err != nil {
-		return err
-	}
-	for _, key := range admitted {
+	remaining := store.NormalizeFeedbackComparisonKeys(keys)
+	for {
+		key, ok, err := w.admitNext(ctx, &remaining)
+		if err != nil || !ok {
+			return err
+		}
 		commit, err := w.Forge.ReadCommit(ctx, key.Repository, "heads/"+key.Head)
 		if err != nil {
 			w.logf("feedback_branch repository=%s outcome=pending category=%s", key.Repository, github.ErrorCategory(github.CategorizeError(err)))
@@ -340,5 +363,4 @@ func (w Work) RefreshBranches(ctx context.Context, branches []BranchRef) error {
 			return err
 		}
 	}
-	return nil
 }

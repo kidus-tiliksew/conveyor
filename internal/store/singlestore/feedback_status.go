@@ -226,32 +226,45 @@ func (s *Store) ReadFeedbackInputs(ctx context.Context, environmentIDs []string)
 	return inputs, nil
 }
 
-// AdmitFeedbackComparisons implements store.FeedbackStatusStore.
-func (s *Store) AdmitFeedbackComparisons(ctx context.Context, keys []store.FeedbackComparisonKey, now time.Time) ([]store.FeedbackComparisonKey, error) {
+// AdmitFeedbackComparisons implements store.FeedbackStatusStore. The
+// workspace feedback claim serializes admissions across workers and
+// replicas.
+func (s *Store) AdmitFeedbackComparisons(ctx context.Context, keys []store.FeedbackComparisonKey, now time.Time, most int) ([]store.FeedbackComparisonKey, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "AdmitFeedbackComparisons")
 	keys = store.NormalizeFeedbackComparisonKeys(keys)
 	now = store.EnvironmentTime(now)
 	var admitted []store.FeedbackComparisonKey
 	err := s.withFeedbackStatusClaim(ctx, func(tx *sql.Tx, ws string) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM feedback_admissions WHERE workspace_id=? AND admitted_at<=?`, ws, now.Add(-store.FeedbackAdmissionLease)); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM feedback_admissions WHERE workspace_id=? AND admitted_at<=?`, ws, now.Add(-store.FeedbackAttemptMemory)); err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT repository,base_commit,head_ref,admitted_at FROM feedback_admissions WHERE workspace_id=?`, ws)
-		if err != nil {
+		var used int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_admissions WHERE workspace_id=? AND admitted_at>?`, ws, now.Add(-store.FeedbackComparisonWindow)).Scan(&used); err != nil {
 			return err
 		}
-		admissions := []store.FeedbackAdmission{}
-		for rows.Next() {
-			var admission store.FeedbackAdmission
-			if err := rows.Scan(&admission.Repository, &admission.Base, &admission.Head, &admission.AdmittedAt); err != nil {
-				rows.Close()
+		attempts := map[store.FeedbackComparisonKey]time.Time{}
+		if err := eachFeedbackChunk(keys, func(part []store.FeedbackComparisonKey) error {
+			conditions := make([]string, len(part))
+			args := []any{ws}
+			for i, key := range part {
+				conditions[i] = `(repository=? AND base_commit=? AND head_ref=?)`
+				args = append(args, key.Repository, key.Base, key.Head)
+			}
+			rows, err := tx.QueryContext(ctx, `SELECT repository,base_commit,head_ref,admitted_at FROM feedback_admissions WHERE workspace_id=? AND (`+strings.Join(conditions, " OR ")+`)`, args...)
+			if err != nil {
 				return err
 			}
-			admission.AdmittedAt = store.EnvironmentTime(admission.AdmittedAt)
-			admissions = append(admissions, admission)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
+			defer rows.Close()
+			for rows.Next() {
+				var key store.FeedbackComparisonKey
+				var at time.Time
+				if err := rows.Scan(&key.Repository, &key.Base, &key.Head, &at); err != nil {
+					return err
+				}
+				attempts[key] = store.EnvironmentTime(at)
+			}
+			return rows.Err()
+		}); err != nil {
 			return err
 		}
 		comparisons, err := listFeedbackComparisons(ctx, tx, ws, keys)
@@ -262,7 +275,7 @@ func (s *Store) AdmitFeedbackComparisons(ctx context.Context, keys []store.Feedb
 		for _, comparison := range comparisons {
 			stored[comparison.FeedbackComparisonKey] = true
 		}
-		admitted = store.PlanFeedbackAdmission(keys, stored, admissions, now)
+		admitted = store.PlanFeedbackAdmission(keys, stored, attempts, used, now, most)
 		for _, key := range admitted {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO feedback_admissions (workspace_id,repository,base_commit,head_ref,admitted_at) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE admitted_at=VALUES(admitted_at)`,
 				ws, key.Repository, key.Base, key.Head, now); err != nil {

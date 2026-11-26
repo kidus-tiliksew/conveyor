@@ -28,6 +28,7 @@ func runFeedbackStatus(t *testing.T, factory Factory) {
 		{"Inputs", runFeedbackInputs},
 		{"Comparisons", runFeedbackComparisons},
 		{"Admission", runFeedbackAdmission},
+		{"AdmissionPutsTriedPairsLast", runFeedbackAdmissionFairness},
 		{"BranchHeads", runFeedbackBranchHeads},
 		{"MergedTasks", runFeedbackMergedTasks},
 		{"Isolation", runFeedbackStatusIsolation},
@@ -219,36 +220,41 @@ func runFeedbackAdmission(t *testing.T, x Fixture) {
 		keys[i] = store.FeedbackComparisonKey{Repository: "acme/app", Base: feedbackCommit(fmt.Sprintf("%02x", i)), Head: head}
 	}
 	requireOK(t, x.Backend.RecordFeedbackComparisons(x.Context, []store.FeedbackComparison{{FeedbackComparisonKey: keys[0], Status: store.FeedbackCompareAhead, ComparedAt: feedbackTime(0)}}))
-	admitted, err := x.Backend.AdmitFeedbackComparisons(x.Context, keys[:30], feedbackTime(0))
+	admitted, err := x.Backend.AdmitFeedbackComparisons(x.Context, keys[:30], feedbackTime(0), 0)
 	requireOK(t, err)
 	if len(admitted) != 29 || admitted[0] != keys[1] || admitted[28] != keys[29] {
 		t.Fatalf("first admission=%d %v", len(admitted), admitted)
 	}
 	// In flight: the same pairs are not admitted again, and the allowance
 	// left is 31.
-	admitted, err = x.Backend.AdmitFeedbackComparisons(x.Context, keys, feedbackTime(10*time.Second))
+	admitted, err = x.Backend.AdmitFeedbackComparisons(x.Context, keys, feedbackTime(10*time.Second), 0)
 	requireOK(t, err)
 	if len(admitted) != 31 || admitted[0] != keys[30] || admitted[30] != keys[60] {
 		t.Fatalf("second admission=%d %v", len(admitted), admitted)
 	}
-	if admitted, err = x.Backend.AdmitFeedbackComparisons(x.Context, keys[61:], feedbackTime(50*time.Second)); err != nil || len(admitted) != 0 {
+	if admitted, err = x.Backend.AdmitFeedbackComparisons(x.Context, keys[61:], feedbackTime(50*time.Second), 0); err != nil || len(admitted) != 0 {
 		t.Fatalf("admission past the allowance=%v err=%v", admitted, err)
 	}
 	// A minute after the first 29, they no longer count.
-	if admitted, err = x.Backend.AdmitFeedbackComparisons(x.Context, keys[61:], feedbackTime(61*time.Second)); err != nil || len(admitted) != 9 {
+	if admitted, err = x.Backend.AdmitFeedbackComparisons(x.Context, keys[61:], feedbackTime(61*time.Second), 0); err != nil || len(admitted) != 9 {
 		t.Fatalf("admission after the window=%v err=%v", admitted, err)
 	}
 	// After the lease an unanswered pair can be admitted again; an answered
 	// one never is.
 	requireOK(t, x.Backend.RecordFeedbackComparisons(x.Context, []store.FeedbackComparison{{FeedbackComparisonKey: keys[2], Status: store.FeedbackCompareBehind, ComparedAt: feedbackTime(0)}}))
-	admitted, err = x.Backend.AdmitFeedbackComparisons(x.Context, keys[:4], feedbackTime(5*time.Minute))
+	admitted, err = x.Backend.AdmitFeedbackComparisons(x.Context, keys[:4], feedbackTime(5*time.Minute), 0)
 	requireOK(t, err)
 	if !slices.Equal(admitted, []store.FeedbackComparisonKey{keys[1], keys[3]}) {
 		t.Fatalf("admission after the lease=%v", admitted)
 	}
+	// most caps one admission, so a caller can charge each request when it
+	// starts.
+	if admitted, err = x.Backend.AdmitFeedbackComparisons(x.Context, keys[4:8], feedbackTime(5*time.Minute+time.Second), 1); err != nil || len(admitted) != 1 {
+		t.Fatalf("admission of one=%v err=%v", admitted, err)
+	}
 	// A branch read is admitted by its branch name.
 	branch := store.FeedbackComparisonKey{Repository: "acme/app", Head: "main"}
-	if admitted, err = x.Backend.AdmitFeedbackComparisons(x.Context, []store.FeedbackComparisonKey{branch, branch}, feedbackTime(6*time.Minute)); err != nil || len(admitted) != 1 {
+	if admitted, err = x.Backend.AdmitFeedbackComparisons(x.Context, []store.FeedbackComparisonKey{branch, branch}, feedbackTime(6*time.Minute), 0); err != nil || len(admitted) != 1 {
 		t.Fatalf("branch admission=%v err=%v", admitted, err)
 	}
 }
@@ -391,10 +397,10 @@ func runFeedbackStatusIsolation(t *testing.T, x Fixture) {
 	}
 	// Their admissions spend none of our allowance, and our stored answer
 	// set is our own.
-	if admitted, err := y.Backend.AdmitFeedbackComparisons(y.Context, []store.FeedbackComparisonKey{{Repository: "acme/conveyor", Base: feedbackCommit("c"), Head: feedbackCommit("d")}}, feedbackTime(0)); err != nil || len(admitted) != 1 {
+	if admitted, err := y.Backend.AdmitFeedbackComparisons(y.Context, []store.FeedbackComparisonKey{{Repository: "acme/conveyor", Base: feedbackCommit("c"), Head: feedbackCommit("d")}}, feedbackTime(0), 0); err != nil || len(admitted) != 1 {
 		t.Fatalf("their admission=%v err=%v", admitted, err)
 	}
-	if admitted, err := x.Backend.AdmitFeedbackComparisons(x.Context, []store.FeedbackComparisonKey{key, {Repository: "acme/conveyor", Base: feedbackCommit("c"), Head: feedbackCommit("d")}}, feedbackTime(0)); err != nil || len(admitted) != 2 {
+	if admitted, err := x.Backend.AdmitFeedbackComparisons(x.Context, []store.FeedbackComparisonKey{key, {Repository: "acme/conveyor", Base: feedbackCommit("c"), Head: feedbackCommit("d")}}, feedbackTime(0), 0); err != nil || len(admitted) != 2 {
 		t.Fatalf("our admission=%v err=%v", admitted, err)
 	}
 	feedbackMergedTask(t, y, "conveyor", "", feedbackMergeEvent("merge.confirmed", feedbackCommit("e")))
@@ -421,7 +427,7 @@ func runFeedbackStatusObservesOnly(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	requireOK(t, x.Backend.RecordFeedbackResolution(x.Context, store.FeedbackResolution{FeedbackVersionRef: ref, ResolvedRepository: "conveyor", ResolvedCommit: feedbackCommit("abc1234"), AttemptedAt: feedbackTime(0)}))
 	key := store.FeedbackComparisonKey{Repository: "acme/conveyor", Base: feedbackCommit("a1"), Head: feedbackCommit("abc1234")}
-	_, err = x.Backend.AdmitFeedbackComparisons(x.Context, []store.FeedbackComparisonKey{key}, feedbackTime(0))
+	_, err = x.Backend.AdmitFeedbackComparisons(x.Context, []store.FeedbackComparisonKey{key}, feedbackTime(0), 0)
 	requireOK(t, err)
 	requireOK(t, x.Backend.RecordFeedbackComparisons(x.Context, []store.FeedbackComparison{{FeedbackComparisonKey: key, Status: store.FeedbackCompareAhead, ComparedAt: feedbackTime(0)}}))
 	requireOK(t, x.Backend.RecordFeedbackBranchHead(x.Context, store.FeedbackBranchHead{Repository: "acme/conveyor", Branch: "main", Commit: feedbackCommit("abc1234"), ObservedAt: feedbackTime(0)}))
@@ -487,7 +493,7 @@ func runFeedbackStatusConcurrent(t *testing.T, x Fixture) {
 				keys[j] = store.FeedbackComparisonKey{Repository: "acme/app", Base: feedbackCommit(fmt.Sprintf("%02x", i*20+j)), Head: head}
 			}
 			for attempt := 0; ; attempt++ {
-				got, err := x.Backend.AdmitFeedbackComparisons(x.Context, keys, feedbackTime(0))
+				got, err := x.Backend.AdmitFeedbackComparisons(x.Context, keys, feedbackTime(0), 0)
 				if errors.Is(err, store.ErrRetryable) && attempt < 20 {
 					continue
 				}
@@ -519,5 +525,36 @@ func runFeedbackStatusConcurrent(t *testing.T, x Fixture) {
 	}
 	if total != store.FeedbackComparisonsPerMinute {
 		t.Fatalf("%d pairs admitted, want the allowance of %d", total, store.FeedbackComparisonsPerMinute)
+	}
+}
+
+// runFeedbackAdmissionFairness proves that pairs tried before, which have no
+// stored answer, go after pairs never tried, oldest attempt first, so pairs
+// that keep failing never hold back the others across reads more than the
+// in-flight lease apart (feature-production-feedback-live FB-3).
+func runFeedbackAdmissionFairness(t *testing.T, x Fixture) {
+	head := feedbackCommit("fa")
+	keys := make([]store.FeedbackComparisonKey, 70)
+	for i := range keys {
+		keys[i] = store.FeedbackComparisonKey{Repository: "acme/app", Base: feedbackCommit(fmt.Sprintf("%02x", i)), Head: head}
+	}
+	first, err := x.Backend.AdmitFeedbackComparisons(x.Context, keys, feedbackTime(0), 0)
+	requireOK(t, err)
+	if len(first) != 60 || first[0] != keys[0] || first[59] != keys[59] {
+		t.Fatalf("first admission=%d", len(first))
+	}
+	// None of the 60 is answered. Three minutes later the lease is over, and
+	// the 10 pairs never tried come first.
+	later, err := x.Backend.AdmitFeedbackComparisons(x.Context, keys, feedbackTime(3*time.Minute), 0)
+	requireOK(t, err)
+	if len(later) != 60 || !slices.Equal(later[:10], keys[60:]) || later[10] != keys[0] {
+		t.Fatalf("later admission=%v", later[:11])
+	}
+	// The pairs tried at 0 go before the pairs tried at three minutes.
+	requireOK(t, x.Backend.RecordFeedbackComparisons(x.Context, []store.FeedbackComparison{{FeedbackComparisonKey: keys[60], Status: store.FeedbackCompareAhead, ComparedAt: feedbackTime(0)}}))
+	next, err := x.Backend.AdmitFeedbackComparisons(x.Context, keys, feedbackTime(6*time.Minute), 3)
+	requireOK(t, err)
+	if !slices.Equal(next, []store.FeedbackComparisonKey{keys[50], keys[51], keys[52]}) {
+		t.Fatalf("oldest attempts first=%v", next)
 	}
 }

@@ -140,30 +140,37 @@ func (m *volatileMemory) ReadFeedbackInputs(ctx context.Context, environmentIDs 
 }
 
 // AdmitFeedbackComparisons implements FeedbackStatusStore.
-func (m *volatileMemory) AdmitFeedbackComparisons(ctx context.Context, keys []FeedbackComparisonKey, now time.Time) ([]FeedbackComparisonKey, error) {
+func (m *volatileMemory) AdmitFeedbackComparisons(ctx context.Context, keys []FeedbackComparisonKey, now time.Time, most int) ([]FeedbackComparisonKey, error) {
 	workspace := workspaceOrDefault(ctx, "")
 	now = EnvironmentTime(now)
+	keys = NormalizeFeedbackComparisonKeys(keys)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	stored := map[FeedbackComparisonKey]bool{}
-	for _, key := range NormalizeFeedbackComparisonKeys(keys) {
-		if _, ok := m.feedbackState.status.comparisons[feedbackComparisonScope{workspace: workspace, key: key}]; ok {
+	attempts := map[FeedbackComparisonKey]time.Time{}
+	for _, key := range keys {
+		scope := feedbackComparisonScope{workspace: workspace, key: key}
+		if _, ok := m.feedbackState.status.comparisons[scope]; ok {
 			stored[key] = true
 		}
+		if at, ok := m.feedbackState.status.admissions[scope]; ok && at.After(now.Add(-FeedbackAttemptMemory)) {
+			attempts[key] = at
+		}
 	}
-	admissions := []FeedbackAdmission{}
+	used := 0
 	for scope, at := range m.feedbackState.status.admissions {
 		if scope.workspace != workspace {
 			continue
 		}
-		if !at.After(now.Add(-FeedbackAdmissionLease)) {
-			// An expired admission counts for nothing, so it is dropped.
+		if !at.After(now.Add(-FeedbackAttemptMemory)) {
 			delete(m.feedbackState.status.admissions, scope)
 			continue
 		}
-		admissions = append(admissions, FeedbackAdmission{FeedbackComparisonKey: scope.key, AdmittedAt: at})
+		if at.After(now.Add(-FeedbackComparisonWindow)) {
+			used++
+		}
 	}
-	admitted := PlanFeedbackAdmission(keys, stored, admissions, now)
+	admitted := PlanFeedbackAdmission(keys, stored, attempts, used, now, most)
 	for _, key := range admitted {
 		m.feedbackState.status.admissions[feedbackComparisonScope{workspace: workspace, key: key}] = now
 	}

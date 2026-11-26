@@ -132,8 +132,8 @@ func (s *Store) ReadFeedbackInputs(ctx context.Context, environmentIDs []string)
 
 // AdmitFeedbackComparisons implements store.FeedbackStatusStore. A
 // transaction advisory lock on the workspace serializes admissions, so the
-// allowance and the in-flight rule hold across replicas.
-func (s *Store) AdmitFeedbackComparisons(ctx context.Context, keys []store.FeedbackComparisonKey, now time.Time) ([]store.FeedbackComparisonKey, error) {
+// allowance and the in-flight rule hold across workers and replicas.
+func (s *Store) AdmitFeedbackComparisons(ctx context.Context, keys []store.FeedbackComparisonKey, now time.Time, most int) ([]store.FeedbackComparisonKey, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "AdmitFeedbackComparisons")
 	keys = store.NormalizeFeedbackComparisonKeys(keys)
 	now = store.EnvironmentTime(now)
@@ -143,25 +143,40 @@ func (s *Store) AdmitFeedbackComparisons(ctx context.Context, keys []store.Feedb
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('feedback_admissions:' || $1, 0))`, workspaceID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM feedback_admissions WHERE workspace_id=$1 AND admitted_at <= $2`, workspaceID, now.Add(-store.FeedbackAdmissionLease)); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM feedback_admissions WHERE workspace_id=$1 AND admitted_at <= $2`, workspaceID, now.Add(-store.FeedbackAttemptMemory)); err != nil {
 			return err
 		}
-		admissions := []store.FeedbackAdmission{}
-		rows, err := tx.Query(ctx, `SELECT repository, base_commit, head_ref, admitted_at FROM feedback_admissions WHERE workspace_id=$1`, workspaceID)
-		if err != nil {
+		var used int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM feedback_admissions WHERE workspace_id=$1 AND admitted_at > $2`, workspaceID, now.Add(-store.FeedbackComparisonWindow)).Scan(&used); err != nil {
 			return err
 		}
-		for rows.Next() {
-			var admission store.FeedbackAdmission
-			if err := rows.Scan(&admission.Repository, &admission.Base, &admission.Head, &admission.AdmittedAt); err != nil {
-				rows.Close()
+		attempts := map[store.FeedbackComparisonKey]time.Time{}
+		if len(keys) > 0 {
+			repositories, bases, heads := make([]string, len(keys)), make([]string, len(keys)), make([]string, len(keys))
+			for i, key := range keys {
+				repositories[i], bases[i], heads[i] = key.Repository, key.Base, key.Head
+			}
+			rows, err := tx.Query(ctx, `SELECT a.repository, a.base_commit, a.head_ref, a.admitted_at
+FROM feedback_admissions a
+JOIN unnest($2::text[], $3::text[], $4::text[]) AS k(repository, base_commit, head_ref)
+  ON a.repository=k.repository AND a.base_commit=k.base_commit AND a.head_ref=k.head_ref
+WHERE a.workspace_id=$1`, workspaceID, repositories, bases, heads)
+			if err != nil {
 				return err
 			}
-			admissions = append(admissions, admission)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
+			for rows.Next() {
+				var key store.FeedbackComparisonKey
+				var at time.Time
+				if err := rows.Scan(&key.Repository, &key.Base, &key.Head, &at); err != nil {
+					rows.Close()
+					return err
+				}
+				attempts[key] = store.EnvironmentTime(at)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return err
+			}
 		}
 		comparisons, err := listFeedbackComparisons(ctx, tx, workspaceID, keys)
 		if err != nil {
@@ -171,7 +186,7 @@ func (s *Store) AdmitFeedbackComparisons(ctx context.Context, keys []store.Feedb
 		for _, comparison := range comparisons {
 			stored[comparison.FeedbackComparisonKey] = true
 		}
-		admitted = store.PlanFeedbackAdmission(keys, stored, admissions, now)
+		admitted = store.PlanFeedbackAdmission(keys, stored, attempts, used, now, most)
 		for _, key := range admitted {
 			if _, err := tx.Exec(ctx, `INSERT INTO feedback_admissions (workspace_id, repository, base_commit, head_ref, admitted_at) VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (workspace_id, repository, base_commit, head_ref) DO UPDATE SET admitted_at=EXCLUDED.admitted_at`, workspaceID, key.Repository, key.Base, key.Head, now); err != nil {

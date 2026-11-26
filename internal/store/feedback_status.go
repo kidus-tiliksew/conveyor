@@ -24,6 +24,11 @@ const (
 	// read stays in flight. A second admission of the same request waits for
 	// it, so concurrent signals, reads, and replicas never ask twice.
 	FeedbackAdmissionLease = 2 * time.Minute
+	// FeedbackAttemptMemory is how long a backend keeps the last attempt of
+	// a request that has no stored answer. Admission puts recently tried
+	// requests after requests never tried, so a request that keeps failing
+	// never holds back the requests after it.
+	FeedbackAttemptMemory = 24 * time.Hour
 	// FeedbackBranchHeadAge is the age after which a read asks for a new
 	// observation of a tracked branch head.
 	FeedbackBranchHeadAge = 10 * time.Minute
@@ -158,11 +163,14 @@ type FeedbackStatusStore interface {
 	// ReadFeedbackInputs returns the newest signal, running versions, deploys,
 	// and stored resolutions of the named environments.
 	ReadFeedbackInputs(ctx context.Context, environmentIDs []string) (FeedbackInputs, error)
-	// AdmitFeedbackComparisons admits, in the given order, the requests that
-	// are neither stored nor in flight, up to the workspace's remaining
-	// allowance in the minute before now. It records each admitted request at
-	// now and returns them.
-	AdmitFeedbackComparisons(ctx context.Context, keys []FeedbackComparisonKey, now time.Time) ([]FeedbackComparisonKey, error)
+	// AdmitFeedbackComparisons admits at most most requests among keys that
+	// are neither stored nor in flight, within the workspace's remaining
+	// allowance in the minute before now. most 0 means the allowance. Requests
+	// never tried come first in the given order, then the others by their
+	// last attempt, oldest first. It records each admitted request as its
+	// attempt at now, so a caller admits each request just before it starts
+	// it, and returns them in order.
+	AdmitFeedbackComparisons(ctx context.Context, keys []FeedbackComparisonKey, now time.Time, most int) ([]FeedbackComparisonKey, error)
 	// RecordFeedbackComparisons stores answers. A stored answer is kept.
 	RecordFeedbackComparisons(ctx context.Context, comparisons []FeedbackComparison) error
 	// ListFeedbackComparisons returns the stored answers among keys.
@@ -257,34 +265,41 @@ func NormalizeFeedbackComparisonKeys(keys []FeedbackComparisonKey) []FeedbackCom
 	return out
 }
 
-// FeedbackAdmission is one admitted request as a backend stores it.
+// FeedbackAdmission is one admitted request as a backend stores it: its
+// last attempt.
 type FeedbackAdmission struct {
 	FeedbackComparisonKey
 	AdmittedAt time.Time
 }
 
-// PlanFeedbackAdmission decides which requests a backend admits, from the
-// stored answers and admissions of the workspace. Every backend admits
-// exactly this result.
-func PlanFeedbackAdmission(keys []FeedbackComparisonKey, stored map[FeedbackComparisonKey]bool, admissions []FeedbackAdmission, now time.Time) []FeedbackComparisonKey {
+// PlanFeedbackAdmission decides which requests a backend admits. stored names
+// the keys with a stored answer, attempts holds the last attempt of keys
+// tried in the last FeedbackAttemptMemory, and used counts the workspace's
+// attempts in the minute before now. Every backend admits exactly this
+// result (feature-production-feedback-live FB-3).
+func PlanFeedbackAdmission(keys []FeedbackComparisonKey, stored map[FeedbackComparisonKey]bool, attempts map[FeedbackComparisonKey]time.Time, used int, now time.Time, most int) []FeedbackComparisonKey {
 	now = EnvironmentTime(now)
-	used := 0
-	inFlight := map[FeedbackComparisonKey]bool{}
-	for _, admission := range admissions {
-		if admission.AdmittedAt.After(now.Add(-FeedbackComparisonWindow)) {
-			used++
-		}
-		if admission.AdmittedAt.After(now.Add(-FeedbackAdmissionLease)) {
-			inFlight[admission.FeedbackComparisonKey] = true
+	if most <= 0 || most > FeedbackComparisonsPerMinute {
+		most = FeedbackComparisonsPerMinute
+	}
+	fresh, tried := []FeedbackComparisonKey{}, []FeedbackComparisonKey{}
+	for _, key := range NormalizeFeedbackComparisonKeys(keys) {
+		last, seen := attempts[key]
+		switch {
+		case stored[key]:
+		case !seen:
+			fresh = append(fresh, key)
+		case last.After(now.Add(-FeedbackAdmissionLease)):
+			// In flight.
+		default:
+			tried = append(tried, key)
 		}
 	}
+	slices.SortStableFunc(tried, func(a, b FeedbackComparisonKey) int { return attempts[a].Compare(attempts[b]) })
 	admitted := []FeedbackComparisonKey{}
-	for _, key := range NormalizeFeedbackComparisonKeys(keys) {
-		if used >= FeedbackComparisonsPerMinute {
+	for _, key := range append(fresh, tried...) {
+		if used >= FeedbackComparisonsPerMinute || len(admitted) >= most {
 			break
-		}
-		if stored[key] || inFlight[key] {
-			continue
 		}
 		admitted = append(admitted, key)
 		used++
