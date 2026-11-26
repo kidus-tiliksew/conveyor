@@ -212,7 +212,11 @@ when GitHub named none.
 ## Live status
 
 A merged task's merge commit is the `merge_commit_sha` of its latest
-`merge.confirmed` or `merge.reconciled` event. A resolved version contains a
+`merge.confirmed` or `merge.reconciled` event, ordered by event time and then
+event ID. When that latest event records no usable commit (40 hexadecimal
+characters), the task has no merge commit. An older event's commit is never
+used in its place. The task still counts as merged in crate totals, but no
+status is derived for it. A resolved version contains a
 task when the version's repository is the task's repository and the version's
 commit equals the merge commit or descends from it. An unresolved version
 contains no task.
@@ -244,6 +248,11 @@ never asks for that pair again. Every comparison runs in the background:
   across every environment, read, worker, and server. Each request is counted
   when it starts, however long it takes. A pair already in flight is not
   asked twice. Work past the allowance waits for a later signal or read.
+- When GitHub rate-limits a comparison, a base commit read, or a branch read,
+  that background job stops and sends GitHub no further request. It does not
+  go on to the direct comparisons, the next branch, or the next version of the
+  signal. Answers that needed no request are kept. Every pair not answered and
+  every branch not read waits for a later signal or read.
 - Pairs never tried go before pairs tried earlier, and those go oldest
   attempt first. A pair that keeps failing therefore never holds back the
   pairs after it.

@@ -29,15 +29,35 @@ type readsForge struct {
 	history []string
 	// branches maps slug|heads/branch to the branch's head commit.
 	branches map[string]string
-	gate     chan struct{}
-	entered  chan struct{}
-	calls    int
+	// limited holds slug|ref reads and compare|slug|base|head comparisons
+	// that GitHub rate-limits.
+	limited map[string]bool
+	gate    chan struct{}
+	entered chan struct{}
+	calls   int
 }
 
 func newReadsForge(history ...string) *readsForge {
 	gate := make(chan struct{})
 	close(gate)
-	return &readsForge{history: history, branches: map[string]string{}, gate: gate, entered: make(chan struct{}, 1024)}
+	return &readsForge{history: history, branches: map[string]string{}, limited: map[string]bool{}, gate: gate, entered: make(chan struct{}, 1024)}
+}
+
+// limit makes GitHub rate-limit a request, or stop doing so when on is
+// false.
+func (f *readsForge) limit(request string, on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.limited[request] = on
+}
+
+func (f *readsForge) rateLimited(request string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.limited[request] {
+		return github.RateLimitedError(time.Now().Add(time.Hour), errors.New("rate limited"))
+	}
+	return nil
 }
 
 // setBranch sets a branch head, or deletes the branch when head is empty.
@@ -82,6 +102,9 @@ func (f *readsForge) count() int {
 
 func (f *readsForge) ReadCommit(_ context.Context, slug, ref string) (string, error) {
 	f.wait()
+	if err := f.rateLimited(slug + "|" + ref); err != nil {
+		return "", err
+	}
 	f.mu.Lock()
 	head, ok := f.branches[slug+"|"+ref]
 	f.mu.Unlock()
@@ -98,6 +121,9 @@ func (f *readsForge) ReadCommit(_ context.Context, slug, ref string) (string, er
 
 func (f *readsForge) Compare(_ context.Context, slug, base, head string, _ int) (feedback.CompareResult, error) {
 	f.wait()
+	if err := f.rateLimited("compare|" + slug + "|" + base + "|" + head); err != nil {
+		return feedback.CompareResult{}, err
+	}
 	baseAt, headAt := slices.Index(f.history, base), slices.Index(f.history, head)
 	switch {
 	case slug != "acme/app" || baseAt < 0 || headAt < 0:
@@ -443,6 +469,40 @@ func TestFeedbackDeletedTrackedBranch(t *testing.T) {
 	}
 	release()
 	h.settle()
+}
+
+// TestFeedbackJobStopsOnARateLimitedBranchRead covers FB-3 plan step 4: when
+// GitHub rate-limits a read job's branch read, the job starts no direct
+// comparison. The branch and the comparison stay eligible, and a later job
+// reads and compares them.
+func TestFeedbackJobStopsOnARateLimitedBranchRead(t *testing.T) {
+	merge, head := readsCommit("b2b2b2b2b2b2"), readsCommit("c3c3c3c3c3c3")
+	h := newReadsHarness(t, merge, head)
+	h.forge.setBranch("acme/app", "main", head)
+	h.forge.limit("acme/app|heads/main", true)
+	pair := store.FeedbackComparisonKey{Repository: "acme/app", Base: merge, Head: head}
+	job := feedbackJob{key: "read:alpha:test", workspace: "alpha", missing: feedback.Missing{Branches: []feedback.BranchRef{{Slug: "acme/app", Branch: "main"}}, Comparisons: []store.FeedbackComparisonKey{pair}}, env: h.server.feedbackJobEnv()}
+	runFeedbackJob(job)
+	if calls := h.forge.count(); calls != 1 {
+		t.Fatalf("forge calls=%d, want only the rate-limited branch read", calls)
+	}
+	if heads, err := h.st.ListFeedbackBranchHeads(h.ctx); err != nil || len(heads) != 0 {
+		t.Fatalf("heads=%+v err=%v", heads, err)
+	}
+	if stored, err := h.st.ListFeedbackComparisons(h.ctx, []store.FeedbackComparisonKey{pair}); err != nil || len(stored) != 0 {
+		t.Fatalf("comparisons=%+v err=%v", stored, err)
+	}
+	// A later job reads the branch and compares the pair.
+	h.forge.limit("acme/app|heads/main", false)
+	h.advance(store.FeedbackAdmissionLease + time.Second)
+	job.env = h.server.feedbackJobEnv()
+	runFeedbackJob(job)
+	if calls := h.forge.count(); calls != 3 {
+		t.Fatalf("forge calls=%d, want a branch read and a comparison after the limit", calls)
+	}
+	if stored, err := h.st.ListFeedbackComparisons(h.ctx, []store.FeedbackComparisonKey{pair}); err != nil || len(stored) != 1 || !stored[0].Contains() {
+		t.Fatalf("comparisons after the limit=%+v err=%v", stored, err)
+	}
 }
 
 // TestFeedbackEnvironmentNewestUnresolved covers invariant 21 and

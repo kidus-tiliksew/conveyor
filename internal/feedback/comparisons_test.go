@@ -77,15 +77,22 @@ func (f *workFixture) work() Work {
 // runs the background work for it.
 func (f *workFixture) signal(versions ...store.FeedbackSignalVersion) {
 	f.t.Helper()
+	if err := f.process(versions...); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// process records an accepted signal like signal and returns the background
+// work's error.
+func (f *workFixture) process(versions ...store.FeedbackSignalVersion) error {
+	f.t.Helper()
 	signal := store.FeedbackSignal{EnvironmentID: f.environment.ID, KeyID: f.key.ID, ArrivedAt: f.clock(), NextSignalSeconds: 60, Services: []store.FeedbackSignalService{{Name: "api", Repository: "conveyor", Versions: versions}}}
 	if err := f.st.RecordFeedbackSignal(f.ctx, signal); err != nil {
 		f.t.Fatal(err)
 	}
 	signal.ArrivedAt = store.EnvironmentTime(signal.ArrivedAt)
 	request := SignalRequest{Signal: signal, Environment: f.environment, Repositories: []Repository{{Name: "conveyor", Slug: "acme/conveyor"}, {Name: "app", Slug: "acme/app"}}}
-	if err := f.work().ProcessSignal(f.ctx, request); err != nil {
-		f.t.Fatal(err)
-	}
+	return f.work().ProcessSignal(f.ctx, request)
 }
 
 func commitVersion(commit string) store.FeedbackSignalVersion {
@@ -281,6 +288,113 @@ func TestForwardDeployListsArrivedCommits(t *testing.T) {
 	}
 }
 
+// TestRateLimitedDescentCheckStopsTheJob covers FB-3 plan step 4: when GitHub
+// rate-limits the descent check of a forward deploy, the job keeps the
+// answers that needed no request, starts no direct comparison, and leaves
+// every unproven pair pending for a later signal.
+func TestRateLimitedDescentCheckStopsTheJob(t *testing.T) {
+	f := newWorkFixture(t)
+	history := line("ea", 6)
+	f.forge.chain("acme/conveyor", "", history...)
+	inherited, previous, arrived, current := history[1], history[2], history[4], history[5]
+	f.merged(inherited)
+	f.merged(previous)
+	f.signal(commitVersion(previous))
+	f.merged(arrived)
+	f.merged(current)
+	descent := "compare|acme/conveyor|" + previous + "|" + current
+	f.forge.fail[descent] = github.RateLimitedError(statusBase.Add(time.Hour), errors.New("rate limited"))
+	f.advance(time.Minute)
+	_, before := f.forge.calls()
+	if err := f.process(commitVersion(current)); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("err=%v, want ErrRateLimited", err)
+	}
+	if _, after := f.forge.calls(); after-before != 1 || f.forge.compare[before] != strings.TrimPrefix(descent, "compare|") {
+		t.Fatalf("compares after the rate-limited descent check=%v", f.forge.compare[before:])
+	}
+	// The merge commit equal to the head needed no request and is kept.
+	if got, ok := f.comparison(current, current); !ok || got.Status != store.FeedbackCompareIdentical {
+		t.Fatalf("identical=%+v ok=%v", got, ok)
+	}
+	for _, merge := range []string{inherited, previous, arrived} {
+		if got, ok := f.comparison(merge, current); ok {
+			t.Fatalf("comparison of %s was stored as %+v", merge, got)
+		}
+	}
+	// A later signal compares the pairs left pending.
+	delete(f.forge.fail, descent)
+	f.advance(store.FeedbackAdmissionLease + time.Second)
+	f.signal(commitVersion(current))
+	for _, merge := range []string{inherited, previous, arrived} {
+		if got, ok := f.comparison(merge, current); !ok || !got.Contains() {
+			t.Fatalf("comparison of %s after the limit=%+v ok=%v", merge, got, ok)
+		}
+	}
+}
+
+// TestRateLimitedComparisonStopsTheSignal covers FB-3 plan step 4: when GitHub
+// rate-limits a direct comparison of the first version a signal names, the
+// job compares no other version, and both versions stay pending for a later
+// signal.
+func TestRateLimitedComparisonStopsTheSignal(t *testing.T) {
+	f := newWorkFixture(t)
+	history := line("eb", 4)
+	f.forge.chain("acme/conveyor", "", history...)
+	merge, first, second := history[1], history[2], history[3]
+	f.merged(merge)
+	limited := "compare|acme/conveyor|" + merge + "|" + first
+	f.forge.fail[limited] = github.RateLimitedError(statusBase.Add(time.Hour), errors.New("rate limited"))
+	if err := f.process(commitVersion(first), commitVersion(second)); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("err=%v, want ErrRateLimited", err)
+	}
+	if _, compares := f.forge.calls(); compares != 1 || f.forge.compare[0] != strings.TrimPrefix(limited, "compare|") {
+		t.Fatalf("compares=%v, want only the rate-limited one", f.forge.compare)
+	}
+	for _, head := range []string{first, second} {
+		if got, ok := f.comparison(merge, head); ok {
+			t.Fatalf("comparison with %s was stored as %+v", head, got)
+		}
+	}
+	// A later signal compares both versions.
+	delete(f.forge.fail, limited)
+	f.advance(store.FeedbackAdmissionLease + time.Second)
+	f.signal(commitVersion(first), commitVersion(second))
+	for _, head := range []string{first, second} {
+		if got, ok := f.comparison(merge, head); !ok || !got.Contains() {
+			t.Fatalf("comparison with %s after the limit=%+v ok=%v", head, got, ok)
+		}
+	}
+}
+
+// TestRefreshBranchesStopsOnARateLimit proves that a rate-limited branch read
+// stops the pass and returns ErrRateLimited, and that the branches not read
+// stay eligible for a later read.
+func TestRefreshBranchesStopsOnARateLimit(t *testing.T) {
+	f := newWorkFixture(t)
+	head := sha("ec01")
+	f.forge.refs["acme/conveyor|heads/main"] = head
+	f.forge.refs["acme/conveyor|heads/release"] = head
+	f.forge.fail["acme/conveyor|heads/main"] = github.RateLimitedError(statusBase.Add(time.Hour), errors.New("rate limited"))
+	branches := []BranchRef{{Slug: "acme/conveyor", Branch: "main"}, {Slug: "acme/conveyor", Branch: "release"}}
+	if err := f.work().RefreshBranches(f.ctx, branches); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("err=%v, want ErrRateLimited", err)
+	}
+	if reads, _ := f.forge.calls(); reads != 1 {
+		t.Fatalf("reads=%d, want the pass to stop after the rate-limited read", reads)
+	}
+	if heads, _ := f.st.ListFeedbackBranchHeads(f.ctx); len(heads) != 0 {
+		t.Fatalf("heads=%+v", heads)
+	}
+	delete(f.forge.fail, "acme/conveyor|heads/main")
+	f.advance(store.FeedbackAdmissionLease + time.Second)
+	if err := f.work().RefreshBranches(f.ctx, branches); err != nil {
+		t.Fatal(err)
+	}
+	if heads, _ := f.st.ListFeedbackBranchHeads(f.ctx); len(heads) != 2 {
+		t.Fatalf("heads after the limit=%+v", heads)
+	}
+}
+
 // TestRollbackComparesDirectly covers FB-3: a version that does not descend
 // from the previous one is compared with each merged task directly.
 func TestRollbackComparesDirectly(t *testing.T) {
@@ -309,8 +423,8 @@ func TestCompareDirectFailures(t *testing.T) {
 	keys := []store.FeedbackComparisonKey{{Repository: "acme/conveyor", Base: missing, Head: head}, {Repository: "acme/conveyor", Base: failing, Head: head}, {Repository: "acme/conveyor", Base: later, Head: head}}
 	f.forge.fail["compare|acme/conveyor|"+failing+"|"+head] = github.StatusError(502, errors.New("bad gateway"))
 	f.forge.fail["compare|acme/conveyor|"+later+"|"+head] = github.RateLimitedError(time.Time{}, errors.New("rate limited"))
-	if err := f.work().CompareDirect(f.ctx, keys); err != nil {
-		t.Fatal(err)
+	if err := f.work().CompareDirect(f.ctx, keys); !errors.Is(err, ErrRateLimited) || !isRateLimited(err) {
+		t.Fatalf("err=%v, want ErrRateLimited", err)
 	}
 	if got, ok := f.comparison(missing, head); !ok || got.Status != store.FeedbackCompareMissing {
 		t.Fatalf("missing=%+v ok=%v", got, ok)
@@ -711,11 +825,6 @@ func TestForgeTimeoutKeepsTheOutcome(t *testing.T) {
 	}
 }
 
-// TestCompareDirectKeepsAmbiguous422Pending covers component-production-
-// feedback invariant 16 and req-production-feedback AC-3.2: when a compare
-// answers 404 and the read of the base commit answers an ambiguous 422, the
-// pair is not stored as missing and stays eligible. Only GitHub's no-commit
-// answer stores missing.
 // TestCompareDirectStopsOnARateLimitedBaseRead proves that a compare that
 // answers 404 followed by a rate-limited read of the base commit stops the
 // pass, as a rate-limited compare does, and stores nothing.
@@ -726,8 +835,8 @@ func TestCompareDirectStopsOnARateLimitedBaseRead(t *testing.T) {
 	f.forge.fail["compare|acme/conveyor|"+failing+"|"+head] = github.StatusError(404, errors.New("not found"))
 	f.forge.fail["acme/conveyor|"+failing] = fmt.Errorf("read commit: %w", github.RateLimitedError(statusBase.Add(time.Hour), errors.New("rate limited")))
 	keys := []store.FeedbackComparisonKey{{Repository: "acme/conveyor", Base: failing, Head: head}, {Repository: "acme/conveyor", Base: later, Head: head}}
-	if err := f.work().CompareDirect(f.ctx, keys); err != nil {
-		t.Fatal(err)
+	if err := f.work().CompareDirect(f.ctx, keys); !errors.Is(err, ErrRateLimited) || !isRateLimited(err) {
+		t.Fatalf("err=%v, want ErrRateLimited from the base read", err)
 	}
 	if reads, compares := f.forge.calls(); reads != 1 || compares != 1 {
 		t.Fatalf("reads=%d compares=%d, want the pass to stop after the rate-limited read", reads, compares)
@@ -742,6 +851,11 @@ func TestCompareDirectStopsOnARateLimitedBaseRead(t *testing.T) {
 	}
 }
 
+// TestCompareDirectKeepsAmbiguous422Pending covers component-production-
+// feedback invariant 16 and req-production-feedback AC-3.2: when a compare
+// answers 404 and the read of the base commit answers an ambiguous 422, the
+// pair is not stored as missing and stays eligible. Only GitHub's no-commit
+// answer stores missing.
 func TestCompareDirectKeepsAmbiguous422Pending(t *testing.T) {
 	f := newWorkFixture(t)
 	head, base := sha("ab01"), sha("ab02")
@@ -753,8 +867,9 @@ func TestCompareDirectKeepsAmbiguous422Pending(t *testing.T) {
 		"an abuse-protection 422": fmt.Errorf("read commit: %w", github.RateLimitedError(statusBase.Add(time.Hour), errors.New("GitHub REST status 422: abuse detection"))),
 	} {
 		f.forge.fail["acme/conveyor|"+base] = lookup
-		if err := f.work().CompareDirect(f.ctx, []store.FeedbackComparisonKey{key}); err != nil {
-			t.Fatal(err)
+		// A rate-limited base read stops the pass; an ambiguous 422 does not.
+		if err := f.work().CompareDirect(f.ctx, []store.FeedbackComparisonKey{key}); errors.Is(err, ErrRateLimited) != isRateLimited(lookup) || (err != nil && !errors.Is(err, ErrRateLimited)) {
+			t.Fatalf("%s: err=%v", name, err)
 		}
 		if got, ok := f.comparison(base, head); ok {
 			t.Fatalf("%s: the pair was stored as %+v", name, got)

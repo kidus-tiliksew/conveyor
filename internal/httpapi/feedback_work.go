@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -178,12 +179,15 @@ func runFeedbackJob(job feedbackJob) {
 	forge := job.env.lazyForge(job.workspace)
 	work := feedback.Work{Store: backend, Forge: forge, Now: job.env.clock, Logf: log.Printf}
 	if job.signal == nil {
+		// A rate limit on a branch read stops the job before any comparison
+		// starts. The branches not read and every comparison stay eligible
+		// for a later read.
 		if err := work.RefreshBranches(ctx, job.missing.Branches); err != nil {
-			log.Printf("feedback_work workspace=%s outcome=failed step=branches error=%v", job.workspace, err)
+			logFeedbackJobStop(job.workspace, "branches", err)
 			return
 		}
 		if err := work.CompareDirect(ctx, job.missing.Comparisons); err != nil {
-			log.Printf("feedback_work workspace=%s outcome=failed step=compare error=%v", job.workspace, err)
+			logFeedbackJobStop(job.workspace, "compare", err)
 		}
 		return
 	}
@@ -193,8 +197,18 @@ func runFeedbackJob(job feedbackJob) {
 		return
 	}
 	if err := work.ProcessSignal(ctx, request); err != nil {
-		log.Printf("feedback_work workspace=%s outcome=failed step=signal error=%v", job.workspace, err)
+		logFeedbackJobStop(job.workspace, "signal", err)
 	}
+}
+
+// logFeedbackJobStop logs why a job stopped early. A GitHub rate limit
+// defers the rest of the job, and it is not a failure.
+func logFeedbackJobStop(workspace, step string, err error) {
+	if errors.Is(err, feedback.ErrRateLimited) {
+		log.Printf("feedback_work workspace=%s outcome=deferred step=%s category=%s", workspace, step, github.ForgeRateLimited)
+		return
+	}
+	log.Printf("feedback_work workspace=%s outcome=failed step=%s error=%v", workspace, step, err)
 }
 
 // feedbackSignalRequest loads the signal's environment and the workspace's

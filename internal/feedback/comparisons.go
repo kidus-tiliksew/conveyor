@@ -3,6 +3,7 @@ package feedback
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"time"
@@ -41,6 +42,25 @@ func outcomeContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), OutcomeWriteTimeout)
 }
 
+// ErrRateLimited reports that GitHub rate-limited a request, so the work
+// stopped and sent no further request. Every pair not answered and every
+// branch not read stays eligible for a later signal or read
+// (feature-production-feedback-live FB-3; req-production-feedback AC-3.2).
+// CompareDirect, RefreshBranches, CompareVersion, and ProcessSignal return
+// it, wrapped with GitHub's failure, and each caller stops the rest of its
+// job.
+var ErrRateLimited = errors.New("GitHub rate-limited the request; the rest of the work stays pending")
+
+// rateLimited wraps a rate-limited forge failure in ErrRateLimited.
+func rateLimited(err error) error {
+	return fmt.Errorf("%w: %w", ErrRateLimited, err)
+}
+
+// isRateLimited reports whether a forge failure is a rate limit.
+func isRateLimited(err error) bool {
+	return github.ErrorCategory(github.CategorizeError(err)) == github.ForgeRateLimited
+}
+
 // recordOutcome runs one save on an outcome context.
 func recordOutcome(ctx context.Context, save func(context.Context) error) error {
 	writeCtx, cancel := outcomeContext(ctx)
@@ -75,6 +95,8 @@ type SignalRequest struct {
 // ProcessSignal resolves each version the signal names that has no stored
 // answer and that a claim allows, then compares each resolved version the
 // signal names (invariants 7, 8, and 14; req-production-feedback AC-1.4).
+// When GitHub rate-limits a comparison, it compares no further version and
+// returns ErrRateLimited.
 func (w Work) ProcessSignal(ctx context.Context, request SignalRequest) error {
 	signal := request.Signal
 	refs := []store.FeedbackVersionRef{}
@@ -137,7 +159,8 @@ func (w Work) ready(ctx context.Context) error {
 }
 
 // compareSignal compares each resolved version the signal names with the
-// merged tasks of its repository.
+// merged tasks of its repository. A rate limit stops it before the next
+// version.
 func (w Work) compareSignal(ctx context.Context, request SignalRequest, refs []store.FeedbackVersionRef) error {
 	inputs, err := w.Store.ReadFeedbackInputs(ctx, []string{request.Signal.EnvironmentID})
 	if err != nil {
@@ -210,6 +233,8 @@ func PreviousVersion(deploys []store.FeedbackDeploy, ref store.FeedbackVersionRe
 // are contained in head. Every pair still unproven, which includes the first
 // version and a version that does not descend from the previous one, is
 // compared directly, newest merge first, within the workspace allowance.
+// When GitHub rate-limits the descent check or a direct comparison, it stops
+// and returns ErrRateLimited.
 func (w Work) CompareVersion(ctx context.Context, repository Repository, head, previous string) error {
 	merged, err := w.Store.ListFeedbackMergedTasks(ctx, store.FeedbackMergedTaskQuery{Repository: repository.Name})
 	if err != nil {
@@ -268,13 +293,22 @@ func (w Work) CompareVersion(ctx context.Context, repository Repository, head, p
 			}
 			if len(admitted) == 1 {
 				result, err := w.Forge.Compare(ctx, slug, previous, head, github.MaxArrivedCommits)
-				if err == nil {
+				switch {
+				case err == nil:
 					answer, ok = store.FeedbackComparison{FeedbackComparisonKey: descent, Status: result.Status, ComparedAt: now}, true
 					found = append(found, answer)
 					for _, commit := range result.Commits {
 						arrived[commit] = true
 					}
-				} else {
+				case isRateLimited(err):
+					// Keep what needed no request, and start no direct
+					// comparison: every unproven pair stays pending.
+					w.logf("feedback_compare repository=%s outcome=pending category=%s", slug, github.ForgeRateLimited)
+					if err := recordOutcome(ctx, func(writeCtx context.Context) error { return w.Store.RecordFeedbackComparisons(writeCtx, found) }); err != nil {
+						return err
+					}
+					return rateLimited(err)
+				default:
 					w.logf("feedback_compare repository=%s outcome=pending category=%s", slug, github.ErrorCategory(github.CategorizeError(err)))
 				}
 			}
@@ -341,8 +375,9 @@ func (w Work) admitNext(ctx context.Context, remaining *[]store.FeedbackComparis
 // puts pairs never tried before pairs tried earlier, so pairs that keep
 // failing never hold back the others. A pair GitHub cannot compare because a
 // commit is missing is stored as missing only when a read of the base commit
-// proves it absent. A rate-limited answer stops the pass, and every pair not
-// answered stays eligible for a later signal or read.
+// proves it absent. A rate-limited answer stops the pass and returns
+// ErrRateLimited, and every pair not answered stays eligible for a later
+// signal or read.
 func (w Work) CompareDirect(ctx context.Context, keys []store.FeedbackComparisonKey) error {
 	remaining := store.NormalizeFeedbackComparisonKeys(keys)
 	if len(remaining) == 0 || w.ready(ctx) != nil {
@@ -357,6 +392,7 @@ func (w Work) CompareDirect(ctx context.Context, keys []store.FeedbackComparison
 		status := result.Status
 		if err != nil {
 			status = ""
+			failure := err
 			category := github.ErrorCategory(github.CategorizeError(err))
 			if github.HTTPStatus(err) == http.StatusNotFound {
 				// The base read's own failure decides the category, so a
@@ -366,13 +402,13 @@ func (w Work) CompareDirect(ctx context.Context, keys []store.FeedbackComparison
 				case errors.Is(readErr, github.ErrCommitNotFound):
 					status = store.FeedbackCompareMissing
 				case readErr != nil:
-					category = github.ErrorCategory(github.CategorizeError(readErr))
+					failure, category = readErr, github.ErrorCategory(github.CategorizeError(readErr))
 				}
 			}
 			if status == "" {
 				w.logf("feedback_compare repository=%s outcome=pending category=%s", key.Repository, category)
 				if category == github.ForgeRateLimited {
-					return nil
+					return rateLimited(failure)
 				}
 				continue
 			}
@@ -395,7 +431,8 @@ type BranchRef struct {
 // When GitHub confirms that the branch does not exist, the confirmed absence
 // supersedes the stored head, so a read never reports containment from a head
 // that GitHub disproved. A forge failure that proves nothing keeps the stored
-// head.
+// head. A rate limit stops the pass and returns ErrRateLimited, and every
+// branch not read stays eligible for a later read.
 func (w Work) RefreshBranches(ctx context.Context, branches []BranchRef) error {
 	if len(branches) == 0 {
 		return nil
@@ -420,8 +457,8 @@ func (w Work) RefreshBranches(ctx context.Context, branches []BranchRef) error {
 		}
 		if err != nil {
 			w.logf("feedback_branch repository=%s outcome=pending category=%s", key.Repository, github.ErrorCategory(github.CategorizeError(err)))
-			if github.ErrorCategory(github.CategorizeError(err)) == github.ForgeRateLimited {
-				return nil
+			if isRateLimited(err) {
+				return rateLimited(err)
 			}
 			continue
 		}
