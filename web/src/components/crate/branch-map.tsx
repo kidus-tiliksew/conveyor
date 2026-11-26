@@ -40,6 +40,13 @@ const MIN_WIDTH = 680
 // inside the map, and the height each dependency line adds to it.
 const CARD_ROOM = 64
 const CARD_DEPENDENCY_LINE = 16
+// The space a card keeps from the edge of what a person can see, and the
+// least height of a card that scrolls.
+const CARD_EDGE = 4
+const CARD_MIN_HEIGHT = 96
+// How long a card that scrolls stays after the pointer leaves its line or
+// the card, so the pointer can cross the gap between them.
+const CARD_REACH_MS = 250
 // The order in which a lane's open lines take rows, nearest the merge first.
 const OPEN_ORDER = ['gate', 'review', 'build', 'plan', 'intake', 'crate', 'aside']
 
@@ -379,7 +386,13 @@ function BranchMapChart({
   // in either direction and through any number of members (AC-6.6).
   const related = useMemo(() => relatedMembers(insight.tasks, emphasizedId), [insight.tasks, emphasizedId])
   const lit = (id: string) => (related ? related.has(id) : groupIds ? groupIds.has(id) : true)
-  const shown = emphasizedId ? model.spurs.find((spur) => spur.task.id === emphasizedId) : undefined
+  // The card's task: the emphasized one, or for a moment after the pointer
+  // leaves, the task of a card that scrolls, so the pointer can reach it.
+  // The emphasis itself clears at once, so no late clear undoes what
+  // another part of the page emphasizes.
+  const [lingering, setLingering] = useState<string | null>(null)
+  const cardId = emphasizedId ?? lingering
+  const shown = cardId ? model.spurs.find((spur) => spur.task.id === cardId) : undefined
   const labelChars = Math.floor((gutterRight - 26) / 6.4)
 
   // A line with keyboard focus draws a ring, so focus stays visible.
@@ -387,30 +400,103 @@ function BranchMapChart({
   // The pointer and focus targets stay apart in the shared emphasis, so
   // leaving a line or count clears only the pointer's target and a line or
   // count that still has focus keeps its emphasis (AC-2.5).
-  const enter = (target: EmphasisTarget) =>
-    'task' in target ? emphasis.emphasize(target.task) : emphasis.emphasizeGroup(target.group)
-  const leave = () => emphasis.emphasize(null)
+  // Leaving clears the pointer's target. A card that scrolls stays a
+  // moment longer, and entering it emphasizes its task again.
+  const leaving = useRef<number | undefined>(undefined)
+  const heldCard = useRef<string | null>(null)
+  useEffect(() => () => window.clearTimeout(leaving.current), [])
+  const enter = (target: EmphasisTarget) => {
+    window.clearTimeout(leaving.current)
+    setLingering(null)
+    if ('task' in target) emphasis.emphasize(target.task)
+    else emphasis.emphasizeGroup(target.group)
+  }
+  const leave = () => {
+    window.clearTimeout(leaving.current)
+    emphasis.emphasize(null)
+    const held = heldCard.current
+    if (!held) return
+    setLingering(held)
+    leaving.current = window.setTimeout(() => setLingering(null), CARD_REACH_MS)
+  }
   const focus = (target: EmphasisTarget) => emphasis.focus(target)
   const blur = (target: EmphasisTarget) => emphasis.blur(target)
 
   // Below 680 px the map scrolls sideways, so a line that takes keyboard
   // focus brings its card into view. A pointer never scrolls the map.
   const card = useRef<HTMLDivElement>(null)
-  // The card's rendered height, measured after each render. Its placement
-  // moves it and does not change its height. Until it is measured, the
-  // estimate counts the dependency lines.
+  // The card's full height, measured after each render, also while it
+  // scrolls. Its placement moves it and does not change this height. Until
+  // it is measured, the estimate counts the dependency lines.
   const [cardHeight, setCardHeight] = useState<number | null>(null)
+  const [cardWidth, setCardWidth] = useState<number | null>(null)
   useLayoutEffect(() => {
-    const height = card.current?.offsetHeight ?? null
+    const height = card.current ? card.current.scrollHeight + 2 : null
+    const cardWide = card.current ? card.current.offsetWidth : null
     setCardHeight((current) => (current === height ? current : height))
+    setCardWidth((current) => (current === cardWide ? current : cardWide))
   })
   const cardRoom =
     cardHeight ?? (shown ? CARD_ROOM + dependencyLineCount(shown.task) * CARD_DEPENDENCY_LINE : CARD_ROOM)
+  // The part of the map a person can see: inside the crate page's scroll
+  // area and the window, in the map's own rows, and inside the map's own
+  // sideways scroll. It is read again on each scroll and resize while a
+  // card shows.
+  const shownId = shown?.task.id
+  const [seen, setSeen] = useState<{ top: number; bottom: number; left: number; right: number } | null>(null)
+  useLayoutEffect(() => {
+    const element = wrapper.current
+    if (!element || !shownId) return
+    const scroller = element.closest('[data-crate-scroll]')
+    const read = () => {
+      const frame = element.getBoundingClientRect()
+      const port = scroller?.getBoundingClientRect()
+      const top = Math.max(port?.top ?? 0, 0) - frame.top
+      const bottom = Math.min(port?.bottom ?? window.innerHeight, window.innerHeight) - frame.top
+      const left = element.scrollLeft
+      const right = element.scrollLeft + element.clientWidth
+      setSeen((current) =>
+        current && current.top === top && current.bottom === bottom && current.left === left && current.right === right
+          ? current
+          : { top, bottom, left, right },
+      )
+    }
+    read()
+    const target = scroller ?? window
+    target.addEventListener('scroll', read, { passive: true })
+    element.addEventListener('scroll', read, { passive: true })
+    window.addEventListener('resize', read)
+    return () => {
+      target.removeEventListener('scroll', read)
+      element.removeEventListener('scroll', read)
+      window.removeEventListener('resize', read)
+    }
+  }, [shownId, wrapper])
   // The card stands below the line when it fits there, and above it when it
   // fits there instead. When it fits on neither side it stands below, in
-  // room the map keeps under its last row, so the whole card shows while the
-  // pointer stays on the line: above, its top would be cut off.
-  const cardBelow = shown ? shown.y1 + 12 + cardRoom <= model.height || shown.y1 - 12 - cardRoom < 0 : true
+  // room the map keeps under its last row: above, its top would be cut off.
+  // A card that the pointer shows also fits the part a person can see. When
+  // it fits there on neither side, it takes the side with more room, keeps
+  // to that room, and scrolls, and only then takes the pointer, which can
+  // move onto it from the line (req-crate-insights AC-6.1). A card that
+  // keyboard focus shows stays whole, and the page scrolls to it while the
+  // focus stays on the line.
+  const focusedCard = focusedId !== null && shown?.task.id === focusedId
+  let cardBelow = shown ? shown.y1 + 12 + cardRoom <= model.height || shown.y1 - 12 - cardRoom < 0 : true
+  let cardCap: number | null = null
+  if (shown && seen && !focusedCard) {
+    const roomBelow = seen.bottom - CARD_EDGE - (shown.y1 + 12)
+    const roomAbove = Math.min(shown.y1 - 12, shown.y1 - 12 - seen.top) - CARD_EDGE
+    const fitsBelow = cardRoom <= roomBelow
+    const fitsAbove = cardRoom <= roomAbove
+    if (cardBelow ? !fitsBelow : !fitsAbove) {
+      if (fitsBelow || fitsAbove) cardBelow = fitsBelow
+      else {
+        cardBelow = roomBelow >= roomAbove
+        cardCap = Math.max(cardBelow ? roomBelow : roomAbove, CARD_MIN_HEIGHT)
+      }
+    }
+  }
   // The map keeps that room for the tallest such card from the start, so
   // pointing at a line does not move the page. The shown card's measure
   // adds any height the estimate missed.
@@ -426,9 +512,17 @@ function BranchMapChart({
       ),
     [model],
   )
-  const below = shown && cardBelow ? shown.y1 + 12 + cardRoom - model.height : 0
+  // The card's centre, kept so the whole card stands inside the part of the
+  // map's sideways scroll that a person can see.
+  let cardLeft = shown ? Math.min(Math.max((shown.xs + Math.min(shown.xe, model.xNow)) / 2, 120), width - 140) : 0
+  if (seen && cardWidth !== null && seen.right - seen.left >= cardWidth + 2 * CARD_EDGE)
+    cardLeft = Math.min(
+      Math.max(cardLeft, seen.left + cardWidth / 2 + CARD_EDGE),
+      seen.right - cardWidth / 2 - CARD_EDGE,
+    )
+  heldCard.current = shown && cardCap !== null ? shown.task.id : null
+  const below = shown && cardBelow ? shown.y1 + 12 + (cardCap ?? cardRoom) - model.height : 0
   const mapHeight = model.height + Math.max(reserved, below)
-  const focusedCard = focusedId !== null && shown?.task.id === focusedId
   useEffect(() => {
     if (focusedCard) card.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
   }, [focusedCard, focusedId])
@@ -802,12 +896,23 @@ function BranchMapChart({
 
         {/* The task's card while it is pointed at or holds focus (AC-2.5). */}
         {shown && (
+          // biome-ignore lint/a11y/noStaticElementInteractions: the pointer that rests on a card that scrolls keeps the card; the card holds no control
           <div
             ref={card}
             data-branch-card={shown.task.id}
-            className="pointer-events-none absolute z-10 w-max max-w-64 rounded-md border border-border bg-card px-2.5 py-1.5 shadow-md"
+            data-branch-card-scrolls={cardCap !== null}
+            className={cn(
+              'absolute z-10 w-max max-w-64 overflow-y-auto overscroll-contain rounded-md border border-border bg-card px-2.5 py-1.5 shadow-md',
+              cardCap === null && 'pointer-events-none',
+            )}
+            onMouseEnter={() => {
+              if (lingering) enter({ task: lingering })
+              else window.clearTimeout(leaving.current)
+            }}
+            onMouseLeave={leave}
             style={{
-              left: Math.min(Math.max((shown.xs + Math.min(shown.xe, model.xNow)) / 2, 120), width - 140),
+              maxHeight: cardCap ?? undefined,
+              left: cardLeft,
               top: cardBelow ? shown.y1 + 12 : shown.y1 - 12,
               transform: cardBelow ? 'translateX(-50%)' : 'translate(-50%, -100%)',
             }}

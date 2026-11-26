@@ -17,12 +17,22 @@
 // route's bundle (DEC-143(2)).
 import { ContactShadows, RoundedBox } from '@react-three/drei'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import * as THREE from 'three'
 import { DependencyDetails } from './dependency-details'
 import { linksKey, type WaitLink } from './dependency-model'
 import { type LineBlock, type LineStation, phaseMeta } from './line-model'
 import type { CrateInsightTask, CratePhase, CrateStation } from '../../lib/types'
+import { cn } from '../../lib/utils'
 
 export interface LineSceneProps {
   blocks: LineBlock[]
@@ -35,9 +45,10 @@ export interface LineSceneProps {
   dark: boolean
   reducedMotion: boolean
   emphasizedId: string | null
-  // The emphasized task as the insight view serves it, for what its card
-  // states about its dependencies (req-crate-insights AC-6.1, AC-6.2).
-  emphasizedTask?: CrateInsightTask
+  // The member tasks as the insight view serves them, for what the card
+  // states about its task's dependencies (req-crate-insights AC-6.1,
+  // AC-6.2).
+  tasks: CrateInsightTask[]
   // The members left undimmed while a task is emphasized: that task and the
   // members its dependencies connect it to (AC-6.6). Null with no emphasis.
   related: Set<string> | null
@@ -691,6 +702,11 @@ interface Anchor {
 const CARD_MARGIN = 4
 // The space between a block's foot and a card that stands under it.
 const CARD_GAP = 8
+// The least height of a card that scrolls.
+const CARD_MIN_HEIGHT = 96
+// How long a card stays after the pointer leaves its block or the card, so
+// the pointer can cross the gap between them.
+const CARD_REACH_MS = 250
 
 // A dependency link the line shows, with the heights over its two blocks'
 // centres where it starts and ends.
@@ -722,6 +738,21 @@ function Projector({
 }) {
   const origin = useRef<THREE.Group>(null)
   const point = useMemo(() => new THREE.Vector3(), [])
+  const canvas = useThree((state) => state.gl.domElement)
+  const invalidate = useThree((state) => state.invalidate)
+  // The card fits the part of the page a person can see, so a scroll of the
+  // crate page or a new window size places it again, also when the canvas
+  // draws only on demand.
+  useEffect(() => {
+    const scroller = canvas.closest('[data-crate-scroll]') ?? window
+    const again = () => invalidate()
+    scroller.addEventListener('scroll', again, { passive: true })
+    window.addEventListener('resize', again)
+    return () => {
+      scroller.removeEventListener('scroll', again)
+      window.removeEventListener('resize', again)
+    }
+  }, [canvas, invalidate])
   useFrame(({ camera, size }) => {
     if (!origin.current) return
     // The page position of `point`, a place in the scene's own frame.
@@ -763,27 +794,45 @@ function Projector({
     const element = elements.current.card
     const node = card ? groups.current.get(card.id) : undefined
     if (!card || !element || !node) return
+    const inner = element.firstElementChild as HTMLElement | null
+    if (!inner) return
     point.copy(node.position)
     point.y += card.lift * node.scale.y
     let { x, y } = project()
+    point.copy(node.position)
+    point.y -= card.drop * node.scale.y
+    const foot = project().y
+    // The part of the canvas's rows that a person can see: inside the crate
+    // page's scroll area and the window. The card may reach past the
+    // scene's foot, so this part can end under the canvas.
+    const frame = canvas.getBoundingClientRect()
+    const port = canvas.closest('[data-crate-scroll]')?.getBoundingClientRect()
+    const seenTop = Math.max(port?.top ?? 0, 0) - frame.top
+    const seenBottom = Math.min(port?.bottom ?? window.innerHeight, window.innerHeight) - frame.top
+    // The card stands over its block when it fits there, inside the scene
+    // and the seen part. Otherwise it stands under the block's foot when it
+    // fits there. The links rise over the blocks, so a card under the block
+    // covers none of them. A card that fits on neither side takes the side
+    // with more room, keeps to that room, and scrolls, so every line it
+    // states stays readable (req-crate-insights AC-6.1). Only then does it
+    // take the pointer, which can move onto it from the block.
+    const above = Math.min(y, size.height - CARD_MARGIN) - Math.max(seenTop, 0) - CARD_MARGIN
+    const below = seenBottom - CARD_MARGIN - (foot + CARD_GAP)
+    const full = inner.scrollHeight + 2
+    const over = full <= above || (full > below && above >= below)
+    const room = over ? above : below
+    const scrolls = full > room
+    const cap = `${Math.max(room, CARD_MIN_HEIGHT).toFixed(0)}px`
+    if (inner.style.maxHeight !== (scrolls ? cap : '')) inner.style.maxHeight = scrolls ? cap : ''
+    element.style.pointerEvents = scrolls ? 'auto' : 'none'
+    element.dataset.lineCardScrolls = String(scrolls)
     // The card's box runs from half its width either side of x, and from
     // its full height above y down to y.
     const width = element.offsetWidth
     const height = element.offsetHeight
     if (size.width >= width + 2 * CARD_MARGIN)
       x = THREE.MathUtils.clamp(x, width / 2 + CARD_MARGIN, size.width - width / 2 - CARD_MARGIN)
-    if (y - height >= CARD_MARGIN) {
-      y = Math.min(y, size.height - CARD_MARGIN)
-    } else {
-      // A card too tall to stand over its block inside the scene stands
-      // under the block's foot instead. It may reach past the foot of the
-      // scene, over the page, so every line it states stays readable
-      // (req-crate-insights AC-6.1). The links rise over the blocks, so a
-      // card under the block covers none of them.
-      point.copy(node.position)
-      point.y -= card.drop * node.scale.y
-      y = project().y + CARD_GAP + height
-    }
+    y = over ? Math.min(y, size.height - CARD_MARGIN) : foot + CARD_GAP + height
     element.style.transform = `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`
     element.style.visibility = 'visible'
   })
@@ -893,7 +942,7 @@ export default function LineScene({
   dark,
   reducedMotion,
   emphasizedId,
-  emphasizedTask,
+  tasks,
   related,
   links,
   onEmphasize,
@@ -920,10 +969,49 @@ export default function LineScene({
     }
     return box
   }, [layout, compact, places])
-  // A pointer that leaves with the scene leaves no pointer cursor behind.
+  const groups = useRef(new Map<string, THREE.Group>())
+  const elements = useRef<Record<string, HTMLElement | null>>({})
+  const paths = useRef<Record<string, SVGPathElement | null>>({})
+  // A pointer that leaves a block clears the emphasis at once, so no late
+  // clear undoes what another part of the page emphasizes. A card that
+  // scrolls stays a moment longer, so the pointer can reach it, and
+  // entering it emphasizes its task again. While the pointer is on a block
+  // or on the card, the card stands over the branch map's card of the same
+  // task, which the shared emphasis also shows. Otherwise the branch map's
+  // card stands over it.
+  const leaving = useRef<number | undefined>(undefined)
+  const [lingering, setLingering] = useState<string | null>(null)
+  const [pointerHere, setPointerHere] = useState(false)
+  const emphasizeBlock = useCallback(
+    (id: string | null) => {
+      window.clearTimeout(leaving.current)
+      if (id !== null) {
+        setLingering(null)
+        setPointerHere(true)
+        onEmphasize(id)
+        return
+      }
+      onEmphasize(null)
+      const element = elements.current.card
+      const held = element?.dataset.lineCardScrolls === 'true' ? element.dataset.lineCard : undefined
+      if (!held) {
+        setPointerHere(false)
+        return
+      }
+      setLingering(held)
+      leaving.current = window.setTimeout(() => {
+        setLingering(null)
+        setPointerHere(false)
+      }, CARD_REACH_MS)
+    },
+    [onEmphasize],
+  )
+  // A pointer that leaves with the scene leaves no pointer cursor behind,
+  // and no clear waits after it.
   useEffect(
     () => () => {
       document.body.style.cursor = ''
+      window.clearTimeout(leaving.current)
     },
     [],
   )
@@ -970,7 +1058,6 @@ export default function LineScene({
     },
   ]
   const emphasized = emphasizedId ? blocks.find((block) => block.id === emphasizedId) : undefined
-  const emphasizedSpot = emphasized ? places.get(emphasized.id) : undefined
   const anchors: Anchor[] = signs.map((sign) => ({ id: sign.id, position: sign.position }))
   // The links the line draws: one for each served `waiting` member entry of
   // the emphasized task, and none at rest (component-crates invariant 39).
@@ -982,18 +1069,21 @@ export default function LineScene({
         return [{ ...link, key: `${link.from}>${link.to}`, liftFrom: a.size / 2, liftTo: b.size / 2 }]
       })
     : []
+  // The card's block: the emphasized one, or a card that stays a moment.
+  const cardId = emphasizedId ?? lingering
+  const cardBlock = cardId ? blocks.find((block) => block.id === cardId) : undefined
+  const cardSpot = cardBlock ? places.get(cardBlock.id) : undefined
+  const cardTask = cardId ? tasks.find((task) => task.id === cardId) : undefined
   // The card moves up to clear the links that end on its block.
+  const cardLinked = links.some((link) => link.to === cardId && places.has(link.from))
   const card =
-    emphasized && emphasizedSpot
+    cardBlock && cardSpot
       ? {
-          id: emphasized.id,
-          lift: emphasizedSpot.size / 2 + (shownLinks.length > 0 ? 0.95 : 0.2),
-          drop: emphasizedSpot.size / 2,
+          id: cardBlock.id,
+          lift: cardSpot.size / 2 + (cardLinked ? 0.95 : 0.2),
+          drop: cardSpot.size / 2,
         }
       : null
-  const groups = useRef(new Map<string, THREE.Group>())
-  const elements = useRef<Record<string, HTMLElement | null>>({})
-  const paths = useRef<Record<string, SVGPathElement | null>>({})
 
   return (
     <div className="relative size-full" data-line-scene data-motion={reducedMotion ? 'still' : 'moving'}>
@@ -1045,7 +1135,7 @@ export default function LineScene({
                 emphasized={emphasizedId === block.id}
                 dimmed={related !== null && !related.has(block.id)}
                 reducedMotion={reducedMotion}
-                onEmphasize={onEmphasize}
+                onEmphasize={emphasizeBlock}
                 groups={groups}
                 onSelect={onSelect}
               />
@@ -1163,31 +1253,37 @@ export default function LineScene({
         ))}
       </div>
       {/* The card stands over the scene without its clip, so a tall card can
-          reach past the scene's foot. It takes no pointer, so the blocks and
-          the page under it keep theirs. */}
+          reach past the scene's foot. It takes no pointer unless it scrolls,
+          so the blocks and the page under it keep theirs. A card that
+          scrolls stays while the pointer is on it. */}
       <div aria-hidden className="pointer-events-none absolute inset-0">
-        {emphasized && (
+        {cardBlock && (
           <div
             ref={(element) => {
               elements.current.card = element
             }}
-            data-line-card={emphasized.id}
+            data-line-card={cardBlock.id}
             style={{ visibility: 'hidden' }}
-            className="absolute top-0 left-0 z-10"
+            className={cn('absolute top-0 left-0', pointerHere ? 'z-20' : 'z-10')}
+            onPointerEnter={() => {
+              window.clearTimeout(leaving.current)
+              if (lingering) emphasizeBlock(lingering)
+            }}
+            onPointerLeave={() => emphasizeBlock(null)}
           >
-            <div className="w-max max-w-64 -translate-y-1/2 rounded-md border border-border bg-card px-2.5 py-1.5 text-left shadow-md">
-              {emphasized.title && (
-                <p className="break-words text-xs font-medium leading-snug text-foreground">{emphasized.title}</p>
+            <div className="w-max max-w-64 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-md border border-border bg-card px-2.5 py-1.5 text-left shadow-md">
+              {cardBlock.title && (
+                <p className="break-words text-xs font-medium leading-snug text-foreground">{cardBlock.title}</p>
               )}
               <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-muted">
                 <span
                   className="size-1.5 shrink-0 rounded-full"
-                  style={{ background: phaseMeta[emphasized.phase].color }}
+                  style={{ background: phaseMeta[cardBlock.phase].color }}
                 />
-                {emphasized.label !== undefined && <span data-line-card-label>{emphasized.label}</span>}
-                <span className="font-mono text-faint">→ {emphasized.baseBranch}</span>
+                {cardBlock.label !== undefined && <span data-line-card-label>{cardBlock.label}</span>}
+                <span className="font-mono text-faint">→ {cardBlock.baseBranch}</span>
               </p>
-              <DependencyDetails task={emphasizedTask} className="mt-1 border-t border-border pt-1" />
+              <DependencyDetails task={cardTask} className="mt-1 border-t border-border pt-1" />
             </div>
           </div>
         )}

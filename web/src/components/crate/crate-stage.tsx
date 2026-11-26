@@ -6,7 +6,7 @@
 // formats them and derives none.
 import { Archive, CalendarPlus, CircleCheck, Pause, Play, RotateCw } from 'lucide-react'
 import { Component, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CrateDetail, CrateInsight } from '../../lib/types'
+import type { CrateDetail, CrateInsight, CrateInsightTask } from '../../lib/types'
 import { useMediaQuery } from '../../lib/use-media-query'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
@@ -17,6 +17,9 @@ import { type LineBlock, lineStations, phaseMeta, phasesInUse, placesAt, replayS
 
 // three.js and its React bindings load with this chunk only (DEC-143(2)).
 const LineScene = lazy(() => import('./line-scene'))
+
+// The task list the scene gets before the insight view loads.
+const noTasks: CrateInsightTask[] = []
 
 // A replay plays the crate's whole history in this many milliseconds.
 const REPLAY_MS = 9000
@@ -173,10 +176,6 @@ export function CrateStage({
   }, [insight, at])
   const emphasizedId = emphasis.emphasizedId
   const related = useMemo(() => relatedMembers(insight?.tasks ?? [], emphasizedId), [insight, emphasizedId])
-  const emphasizedTask = useMemo(
-    () => (emphasizedId ? insight?.tasks.find((task) => task.id === emphasizedId) : undefined),
-    [insight, emphasizedId],
-  )
 
   const textMode = sceneFailed
   const sceneShown = Boolean(insight) && !textMode
@@ -231,7 +230,7 @@ export function CrateStage({
                       dark={dark}
                       reducedMotion={reducedMotion}
                       emphasizedId={emphasizedId}
-                      emphasizedTask={emphasizedTask}
+                      tasks={insight?.tasks ?? noTasks}
                       related={related}
                       links={links}
                       onEmphasize={emphasis.emphasize}

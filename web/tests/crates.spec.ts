@@ -1843,50 +1843,141 @@ const manyWaitsInsight: CrateInsight = {
   ),
 }
 
-test('at 375 px the line card shows every title its task waits on, clear of the link', async ({ page }) => {
-  await page.setViewportSize({ width: 375, height: 812 })
+// Where a block stands on the page: the top of the block where a link ends,
+// read from the link that the row's emphasis draws, and then a few pixels
+// into the block. The emphasis clears again before the pointer moves.
+async function blockUnder(page: Page, id: string, linkKey: string) {
+  await memberRow(page, id).dispatchEvent('mouseover')
+  const ends = await linkEnds(page, linkKey)
+  const overlay = await page.locator('[data-line-links]').boundingBox()
+  await memberRow(page, id).dispatchEvent('mouseout')
+  await expect(lineLinks(page)).toHaveCount(0)
+  return { x: (overlay?.x ?? 0) + ends.end.x, y: (overlay?.y ?? 0) + ends.end.y + 12 }
+}
+
+// Both boxes inside the crate page's scroll area and the window.
+async function expectSeen(page: Page, locator: ReturnType<Page['locator']>) {
+  const box = await locator.boundingBox()
+  const port = await page.locator('[data-crate-scroll]').boundingBox()
+  const window = page.viewportSize()
+  expect(box && port && window).toBeTruthy()
+  if (!box || !port || !window) return
+  expect(box.y).toBeGreaterThanOrEqual(Math.max(port.y, 0) - 0.5)
+  expect(box.y + box.height).toBeLessThanOrEqual(Math.min(port.y + port.height, window.height) + 0.5)
+}
+
+test('at 375 x 667 a pointer on a block reads every title of its tall line card', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 })
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
   await page.goto('/w/demo/crates/crate-deps')
   await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
-  // The pointer enters the task's row in the task list, which emphasizes
-  // the task on the line. The event moves no scroll, so the line stays on
-  // screen above the list.
-  await memberRow(page, deps.total).dispatchEvent('mouseover')
+  // The page as it opens: not scrolled.
   await expect(page.locator('[data-crate-scroll]')).toHaveJSProperty('scrollTop', 0)
+  const block = await blockUnder(page, deps.total, `${deps.price}>${deps.total}`)
 
+  // A real pointer on the block shows the card, fitted to what the person
+  // can see, with its list in a scroll.
+  await page.mouse.move(block.x, block.y)
   const card = page.locator(`[data-line-card="${deps.total}"]`)
+  const box = card.locator(':scope > div')
+  await expect(card).toHaveAttribute('data-line-card-scrolls', 'true')
   const titles = card.locator('[data-waits-on]')
   await expect(titles).toHaveCount(21)
+  await expectSeen(page, box)
   await expect(titles.first()).toHaveText('Waits on Step 01 (outside this crate)')
-  await expect(titles.last()).toHaveText('Waits on Price the basket')
-  // Readable: whole inside the window, not cut off by the scene.
   await expect(titles.first()).toBeInViewport({ ratio: 1 })
-  await expect(titles.last()).toBeInViewport({ ratio: 1 })
+  await expect(titles.last()).not.toBeInViewport({ ratio: 1 })
 
   // The card covers no part of the link to the basket price.
   await expect(lineLinks(page)).toHaveCount(1)
-  const link = await linkEnds(page, `${deps.price}>${deps.total}`)
   const curve = await page.locator('[data-line-link-path]').boundingBox()
-  const box = await card.locator(':scope > div').boundingBox()
-  expect(curve && box).toBeTruthy()
-  if (curve && box) {
-    const apart =
-      curve.x + curve.width <= box.x ||
-      box.x + box.width <= curve.x ||
-      curve.y + curve.height <= box.y ||
-      box.y + box.height <= curve.y
-    expect(apart, `curve ${JSON.stringify(curve)} card ${JSON.stringify(box)} ends ${JSON.stringify(link)}`).toBe(true)
-  }
+  const cardBox = await box.boundingBox()
+  expect(curve && cardBox).toBeTruthy()
+  if (curve && cardBox)
+    expect(
+      curve.x + curve.width <= cardBox.x ||
+        cardBox.x + cardBox.width <= curve.x ||
+        curve.y + curve.height <= cardBox.y ||
+        cardBox.y + cardBox.height <= curve.y,
+      `curve ${JSON.stringify(curve)} card ${JSON.stringify(cardBox)}`,
+    ).toBe(true)
 
-  // The card takes no pointer: a press over it reaches what is under it.
-  const through = await card.evaluate((element) => {
-    const rect = element.firstElementChild?.getBoundingClientRect()
-    if (!rect) return false
-    const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
-    return hit !== null && !element.contains(hit)
-  })
-  expect(through).toBe(true)
+  // The pointer moves from the block onto the card, which stays, and the
+  // wheel brings the last title into view.
+  if (!cardBox) return
+  await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2, { steps: 12 })
+  await expect(card).toBeVisible()
+  await page.mouse.wheel(0, 2000)
+  await expect(titles.last()).toHaveText('Waits on Price the basket')
+  await expect(titles.last()).toBeInViewport({ ratio: 1 })
+  await expect(card).toBeVisible()
+  await expect(page.locator('[data-crate-scroll]')).toHaveJSProperty('scrollTop', 0)
+
+  // Back on the block, a press still opens the task.
+  await page.mouse.move(block.x, block.y, { steps: 12 })
+  await page.mouse.click(block.x, block.y)
+  await expect(page).toHaveURL(new RegExp(`/w/demo/crates/crate-deps\\?task=${deps.total}$`))
+})
+
+test('at 375 x 667 a pointer on a branch map line reads every title of its tall card', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 })
+  await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  // The person scrolls down to the map and points at the line's label.
+  const label = branchLine(page, deps.total).locator('[data-open-label]')
+  await label.scrollIntoViewIfNeeded()
+  await label.hover()
+  const card = page.locator(`[data-branch-card="${deps.total}"]`)
+  await expect(card).toHaveAttribute('data-branch-card-scrolls', 'true')
+  const titles = card.locator('[data-waits-on]')
+  await expect(titles).toHaveCount(21)
+  await expectSeen(page, card)
+  await expect(titles.first()).toBeInViewport({ ratio: 1 })
+  await expect(titles.last()).not.toBeInViewport({ ratio: 1 })
+
+  const box = await card.boundingBox()
+  if (!box) throw new Error('no card box')
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 12 })
+  await expect(card).toBeVisible()
+  await page.mouse.wheel(0, 2000)
+  await expect(titles.last()).toHaveText('Waits on Price the basket')
+  await expect(titles.last()).toBeInViewport({ ratio: 1 })
+  await expect(card).toBeVisible()
+
+  // Off the card and off the line, the card goes.
+  await page.mouse.move(2, 2, { steps: 4 })
+  await expect(card).toHaveCount(0)
+})
+
+test('at 375 x 667 keyboard focus on a branch map line keeps its whole card, which the page scrolls to', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 667 })
+  await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(branchLine(page, deps.total)).toHaveCount(1)
+  // Keyboard use from the start, so the focus below is keyboard focus.
+  await page.keyboard.press('Tab')
+  await branchLine(page, deps.total).focus()
+  const card = page.locator(`[data-branch-card="${deps.total}"]`)
+  await expect(card).toHaveAttribute('data-branch-card-scrolls', 'false')
+  const titles = card.locator('[data-waits-on]')
+  await expect(titles.first()).toBeInViewport({ ratio: 1 })
+  // The page scrolls with the keys while the focus stays on the line.
+  for (let step = 0; step < 12; step += 1) {
+    if (
+      await titles.last().evaluate((element) => {
+        const box = element.getBoundingClientRect()
+        return box.bottom <= window.innerHeight && box.top >= 0
+      })
+    )
+      break
+    await page.keyboard.press('ArrowDown')
+  }
+  await expect(titles.last()).toBeInViewport({ ratio: 1 })
+  await expect(branchLine(page, deps.total)).toBeFocused()
+  await expect(card).toBeVisible()
 })
 
 test('the line dims every member the pointed-at task has no dependency path to', async ({ page }) => {
@@ -1973,14 +2064,35 @@ for (const width of [375, 1280]) {
 // 375 px and a desktop width.
 for (const width of [375, 1280]) {
   test(`the tall line card screenshot at ${width} px`, async ({ page }, testInfo) => {
-    await page.setViewportSize({ width, height: width < 768 ? 812 : 900 })
+    await page.setViewportSize({ width, height: width < 768 ? 667 : 900 })
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
     await page.goto('/w/demo/crates/crate-deps')
     await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
-    await memberRow(page, deps.total).dispatchEvent('mouseover')
+    const block = await blockUnder(page, deps.total, `${deps.price}>${deps.total}`)
+    await page.mouse.move(block.x, block.y)
     const titles = page.locator(`[data-line-card="${deps.total}"] [data-waits-on]`)
-    await expect(titles.last()).toBeInViewport({ ratio: 1 })
+    await expect(titles.first()).toBeInViewport({ ratio: 1 })
+    // Nothing else on the page covers a title the card shows, also not the
+    // branch map's card of the same task.
+    // The point test skips an element that takes no pointer, so the card
+    // takes it while the test reads.
+    const covered = await titles.evaluateAll((lines) => {
+      const card = lines[0]?.closest<HTMLElement>('[data-line-card]')
+      const before = card?.style.pointerEvents ?? ''
+      if (card) card.style.pointerEvents = 'auto'
+      const hidden = lines.flatMap((line) => {
+        const box = line.getBoundingClientRect()
+        if (box.bottom <= 0 || box.top >= window.innerHeight) return []
+        const scroll = line.closest('[data-line-card] > div')?.getBoundingClientRect()
+        if (scroll && (box.top < scroll.top || box.bottom > scroll.bottom)) return []
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+        return hit && line.contains(hit) ? [] : [line.textContent]
+      })
+      if (card) card.style.pointerEvents = before
+      return hidden
+    })
+    expect(covered).toEqual([])
     await expect(page.locator(`[data-line-link="${deps.price}>${deps.total}"] [data-line-link-path]`)).toHaveAttribute(
       'd',
       /^M/,
@@ -1993,6 +2105,33 @@ for (const width of [375, 1280]) {
     if (shots) {
       const { writeFile } = await import('node:fs/promises')
       await writeFile(`${shots}/${name}`, image)
+    }
+    // The branch map card of the same task, under a pointer on its line.
+    await page.mouse.move(2, 2)
+    const label = branchLine(page, deps.total).locator('[data-open-label]')
+    await label.scrollIntoViewIfNeeded()
+    await label.hover()
+    await expect(page.locator(`[data-branch-card="${deps.total}"] [data-waits-on]`).first()).toBeInViewport({
+      ratio: 1,
+    })
+    // The line's card of the same task does not cover the card under the
+    // pointer.
+    const onTop = await page.locator(`[data-branch-card="${deps.total}"]`).evaluate((card: HTMLElement) => {
+      const before = card.style.pointerEvents
+      card.style.pointerEvents = 'auto'
+      const line = card.querySelector('[data-waits-on]')?.getBoundingClientRect()
+      const hit = line ? document.elementFromPoint(line.left + line.width / 2, line.top + line.height / 2) : null
+      card.style.pointerEvents = before
+      return hit !== null && card.contains(hit)
+    })
+    expect(onTop).toBe(true)
+    await page.evaluate(() => document.fonts.ready)
+    const mapName = `crate-deps-map-tall-card-${width}.png`
+    const mapImage = await page.screenshot()
+    await testInfo.attach(mapName, { body: mapImage, contentType: 'image/png' })
+    if (shots) {
+      const { writeFile } = await import('node:fs/promises')
+      await writeFile(`${shots}/${mapName}`, mapImage)
     }
   })
 }
