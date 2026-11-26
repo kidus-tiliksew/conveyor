@@ -626,3 +626,38 @@ func TestForgeTimeoutKeepsTheOutcome(t *testing.T) {
 		t.Fatal("a request started after the job's time ran out")
 	}
 }
+
+// TestCompareDirectKeepsAmbiguous422Pending covers component-production-
+// feedback invariant 16 and req-production-feedback AC-3.2: when a compare
+// answers 404 and the read of the base commit answers an ambiguous 422, the
+// pair is not stored as missing and stays eligible. Only GitHub's no-commit
+// answer stores missing.
+func TestCompareDirectKeepsAmbiguous422Pending(t *testing.T) {
+	f := newWorkFixture(t)
+	head, base := sha("ab01"), sha("ab02")
+	f.forge.chain("acme/conveyor", "", head)
+	key := store.FeedbackComparisonKey{Repository: "acme/conveyor", Base: base, Head: head}
+	f.forge.fail["compare|acme/conveyor|"+base+"|"+head] = github.StatusError(404, errors.New("not found"))
+	for name, lookup := range map[string]error{
+		"an ambiguous 422":        fmt.Errorf("read commit: %w", github.StatusError(422, errors.New("GitHub REST status 422: Validation Failed"))),
+		"an abuse-protection 422": fmt.Errorf("read commit: %w", github.RateLimitedError(statusBase.Add(time.Hour), errors.New("GitHub REST status 422: abuse detection"))),
+	} {
+		f.forge.fail["acme/conveyor|"+base] = lookup
+		if err := f.work().CompareDirect(f.ctx, []store.FeedbackComparisonKey{key}); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := f.comparison(base, head); ok {
+			t.Fatalf("%s: the pair was stored as %+v", name, got)
+		}
+		// The next pass may admit the pair again once its lease is over.
+		f.advance(store.FeedbackAdmissionLease + time.Second)
+	}
+	// GitHub's no-commit answer for the base proves it missing.
+	f.forge.fail["acme/conveyor|"+base] = github.CommitNotFoundError(base)
+	if err := f.work().CompareDirect(f.ctx, []store.FeedbackComparisonKey{key}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := f.comparison(base, head); !ok || got.Status != store.FeedbackCompareMissing {
+		t.Fatalf("after the no-commit answer=%+v ok=%v", got, ok)
+	}
+}

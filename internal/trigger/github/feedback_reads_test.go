@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const feedbackSHA = "0123456789abcdef0123456789abcdef01234567"
@@ -26,6 +27,10 @@ func TestReadCommit(t *testing.T) {
 		category ForgeErrorCategory
 		// repoStatus answers the repository read that a 404 makes; 0 is 200.
 		repoStatus int
+		// headers are set on the commit answer, and retry is the wait that a
+		// rate-limited answer must keep.
+		headers map[string]string
+		retry   time.Duration
 	}{
 		{name: "commit", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", body: `{"sha":"` + strings.ToUpper(feedbackSHA) + `"}`, want: feedbackSHA},
 		{name: "tag with a slash", ref: "tags/api/v1.2", path: "/repos/acme/app/commits/tags%2Fapi%2Fv1.2", body: `{"sha":"` + feedbackSHA + `"}`, want: feedbackSHA},
@@ -33,6 +38,11 @@ func TestReadCommit(t *testing.T) {
 		{name: "not found in a repository the token cannot read", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 404, body: `{"message":"Not Found"}`, repoStatus: 404, category: ForgePermission},
 		{name: "not found and the repository read fails", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 404, body: `{"message":"Not Found"}`, repoStatus: 502, category: ForgeStatus},
 		{name: "no commit for the SHA", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 422, body: `{"message":"No commit found for SHA: abc1234"}`, notFound: true},
+		{name: "no commit for the ref", ref: "tags/v9", path: "/repos/acme/app/commits/tags%2Fv9", status: 422, body: `{"message":"No commit found for the ref tags/v9"}`, notFound: true},
+		{name: "a validation 422 proves nothing", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 422, body: `{"message":"Validation Failed","errors":[{"code":"invalid"}]}`, category: ForgeStatus},
+		{name: "a 422 with no body proves nothing", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 422, body: ``, category: ForgeStatus},
+		{name: "an abuse-protection 422 keeps its retry time", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 422, body: `{"message":"No commit found for SHA: abc1234"}`, headers: map[string]string{"Retry-After": "120"}, category: ForgeRateLimited, retry: 120 * time.Second},
+		{name: "a rate-limited 422 keeps its retry time", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 422, body: `{"message":"You have exceeded a secondary rate limit"}`, headers: map[string]string{"X-RateLimit-Remaining": "0", "Retry-After": "60"}, category: ForgeRateLimited, retry: 60 * time.Second},
 		{name: "malformed", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", body: `{"sha":"abc"}`, category: ForgeResponse},
 		{name: "server failure", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 502, body: `{"message":"bad gateway"}`, category: ForgeStatus},
 		{name: "permission", ref: "abc1234", path: "/repos/acme/app/commits/abc1234", status: 403, body: `{"message":"Resource not accessible"}`, category: ForgePermission},
@@ -50,12 +60,16 @@ func TestReadCommit(t *testing.T) {
 				if r.Header.Get("Authorization") != "Bearer workspace-token" || r.URL.EscapedPath() != tc.path {
 					t.Errorf("request %s", r.URL.EscapedPath())
 				}
+				for name, value := range tc.headers {
+					w.Header().Set(name, value)
+				}
 				if tc.status != 0 {
 					w.WriteHeader(tc.status)
 				}
 				fmt.Fprint(w, tc.body)
 			}))
 			defer server.Close()
+			before := time.Now()
 			got, err := readCommit(t.Context(), "acme/app", tc.ref, newRESTRunner(server.Client(), server.URL, "workspace-token", "workspace demo GitHub App"))
 			switch {
 			case tc.want != "":
@@ -69,6 +83,12 @@ func TestReadCommit(t *testing.T) {
 			default:
 				if ErrorCategory(err) != tc.category || errors.Is(err, ErrCommitNotFound) {
 					t.Fatalf("err %v category %q, want %q", err, ErrorCategory(err), tc.category)
+				}
+				if tc.retry > 0 {
+					retryAt, limited := RateLimitRetryAt(err)
+					if !limited || retryAt.Before(before.Add(tc.retry-time.Second)) || retryAt.After(time.Now().Add(tc.retry+time.Second)) {
+						t.Fatalf("retry time %v limited=%v, want about %v from now", retryAt, limited, tc.retry)
+					}
 				}
 			}
 		})

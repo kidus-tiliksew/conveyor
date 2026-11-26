@@ -2,6 +2,7 @@ package feedback
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -61,6 +62,26 @@ func TestResolve(t *testing.T) {
 				t.Fatalf("got %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+	// A commit read answers an ambiguous 422 the way github.ReadCommit does:
+	// a categorized failure, not github.ErrCommitNotFound.
+	ambiguous := fmt.Errorf("read commit: %w", github.StatusError(422, errors.New("GitHub REST status 422: Validation Failed")))
+	abuse := fmt.Errorf("read commit: %w", github.RateLimitedError(retryAt, errors.New("GitHub REST status 422: abuse detection")))
+	for name, tc := range map[string]struct {
+		failure error
+		want    Resolution
+	}{
+		"a match plus an ambiguous 422 in another repository": {ambiguous, Resolution{Reason: string(github.ForgeStatus)}},
+		"a match plus an abuse-protection 422 in another repository": {abuse, Resolution{Reason: string(github.ForgeRateLimited), RetryAt: retryAt}},
+	} {
+		forge := newStubForge()
+		forge.chain("acme/app", "", commit)
+		forge.fail["acme/conveyor|abc1234"] = tc.failure
+		// The 422 proves neither absence nor uniqueness, so the match in
+		// acme/app does not resolve the version.
+		if got := Resolve(t.Context(), forge, ResolveRequest{Version: store.FeedbackVersion{Commit: "abc1234"}, Repositories: resolverRepositories}); got != tc.want {
+			t.Fatalf("%s: got %+v, want %+v", name, got, tc.want)
+		}
 	}
 	for category, failure := range map[github.ForgeErrorCategory]error{
 		github.ForgeRequest:     &github.Error{Category: github.ForgeRequest, Err: errors.New("transport")},

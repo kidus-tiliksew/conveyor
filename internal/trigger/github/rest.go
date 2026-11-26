@@ -133,7 +133,10 @@ func (c *restClient) request(ctx context.Context, method, endpoint, accept strin
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		category := ForgeStatus
-		if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusForbidden && (response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != "") {
+		limited := response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != ""
+		// GitHub can answer abuse protection with 403 or 422 and a retry
+		// header. Either is a rate limit that keeps GitHub's retry time.
+		if response.StatusCode == http.StatusTooManyRequests || (response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusUnprocessableEntity) && limited {
 			category = ForgeRateLimited
 		} else if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 			category = ForgePermission

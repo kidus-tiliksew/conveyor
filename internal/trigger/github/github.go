@@ -1188,6 +1188,15 @@ func CommitNotFoundError(ref string) error {
 	return &Error{Category: ForgeStatus, status: http.StatusNotFound, Err: fmt.Errorf("%w: %s", ErrCommitNotFound, ref)}
 }
 
+// provesMissingRef reports whether a 422 from a commit read carries GitHub's
+// message for a commit or ref the repository does not hold, such as "No
+// commit found for SHA: ..." or "No commit found for the ref ...". An empty,
+// unparsed, or other message proves nothing.
+func provesMissingRef(err error) bool {
+	_, message, found := strings.Cut(err.Error(), "GitHub REST status 422: ")
+	return found && strings.HasPrefix(strings.ToLower(strings.TrimSpace(message)), "no commit found for")
+}
+
 func fullCommitID(sha string) bool {
 	return len(sha) == 40 && strings.Trim(sha, "0123456789abcdef") == ""
 }
@@ -1213,8 +1222,13 @@ func readCommit(ctx context.Context, repo, ref string, run ghRunner) (string, er
 		failure := forgeCallError(err)
 		switch HTTPStatus(failure) {
 		case http.StatusUnprocessableEntity:
-			// GitHub names a readable repository that holds no such commit.
-			return "", CommitNotFoundError(ref)
+			// GitHub also answers 422 for validation and abuse protection, so
+			// only its no-commit message proves that a readable repository
+			// holds no such commit or ref. Every other 422, a rate-limited
+			// one included, stays a categorized failure with its retry time.
+			if ErrorCategory(failure) == ForgeStatus && provesMissingRef(failure) {
+				return "", CommitNotFoundError(ref)
+			}
 		case http.StatusNotFound:
 			if _, repoErr := run(ctx, "api", "repos/"+repo); repoErr != nil {
 				repoFailure := forgeCallError(repoErr)

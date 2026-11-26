@@ -190,7 +190,7 @@ resolved again. An unresolved version keeps one reason:
 | `version_rule_mismatch` | The version does not fit the version rule |
 | `no_match` | No candidate repository holds the commit or the tag |
 | `ambiguous` | Two or more repositories hold it, even with one commit ID |
-| `forge_request`, `forge_status`, `forge_response`, `forge_rate_limited`, `forge_permission` | A GitHub read failed with that category. A failure in one candidate repository proves neither absence nor uniqueness |
+| `forge_request`, `forge_status`, `forge_response`, `forge_rate_limited`, `forge_permission` | A GitHub read failed with that category. A failure in one candidate repository proves neither absence nor uniqueness. A 422 proves absence only when GitHub's message says no commit was found. A 422 with a retry header is `forge_rate_limited` and keeps GitHub's retry time |
 
 Each background job has a two-minute bound. A GitHub read that ends when
 that time runs out still saves its outcome, with its own short bound, so a
