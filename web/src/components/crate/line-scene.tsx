@@ -184,39 +184,47 @@ function place(blocks: LineBlock[], layout: Layout, links: WaitLink[]): Map<stri
   return places
 }
 
-// The places of one station's blocks in file: each member that no other
-// member here holds back heads a file, and the members that wait on it stand
-// behind it, toward the station before. Files fill the belt's two rows. Null
-// when no two blocks here are linked, when a link loop leaves a block out, or
-// when the files do not fit the station without stacking.
+// The places of one station's blocks in file. The blocks that links join
+// form one file, each member standing ahead of every member that waits on
+// it, toward the next station. Files fill the belt's two rows. Null when no
+// two blocks here are linked, when a link loop leaves no order, or when the
+// files do not fit the station without stacking.
 function fileSpots(here: LineBlock[], links: WaitLink[], length: number) {
   const ids = new Set(here.map((block) => block.id))
   const inZone = links.filter((link) => ids.has(link.from) && ids.has(link.to))
   if (inZone.length === 0) return null
-  const waits = new Set(inZone.map((link) => link.to))
-  const seen = new Set<string>()
-  const walk = (id: string, file: string[]) => {
-    if (seen.has(id)) return
-    seen.add(id)
-    file.push(id)
-    for (const link of inZone) if (link.from === id) walk(link.to, file)
+  // The linked groups, in the served block order of their first block.
+  const group = new Map(here.map((block) => [block.id, block.id]))
+  const root = (id: string): string => {
+    const parent = group.get(id) as string
+    return parent === id ? id : root(parent)
   }
-  const files: string[][] = []
-  for (const block of here) {
-    if (waits.has(block.id)) continue
+  for (const link of inZone) group.set(root(link.to), root(link.from))
+  const files = new Map<string, string[]>()
+  for (const block of here) files.set(root(block.id), [...(files.get(root(block.id)) ?? []), block.id])
+  // Each file in dependency order: a block takes its place once every block
+  // it waits on here has one, and ties keep the served order.
+  const ordered: string[][] = []
+  for (const members of files.values()) {
+    const waitsOn = new Map(members.map((id) => [id, inZone.filter((link) => link.to === id).length]))
     const file: string[] = []
-    walk(block.id, file)
-    if (file.length > 0) files.push(file)
+    while (file.length < members.length) {
+      const next = members.find((id) => !file.includes(id) && waitsOn.get(id) === 0)
+      if (next === undefined) return null
+      file.push(next)
+      for (const link of inZone) if (link.from === next) waitsOn.set(link.to, (waitsOn.get(link.to) ?? 0) - 1)
+    }
+    ordered.push(file)
   }
   const used = [0, 0]
   const spots: Array<{ id: string; row: number; column: number }> = []
-  for (const file of files) {
+  for (const file of ordered) {
     const row = used[0] <= used[1] ? 0 : 1
     for (const id of file) spots.push({ id, row, column: used[row]++ })
   }
   const longest = Math.max(...used)
   const gap = longest > 1 ? Math.min(MODULE + 0.3, (length - MODULE) / (longest - 1)) : MODULE + 0.3
-  if (spots.length !== here.length || gap < MODULE + 0.08) return null
+  if (gap < MODULE + 0.08) return null
   return { spots, gap, single: used[1] === 0 }
 }
 

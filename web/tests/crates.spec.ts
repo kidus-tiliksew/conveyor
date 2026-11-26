@@ -1742,6 +1742,79 @@ test('the line links the pointed-at task to the members it waits on, only at the
   await expect(lineLinks(page)).toHaveCount(0)
 })
 
+// Three linked members at one station, where a depth-first walk from the
+// basket price would put the order history ahead of the coupon rules it
+// waits on. Each member stands ahead of every member that waits on it.
+const stationInsight: CrateInsight = {
+  ...depsInsight,
+  tasks: depsInsight.tasks.map((task) =>
+    task.id === deps.history
+      ? {
+          ...task,
+          phase: 'blocked',
+          station: 'build',
+          pull_request_opened_at: [],
+          depends_on: [
+            dependency(deps.price, 'Price the basket', 'running', true, true),
+            dependency(deps.coupon, 'Apply the coupon rules', 'queued', true, true),
+          ],
+          wait_depth: 2,
+        }
+      : task.id === deps.coupon
+        ? { ...task, waited_on_by: [deps.history] }
+        : task.id === deps.price
+          ? { ...task, waited_on_by: [deps.total, deps.history, deps.coupon] }
+          : task,
+  ),
+}
+
+test('a member at a station stands ahead of every member there that waits on it', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1800 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await serveCrates(page, { insights: { [depsCrate.id]: stationInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-station-sign="build"]')).toContainText('3')
+  await memberRow(page, deps.history).hover()
+  await expect(lineLinks(page)).toHaveCount(2)
+  const fromCoupon = await linkEnds(page, `${deps.coupon}>${deps.history}`)
+  const fromPrice = await linkEnds(page, `${deps.price}>${deps.history}`)
+  // The coupon rules stand ahead of the order history, and the basket price
+  // ahead of both.
+  expect(fromCoupon.start.x - fromCoupon.end.x).toBeGreaterThan(20)
+  expect(fromPrice.start.x - fromCoupon.start.x).toBeGreaterThan(20)
+})
+
+// A short map: three open lines in one lane. The first line's card is too
+// tall for the room below it and for the room above it, so it stands below,
+// where the map scrolls to it, and never loses its top.
+const shortInsight: CrateInsight = {
+  ...depsInsight,
+  tasks: depsInsight.tasks.filter((task) => [deps.price, deps.total, deps.coupon].includes(task.id)),
+  whereabouts: [{ key: 'task_branch', branch: null, task_ids: [deps.price, deps.total, deps.coupon] }],
+  replay: {
+    ...depsInsight.replay,
+    steps: depsInsight.replay.steps.filter((entry) => [deps.price, deps.total, deps.coupon].includes(entry.task_id)),
+  },
+}
+
+test('a branch map card stays whole when it fits on neither side of its line', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await serveCrates(page, { insights: { [depsCrate.id]: shortInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  const scroller = page.locator('[data-branch-map-scroll]')
+  await expect(scroller.locator('[data-branch-task]')).toHaveCount(3)
+  for (const id of [deps.price, deps.total, deps.coupon]) {
+    await branchLine(page, id).focus()
+    const card = scroller.locator(`[data-branch-card="${id}"]`)
+    await expect(card).toBeVisible()
+    const view = await scroller.boundingBox()
+    const box = await card.boundingBox()
+    // The card's top is inside the map, not cut off above it.
+    expect((box?.y ?? -1) - (view?.y ?? 0)).toBeGreaterThanOrEqual(0)
+  }
+  await expect(scroller.locator(`[data-branch-card="${deps.coupon}"] [data-waits-on]`)).toHaveCount(1)
+})
+
 test('the line dims every member the pointed-at task has no dependency path to', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 1800 })
   await page.emulateMedia({ reducedMotion: 'reduce' })

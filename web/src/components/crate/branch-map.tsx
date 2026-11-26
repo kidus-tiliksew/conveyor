@@ -36,8 +36,8 @@ const TOP = 30
 const GUTTER_LEFT = 92
 // Below this width the map keeps it and scrolls sideways inside its card.
 const MIN_WIDTH = 680
-// The hover card's height, used to keep the card inside the map, and the
-// height each dependency line adds to it.
+// The hover card's height before it is measured, used to keep the card
+// inside the map, and the height each dependency line adds to it.
 const CARD_ROOM = 64
 const CARD_DEPENDENCY_LINE = 16
 // The order in which a lane's open lines take rows, nearest the merge first.
@@ -393,11 +393,23 @@ function BranchMapChart({
   const focus = (target: EmphasisTarget) => emphasis.focus(target)
   const blur = (target: EmphasisTarget) => emphasis.blur(target)
 
-  const cardRoom = shown ? CARD_ROOM + dependencyLineCount(shown.task) * CARD_DEPENDENCY_LINE : CARD_ROOM
-  const cardBelow = shown ? shown.y1 + 12 + cardRoom <= model.height : true
   // Below 680 px the map scrolls sideways, so a line that takes keyboard
   // focus brings its card into view. A pointer never scrolls the map.
   const card = useRef<HTMLDivElement>(null)
+  // The card's rendered height, measured after each render. Its placement
+  // moves it and does not change its height. Until it is measured, the
+  // estimate counts the dependency lines.
+  const [cardHeight, setCardHeight] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const height = card.current?.offsetHeight ?? null
+    setCardHeight((current) => (current === height ? current : height))
+  })
+  const cardRoom =
+    cardHeight ?? (shown ? CARD_ROOM + dependencyLineCount(shown.task) * CARD_DEPENDENCY_LINE : CARD_ROOM)
+  // The card stands below the line when it fits there, and above it when it
+  // fits there instead. When it fits on neither side it stands below, where
+  // the map scrolls to reach it: above, its top would be cut off.
+  const cardBelow = shown ? shown.y1 + 12 + cardRoom <= model.height || shown.y1 - 12 - cardRoom < 0 : true
   const focusedCard = focusedId !== null && shown?.task.id === focusedId
   useEffect(() => {
     if (focusedCard) card.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
