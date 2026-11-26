@@ -262,7 +262,7 @@ func TestEnvironmentRoutes(t *testing.T) {
 			t.Fatal("a later read holds the key value")
 		}
 	}
-	if verified, err := h.st.VerifyEnvironmentKey(t.Context(), issued.Value); err != nil || verified.EnvironmentID != record.ID || verified.KeyID != issued.ID || verified.Workspace != "alpha" {
+	if verified, err := h.st.CheckEnvironmentKey(t.Context(), issued.Value); err != nil || verified.EnvironmentID != record.ID || verified.KeyID != issued.ID || verified.Workspace != "alpha" {
 		t.Fatalf("verified = %+v %v", verified, err)
 	}
 	for range 2 {
@@ -421,7 +421,7 @@ func TestEnvironmentFieldsRefuseCredentials(t *testing.T) {
 	if after := h.recorded(); after != before {
 		t.Fatal("a refused credential changed a record or an event")
 	}
-	if _, err := h.st.VerifyEnvironmentKey(t.Context(), key.Value); err != nil {
+	if _, err := h.st.CheckEnvironmentKey(t.Context(), key.Value); err != nil {
 		t.Fatalf("the key after the refusals: %v", err)
 	}
 }

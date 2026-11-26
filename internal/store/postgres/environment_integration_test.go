@@ -133,7 +133,7 @@ func TestEnvironmentAuditFailureRollsBackIntegration(t *testing.T) {
 	if err != nil || len(records) != 1 || records[0].Archived || len(records[0].Keys) != 1 {
 		t.Fatalf("records=%+v err=%v, want the one unarchived environment with one key", records, err)
 	}
-	if _, err := st.VerifyEnvironmentKey(ctx, key.Value); err != nil {
+	if _, err := st.CheckEnvironmentKey(ctx, key.Value); err != nil {
 		t.Fatalf("the key after a failed revocation: %v", err)
 	}
 	var ignored int

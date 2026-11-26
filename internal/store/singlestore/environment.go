@@ -501,57 +501,27 @@ func (s *Store) RevokeEnvironmentKey(ctx context.Context, environmentID, keyID s
 
 // readEnvironmentKey resolves a key by the digest of the presented value
 // alone, in one read that also checks the revocation and the archive state.
-func (s *Store) readEnvironmentKey(ctx context.Context, hash []byte) (store.VerifiedEnvironmentKey, bool, error) {
+func (s *Store) readEnvironmentKey(ctx context.Context, hash []byte) (store.VerifiedEnvironmentKey, error) {
 	var verified store.VerifiedEnvironmentKey
 	var stored []byte
-	var stale bool
-	err := backendRow(ctx, s.db, "SELECT k.key_hash,k.workspace_id,k.environment_id,k.id,k.label,k.last_used_at IS NULL OR k.last_used_at<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND) FROM environment_keys k JOIN environments e ON e.workspace_id=k.workspace_id AND e.id=k.environment_id WHERE k.key_hash=? AND k.revoked_at IS NULL AND e.archived=0",
-		store.EnvironmentKeyUseGranularity.Microseconds(), hash).
-		Scan(&stored, &verified.Workspace, &verified.EnvironmentID, &verified.KeyID, &verified.Label, &stale)
+	err := backendRow(ctx, s.db, "SELECT k.key_hash,k.workspace_id,k.environment_id,k.id,k.label FROM environment_keys k JOIN environments e ON e.workspace_id=k.workspace_id AND e.id=k.environment_id WHERE k.key_hash=? AND k.revoked_at IS NULL AND e.archived=0", hash).
+		Scan(&stored, &verified.Workspace, &verified.EnvironmentID, &verified.KeyID, &verified.Label)
 	if errors.Is(err, sql.ErrNoRows) {
-		return store.VerifiedEnvironmentKey{}, false, store.ErrInvalidEnvironmentKey
+		return store.VerifiedEnvironmentKey{}, store.ErrInvalidEnvironmentKey
 	}
 	if err != nil {
-		return store.VerifiedEnvironmentKey{}, false, translateBackendConflict(err)
+		return store.VerifiedEnvironmentKey{}, translateBackendConflict(err)
 	}
 	if subtle.ConstantTimeCompare(stored, hash) != 1 {
-		return store.VerifiedEnvironmentKey{}, false, store.ErrInvalidEnvironmentKey
+		return store.VerifiedEnvironmentKey{}, store.ErrInvalidEnvironmentKey
 	}
-	return verified, stale, nil
-}
-
-// VerifyEnvironmentKey implements store.EnvironmentStore. It reads before it
-// writes and never enters a transaction. A stale last use gets one
-// conditional UPDATE that repeats every validity predicate. A call whose
-// UPDATE changes nothing rereads, because a concurrent call stamped first or
-// the key lost its validity in between.
-func (s *Store) VerifyEnvironmentKey(ctx context.Context, value string) (store.VerifiedEnvironmentKey, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "VerifyEnvironmentKey")
-	hash := store.EnvironmentKeyDigest(value)
-	verified, stale, err := s.readEnvironmentKey(ctx, hash)
-	if err != nil || !stale {
-		return verified, err
-	}
-	result, err := backendExec(ctx, s.db, "UPDATE environment_keys SET last_used_at=CURRENT_TIMESTAMP(6) WHERE workspace_id=? AND id=? AND key_hash=? AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND)) AND environment_id IN (SELECT id FROM environments WHERE workspace_id=? AND archived=0)",
-		verified.Workspace, verified.KeyID, hash, store.EnvironmentKeyUseGranularity.Microseconds(), verified.Workspace)
-	if err != nil {
-		return store.VerifiedEnvironmentKey{}, translateBackendConflict(err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return store.VerifiedEnvironmentKey{}, translateBackendConflict(err)
-	}
-	if changed != 1 {
-		verified, _, err = s.readEnvironmentKey(ctx, hash)
-	}
-	return verified, err
+	return verified, nil
 }
 
 // CheckEnvironmentKey implements store.EnvironmentStore.
 func (s *Store) CheckEnvironmentKey(ctx context.Context, value string) (store.VerifiedEnvironmentKey, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "CheckEnvironmentKey")
-	verified, _, err := s.readEnvironmentKey(ctx, store.EnvironmentKeyDigest(value))
-	return verified, err
+	return s.readEnvironmentKey(ctx, store.EnvironmentKeyDigest(value))
 }
 
 // environmentSuggestionRow is one stored suggestion. reportedAt is not valid

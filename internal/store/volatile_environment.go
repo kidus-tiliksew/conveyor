@@ -246,18 +246,6 @@ func (m *volatileMemory) RevokeEnvironmentKey(ctx context.Context, environmentID
 	return nil
 }
 
-// VerifyEnvironmentKey implements EnvironmentStore. The check and the last
-// use stamp share the write mutex.
-func (m *volatileMemory) VerifyEnvironmentKey(_ context.Context, value string) (VerifiedEnvironmentKey, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	verified, err := m.checkEnvironmentKeyLocked(value)
-	if err == nil {
-		m.touchEnvironmentKeyLocked(memoryScopedKey{workspace: verified.Workspace, id: verified.KeyID})
-	}
-	return verified, err
-}
-
 // CheckEnvironmentKey implements EnvironmentStore.
 func (m *volatileMemory) CheckEnvironmentKey(_ context.Context, value string) (VerifiedEnvironmentKey, error) {
 	m.mu.RLock()
