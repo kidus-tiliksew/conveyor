@@ -102,7 +102,7 @@ func (m *volatileMemory) RecordFeedbackGitHubDeploy(ctx context.Context, deploy 
 		return false, nil
 	}
 	origin := FeedbackGitHubOrigin(m.nextFeedbackReportLocked(scope))
-	changes, err := PlanFeedbackChanges(signal, origin, FeedbackHistory{Running: m.feedbackState.running[scope], Later: m.feedbackState.accepted[scope], Deploys: m.feedbackState.deploys[scope]})
+	changes, err := PlanFeedbackGitHubDeploy(signal, origin, FeedbackHistory{Running: m.feedbackState.running[scope], Later: m.feedbackState.accepted[scope], Deploys: m.feedbackState.deploys[scope]})
 	if err != nil {
 		return false, err
 	}

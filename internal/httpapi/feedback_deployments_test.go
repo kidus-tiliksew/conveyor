@@ -85,3 +85,40 @@ func TestFeedbackSignalJobsOfOneTimeStayApart(t *testing.T) {
 		t.Fatalf("resolved services=%v, want both reports processed", services)
 	}
 }
+
+// TestFeedbackDeploymentRedeployAsOf applies two successful GitHub reports of
+// one commit at two times with no signal between them. The environment's
+// live status rests on the later report, and a duplicate of it writes nothing
+// (component-production-feedback invariants 10 and 17; req-production-feedback
+// AC-1.5 and AC-3.6).
+func TestFeedbackDeploymentRedeployAsOf(t *testing.T) {
+	merge, deployed := readsCommit("b2b2b2b2b2b2"), readsCommit("c3c3c3c3c3c3")
+	h := newReadsHarness(t, merge, deployed)
+	task := h.merged(h.ctx, merge, "")
+	environment, err := h.st.CreateEnvironment(h.ctx, store.EnvironmentInput{Name: "Staging", GitHubEnvironments: []string{"staging"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := h.server.FeedbackDeploymentReports()
+	first, second := time.Date(2026, 11, 26, 9, 30, 0, 0, time.UTC), time.Date(2026, 11, 26, 11, 0, 0, 0, time.UTC)
+	for _, at := range []time.Time{first, second, second} {
+		if err := apply(h.ctx, "acme/app", github.DeploymentStatus{State: "success", Environment: "staging", Commit: deployed, ReportedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+		h.settle()
+	}
+	deploys, err := h.st.ListFeedbackDeploys(h.ctx, environment.ID)
+	if err != nil || len(deploys) != 2 || !deploys[0].DeployedAt.Equal(first) || !deploys[1].DeployedAt.Equal(second) || deploys[1].StoppedAt != nil {
+		t.Fatalf("deploys=%+v err=%v, want one deploy for each report time", deploys, err)
+	}
+	var staging *feedback.TaskStatus
+	for _, status := range statusesOf(t, h.taskRead(task.ID)["environments"]) {
+		if status.Environment.ID == environment.ID {
+			copied := status
+			staging = &copied
+		}
+	}
+	if staging == nil || staging.Status != feedback.StatusLive || staging.AsOf == nil || !staging.AsOf.Equal(second) {
+		t.Fatalf("staging status=%+v, want live as of the later report", staging)
+	}
+}

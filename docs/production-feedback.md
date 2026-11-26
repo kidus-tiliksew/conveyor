@@ -171,8 +171,10 @@ A report records a deploy only when all of these are true:
 To check the branch, Conveyor reads the branch head with the workspace App's
 installation token. Then it asks GitHub to compare the deployment's commit
 with that head. The answers `identical` and `ahead` hold the commit. The answers
-`behind` and `diverged` do not, and the report records nothing. A branch that
-GitHub confirms missing holds no commit.
+`behind` and `diverged` do not, and the report records nothing. Only these
+two answers make a report a no-op. A branch head that does not resolve, for
+example because GitHub does not find the branch, is a failed read, as
+[When the branch check fails](#when-the-branch-check-fails) describes.
 
 The deploy has these values:
 
@@ -192,9 +194,16 @@ The server keeps each report as it keeps an accepted signal, with its time and
 its service, and the report takes the next report number of the environment.
 A signal that reaches the store later with an earlier arrival therefore ends
 at the GitHub report, as [Deploys and running versions](#deploys-and-running-versions)
-describes. A report of the commit that the service runs now records no deploy,
-but its time is kept in the same way. A repeat of a report that the server
-already holds, with the same service, commit, and time, writes nothing.
+describes.
+
+Each successful report keeps its own deploy record and time. When a report is
+the newest report of the service and the service already runs the reported
+commit from an earlier time, the report is a redeploy. The earlier deploy stops
+at the report's time, and a new deploy of the same commit starts then. The
+`as_of` time of the environment's live status therefore follows the newest
+report. A repeat of a report that the server already holds, with the same
+service, commit, and time, writes nothing. A repeated delivery with the same
+delivery ID is refused before it reaches the store.
 
 An archived environment records nothing from GitHub. Conveyor runs no git
 command and writes nothing to GitHub for a report.
@@ -205,15 +214,18 @@ it, as it does for a signal.
 
 ### When the branch check fails
 
-When a GitHub read for the branch check fails, for example with a timeout or a
-rate limit, the report records nothing. The delivery fails with the failure's
+When a GitHub read for the branch check fails, for example with a timeout, a
+rate limit, or a branch head that does not resolve, the report records
+nothing. The delivery fails with the failure's
 category and no text from GitHub. The webhook applier tries the delivery two
 more times, after one second and then two seconds. When every attempt fails,
 the applier forgets the delivery.
 
 GitHub does not send a failed delivery again by itself. A person can redeliver
 it from the App's advanced settings on GitHub. Because the applier forgot the
-delivery, Conveyor accepts the redelivery and applies it again.
+delivery, Conveyor accepts the redelivery and applies it again. For example,
+when the tracked branch is created or restored after the failure, a
+redelivery records the deploy.
 
 ### Suggestions
 

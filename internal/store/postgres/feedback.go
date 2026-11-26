@@ -377,7 +377,7 @@ func (s *Store) RecordFeedbackGitHubDeploy(ctx context.Context, deploy store.Fee
 			return err
 		}
 		origin := store.FeedbackGitHubOrigin(next)
-		changes, err := store.PlanFeedbackChanges(signal, origin, history)
+		changes, err := store.PlanFeedbackGitHubDeploy(signal, origin, history)
 		if err != nil {
 			return err
 		}

@@ -206,9 +206,11 @@ type FeedbackStore interface {
 	// PlanFeedbackChanges plans it for a signal that names only that
 	// service. It takes the next report number of the environment, which
 	// signals share, and it is kept as an accepted report with an empty
-	// label, so a later-arriving earlier report ends at it. A report of the
-	// commit that the service runs now records no deploy and still keeps its
-	// time. An environment that is missing or archived by the time of the
+	// label, so a later-arriving earlier report ends at it. A newest report
+	// of the commit that the service runs from an earlier time is a distinct
+	// redeploy, as PlanFeedbackGitHubDeploy plans it, so every successful
+	// report keeps its own deploy record and time. An environment that is
+	// missing or archived by the time of the
 	// write, a repository outside the workspace configuration, and a repeat
 	// of an accepted GitHub report of the same service and time that changes
 	// nothing record nothing and answer false. It leaves the newest signal
@@ -681,6 +683,49 @@ func FeedbackGitHubDeploySignal(deploy FeedbackGitHubDeploy) (FeedbackSignal, er
 			Versions: []FeedbackSignalVersion{{Commit: commit}},
 		}},
 	}, nil
+}
+
+// PlanFeedbackGitHubDeploy plans a GitHub deployment report, given as the
+// one-service signal that FeedbackGitHubDeploySignal returns. It is
+// PlanFeedbackChanges with one addition: when the report is the service's
+// newest report and the service already runs the reported commit from an
+// earlier time, the report is a distinct redeploy. That deploy stops at the
+// report's time, and a new deploy of the same commit starts then, so the
+// deploy records keep the time of every successful deployment report
+// (component-production-feedback invariants 10 and 17; req-production-feedback
+// AC-1.5 and AC-3.6). A report at the time the running deploy started is a
+// repeat and plans no redeploy. A report that a later report already
+// overtook is planned as PlanFeedbackChanges plans an earlier arrival.
+func PlanFeedbackGitHubDeploy(signal FeedbackSignal, origin FeedbackOrigin, history FeedbackHistory) (FeedbackChanges, error) {
+	changes, err := PlanFeedbackChanges(signal, origin, history)
+	if err != nil || len(signal.Services) != 1 || len(signal.Services[0].Versions) != 1 {
+		return changes, err
+	}
+	service := signal.Services[0]
+	running := []FeedbackRunningVersion{}
+	for _, version := range history.Running {
+		if version.Service == service.Name {
+			running = append(running, version)
+		}
+	}
+	if len(FeedbackLateServices(signal, running)) > 0 {
+		return changes, nil
+	}
+	reported := FeedbackVersion{Repository: service.Repository, Commit: service.Versions[0].Commit, Version: service.Versions[0].Version}
+	for _, version := range running {
+		if version.FeedbackVersion != reported || !version.DeployedAt.Before(signal.ArrivedAt) {
+			continue
+		}
+		deploy, err := changes.addDeploy(FeedbackDeploy{EnvironmentID: signal.EnvironmentID, Service: service.Name, FeedbackVersion: reported, DeployedAt: signal.ArrivedAt, Origin: origin})
+		if err != nil {
+			return FeedbackChanges{}, err
+		}
+		changes.Stopped = append(changes.Stopped, version)
+		changes.Started = append(changes.Started, FeedbackRunningVersion{
+			EnvironmentID: signal.EnvironmentID, Service: service.Name, FeedbackVersion: reported, DeployID: deploy.ID, DeployedAt: deploy.DeployedAt, ReportedAt: signal.ArrivedAt,
+		})
+	}
+	return changes, nil
 }
 
 // Changed reports whether the plan changes a deploy or a running version. A

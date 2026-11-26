@@ -76,26 +76,48 @@ func runFeedbackGitHubDeploy(t *testing.T, x Fixture) {
 	if after := e.state(t); after != before {
 		t.Fatalf("a repeated report changed the stored state:\nbefore %s\nafter  %s", before, after)
 	}
-	// A later report of the same commit records no deploy and keeps its time
-	// as the service's newest report.
+	// A later report of the same commit is a distinct redeploy at its own
+	// time.
 	e.report(t, e.github(30*time.Second, "app", feedbackCommit("a")), true)
-	e.requireDeploys(t, "app=@1+0-20", "app=@2+0-20", "app="+feedbackCommit("a")+"+20", "web=@3+0")
-	for _, version := range e.running(t) {
-		if version.Service == "app" && !version.ReportedAt.Equal(feedbackTime(30*time.Second)) {
-			t.Fatalf("running version=%+v, want the later report as its newest report", version)
-		}
-	}
+	e.requireRunning(t, "app="+feedbackCommit("a")+"+30", "web=@3+0")
+	e.requireDeploys(t, "app=@1+0-20", "app=@2+0-20", "app="+feedbackCommit("a")+"+20-30", "app="+feedbackCommit("a")+"+30", "web=@3+0")
 
 	// A new commit replaces the GitHub deploy.
 	e.report(t, e.github(40*time.Second, "app", feedbackCommit("b")), true)
 	e.requireRunning(t, "app="+feedbackCommit("b")+"+40", "web=@3+0")
-	e.requireDeploys(t, "app=@1+0-20", "app=@2+0-20", "app="+feedbackCommit("a")+"+20-40", "app="+feedbackCommit("b")+"+40", "web=@3+0")
+	e.requireDeploys(t, "app=@1+0-20", "app=@2+0-20", "app="+feedbackCommit("a")+"+20-30", "app="+feedbackCommit("a")+"+30-40", "app="+feedbackCommit("b")+"+40", "web=@3+0")
+}
+
+// runFeedbackGitHubRedeploy covers two successful reports of one commit at two
+// times with no signal between them. Each keeps its own deploy record and
+// time, both come from GitHub, and a repeat of either writes nothing.
+func runFeedbackGitHubRedeploy(t *testing.T, x Fixture) {
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	e.report(t, e.github(20*time.Second, "app", feedbackCommit("a")), true)
+	e.report(t, e.github(50*time.Second, "app", feedbackCommit("a")), true)
+	e.requireRunning(t, "app="+feedbackCommit("a")+"+50")
+	e.requireDeploys(t, "app="+feedbackCommit("a")+"+20-50", "app="+feedbackCommit("a")+"+50")
+	github := store.FeedbackOrigin{Source: store.FeedbackSourceGitHub, Actor: core.SystemActorID}
+	for _, deploy := range e.deploys(t) {
+		if unnumbered(deploy.Origin) != github || (deploy.StopOrigin != nil && unnumbered(*deploy.StopOrigin) != github) {
+			t.Fatalf("deploy=%+v, want GitHub origins", deploy)
+		}
+	}
+	if _, ok := e.newest(t); ok {
+		t.Fatal("a GitHub report recorded a newest signal")
+	}
+	before := e.state(t)
+	e.report(t, e.github(50*time.Second, "app", feedbackCommit("a")), false)
+	e.report(t, e.github(20*time.Second, "app", feedbackCommit("a")), false)
+	if after := e.state(t); after != before {
+		t.Fatalf("a repeated report changed the stored state:\nbefore %s\nafter  %s", before, after)
+	}
 }
 
 // runFeedbackGitHubBoundaries proves that a GitHub report is a boundary of
 // the deploy history: a signal that arrives later with an earlier time ends
-// at the GitHub report, also when that report recorded no deploy or when an
-// earlier report moved the GitHub deploy's start.
+// at the GitHub report, also when that report was a redeploy of the running
+// commit or when an earlier report moved the GitHub deploy's start.
 func runFeedbackGitHubBoundaries(t *testing.T, x Fixture) {
 	t.Run("RepeatedCommit", func(t *testing.T) {
 		e := newFeedbackEnvironment(t, x, "Production", "watcher")

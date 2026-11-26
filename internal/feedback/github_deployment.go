@@ -154,17 +154,19 @@ func (d DeploymentReports) suggest(ctx context.Context, workspace string, reposi
 // onTrackedBranch reports whether commit is the head of the branch or an
 // ancestor of it. It reads the branch head through the workspace App and
 // compares the deployment commit as base with that head: identical and ahead
-// hold the commit, and behind and diverged do not. A branch that GitHub
-// confirms missing holds no commit. Any other failed read is an error.
+// hold the commit, and behind and diverged do not. Every failed read is an
+// error, a head that does not resolve included.
 func (d DeploymentReports) onTrackedBranch(ctx context.Context, workspace string, repository Repository, branch, commit string) (bool, error) {
 	if d.Forge == nil {
 		return false, branchCheckError(ErrNoGitHubApp)
 	}
 	forge := d.Forge(ctx, workspace)
+	// A head that does not resolve, a missing branch included, is a failed
+	// read like any other. The delivery fails, so the applier retries it and
+	// then forgets it, and a redelivery after the head returns records the
+	// deploy. Only a comparison answer proves that the commit is off the
+	// branch.
 	head, err := forge.ReadCommit(ctx, repository.Slug, "heads/"+branch)
-	if errors.Is(err, github.ErrCommitNotFound) {
-		return false, nil
-	}
 	if err != nil {
 		return false, branchCheckError(err)
 	}

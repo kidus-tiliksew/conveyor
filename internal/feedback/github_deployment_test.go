@@ -202,6 +202,30 @@ func TestDeploySuccessRecordsAGitHubDeploy(t *testing.T) {
 	}
 }
 
+// TestDeployRedeployOfTheRunningCommit covers two successes for one service
+// and commit at two times with no watcher signal between them. Each keeps its
+// own deploy record at its status time, and a duplicate of either writes
+// nothing and hands nothing on.
+func TestDeployRedeployOfTheRunningCommit(t *testing.T) {
+	f := newDeploymentFixture(t)
+	environment := f.environment(store.EnvironmentInput{Name: "Production", GitHubEnvironments: []string{"production"}})
+	later := deployTime.Add(time.Hour)
+	f.mustApply("acme/app", "success", "production", deployHead, deployTime)
+	f.mustApply("acme/app", "success", "production", deployHead, later)
+	deploys := f.deploys(environment.ID)
+	if len(deploys) != 2 || !deploys[0].DeployedAt.Equal(deployTime) || deploys[0].StoppedAt == nil || !deploys[0].StoppedAt.Equal(later) || !deploys[1].DeployedAt.Equal(later) || deploys[1].StoppedAt != nil || deploys[1].Commit != deployHead || deploys[1].Origin.Source != store.FeedbackSourceGitHub {
+		t.Fatalf("deploys=%+v, want one deploy for each report time", deploys)
+	}
+	if f.recordedCount() != 2 {
+		t.Fatalf("recorded=%d, want both reports handed to the background work", f.recordedCount())
+	}
+	f.mustApply("acme/app", "success", "production", deployHead, later)
+	f.mustApply("acme/app", "success", "production", deployHead, deployTime)
+	if after := f.deploys(environment.ID); len(after) != 2 || f.recordedCount() != 2 {
+		t.Fatalf("deploys=%+v recorded=%d after duplicates, want no second write", after, f.recordedCount())
+	}
+}
+
 // TestDeployOtherStatesRecordNoDeploy covers every state other than success
 // under a listed name.
 func TestDeployOtherStatesRecordNoDeploy(t *testing.T) {
@@ -279,8 +303,9 @@ func TestDeployRepositoryOutsideTheWorkspace(t *testing.T) {
 }
 
 // TestDeployTrackedBranch covers a commit at the tracked head, an ancestor,
-// a commit off the branch, a commit the branch does not hold yet, a branch
-// GitHub confirms missing, and a branch tracked for another repository only.
+// a commit off the branch, a commit the branch does not hold yet, and a branch
+// tracked for another repository only. A head that does not resolve is a
+// failure, which TestDeployForgeFailureFailsTheDelivery covers.
 func TestDeployTrackedBranch(t *testing.T) {
 	for _, c := range []struct {
 		name     string
@@ -293,7 +318,6 @@ func TestDeployTrackedBranch(t *testing.T) {
 		{"Ancestor", map[string]string{"app": "main"}, deployAncestor, true, 1},
 		{"OffTheBranch", map[string]string{"app": "main"}, deployOff, false, 1},
 		{"NotOnTheBranchYet", map[string]string{"app": "main"}, deployAhead, false, 1},
-		{"MissingBranch", map[string]string{"app": "gone"}, deployHead, false, 1},
 		{"NoBranchForTheRepository", map[string]string{"web": "main"}, deployOff, true, 0},
 		{"NoBranch", nil, deployOff, true, 0},
 	} {
@@ -309,7 +333,7 @@ func TestDeployTrackedBranch(t *testing.T) {
 			if reads != c.reads {
 				t.Fatalf("branch reads=%d, want %d", reads, c.reads)
 			}
-			if c.reads > 0 && c.name != "MissingBranch" {
+			if c.reads > 0 {
 				f.forge.mu.Lock()
 				compared := slices.Clone(f.forge.compare)
 				f.forge.mu.Unlock()
@@ -325,19 +349,22 @@ func TestDeployTrackedBranch(t *testing.T) {
 
 // TestDeployForgeFailureFailsTheDelivery proves that a forge failure during
 // the branch check writes no deploy and fails with its category only, and
-// that the same report records once the forge answers.
+// that the same report records once the forge answers. A tracked branch head
+// that does not resolve is such a failure, not an off-branch answer.
 func TestDeployForgeFailureFailsTheDelivery(t *testing.T) {
 	for _, c := range []struct {
-		name string
-		key  string
+		name    string
+		key     string
+		failure error
 	}{
-		{"BranchRead", "acme/app|heads/main"},
-		{"Comparison", "compare|acme/app|" + deployAncestor + "|" + deployHead},
+		{"BranchRead", "acme/app|heads/main", github.StatusError(502, errors.New("upstream said token ghs_secretsecretsecretsecretsecretsecret1"))},
+		{"MissingHead", "acme/app|heads/main", github.CommitNotFoundError("heads/main")},
+		{"Comparison", "compare|acme/app|" + deployAncestor + "|" + deployHead, github.StatusError(502, errors.New("upstream said token ghs_secretsecretsecretsecretsecretsecret1"))},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newDeploymentFixture(t)
 			environment := f.environment(store.EnvironmentInput{Name: "Production", GitHubEnvironments: []string{"production"}, TrackedBranches: map[string]string{"app": "main"}})
-			f.forge.fail[c.key] = github.StatusError(502, errors.New("upstream said token ghs_secretsecretsecretsecretsecretsecret1"))
+			f.forge.fail[c.key] = c.failure
 			err := f.apply("acme/app", "success", "production", deployAncestor, deployTime)
 			var failed *BranchCheckError
 			if !errors.As(err, &failed) || failed.Category != github.ForgeStatus {

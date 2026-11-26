@@ -619,6 +619,9 @@ type deployBranchForge struct {
 	head     string
 	failures atomic.Int32
 	reads    atomic.Int32
+	// missing makes the branch head unresolvable, as GitHub answers for a
+	// branch it does not hold.
+	missing atomic.Bool
 }
 
 func (f *deployBranchForge) ReadCommit(_ context.Context, _, ref string) (string, error) {
@@ -626,7 +629,7 @@ func (f *deployBranchForge) ReadCommit(_ context.Context, _, ref string) (string
 	if f.failures.Add(-1) >= 0 {
 		return "", githubtrigger.StatusError(http.StatusBadGateway, errors.New("GitHub REST status 502"))
 	}
-	if ref != "heads/main" {
+	if ref != "heads/main" || f.missing.Load() {
 		return "", githubtrigger.CommitNotFoundError(ref)
 	}
 	return f.head, nil
@@ -674,6 +677,25 @@ func TestGitHubWebhookDeploymentStatusRetriesAndRedelivery(t *testing.T) {
 		}
 		if f.deployForge.reads.Load() != 2 || len(f.notApplied()) != 0 {
 			t.Fatalf("reads=%d lines=%v, want one failure and one retried check", f.deployForge.reads.Load(), f.lines)
+		}
+	})
+	t.Run("an unresolved branch head exhausts the retries and its redelivery records once", func(t *testing.T) {
+		f, environmentID := setup(t)
+		f.deployForge.missing.Store(true)
+		f.deliver("deploy-head", "deployment_status", recordedDeploymentStatus)
+		if listed := deploys(t, f, environmentID); len(listed) != 0 {
+			t.Fatalf("deploys=%+v while the head does not resolve, want none", listed)
+		}
+		lines := f.notApplied()
+		if f.deployForge.reads.Load() != 3 || len(lines) != 1 || !strings.Contains(lines[0], "category forge_status") || !strings.Contains(lines[0], "attempts=3") {
+			t.Fatalf("reads=%d lines=%v, want three failed head reads and one not-applied line", f.deployForge.reads.Load(), lines)
+		}
+		// The applier forgot the delivery, so GitHub's redelivery with the
+		// same ID is accepted and records the deploy once the head returns.
+		f.deployForge.missing.Store(false)
+		f.deliver("deploy-head", "deployment_status", recordedDeploymentStatus)
+		if listed := deploys(t, f, environmentID); len(listed) != 1 || listed[0].Commit != recordedDeployCommit {
+			t.Fatalf("deploys=%+v after the redelivery, want one", listed)
 		}
 	})
 	t.Run("an exhausted delivery is forgotten and its redelivery records once", func(t *testing.T) {
