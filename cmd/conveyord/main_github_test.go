@@ -476,8 +476,18 @@ func newRetryFixture(t *testing.T) *retryFixture {
 	f.deployForge = &deployBranchForge{head: recordedDeployCommit}
 	deployments := feedback.DeploymentReports{
 		Store: backend,
-		Repositories: func(context.Context) ([]feedback.Repository, error) {
-			return []feedback.Repository{{Name: "app", Slug: "acme/app"}}, nil
+		// The repositories come from the stored workspace configuration, as
+		// the daemon reads them.
+		Repositories: func(ctx context.Context) ([]feedback.Repository, error) {
+			document, err := backend.WorkspaceConfig(ctx)
+			if err != nil {
+				return nil, err
+			}
+			repositories := []feedback.Repository{}
+			for _, repository := range document.Document.Repos {
+				repositories = append(repositories, feedback.Repository{Name: repository.Name, Slug: repository.GitHub})
+			}
+			return repositories, nil
 		},
 		Forge: func(context.Context, string) feedback.Forge { return f.deployForge },
 	}
@@ -736,6 +746,25 @@ func TestGitHubWebhookDeploymentStatusRetriesAndRedelivery(t *testing.T) {
 		}
 		if listed := deploys(t, f, environmentID); len(listed) != 1 {
 			t.Fatalf("deploys=%+v after a duplicate delivery, want one", listed)
+		}
+	})
+	t.Run("a repository alias of 256 characters keeps its whole name as the service", func(t *testing.T) {
+		f, environmentID := setup(t)
+		alias := "app-" + strings.Repeat("x", 252)
+		current, err := f.st.WorkspaceConfig(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.st.UpdateWorkspaceConfig(f.ctx, current.Version, &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: alias, GitHub: "acme/app", Base: "main"}}}); err != nil {
+			t.Fatal(err)
+		}
+		f.deliver("deploy-long", "deployment_status", recordedDeploymentStatus)
+		listed := deploys(t, f, environmentID)
+		if len(alias) != 256 || len(listed) != 1 || listed[0].Service != alias || listed[0].Repository != alias || listed[0].Commit != recordedDeployCommit || listed[0].Origin.Source != store.FeedbackSourceGitHub {
+			t.Fatalf("deploys=%+v, want one GitHub deploy whose service is the whole %d-character alias", listed, len(alias))
+		}
+		if lines := f.notApplied(); len(lines) != 0 {
+			t.Fatalf("lines=%v, want the delivery applied", lines)
 		}
 	})
 	t.Run("two distinct statuses in one second keep both deploys and a replay changes nothing", func(t *testing.T) {

@@ -180,7 +180,7 @@ The deploy has these values:
 
 | Value | Rule |
 | --- | --- |
-| Service | The repository's name in the workspace configuration, 1 to 255 characters. The 100-character limit of a watcher's service name does not apply |
+| Service | The repository's whole name in the workspace configuration, at any length the configuration accepts. The 100-character limit of a watcher's service name does not apply |
 | Repository and commit | The repository's name and the full commit ID |
 | Time | The status's creation time. The deployment's time and the time of receipt are not used |
 | Source | `github`, with the system as the actor |

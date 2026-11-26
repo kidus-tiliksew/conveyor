@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -432,34 +433,61 @@ func runFeedbackGitHubSameTime(t *testing.T, x Fixture) {
 	})
 }
 
-// runFeedbackGitHubLongRepository records a GitHub deploy for a configured
-// repository whose name has 101 characters. The configuration accepts it, so
-// the watcher service-name rule of 100 characters does not bound it. A name
-// over the shared service bound of 255 characters is refused as a field
-// (component-production-feedback invariants 3 and 10; req-production-feedback
-// AC-1.5).
+// runFeedbackGitHubLongRepository records GitHub deploys for configured
+// repositories with long names, and each deploy keeps the whole name as its
+// service. The watcher service-name rule of 100 characters does not bound a
+// GitHub deploy (component-production-feedback invariants 3 and 10;
+// req-production-feedback AC-1.5). Names of 101 and 255 characters fit every
+// backend's workspace configuration. Names of 256 and 300 characters are
+// covered on each backend whose workspace configuration stores them: the
+// SingleStore repository table keys the name as 255 characters, so that
+// configuration refuses them, and no GitHub report there can name one.
 func runFeedbackGitHubLongRepository(t *testing.T, x Fixture) {
-	long := "repo-" + strings.Repeat("a", 96)
-	if len(long) != 101 {
-		t.Fatalf("name has %d characters", len(long))
+	named := func(size int) string { return "repo-" + strings.Repeat("a", size-5) }
+	configure := func(names []string) error {
+		current, err := x.Backend.WorkspaceConfig(x.Context)
+		requireOK(t, err)
+		next := *x.Config
+		next.Repos = slices.Clone(x.Config.Repos)
+		for _, name := range names {
+			next.Repos = append(next.Repos, config.Repo{Name: name, URL: "https://example.test/" + name[:20], Base: "main"})
+		}
+		_, err = x.Backend.UpdateWorkspaceConfig(x.Context, current.Version, &next)
+		return err
 	}
-	current, err := x.Backend.WorkspaceConfig(x.Context)
-	requireOK(t, err)
-	next := *x.Config
-	next.Repos = append(slices.Clone(x.Config.Repos), config.Repo{Name: long, URL: "https://example.test/" + long, Base: "main"})
-	_, err = x.Backend.UpdateWorkspaceConfig(x.Context, current.Version, &next)
-	requireOK(t, err)
+	names := []string{named(101), named(255)}
+	requireOK(t, configure(names))
+	if err := configure(append(slices.Clone(names), named(256), named(300))); err == nil {
+		names = append(names, named(256), named(300))
+	} else {
+		stored, readErr := x.Backend.WorkspaceConfig(x.Context)
+		requireOK(t, readErr)
+		if len(stored.Document.Repos) != len(x.Config.Repos)+2 {
+			t.Fatalf("a refused configuration update stored %d repositories", len(stored.Document.Repos))
+		}
+		t.Logf("this backend's workspace configuration refuses repository names over 255 characters: %v", err)
+	}
 	e := newFeedbackEnvironment(t, x, "Production", "watcher")
-	e.report(t, e.github(20*time.Second, long, feedbackCommit("a")), true)
-	e.requireRunning(t, long+"="+feedbackCommit("a")+"+20")
-	e.requireDeploys(t, long+"="+feedbackCommit("a")+"+20")
-	deploys := e.deploys(t)
-	if len(deploys) != 1 || deploys[0].Service != long || deploys[0].Repository != long || deploys[0].Origin.Source != store.FeedbackSourceGitHub {
-		t.Fatalf("deploys=%+v, want one GitHub deploy named after the repository", deploys)
+	running := []string{}
+	for i, name := range names {
+		at := time.Duration(10*(i+1)) * time.Second
+		e.report(t, e.github(at, name, feedbackCommit("a")), true)
+		running = append(running, fmt.Sprintf("%s=%s+%d", name, feedbackCommit("a"), 10*(i+1)))
 	}
-	recorded, err := x.Backend.RecordFeedbackGitHubDeploy(x.Context, e.github(30*time.Second, strings.Repeat("r", store.FeedbackGitHubServiceMaxCharacters+1), feedbackCommit("a")))
+	e.requireRunning(t, running...)
+	e.requireDeploys(t, running...)
+	for _, deploy := range e.deploys(t) {
+		if deploy.Service != deploy.Repository || !slices.Contains(names, deploy.Service) || deploy.Origin.Source != store.FeedbackSourceGitHub {
+			t.Fatalf("deploy=%+v, want a GitHub deploy named after its whole repository name", deploy)
+		}
+	}
+	// A watcher signal keeps its 100-character service rule.
+	err := x.Backend.RecordFeedbackSignal(x.Context, e.signal(100*time.Second, feedbackService(names[0], "@1")))
+	requireFeedbackField(t, err, "services[0].name")
+	// A name with a control character is refused as a field.
+	recorded, err := x.Backend.RecordFeedbackGitHubDeploy(x.Context, e.github(110*time.Second, "repo\nname", feedbackCommit("a")))
 	requireFeedbackField(t, err, "repository")
 	if recorded {
-		t.Fatal("a repository name over the service bound recorded a deploy")
+		t.Fatal("a repository name with a control character recorded a deploy")
 	}
 }

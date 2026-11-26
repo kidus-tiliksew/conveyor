@@ -2,9 +2,12 @@ package httpapi
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/feedback"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -184,4 +187,64 @@ func TestFeedbackDeploymentLateReportsKeepAsOf(t *testing.T) {
 	}
 	h.settle()
 	requireAsOfLate("late earlier watcher signal")
+}
+
+// TestFeedbackDeploymentLongAliasLiveStatus applies a GitHub report for a
+// configured repository whose alias has 256 characters. The deploy keeps the
+// whole alias as its service, the background work resolves and compares it,
+// and a merged task of that repository reads as live under the alias
+// (component-production-feedback invariants 7, 10, and 16;
+// req-production-feedback AC-1.5 and AC-3.2).
+func TestFeedbackDeploymentLongAliasLiveStatus(t *testing.T) {
+	merge, deployed := readsCommit("b2b2b2b2b2b2"), readsCommit("c3c3c3c3c3c3")
+	h := newReadsHarness(t, merge, deployed)
+	alias := "app-" + strings.Repeat("x", 252)
+	current, err := h.st.WorkspaceConfig(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.UpdateWorkspaceConfig(h.ctx, current.Version, &config.Config{Workspace: "alpha", Repos: []config.Repo{{Name: alias, URL: "https://example.test/app", Base: "main", GitHub: "acme/app"}}}); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: core.NewTaskID() + "-long", Workspace: "alpha", Repo: alias, Title: "Merged", Body: "Merged.", State: core.TaskMerged, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	if err := h.st.CreateTask(h.ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.AppendEvent(h.ctx, core.Event{TaskID: task.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "merge_commit_sha": merge})}); err != nil {
+		t.Fatal(err)
+	}
+	environment, err := h.st.CreateEnvironment(h.ctx, store.EnvironmentInput{Name: "Staging", GitHubEnvironments: []string{"staging"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportedAt := time.Date(2026, 11, 26, 9, 30, 0, 0, time.UTC)
+	if err := h.server.FeedbackDeploymentReports()(h.ctx, "acme/app", github.DeploymentStatus{State: "success", Environment: "staging", Commit: deployed, ReportedAt: reportedAt}); err != nil {
+		t.Fatal(err)
+	}
+	h.settle()
+	deploys, err := h.st.ListFeedbackDeploys(h.ctx, environment.ID)
+	if err != nil || len(alias) != 256 || len(deploys) != 1 || deploys[0].Service != alias || deploys[0].Repository != alias {
+		t.Fatalf("deploys=%+v err=%v, want one deploy named after the whole alias", deploys, err)
+	}
+	inputs, err := h.st.ReadFeedbackInputs(h.ctx, []string{environment.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := false
+	for _, resolution := range inputs.Resolutions {
+		resolved = resolved || (resolution.Service == alias && resolution.ResolvedRepository == alias && resolution.ResolvedCommit == deployed)
+	}
+	if !resolved {
+		t.Fatalf("resolutions=%+v, want the deploy resolved under the whole alias", inputs.Resolutions)
+	}
+	var staging *feedback.TaskStatus
+	for _, status := range statusesOf(t, h.taskRead(task.ID)["environments"]) {
+		if status.Environment.ID == environment.ID {
+			copied := status
+			staging = &copied
+		}
+	}
+	if staging == nil || staging.Status != feedback.StatusLive || !slices.Equal(staging.Services, []string{alias}) || staging.AsOf == nil || !staging.AsOf.Equal(reportedAt) {
+		t.Fatalf("staging status=%+v, want live under the whole alias as of the report", staging)
+	}
 }

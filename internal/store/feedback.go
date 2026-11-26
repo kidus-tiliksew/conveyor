@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -664,12 +665,23 @@ func FeedbackGitHubOrigin(report int64) FeedbackOrigin {
 	return FeedbackOrigin{Source: FeedbackSourceGitHub, Actor: SystemActor().ID, Report: report}
 }
 
-// FeedbackGitHubServiceMaxCharacters bounds the service of a GitHub deploy,
-// the configured repository's name. It is the service bound that the
-// PostgreSQL and SingleStore deploy tables share, and a watcher signal's own
-// service names keep their 100-character rule (component-production-feedback
-// invariants 3 and 10).
-const FeedbackGitHubServiceMaxCharacters = 255
+// checkFeedbackGitHubService checks the service of a GitHub deploy, the
+// configured repository's name. Any name that the workspace configuration
+// accepts is kept whole, so no length bound applies: the watcher rule of 100
+// characters bounds a signal's own service names only, and every backend
+// stores a deploy's service as unbounded text (component-production-feedback
+// invariants 3 and 10). The name must still be text that every backend can
+// store, hold no control character, and hold no credential shape. The
+// refusal never repeats the name.
+func checkFeedbackGitHubService(value string) error {
+	if value == "" || !utf8.ValidString(value) || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return feedbackFieldError("repository", "must be non-empty UTF-8 text without a control character")
+	}
+	if clean, _ := redact.New(nil).Redact(value); clean != value || redact.HoldsCredentialShape(value) {
+		return feedbackFieldError("repository", "must not hold a credential or other secret")
+	}
+	return nil
+}
 
 // FeedbackGitHubDeploySignal checks a GitHub deployment report and returns it
 // as the signal that PlanFeedbackChanges reads: one service named after the
@@ -681,10 +693,7 @@ func FeedbackGitHubDeploySignal(deploy FeedbackGitHubDeploy) (FeedbackSignal, er
 	if deploy.EnvironmentID == "" {
 		return FeedbackSignal{}, feedbackFieldError("environment_id", "is required")
 	}
-	// The service is the configured repository's name, which the watcher
-	// service-name rule does not bound. It meets the bound that both durable
-	// backends store for a service, and the secret check.
-	if err := checkFeedbackText(redact.New(nil), "repository", deploy.Repository, FeedbackGitHubServiceMaxCharacters); err != nil {
+	if err := checkFeedbackGitHubService(deploy.Repository); err != nil {
 		return FeedbackSignal{}, err
 	}
 	commit := strings.ToLower(deploy.Commit)
