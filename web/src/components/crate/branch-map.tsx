@@ -407,9 +407,27 @@ function BranchMapChart({
   const cardRoom =
     cardHeight ?? (shown ? CARD_ROOM + dependencyLineCount(shown.task) * CARD_DEPENDENCY_LINE : CARD_ROOM)
   // The card stands below the line when it fits there, and above it when it
-  // fits there instead. When it fits on neither side it stands below, where
-  // the map scrolls to reach it: above, its top would be cut off.
+  // fits there instead. When it fits on neither side it stands below, in
+  // room the map keeps under its last row, so the whole card shows while the
+  // pointer stays on the line: above, its top would be cut off.
   const cardBelow = shown ? shown.y1 + 12 + cardRoom <= model.height || shown.y1 - 12 - cardRoom < 0 : true
+  // The map keeps that room for the tallest such card from the start, so
+  // pointing at a line does not move the page. The shown card's measure
+  // adds any height the estimate missed.
+  const reserved = useMemo(
+    () =>
+      Math.max(
+        0,
+        ...model.spurs.map((spur) => {
+          const room = CARD_ROOM + dependencyLineCount(spur.task) * CARD_DEPENDENCY_LINE
+          const fits = spur.y1 + 12 + room <= model.height || spur.y1 - 12 - room >= 0
+          return fits ? 0 : spur.y1 + 12 + room - model.height
+        }),
+      ),
+    [model],
+  )
+  const below = shown && cardBelow ? shown.y1 + 12 + cardRoom - model.height : 0
+  const mapHeight = model.height + Math.max(reserved, below)
   const focusedCard = focusedId !== null && shown?.task.id === focusedId
   useEffect(() => {
     if (focusedCard) card.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
@@ -480,7 +498,7 @@ function BranchMapChart({
         </ol>
       </header>
 
-      <div ref={wrapper} data-branch-map-scroll className="relative overflow-x-auto">
+      <div ref={wrapper} data-branch-map-scroll className="relative overflow-x-auto" style={{ minHeight: mapHeight }}>
         {/* biome-ignore lint/a11y/useSemanticElements: an SVG element cannot be a fieldset, and the group names the lines it holds */}
         <svg
           width={width}

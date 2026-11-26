@@ -1813,6 +1813,19 @@ test('a branch map card stays whole when it fits on neither side of its line', a
     expect((box?.y ?? -1) - (view?.y ?? 0)).toBeGreaterThanOrEqual(0)
   }
   await expect(scroller.locator(`[data-branch-card="${deps.coupon}"] [data-waits-on]`)).toHaveCount(1)
+
+  // A pointer shows each whole card inside the map, which keeps room for it
+  // and needs no scroll to reach it.
+  for (const id of [deps.price, deps.total, deps.coupon]) {
+    await branchLine(page, id).locator('[data-open-label]').hover()
+    const card = scroller.locator(`[data-branch-card="${id}"]`)
+    await expect(card).toBeVisible()
+    const view = await scroller.boundingBox()
+    const box = await card.boundingBox()
+    expect((box?.y ?? -1) - (view?.y ?? 0)).toBeGreaterThanOrEqual(0)
+    expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual((view?.y ?? 0) + (view?.height ?? 0))
+    expect(await scroller.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(0)
+  }
 })
 
 test('the line dims every member the pointed-at task has no dependency path to', async ({ page }) => {
