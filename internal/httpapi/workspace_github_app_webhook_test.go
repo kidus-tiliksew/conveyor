@@ -83,7 +83,7 @@ func TestWorkspaceGitHubWebhookSettings(t *testing.T) {
 		return got
 	}
 	before := read()
-	if before.Webhook.ReceiverURL != "https://conveyor.example/v1/github/webhook/alpha" || strings.Join(before.Webhook.Events, ",") != "pull_request,check_suite,check_run,status,push,issues" || before.Webhook.SecretConfigured || before.Webhook.Configured || before.Webhook.LastDeliveryAt != nil {
+	if before.Webhook.ReceiverURL != "https://conveyor.example/v1/github/webhook/alpha" || strings.Join(before.Webhook.Events, ",") != "pull_request,check_suite,check_run,status,push,issues,deployment_status" || before.Webhook.SecretConfigured || before.Webhook.Configured || before.Webhook.LastDeliveryAt != nil {
 		t.Fatalf("webhook before a secret=%+v", before.Webhook)
 	}
 	created := call("POST", "/webhook-secret", "operator")
@@ -98,7 +98,7 @@ func TestWorkspaceGitHubWebhookSettings(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &first); err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Secret) != 64 || first.ReceiverURL != before.Webhook.ReceiverURL || len(first.Events) != 6 {
+	if len(first.Secret) != 64 || first.ReceiverURL != before.Webhook.ReceiverURL || len(first.Events) != 7 {
 		t.Fatalf("created secret response=%+v", first)
 	}
 	stored, err := st.GetWorkspaceGitHubWebhookSecretForUse(t.Context(), "alpha")

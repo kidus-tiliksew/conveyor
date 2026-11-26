@@ -265,3 +265,37 @@ func TestRequireRepositoryCoverageReadFailures(t *testing.T) {
 		})
 	}
 }
+
+// TestAppInstallationDecodesPermissionsAndEvents: the verified installation
+// carries the permissions it grants and the events it subscribes, as GitHub
+// reports them, and an installation that reports neither decodes as empty
+// rather than failing (feature-production-feedback-live FB-4; DEC-149(5)).
+func TestAppInstallationDecodesPermissionsAndEvents(t *testing.T) {
+	_, private := appTestKey(t)
+	body := `{"id":12,"app_id":41,"account":{"login":"org"},"permissions":{"metadata":"read","deployments":"read","checks":"read"},"events":["pull_request","deployment_status"]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/12" {
+			t.Errorf("unexpected endpoint %s", r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		fmt.Fprint(w, body)
+	}))
+	defer server.Close()
+	client := &AppClient{HTTP: server.Client(), BaseURL: server.URL, Runner: func(token, identity string) AppRunner {
+		return newRESTRunner(server.Client(), server.URL, token, identity)
+	}}
+	credentials := AppCredentials{AppID: 41, PrivateKey: private}
+	installation, err := client.Installation(t.Context(), "demo", credentials, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installation.Permissions["deployments"] != "read" || len(installation.Permissions) != 3 || strings.Join(installation.Events, ",") != "pull_request,deployment_status" {
+		t.Fatalf("installation=%+v", installation)
+	}
+	body = `{"id":12,"app_id":41,"account":{"login":"org"}}`
+	installation, err = client.Installation(t.Context(), "demo", credentials, 12)
+	if err != nil || len(installation.Permissions) != 0 || len(installation.Events) != 0 {
+		t.Fatalf("installation=%+v err=%v, want no permissions or events", installation, err)
+	}
+}

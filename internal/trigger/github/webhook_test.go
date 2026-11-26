@@ -60,6 +60,12 @@ func (r *recordingHandlers) handlers() WebhookHandlers {
 			r.calls = append(r.calls, recordedCall{kind: "issue", repository: repository, issue: issue})
 			return r.next()
 		},
+		DeploymentStatus: func(_ context.Context, repository string, status DeploymentStatus) error {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.calls = append(r.calls, recordedCall{kind: "deployment_status", repository: repository, sha: status.Commit})
+			return r.next()
+		},
 	}
 }
 
@@ -120,6 +126,120 @@ func TestParseWebhookMapsEachEvent(t *testing.T) {
 	}
 	if _, err := parseWebhook("pull_request", []byte("{not json")); !errors.Is(err, errMalformedDelivery) {
 		t.Fatalf("malformed payload: %v", err)
+	}
+}
+
+// TestParseWebhookDeploymentStatus: a deployment_status delivery of any state
+// maps to the deployment handler with the repository, the status's state,
+// the status's environment name or else the deployment's, the deployment's
+// commit in lower case, and the status's creation time. A delivery without
+// one of them is malformed, never an empty report (feature-production-
+// feedback-live FB-4; component-production-feedback invariants 10 and 11).
+func TestParseWebhookDeploymentStatus(t *testing.T) {
+	const commit = "5F3C2AB5F3C2AB5F3C2AB5F3C2AB5F3C2AB5F3C2"
+	created := time.Date(2026, 11, 26, 9, 30, 0, 0, time.UTC)
+	body := func(status, deployment string) string {
+		return `{"action":"created","deployment_status":{` + status + `},"deployment":{` + deployment + `},"repository":{"full_name":"acme/app"}}`
+	}
+	if !strings.Contains(strings.Join(WebhookEvents, ","), "deployment_status") {
+		t.Fatalf("WebhookEvents=%v, want deployment_status", WebhookEvents)
+	}
+	for _, tc := range []struct {
+		name, body string
+		want       DeploymentStatus
+	}{
+		{"success", body(`"state":"success","environment":"Production","created_at":"2026-11-26T09:30:00Z","updated_at":"2026-11-26T10:00:00Z"`, `"sha":"`+commit+`","environment":"production","created_at":"2026-11-26T09:00:00Z"`), DeploymentStatus{State: "success", Environment: "Production", Commit: strings.ToLower(commit), ReportedAt: created}},
+		{"failure", body(`"state":"failure","environment":"staging","created_at":"2026-11-26T09:30:00Z"`, `"sha":"`+commit+`"`), DeploymentStatus{State: "failure", Environment: "staging", Commit: strings.ToLower(commit), ReportedAt: created}},
+		{"deployment environment stands in", body(`"state":"in_progress","created_at":"2026-11-26T09:30:00Z"`, `"sha":"`+commit+`","environment":"preview"`), DeploymentStatus{State: "in_progress", Environment: "preview", Commit: strings.ToLower(commit), ReportedAt: created}},
+		{"form-encoded", "payload=" + url.QueryEscape(body(`"state":"success","environment":"prod","created_at":"2026-11-26T09:30:00Z"`, `"sha":"`+commit+`"`)), DeploymentStatus{State: "success", Environment: "prod", Commit: strings.ToLower(commit), ReportedAt: created}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			action, err := parseWebhook("deployment_status", []byte(tc.body))
+			if err != nil || action == nil {
+				t.Fatalf("action=%v err=%v", action != nil, err)
+			}
+			var gotRepository string
+			var got DeploymentStatus
+			if err := action(context.Background(), WebhookHandlers{DeploymentStatus: func(_ context.Context, repository string, status DeploymentStatus) error {
+				gotRepository, got = repository, status
+				return nil
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			if gotRepository != "acme/app" || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("repository=%q status=%+v, want acme/app %+v", gotRepository, got, tc.want)
+			}
+			// A nil handler skips the event.
+			if err := action(context.Background(), WebhookHandlers{}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for name, malformed := range map[string]string{
+		"no state":          body(`"environment":"prod","created_at":"2026-11-26T09:30:00Z"`, `"sha":"`+commit+`"`),
+		"no environment":    body(`"state":"success","created_at":"2026-11-26T09:30:00Z"`, `"sha":"`+commit+`"`),
+		"short commit":      body(`"state":"success","environment":"prod","created_at":"2026-11-26T09:30:00Z"`, `"sha":"5f3c2ab"`),
+		"no commit":         body(`"state":"success","environment":"prod","created_at":"2026-11-26T09:30:00Z"`, ``),
+		"no creation time":  body(`"state":"success","environment":"prod"`, `"sha":"`+commit+`"`),
+		"bad creation time": body(`"state":"success","environment":"prod","created_at":"yesterday"`, `"sha":"`+commit+`"`),
+		"no repository":     `{"deployment_status":{"state":"success","environment":"prod","created_at":"2026-11-26T09:30:00Z"},"deployment":{"sha":"` + commit + `"}}`,
+		"not json":          "{not json",
+		"secret not json":   `{"deployment_status":{"state":"` + syntheticSecret + `"`,
+		"secret wrong type": body(`"state":{"value":"`+syntheticSecret+`"},"environment":"prod","created_at":"2026-11-26T09:30:00Z"`, `"sha":"`+commit+`"`),
+	} {
+		_, err := parseWebhook("deployment_status", []byte(malformed))
+		if !errors.Is(err, errMalformedDelivery) {
+			t.Errorf("%s: err=%v, want a malformed delivery", name, err)
+			continue
+		}
+		if strings.Contains(err.Error(), "yesterday") || strings.Contains(err.Error(), "ghp_") || strings.Contains(err.Error(), "not json") {
+			t.Errorf("%s: err=%q echoes a payload value", name, err)
+		}
+	}
+	// An invalid creation time names the field and never its value, which
+	// Go's decoder and time parser errors would quote.
+	for name, malformed := range map[string]string{
+		"credential-shaped":      body(`"state":"success","environment":"prod","created_at":"`+syntheticSecret+`"`, `"sha":"`+commit+`"`),
+		"form credential-shaped": "payload=" + url.QueryEscape(body(`"state":"success","environment":"prod","created_at":"`+syntheticSecret+`"`, `"sha":"`+commit+`"`)),
+		"number":                 body(`"state":"success","environment":"prod","created_at":1795680000`, `"sha":"`+commit+`"`),
+	} {
+		_, err := parseWebhook("deployment_status", []byte(malformed))
+		if !errors.Is(err, errMalformedDelivery) || !strings.Contains(err.Error(), "deployment_status.created_at") || strings.Contains(err.Error(), "ghp_") || strings.Contains(err.Error(), "1795680000") {
+			t.Errorf("%s: err=%v, want a malformed delivery naming deployment_status.created_at without its value", name, err)
+		}
+	}
+}
+
+// syntheticSecret has the shape of a GitHub personal access token. It is
+// not a credential.
+var syntheticSecret = "ghp_" + strings.Repeat("Z9y8X7w6", 5)[:36]
+
+// TestWebhookApplierDeploymentStatusLogOmitsFieldValues: a deployment_status
+// delivery whose created_at holds a credential-shaped value writes one error
+// line that names the field and not the value, is neither retried nor
+// forgotten, and calls no handler (component-identity-membership invariants
+// 45 and 46).
+func TestWebhookApplierDeploymentStatusLogOmitsFieldValues(t *testing.T) {
+	const commit = "5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2"
+	for name, body := range map[string]string{
+		"JSON":         `{"deployment_status":{"state":"success","environment":"prod","created_at":"` + syntheticSecret + `"},"deployment":{"sha":"` + commit + `"},"repository":{"full_name":"acme/app"}}`,
+		"form-encoded": "payload=" + url.QueryEscape(`{"deployment_status":{"state":"success","environment":"prod","created_at":"`+syntheticSecret+`"},"deployment":{"sha":"`+commit+`"},"repository":{"full_name":"acme/app"}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newApplierFixture(nil)
+			f.applier.Submit(WebhookDelivery{Workspace: "demo", ID: "deploy-bad-time", Event: "deployment_status", Body: []byte(body)})
+			f.applier.Wait()
+			if len(f.recorder.calls) != 0 || len(f.sleeps) != 0 || len(f.forgotten) != 0 || len(f.lines) != 1 {
+				t.Fatalf("calls=%v sleeps=%v forgotten=%v lines=%v", f.recorder.calls, f.sleeps, f.forgotten, f.lines)
+			}
+			line := f.lines[0]
+			if !strings.Contains(line, `level=error msg="GitHub webhook delivery not applied" workspace=demo delivery=deploy-bad-time event=deployment_status`) || !strings.Contains(line, "deployment_status.created_at") || !strings.Contains(line, errMalformedDelivery.Error()) {
+				t.Fatalf("line=%q, want the malformed outcome naming deployment_status.created_at", line)
+			}
+			if strings.Contains(line, syntheticSecret) || strings.Contains(line, "ghp_") || strings.Contains(line, "Z9y8X7w6") {
+				t.Fatalf("line=%q echoes the created_at value", line)
+			}
+		})
 	}
 }
 

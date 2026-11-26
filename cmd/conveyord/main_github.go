@@ -27,7 +27,9 @@ type gitHubWebhookDispatcher interface {
 
 // newGitHubWebhookApplier wires the applier the receiver hands each accepted
 // delivery to (component-runtime, GitHub webhook applier).
-func newGitHubWebhookApplier(webhooks store.GitHubWebhookStore, d gitHubWebhookDispatcher, pushed func(ctx context.Context, repository, ref string) error, checked func(ctx context.Context, repository string, branches []string) error, delivered func(workspace string), logf func(string, ...any)) *githubtrigger.WebhookApplier {
+// deployed applies deployment_status deliveries to production feedback, and
+// nil skips them (feature-production-feedback-live FB-4).
+func newGitHubWebhookApplier(webhooks store.GitHubWebhookStore, d gitHubWebhookDispatcher, pushed func(ctx context.Context, repository, ref string) error, checked func(ctx context.Context, repository string, branches []string) error, deployed func(ctx context.Context, repository string, status githubtrigger.DeploymentStatus) error, delivered func(workspace string), logf func(string, ...any)) *githubtrigger.WebhookApplier {
 	return &githubtrigger.WebhookApplier{
 		Handlers: githubtrigger.WebhookHandlers{
 			PullRequest: d.ApplyPullRequestDelivery,
@@ -36,8 +38,9 @@ func newGitHubWebhookApplier(webhooks store.GitHubWebhookStore, d gitHubWebhookD
 			Checks: func(ctx context.Context, repository, sha string, branches []string) error {
 				return errors.Join(d.ApplyChecksDelivery(ctx, repository, sha, branches), checked(ctx, repository, branches))
 			},
-			Push:       pushed,
-			ReadyIssue: d.IntakeReadyIssue,
+			Push:             pushed,
+			ReadyIssue:       d.IntakeReadyIssue,
+			DeploymentStatus: deployed,
 		},
 		Bind: func(ctx context.Context, workspace string) context.Context {
 			return store.WithWorkspace(store.WithActor(ctx, store.SystemActor(httpapi.GitHubWebhookActor)), workspace)

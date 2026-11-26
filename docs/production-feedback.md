@@ -3,10 +3,12 @@
 A watcher is a program beside a workspace's software. It sends a signal that
 tells Conveyor which version each service runs in one
 [environment](environments.md). Conveyor records each new version as a deploy.
+GitHub [deployment reports](#deployment-reports-from-github) also record
+deploys.
 
 People read these records. No queue, claim, gate, review, merge, or work order
-reads them. A signal creates no task, changes no task, and raises no notice
-(`component-production-feedback` invariant 1; DEC-149).
+reads them. A signal or a deployment report creates no task, changes no task,
+and raises no notice (`component-production-feedback` invariant 1; DEC-149).
 
 `req-production-feedback` and `component-production-feedback` hold the rules.
 
@@ -136,6 +138,133 @@ environment exists.
 
 A version is stored as it was sent. It stays unresolved until the background
 work in [Resolving a version](#resolving-a-version) resolves it.
+
+## Deployment reports from GitHub
+
+A platform such as Vercel reports each deployment to GitHub. When the
+workspace GitHub App has read access to deployments and subscribes to the
+`deployment_status` event, GitHub sends each report to Conveyor. See
+[GitHub lifecycle coordination](github-lifecycle.md#deployment-reports) for the
+access and for the steps that the owner of an existing App takes.
+
+Conveyor reads four values from a report: the status's state, the status's
+GitHub environment name, the deployment's commit, and the status's creation
+time. When the status does not name an environment, the deployment's
+environment name is used. A report that does not hold all four values, or
+whose creation time is not an RFC 3339 time, is malformed and records nothing.
+The log line for a malformed report names the field and never its value.
+
+The report's `repository.full_name` must match the GitHub slug of a repository
+in the workspace configuration. Case does not count. A report from any other
+repository records nothing. The workspace comes from the signed webhook
+address, never from the report.
+
+### When a report records a deploy
+
+A report records a deploy only when all of these are true:
+
+- The state is `success`.
+- An unarchived [environment](environments.md) lists the report's GitHub
+  environment name. Case does not count.
+- The environment tracks no branch for the repository, or the deployment's
+  commit is the head of that branch or an ancestor of it.
+
+To check the branch, Conveyor reads the branch head with the workspace App's
+installation token. Then it asks GitHub to compare the deployment's commit
+with that head. The answers `identical` and `ahead` hold the commit. The answers
+`behind` and `diverged` do not, and the report records nothing. Only these
+two answers make a report a no-op. A branch head that does not resolve, for
+example because GitHub does not find the branch, is a failed read, as
+[When the branch check fails](#when-the-branch-check-fails) describes.
+
+The deploy has these values:
+
+| Value | Rule |
+| --- | --- |
+| Service | The repository's whole name in the workspace configuration, at any length the configuration accepts. The 100-character limit of a watcher's service name does not apply |
+| Repository and commit | The repository's name and the full commit ID |
+| Time | The status's creation time. The deployment's time and the time of receipt are not used |
+| Source | `github`, with the system as the actor |
+
+The report replaces the running versions of that service only. Each version
+that the service ran is recorded as stopped at the report's time. Other
+services, past deploys, and the newest signal stay as they are, so a GitHub
+report does not change whether a watcher is listening.
+
+The server keeps each report as it keeps an accepted signal, with its time and
+its service, and the report takes the next report number of the environment.
+A signal that reaches the store later with an earlier arrival therefore ends
+at the GitHub report, as [Deploys and running versions](#deploys-and-running-versions)
+describes.
+
+Each successful report keeps its own deploy record and time. When a report is
+the newest report of the service and the service already runs the reported
+commit from an earlier time, the report is a redeploy. The earlier deploy stops
+at the report's time, and a new deploy of the same commit starts then. The
+`as_of` time of the environment's live status therefore follows the newest
+report.
+
+GitHub dates a status to the second, so two distinct statuses can name the
+same service, commit, and time. Each one keeps its own deploy: the later one
+stops the earlier one at that time and starts its own. The server does not
+take a report for a repeat because of its service, commit, and time. Only a
+repeated delivery is a repeat. The webhook receiver records each delivery ID
+of the workspace and refuses a delivery whose ID it already holds, so a
+replay changes nothing. When every attempt to apply a delivery fails, the
+applier forgets its ID, so an explicit redelivery is applied once.
+
+The order in which reports arrive does not change this. A GitHub deploy keeps
+its time and its `github` source when an earlier report of the same commit
+arrives after it, from GitHub or from a watcher. The earlier report's span is
+recorded as its own deploy that stops at the GitHub report's time. For
+example, GitHub reports a commit at 10:30 and then, after a redelivery, the
+same commit at 09:30. The result is the same as in the other order: one deploy
+from 09:30 to 10:30 and one from 10:30 that still runs. When a late GitHub
+report falls inside a deploy of the same commit, that deploy stops at the
+report's time and the report starts its own deploy, which ends where the
+earlier one ended. Reports at 09:00, 10:30, and 09:30 therefore give deploys
+from 09:00 to 09:30, from 09:30 to 10:30, and from 10:30, in any arrival
+order. A GitHub report at the same time as a watcher deploy of the same
+commit also gets its own deploy with the `github` source: the server takes
+the report as the later one, so the watcher deploy stops at that time and the
+GitHub deploy starts then. Signals of a watcher keep the rules in
+[Deploys and running versions](#deploys-and-running-versions).
+
+An archived environment records nothing from GitHub. Conveyor runs no git
+command and writes nothing to GitHub for a report.
+
+After a report records a deploy, the background step in
+[Resolving a version](#resolving-a-version) resolves the commit and compares
+it, as it does for a signal.
+
+### When the branch check fails
+
+When a GitHub read for the branch check fails, for example with a timeout, a
+rate limit, or a branch head that does not resolve, the report records
+nothing. The delivery fails with the failure's
+category and no text from GitHub. The webhook applier tries the delivery two
+more times, after one second and then two seconds. When every attempt fails,
+the applier forgets the delivery.
+
+GitHub does not send a failed delivery again by itself. A person can redeliver
+it from the App's advanced settings on GitHub. Because the applier forgot the
+delivery, Conveyor accepts the redelivery and applies it again. For example,
+when the tracked branch is created or restored after the failure, a
+redelivery records the deploy.
+
+### Suggestions
+
+A report whose GitHub environment name no unarchived environment lists becomes
+a [suggestion](environments.md), whatever its state. The suggestion keeps the
+name, the repository, and the newest report time. An older report does not
+replace a newer one. A name that a workspace manager ignored records nothing. A
+name that only an archived environment lists can become a suggestion.
+
+A name that the rules for GitHub environment names refuse, for example text
+that looks like a credential, records nothing. The delivery does not fail, so
+it is not tried again. The log line names the refused field and not the name.
+
+A report creates no task, changes no task, and raises no task or Inbox notice.
 
 ## Listening
 

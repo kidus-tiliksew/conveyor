@@ -299,34 +299,17 @@ func (s *Store) RecordFeedbackSignal(ctx context.Context, signal store.FeedbackS
 			return err
 		}
 		// The claim makes this the next number.
-		var last int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(last_report),0) FROM feedback_signals WHERE workspace_id=? AND environment_id=?`, ws, signal.EnvironmentID).Scan(&last); err != nil {
+		next, err := nextFeedbackReport(ctx, tx, ws, signal.EnvironmentID)
+		if err != nil {
 			return err
 		}
-		origin := store.FeedbackSignalOrigin(label, last+1)
+		origin := store.FeedbackSignalOrigin(label, next)
 		changes, err := store.PlanFeedbackChanges(signal, origin, history)
 		if err != nil {
 			return err
 		}
-		if err := stopFeedbackVersions(ctx, tx, ws, signal, origin, changes.Stopped); err != nil {
+		if err := writeFeedbackChanges(ctx, tx, ws, signal, origin, changes); err != nil {
 			return err
-		}
-		if err := startFeedbackVersions(ctx, tx, ws, signal, changes); err != nil {
-			return err
-		}
-		if err := moveFeedbackRecords(ctx, tx, ws, signal, changes); err != nil {
-			return err
-		}
-		if len(changes.Reported) > 0 {
-			reported := make([]string, len(changes.Reported))
-			for i, service := range changes.Reported {
-				reported[i] = store.FeedbackServiceDigest(service)
-			}
-			list, args := feedbackList(reported)
-			if _, err := tx.ExecContext(ctx, `UPDATE feedback_running_versions SET reported_at=? WHERE workspace_id=? AND environment_id=? AND service_digest IN (`+list+`)`,
-				append([]any{signal.ArrivedAt, ws, signal.EnvironmentID}, args...)...); err != nil {
-				return err
-			}
 		}
 		if _, err := tx.ExecContext(ctx, "UPDATE environment_keys SET last_used_at=CURRENT_TIMESTAMP(6) WHERE workspace_id=? AND id=? AND (last_used_at IS NULL OR last_used_at<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND))",
 			ws, signal.KeyID, store.EnvironmentKeyUseGranularity.Microseconds()); err != nil {
@@ -340,6 +323,118 @@ func (s *Store) RecordFeedbackSignal(ctx context.Context, signal store.FeedbackS
 		}
 		return claim.touchEnvironment(ctx, tx, signal.EnvironmentID)
 	})
+}
+
+// writeFeedbackChanges records a planned change set: the stops, the new
+// deploys and running versions, the moved records, and the newest report of
+// each service.
+func writeFeedbackChanges(ctx context.Context, tx *sql.Tx, ws string, signal store.FeedbackSignal, origin store.FeedbackOrigin, changes store.FeedbackChanges) error {
+	if err := stopFeedbackVersions(ctx, tx, ws, signal, origin, changes.Stopped); err != nil {
+		return err
+	}
+	if err := startFeedbackVersions(ctx, tx, ws, signal, changes); err != nil {
+		return err
+	}
+	if err := moveFeedbackRecords(ctx, tx, ws, signal, changes); err != nil {
+		return err
+	}
+	if len(changes.Reported) == 0 {
+		return nil
+	}
+	reported := make([]string, len(changes.Reported))
+	for i, service := range changes.Reported {
+		reported[i] = store.FeedbackServiceDigest(service)
+	}
+	list, args := feedbackList(reported)
+	_, err := tx.ExecContext(ctx, `UPDATE feedback_running_versions SET reported_at=? WHERE workspace_id=? AND environment_id=? AND service_digest IN (`+list+`)`,
+		append([]any{signal.ArrivedAt, ws, signal.EnvironmentID}, args...)...)
+	return err
+}
+
+// nextFeedbackReport numbers the next accepted report of an environment.
+// Signals and GitHub deployment reports share the numbers, and a GitHub
+// report keeps its number only on the deploys and stops it records. The
+// caller holds the workspace environment claim.
+func nextFeedbackReport(ctx context.Context, tx *sql.Tx, ws, environmentID string) (int64, error) {
+	var signals, starts, stops int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(last_report),0) FROM feedback_signals WHERE workspace_id=? AND environment_id=?`, ws, environmentID).Scan(&signals); err != nil {
+		return 0, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(report),0), COALESCE(MAX(stop_report),0) FROM feedback_deploys WHERE workspace_id=? AND environment_id=?`, ws, environmentID).Scan(&starts, &stops); err != nil {
+		return 0, err
+	}
+	var accepted int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(report),0) FROM feedback_accepted_signals WHERE workspace_id=? AND environment_id=?`, ws, environmentID).Scan(&accepted); err != nil {
+		return 0, err
+	}
+	return store.NextFeedbackReport(signals, starts, stops, accepted), nil
+}
+
+// RecordFeedbackGitHubDeploy implements store.FeedbackStore. It holds the
+// workspace environment claim, which an archive takes too, so an archived
+// environment records nothing, and it stamps the environment row as its own
+// witness as a signal does (component-persistence invariant 8).
+func (s *Store) RecordFeedbackGitHubDeploy(ctx context.Context, deploy store.FeedbackGitHubDeploy) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordFeedbackGitHubDeploy")
+	signal, err := store.FeedbackGitHubDeploySignal(deploy)
+	if err != nil {
+		return false, err
+	}
+	ws, err := workspace(ctx)
+	if err != nil {
+		return false, err
+	}
+	recorded := false
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		recorded = false
+		claim, err := claimEnvironments(ctx, tx, ws)
+		if err != nil {
+			return err
+		}
+		var archived bool
+		err = tx.QueryRowContext(ctx, `SELECT archived FROM environments WHERE workspace_id=? AND id=?`, ws, signal.EnvironmentID).Scan(&archived)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && archived) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		repositories, err := environmentRepositoriesTx(ctx, tx, ws)
+		if err != nil {
+			return err
+		}
+		if !repositories[deploy.Repository] {
+			return nil
+		}
+		history, err := readFeedbackHistory(ctx, tx, ws, signal)
+		if err != nil {
+			return err
+		}
+		next, err := nextFeedbackReport(ctx, tx, ws, signal.EnvironmentID)
+		if err != nil {
+			return err
+		}
+		origin := store.FeedbackGitHubOrigin(next)
+		changes, err := store.PlanFeedbackGitHubDeploy(signal, origin, history)
+		if err != nil {
+			return err
+		}
+		if err := writeFeedbackChanges(ctx, tx, ws, signal, origin, changes); err != nil {
+			return err
+		}
+		if err := recordFeedbackAccepted(ctx, tx, ws, signal, origin); err != nil {
+			return err
+		}
+		if err := claim.touchEnvironment(ctx, tx, signal.EnvironmentID); err != nil {
+			return err
+		}
+		recorded = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return recorded, nil
 }
 
 // ListFeedbackSignals implements store.FeedbackStore.

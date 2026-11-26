@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -131,8 +132,9 @@ func (s *Server) createWorkspaceGitHubAppManifest(w http.ResponseWriter, r *http
 	// Webhook delivery is active: GitHub signs each delivery with the secret
 	// the conversion returns, and checks read admits check_suite and
 	// check_run deliveries (component-identity-membership; req-quiet-idle-runtime
-	// AC-3.1).
-	manifest := map[string]any{"name": "Conveyor " + record.Name, "url": base.String(), "public": true, "redirect_url": path + "/callback", "setup_url": path + "/setup", "setup_on_update": true, "hook_attributes": map[string]any{"active": true, "url": gitHubWebhookReceiverURL(base.String(), workspace)}, "default_events": append([]string(nil), github.WebhookEvents...), "default_permissions": map[string]string{"metadata": "read", "checks": "read", "contents": "write", "pull_requests": "write", "issues": "write", "statuses": "write"}}
+	// AC-3.1). Deployments read admits deployment_status deliveries
+	// (feature-production-feedback-live FB-4; DEC-149(5)).
+	manifest := map[string]any{"name": "Conveyor " + record.Name, "url": base.String(), "public": true, "redirect_url": path + "/callback", "setup_url": path + "/setup", "setup_on_update": true, "hook_attributes": map[string]any{"active": true, "url": gitHubWebhookReceiverURL(base.String(), workspace)}, "default_events": append([]string(nil), github.WebhookEvents...), "default_permissions": map[string]string{"metadata": "read", "checks": "read", "contents": "write", "pull_requests": "write", "issues": "write", "statuses": "write", "deployments": "read"}}
 	s.setAppReturnCookie(w, r, workspace, cookie)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"manifest": manifest, "state": state})
@@ -228,10 +230,14 @@ func (s *Server) getWorkspaceGitHubApp(w http.ResponseWriter, r *http.Request) {
 	}
 	repositories := []repositoryCoverage{}
 	covered := map[string]bool{}
+	deploymentReports := ""
 	if status.Connected && status.InstallationID > 0 {
 		token, err := s.appClient().WorkspaceToken(r.Context(), s.WorkspaceGitHubApps, workspace)
 		if err == nil {
 			covered, err = s.appClient().Repositories(r.Context(), workspace, token)
+		}
+		if err == nil {
+			deploymentReports, err = s.gitHubDeploymentReports(r, workspace)
 		}
 		if err != nil {
 			writeGitHubAppStatusFailure(w, workspace, err)
@@ -250,6 +256,9 @@ func (s *Server) getWorkspaceGitHubApp(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	result := map[string]any{"connected": status.Connected, "app_slug": status.AppSlug, "installation_account": status.InstallationAccount, "repositories": repositories}
+	if deploymentReports != "" {
+		result["deployment_reports"] = deploymentReports
+	}
 	webhook, err := s.workspaceGitHubWebhookView(r, workspace)
 	if err != nil {
 		appHTTPError(w, http.StatusInternalServerError, "github_webhook_status_failed")
@@ -270,6 +279,45 @@ func (s *Server) getWorkspaceGitHubApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// deployment_reports values: on, or which of deployments read access and the
+// deployment_status event the installation lacks
+// (feature-production-feedback-live FB-4; component-production-feedback
+// invariant 12; DEC-149(5)).
+const (
+	deploymentReportsOn                        = "on"
+	deploymentReportsMissingPermission         = "missing_permission"
+	deploymentReportsMissingEvent              = "missing_event"
+	deploymentReportsMissingPermissionAndEvent = "missing_permission_and_event"
+)
+
+// gitHubDeploymentReports reads the verified installation and states whether
+// it grants read access to deployments and subscribes deployment_status.
+// Write access to deployments also admits reads. A missing grant or event is
+// status data, not a failure. A failed read keeps the status read's failure
+// answer.
+func (s *Server) gitHubDeploymentReports(r *http.Request, workspace string) (string, error) {
+	app, err := s.WorkspaceGitHubApps.GetWorkspaceGitHubAppForUse(r.Context(), workspace)
+	if err != nil {
+		return "", github.AppPermission(workspace)
+	}
+	installation, err := s.appClient().Installation(r.Context(), workspace, github.AppCredentials{AppID: app.AppID, PrivateKey: app.PrivateKey}, app.InstallationID)
+	if err != nil {
+		return "", err
+	}
+	access := installation.Permissions["deployments"]
+	permission := access == "read" || access == "write"
+	event := slices.Contains(installation.Events, "deployment_status")
+	switch {
+	case permission && event:
+		return deploymentReportsOn, nil
+	case event:
+		return deploymentReportsMissingPermission, nil
+	case permission:
+		return deploymentReportsMissingEvent, nil
+	}
+	return deploymentReportsMissingPermissionAndEvent, nil
 }
 
 // writeGitHubAppStatusFailure answers a failed installation token or

@@ -119,7 +119,7 @@ func TestChecksDeliveryRunsReadinessAndPollWhateverTheOtherDoes(t *testing.T) {
 					t.Errorf("poll for %s %v", repository, branches)
 				}
 				return test.poll
-			}, func(string) {}, t.Logf)
+			}, nil, func(string) {}, t.Logf)
 			err := applier.Handlers.Checks(t.Context(), "acme/api", "landed", []string{"main"})
 			if dispatcher.calls != 1 || polls != 1 {
 				t.Fatalf("readiness calls=%d polls=%d", dispatcher.calls, polls)
@@ -225,7 +225,7 @@ func newPostMergeFixture(t *testing.T) *postMergeFixture {
 		},
 		Sleep: func(context.Context, time.Duration) error { return nil },
 	}
-	f.applier = newGitHubWebhookApplier(st, d, polls.PushedRef, polls.ChecksCompleted, func(string) {}, func(format string, args ...any) {
+	f.applier = newGitHubWebhookApplier(st, d, polls.PushedRef, polls.ChecksCompleted, nil, func(string) {}, func(format string, args ...any) {
 		f.lines.Add(1)
 		t.Logf(format, args...)
 	})

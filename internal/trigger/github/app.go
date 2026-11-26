@@ -153,6 +153,12 @@ type AppInstallation struct {
 		Login string `json:"login"`
 	} `json:"account"`
 	SuspendedAt *time.Time `json:"suspended_at"`
+	// Permissions and Events are what the installation grants and
+	// subscribes, as GitHub reports them for the verified installation. The
+	// App status read takes deployment report access from them
+	// (feature-production-feedback-live FB-4; DEC-149(5)).
+	Permissions map[string]string `json:"permissions"`
+	Events      []string          `json:"events"`
 }
 
 func (c *AppClient) Installation(ctx context.Context, workspace string, app AppCredentials, id int64) (AppInstallation, error) {

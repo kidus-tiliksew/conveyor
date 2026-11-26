@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/feedback"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -127,8 +128,37 @@ func (s *Server) enqueueFeedbackSignal(workspace string, signal store.FeedbackSi
 		copied.Services[i] = service
 		copied.Services[i].Versions = slices.Clone(service.Versions)
 	}
-	key := "signal:" + workspace + ":" + signal.EnvironmentID + ":" + signal.ArrivedAt.Format(time.RFC3339Nano)
+	// The key names the services and versions too: two GitHub deployment
+	// reports of one environment can share a report time, and each one must
+	// reach the background work.
+	services := sha256.Sum256(core.JSONPayload(copied.Services))
+	key := "signal:" + workspace + ":" + signal.EnvironmentID + ":" + signal.ArrivedAt.Format(time.RFC3339Nano) + ":" + hex.EncodeToString(services[:])
 	s.feedbackWorker().enqueue(feedbackJob{key: key, workspace: workspace, signal: &copied, env: s.feedbackJobEnv()})
+}
+
+// FeedbackDeploymentReports returns the handler that applies GitHub
+// deployment_status deliveries, or nil when the store keeps no environments
+// or deploys. The tracked-branch check reads through the workspace App's
+// installation token, and a recorded deploy goes to the background resolving
+// and comparing as an accepted signal does (feature-production-feedback-live
+// FB-4; component-production-feedback invariants 9 and 10; DEC-59(3)).
+func (s *Server) FeedbackDeploymentReports() func(ctx context.Context, repository string, status github.DeploymentStatus) error {
+	backend, ok := s.Store.(feedback.DeploymentStore)
+	if !ok {
+		return nil
+	}
+	reports := feedback.DeploymentReports{
+		Store: backend,
+		Repositories: func(ctx context.Context) ([]feedback.Repository, error) {
+			return feedbackRepositories(ctx, s.Store)
+		},
+		Forge: func(_ context.Context, workspace string) feedback.Forge {
+			return s.feedbackJobEnv().lazyForge(workspace)
+		},
+		Recorded: s.enqueueFeedbackSignal,
+		Logf:     log.Printf,
+	}
+	return reports.Apply
 }
 
 // requestFeedbackAnswers asks the background work for the answers a read

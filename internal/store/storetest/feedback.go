@@ -17,7 +17,7 @@ import (
 )
 
 // runFeedback holds every backend to component-production-feedback invariants
-// 1, 3 to 6, and 13 (feature-production-feedback-live FB-2;
+// 1, 3 to 6, 10, and 13 (feature-production-feedback-live FB-2 and FB-4;
 // req-production-feedback REQ-1, REQ-2, and REQ-11; req-environments AC-2.4).
 // Each case starts from a fresh workspace.
 func runFeedback(t *testing.T, factory Factory) {
@@ -46,6 +46,15 @@ func runFeedback(t *testing.T, factory Factory) {
 		{"ObservesOnly", runFeedbackObservesOnly},
 		{"ConcurrentSignals", runFeedbackConcurrent},
 		{"ConcurrentRevocationAndArchive", runFeedbackConcurrentRefusal},
+		{"GitHubDeploy", runFeedbackGitHubDeploy},
+		{"GitHubRedeploy", runFeedbackGitHubRedeploy},
+		{"GitHubBoundaries", runFeedbackGitHubBoundaries},
+		{"GitHubSameTime", runFeedbackGitHubSameTime},
+		{"GitHubSameSecond", runFeedbackGitHubSameSecond},
+		{"GitHubLongRepository", runFeedbackGitHubLongRepository},
+		{"GitHubReportNumbers", runFeedbackGitHubReportNumbers},
+		{"GitHubRecordsNothing", runFeedbackGitHubRecordsNothing},
+		{"GitHubObservesOnly", runFeedbackGitHubObservesOnly},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.run(t, factory.fresh(t, nil)) })
 	}

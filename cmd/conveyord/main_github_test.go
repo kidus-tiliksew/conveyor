@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/feedback"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -199,7 +201,7 @@ func TestGitHubWebhookReplayAgainstFakeForge(t *testing.T) {
 		},
 	}
 	var delivered []string
-	applier := newGitHubWebhookApplier(st, d, polls.PushedRef, polls.ChecksCompleted, func(workspace string) { delivered = append(delivered, workspace) }, t.Logf)
+	applier := newGitHubWebhookApplier(st, d, polls.PushedRef, polls.ChecksCompleted, nil, func(workspace string) { delivered = append(delivered, workspace) }, t.Logf)
 	applier.Start(t.Context())
 	receiver := httpapi.NewServer(st)
 	receiver.GitHubWebhookApplier = applier
@@ -357,6 +359,7 @@ type retryFixture struct {
 	runnerCalls int
 	labelMoves  int
 	lines       []string
+	deployForge *deployBranchForge
 }
 
 // newRetryFixture wires the real receiver, applier, dispatcher, and monitor
@@ -470,7 +473,25 @@ func newRetryFixture(t *testing.T) *retryFixture {
 			return func(_ context.Context, args ...string) ([]byte, error) { return quietMonitorRead(args...), nil }, nil
 		},
 	}
-	f.applier = newGitHubWebhookApplier(backend, d, polls.PushedRef, polls.ChecksCompleted, func(string) {}, func(format string, args ...any) {
+	f.deployForge = &deployBranchForge{head: recordedDeployCommit}
+	deployments := feedback.DeploymentReports{
+		Store: backend,
+		// The repositories come from the stored workspace configuration, as
+		// the daemon reads them.
+		Repositories: func(ctx context.Context) ([]feedback.Repository, error) {
+			document, err := backend.WorkspaceConfig(ctx)
+			if err != nil {
+				return nil, err
+			}
+			repositories := []feedback.Repository{}
+			for _, repository := range document.Document.Repos {
+				repositories = append(repositories, feedback.Repository{Name: repository.Name, Slug: repository.GitHub})
+			}
+			return repositories, nil
+		},
+		Forge: func(context.Context, string) feedback.Forge { return f.deployForge },
+	}
+	f.applier = newGitHubWebhookApplier(backend, d, polls.PushedRef, polls.ChecksCompleted, deployments.Apply, func(string) {}, func(format string, args ...any) {
 		f.mu.Lock()
 		f.lines = append(f.lines, fmt.Sprintf(format, args...))
 		f.mu.Unlock()
@@ -591,6 +612,193 @@ func TestGitHubWebhookRetriesFailedApplications(t *testing.T) {
 		}
 		if tasks[0].State == core.TaskClaiming || f.labelMoves == 0 || len(f.notApplied()) != 0 {
 			t.Fatalf("intake not resumed: state=%s label moves=%d lines=%v", tasks[0].State, f.labelMoves, f.lines)
+		}
+	})
+}
+
+// recordedDeploymentStatus is a deployment_status delivery trimmed to the
+// fields GitHub sends that the receiver reads.
+const (
+	recordedDeployCommit = "5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2"
+	// Two distinct statuses of two deployments of one commit, created in one
+	// second, as GitHub can send them.
+	recordedDeploymentStatusA = `{"action":"created","deployment_status":{"id":9101,"state":"success","environment":"Production","created_at":"2026-11-26T09:30:00Z"},"deployment":{"id":801,"sha":"5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2","ref":"main","environment":"Production"},"repository":{"full_name":"acme/app"}}`
+	recordedDeploymentStatusB = `{"action":"created","deployment_status":{"id":9102,"state":"success","environment":"Production","created_at":"2026-11-26T09:30:00Z"},"deployment":{"id":802,"sha":"5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2","ref":"main","environment":"Production"},"repository":{"full_name":"acme/app"}}`
+	recordedDeploymentStatus  = `{"action":"created","deployment_status":{"state":"success","environment":"Production","created_at":"2026-11-26T09:30:00Z"},"deployment":{"sha":"5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2","ref":"main","environment":"Production","created_at":"2026-11-26T09:00:00Z"},"repository":{"full_name":"acme/app"}}`
+)
+
+// deployBranchForge answers the tracked-branch check: main's head is head,
+// and the deployment commit is that head. It fails while failures is above
+// zero.
+type deployBranchForge struct {
+	head     string
+	failures atomic.Int32
+	reads    atomic.Int32
+	// missing makes the branch head unresolvable, as GitHub answers for a
+	// branch it does not hold.
+	missing atomic.Bool
+}
+
+func (f *deployBranchForge) ReadCommit(_ context.Context, _, ref string) (string, error) {
+	f.reads.Add(1)
+	if f.failures.Add(-1) >= 0 {
+		return "", githubtrigger.StatusError(http.StatusBadGateway, errors.New("GitHub REST status 502"))
+	}
+	if ref != "heads/main" || f.missing.Load() {
+		return "", githubtrigger.CommitNotFoundError(ref)
+	}
+	return f.head, nil
+}
+
+func (f *deployBranchForge) Compare(_ context.Context, _, base, head string, _ int) (feedback.CompareResult, error) {
+	if base == head {
+		return feedback.CompareResult{Status: "identical"}, nil
+	}
+	return feedback.CompareResult{Status: "diverged"}, nil
+}
+
+// TestGitHubWebhookDeploymentStatusRetriesAndRedelivery sends a signed
+// deployment_status delivery through the real receiver and applier. A forge
+// failure during the tracked-branch check is retried within the delivery. A
+// delivery that fails every attempt records no deploy and is forgotten, so an
+// explicit redelivery from GitHub is accepted and records the deploy once. A
+// duplicate delivery ID records nothing more, and two distinct statuses in one
+// second each keep their deploy (feature-production-feedback-live
+// FB-4; component-production-feedback invariant 10; req-production-feedback
+// AC-1.5).
+func TestGitHubWebhookDeploymentStatusRetriesAndRedelivery(t *testing.T) {
+	setup := func(t *testing.T) (*retryFixture, string) {
+		f := newRetryFixture(t)
+		environment, err := f.st.CreateEnvironment(f.ctx, store.EnvironmentInput{Name: "Production", GitHubEnvironments: []string{"production"}, TrackedBranches: map[string]string{"app": "main"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f, environment.ID
+	}
+	deploys := func(t *testing.T, f *retryFixture, environmentID string) []store.FeedbackDeploy {
+		t.Helper()
+		listed, err := f.st.ListFeedbackDeploys(f.ctx, environmentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return listed
+	}
+	t.Run("a one-time forge failure is retried", func(t *testing.T) {
+		f, environmentID := setup(t)
+		f.deployForge.failures.Store(1)
+		f.deliver("deploy-1", "deployment_status", recordedDeploymentStatus)
+		listed := deploys(t, f, environmentID)
+		if len(listed) != 1 || listed[0].Commit != recordedDeployCommit || listed[0].Service != "app" || listed[0].Origin.Source != store.FeedbackSourceGitHub || !listed[0].DeployedAt.Equal(time.Date(2026, 11, 26, 9, 30, 0, 0, time.UTC)) {
+			t.Fatalf("deploys=%+v, want one GitHub deploy at the status time", listed)
+		}
+		if f.deployForge.reads.Load() != 2 || len(f.notApplied()) != 0 {
+			t.Fatalf("reads=%d lines=%v, want one failure and one retried check", f.deployForge.reads.Load(), f.lines)
+		}
+	})
+	t.Run("an unresolved branch head exhausts the retries and its redelivery records once", func(t *testing.T) {
+		f, environmentID := setup(t)
+		f.deployForge.missing.Store(true)
+		f.deliver("deploy-head", "deployment_status", recordedDeploymentStatus)
+		if listed := deploys(t, f, environmentID); len(listed) != 0 {
+			t.Fatalf("deploys=%+v while the head does not resolve, want none", listed)
+		}
+		lines := f.notApplied()
+		if f.deployForge.reads.Load() != 3 || len(lines) != 1 || !strings.Contains(lines[0], "category forge_status") || !strings.Contains(lines[0], "attempts=3") {
+			t.Fatalf("reads=%d lines=%v, want three failed head reads and one not-applied line", f.deployForge.reads.Load(), lines)
+		}
+		// The applier forgot the delivery, so GitHub's redelivery with the
+		// same ID is accepted and records the deploy once the head returns.
+		f.deployForge.missing.Store(false)
+		f.deliver("deploy-head", "deployment_status", recordedDeploymentStatus)
+		if listed := deploys(t, f, environmentID); len(listed) != 1 || listed[0].Commit != recordedDeployCommit {
+			t.Fatalf("deploys=%+v after the redelivery, want one", listed)
+		}
+	})
+	t.Run("an exhausted delivery is forgotten and its redelivery records once", func(t *testing.T) {
+		f, environmentID := setup(t)
+		f.deployForge.failures.Store(3)
+		f.deliver("deploy-2", "deployment_status", recordedDeploymentStatus)
+		if listed := deploys(t, f, environmentID); len(listed) != 0 {
+			t.Fatalf("deploys=%+v after every attempt failed, want none", listed)
+		}
+		lines := f.notApplied()
+		if len(lines) != 1 || !strings.Contains(lines[0], "category forge_status") || strings.Contains(lines[0], "502") {
+			t.Fatalf("lines=%v, want one not-applied line with the category only", lines)
+		}
+		// GitHub's explicit redelivery keeps the delivery ID.
+		f.deliver("deploy-2", "deployment_status", recordedDeploymentStatus)
+		if listed := deploys(t, f, environmentID); len(listed) != 1 || listed[0].Commit != recordedDeployCommit {
+			t.Fatalf("deploys=%+v after the redelivery, want one", listed)
+		}
+		// The applied delivery is recorded, so the same ID again is a
+		// duplicate that applies nothing.
+		mac := hmac.New(sha256.New, []byte(replaySecret))
+		mac.Write([]byte(recordedDeploymentStatus))
+		req := httptest.NewRequest(http.MethodPost, "/v1/github/webhook/demo", strings.NewReader(recordedDeploymentStatus))
+		req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set("X-GitHub-Delivery", "deploy-2")
+		req.Header.Set("X-GitHub-Event", "deployment_status")
+		w := httptest.NewRecorder()
+		f.receiver.Handler().ServeHTTP(w, req)
+		f.applier.Wait()
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "duplicate") {
+			t.Fatalf("duplicate delivery: %d %s", w.Code, w.Body.String())
+		}
+		if listed := deploys(t, f, environmentID); len(listed) != 1 {
+			t.Fatalf("deploys=%+v after a duplicate delivery, want one", listed)
+		}
+	})
+	t.Run("a repository alias of 256 characters keeps its whole name as the service", func(t *testing.T) {
+		f, environmentID := setup(t)
+		alias := "app-" + strings.Repeat("x", 252)
+		current, err := f.st.WorkspaceConfig(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.st.UpdateWorkspaceConfig(f.ctx, current.Version, &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: alias, GitHub: "acme/app", Base: "main"}}}); err != nil {
+			t.Fatal(err)
+		}
+		f.deliver("deploy-long", "deployment_status", recordedDeploymentStatus)
+		listed := deploys(t, f, environmentID)
+		if len(alias) != 256 || len(listed) != 1 || listed[0].Service != alias || listed[0].Repository != alias || listed[0].Commit != recordedDeployCommit || listed[0].Origin.Source != store.FeedbackSourceGitHub {
+			t.Fatalf("deploys=%+v, want one GitHub deploy whose service is the whole %d-character alias", listed, len(alias))
+		}
+		if lines := f.notApplied(); len(lines) != 0 {
+			t.Fatalf("lines=%v, want the delivery applied", lines)
+		}
+	})
+	t.Run("two distinct statuses in one second keep both deploys and a replay changes nothing", func(t *testing.T) {
+		f, environmentID := setup(t)
+		f.deliver("deploy-a", "deployment_status", recordedDeploymentStatusA)
+		f.deliver("deploy-b", "deployment_status", recordedDeploymentStatusB)
+		listed := deploys(t, f, environmentID)
+		at := time.Date(2026, 11, 26, 9, 30, 0, 0, time.UTC)
+		if len(listed) != 2 {
+			t.Fatalf("deploys=%+v, want one deploy for each distinct status", listed)
+		}
+		for _, deploy := range listed {
+			if deploy.Commit != recordedDeployCommit || deploy.Origin.Source != store.FeedbackSourceGitHub || !deploy.DeployedAt.Equal(at) {
+				t.Fatalf("deploy=%+v, want a GitHub deploy of the commit at the status time", deploy)
+			}
+		}
+		// A true replay of either delivery ID is refused by the receiver and
+		// leaves the stored state unchanged.
+		for _, replay := range []struct{ id, body string }{{"deploy-a", recordedDeploymentStatusA}, {"deploy-b", recordedDeploymentStatusB}} {
+			mac := hmac.New(sha256.New, []byte(replaySecret))
+			mac.Write([]byte(replay.body))
+			req := httptest.NewRequest(http.MethodPost, "/v1/github/webhook/demo", strings.NewReader(replay.body))
+			req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+			req.Header.Set("X-GitHub-Delivery", replay.id)
+			req.Header.Set("X-GitHub-Event", "deployment_status")
+			w := httptest.NewRecorder()
+			f.receiver.Handler().ServeHTTP(w, req)
+			f.applier.Wait()
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "duplicate") {
+				t.Fatalf("replay of %s: %d %s", replay.id, w.Code, w.Body.String())
+			}
+		}
+		if after := deploys(t, f, environmentID); !reflect.DeepEqual(after, listed) {
+			t.Fatalf("deploys after replays=%+v, want %+v unchanged", after, listed)
 		}
 	})
 }
