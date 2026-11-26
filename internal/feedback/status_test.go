@@ -1,6 +1,7 @@
 package feedback
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +87,7 @@ func TestTaskStatuses(t *testing.T) {
 		f.deploy("env-prod", "worker", old, "conveyor", 5, -1)
 		f.compare("conveyor", merge, current, store.FeedbackCompareAhead)
 		f.compare("conveyor", merge, old, store.FeedbackCompareAhead)
-		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
 		status := only(t, statuses, "env-prod")
 		if status.Status != StatusLive || strings.Join(status.Services, ",") != "api,worker" || !status.LiveSince.Equal(at(5)) || status.AsOf == nil || !status.AsOf.Equal(at(90)) || !missing.Empty() {
 			t.Fatalf("status=%+v missing=%+v", status, missing)
@@ -111,7 +112,7 @@ func TestTaskStatuses(t *testing.T) {
 		f.deploy("env-prod", "api", current, "conveyor", 10, -1)
 		f.compare("conveyor", merge, current, store.FeedbackCompareAhead)
 		// No answer is stored for the stopped version, and none is asked for.
-		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
 		status := only(t, statuses, "env-prod")
 		if status.Status != StatusLive || strings.Join(status.Services, ",") != "api" || !status.LiveSince.Equal(at(10)) || !missing.Empty() {
 			t.Fatalf("status=%+v missing=%+v", status, missing)
@@ -123,7 +124,7 @@ func TestTaskStatuses(t *testing.T) {
 		f.deploy("env-prod", "api", current, "conveyor", 10, -1)
 		f.deploy("env-prod", "worker", old, "conveyor", 5, -1)
 		f.compare("conveyor", merge, current, store.FeedbackCompareAhead)
-		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
 		want := store.FeedbackComparisonKey{Repository: "acme/conveyor", Base: merge, Head: old}
 		if len(statuses) != 0 || len(missing.Comparisons) != 1 || missing.Comparisons[0] != want {
 			t.Fatalf("statuses=%+v missing=%+v", statuses, missing)
@@ -148,7 +149,7 @@ func TestTaskStatuses(t *testing.T) {
 		f.compare("conveyor", merge, old, store.FeedbackCompareBehind)
 		f.in.BranchHeads = []store.FeedbackBranchHead{{Repository: "acme/conveyor", Branch: "main", Commit: current, ObservedAt: at(99)}}
 		f.compare("conveyor", merge, current, store.FeedbackCompareAhead)
-		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
 		status := only(t, statuses, "env-prod")
 		if status.Status != StatusNotLiveYet || !status.OnTrackedBranch || !missing.Empty() {
 			t.Fatalf("status=%+v missing=%+v", status, missing)
@@ -157,7 +158,7 @@ func TestTaskStatuses(t *testing.T) {
 	t.Run("a tracked branch head that is not stored waits", func(t *testing.T) {
 		f := newStatusFixture()
 		f.environment("env-prod", "Production", map[string]string{"conveyor": "main"})
-		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
 		if len(statuses) != 0 || len(missing.Branches) != 1 || missing.Branches[0] != (BranchRef{Slug: "acme/conveyor", Branch: "main"}) {
 			t.Fatalf("statuses=%+v missing=%+v", statuses, missing)
 		}
@@ -167,7 +168,7 @@ func TestTaskStatuses(t *testing.T) {
 		f.environment("env-prod", "Production", map[string]string{"conveyor": "main"})
 		f.in.BranchHeads = []store.FeedbackBranchHead{{Repository: "acme/conveyor", Branch: "main", Commit: current, ObservedAt: at(80)}}
 		f.compare("conveyor", merge, current, store.FeedbackCompareBehind)
-		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
 		if status := only(t, statuses, "env-prod"); status.Status != StatusNotLiveYet || status.OnTrackedBranch || len(missing.Branches) != 1 {
 			t.Fatalf("status=%+v missing=%+v", status, missing)
 		}
@@ -176,13 +177,13 @@ func TestTaskStatuses(t *testing.T) {
 		f := newStatusFixture()
 		f.environment("env-prod", "Production", map[string]string{"conveyor": "main"})
 		f.in.BranchHeads = []store.FeedbackBranchHead{{Repository: "acme/conveyor", Branch: "main", Commit: store.FeedbackBranchAbsent, ObservedAt: at(99)}}
-		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
 		if status := only(t, statuses, "env-prod"); status.Status != StatusNotLiveYet || status.OnTrackedBranch || !missing.Empty() {
 			t.Fatalf("status=%+v missing=%+v", status, missing)
 		}
 		// An old absence is still served and read again.
 		f.in.BranchHeads[0].ObservedAt = at(80)
-		statuses, missing = TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, missing = TaskStatuses(f.in, task("t1", "conveyor", merge))
 		if status := only(t, statuses, "env-prod"); status.Status != StatusNotLiveYet || status.OnTrackedBranch || len(missing.Branches) != 1 || len(missing.Comparisons) != 0 {
 			t.Fatalf("status=%+v missing=%+v", status, missing)
 		}
@@ -205,7 +206,7 @@ func TestTaskStatuses(t *testing.T) {
 		f.in.State.Running["env-prod"][1].Repository = "conveyor"
 		f.in.State.Resolutions[1].Repository = "conveyor"
 		f.compare("conveyor", merge, current, store.FeedbackCompareBehind)
-		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
 		if status := only(t, statuses, "env-prod"); status.Status != StatusNotLiveYet || !missing.Empty() {
 			t.Fatalf("status=%+v missing=%+v", status, missing)
 		}
@@ -217,7 +218,7 @@ func TestTaskStatuses(t *testing.T) {
 		f.deploy("env-prod", "api", current, "conveyor", 10, -1)
 		f.deploy("env-stage", "api", current, "conveyor", 10, -1)
 		f.compare("conveyor", merge, old, store.FeedbackCompareAhead)
-		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
 		want := store.FeedbackComparisonKey{Repository: "acme/conveyor", Base: merge, Head: current}
 		if len(statuses) != 0 || len(missing.Comparisons) == 0 || missing.Comparisons[0] != want {
 			t.Fatalf("statuses=%+v missing=%+v", statuses, missing)
@@ -233,7 +234,7 @@ func TestTaskStatuses(t *testing.T) {
 		f.deploy("env-app", "web", other, "app", 10, -1)
 		f.deploy("env-old", "api", current, "conveyor", 10, -1)
 		f.compare("conveyor", merge, current, store.FeedbackCompareAhead)
-		statuses, _ := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, _ := TaskStatuses(f.in, task("t1", "conveyor", merge))
 		if len(statuses) != 1 || statuses[0].Environment != (EnvironmentRef{ID: "env-prod", Name: "Production"}) {
 			t.Fatalf("statuses=%+v", statuses)
 		}
@@ -242,7 +243,7 @@ func TestTaskStatuses(t *testing.T) {
 		f := newStatusFixture()
 		f.environment("env-prod", "Production", nil)
 		f.deploy("env-prod", "api", merge, "conveyor", 10, -1)
-		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		statuses, _, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
 		if status := only(t, statuses, "env-prod"); status.Status != StatusLive || !missing.Empty() {
 			t.Fatalf("status=%+v missing=%+v", status, missing)
 		}
@@ -260,7 +261,7 @@ func TestTaskStatuses(t *testing.T) {
 	})
 }
 
-func first(statuses []TaskStatus, _ Missing) []TaskStatus { return statuses }
+func first(statuses []TaskStatus, _ bool, _ Missing) []TaskStatus { return statuses }
 
 // TestCrateStatus covers invariant 18 (req-production-feedback AC-3.4).
 func TestCrateStatus(t *testing.T) {
@@ -277,7 +278,7 @@ func TestCrateStatus(t *testing.T) {
 	f.compare("conveyor", mergeA, version, store.FeedbackCompareAhead)
 	f.compare("conveyor", mergeB, version, store.FeedbackCompareDiverged)
 	members := []store.FeedbackMergedTask{task("ta", "conveyor", mergeA), task("tb", "conveyor", mergeB), task("tc", "conveyor", "")}
-	lines, liveIn, missing := CrateStatus(f.in, members)
+	lines, liveIn, _, missing := CrateStatus(f.in, members)
 	if len(lines) != 2 || !missing.Empty() {
 		t.Fatalf("lines=%+v missing=%+v", lines, missing)
 	}
@@ -294,7 +295,7 @@ func TestCrateStatus(t *testing.T) {
 	// A stopped version whose answer stays missing does not hide a member
 	// that a running version proves live.
 	f.deploy("env-prod", "api", sha("b0"), "conveyor", 5, 20)
-	lines, liveIn, missing = CrateStatus(f.in, members)
+	lines, liveIn, _, missing = CrateStatus(f.in, members)
 	if len(lines) != 2 || lines[0].LiveTaskCount != 1 || strings.Join(liveIn["ta"], ",") != "Production,Staging" {
 		t.Fatalf("lines with a stopped version=%+v live_in=%+v", lines, liveIn)
 	}
@@ -302,8 +303,119 @@ func TestCrateStatus(t *testing.T) {
 	if len(missing.Comparisons) != 1 || missing.Comparisons[0].Base != mergeB || missing.Comparisons[0].Head != sha("b0") {
 		t.Fatalf("missing with a stopped version=%+v", missing)
 	}
-	if lines, _, _ := CrateStatus(f.in, nil); len(lines) != 0 {
+	if lines, _, _, _ := CrateStatus(f.in, nil); len(lines) != 0 {
 		t.Fatalf("lines without members=%+v", lines)
+	}
+}
+
+// TestStatusPending covers environments_pending (component-production-feedback
+// invariant 20; req-production-feedback AC-3.2): it is true only when a
+// relevant status is left out because a comparison or a tracked branch head is
+// not stored yet.
+func TestStatusPending(t *testing.T) {
+	merge, old, current := sha("aa"), sha("b1"), sha("b2")
+	cases := []struct {
+		name    string
+		setup   func(f *statusFixture)
+		task    store.FeedbackMergedTask
+		pending bool
+		served  int
+		missing bool
+	}{
+		{name: "a missing comparison for a running version is pending", setup: func(f *statusFixture) {
+			f.environment("env-prod", "Production", nil)
+			f.deploy("env-prod", "api", current, "conveyor", 10, -1)
+		}, pending: true, missing: true},
+		{name: "a tracked branch head that is not stored is pending", setup: func(f *statusFixture) {
+			f.environment("env-prod", "Production", map[string]string{"conveyor": "main"})
+		}, pending: true, missing: true},
+		{name: "a stored head without its comparison is pending", setup: func(f *statusFixture) {
+			f.environment("env-prod", "Production", map[string]string{"conveyor": "main"})
+			f.in.BranchHeads = []store.FeedbackBranchHead{{Repository: "acme/conveyor", Branch: "main", Commit: current, ObservedAt: at(80)}}
+		}, pending: true, missing: true},
+		{name: "a served stale head is not pending", setup: func(f *statusFixture) {
+			f.environment("env-prod", "Production", map[string]string{"conveyor": "main"})
+			f.in.BranchHeads = []store.FeedbackBranchHead{{Repository: "acme/conveyor", Branch: "main", Commit: current, ObservedAt: at(80)}}
+			f.compare("conveyor", merge, current, store.FeedbackCompareBehind)
+		}, served: 1, missing: true},
+		{name: "a live task with a stopped version's comparison missing is not pending", setup: func(f *statusFixture) {
+			f.environment("env-prod", "Production", nil)
+			f.deploy("env-prod", "api", old, "conveyor", 5, 10)
+			f.deploy("env-prod", "api", current, "conveyor", 10, -1)
+			f.compare("conveyor", merge, current, store.FeedbackCompareAhead)
+		}, served: 1},
+		{name: "a missing merge commit stays unknown and is not pending", setup: func(f *statusFixture) {
+			f.environment("env-prod", "Production", nil)
+			f.deploy("env-prod", "api", current, "conveyor", 10, -1)
+			f.deploy("env-prod", "worker", old, "conveyor", 5, -1)
+			f.compare("conveyor", merge, current, store.FeedbackCompareMissing)
+		}, served: 1},
+		{name: "a workspace with no environment is not pending", setup: func(*statusFixture) {}},
+		{name: "an archived environment is not pending", setup: func(f *statusFixture) {
+			f.environment("env-old", "Archived", nil)
+			f.in.Environments[0].Archived = true
+			f.deploy("env-old", "api", current, "conveyor", 10, -1)
+		}},
+		{name: "a task without a merge commit is left out and not pending", setup: func(f *statusFixture) {
+			f.environment("env-prod", "Production", nil)
+			f.deploy("env-prod", "api", current, "conveyor", 10, -1)
+		}, task: task("t1", "conveyor", "")},
+		{name: "a repository without a slug is left out and not pending", setup: func(f *statusFixture) {
+			f.environment("env-prod", "Production", nil)
+			f.deploy("env-prod", "api", current, "conveyor", 10, -1)
+			delete(f.in.Slugs, "conveyor")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStatusFixture()
+			tc.setup(f)
+			merged := tc.task
+			if merged.TaskID == "" {
+				merged = task("t1", "conveyor", merge)
+			}
+			statuses, pending, missing := TaskStatuses(f.in, merged)
+			if pending != tc.pending || len(statuses) != tc.served || missing.Empty() == tc.missing {
+				t.Fatalf("pending=%v statuses=%+v missing=%+v", pending, statuses, missing)
+			}
+		})
+	}
+}
+
+// TestCrateStatusPending proves that a pending member sets the crate's flag
+// even when its environment already has a line, and that the flag changes no
+// line, count, or live_in entry (invariants 18 and 20).
+func TestCrateStatusPending(t *testing.T) {
+	mergeA, mergeB, version := sha("a1"), sha("a2"), sha("b1")
+	f := newStatusFixture()
+	f.environment("env-prod", "Production", nil)
+	f.signal("env-prod", 99, 60)
+	f.deploy("env-prod", "api", version, "conveyor", 20, -1)
+	f.compare("conveyor", mergeA, version, store.FeedbackCompareAhead)
+	members := []store.FeedbackMergedTask{task("ta", "conveyor", mergeA), task("tb", "conveyor", mergeB)}
+	lines, liveIn, pending, missing := CrateStatus(f.in, members)
+	if !pending || len(missing.Comparisons) != 1 || missing.Comparisons[0].Base != mergeB {
+		t.Fatalf("pending=%v missing=%+v", pending, missing)
+	}
+	if len(lines) != 1 || lines[0].LiveTaskCount != 1 || lines[0].MergedTaskCount != 2 || !lines[0].NewestLiveAt.Equal(at(20)) || strings.Join(liveIn["ta"], ",") != "Production" || len(liveIn["tb"]) != 0 {
+		t.Fatalf("lines=%+v live_in=%+v", lines, liveIn)
+	}
+	// Once the answer is stored, the same lines are served and nothing is
+	// pending.
+	f.compare("conveyor", mergeB, version, store.FeedbackCompareDiverged)
+	settled, settledLiveIn, pending, missing := CrateStatus(f.in, members)
+	if pending || !missing.Empty() || !reflect.DeepEqual(settled, lines) || strings.Join(settledLiveIn["ta"], ",") != "Production" {
+		t.Fatalf("pending=%v missing=%+v lines=%+v", pending, missing, settled)
+	}
+	// A member without a merge commit is left out and is not pending.
+	f = newStatusFixture()
+	f.environment("env-prod", "Production", nil)
+	f.deploy("env-prod", "api", version, "conveyor", 20, -1)
+	if lines, _, pending, _ := CrateStatus(f.in, []store.FeedbackMergedTask{task("tc", "conveyor", "")}); pending || len(lines) != 1 || lines[0].LiveTaskCount != 0 {
+		t.Fatalf("pending=%v lines=%+v", pending, lines)
+	}
+	if lines, _, pending, _ := CrateStatus(newStatusFixture().in, members); pending || len(lines) != 0 {
+		t.Fatalf("no environment: pending=%v lines=%+v", pending, lines)
 	}
 }
 

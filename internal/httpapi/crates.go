@@ -49,6 +49,9 @@ type crateDetailResponse struct {
 	// Environments holds one line per relevant environment, and [] when no
 	// environment is relevant (component-production-feedback invariant 18).
 	Environments []feedback.CrateLine `json:"environments"`
+	// EnvironmentsPending is true when a merged member's status was left
+	// out because an answer is not stored yet (invariant 20).
+	EnvironmentsPending bool `json:"environments_pending"`
 }
 
 // crateTaskRow is one member task on the crate read (req-crates AC-5.3).
@@ -244,18 +247,18 @@ func (s *Server) getCrate(w http.ResponseWriter, r *http.Request) {
 		actions[task.ID] = nextaction.CompactFrom(projected[task.ID])
 	}
 	crateinsight.SortTasks(detail.Tasks, actions)
-	lines, liveIn, err := s.feedbackCrateEnvironments(r.Context(), detail.Crate.ID)
+	live, err := s.feedbackCrateEnvironments(r.Context(), detail.Crate.ID)
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return
 	}
-	response := crateDetailResponse{Crate: detail.Crate, Requirements: detail.Requirements, UndeclaredRequirements: detail.UndeclaredRequirements, Tasks: make([]crateTaskRow, 0, len(detail.Tasks)), Environments: lines}
+	response := crateDetailResponse{Crate: detail.Crate, Requirements: detail.Requirements, UndeclaredRequirements: detail.UndeclaredRequirements, Tasks: make([]crateTaskRow, 0, len(detail.Tasks)), Environments: live.Lines, EnvironmentsPending: live.Pending}
 	for _, task := range detail.Tasks {
 		row := crateTaskRow{
 			ID: task.ID, Title: task.Title, State: task.State, Branch: task.Branch,
 			NextAction: actions[task.ID],
 		}
-		if names, merged := liveIn[task.ID]; merged {
+		if names, merged := live.LiveIn[task.ID]; merged {
 			row.LiveIn = &names
 		}
 		if event, found := pulls[task.ID]; found {

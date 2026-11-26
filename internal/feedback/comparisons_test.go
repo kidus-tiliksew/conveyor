@@ -501,7 +501,7 @@ func TestRefreshBranchesDeletedBranch(t *testing.T) {
 		if in.Comparisons, err = f.st.ListFeedbackComparisons(f.ctx, RequiredComparisons(in, []store.FeedbackMergedTask{merged})); err != nil {
 			t.Fatal(err)
 		}
-		statuses, missing := TaskStatuses(in, merged)
+		statuses, _, missing := TaskStatuses(in, merged)
 		if len(statuses) != 1 {
 			t.Fatalf("statuses=%+v missing=%+v", statuses, missing)
 		}
