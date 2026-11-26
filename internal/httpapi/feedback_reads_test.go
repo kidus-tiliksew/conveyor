@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,11 +114,17 @@ func newReadsHarness(t *testing.T, history ...string) *readsHarness {
 	return h
 }
 
+// readsTaskSequence numbers the fixture tasks of the read tests.
+var readsTaskSequence atomic.Int64
+
 // merged creates a merged task of the app repository.
 func (h *readsHarness) merged(ctx context.Context, merge, crateID string) core.Task {
 	h.t.Helper()
 	workspace, _ := store.WorkspaceFromContext(ctx)
-	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "app", Title: "Merged", Body: "Merged.", State: core.TaskMerged, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	// A sequence number keeps fixture IDs unique: core.NewTaskID has few
+	// random bits within one day, and a test can create hundreds of tasks.
+	id := fmt.Sprintf("%s-%d", core.NewTaskID(), readsTaskSequence.Add(1))
+	task := core.Task{ID: id, Workspace: workspace, Repo: "app", Title: "Merged", Body: "Merged.", State: core.TaskMerged, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
 	if crateID != "" {
 		task.Crate = &core.TaskCrate{ID: crateID}
 	}
