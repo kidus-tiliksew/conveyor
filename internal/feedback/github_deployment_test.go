@@ -472,3 +472,107 @@ func TestDeployLongRepositoryName(t *testing.T) {
 		}
 	}
 }
+
+// TestDeployLogsOmitCredentialShapedRepositoryName configures a repository
+// whose name has a synthetic credential shape. The workspace configuration
+// accepts the name, and the stores refuse it. Each log path, the deploy
+// refusal, the suggestion refusal, and the off-branch outcome, keeps its
+// workspace, outcome, and field name and never prints the name. A refusal
+// records no deploy and no suggestion, and the off-branch report stays a
+// no-op (component-identity-membership invariants 45 and 46;
+// component-production-feedback invariants 10 and 11).
+func TestDeployLogsOmitCredentialShapedRepositoryName(t *testing.T) {
+	alias := "ghp_" + strings.Repeat("A1b2C3d4", 5)[:36]
+	configure := func(t *testing.T, f *deploymentFixture) {
+		t.Helper()
+		current, err := f.st.WorkspaceConfig(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		workspace, _ := store.WorkspaceFromContext(f.ctx)
+		if _, err := f.st.UpdateWorkspaceConfig(f.ctx, current.Version, &config.Config{Workspace: workspace, Repos: []config.Repo{
+			{Name: alias, URL: "https://example.test/secret-shaped", Base: "main", GitHub: "acme/app"},
+		}}); err != nil {
+			t.Fatalf("the workspace configuration refused the synthetic name: %v", err)
+		}
+	}
+	reportsFor := func(f *deploymentFixture) DeploymentReports {
+		reports := f.reports()
+		reports.Repositories = func(context.Context) ([]Repository, error) {
+			return []Repository{{Name: alias, Slug: "acme/app"}}, nil
+		}
+		return reports
+	}
+	requireLogs := func(t *testing.T, f *deploymentFixture, want ...string) {
+		t.Helper()
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if len(f.logs) != 1 {
+			t.Fatalf("logs=%q, want one line", f.logs)
+		}
+		if strings.Contains(f.logs[0], alias) || strings.Contains(f.logs[0], "ghp_") || strings.Contains(f.logs[0], "repository=") {
+			t.Fatalf("log=%q repeats the repository name", f.logs[0])
+		}
+		for _, part := range want {
+			if !strings.Contains(f.logs[0], part) {
+				t.Fatalf("log=%q, want it to hold %q", f.logs[0], part)
+			}
+		}
+	}
+	t.Run("DeployRefusal", func(t *testing.T) {
+		f := newDeploymentFixture(t)
+		configure(t, f)
+		environment := f.environment(store.EnvironmentInput{Name: "Production", GitHubEnvironments: []string{"production"}})
+		if err := reportsFor(f).Apply(f.ctx, "acme/app", github.DeploymentStatus{State: "success", Environment: "production", Commit: deployHead, ReportedAt: deployTime}); err != nil {
+			t.Fatalf("err=%v, want a refused name to fail no delivery", err)
+		}
+		if deploys := f.deploys(environment.ID); len(deploys) != 0 || f.recordedCount() != 0 {
+			t.Fatalf("deploys=%+v recorded=%d, want none", deploys, f.recordedCount())
+		}
+		requireLogs(t, f, "outcome=refused", "field=repository", "environment_id="+environment.ID)
+	})
+	t.Run("SuggestionRefusal", func(t *testing.T) {
+		f := newDeploymentFixture(t)
+		configure(t, f)
+		f.environment(store.EnvironmentInput{Name: "Production", GitHubEnvironments: []string{"production"}})
+		if err := reportsFor(f).Apply(f.ctx, "acme/app", github.DeploymentStatus{State: "failure", Environment: "preview", Commit: deployHead, ReportedAt: deployTime}); err != nil {
+			t.Fatalf("err=%v, want a refused name to fail no delivery", err)
+		}
+		if suggestions := f.suggestions(); len(suggestions) != 0 {
+			t.Fatalf("suggestions=%+v, want none", suggestions)
+		}
+		requireLogs(t, f, "outcome=refused", "field=repository")
+	})
+	t.Run("OffBranch", func(t *testing.T) {
+		f := newDeploymentFixture(t)
+		configure(t, f)
+		// The environment store refuses a credential-shaped repository name
+		// as a tracked-branch key, so this read adds the branch itself. The
+		// off-branch log line is checked whatever name reaches it.
+		environment := f.environment(store.EnvironmentInput{Name: "Production", GitHubEnvironments: []string{"production"}})
+		reports := reportsFor(f)
+		reports.Store = trackedBranchStore{DeploymentStore: f.st, repository: alias, branch: "main"}
+		if err := reports.Apply(f.ctx, "acme/app", github.DeploymentStatus{State: "success", Environment: "production", Commit: deployOff, ReportedAt: deployTime}); err != nil {
+			t.Fatalf("err=%v, want an off-branch report to fail no delivery", err)
+		}
+		if deploys := f.deploys(environment.ID); len(deploys) != 0 || f.recordedCount() != 0 || len(f.suggestions()) != 0 {
+			t.Fatalf("deploys=%+v recorded=%d suggestions=%+v, want none", deploys, f.recordedCount(), f.suggestions())
+		}
+		requireLogs(t, f, "outcome=ignored", "reason=off_tracked_branch", "environment_id="+environment.ID)
+	})
+}
+
+// trackedBranchStore adds a tracked branch for one repository to every
+// environment it lists.
+type trackedBranchStore struct {
+	DeploymentStore
+	repository, branch string
+}
+
+func (s trackedBranchStore) ListEnvironments(ctx context.Context, query store.EnvironmentListQuery) ([]store.Environment, error) {
+	environments, err := s.DeploymentStore.ListEnvironments(ctx, query)
+	for i := range environments {
+		environments[i].TrackedBranches = map[string]string{s.repository: s.branch}
+	}
+	return environments, err
+}

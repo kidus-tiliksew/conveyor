@@ -38,7 +38,12 @@ type DeploymentReports struct {
 	// comparing, as an accepted signal is. Nil skips it.
 	Recorded func(workspace string, signal store.FeedbackSignal)
 	// Logf writes one line for each report that records nothing for a
-	// reason a person can act on. Nil discards them.
+	// reason a person can act on. A line holds the workspace, the
+	// environment ID where one matched, the outcome, and the refused field
+	// name, and never the repository name or anything GitHub sent: a
+	// configured repository name can have a credential shape that the store
+	// refuses (component-identity-membership invariants 45 and 46). Nil
+	// discards them.
 	Logf func(format string, args ...any)
 }
 
@@ -114,7 +119,7 @@ func (d DeploymentReports) Apply(ctx context.Context, slug string, status github
 			return err
 		}
 		if !onBranch {
-			d.logf("feedback_deployment workspace=%s repository=%s environment_id=%s outcome=ignored reason=off_tracked_branch", workspace, repository.Name, environment.ID)
+			d.logf("feedback_deployment workspace=%s environment_id=%s outcome=ignored reason=off_tracked_branch", workspace, environment.ID)
 			return nil
 		}
 	}
@@ -123,7 +128,7 @@ func (d DeploymentReports) Apply(ctx context.Context, slug string, status github
 	var refused *store.FeedbackFieldError
 	if errors.As(err, &refused) {
 		// The same report would be refused again, so it is not retried.
-		d.logf("feedback_deployment workspace=%s repository=%s environment_id=%s outcome=refused field=%s", workspace, repository.Name, environment.ID, refused.Field)
+		d.logf("feedback_deployment workspace=%s environment_id=%s outcome=refused field=%s", workspace, environment.ID, refused.Field)
 		return nil
 	}
 	if err != nil || !recorded || d.Recorded == nil {
@@ -145,7 +150,7 @@ func (d DeploymentReports) suggest(ctx context.Context, workspace string, reposi
 	_, err := d.Store.RecordEnvironmentReport(ctx, store.EnvironmentReport{GitHubEnvironment: status.Environment, Repository: repository.Name, ReportedAt: status.ReportedAt})
 	var refused *store.EnvironmentFieldError
 	if errors.As(err, &refused) {
-		d.logf("feedback_deployment workspace=%s repository=%s outcome=refused field=%s", workspace, repository.Name, refused.Field)
+		d.logf("feedback_deployment workspace=%s outcome=refused field=%s", workspace, refused.Field)
 		return nil
 	}
 	return err
