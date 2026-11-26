@@ -71,7 +71,7 @@ func TestResolve(t *testing.T) {
 		failure error
 		want    Resolution
 	}{
-		"a match plus an ambiguous 422 in another repository": {ambiguous, Resolution{Reason: string(github.ForgeStatus)}},
+		"a match plus an ambiguous 422 in another repository":        {ambiguous, Resolution{Reason: string(github.ForgeStatus)}},
 		"a match plus an abuse-protection 422 in another repository": {abuse, Resolution{Reason: string(github.ForgeRateLimited), RetryAt: retryAt}},
 	} {
 		forge := newStubForge()
