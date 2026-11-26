@@ -386,6 +386,10 @@ type BranchRef struct {
 
 // RefreshBranches reads the head of each admitted tracked branch and stores
 // it with its time. A branch read passes the same admission as a comparison.
+// When GitHub confirms that the branch does not exist, the confirmed absence
+// supersedes the stored head, so a read never reports containment from a head
+// that GitHub disproved. A forge failure that proves nothing keeps the stored
+// head.
 func (w Work) RefreshBranches(ctx context.Context, branches []BranchRef) error {
 	if len(branches) == 0 {
 		return nil
@@ -404,6 +408,10 @@ func (w Work) RefreshBranches(ctx context.Context, branches []BranchRef) error {
 			return err
 		}
 		commit, err := w.Forge.ReadCommit(ctx, key.Repository, "heads/"+key.Head)
+		if errors.Is(err, github.ErrCommitNotFound) {
+			w.logf("feedback_branch repository=%s outcome=absent", key.Repository)
+			commit, err = store.FeedbackBranchAbsent, nil
+		}
 		if err != nil {
 			w.logf("feedback_branch repository=%s outcome=pending category=%s", key.Repository, github.ErrorCategory(github.CategorizeError(err)))
 			if github.ErrorCategory(github.CategorizeError(err)) == github.ForgeRateLimited {

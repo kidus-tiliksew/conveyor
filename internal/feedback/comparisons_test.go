@@ -345,8 +345,9 @@ func TestRefreshBranches(t *testing.T) {
 	if err := f.work().RefreshBranches(f.ctx, branches); err != nil {
 		t.Fatal(err)
 	}
+	// GitHub confirms that gone does not exist, so its absence is stored.
 	heads, err := f.st.ListFeedbackBranchHeads(f.ctx)
-	if err != nil || len(heads) != 1 || heads[0].Commit != head || heads[0].Branch != "main" || !heads[0].ObservedAt.Equal(statusBase) {
+	if err != nil || len(heads) != 2 || heads[0].Branch != "gone" || !heads[0].Absent() || heads[1].Commit != head || heads[1].Branch != "main" || !heads[1].ObservedAt.Equal(statusBase) {
 		t.Fatalf("heads=%+v err=%v", heads, err)
 	}
 	// In flight: a second request inside the lease reads nothing.
@@ -355,6 +356,89 @@ func TestRefreshBranches(t *testing.T) {
 	}
 	if reads, _ := f.forge.calls(); reads != 2 {
 		t.Fatalf("reads=%d", reads)
+	}
+}
+
+// TestRefreshBranchesDeletedBranch proves that a confirmed absence of a
+// tracked branch supersedes a stored head that held the task, a forge failure
+// that proves nothing keeps the stored head, and a recreated branch
+// supersedes the absence (req-production-feedback AC-3.2).
+func TestRefreshBranchesDeletedBranch(t *testing.T) {
+	f := newWorkFixture(t)
+	merge, head := sha("aa01"), sha("ee01")
+	f.forge.refs["acme/conveyor|heads/main"] = head
+	f.forge.chain("acme/conveyor", "", merge, head)
+	branches := []BranchRef{{Slug: "acme/conveyor", Branch: "main"}}
+	merged := store.FeedbackMergedTask{TaskID: "t1", Repository: "conveyor", MergeCommit: merge, MergedAt: statusBase}
+	environment := f.environment
+	environment.TrackedBranches = map[string]string{"conveyor": "main"}
+	// read derives the status a read serves from storage alone.
+	read := func() (TaskStatus, Missing) {
+		t.Helper()
+		heads, err := f.st.ListFeedbackBranchHeads(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, err := f.st.ReadFeedbackInputs(f.ctx, []string{environment.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := Inputs{Now: f.clock(), Environments: []store.Environment{environment}, State: state, BranchHeads: heads, Slugs: map[string]string{"conveyor": "acme/conveyor"}}
+		if in.Comparisons, err = f.st.ListFeedbackComparisons(f.ctx, RequiredComparisons(in, []store.FeedbackMergedTask{merged})); err != nil {
+			t.Fatal(err)
+		}
+		statuses, missing := TaskStatuses(in, merged)
+		if len(statuses) != 1 {
+			t.Fatalf("statuses=%+v missing=%+v", statuses, missing)
+		}
+		return statuses[0], missing
+	}
+	// refresh runs the background branch read once the admission lease and
+	// the head age have passed.
+	refresh := func() {
+		t.Helper()
+		f.advance(store.FeedbackBranchHeadAge)
+		if err := f.work().RefreshBranches(f.ctx, branches); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := f.work().RefreshBranches(f.ctx, branches); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.work().CompareDirect(f.ctx, []store.FeedbackComparisonKey{{Repository: "acme/conveyor", Base: merge, Head: head}}); err != nil {
+		t.Fatal(err)
+	}
+	if status, missing := read(); status.Status != StatusNotLiveYet || !status.OnTrackedBranch || !missing.Empty() {
+		t.Fatalf("status=%+v missing=%+v", status, missing)
+	}
+
+	// A forge failure that proves nothing keeps the stored head.
+	f.forge.fail["acme/conveyor|heads/main"] = github.StatusError(502, errors.New("bad gateway"))
+	refresh()
+	if heads, _ := f.st.ListFeedbackBranchHeads(f.ctx); len(heads) != 1 || heads[0].Commit != head {
+		t.Fatalf("heads after a transient failure=%+v", heads)
+	}
+	delete(f.forge.fail, "acme/conveyor|heads/main")
+
+	// The branch is deleted: the confirmed absence supersedes the head, and
+	// the next read never reports the task on the branch.
+	delete(f.forge.refs, "acme/conveyor|heads/main")
+	refresh()
+	reads, compares := f.forge.calls()
+	if status, missing := read(); status.Status != StatusNotLiveYet || status.OnTrackedBranch || !missing.Empty() {
+		t.Fatalf("status after the branch was deleted=%+v missing=%+v", status, missing)
+	}
+	if r, c := f.forge.calls(); r != reads || c != compares {
+		t.Fatalf("the read called the forge: reads %d->%d compares %d->%d", reads, r, compares, c)
+	}
+
+	// The branch is recreated at the same head: the new head supersedes the
+	// absence and the stored answer serves the read again.
+	f.forge.refs["acme/conveyor|heads/main"] = head
+	refresh()
+	if status, missing := read(); !status.OnTrackedBranch || !missing.Empty() {
+		t.Fatalf("status after the branch was recreated=%+v missing=%+v", status, missing)
 	}
 }
 

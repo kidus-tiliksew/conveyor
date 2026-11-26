@@ -105,13 +105,26 @@ func (c FeedbackComparison) Contains() bool {
 	return c.Status == FeedbackCompareAhead || c.Status == FeedbackCompareIdentical
 }
 
+// FeedbackBranchAbsent is the head a backend stores when GitHub confirms that
+// a tracked branch does not exist. It is git's null object ID, so it passes
+// every backend's commit ID check and never names a real commit. A newer
+// observation of either kind supersedes it.
+const FeedbackBranchAbsent = "0000000000000000000000000000000000000000"
+
 // FeedbackBranchHead is the newest observed head of a tracked branch, read in
-// the background through the forge boundary.
+// the background through the forge boundary. Commit is FeedbackBranchAbsent
+// when GitHub confirmed that the branch does not exist.
 type FeedbackBranchHead struct {
 	Repository string
 	Branch     string
 	Commit     string
 	ObservedAt time.Time
+}
+
+// Absent reports whether the observation is a confirmed absence of the
+// branch rather than a head commit.
+func (h FeedbackBranchHead) Absent() bool {
+	return h.Commit == FeedbackBranchAbsent
 }
 
 // FeedbackMergedTask is one merged task with its configured repository and
@@ -176,7 +189,8 @@ type FeedbackStatusStore interface {
 	// ListFeedbackComparisons returns the stored answers among keys.
 	ListFeedbackComparisons(ctx context.Context, keys []FeedbackComparisonKey) ([]FeedbackComparison, error)
 	// RecordFeedbackBranchHead stores a branch head observation that is newer
-	// than the stored one.
+	// than the stored one. A confirmed absence (FeedbackBranchAbsent) is an
+	// observation like any other.
 	RecordFeedbackBranchHead(ctx context.Context, head FeedbackBranchHead) error
 	// ListFeedbackBranchHeads returns the workspace's branch head observations.
 	ListFeedbackBranchHeads(ctx context.Context) ([]FeedbackBranchHead, error)

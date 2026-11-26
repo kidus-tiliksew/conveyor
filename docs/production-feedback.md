@@ -250,6 +250,12 @@ never asks for that pair again. Every comparison runs in the background:
 - For `not_live_yet`, the head of the environment's tracked branch is read in
   the background and compared by its full commit ID. A read asks for a new
   head when the stored one is 10 minutes old or older.
+- When GitHub confirms that the tracked branch does not exist, that answer
+  replaces the stored head. The status stays `not_live_yet` with
+  `on_tracked_branch` set to `false`, and a read still asks for a new head
+  every 10 minutes. A head stored before the branch was deleted is never used
+  again. A GitHub failure that proves nothing, such as a timeout, keeps the
+  stored head.
 
 ### The fields
 

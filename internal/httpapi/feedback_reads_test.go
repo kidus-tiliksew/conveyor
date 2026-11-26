@@ -27,15 +27,28 @@ import (
 type readsForge struct {
 	mu      sync.Mutex
 	history []string
-	gate    chan struct{}
-	entered chan struct{}
-	calls   int
+	// branches maps slug|heads/branch to the branch's head commit.
+	branches map[string]string
+	gate     chan struct{}
+	entered  chan struct{}
+	calls    int
 }
 
 func newReadsForge(history ...string) *readsForge {
 	gate := make(chan struct{})
 	close(gate)
-	return &readsForge{history: history, gate: gate, entered: make(chan struct{}, 1024)}
+	return &readsForge{history: history, branches: map[string]string{}, gate: gate, entered: make(chan struct{}, 1024)}
+}
+
+// setBranch sets a branch head, or deletes the branch when head is empty.
+func (f *readsForge) setBranch(slug, branch, head string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if head == "" {
+		delete(f.branches, slug+"|heads/"+branch)
+		return
+	}
+	f.branches[slug+"|heads/"+branch] = head
 }
 
 // hold closes the gate and returns its release, which is safe to call more
@@ -69,6 +82,12 @@ func (f *readsForge) count() int {
 
 func (f *readsForge) ReadCommit(_ context.Context, slug, ref string) (string, error) {
 	f.wait()
+	f.mu.Lock()
+	head, ok := f.branches[slug+"|"+ref]
+	f.mu.Unlock()
+	if ok {
+		return head, nil
+	}
 	for _, commit := range f.history {
 		if slug == "acme/app" && len(ref) >= 7 && strings.HasPrefix(commit, ref) {
 			return commit, nil
@@ -355,6 +374,75 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 	if statuses := statusesOf(t, h.taskRead(fresh.ID)["environments"]); len(statuses) != 1 || statuses[0].Status != feedback.StatusLive {
 		t.Fatalf("statuses after the background comparison=%+v", statuses)
 	}
+}
+
+// TestFeedbackDeletedTrackedBranch proves that a tracked branch GitHub
+// confirms is gone supersedes its stored head in the background, so a read
+// no longer reports a task on the branch from a head GitHub disproved, and
+// the read makes no forge call (req-production-feedback AC-3.2;
+// component-production-feedback invariants 14 and 20).
+func TestFeedbackDeletedTrackedBranch(t *testing.T) {
+	merge, head := readsCommit("b2b2b2b2b2b2"), readsCommit("c3c3c3c3c3c3")
+	h := newReadsHarness(t, merge, head)
+	h.forge.setBranch("acme/app", "main", head)
+	h.want(http.StatusOK, http.MethodPatch, "/v1/environments/"+h.environment.ID, `{"tracked_branches":{"app":"main"}}`)
+	task := h.merged(h.ctx, merge, "")
+
+	// The first read asks for the branch head and the next for the
+	// comparison, both in the background.
+	for range 2 {
+		h.taskRead(task.ID)
+		h.settle()
+	}
+	statuses := statusesOf(t, h.taskRead(task.ID)["environments"])
+	if len(statuses) != 1 || statuses[0].Status != feedback.StatusNotLiveYet || !statuses[0].OnTrackedBranch {
+		t.Fatalf("statuses before the branch was deleted=%+v", statuses)
+	}
+
+	// The branch is deleted. Once the stored head is old, a read serves it
+	// at once and asks for a new head in the background.
+	h.forge.setBranch("acme/app", "main", "")
+	h.advance(store.FeedbackBranchHeadAge)
+	release := h.forge.hold(t)
+	read := make(chan []byte, 1)
+	go func() { read <- h.do(h.manager(), http.MethodGet, "/v1/tasks/"+task.ID, "").Body.Bytes() }()
+	select {
+	case <-read:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the task read waited for the forge")
+	}
+	select {
+	case <-h.forge.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the read requested no new branch head")
+	}
+	release()
+	h.settle()
+	heads, err := h.st.ListFeedbackBranchHeads(h.ctx)
+	if err != nil || len(heads) != 1 || !heads[0].Absent() {
+		t.Fatalf("heads=%+v err=%v", heads, err)
+	}
+
+	// The next read never reports the task on the deleted branch and calls
+	// no forge.
+	release = h.forge.hold(t)
+	calls := h.forge.count()
+	go func() { read <- h.do(h.manager(), http.MethodGet, "/v1/tasks/"+task.ID, "").Body.Bytes() }()
+	select {
+	case body := <-read:
+		raw := decodeFields(t, body)["environments"]
+		statuses := statusesOf(t, raw)
+		if len(statuses) != 1 || statuses[0].Status != feedback.StatusNotLiveYet || statuses[0].OnTrackedBranch || strings.Contains(string(raw), `"on_tracked_branch":true`) {
+			t.Fatalf("statuses after the branch was deleted=%s", raw)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the task read waited for the forge")
+	}
+	if got := h.forge.count(); got != calls {
+		t.Fatalf("the read made %d forge calls", got-calls)
+	}
+	release()
+	h.settle()
 }
 
 // TestFeedbackEnvironmentNewestUnresolved covers invariant 21 and

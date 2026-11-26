@@ -259,7 +259,8 @@ func runFeedbackAdmission(t *testing.T, x Fixture) {
 	}
 }
 
-// runFeedbackBranchHeads proves that only a newer observation replaces the
+// runFeedbackBranchHeads proves that only a newer observation, a head or a
+// confirmed absence of the branch (store.FeedbackBranchAbsent), replaces the
 // stored one.
 func runFeedbackBranchHeads(t *testing.T, x Fixture) {
 	first, second := feedbackCommit("aa"), feedbackCommit("bb")
@@ -279,6 +280,29 @@ func runFeedbackBranchHeads(t *testing.T, x Fixture) {
 	}
 	if err := x.Backend.RecordFeedbackBranchHead(x.Context, store.FeedbackBranchHead{Repository: "acme/app", Branch: "main", Commit: "abc", ObservedAt: feedbackTime(0)}); err == nil {
 		t.Fatal("a short commit was recorded")
+	}
+	// A confirmed absence of the branch supersedes an older head, an older
+	// head never replaces it, and a newer head supersedes it.
+	mainHead := func() store.FeedbackBranchHead {
+		t.Helper()
+		heads, err := x.Backend.ListFeedbackBranchHeads(x.Context)
+		requireOK(t, err)
+		if len(heads) != 2 || heads[0].Branch != "main" {
+			t.Fatalf("heads=%+v", heads)
+		}
+		return heads[0]
+	}
+	requireOK(t, x.Backend.RecordFeedbackBranchHead(x.Context, store.FeedbackBranchHead{Repository: "acme/app", Branch: "main", Commit: store.FeedbackBranchAbsent, ObservedAt: feedbackTime(3 * time.Minute)}))
+	if head := mainHead(); !head.Absent() || !head.ObservedAt.Equal(feedbackTime(3*time.Minute)) {
+		t.Fatalf("head after the absence=%+v", head)
+	}
+	requireOK(t, x.Backend.RecordFeedbackBranchHead(x.Context, store.FeedbackBranchHead{Repository: "acme/app", Branch: "main", Commit: second, ObservedAt: feedbackTime(2 * time.Minute)}))
+	if head := mainHead(); !head.Absent() {
+		t.Fatalf("an older head replaced the absence: %+v", head)
+	}
+	requireOK(t, x.Backend.RecordFeedbackBranchHead(x.Context, store.FeedbackBranchHead{Repository: "acme/app", Branch: "main", Commit: first, ObservedAt: feedbackTime(4 * time.Minute)}))
+	if head := mainHead(); head.Absent() || head.Commit != first || !head.ObservedAt.Equal(feedbackTime(4*time.Minute)) {
+		t.Fatalf("head after the branch returned=%+v", head)
 	}
 }
 

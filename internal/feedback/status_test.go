@@ -172,6 +172,21 @@ func TestTaskStatuses(t *testing.T) {
 			t.Fatalf("status=%+v missing=%+v", status, missing)
 		}
 	})
+	t.Run("a tracked branch that GitHub confirmed is gone holds no task", func(t *testing.T) {
+		f := newStatusFixture()
+		f.environment("env-prod", "Production", map[string]string{"conveyor": "main"})
+		f.in.BranchHeads = []store.FeedbackBranchHead{{Repository: "acme/conveyor", Branch: "main", Commit: store.FeedbackBranchAbsent, ObservedAt: at(99)}}
+		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		if status := only(t, statuses, "env-prod"); status.Status != StatusNotLiveYet || status.OnTrackedBranch || !missing.Empty() {
+			t.Fatalf("status=%+v missing=%+v", status, missing)
+		}
+		// An old absence is still served and read again.
+		f.in.BranchHeads[0].ObservedAt = at(80)
+		statuses, missing = TaskStatuses(f.in, task("t1", "conveyor", merge))
+		if status := only(t, statuses, "env-prod"); status.Status != StatusNotLiveYet || status.OnTrackedBranch || len(missing.Branches) != 1 || len(missing.Comparisons) != 0 {
+			t.Fatalf("status=%+v missing=%+v", status, missing)
+		}
+	})
 	t.Run("a missing merge commit is unknown", func(t *testing.T) {
 		f := newStatusFixture()
 		f.environment("env-prod", "Production", nil)
@@ -304,6 +319,11 @@ func TestRequiredComparisons(t *testing.T) {
 	f.in.BranchHeads = []store.FeedbackBranchHead{{Repository: "acme/conveyor", Branch: "main", Commit: sha("b3"), ObservedAt: at(99)}}
 	keys := RequiredComparisons(f.in, []store.FeedbackMergedTask{task("t1", "conveyor", merge), task("t2", "conveyor", "")})
 	if len(keys) != 3 || keys[0].Head != sha("b1") || keys[1].Head != sha("b2") || keys[2].Head != sha("b3") {
+		t.Fatalf("keys=%+v", keys)
+	}
+	// A confirmed absence of the branch names no commit to compare.
+	f.in.BranchHeads[0].Commit = store.FeedbackBranchAbsent
+	if keys := RequiredComparisons(f.in, []store.FeedbackMergedTask{task("t1", "conveyor", merge)}); len(keys) != 2 || keys[1].Head != sha("b2") {
 		t.Fatalf("keys=%+v", keys)
 	}
 }

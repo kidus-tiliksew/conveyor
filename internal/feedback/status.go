@@ -278,6 +278,11 @@ func (v view) taskStatus(environment store.Environment, task store.FeedbackMerge
 	if v.in.Now.Sub(head.ObservedAt) >= store.FeedbackBranchHeadAge {
 		missing.Branches = append(missing.Branches, ref)
 	}
+	if head.Absent() {
+		// GitHub confirmed that the branch does not exist, so nothing is on
+		// it. An older head it superseded is never used.
+		return status, true, missing
+	}
 	switch v.contains(slug, task.MergeCommit, head.Commit, &missing) {
 	case pending:
 		return status, false, missing
@@ -374,7 +379,7 @@ func RequiredComparisons(in Inputs, tasks []store.FeedbackMergedTask) []store.Fe
 				}
 			}
 			if branch := environment.TrackedBranches[task.Repository]; branch != "" {
-				if head, ok := v.heads[BranchRef{Slug: slug, Branch: branch}]; ok {
+				if head, ok := v.heads[BranchRef{Slug: slug, Branch: branch}]; ok && !head.Absent() {
 					keys = append(keys, store.FeedbackComparisonKey{Repository: slug, Base: task.MergeCommit, Head: head.Commit})
 				}
 			}
