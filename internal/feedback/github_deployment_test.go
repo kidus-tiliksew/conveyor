@@ -194,18 +194,18 @@ func TestDeploySuccessRecordsAGitHubDeploy(t *testing.T) {
 		t.Fatalf("suggestions=%+v, want none for a listed name", f.suggestions())
 	}
 
-	// A duplicate report makes no second write and hands nothing on.
+	// A second distinct status with the same service, commit, and time keeps
+	// its own deploy. Only the signed receiver refuses a repeated delivery.
 	before := f.deploys(environment.ID)
 	f.mustApply("acme/app", "success", "production", deployHead, deployTime)
-	if after := f.deploys(environment.ID); len(after) != len(before) || f.recordedCount() != 1 {
-		t.Fatalf("deploys=%d recorded=%d after a duplicate, want %d and 1", len(after), f.recordedCount(), len(before))
+	if after := f.deploys(environment.ID); len(after) != len(before)+1 || f.recordedCount() != 2 {
+		t.Fatalf("deploys=%d recorded=%d after a second status, want %d and 2", len(after), f.recordedCount(), len(before)+1)
 	}
 }
 
 // TestDeployRedeployOfTheRunningCommit covers two successes for one service
 // and commit at two times with no watcher signal between them. Each keeps its
-// own deploy record at its status time, and a duplicate of either writes
-// nothing and hands nothing on.
+// own deploy record at its status time.
 func TestDeployRedeployOfTheRunningCommit(t *testing.T) {
 	f := newDeploymentFixture(t)
 	environment := f.environment(store.EnvironmentInput{Name: "Production", GitHubEnvironments: []string{"production"}})
@@ -218,11 +218,6 @@ func TestDeployRedeployOfTheRunningCommit(t *testing.T) {
 	}
 	if f.recordedCount() != 2 {
 		t.Fatalf("recorded=%d, want both reports handed to the background work", f.recordedCount())
-	}
-	f.mustApply("acme/app", "success", "production", deployHead, later)
-	f.mustApply("acme/app", "success", "production", deployHead, deployTime)
-	if after := f.deploys(environment.ID); len(after) != 2 || f.recordedCount() != 2 {
-		t.Fatalf("deploys=%+v recorded=%d after duplicates, want no second write", after, f.recordedCount())
 	}
 }
 
@@ -244,11 +239,6 @@ func TestDeployLateEarlierReportKeepsTheGitHubDeploy(t *testing.T) {
 		if deploy.Origin.Source != store.FeedbackSourceGitHub || (deploy.StopOrigin != nil && deploy.StopOrigin.Source != store.FeedbackSourceGitHub) {
 			t.Fatalf("deploy=%+v, want GitHub origins", deploy)
 		}
-	}
-	f.mustApply("acme/app", "success", "production", deployHead, deployTime)
-	f.mustApply("acme/app", "success", "production", deployHead, later)
-	if after := f.deploys(environment.ID); len(after) != 2 {
-		t.Fatalf("deploys=%+v after duplicates, want no second write", after)
 	}
 }
 
@@ -440,5 +430,45 @@ func TestDeployStoreFailureFailsTheDelivery(t *testing.T) {
 	reports.Repositories = func(context.Context) ([]Repository, error) { return nil, failure }
 	if err := reports.Apply(f.ctx, "acme/app", github.DeploymentStatus{State: "success", Environment: "production", Commit: deployHead, ReportedAt: deployTime}); !errors.Is(err, failure) {
 		t.Fatalf("err=%v, want the store failure", err)
+	}
+}
+
+// TestDeployLongRepositoryName records a deploy for a configured repository
+// whose name has 101 characters. The watcher service-name rule of 100
+// characters does not bound a GitHub deploy, so the report is not refused
+// (component-production-feedback invariant 10; req-production-feedback
+// AC-1.5).
+func TestDeployLongRepositoryName(t *testing.T) {
+	f := newDeploymentFixture(t)
+	long := "repo-" + strings.Repeat("a", 96)
+	current, err := f.st.WorkspaceConfig(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, _ := store.WorkspaceFromContext(f.ctx)
+	if _, err := f.st.UpdateWorkspaceConfig(f.ctx, current.Version, &config.Config{Workspace: workspace, Repos: []config.Repo{
+		{Name: "app", URL: "https://example.test/app", Base: "main", GitHub: "acme/app"},
+		{Name: long, URL: "https://example.test/long", Base: "main", GitHub: "acme/long"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	environment := f.environment(store.EnvironmentInput{Name: "Production", GitHubEnvironments: []string{"production"}})
+	reports := f.reports()
+	reports.Repositories = func(context.Context) ([]Repository, error) {
+		return []Repository{{Name: "app", Slug: "acme/app"}, {Name: long, Slug: "acme/long"}}, nil
+	}
+	if err := reports.Apply(f.ctx, "acme/long", github.DeploymentStatus{State: "success", Environment: "production", Commit: deployHead, ReportedAt: deployTime}); err != nil {
+		t.Fatal(err)
+	}
+	deploys := f.deploys(environment.ID)
+	if len(deploys) != 1 || deploys[0].Service != long || deploys[0].Repository != long || f.recordedCount() != 1 {
+		t.Fatalf("deploys=%+v recorded=%d, want one deploy named after the 101-character repository", deploys, f.recordedCount())
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, line := range f.logs {
+		if strings.Contains(line, "outcome=refused") {
+			t.Fatalf("logs=%q, want no refusal", f.logs)
+		}
 	}
 }

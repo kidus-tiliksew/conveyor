@@ -180,7 +180,7 @@ The deploy has these values:
 
 | Value | Rule |
 | --- | --- |
-| Service | The repository's name in the workspace configuration |
+| Service | The repository's name in the workspace configuration, 1 to 255 characters. The 100-character limit of a watcher's service name does not apply |
 | Repository and commit | The repository's name and the full commit ID |
 | Time | The status's creation time. The deployment's time and the time of receipt are not used |
 | Source | `github`, with the system as the actor |
@@ -201,10 +201,16 @@ the newest report of the service and the service already runs the reported
 commit from an earlier time, the report is a redeploy. The earlier deploy stops
 at the report's time, and a new deploy of the same commit starts then. The
 `as_of` time of the environment's live status therefore follows the newest
-report. A repeat of a report that the server already holds, with the same
-service, commit, and time, writes nothing, also when a report of another
-commit came between them. A repeated delivery with the same delivery ID is
-refused before it reaches the store.
+report.
+
+GitHub dates a status to the second, so two distinct statuses can name the
+same service, commit, and time. Each one keeps its own deploy: the later one
+stops the earlier one at that time and starts its own. The server does not
+take a report for a repeat because of its service, commit, and time. Only a
+repeated delivery is a repeat. The webhook receiver records each delivery ID
+of the workspace and refuses a delivery whose ID it already holds, so a
+replay changes nothing. When every attempt to apply a delivery fails, the
+applier forgets its ID, so an explicit redelivery is applied once.
 
 The order in which reports arrive does not change this. A GitHub deploy keeps
 its time and its `github` source when an earlier report of the same commit

@@ -2,10 +2,12 @@ package storetest
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -70,12 +72,6 @@ func runFeedbackGitHubDeploy(t *testing.T, x Fixture) {
 		t.Fatalf("a GitHub report changed an environment or key:\nbefore %s\nafter  %s", keys, after)
 	}
 
-	// The same report again writes nothing.
-	before := e.state(t)
-	e.report(t, e.github(20*time.Second, "app", strings.ToUpper(feedbackCommit("a"))), false)
-	if after := e.state(t); after != before {
-		t.Fatalf("a repeated report changed the stored state:\nbefore %s\nafter  %s", before, after)
-	}
 	// A later report of the same commit is a distinct redeploy at its own
 	// time.
 	e.report(t, e.github(30*time.Second, "app", feedbackCommit("a")), true)
@@ -90,7 +86,7 @@ func runFeedbackGitHubDeploy(t *testing.T, x Fixture) {
 
 // runFeedbackGitHubRedeploy covers two successful reports of one commit at two
 // times with no signal between them. Each keeps its own deploy record and
-// time, both come from GitHub, and a repeat of either writes nothing.
+// time, and both come from GitHub.
 func runFeedbackGitHubRedeploy(t *testing.T, x Fixture) {
 	// The same reports give the same records in every arrival order.
 	a := feedbackCommit("a")
@@ -125,28 +121,56 @@ func runFeedbackGitHubRedeploy(t *testing.T, x Fixture) {
 			if _, ok := e.newest(t); ok {
 				t.Fatal("a GitHub report recorded a newest signal")
 			}
-			before := e.state(t)
-			for _, at := range c.order {
-				e.report(t, e.github(at, "app", a), false)
-			}
-			if after := e.state(t); after != before {
-				t.Fatalf("a repeated report changed the stored state:\nbefore %s\nafter  %s", before, after)
-			}
 		})
 	}
-	// A repeat writes nothing even when a report of another commit at the
-	// same time came between them.
-	t.Run("RepeatAfterAnotherCommit", func(t *testing.T) {
-		e := newFeedbackEnvironment(t, x, "Production repeat", "watcher")
-		b := feedbackCommit("b")
+}
+
+// runFeedbackGitHubSameSecond covers distinct successful GitHub reports of one
+// service and commit with one reported time, as two deployment statuses in
+// one second give. The store takes neither for a repeat of the other: each
+// keeps its own GitHub deploy, on the newest path and on the late path. Only
+// the signed webhook receiver refuses a repeated delivery, by its delivery ID
+// (component-production-feedback invariant 10; req-production-feedback
+// AC-1.5).
+func runFeedbackGitHubSameSecond(t *testing.T, x Fixture) {
+	a, b := feedbackCommit("a"), feedbackCommit("b")
+	github := store.FeedbackOrigin{Source: store.FeedbackSourceGitHub, Actor: core.SystemActorID}
+	requireGitHub := func(t *testing.T, e feedbackEnvironment) {
+		t.Helper()
+		for _, deploy := range e.deploys(t) {
+			if deploy.Commit != "" && unnumbered(deploy.Origin) != github {
+				t.Fatalf("deploy=%+v, want a GitHub deploy", deploy)
+			}
+			if stop, running := deploy.Stop(); !running && stop.Compare(deploy.Start()) <= 0 {
+				t.Fatalf("deploy=%+v stops before it starts", deploy)
+			}
+		}
+	}
+	t.Run("Newest", func(t *testing.T) {
+		e := newFeedbackEnvironment(t, x, "Same second newest", "watcher")
+		e.report(t, e.github(20*time.Second, "app", a), true)
+		e.report(t, e.github(20*time.Second, "app", a), true)
+		e.requireRunning(t, "app="+a+"+20")
+		e.requireDeploys(t, "app="+a+"+20-20", "app="+a+"+20")
+		requireGitHub(t, e)
+	})
+	t.Run("Late", func(t *testing.T) {
+		e := newFeedbackEnvironment(t, x, "Same second late", "watcher")
+		e.send(t, 30*time.Second, feedbackService("app", "@9"))
+		e.report(t, e.github(20*time.Second, "app", a), true)
+		e.report(t, e.github(20*time.Second, "app", a), true)
+		e.requireRunning(t, "app=@9+30")
+		e.requireDeploys(t, "app="+a+"+20-20", "app="+a+"+20-30", "app=@9+30")
+		requireGitHub(t, e)
+	})
+	t.Run("AnotherCommitBetween", func(t *testing.T) {
+		e := newFeedbackEnvironment(t, x, "Same second between", "watcher")
 		e.report(t, e.github(20*time.Second, "app", a), true)
 		e.report(t, e.github(20*time.Second, "app", b), true)
-		e.requireRunning(t, "app="+b+"+20")
-		before := e.state(t)
-		e.report(t, e.github(20*time.Second, "app", a), false)
-		if after := e.state(t); after != before {
-			t.Fatalf("a repeated report changed the stored state:\nbefore %s\nafter  %s", before, after)
-		}
+		e.report(t, e.github(20*time.Second, "app", a), true)
+		e.requireRunning(t, "app="+a+"+20")
+		e.requireDeploys(t, "app="+a+"+20-20", "app="+b+"+20-20", "app="+a+"+20")
+		requireGitHub(t, e)
 	})
 }
 
@@ -315,8 +339,9 @@ func runFeedbackGitHubObservesOnly(t *testing.T, x Fixture) {
 // runFeedbackGitHubSameTime covers a watcher signal and a GitHub report of the
 // same service and commit with one stored time. The report boundary orders
 // them, so the GitHub report keeps its own deploy with the GitHub source and
-// the watcher deploy stops at that time. A repeat of the GitHub report writes
-// nothing (component-production-feedback invariants 6 and 10;
+// the watcher deploy stops at that time. A second distinct GitHub report of
+// the same commit and time keeps its own deploy too
+// (component-production-feedback invariants 6 and 10;
 // req-production-feedback AC-1.5).
 func runFeedbackGitHubSameTime(t *testing.T, x Fixture) {
 	a := feedbackCommit("a")
@@ -343,13 +368,23 @@ func runFeedbackGitHubSameTime(t *testing.T, x Fixture) {
 		}
 		t.Fatalf("deploys=%+v, want a GitHub deploy of the commit at %s", e.deploys(t), at)
 	}
-	requireRepeatWritesNothing := func(t *testing.T, e feedbackEnvironment) {
+	requireSecondReportKept := func(t *testing.T, e feedbackEnvironment) {
 		t.Helper()
-		before := e.state(t)
-		e.report(t, e.github(20*time.Second, "app", a), false)
-		if after := e.state(t); after != before {
-			t.Fatalf("a repeated report changed the stored state:\nbefore %s\nafter  %s", before, after)
+		count := func() int {
+			n := 0
+			for _, deploy := range e.deploys(t) {
+				if deploy.Commit == a && unnumbered(deploy.Origin) == github && deploy.DeployedAt.Equal(feedbackTime(20*time.Second)) {
+					n++
+				}
+			}
+			return n
 		}
+		before := count()
+		e.report(t, e.github(20*time.Second, "app", a), true)
+		if after := count(); after != before+1 {
+			t.Fatalf("GitHub deploys at 20s=%d after a second distinct report, want %d", after, before+1)
+		}
+		requireOrdered(t, e)
 	}
 	t.Run("SignalThenReport", func(t *testing.T) {
 		e := newFeedbackEnvironment(t, x, "Same time newest", "watcher")
@@ -367,7 +402,7 @@ func runFeedbackGitHubSameTime(t *testing.T, x Fixture) {
 			}
 		}
 		requireOrdered(t, e)
-		requireRepeatWritesNothing(t, e)
+		requireSecondReportKept(t, e)
 	})
 	t.Run("SignalThenNewerThenReport", func(t *testing.T) {
 		e := newFeedbackEnvironment(t, x, "Same time late", "watcher")
@@ -383,7 +418,7 @@ func runFeedbackGitHubSameTime(t *testing.T, x Fixture) {
 			}
 		}
 		requireOrdered(t, e)
-		requireRepeatWritesNothing(t, e)
+		requireSecondReportKept(t, e)
 	})
 	t.Run("ReportThenSignal", func(t *testing.T) {
 		e := newFeedbackEnvironment(t, x, "Same time reverse", "watcher")
@@ -393,6 +428,38 @@ func runFeedbackGitHubSameTime(t *testing.T, x Fixture) {
 		e.requireDeploys(t, "app="+a+"+20")
 		requireGitHubAt(t, e, 20*time.Second)
 		requireOrdered(t, e)
-		requireRepeatWritesNothing(t, e)
+		requireSecondReportKept(t, e)
 	})
+}
+
+// runFeedbackGitHubLongRepository records a GitHub deploy for a configured
+// repository whose name has 101 characters. The configuration accepts it, so
+// the watcher service-name rule of 100 characters does not bound it. A name
+// over the shared service bound of 255 characters is refused as a field
+// (component-production-feedback invariants 3 and 10; req-production-feedback
+// AC-1.5).
+func runFeedbackGitHubLongRepository(t *testing.T, x Fixture) {
+	long := "repo-" + strings.Repeat("a", 96)
+	if len(long) != 101 {
+		t.Fatalf("name has %d characters", len(long))
+	}
+	current, err := x.Backend.WorkspaceConfig(x.Context)
+	requireOK(t, err)
+	next := *x.Config
+	next.Repos = append(slices.Clone(x.Config.Repos), config.Repo{Name: long, URL: "https://example.test/" + long, Base: "main"})
+	_, err = x.Backend.UpdateWorkspaceConfig(x.Context, current.Version, &next)
+	requireOK(t, err)
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	e.report(t, e.github(20*time.Second, long, feedbackCommit("a")), true)
+	e.requireRunning(t, long+"="+feedbackCommit("a")+"+20")
+	e.requireDeploys(t, long+"="+feedbackCommit("a")+"+20")
+	deploys := e.deploys(t)
+	if len(deploys) != 1 || deploys[0].Service != long || deploys[0].Repository != long || deploys[0].Origin.Source != store.FeedbackSourceGitHub {
+		t.Fatalf("deploys=%+v, want one GitHub deploy named after the repository", deploys)
+	}
+	recorded, err := x.Backend.RecordFeedbackGitHubDeploy(x.Context, e.github(30*time.Second, strings.Repeat("r", store.FeedbackGitHubServiceMaxCharacters+1), feedbackCommit("a")))
+	requireFeedbackField(t, err, "repository")
+	if recorded {
+		t.Fatal("a repository name over the service bound recorded a deploy")
+	}
 }

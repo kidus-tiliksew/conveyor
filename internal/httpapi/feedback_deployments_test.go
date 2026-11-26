@@ -88,8 +88,7 @@ func TestFeedbackSignalJobsOfOneTimeStayApart(t *testing.T) {
 
 // TestFeedbackDeploymentRedeployAsOf applies two successful GitHub reports of
 // one commit at two times with no signal between them. The environment's
-// live status rests on the later report, and a duplicate of it writes nothing
-// (component-production-feedback invariants 10 and 17; req-production-feedback
+// live status rests on the later report (component-production-feedback invariants 10 and 17; req-production-feedback
 // AC-1.5 and AC-3.6).
 func TestFeedbackDeploymentRedeployAsOf(t *testing.T) {
 	merge, deployed := readsCommit("b2b2b2b2b2b2"), readsCommit("c3c3c3c3c3c3")
@@ -101,7 +100,7 @@ func TestFeedbackDeploymentRedeployAsOf(t *testing.T) {
 	}
 	apply := h.server.FeedbackDeploymentReports()
 	first, second := time.Date(2026, 11, 26, 9, 30, 0, 0, time.UTC), time.Date(2026, 11, 26, 11, 0, 0, 0, time.UTC)
-	for _, at := range []time.Time{first, second, second} {
+	for _, at := range []time.Time{first, second} {
 		if err := apply(h.ctx, "acme/app", github.DeploymentStatus{State: "success", Environment: "staging", Commit: deployed, ReportedAt: at}); err != nil {
 			t.Fatal(err)
 		}

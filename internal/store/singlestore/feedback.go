@@ -370,33 +370,6 @@ func nextFeedbackReport(ctx context.Context, tx *sql.Tx, ws, environmentID strin
 	return store.NextFeedbackReport(signals, starts, stops, accepted), nil
 }
 
-// feedbackGitHubRepeat reads the accepted GitHub reports of the environment
-// at the signal's time and reports whether one names its service.
-func feedbackGitHubRepeat(ctx context.Context, tx *sql.Tx, ws string, signal store.FeedbackSignal) (bool, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT arrived_at,report,source_label,service_digests FROM feedback_accepted_signals WHERE workspace_id=? AND environment_id=? AND arrived_at=? AND source_label=''`, ws, signal.EnvironmentID, signal.ArrivedAt)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	var accepted []store.FeedbackAcceptedSignal
-	for rows.Next() {
-		var report store.FeedbackAcceptedSignal
-		var services []byte
-		if err := rows.Scan(&report.ArrivedAt, &report.Report, &report.Label, &services); err != nil {
-			return false, err
-		}
-		report.ArrivedAt = store.EnvironmentTime(report.ArrivedAt)
-		if err := store.ApplyFeedbackAcceptedServices(&report, services); err != nil {
-			return false, err
-		}
-		accepted = append(accepted, report)
-	}
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	return store.FeedbackGitHubRepeat(signal, accepted), nil
-}
-
 // RecordFeedbackGitHubDeploy implements store.FeedbackStore. It holds the
 // workspace environment claim, which an archive takes too, so an archived
 // environment records nothing, and it stamps the environment row as its own
@@ -433,14 +406,6 @@ func (s *Store) RecordFeedbackGitHubDeploy(ctx context.Context, deploy store.Fee
 		if !repositories[deploy.Repository] {
 			return nil
 		}
-		rows, err := tx.QueryContext(ctx, feedbackDeploySQL+` AND service=? AND deployed_at=? AND source=?`, ws, signal.EnvironmentID, deploy.Repository, signal.ArrivedAt, store.FeedbackSourceGitHub)
-		if err != nil {
-			return err
-		}
-		repeats, err := collectFeedbackDeploys(rows)
-		if err != nil || store.FeedbackGitHubDeployRepeat(signal, repeats) {
-			return err
-		}
 		history, err := readFeedbackHistory(ctx, tx, ws, signal)
 		if err != nil {
 			return err
@@ -453,12 +418,6 @@ func (s *Store) RecordFeedbackGitHubDeploy(ctx context.Context, deploy store.Fee
 		changes, err := store.PlanFeedbackGitHubDeploy(signal, origin, history)
 		if err != nil {
 			return err
-		}
-		if !changes.Changed() {
-			repeat, err := feedbackGitHubRepeat(ctx, tx, ws, signal)
-			if err != nil || repeat {
-				return err
-			}
 		}
 		if err := writeFeedbackChanges(ctx, tx, ws, signal, origin, changes); err != nil {
 			return err

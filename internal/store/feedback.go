@@ -210,14 +210,15 @@ type FeedbackStore interface {
 	// of the commit that the service runs from an earlier time is a distinct
 	// redeploy, and an overtaken report gets its own deploy, as
 	// PlanFeedbackGitHubDeploy plans it, so every successful report keeps
-	// its own deploy record, time, and origin in every arrival order. An
-	// environment that is missing or archived by the time of the write, a
-	// repository outside the workspace configuration, and a repeat of an
-	// accepted GitHub report with the same service, commit, and time record
-	// nothing and answer false, whatever the plan would change. It leaves the
-	// newest signal and every key unchanged (component-production-feedback
-	// invariants 4 to 6, 10, and 17; req-production-feedback AC-1.5 and
-	// AC-3.6; req-environments AC-1.9).
+	// its own deploy record, time, and origin in every arrival order. Two
+	// distinct reports of one service, commit, and time each keep their own
+	// deploy: the store does not take one for a repeat of the other, because
+	// the signed webhook receiver already refuses a delivery whose ID it has
+	// recorded. An environment that is missing or archived by the time of the
+	// write and a repository outside the workspace configuration record
+	// nothing and answer false. It leaves the newest signal and every key
+	// unchanged (component-production-feedback invariants 4 to 6, 10, and 17;
+	// req-production-feedback AC-1.5 and AC-3.6; req-environments AC-1.9).
 	RecordFeedbackGitHubDeploy(ctx context.Context, deploy FeedbackGitHubDeploy) (recorded bool, err error)
 	// FeedbackStatusStore keeps resolved versions and comparisons and reads
 	// merged tasks (feature-production-feedback-live FB-3).
@@ -663,6 +664,13 @@ func FeedbackGitHubOrigin(report int64) FeedbackOrigin {
 	return FeedbackOrigin{Source: FeedbackSourceGitHub, Actor: SystemActor().ID, Report: report}
 }
 
+// FeedbackGitHubServiceMaxCharacters bounds the service of a GitHub deploy,
+// the configured repository's name. It is the service bound that the
+// PostgreSQL and SingleStore deploy tables share, and a watcher signal's own
+// service names keep their 100-character rule (component-production-feedback
+// invariants 3 and 10).
+const FeedbackGitHubServiceMaxCharacters = 255
+
 // FeedbackGitHubDeploySignal checks a GitHub deployment report and returns it
 // as the signal that PlanFeedbackChanges reads: one service named after the
 // repository that runs exactly the deployment's commit, at the report's time.
@@ -673,7 +681,10 @@ func FeedbackGitHubDeploySignal(deploy FeedbackGitHubDeploy) (FeedbackSignal, er
 	if deploy.EnvironmentID == "" {
 		return FeedbackSignal{}, feedbackFieldError("environment_id", "is required")
 	}
-	if err := checkFeedbackText(redact.New(nil), "repository", deploy.Repository, feedbackNameMaxCharacters); err != nil {
+	// The service is the configured repository's name, which the watcher
+	// service-name rule does not bound. It meets the bound that both durable
+	// backends store for a service, and the secret check.
+	if err := checkFeedbackText(redact.New(nil), "repository", deploy.Repository, FeedbackGitHubServiceMaxCharacters); err != nil {
 		return FeedbackSignal{}, err
 	}
 	commit := strings.ToLower(deploy.Commit)
@@ -701,18 +712,17 @@ func FeedbackGitHubDeploySignal(deploy FeedbackGitHubDeploy) (FeedbackSignal, er
 // report's time, and a new deploy of the same commit starts then, so the
 // deploy records keep the time of every successful deployment report
 // (component-production-feedback invariants 10 and 17; req-production-feedback
-// AC-1.5 and AC-3.6). A running deploy that a watcher signal started at the
-// report's own time is also redeployed: the report boundary orders the two,
-// so the watcher deploy stops at that time and the GitHub deploy starts
-// then, and the report keeps a deploy with the GitHub source (invariants 6
-// and 10). A report that a later report already overtook is planned as
-// PlanFeedbackChanges plans an earlier arrival, which never moves the start
-// or origin of a GitHub deploy: the overtaken report's span is its own
-// deploy that stops at the next report, and a covering deploy of the same
-// commit is split at the report's time. The caller refuses a repeat with
-// FeedbackGitHubDeployRepeat before it plans, so a running deploy or a
-// covering deploy that starts at the report's time is never a GitHub deploy
-// of the same commit.
+// AC-1.5 and AC-3.6). A running deploy that started at the report's own time,
+// from a watcher signal or from another GitHub report, is also redeployed:
+// the report boundary orders the two, so the running deploy stops at that
+// time and the new GitHub deploy starts then (invariants 6 and 10). A report
+// that a later report already overtook is planned as PlanFeedbackChanges
+// plans an earlier arrival, which never moves the start or origin of a
+// GitHub deploy: the overtaken report's span is its own deploy that stops at
+// the next report, and a covering deploy of the same commit is split at the
+// report's time. Every report the planner gets is a distinct report. The
+// signed webhook receiver refuses a repeated delivery before it reaches the
+// store.
 func PlanFeedbackGitHubDeploy(signal FeedbackSignal, origin FeedbackOrigin, history FeedbackHistory) (FeedbackChanges, error) {
 	changes, err := PlanFeedbackChanges(signal, origin, history)
 	if err != nil || len(signal.Services) != 1 || len(signal.Services[0].Versions) != 1 {
@@ -750,16 +760,13 @@ func PlanFeedbackGitHubDeploy(signal FeedbackSignal, origin FeedbackOrigin, hist
 // stops at the report's time, and a new GitHub deploy starts then and ends
 // where the covering deploy ended, or runs on in its place. Without it the
 // report would leave no record and no time (component-production-feedback
-// invariants 10 and 17). A watcher deploy that starts at the report's time
-// and has an earlier report number covers it too, so it is split. A GitHub
-// deploy that starts at the report's time is a repeat, and nothing is split.
+// invariants 10 and 17). A deploy that starts at the report's time and has
+// an earlier report number, from a watcher signal or from another GitHub
+// report, covers it too, so it is split.
 func (c *FeedbackChanges) splitCoveringDeploy(signal FeedbackSignal, origin FeedbackOrigin, service string, reported FeedbackVersion, running []FeedbackRunningVersion, deploys []FeedbackDeploy) error {
 	at := FeedbackBoundary{At: signal.ArrivedAt, Report: origin.Report}
 	for _, deploy := range deploys {
 		if deploy.Service != service || deploy.FeedbackVersion != reported || deploy.DeployedAt.After(signal.ArrivedAt) || slices.ContainsFunc(c.Updated, func(d FeedbackDeploy) bool { return d.ID == deploy.ID }) {
-			continue
-		}
-		if deploy.DeployedAt.Equal(signal.ArrivedAt) && deploy.Origin.Source == FeedbackSourceGitHub {
 			continue
 		}
 		stop, runs := deploy.Stop()
@@ -780,43 +787,6 @@ func (c *FeedbackChanges) splitCoveringDeploy(signal FeedbackSignal, origin Feed
 		return nil
 	}
 	return nil
-}
-
-// Changed reports whether the plan changes a deploy or a running version. A
-// report that names exactly what the service runs changes neither.
-func (c FeedbackChanges) Changed() bool {
-	return len(c.Deploys) > 0 || len(c.Started) > 0 || len(c.Stopped) > 0 || len(c.Updated) > 0 || len(c.Moved) > 0
-}
-
-// FeedbackGitHubDeployRepeat reports whether deploys holds a GitHub deploy of
-// the signal's one service and version that starts at the signal's time.
-// Every accepted GitHub report that records a deploy keeps such a record, and
-// nothing moves its start or origin later, so a report that matches one is a
-// repeat. A repeat writes nothing, whatever the plan would change. A backend
-// passes the GitHub deploys of the service that start at that time.
-func FeedbackGitHubDeployRepeat(signal FeedbackSignal, deploys []FeedbackDeploy) bool {
-	service := signal.Services[0]
-	reported := FeedbackVersion{Repository: service.Repository, Commit: service.Versions[0].Commit, Version: service.Versions[0].Version}
-	for _, deploy := range deploys {
-		if deploy.Service == service.Name && deploy.FeedbackVersion == reported && deploy.DeployedAt.Equal(signal.ArrivedAt) && deploy.Origin.Source == FeedbackSourceGitHub {
-			return true
-		}
-	}
-	return false
-}
-
-// FeedbackGitHubRepeat reports whether accepted holds a GitHub report of the
-// signal's one service at the signal's time. A backend passes the accepted
-// reports of the environment at that time. Together with a plan that changes
-// nothing, it makes a repeated report that recorded no deploy a no-op.
-func FeedbackGitHubRepeat(signal FeedbackSignal, accepted []FeedbackAcceptedSignal) bool {
-	digest := FeedbackServiceDigest(signal.Services[0].Name)
-	for _, report := range accepted {
-		if report.Label == "" && report.ArrivedAt.Equal(signal.ArrivedAt) && slices.Contains(report.Services, digest) {
-			return true
-		}
-	}
-	return false
 }
 
 // NextFeedbackReport is the number of the next accepted report of an
