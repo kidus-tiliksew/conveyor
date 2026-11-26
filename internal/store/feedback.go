@@ -667,12 +667,14 @@ func FeedbackGitHubOrigin(report int64) FeedbackOrigin {
 
 // checkFeedbackGitHubService checks the service of a GitHub deploy, the
 // configured repository's name. Any name that the workspace configuration
-// accepts is kept whole, so no length bound applies: the watcher rule of 100
-// characters bounds a signal's own service names only, and every backend
-// stores a deploy's service as unbounded text (component-production-feedback
-// invariants 3 and 10). The name must still be text that every backend can
-// store, hold no control character, and hold no credential shape. The
-// refusal never repeats the name.
+// accepts is kept whole, so this check sets no length bound. The watcher rule
+// of 100 characters bounds a signal's own service names only. SingleStore
+// stores a deploy's service in a column of 255 characters, and its workspace
+// configuration refuses a longer repository name, so every name that reaches
+// this check fits (component-production-feedback invariants 3 and 10). The
+// name must still be text that every backend can store, hold no control
+// character, and hold no credential shape. The refusal never repeats the
+// name.
 func checkFeedbackGitHubService(value string) error {
 	if value == "" || !utf8.ValidString(value) || strings.IndexFunc(value, unicode.IsControl) >= 0 {
 		return feedbackFieldError("repository", "must be non-empty UTF-8 text without a control character")

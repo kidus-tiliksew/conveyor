@@ -164,7 +164,7 @@ func requireEnvironmentArchived(t *testing.T, err error) {
 
 func requireInvalidEnvironmentKey(t *testing.T, x Fixture, value, what string) {
 	t.Helper()
-	verified, err := x.Backend.VerifyEnvironmentKey(x.Context, value)
+	verified, err := x.Backend.CheckEnvironmentKey(x.Context, value)
 	if !errors.Is(err, store.ErrInvalidEnvironmentKey) || err.Error() != store.ErrInvalidEnvironmentKey.Error() || verified != (store.VerifiedEnvironmentKey{}) {
 		t.Fatalf("%s: verified=%+v err=%v, want the one refusal", what, verified, err)
 	}
@@ -564,7 +564,7 @@ func runEnvironmentArchive(t *testing.T, x Fixture) {
 	if restored.Archived || !slices.Equal(restored.GitHubEnvironments, []string{"prod"}) {
 		t.Fatalf("restored = %+v", restored)
 	}
-	if verified, err := x.Backend.VerifyEnvironmentKey(x.Context, kept.Value); err != nil || verified.KeyID != kept.ID {
+	if verified, err := x.Backend.CheckEnvironmentKey(x.Context, kept.Value); err != nil || verified.KeyID != kept.ID {
 		t.Fatalf("restored key = %+v %v", verified, err)
 	}
 	requireInvalidEnvironmentKey(t, x, revoked.Value, "a revoked key after a restore")
@@ -662,7 +662,7 @@ func runEnvironmentIsolation(t *testing.T, x Fixture) {
 	}
 	// The key alone names its workspace, whatever the context binds.
 	for name, verifyCtx := range map[string]context.Context{"own": x.Context, "other": y.Context, "none": t.Context()} {
-		verified, err := x.Backend.VerifyEnvironmentKey(verifyCtx, key.Value)
+		verified, err := x.Backend.CheckEnvironmentKey(verifyCtx, key.Value)
 		if err != nil || verified.Workspace != x.Workspace || verified.EnvironmentID != mine.ID {
 			t.Fatalf("%s workspace context: verified=%+v err=%v", name, verified, err)
 		}
@@ -736,7 +736,7 @@ func runEnvironmentKeyRevocation(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	kept, err := x.Backend.IssueEnvironmentKey(x.Context, environment.ID, "kept")
 	requireOK(t, err)
-	if _, err := x.Backend.VerifyEnvironmentKey(x.Context, key.Value); err != nil {
+	if _, err := x.Backend.CheckEnvironmentKey(x.Context, key.Value); err != nil {
 		t.Fatal(err)
 	}
 	// Another environment's key answers as a missing one.
@@ -754,7 +754,7 @@ func runEnvironmentKeyRevocation(t *testing.T, x Fixture) {
 	if strings.Contains(before[:strings.Index(before, "environment.created")], key.ID) {
 		t.Fatalf("a read lists the revoked key: %s", before)
 	}
-	if _, err := x.Backend.VerifyEnvironmentKey(x.Context, kept.Value); err != nil {
+	if _, err := x.Backend.CheckEnvironmentKey(x.Context, kept.Value); err != nil {
 		t.Fatalf("the other key: %v", err)
 	}
 }
@@ -763,13 +763,13 @@ func runEnvironmentKeyVerification(t *testing.T, x Fixture) {
 	environment := createEnvironment(t, x, store.EnvironmentInput{Name: "Production"})
 	key, err := x.Backend.IssueEnvironmentKey(x.Context, environment.ID, "deploy")
 	requireOK(t, err)
-	verified, err := x.Backend.VerifyEnvironmentKey(x.Context, key.Value)
+	verified, err := x.Backend.CheckEnvironmentKey(x.Context, key.Value)
 	if err != nil || verified != (store.VerifiedEnvironmentKey{Workspace: x.Workspace, EnvironmentID: environment.ID, KeyID: key.ID, Label: "deploy"}) {
 		t.Fatalf("verified = %+v %v", verified, err)
 	}
 	// A rename of the environment changes no identity the key names.
 	updateEnvironment(t, x, environment.ID, store.EnvironmentPatch{Name: ptr("Renamed")})
-	if again, err := x.Backend.VerifyEnvironmentKey(x.Context, key.Value); err != nil || again != verified {
+	if again, err := x.Backend.CheckEnvironmentKey(x.Context, key.Value); err != nil || again != verified {
 		t.Fatalf("verified again = %+v %v", again, err)
 	}
 	digest := sha256.Sum256([]byte(key.Value))
@@ -802,6 +802,10 @@ func environmentLastUse(t *testing.T, x Fixture, keyID string) *time.Time {
 	return nil
 }
 
+// runEnvironmentKeyLastUse proves component-environments invariant 14
+// through the two paths that remain: the read-only check records no use, and
+// an accepted signal records the key's last use at most once a minute. A
+// refused key records no use, and last use appends no event.
 func runEnvironmentKeyLastUse(t *testing.T, x Fixture) {
 	if x.AgeEnvironmentKey == nil {
 		t.Fatal("conformance fixture must provide AgeEnvironmentKey for the last-use case")
@@ -809,42 +813,53 @@ func runEnvironmentKeyLastUse(t *testing.T, x Fixture) {
 	environment := createEnvironment(t, x, store.EnvironmentInput{Name: "Production"})
 	key, err := x.Backend.IssueEnvironmentKey(x.Context, environment.ID, "deploy")
 	requireOK(t, err)
-	verify := func() {
+	e := feedbackEnvironment{x: x, id: environment.ID, key: key}
+	arrival := time.Duration(0)
+	use := func() {
 		t.Helper()
-		if _, err := x.Backend.VerifyEnvironmentKey(x.Context, key.Value); err != nil {
+		if _, err := x.Backend.CheckEnvironmentKey(x.Context, key.Value); err != nil {
 			t.Fatal(err)
 		}
+		arrival += 10 * time.Second
+		e.send(t, arrival, feedbackService("api", "@1"))
+	}
+	if _, err := x.Backend.CheckEnvironmentKey(x.Context, key.Value); err != nil {
+		t.Fatal(err)
 	}
 	if at := environmentLastUse(t, x, key.ID); at != nil {
-		t.Fatalf("unused key has last use %v", at)
+		t.Fatalf("a check of an unused key recorded the last use %v", at)
 	}
-	verify()
+	use()
 	first := environmentLastUse(t, x, key.ID)
 	if first == nil || time.Since(*first).Abs() > 10*time.Minute {
 		t.Fatalf("first last use = %v", first)
 	}
-	verify()
+	use()
 	if again := environmentLastUse(t, x, key.ID); again == nil || !again.Equal(*first) {
 		t.Fatalf("a second use within a minute moved the last use from %v to %v", first, again)
 	}
 	x.AgeEnvironmentKey(t, x.Context, key.ID, 30*time.Second)
 	aged := environmentLastUse(t, x, key.ID)
-	verify()
+	use()
 	if again := environmentLastUse(t, x, key.ID); !again.Equal(*aged) {
 		t.Fatalf("a use 30 seconds later moved the last use from %v to %v", aged, again)
 	}
 	x.AgeEnvironmentKey(t, x.Context, key.ID, time.Minute)
 	aged = environmentLastUse(t, x, key.ID)
-	verify()
+	use()
 	stamped := environmentLastUse(t, x, key.ID)
 	if !stamped.After(*aged) {
 		t.Fatalf("a use after a minute kept the last use at %v", stamped)
 	}
-	// A refused key records no use, and last use appends no event.
+	// A refused key records no use, by the check or by a signal, and last use
+	// appends no event.
 	x.AgeEnvironmentKey(t, x.Context, key.ID, time.Hour)
 	aged = environmentLastUse(t, x, key.ID)
 	archiveEnvironment(t, x, environment.ID, true)
 	requireInvalidEnvironmentKey(t, x, key.Value, "a key of an archived environment")
+	if err := x.Backend.RecordFeedbackSignal(x.Context, e.signal(arrival+10*time.Second, feedbackService("api", "@1"))); !errors.Is(err, store.ErrInvalidEnvironmentKey) {
+		t.Fatalf("a signal under a key of an archived environment: err=%v, want the one refusal", err)
+	}
 	if again := environmentLastUse(t, x, key.ID); !again.Equal(*aged) {
 		t.Fatalf("a refused use moved the last use from %v to %v", aged, again)
 	}
@@ -875,7 +890,7 @@ func runEnvironmentKeySecrets(t *testing.T, x Fixture) {
 	if strings.Contains(stored.Text, secret) {
 		t.Fatal("a stored column beside the hash holds the secret")
 	}
-	if _, err := x.Backend.VerifyEnvironmentKey(x.Context, key.Value); err != nil {
+	if _, err := x.Backend.CheckEnvironmentKey(x.Context, key.Value); err != nil {
 		t.Fatal(err)
 	}
 	// Forty characters, so it fits a name and a label.
@@ -1160,16 +1175,40 @@ func runEnvironmentConcurrentKeys(t *testing.T, x Fixture) {
 			t.Fatalf("losing issue err=%v", err)
 		}
 	}
-	// Concurrent first uses all verify, and concurrent revocations append one
-	// event.
-	verify := func() error {
-		_, err := x.Backend.VerifyEnvironmentKey(x.Context, keys[0].Value)
+	// Concurrent checks all resolve the key and record no use. Concurrent
+	// first uses, each a check and then an accepted signal, all succeed,
+	// stamp the last use, and append no event. Concurrent revocations
+	// append one event.
+	use := feedbackEnvironment{x: x, id: environment.ID, key: keys[0]}
+	check := func() error {
+		_, err := x.Backend.CheckEnvironmentKey(x.Context, keys[0].Value)
 		return err
 	}
-	if results := environmentRace(verify, verify, verify, verify); environmentWinners(results) != 4 {
-		t.Fatalf("concurrent verifications = %v", results)
+	if results := environmentRace(check, check, check, check); environmentWinners(results) != 4 {
+		t.Fatalf("concurrent checks = %v", results)
+	}
+	if at := environmentLastUse(t, x, keys[0].ID); at != nil {
+		t.Fatalf("concurrent checks recorded the last use %v", at)
 	}
 	before := len(environmentEvents(t, x))
+	signal := func(offset time.Duration) func() error {
+		return func() error {
+			if err := check(); err != nil {
+				return err
+			}
+			return x.Backend.RecordFeedbackSignal(x.Context, use.signal(offset, feedbackService("api", "@1")))
+		}
+	}
+	if results := environmentRace(signal(time.Second), signal(2*time.Second), signal(3*time.Second), signal(4*time.Second)); environmentWinners(results) != 4 {
+		t.Fatalf("concurrent first uses = %v", results)
+	}
+	if at := environmentLastUse(t, x, keys[0].ID); at == nil {
+		t.Fatal("concurrent first uses recorded no last use")
+	}
+	if after := len(environmentEvents(t, x)); after != before {
+		t.Fatalf("concurrent first uses appended %d events, want none", after-before)
+	}
+	before = len(environmentEvents(t, x))
 	revoke := func() error { return x.Backend.RevokeEnvironmentKey(x.Context, environment.ID, keys[0].ID) }
 	if results := environmentRace(revoke, revoke, revoke, revoke); environmentWinners(results) != 4 {
 		t.Fatalf("concurrent revocations = %v", results)
