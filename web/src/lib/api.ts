@@ -2444,3 +2444,171 @@ export function addTaskToCrate(workspace: string, taskId: string, crateId: strin
 export function removeTaskFromCrate(workspace: string, taskId: string) {
   return sendCrateJSON<Task>(workspace, 'DELETE', `/v1/tasks/${encodeURIComponent(taskId)}/crate`)
 }
+
+// Environments (component-environments, Public surfaces). Reads need
+// view_workspace and every act needs manage_workspace; the server checks both.
+
+/**
+ * A refused environment request. It keeps the HTTP status, the server's error
+ * code, and the field the server names, so a form shows the refusal beside
+ * that field (component-environments invariant 2; req-environments AC-1.1 to
+ * AC-1.5).
+ */
+export class EnvironmentRequestError extends Error {
+  status: number
+  code: string
+  field: string
+
+  constructor(status: number, code: string, field: string, message: string) {
+    super(message)
+    this.status = status
+    this.code = code
+    this.field = field
+  }
+}
+
+async function environmentRequestError(response: Response) {
+  const text = await response.text()
+  let code = ''
+  let field = ''
+  try {
+    const body = JSON.parse(text) as { error?: unknown; field?: unknown }
+    if (typeof body.error === 'string') code = body.error
+    if (typeof body.field === 'string') field = body.field
+  } catch {
+    // A body that is not JSON keeps no code and no field.
+  }
+  return new EnvironmentRequestError(response.status, code, field, apiErrorMessage(text, response.statusText))
+}
+
+async function environmentRequest(workspace: string, path: string, method: string, body?: unknown) {
+  const response = await fetch(workspaceURL(path, workspace), {
+    method,
+    headers: mutationHeaders(),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!response.ok) throw await environmentRequestError(response)
+  return response
+}
+
+// The unarchived environments, or the archived ones on request
+// (req-environments AC-1.8).
+export function fetchEnvironments(workspace: string, archived: boolean, signal?: AbortSignal) {
+  return getJSON<import('./types').EnvironmentRow[]>(
+    workspaceURL(`/v1/environments?archived=${archived ? 'true' : 'false'}`, workspace),
+    signal,
+  )
+}
+
+// The largest page the list routes serve (component-http-api invariant 19).
+const environmentSuggestionPageLimit = 200
+
+/**
+ * A suggestions read whose pages stopped before the served total. The read
+ * fails with it instead of showing part of the list as the whole list.
+ */
+export class EnvironmentSuggestionPagingError extends Error {}
+
+/**
+ * Every suggestion of the workspace. The suggestions route serves a default
+ * page of 100 rows with the X-Conveyor-Total, X-Conveyor-Limit, and
+ * X-Conveyor-Offset headers, so the read follows each page until it holds the
+ * served total, however many pages that takes. A manager then sees, accepts,
+ * and ignores every suggestion (req-environments AC-1.6;
+ * component-environments invariant 16). Every page names the workspace and
+ * takes the read's abort signal. An answer without the total header is the
+ * whole list. A page that is empty or does not advance the offset before the
+ * total is reached fails the read, so no suggestion is dropped without a
+ * message. A suggestion that two pages repeat shows once.
+ */
+export async function fetchEnvironmentSuggestions(workspace: string, signal?: AbortSignal) {
+  type Suggestion = import('./types').EnvironmentSuggestion
+  const suggestions: Suggestion[] = []
+  const seen = new Set<string>()
+  let offset = 0
+  for (;;) {
+    const params = new URLSearchParams({ limit: String(environmentSuggestionPageLimit), offset: String(offset) })
+    const response = await fetch(workspaceURL(`/v1/environments/suggestions?${params.toString()}`, workspace), {
+      signal,
+    })
+    if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+    const page = (await response.json()) as Suggestion[] | null
+    const items = Array.isArray(page) ? page : []
+    for (const item of items) {
+      const key = `${item.github_environment}\u0000${item.repository}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      suggestions.push(item)
+    }
+    const totalHeader = response.headers.get('X-Conveyor-Total')
+    if (totalHeader === null) return suggestions
+    const total = Number(totalHeader)
+    const served = Number(response.headers.get('X-Conveyor-Offset') ?? offset)
+    if (!Number.isFinite(total) || !Number.isFinite(served))
+      throw new EnvironmentSuggestionPagingError('The suggestions list sent page headers that are not numbers.')
+    const next = served + items.length
+    if (next >= total) return suggestions
+    if (items.length === 0 || next <= offset)
+      throw new EnvironmentSuggestionPagingError(
+        `The suggestions list stopped at ${next} of ${total} rows. Refresh the page to read it again.`,
+      )
+    offset = next
+  }
+}
+
+export async function createEnvironment(workspace: string, input: import('./types').EnvironmentInput) {
+  const response = await environmentRequest(workspace, '/v1/environments', 'POST', input)
+  return response.json() as Promise<import('./types').EnvironmentRecord>
+}
+
+export async function updateEnvironment(
+  workspace: string,
+  environmentId: string,
+  patch: import('./types').EnvironmentInput,
+) {
+  const response = await environmentRequest(
+    workspace,
+    `/v1/environments/${encodeURIComponent(environmentId)}`,
+    'PATCH',
+    patch,
+  )
+  return response.json() as Promise<import('./types').EnvironmentRecord>
+}
+
+// The answer is the only one that ever holds the key's value. The caller keeps
+// it in a mounted dialog's state and never in a cache (component-environments
+// invariant 11; req-environments AC-2.1).
+export async function issueEnvironmentKey(workspace: string, environmentId: string, label: string) {
+  const response = await environmentRequest(
+    workspace,
+    `/v1/environments/${encodeURIComponent(environmentId)}/keys`,
+    'POST',
+    { label },
+  )
+  return response.json() as Promise<import('./types').IssuedEnvironmentKey>
+}
+
+export async function revokeEnvironmentKey(workspace: string, environmentId: string, keyId: string) {
+  await environmentRequest(
+    workspace,
+    `/v1/environments/${encodeURIComponent(environmentId)}/keys/${encodeURIComponent(keyId)}`,
+    'DELETE',
+  )
+}
+
+export async function ignoreEnvironmentSuggestion(workspace: string, githubEnvironment: string) {
+  await environmentRequest(workspace, '/v1/environments/suggestions/ignore', 'POST', {
+    github_environment: githubEnvironment,
+  })
+}
+
+// A merged task's live status from `GET /v1/tasks/{id}`, the only task read
+// that carries `environments` (component-production-feedback, Public
+// surfaces; invariant 19). Only that field is kept.
+export async function fetchTaskLiveStatus(workspace: string, taskId: string, signal?: AbortSignal) {
+  const task = await getJSON<{ environments?: import('./types').TaskEnvironmentStatus[] | null }>(
+    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}`, workspace),
+    signal,
+  )
+  return task.environments ?? []
+}

@@ -27,6 +27,7 @@ import { type CrateEmphasis, useCrateEmphasis } from '../components/crate/crate-
 import { CrateFormDialog } from '../components/crate/crate-parts'
 import { CrateStage } from '../components/crate/crate-stage'
 import { DeliveryStatsSheet } from '../components/crate/delivery-stats'
+import { CrateLiveLines, LiveIn, liveStatusInterval } from '../components/feedback/live-status'
 import { TaskRow } from '../components/insights/shared'
 import { TaskSheet } from '../components/task/task-sheet'
 import { Button } from '../components/ui/button'
@@ -74,10 +75,20 @@ export function CratePage() {
     queryKey: crateQueryKey(workspace, crateId),
     queryFn: () => fetchCrate(workspace, crateId),
     enabled: Boolean(workspace && crateId),
+    // The crate read carries the environment lines, so it reads again every
+    // 60 seconds while the page shows one (component-production-feedback
+    // invariant 23).
+    refetchInterval: (query) => liveStatusInterval(query.state.data?.environments?.length),
   })
 
+  // Reading the update time re-renders the page after each successful read,
+  // so the relative times on the live lines stay current even when the
+  // answer is unchanged.
+  void crate.dataUpdatedAt
   if (crate.isPending) return <CratePageSkeleton />
-  if (crate.error != null || !crate.data)
+  // The full-page failure shows only when no crate data exists. A failed
+  // timed refresh keeps the page, its open dialogs, and the last served data.
+  if (!crate.data)
     return (
       <div className="flex h-full flex-col">
         <PageHeader title={<CratesCrumb />} />
@@ -213,6 +224,9 @@ function CrateView({ crate }: { crate: CrateDetail }) {
               {setState.error instanceof Error ? setState.error.message : String(setState.error)}
             </p>
           )}
+          {/* One line per relevant environment, under the page header
+              (req-production-feedback AC-3.4). */}
+          <CrateLiveLines lines={crate.environments ?? []} />
           <CrateStage
             crate={crate}
             insight={insight.data}
@@ -424,23 +438,31 @@ function MemberTasks({
                     task={task}
                     onActivate={onActivate}
                     details={
-                      <span className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px] text-faint">
-                        <span
-                          data-task-state={task.state}
-                          className={cn(
-                            'shrink-0 rounded-[4px] px-1.5 font-medium leading-[18px]',
-                            stateTone(task.state),
-                          )}
-                        >
-                          {taskStateLabels[task.state] ?? task.state}
-                        </span>
-                        <span className="flex min-w-0 items-center gap-1">
-                          <GitBranch aria-hidden className="size-3 shrink-0" />
-                          <span className="min-w-0 truncate font-mono" data-task-branch>
-                            {task.branch}
+                      <>
+                        <span className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px] text-faint">
+                          <span
+                            data-task-state={task.state}
+                            className={cn(
+                              'shrink-0 rounded-[4px] px-1.5 font-medium leading-[18px]',
+                              stateTone(task.state),
+                            )}
+                          >
+                            {taskStateLabels[task.state] ?? task.state}
+                          </span>
+                          <span className="flex min-w-0 items-center gap-1">
+                            <GitBranch aria-hidden className="size-3 shrink-0" />
+                            <span className="min-w-0 truncate font-mono" data-task-branch>
+                              {task.branch}
+                            </span>
                           </span>
                         </span>
-                      </span>
+                        {/* Where a merged member is live, on its own line, only
+                          when the crate has environment lines
+                          (req-production-feedback AC-3.4). */}
+                        {task.state === 'merged' && task.live_in && (crate.environments?.length ?? 0) > 0 && (
+                          <LiveIn names={task.live_in} className="mt-1 text-[11px] text-faint" />
+                        )}
+                      </>
                     }
                   />
                 </div>

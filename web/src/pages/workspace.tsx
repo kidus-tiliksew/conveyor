@@ -15,6 +15,7 @@ import { Input, Select } from '../components/ui/input'
 import { PageHeader } from '../components/ui/page-header'
 import { Switch } from '../components/ui/switch'
 import { Tabs, tabPanelProps } from '../components/ui/tabs'
+import { EnvironmentsPanel } from '../components/environment/environments-panel'
 import { Field } from '../components/workspace/field'
 import { MembersSection } from '../components/workspace/members-section'
 import { VerificationKits } from '../components/workspace/verification-kits'
@@ -38,7 +39,7 @@ import { cn } from '../lib/utils'
 // The selected tab is page state, never part of the address, so ordinary
 // navigation to this page opens on Policy. Conveyor has no workers, so no tab,
 // badge, or panel describes them (DEC-97(1)).
-type TabId = 'general' | 'policy' | 'verification' | 'members'
+type TabId = 'general' | 'policy' | 'verification' | 'environments' | 'members'
 
 // A link saved while the retired Workers tab was open carries `?tab=workers`
 // and opens General as a bounded compatibility fallback. No other `tab` value
@@ -52,13 +53,17 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'general', label: 'General' },
   { id: 'policy', label: 'Policy' },
   { id: 'verification', label: 'Verification' },
+  // Environments are their own records, not part of the configuration draft,
+  // so the tab has no dirty or error marker (component-environments
+  // invariant 18).
+  { id: 'environments', label: 'Environments' },
   { id: 'members', label: 'Members' },
 ]
 
 // Which tab owns a config section, for dirty markers and validation-error routing.
 // The verify_stage switch lives in execution but belongs to the Verification
 // tab, so the policy slice compares execution without it.
-const TAB_SLICES: Record<Exclude<TabId, 'members'>, (document: WorkspaceConfigDocument) => unknown> = {
+const TAB_SLICES: Record<Exclude<TabId, 'members' | 'environments'>, (document: WorkspaceConfigDocument) => unknown> = {
   general: (document) => [
     document.work_order_queue_timeout,
     document.repos,
@@ -124,7 +129,7 @@ export function WorkspacePage() {
   const serverDocument = query.data?.document
   const dirtyTabs = useMemo(() => {
     if (!draft || !serverDocument) return [] as TabId[]
-    return (Object.keys(TAB_SLICES) as Array<Exclude<TabId, 'members'>>).filter(
+    return (Object.keys(TAB_SLICES) as Array<Exclude<TabId, 'members' | 'environments'>>).filter(
       (id) => JSON.stringify(TAB_SLICES[id](draft)) !== JSON.stringify(TAB_SLICES[id](serverDocument)),
     )
   }, [draft, serverDocument])
@@ -221,6 +226,18 @@ export function WorkspacePage() {
                     <VerificationKits key={workspace} workspace={workspace} />
                   </div>
                 )}
+                {/* Mounted only on its tab and keyed by workspace, so its
+                    reads, timer, and dialogs end when the tab or the
+                    workspace changes. Branch fields follow the saved
+                    configuration's repositories. */}
+                {tab === 'environments' && (
+                  <EnvironmentsPanel
+                    key={workspace}
+                    workspace={workspace}
+                    canManage
+                    repositories={(serverDocument?.repos ?? []).map((repo) => repo.name)}
+                  />
+                )}
                 {tab === 'members' && <MembersSection />}
               </div>
 
@@ -284,6 +301,14 @@ export function WorkspacePage() {
               {workspace && (
                 <div className="mt-4">
                   <VerificationKits key={workspace} workspace={workspace} />
+                </div>
+              )}
+              {/* Every member who may view the workspace reads its
+                  environments, without the controls (req-environments
+                  AC-1.8). */}
+              {workspace && (
+                <div className="mt-6">
+                  <EnvironmentsPanel key={workspace} workspace={workspace} canManage={false} repositories={[]} />
                 </div>
               )}
               <div className="mt-4">

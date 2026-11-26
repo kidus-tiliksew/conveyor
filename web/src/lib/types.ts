@@ -310,12 +310,20 @@ export interface CrateTask {
   branch: string
   pull_request: CratePullRequest | null
   next_action: NextActionCompact
+  // The environments where a merged member is live, [] when it is live
+  // nowhere. A member that is not merged has no live_in
+  // (component-production-feedback, Public surfaces).
+  live_in?: string[]
 }
 
 export interface CrateDetail extends Crate {
   requirements: CrateRequirement[]
   undeclared_requirements: CrateRequirement[]
   tasks: CrateTask[]
+  // One line per relevant environment, [] when none is relevant
+  // (component-production-feedback invariant 18; req-production-feedback
+  // AC-3.4).
+  environments?: CrateEnvironmentLine[]
 }
 
 export type CrateActivityKind =
@@ -1354,7 +1362,13 @@ export interface WorkspaceGitHubAppStatus {
   repositories: Array<{ name: string; covered: boolean }>
   installation_url?: string
   webhook: WorkspaceGitHubWebhookStatus
+  // Whether the installation can send deployment reports, and what it lacks.
+  // The read omits it when the App has no installation
+  // (component-production-feedback invariant 12; DEC-149(5)).
+  deployment_reports?: DeploymentReportsState
 }
+
+export type DeploymentReportsState = 'on' | 'missing_permission' | 'missing_event' | 'missing_permission_and_event'
 
 // The secret-free webhook projection of GET …/github-app
 // (component-identity-membership; req-quiet-idle-runtime AC-3.6). A workspace
@@ -2601,4 +2615,107 @@ export interface TaskFlow {
   display: TaskFlowDisplay
   next_action: TaskFlowNextAction
   raw: TaskFlowRaw
+}
+
+// Environments (component-environments, Public surfaces). The rows of
+// `GET /v1/environments` in the shape internal/httpapi/feedback_signals.go
+// writes: the environment record, its keys that are not revoked, and the
+// listening state, last signal, and newest unresolved version
+// (component-production-feedback invariant 21).
+export type EnvironmentVersionRuleKind = 'commit_pattern' | 'tag_template'
+
+export interface EnvironmentVersionRule {
+  kind: EnvironmentVersionRuleKind
+  text: string
+}
+
+export interface EnvironmentKey {
+  id: string
+  label: string
+  created_by: string
+  created_at: string
+  last_used_at: string | null
+}
+
+// The answer to issuing a key, the only answer that holds its value
+// (component-environments invariant 11). The dashboard keeps it only in the
+// mounted key dialog's state.
+export interface IssuedEnvironmentKey extends EnvironmentKey {
+  value: string
+}
+
+export interface EnvironmentUnresolvedVersion {
+  service: string
+  repository?: string
+  commit?: string
+  version?: string
+  deployed_at: string
+  reason: string
+}
+
+export interface EnvironmentRecord {
+  id: string
+  name: string
+  tracked_branches: Record<string, string> | null
+  github_environments: string[] | null
+  version_rule: EnvironmentVersionRule | null
+  timing_window_minutes: number
+  archived: boolean
+  created_by: string
+  created_at: string
+  keys: EnvironmentKey[] | null
+}
+
+export interface EnvironmentRow extends EnvironmentRecord {
+  // Absent when the answer states no listening state. The dashboard then
+  // shows no watcher state, never a false one.
+  listening?: boolean
+  last_signal_at: string | null
+  newest_unresolved: EnvironmentUnresolvedVersion | null
+}
+
+// The body of a create or edit. An omitted field stays unchanged on edit, and
+// an explicit null version_rule clears the rule.
+export interface EnvironmentInput {
+  name?: string
+  tracked_branches?: Record<string, string>
+  github_environments?: string[]
+  version_rule?: EnvironmentVersionRule | null
+  timing_window_minutes?: number
+  archived?: boolean
+}
+
+export interface EnvironmentSuggestion {
+  github_environment: string
+  repository: string
+  last_reported_at: string
+}
+
+// Live status (component-production-feedback invariants 16 to 18).
+export type LiveStatus = 'live' | 'not_live_yet' | 'no_longer_live' | 'unknown'
+
+export interface LiveEnvironmentRef {
+  id: string
+  name: string
+}
+
+// One merged task's status in one relevant environment on
+// `GET /v1/tasks/{id}`.
+export interface TaskEnvironmentStatus {
+  environment: LiveEnvironmentRef
+  status: LiveStatus | string
+  services: string[] | null
+  live_since: string | null
+  on_tracked_branch?: boolean
+  as_of: string | null
+}
+
+export interface CrateEnvironmentLine {
+  environment: LiveEnvironmentRef
+  live_task_count: number
+  merged_task_count: number
+  newest_live_at: string | null
+  listening?: boolean
+  last_signal_at: string | null
+  as_of: string | null
 }

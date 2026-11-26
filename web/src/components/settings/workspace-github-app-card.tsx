@@ -3,7 +3,7 @@ import { Building2 } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { createWorkspaceGitHubAppManifest, disconnectWorkspaceGitHubApp, fetchWorkspaceGitHubApp } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
-import type { WorkspaceGitHubAppStatus } from '../../lib/types'
+import type { DeploymentReportsState, WorkspaceGitHubAppStatus } from '../../lib/types'
 import { fullTime } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
@@ -164,6 +164,7 @@ export function WorkspaceGitHubAppCard() {
               ))}
             </ul>
             {current.repositories.length === 0 && <p className="text-sm text-muted">No repositories registered.</p>}
+            {current.deployment_reports && <DeploymentReports state={current.deployment_reports} />}
             <div className="flex items-center gap-3">
               <a
                 className="text-sm text-primary underline"
@@ -260,5 +261,50 @@ function GitHubAppSummary({ status }: { status: WorkspaceGitHubAppStatus }) {
           : 'No delivery has arrived yet'}
       </SummaryLine>
     </>
+  )
+}
+
+// What the installation lacks for GitHub to send deployment reports, from the
+// served `deployment_reports` (component-production-feedback invariant 12;
+// DEC-149(5)). The read omits the field when the App has no installation, and
+// then this line does not render.
+const deploymentReportsMissing: Record<Exclude<DeploymentReportsState, 'on'>, { missing: string; add: string }> = {
+  missing_permission: {
+    missing: 'The App does not have read access to Deployments.',
+    add: 'The App owner must give the App read access to Deployments on GitHub.',
+  },
+  missing_event: {
+    missing: 'The App does not subscribe to the Deployment status event.',
+    add: 'The App owner must subscribe the App to the Deployment status event on GitHub.',
+  },
+  missing_permission_and_event: {
+    missing: 'The App does not have read access to Deployments and does not subscribe to the Deployment status event.',
+    add: 'The App owner must give the App read access to Deployments and subscribe it to the Deployment status event on GitHub.',
+  },
+}
+
+function DeploymentReports({ state }: { state: DeploymentReportsState }) {
+  if (state === 'on')
+    return (
+      <p className="text-sm" data-deployment-reports={state}>
+        <span className="font-medium">Deployment reports:</span> <span className="text-positive">on</span>. GitHub sends
+        deployment reports to Conveyor.
+      </p>
+    )
+  const text = deploymentReportsMissing[state as Exclude<DeploymentReportsState, 'on'>]
+  if (!text) return null
+  return (
+    <div
+      className="space-y-1 rounded-md border border-attention/30 bg-attention-soft p-3 text-sm"
+      data-deployment-reports={state}
+    >
+      <p>
+        <span className="font-medium">Deployment reports:</span> <span className="text-attention">off</span>.{' '}
+        {text.missing}
+      </p>
+      <p className="text-muted">
+        {text.add} Then an owner of the installation account must approve the change to the installation.
+      </p>
+    </div>
   )
 }
