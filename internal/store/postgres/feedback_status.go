@@ -136,13 +136,16 @@ func (s *Store) ReadFeedbackInputs(ctx context.Context, environmentIDs []string)
 func (s *Store) AdmitFeedbackComparisons(ctx context.Context, keys []store.FeedbackComparisonKey, now time.Time, most int) ([]store.FeedbackComparisonKey, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "AdmitFeedbackComparisons")
 	keys = store.NormalizeFeedbackComparisonKeys(keys)
-	now = store.EnvironmentTime(now)
+	waited, asked := time.Now(), now
 	workspaceID := workspace(ctx)
 	var admitted []store.FeedbackComparisonKey
 	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('feedback_admissions:' || $1, 0))`, workspaceID); err != nil {
 			return err
 		}
+		// The time is read after the lock is held, so a call that waited
+		// counts and records when its request can start.
+		now := store.FeedbackAdmissionTime(asked, waited)
 		if _, err := tx.Exec(ctx, `DELETE FROM feedback_admissions WHERE workspace_id=$1 AND admitted_at <= $2`, workspaceID, now.Add(-store.FeedbackAttemptMemory)); err != nil {
 			return err
 		}

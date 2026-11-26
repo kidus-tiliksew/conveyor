@@ -232,9 +232,12 @@ func (s *Store) ReadFeedbackInputs(ctx context.Context, environmentIDs []string)
 func (s *Store) AdmitFeedbackComparisons(ctx context.Context, keys []store.FeedbackComparisonKey, now time.Time, most int) ([]store.FeedbackComparisonKey, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "AdmitFeedbackComparisons")
 	keys = store.NormalizeFeedbackComparisonKeys(keys)
-	now = store.EnvironmentTime(now)
+	waited, asked := time.Now(), now
 	var admitted []store.FeedbackComparisonKey
 	err := s.withFeedbackStatusClaim(ctx, func(tx *sql.Tx, ws string) error {
+		// The time is read after the claim is held, so a call that waited
+		// counts and records when its request can start.
+		now := store.FeedbackAdmissionTime(asked, waited)
 		if _, err := tx.ExecContext(ctx, `DELETE FROM feedback_admissions WHERE workspace_id=? AND admitted_at<=?`, ws, now.Add(-store.FeedbackAttemptMemory)); err != nil {
 			return err
 		}

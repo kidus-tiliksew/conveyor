@@ -142,10 +142,11 @@ func (m *volatileMemory) ReadFeedbackInputs(ctx context.Context, environmentIDs 
 // AdmitFeedbackComparisons implements FeedbackStatusStore.
 func (m *volatileMemory) AdmitFeedbackComparisons(ctx context.Context, keys []FeedbackComparisonKey, now time.Time, most int) ([]FeedbackComparisonKey, error) {
 	workspace := workspaceOrDefault(ctx, "")
-	now = EnvironmentTime(now)
+	waited := time.Now()
 	keys = NormalizeFeedbackComparisonKeys(keys)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now = FeedbackAdmissionTime(now, waited)
 	stored := map[FeedbackComparisonKey]bool{}
 	attempts := map[FeedbackComparisonKey]time.Time{}
 	for _, key := range keys {

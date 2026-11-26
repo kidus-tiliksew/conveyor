@@ -204,3 +204,22 @@ func TestFeedbackFailedTokenRequestWaitsTenMinutes(t *testing.T) {
 		t.Fatalf("resolution after the retry time=%+v token requests=%d", resolved, h.provider.count())
 	}
 }
+
+// TestFeedbackTokenBackoffKeepsTheLaterDeadline proves that a failure
+// recorded after a rate-limited one never shortens GitHub's retry time.
+func TestFeedbackTokenBackoffKeepsTheLaterDeadline(t *testing.T) {
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	backoff := &feedbackTokenBackoff{until: map[string]feedbackTokenFailure{}}
+	limited := github.RateLimitedError(now.Add(30*time.Minute), fmt.Errorf("rate limited"))
+	backoff.record("alpha", limited, now)
+	backoff.record("alpha", github.StatusError(http.StatusBadGateway, fmt.Errorf("bad gateway")), now)
+	if err := backoff.failure("alpha", now.Add(29*time.Minute)); err != limited {
+		t.Fatalf("failure before the retry time=%v, want the rate-limited failure", err)
+	}
+	if err := backoff.failure("alpha", now.Add(30*time.Minute)); err != nil {
+		t.Fatalf("failure at the retry time=%v", err)
+	}
+	if err := backoff.failure("beta", now); err != nil {
+		t.Fatalf("another workspace=%v", err)
+	}
+}

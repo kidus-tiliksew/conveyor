@@ -265,6 +265,15 @@ func NormalizeFeedbackComparisonKeys(keys []FeedbackComparisonKey) []FeedbackCom
 	return out
 }
 
+// FeedbackAdmissionTime is the time an admission counts and records: the
+// caller's time plus the real time the backend spent from waited, at the
+// start of the call, until it held the workspace's admission lock. A call
+// that waits for the lock therefore never counts or records a time older
+// than when its request can start.
+func FeedbackAdmissionTime(now, waited time.Time) time.Time {
+	return EnvironmentTime(now.Add(time.Since(waited)))
+}
+
 // FeedbackAdmission is one admitted request as a backend stores it: its
 // last attempt.
 type FeedbackAdmission struct {

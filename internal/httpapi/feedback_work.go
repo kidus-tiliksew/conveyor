@@ -282,6 +282,11 @@ func (b *feedbackTokenBackoff) record(workspace string, err error, now time.Time
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// A concurrent failure that set a later deadline, such as GitHub's
+	// retry time, keeps it.
+	if existing, ok := b.until[workspace]; ok && existing.until.After(until) {
+		return
+	}
 	b.until[workspace] = feedbackTokenFailure{err: err, until: until}
 }
 
