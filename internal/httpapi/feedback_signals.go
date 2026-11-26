@@ -175,6 +175,15 @@ func (s *Server) receiveFeedbackSignal(w http.ResponseWriter, r *http.Request) {
 	accepted := false
 	defer func() { limiter.settle(key, accepted) }()
 	if err := backend.RecordFeedbackSignal(r.Context(), signal); err != nil {
+		// A store that asks for the signal to be sent again recorded nothing,
+		// and the deferred settle opens no window, so an immediate resend is
+		// admitted (component-production-feedback, Public surfaces and
+		// invariant 27; component-persistence invariant 8).
+		if errors.Is(err, store.ErrRetryable) {
+			w.Header().Set("Retry-After", "1")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "retryable", "message": storeRetryableMessage})
+			return
+		}
 		writeFeedbackError(w, r, err)
 		return
 	}
