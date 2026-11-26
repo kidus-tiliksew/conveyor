@@ -46,6 +46,7 @@ A second `DELETE` of one key answers 204 and records nothing.
 | 404 `environment_not_found` | The environment, or its key, is missing or belongs to another workspace |
 | 409 `environment_archived` | The environment is archived and the request edits a field other than `archived`, or issues a key |
 | 409 `environment_key_limit` | The environment holds five keys that are not revoked |
+| 503 `retryable` | A `POST`, `PATCH`, or `DELETE` that the store asks to be sent again, for example on SingleStore when the previous environment change is not visible yet. `Retry-After` is `1`. Nothing was recorded, so send the same request again after that second |
 
 Each refusal is JSON with `error` and `message`. A refused request records
 nothing. `PATCH` checks the JSON fields and their types first, then that the

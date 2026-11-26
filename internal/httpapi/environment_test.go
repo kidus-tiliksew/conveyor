@@ -849,3 +849,38 @@ func TestEnvironmentStoreFailuresAreGeneric(t *testing.T) {
 		h.want(http.StatusNotImplemented, c.method, c.path, c.body)
 	}
 }
+
+// TestEnvironmentMutationRetryable proves that each environment mutation
+// answers a store that asks for it to be sent again with 503 retryable and
+// Retry-After, repeats no store text, and changes no record, key,
+// suggestion, or event (component-environments, Public surfaces;
+// component-persistence invariant 8).
+func TestEnvironmentMutationRetryable(t *testing.T) {
+	h := newEnvironmentHarness(t)
+	environment := h.create(`{"name":"Production"}`)
+	key := h.issue(environment.ID)
+	if recorded, err := h.st.RecordEnvironmentReport(h.ctx, store.EnvironmentReport{GitHubEnvironment: "preview", Repository: "app", ReportedAt: time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)}); err != nil || !recorded {
+		t.Fatalf("report recorded=%v err=%v", recorded, err)
+	}
+	const detail = "driver detail cv_env_envkey_Ab3dE6gH9jK2mN5p_Ab3dE6gH9jK2mN5pQ8sT1vW4y"
+	h.server.Store = failingEnvironmentStore{Backend: h.st, err: fmt.Errorf("%s: %w", detail, store.ErrRetryable)}
+	h.handler = h.server.Handler()
+	before := h.recorded()
+	for _, c := range environmentMutations(environment.ID, key.ID) {
+		response := h.want(http.StatusServiceUnavailable, c.method, c.path, c.body)
+		if got := response.Header().Get("Retry-After"); got != "1" {
+			t.Fatalf("%s %s Retry-After = %q, want 1", c.method, c.path, got)
+		}
+		var body map[string]string
+		decodeEnvironmentBody(t, response, &body)
+		if want := (map[string]string{"error": "retryable", "message": storeRetryableMessage}); !maps.Equal(body, want) {
+			t.Fatalf("%s %s body = %s, want %v", c.method, c.path, response.Body, want)
+		}
+		if strings.Contains(response.Body.String(), "driver detail") || strings.Contains(response.Body.String(), "cv_env_") {
+			t.Fatalf("%s %s body repeats the store text: %s", c.method, c.path, response.Body)
+		}
+		if after := h.recorded(); after != before {
+			t.Fatalf("%s %s changed a record:\nbefore %s\nafter  %s", c.method, c.path, before, after)
+		}
+	}
+}

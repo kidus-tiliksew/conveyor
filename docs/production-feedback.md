@@ -86,6 +86,7 @@ A signal that breaks a rule is refused whole and records nothing.
 | 429 | The signal arrived less than 5 seconds before or after another accepted signal of the key, or one that is on its way to the store. `Retry-After` holds the whole seconds to wait from the answer, at least 1 |
 | 500 | The store failed, or the check of the key took more than 10 seconds. The answer holds no detail |
 | 503 | The server holds the most keys it can, and each one is inside its 5 seconds or has a request in progress that arrived inside them. Try again |
+| 503 `retryable` | The store asks for the signal to be sent again. The answer is JSON with `error` of `retryable`, unlike the plain-text 503 above, and `Retry-After` is `1`. Nothing was recorded and the 5 seconds did not start, so send the same signal again after that second |
 
 Each rule of the body is checked before the 5 seconds. An invalid signal gets 400
 inside them, and it never delays a valid signal of the same key.
