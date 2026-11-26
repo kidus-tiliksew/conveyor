@@ -81,8 +81,14 @@ export function CratePage() {
     refetchInterval: (query) => liveStatusInterval(query.state.data?.environments?.length),
   })
 
+  // Reading the update time re-renders the page after each successful read,
+  // so the relative times on the live lines stay current even when the
+  // answer is unchanged.
+  void crate.dataUpdatedAt
   if (crate.isPending) return <CratePageSkeleton />
-  if (crate.error != null || !crate.data)
+  // The full-page failure shows only when no crate data exists. A failed
+  // timed refresh keeps the page, its open dialogs, and the last served data.
+  if (!crate.data)
     return (
       <div className="flex h-full flex-col">
         <PageHeader title={<CratesCrumb />} />

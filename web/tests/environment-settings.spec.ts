@@ -114,6 +114,7 @@ async function mockServer(page: Page, options: ServerOptions = {}) {
     gets: [] as string[],
     writes: [] as Array<{ method: string; path: string; body: unknown }>,
     reply: undefined as ((request: Request) => Promise<Reply> | Reply) | undefined,
+    failActive: false,
   }
   const role = options.role ?? 'operator'
   await page.addInitScript(() => {
@@ -139,8 +140,18 @@ async function mockServer(page: Page, options: ServerOptions = {}) {
       state.writes.push({ method, path, body })
       const reply = await state.reply?.(request)
       if (reply) return route.fulfill(reply)
-      if (path === '/v1/environments')
-        return route.fulfill({ status: 201, json: environment('env-new', (body as { name: string }).name) })
+      if (path === '/v1/environments') {
+        // As the server does: the new environment joins the active list, and
+        // a suggestion whose name it lists is no longer served.
+        const input = body as { name: string; github_environments?: string[] }
+        const created = environment(`env-${input.name}`, input.name, {
+          github_environments: input.github_environments ?? [],
+        })
+        state.active.push(created)
+        const listed = new Set((input.github_environments ?? []).map((name) => name.toLowerCase()))
+        state.suggestions = state.suggestions.filter((item) => !listed.has(item.github_environment.toLowerCase()))
+        return route.fulfill({ status: 201, json: created })
+      }
       if (path === '/v1/environments/suggestions/ignore') {
         state.suggestions = state.suggestions.filter(
           (item) => item.github_environment !== (body as { github_environment: string }).github_environment,
@@ -186,8 +197,11 @@ async function mockServer(page: Page, options: ServerOptions = {}) {
         },
       })
     }
-    if (path === '/v1/environments')
+    if (path === '/v1/environments') {
+      if (state.failActive && url.searchParams.get('archived') !== 'true')
+        return route.fulfill({ status: 500, json: { error: 'internal', message: 'The store failed.' } })
       return route.fulfill({ json: url.searchParams.get('archived') === 'true' ? state.archived : state.active })
+    }
     if (path === '/v1/pending-proposals')
       return route.fulfill({ json: { items: [], attention: { total: 0, task_count: 0, pending_proposal_count: 0 } } })
     return route.fulfill({ json: [] })
@@ -542,32 +556,39 @@ test('a suggestion opens a filled create form without a write, and ignore remove
   ])
 })
 
-test('a suggestion on a later page shows, and its create and ignore controls work', async ({ page }) => {
-  // 201 suggestions: the largest page holds 200, so the last one is on page 2.
+test('suggestions on a later page show, and their create and ignore controls work', async ({ page }) => {
+  // 202 suggestions: the largest page holds 200, so the last two are on page 2.
   const many: EnvironmentSuggestion[] = Array.from({ length: 200 }, (_, index) => ({
     github_environment: `preview-${String(index).padStart(3, '0')}`,
     repository: 'web-app',
     last_reported_at: '2026-11-25T08:00:00Z',
   }))
-  const late: EnvironmentSuggestion = {
+  const lateCanary: EnvironmentSuggestion = {
     github_environment: 'late-canary',
     repository: 'conveyor',
     last_reported_at: '2026-11-26T09:00:00Z',
   }
-  const state = await mockServer(page, { suggestions: [...many, late] })
+  const lateEdge: EnvironmentSuggestion = {
+    github_environment: 'late-edge',
+    repository: 'web-app',
+    last_reported_at: '2026-11-26T09:30:00Z',
+  }
+  const state = await mockServer(page, { suggestions: [...many, lateCanary, lateEdge] })
   await openEnvironmentsTab(page)
   const reads = () => state.gets.filter((path) => path.startsWith('/v1/environments/suggestions'))
-  const row = page.locator('[data-environment-suggestion="late-canary"]')
-  await expect(row).toContainText('conveyor')
-  await expect(row.locator('time')).toHaveAttribute('datetime', '2026-11-26T09:00:00Z')
-  await expect(page.locator('[data-environment-suggestion]')).toHaveCount(201)
+  const canary = page.locator('[data-environment-suggestion="late-canary"]')
+  const edge = page.locator('[data-environment-suggestion="late-edge"]')
+  await expect(canary).toContainText('conveyor')
+  await expect(canary.locator('time')).toHaveAttribute('datetime', '2026-11-26T09:00:00Z')
+  await expect(edge).toContainText('web-app')
+  await expect(page.locator('[data-environment-suggestion]')).toHaveCount(202)
   // The read followed the server's pages, each for this workspace.
   const pages = reads().map((path) => new URL(path, 'http://x').searchParams)
   expect(pages.map((params) => params.get('offset'))).toEqual(['0', '200'])
   expect(pages.every((params) => params.get('workspace_id') === 'demo')).toBe(true)
 
   // Create fills the form and writes nothing until the form is sent.
-  await row.getByRole('button', { name: 'Create environment' }).click()
+  await canary.getByRole('button', { name: 'Create environment' }).click()
   const form = page.getByRole('form', { name: 'Add environment' })
   await expect(form.getByLabel('Name', { exact: true })).toHaveValue('late-canary')
   await expect(form.getByLabel('GitHub environment names')).toHaveValue('late-canary')
@@ -581,16 +602,33 @@ test('a suggestion on a later page shows, and its create and ignore controls wor
       body: { name: 'late-canary', tracked_branches: {}, github_environments: ['late-canary'] },
     },
   ])
+  // The new environment shows and its suggestion leaves the list.
+  await expect(card(page, 'env-late-canary')).toBeVisible()
+  await expect(canary).toHaveCount(0)
 
-  // Ignore sends the name and the row leaves the list.
-  await row.getByRole('button', { name: 'Ignore late-canary' }).click()
-  await expect(row).toHaveCount(0)
+  // Ignore sends the other later-page name, and its row leaves the list.
+  await edge.getByRole('button', { name: 'Ignore late-edge' }).click()
+  await expect(edge).toHaveCount(0)
   expect(state.writes.at(-1)).toEqual({
     method: 'POST',
     path: '/v1/environments/suggestions/ignore',
-    body: { github_environment: 'late-canary' },
+    body: { github_environment: 'late-edge' },
   })
   await expect(page.locator('[data-environment-suggestion]')).toHaveCount(200)
+})
+
+test('a failed timed read keeps the environment rows on screen and says the read failed', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+  const state = await mockServer(page)
+  await openEnvironmentsTab(page)
+  await page.clock.runFor(1_000)
+  const base = activeReads(state)
+  state.failActive = true
+  await page.clock.runFor(61_000)
+  await expect.poll(() => activeReads(state)).toBeGreaterThan(base)
+  await expect(page.getByRole('alert').filter({ hasText: 'Conveyor could not read the environments.' })).toBeVisible()
+  await expect(card(page, 'env-production')).toBeVisible()
+  await expect(card(page, 'env-staging')).toBeVisible()
 })
 
 test('accepting a suggestion saves only when the form is sent', async ({ page }) => {

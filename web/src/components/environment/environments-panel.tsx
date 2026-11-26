@@ -77,6 +77,11 @@ export function EnvironmentsPanel({
     enabled: Boolean(workspace) && canManage,
     retry: false,
   })
+  // Reading the update time re-renders the panel after each successful timed
+  // read, so its relative times stay current even when the answer is
+  // unchanged. A failed refresh keeps the last served rows on screen with the
+  // failure above them.
+  void active.dataUpdatedAt
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['environments', workspace] })
   const setArchived = useMutation({
     mutationFn: ({ environment, archived }: { environment: EnvironmentRecord; archived: boolean }) =>
@@ -118,7 +123,7 @@ export function EnvironmentsPanel({
           </Button>
         </div>
       )}
-      {active.isSuccess && active.data.length === 0 && (
+      {active.data && active.data.length === 0 && (
         <Card data-environments-empty>
           <CardContent className="py-6 text-center text-sm">
             <p className="font-medium">This workspace has no environments.</p>
@@ -130,20 +135,19 @@ export function EnvironmentsPanel({
           </CardContent>
         </Card>
       )}
-      {active.isSuccess &&
-        active.data.map((environment) => (
-          <EnvironmentCard
-            key={environment.id}
-            environment={environment}
-            canManage={canManage}
-            onEdit={() => setForm({ mode: 'edit', environment })}
-            onArchive={() => setArchived.mutate({ environment, archived: true })}
-            onIssueKey={() => setKeyDialog({ kind: 'issue', environment })}
-            onRevokeKey={(key) => setKeyDialog({ kind: 'revoke', environment, key })}
-            pending={setArchived.isPending && setArchived.variables?.environment.id === environment.id}
-            error={archiveError(environment)}
-          />
-        ))}
+      {active.data?.map((environment) => (
+        <EnvironmentCard
+          key={environment.id}
+          environment={environment}
+          canManage={canManage}
+          onEdit={() => setForm({ mode: 'edit', environment })}
+          onArchive={() => setArchived.mutate({ environment, archived: true })}
+          onIssueKey={() => setKeyDialog({ kind: 'issue', environment })}
+          onRevokeKey={(key) => setKeyDialog({ kind: 'revoke', environment, key })}
+          pending={setArchived.isPending && setArchived.variables?.environment.id === environment.id}
+          error={archiveError(environment)}
+        />
+      ))}
 
       {canManage && (suggestions.data?.length ?? 0) > 0 && (
         <Suggestions
@@ -183,20 +187,19 @@ export function EnvironmentsPanel({
               Conveyor could not read the archived environments. {errorMessage(archived.error)}
             </p>
           )}
-          {archived.isSuccess && archived.data.length === 0 && (
+          {archived.data && archived.data.length === 0 && (
             <p className="text-sm text-muted">This workspace has no archived environments.</p>
           )}
-          {archived.isSuccess &&
-            archived.data.map((environment) => (
-              <EnvironmentCard
-                key={environment.id}
-                environment={environment}
-                canManage={canManage}
-                onRestore={() => setArchived.mutate({ environment, archived: false })}
-                pending={setArchived.isPending && setArchived.variables?.environment.id === environment.id}
-                error={archiveError(environment)}
-              />
-            ))}
+          {archived.data?.map((environment) => (
+            <EnvironmentCard
+              key={environment.id}
+              environment={environment}
+              canManage={canManage}
+              onRestore={() => setArchived.mutate({ environment, archived: false })}
+              pending={setArchived.isPending && setArchived.variables?.environment.id === environment.id}
+              error={archiveError(environment)}
+            />
+          ))}
         </section>
       )}
 

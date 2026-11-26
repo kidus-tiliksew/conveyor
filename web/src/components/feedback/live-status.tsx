@@ -68,6 +68,10 @@ export function TaskLiveStatus({ taskId }: { taskId: string }) {
     refetchOnWindowFocus: false,
     refetchInterval: (query) => liveStatusInterval(query.state.data?.length),
   })
+  // Reading the update time re-renders the lines after each successful timed
+  // read, so their relative times stay current even when the answer is
+  // unchanged.
+  void statuses.dataUpdatedAt
   const lines = statuses.data ?? []
   const environments = useQuery({
     queryKey: environmentsQueryKey(workspace, false),

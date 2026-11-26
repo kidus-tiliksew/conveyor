@@ -218,6 +218,7 @@ async function mockServer(page: Page, options: Options = {}) {
     statuses: options.statuses ?? taskStatuses,
     rows: environmentRows.map((item) => ({ ...item })),
     crate: options.crate ?? crate(crateLines, true),
+    failCrate: false,
     gets: [] as string[],
   }
   await page.addInitScript(() => {
@@ -249,7 +250,10 @@ async function mockServer(page: Page, options: Options = {}) {
       const item = activity(id, taskState).task
       return route.fulfill({ json: taskState === 'merged' ? { ...item, environments: state.statuses } : item })
     }
-    if (path === '/v1/crates/crate-billing') return route.fulfill({ json: state.crate })
+    if (path === '/v1/crates/crate-billing') {
+      if (state.failCrate) return route.fulfill({ status: 500, json: { error: 'internal error' } })
+      return route.fulfill({ json: state.crate })
+    }
     if (path === '/v1/crates/crate-billing/insight') return route.fulfill({ json: insight(state.crate) })
     if (path === '/v1/crates/crate-billing/activity') return route.fulfill({ json: { events: [] } })
     if (path === '/v1/crates/crate-billing/briefing')
@@ -440,6 +444,27 @@ test('the crate read repeats every 60 seconds while the page is open and stops a
   const after = crateReads(state)
   await page.clock.runFor(180_000)
   expect(crateReads(state)).toBe(after)
+})
+
+test('a failed timed crate read keeps the page and its open dialog', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+  const state = await mockServer(page)
+  await page.goto('/w/demo/crates/crate-billing')
+  await expect(page.getByRole('region', { name: 'Live status' })).toBeVisible()
+  await page.getByRole('button', { name: 'Crate actions' }).click()
+  await page.getByRole('menuitem', { name: 'Edit crate' }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toBeVisible()
+  await page.clock.runFor(1_000)
+  const base = crateReads(state)
+  state.failCrate = true
+  // The timed read and its three default retries all fail.
+  await page.clock.runFor(61_000)
+  await page.clock.runFor(15_000)
+  await expect.poll(() => crateReads(state)).toBeGreaterThan(base)
+  await expect(page.getByText('This crate did not load')).toHaveCount(0)
+  await expect(dialog).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Live status' })).toBeVisible()
 })
 
 test('a crate with no environment shows the page as before and reads on no timer', async ({ page }) => {
