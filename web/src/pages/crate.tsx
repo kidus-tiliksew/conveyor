@@ -88,13 +88,14 @@ export function CratePage() {
   // times in a row, and otherwise every 60 seconds while the page shows a
   // line (component-production-feedback invariant 23).
   useLiveStatusRefresh({
-    identity: JSON.stringify(queryKey),
+    queryKey,
     shown: crate.data?.environments?.length ?? 0,
     pending: crate.data?.environments_pending === true,
     hasAnswer: crate.data !== undefined,
     dataUpdatedAt: crate.dataUpdatedAt,
     errorUpdatedAt: crate.errorUpdatedAt,
     isFetching: crate.isFetching,
+    isPaused: crate.isPaused,
     refetch: crate.refetch,
   })
 

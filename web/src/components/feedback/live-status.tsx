@@ -73,13 +73,14 @@ export function TaskLiveStatus({ taskId }: { taskId: string }) {
   // most six times in a row, and otherwise every 60 seconds while a line
   // shows (component-production-feedback invariant 23).
   useLiveStatusRefresh({
-    identity: JSON.stringify(queryKey),
+    queryKey,
     shown: lines.length,
     pending: statuses.data?.environments_pending === true,
     hasAnswer: statuses.data !== undefined,
     dataUpdatedAt: statuses.dataUpdatedAt,
     errorUpdatedAt: statuses.errorUpdatedAt,
     isFetching: statuses.isFetching,
+    isPaused: statuses.isPaused,
     refetch: statuses.refetch,
   })
   const environments = useQuery({

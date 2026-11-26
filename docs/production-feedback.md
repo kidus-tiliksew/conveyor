@@ -409,8 +409,8 @@ merged task, and on `GET /v1/crates/{id}` and MCP `get_crate`:
 
 | Value | When |
 | --- | --- |
-| `true` | The status of at least one relevant environment is left out because a comparison or the head of a tracked branch is not stored yet. On a crate read, this is true of at least one merged member |
-| `false` | Every other case, including an empty list, a workspace with no environment, and a task with no merge commit |
+| `true` | The status of at least one relevant environment is left out because a comparison or the head of a tracked branch is not stored yet. On a crate read, this is true of at least one merged member. The list can be empty: a read that leaves out every relevant status for this reason serves `[]` with `true` |
+| `false` | Every other case, including an empty list with no status left out for this reason, a workspace with no environment, and a task with no merge commit |
 
 A stored branch head that is 10 minutes old or older is served while a new one
 is asked for, so it does not make the read pending. A crate read can serve a

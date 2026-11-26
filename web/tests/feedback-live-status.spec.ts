@@ -702,6 +702,34 @@ for (const surface of surfaces) {
     for (let read = 2; read <= 6; read++) await step(page, surface, state, 10_000, 1)
     await step(page, surface, state, 70_000, 0)
   })
+
+  test(`an offline browser makes no pending ${surface.name} read and no catch-up read on reconnect or reveal`, async ({
+    page,
+    context,
+  }) => {
+    await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+    await hideableTab(page)
+    const state = await mockServer(page)
+    surface.serve(state, false, true)
+    await openSurface(page, surface, state)
+    // The browser goes offline before the first pending read is due. The
+    // timer would fire in this time, but a read while offline would wait in
+    // TanStack Query's paused queue, so none starts and none counts.
+    await context.setOffline(true)
+    await step(page, surface, state, 15_000, 0)
+    await setTabHidden(page, true)
+    await step(page, surface, state, 30_000, 0)
+    // Coming back online while the tab is hidden resumes nothing.
+    await context.setOffline(false)
+    await step(page, surface, state, 30_000, 0)
+    // Showing the tab makes no read at once. The page waits the whole delay.
+    await setTabHidden(page, false)
+    await step(page, surface, state, 9_000, 0)
+    await step(page, surface, state, 1_000, 1)
+    // The offline and hidden time used none of the six reads.
+    for (let read = 2; read <= 6; read++) await step(page, surface, state, 10_000, 1)
+    await step(page, surface, state, 70_000, 0)
+  })
 }
 
 test('a failed pending crate read keeps the page, counts as one of the six, and is not retried', async ({ page }) => {
