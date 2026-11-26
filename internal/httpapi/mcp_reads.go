@@ -536,12 +536,13 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 			}
 			// The same live status the REST task read serves
 			// (req-production-feedback AC-10.1).
-			statuses, merged, e := s.feedbackTaskEnvironments(ctx, task)
+			live, merged, e := s.feedbackTaskEnvironments(ctx, task)
 			if e != nil {
 				return nil, e
 			}
 			if merged {
-				read["environments"] = statuses
+				read["environments"] = live.Statuses
+				read["environments_pending"] = live.Pending
 			}
 			return []any{read}, nil
 		}

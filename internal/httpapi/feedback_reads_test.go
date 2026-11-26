@@ -209,6 +209,16 @@ func requireEmptyArray(t *testing.T, what string, raw json.RawMessage) {
 	}
 }
 
+// requirePending fails unless raw is exactly the JSON literal want, true or
+// false. A missing key or null fails (component-production-feedback, Public
+// surfaces).
+func requirePending(t *testing.T, what string, raw json.RawMessage, want bool) {
+	t.Helper()
+	if got := strings.TrimSpace(string(raw)); got != strconv.FormatBool(want) {
+		t.Fatalf("%s environments_pending=%q, want %t", what, got, want)
+	}
+}
+
 // requireAbsent fails when the key is present, null included.
 func requireAbsent(t *testing.T, what string, fields map[string]json.RawMessage, key string) {
 	t.Helper()
@@ -268,6 +278,9 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 	// is empty, not missing.
 	requireEmptyArray(t, "task environments before any deploy", h.taskRead(live.ID)["environments"])
 	requireEmptyArray(t, "MCP task environments before any deploy", h.mcpTask(live.ID)["environments"])
+	// No environment is relevant, so nothing waits for an answer.
+	requirePending(t, "task before any deploy", h.taskRead(live.ID)["environments_pending"], false)
+	requirePending(t, "MCP task before any deploy", h.mcpTask(live.ID)["environments_pending"], false)
 	beforeTask := h.taskRead(live.ID)
 	beforeOrders, err := h.st.ListWorkOrders(h.ctx)
 	if err != nil {
@@ -309,6 +322,9 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 	if rest, mcp := h.taskRead(live.ID)["environments"], h.mcpTask(live.ID)["environments"]; string(rest) != string(mcp) {
 		t.Fatalf("REST %s, MCP %s", rest, mcp)
 	}
+	// Every answer is stored, so no read is pending.
+	requirePending(t, "settled task", h.taskRead(live.ID)["environments_pending"], false)
+	requirePending(t, "settled MCP task", h.mcpTask(live.ID)["environments_pending"], false)
 
 	// The crate read and MCP get_crate serve the same lines.
 	crateBody := decodeFields(t, h.want(http.StatusOK, http.MethodGet, "/v1/crates/"+crate.ID, "").Body.Bytes())
@@ -348,6 +364,8 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 	if err := json.Unmarshal(mcpCrate["environments"], &mcpLines); err != nil || !reflect.DeepEqual(mcpLines, lines) {
 		t.Fatalf("MCP crate environments=%s live_in=%s", mcpCrate["environments"], mcpCrate["live_in"])
 	}
+	requirePending(t, "settled crate", crateBody["environments_pending"], false)
+	requirePending(t, "settled MCP crate", mcpCrate["environments_pending"], false)
 
 	// Live status changed and nothing of the task's delivery did.
 	afterTask := h.taskRead(live.ID)
@@ -361,9 +379,18 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 	}
 
 	// A read never calls the forge: with the forge held, a task merged after
-	// the comparisons ran is read at once without a status, and the missing
-	// comparison is requested in the background.
-	fresh := h.merged(h.ctx, early, "")
+	// the comparisons ran is read at once without a status and with
+	// environments_pending true, and the missing comparison is requested in
+	// the background (component-production-feedback invariant 20).
+	pendingCrate, err := h.st.CreateCrate(h.ctx, store.CrateInput{Name: "Pending wave"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := h.merged(h.ctx, early, pendingCrate.ID)
+	freshEvents, err := h.st.ListEvents(h.ctx, fresh.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	release = h.forge.hold(t)
 	calls := h.forge.count()
 	type response struct {
@@ -382,8 +409,10 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 			t.Fatalf("task read status=%d body=%s", got.code, got.body)
 		}
 		// The only status needs a comparison that is not stored, so it is
-		// left out and the merged task's list is empty.
-		requireEmptyArray(t, "task environments while the comparison is missing", decodeFields(t, got.body)["environments"])
+		// left out, the merged task's list is empty, and the read says so.
+		fields := decodeFields(t, got.body)
+		requireEmptyArray(t, "task environments while the comparison is missing", fields["environments"])
+		requirePending(t, "task while the comparison is missing", fields["environments_pending"], true)
 	case <-time.After(10 * time.Second):
 		t.Fatal("the task read waited for the forge")
 	}
@@ -392,13 +421,37 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the read requested no comparison")
 	}
+	// The forge call is still held, and the other reads answer at once with
+	// the same value. The crate keeps its line for the environment while one
+	// member's status waits.
+	requirePending(t, "MCP task while the comparison is missing", h.mcpTask(fresh.ID)["environments_pending"], true)
+	pendingBody := decodeFields(t, h.want(http.StatusOK, http.MethodGet, "/v1/crates/"+pendingCrate.ID, "").Body.Bytes())
+	requirePending(t, "crate while the comparison is missing", pendingBody["environments_pending"], true)
+	var pendingLines []feedback.CrateLine
+	if err := json.Unmarshal(pendingBody["environments"], &pendingLines); err != nil || len(pendingLines) != 1 || pendingLines[0].LiveTaskCount != 0 || pendingLines[0].MergedTaskCount != 1 {
+		t.Fatalf("crate lines while the comparison is missing=%s err=%v", pendingBody["environments"], err)
+	}
+	pendingPage := readAs(t, h.handler, h.manager(), "get_crate", map[string]any{"workspace_id": "alpha", "crate_id": pendingCrate.ID})
+	requirePending(t, "MCP crate while the comparison is missing", decodeFields(t, pendingPage.Items[0])["environments_pending"], true)
 	release()
 	h.settle()
 	if h.forge.count() <= calls {
 		t.Fatal("no background comparison ran")
 	}
-	if statuses := statusesOf(t, h.taskRead(fresh.ID)["environments"]); len(statuses) != 1 || statuses[0].Status != feedback.StatusLive {
+	settled := h.taskRead(fresh.ID)
+	if statuses := statusesOf(t, settled["environments"]); len(statuses) != 1 || statuses[0].Status != feedback.StatusLive {
 		t.Fatalf("statuses after the background comparison=%+v", statuses)
+	}
+	requirePending(t, "task after the background comparison", settled["environments_pending"], false)
+	requirePending(t, "MCP task after the background comparison", h.mcpTask(fresh.ID)["environments_pending"], false)
+	settledCrate := decodeFields(t, h.want(http.StatusOK, http.MethodGet, "/v1/crates/"+pendingCrate.ID, "").Body.Bytes())
+	requirePending(t, "crate after the background comparison", settledCrate["environments_pending"], false)
+	settledPage := readAs(t, h.handler, h.manager(), "get_crate", map[string]any{"workspace_id": "alpha", "crate_id": pendingCrate.ID})
+	requirePending(t, "MCP crate after the background comparison", decodeFields(t, settledPage.Items[0])["environments_pending"], false)
+	// The pending reads and the stored answer appended no task event
+	// (invariant 1).
+	if after, err := h.st.ListEvents(h.ctx, fresh.ID); err != nil || len(after) != len(freshEvents) {
+		t.Fatalf("task events %d -> %d err=%v", len(freshEvents), len(after), err)
 	}
 }
 
@@ -415,15 +468,18 @@ func TestFeedbackDeletedTrackedBranch(t *testing.T) {
 	task := h.merged(h.ctx, merge, "")
 
 	// The first read asks for the branch head and the next for the
-	// comparison, both in the background.
+	// comparison, both in the background. Each of them waits for an answer
+	// that is not stored yet, so it is pending.
 	for range 2 {
-		h.taskRead(task.ID)
+		requirePending(t, "task while the branch answers are missing", h.taskRead(task.ID)["environments_pending"], true)
 		h.settle()
 	}
-	statuses := statusesOf(t, h.taskRead(task.ID)["environments"])
+	settled := h.taskRead(task.ID)
+	statuses := statusesOf(t, settled["environments"])
 	if len(statuses) != 1 || statuses[0].Status != feedback.StatusNotLiveYet || !statuses[0].OnTrackedBranch {
 		t.Fatalf("statuses before the branch was deleted=%+v", statuses)
 	}
+	requirePending(t, "task with the branch answers stored", settled["environments_pending"], false)
 
 	// The branch is deleted. Once the stored head is old, a read serves it
 	// at once and asks for a new head in the background.
@@ -433,7 +489,9 @@ func TestFeedbackDeletedTrackedBranch(t *testing.T) {
 	read := make(chan []byte, 1)
 	go func() { read <- h.do(h.manager(), http.MethodGet, "/v1/tasks/"+task.ID, "").Body.Bytes() }()
 	select {
-	case <-read:
+	case body := <-read:
+		// The old head is served, so the status is not pending.
+		requirePending(t, "task with a served old branch head", decodeFields(t, body)["environments_pending"], false)
 	case <-time.After(10 * time.Second):
 		t.Fatal("the task read waited for the forge")
 	}
@@ -584,10 +642,17 @@ func TestFeedbackReadsWithoutEnvironment(t *testing.T) {
 	requireAbsent(t, "REST open task", beta("/v1/tasks/"+open.ID), "environments")
 	requireEmptyArray(t, "MCP merged task environments", mcp("get_task", map[string]any{"task_id": merged.ID})["environments"])
 	requireAbsent(t, "MCP open task", mcp("get_task", map[string]any{"task_id": open.ID}), "environments")
+	// environments_pending is false beside an empty list, and a task that is
+	// not merged has neither field.
+	requirePending(t, "REST merged task", beta("/v1/tasks/" + merged.ID)["environments_pending"], false)
+	requireAbsent(t, "REST open task", beta("/v1/tasks/"+open.ID), "environments_pending")
+	requirePending(t, "MCP merged task", mcp("get_task", map[string]any{"task_id": merged.ID})["environments_pending"], false)
+	requireAbsent(t, "MCP open task", mcp("get_task", map[string]any{"task_id": open.ID}), "environments_pending")
 
 	// REST crate detail: [] lines, [] live_in for the merged member only.
 	crateBody := beta("/v1/crates/" + crate.ID)
 	requireEmptyArray(t, "REST crate environments", crateBody["environments"])
+	requirePending(t, "REST crate", crateBody["environments_pending"], false)
 	var rows []map[string]json.RawMessage
 	if err := json.Unmarshal(crateBody["tasks"], &rows); err != nil || len(rows) != 2 {
 		t.Fatalf("crate rows=%s err=%v", crateBody["tasks"], err)
@@ -607,6 +672,7 @@ func TestFeedbackReadsWithoutEnvironment(t *testing.T) {
 	// the merged member, with the value [].
 	crateFields := mcp("get_crate", map[string]any{"crate_id": crate.ID})
 	requireEmptyArray(t, "MCP crate environments", crateFields["environments"])
+	requirePending(t, "MCP crate", crateFields["environments_pending"], false)
 	var liveIn map[string]json.RawMessage
 	if raw := crateFields["live_in"]; raw == nil || string(raw) == "null" || json.Unmarshal(raw, &liveIn) != nil {
 		t.Fatalf("MCP crate live_in=%s, want an object", raw)
@@ -623,8 +689,22 @@ func TestFeedbackReadsWithoutEnvironment(t *testing.T) {
 	listRequest, _ := http.NewRequest(http.MethodGet, "/v1/tasks", nil)
 	listRequest.Header.Set("Authorization", "Bearer "+h.foreign)
 	listRequest.Header.Set("X-Workspace-ID", "beta")
-	if list := h.serve(listRequest); list.Code != http.StatusOK || strings.Contains(list.Body.String(), `"environments"`) || strings.Contains(list.Body.String(), `"live_in"`) {
+	if list := h.serve(listRequest); list.Code != http.StatusOK || strings.Contains(list.Body.String(), `"environments"`) || strings.Contains(list.Body.String(), `"live_in"`) || strings.Contains(list.Body.String(), `"environments_pending"`) {
 		t.Fatalf("task list status=%d holds a feedback field: %s", list.Code, list.Body)
+	}
+	crateList, _ := http.NewRequest(http.MethodGet, "/v1/crates", nil)
+	crateList.Header.Set("Authorization", "Bearer "+h.foreign)
+	crateList.Header.Set("X-Workspace-ID", "beta")
+	if list := h.serve(crateList); list.Code != http.StatusOK || strings.Contains(list.Body.String(), `"environments`) || strings.Contains(list.Body.String(), `"live_in"`) {
+		t.Fatalf("crate list status=%d holds a feedback field: %s", list.Code, list.Body)
+	}
+	for _, tool := range []string{"list_tasks", "list_crates"} {
+		page := readAs(t, h.handler, h.foreign, tool, map[string]any{"workspace_id": "beta"})
+		for _, item := range page.Items {
+			if strings.Contains(string(item), `"environments`) || strings.Contains(string(item), `"live_in"`) {
+				t.Fatalf("%s item holds a feedback field: %s", tool, item)
+			}
+		}
 	}
 }
 

@@ -15,7 +15,10 @@ import (
 // feedback.CrateStatus (component-production-feedback invariant 19;
 // req-production-feedback AC-10.1; DEC-61). It reads storage only. An answer
 // storage lacks is requested in the background, and the status that needs it
-// is left out (invariant 20). Nothing here changes a task or reads a forge.
+// is left out, which sets environments_pending (invariant 20). Nothing here
+// changes a task or reads a forge, and no read waits for the background work.
+// environments_pending observes only: no dispatch, gate, review, merge,
+// next-action, lineage, or work-order code reads it (invariant 1).
 
 // feedbackStatusInputs loads every stored input for a derivation over the
 // tasks. ok is false when the store keeps no feedback or the workspace has no
@@ -58,70 +61,101 @@ func (s *Server) feedbackStatusInputs(ctx context.Context, tasks []store.Feedbac
 	return inputs, true, nil
 }
 
+// feedbackTaskLive is a merged task's live status on a task read: one
+// status per relevant environment, and whether a status was left out because
+// an answer is not stored yet (component-production-feedback, Public
+// surfaces).
+type feedbackTaskLive struct {
+	Statuses []feedback.TaskStatus
+	Pending  bool
+}
+
 // feedbackTaskEnvironments returns a merged task's status in each relevant
-// environment. merged is false for any other task, which gets no
-// environments field. A merged task always gets a list: it is empty in a
-// workspace with no environment or when no environment is relevant, and it
-// leaves out a status that still needs comparison evidence
+// environment and its environments_pending value. merged is false for any
+// other task, which gets neither field. A merged task always gets a list: it
+// is empty in a workspace with no environment or when no environment is
+// relevant, and it leaves out a status that still needs comparison evidence
 // (feature-production-feedback-live v1, Rollout and closure;
-// component-production-feedback invariants 15 and 20).
-func (s *Server) feedbackTaskEnvironments(ctx context.Context, task core.Task) (statuses []feedback.TaskStatus, merged bool, err error) {
+// component-production-feedback invariants 15 and 20). Pending is false
+// whenever no status is derived.
+func (s *Server) feedbackTaskEnvironments(ctx context.Context, task core.Task) (live feedbackTaskLive, merged bool, err error) {
 	if task.State != core.TaskMerged {
-		return nil, false, nil
+		return feedbackTaskLive{}, false, nil
 	}
-	statuses = []feedback.TaskStatus{}
+	live.Statuses = []feedback.TaskStatus{}
 	backend, ok := s.Store.(store.FeedbackStore)
 	if !ok {
-		return statuses, true, nil
+		return live, true, nil
 	}
 	tasks, err := backend.ListFeedbackMergedTasks(ctx, store.FeedbackMergedTaskQuery{TaskIDs: []string{task.ID}})
-	if err != nil || len(tasks) == 0 {
-		return statuses, true, err
+	if err != nil {
+		return feedbackTaskLive{}, true, err
+	}
+	if len(tasks) == 0 {
+		return live, true, nil
 	}
 	inputs, ok, err := s.feedbackStatusInputs(ctx, tasks)
-	if err != nil || !ok {
-		return statuses, true, err
+	if err != nil {
+		return feedbackTaskLive{}, true, err
 	}
-	derived, missing := feedback.TaskStatuses(inputs, tasks[0])
+	if !ok {
+		return live, true, nil
+	}
+	derived, pending, missing := feedback.TaskStatuses(inputs, tasks[0])
 	s.requestFeedbackMissing(ctx, missing)
-	return append(statuses, derived...), true, nil
+	live.Statuses = append(live.Statuses, derived...)
+	live.Pending = pending
+	return live, true, nil
+}
+
+// feedbackCrateLive is a crate's live status on a crate read: its
+// environment lines, where each merged member is live, and whether a
+// member's status was left out because an answer is not stored yet
+// (component-production-feedback, Public surfaces).
+type feedbackCrateLive struct {
+	Lines   []feedback.CrateLine
+	LiveIn  map[string][]string
+	Pending bool
 }
 
 // feedbackCrateEnvironments returns a crate's environment lines, where each
-// merged member is live, and the IDs of the crate's merged members. lines is
-// never nil, and liveIn holds a list, empty when it is live nowhere, for
-// every merged member (component-production-feedback invariant 18). It reads
-// every merged member of the crate by crate scope, whatever window of
-// members a read shows, so the counts are whole-crate counts.
-func (s *Server) feedbackCrateEnvironments(ctx context.Context, crateID string) (lines []feedback.CrateLine, liveIn map[string][]string, err error) {
-	lines, liveIn = []feedback.CrateLine{}, map[string][]string{}
+// merged member is live, and its environments_pending value. Lines is never
+// nil, and LiveIn holds a list, empty when it is live nowhere, for every
+// merged member (component-production-feedback invariant 18). It reads every
+// merged member of the crate by crate scope, whatever window of members a
+// read shows, so the counts are whole-crate counts. Pending is false whenever
+// no status is derived.
+func (s *Server) feedbackCrateEnvironments(ctx context.Context, crateID string) (feedbackCrateLive, error) {
+	live := feedbackCrateLive{Lines: []feedback.CrateLine{}, LiveIn: map[string][]string{}}
 	backend, ok := s.Store.(store.FeedbackStore)
 	if !ok || crateID == "" {
-		return lines, liveIn, nil
+		return live, nil
 	}
 	members, err := backend.ListFeedbackMergedTasks(ctx, store.FeedbackMergedTaskQuery{CrateID: crateID})
 	if err != nil {
-		return nil, nil, err
+		return feedbackCrateLive{}, err
 	}
 	for _, member := range members {
-		liveIn[member.TaskID] = []string{}
+		live.LiveIn[member.TaskID] = []string{}
 	}
 	if len(members) == 0 {
-		return lines, liveIn, nil
+		return live, nil
 	}
 	inputs, ok, err := s.feedbackStatusInputs(ctx, members)
 	if err != nil {
-		return nil, nil, err
+		return feedbackCrateLive{}, err
 	}
 	if !ok {
-		return lines, liveIn, nil
+		return live, nil
 	}
-	derived, names, missing := feedback.CrateStatus(inputs, members)
+	derived, names, pending, missing := feedback.CrateStatus(inputs, members)
 	s.requestFeedbackMissing(ctx, missing)
 	for taskID, environments := range names {
-		liveIn[taskID] = append(liveIn[taskID], environments...)
+		live.LiveIn[taskID] = append(live.LiveIn[taskID], environments...)
 	}
-	return append(lines, derived...), liveIn, nil
+	live.Lines = append(live.Lines, derived...)
+	live.Pending = pending
+	return live, nil
 }
 
 func (s *Server) requestFeedbackMissing(ctx context.Context, missing feedback.Missing) {
@@ -130,12 +164,14 @@ func (s *Server) requestFeedbackMissing(ctx context.Context, missing feedback.Mi
 	}
 }
 
-// withFeedbackEnvironments adds environments to a rendered task read of a
-// merged task. The list is [] when the task has no status to show.
-func withFeedbackEnvironments(response any, statuses []feedback.TaskStatus, merged bool) (any, error) {
+// withFeedbackEnvironments adds environments and environments_pending to a
+// rendered task read of a merged task. The list is [] when the task has no
+// status to show. A task that is not merged gets neither field.
+func withFeedbackEnvironments(response any, live feedbackTaskLive, merged bool) (any, error) {
 	if !merged {
 		return response, nil
 	}
+	statuses := live.Statuses
 	if statuses == nil {
 		statuses = []feedback.TaskStatus{}
 	}
@@ -148,6 +184,9 @@ func withFeedbackEnvironments(response any, statuses []feedback.TaskStatus, merg
 		return nil, err
 	}
 	if fields["environments"], err = json.Marshal(statuses); err != nil {
+		return nil, err
+	}
+	if fields["environments_pending"], err = json.Marshal(live.Pending); err != nil {
 		return nil, err
 	}
 	return fields, nil

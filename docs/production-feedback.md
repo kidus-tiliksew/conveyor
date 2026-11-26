@@ -86,6 +86,7 @@ A signal that breaks a rule is refused whole and records nothing.
 | 429 | The signal arrived less than 5 seconds before or after another accepted signal of the key, or one that is on its way to the store. `Retry-After` holds the whole seconds to wait from the answer, at least 1 |
 | 500 | The store failed, or the check of the key took more than 10 seconds. The answer holds no detail |
 | 503 | The server holds the most keys it can, and each one is inside its 5 seconds or has a request in progress that arrived inside them. Try again |
+| 503 `retryable` | The store asks for the signal to be sent again. The answer is JSON with `error` of `retryable`, unlike the plain-text 503 above, and `Retry-After` is `1`. Nothing was recorded and the 5 seconds did not start, so send the same signal again after that second |
 
 Each rule of the body is checked before the 5 seconds. An invalid signal gets 400
 inside them, and it never delays a valid signal of the same key.
@@ -400,7 +401,28 @@ never asks for that pair again. Every comparison runs in the background:
 A read asks GitHub nothing. When a stored answer that a status needs is
 missing, the read asks the background work for it and leaves out only that
 environment's status. A later read serves it. A placeholder status is never
-shown.
+shown. No read waits for the background work.
+
+The read says when it left a status out for this reason. `environments_pending`
+sits beside `environments` on `GET /v1/tasks/{id}` and MCP `get_task` for a
+merged task, and on `GET /v1/crates/{id}` and MCP `get_crate`:
+
+| Value | When |
+| --- | --- |
+| `true` | The status of at least one relevant environment is left out because a comparison or the head of a tracked branch is not stored yet. On a crate read, this is true of at least one merged member. The list can be empty: a read that leaves out every relevant status for this reason serves `[]` with `true` |
+| `false` | Every other case, including an empty list with no status left out for this reason, a workspace with no environment, and a task with no merge commit |
+
+A stored branch head that is 10 minutes old or older is served while a new one
+is asked for, so it does not make the read pending. A crate read can serve a
+line for an environment and still be pending, because a line counts every
+merged member and one member's status can wait. A task that is not merged has
+no `environments_pending`, and no list endpoint carries it.
+
+While the answer is pending, the task page and the crate page read again after
+10 seconds, at most six times in a row. An answer that is not pending ends the
+run. After the run, a page that shows a line reads again every 60 seconds, and
+a page with no line sets no timer. A pending answer from a 60-second read
+starts no new run. No timed read runs while the tab is hidden.
 
 Each list below is always present in its scope, as a JSON array. In a
 workspace with no unarchived environment, or when no environment is relevant,
@@ -412,7 +434,8 @@ the list is `[]`, never `null` and never a missing key:
 | `environments` (lines) | `GET /v1/crates/{id}` and MCP `get_crate` | — |
 | `live_in` | Each merged member row of `GET /v1/crates/{id}`, and each merged member's value in the MCP `get_crate` `live_in` object | A crate member that is not merged |
 
-No list endpoint carries these fields, and a task read carries no `live_in`.
+No list endpoint carries these fields or `environments_pending`, and a task
+read carries no `live_in`.
 
 `GET /v1/tasks/{id}` and MCP `get_task` add `environments` to a merged task:
 
@@ -444,5 +467,6 @@ that `task_ids` lists, with `[]` for a member live nowhere, and no entry for a
 member that is not merged or that `task_ids` leaves out. The crate lines count
 every merged member, also when `task_ids` is truncated.
 
-Live status is a record for people to read. No gate, queue, claim, merge,
-review, next action, or work order reads it, and it changes no task.
+Live status, `environments_pending` included, is a record for people to read.
+No gate, queue, claim, merge, review, next action, or work order reads it, and
+it changes no task.

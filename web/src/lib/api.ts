@@ -2603,12 +2603,17 @@ export async function ignoreEnvironmentSuggestion(workspace: string, githubEnvir
 }
 
 // A merged task's live status from `GET /v1/tasks/{id}`, the only task read
-// that carries `environments` (component-production-feedback, Public
-// surfaces; invariant 19). Only that field is kept.
-export async function fetchTaskLiveStatus(workspace: string, taskId: string, signal?: AbortSignal) {
-  const task = await getJSON<{ environments?: import('./types').TaskEnvironmentStatus[] | null }>(
-    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}`, workspace),
-    signal,
-  )
-  return task.environments ?? []
+// that carries `environments` and `environments_pending`
+// (component-production-feedback, Public surfaces; invariant 19). Only those
+// fields are kept. An absent flag is false.
+export async function fetchTaskLiveStatus(
+  workspace: string,
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<import('./types').TaskLiveStatusAnswer> {
+  const task = await getJSON<{
+    environments?: import('./types').TaskEnvironmentStatus[] | null
+    environments_pending?: boolean
+  }>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}`, workspace), signal)
+  return { environments: task.environments ?? [], environments_pending: task.environments_pending === true }
 }

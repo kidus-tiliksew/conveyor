@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -697,6 +698,60 @@ func TestFeedbackSignalStoreFailure(t *testing.T) {
 	h.handler = h.server.Handler()
 	if response := h.signal(h.key.Value, feedbackMinimalSignal); response.Code != http.StatusAccepted {
 		t.Fatalf("later retry: status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+// TestFeedbackSignalRetryable proves that a signal whose store write asks to
+// be sent again answers 503 retryable with Retry-After, records nothing,
+// starts no rate window, and that the same handler accepts the signal sent
+// again at once (component-production-feedback, Public surfaces and
+// invariant 27; req-production-feedback AC-1.1).
+func TestFeedbackSignalRetryable(t *testing.T) {
+	h := newFeedbackHarness(t)
+	logs := captureStandardLog(t)
+	detail := "driver detail " + h.key.Value
+	writes := 0
+	h.use(feedbackSignalStore{Backend: h.st, record: func(ctx context.Context, signal store.FeedbackSignal) error {
+		writes++
+		if writes == 1 {
+			return fmt.Errorf("%s: %w", detail, store.ErrRetryable)
+		}
+		return h.st.RecordFeedbackSignal(ctx, signal)
+	}})
+	before := h.stored()
+	response := h.signal(h.key.Value, feedbackMinimalSignal)
+	if response.Code != http.StatusServiceUnavailable || response.Header().Get("Retry-After") != "1" {
+		t.Fatalf("status=%d headers=%v body=%s, want 503 with Retry-After 1", response.Code, response.Header(), response.Body)
+	}
+	var body map[string]string
+	decodeEnvironmentBody(t, response, &body)
+	if want := (map[string]string{"error": "retryable", "message": storeRetryableMessage}); !maps.Equal(body, want) {
+		t.Fatalf("body = %s, want %v", response.Body, want)
+	}
+	if strings.Contains(response.Body.String(), "driver detail") || strings.Contains(response.Body.String(), h.key.Value) {
+		t.Fatalf("body repeats the store text: %s", response.Body)
+	}
+	if strings.Contains(logs.String(), h.key.Value) {
+		t.Fatal("the log holds the key value")
+	}
+	if after := h.stored(); after != before {
+		t.Fatalf("a retryable signal changed a record:\nbefore %s\nafter  %s", before, after)
+	}
+	// The refusal started no 5 seconds, so the same key at the same clock
+	// time is accepted through the same handler and limiter.
+	response = h.signal(h.key.Value, feedbackMinimalSignal)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("resend: status=%d body=%s, want 202", response.Code, response.Body)
+	}
+	if writes != 2 {
+		t.Fatalf("store writes = %d, want 2", writes)
+	}
+	signals, err := h.st.ListFeedbackSignals(h.ctx, []string{h.environment.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, ok := signals[h.environment.ID]; !ok || !state.LastSignalAt.Equal(h.clock().Truncate(time.Microsecond)) {
+		t.Fatalf("signal state = %+v (present %v), want the resent signal at %s", state, ok, h.clock())
 	}
 }
 

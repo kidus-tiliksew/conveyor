@@ -218,15 +218,20 @@ function insight(detail: CrateDetail): CrateInsight {
 
 interface Options {
   statuses?: TaskEnvironmentStatus[]
+  // The served environments_pending of the task read. Undefined leaves the
+  // field out.
+  taskPending?: boolean
   crate?: CrateDetail
 }
 
 async function mockServer(page: Page, options: Options = {}) {
   const state = {
     statuses: options.statuses ?? taskStatuses,
+    taskPending: options.taskPending,
     rows: environmentRows.map((item) => ({ ...item })),
     crate: options.crate ?? crate(crateLines, true),
     failCrate: false,
+    failTask: false,
     gets: [] as string[],
   }
   await page.addInitScript(() => {
@@ -256,7 +261,10 @@ async function mockServer(page: Page, options: Options = {}) {
       // GET /v1/tasks/{id}: a merged task always carries `environments`, []
       // when no environment is relevant; any other task has no field.
       const item = activity(id, taskState).task
-      return route.fulfill({ json: taskState === 'merged' ? { ...item, environments: state.statuses } : item })
+      if (taskState !== 'merged') return route.fulfill({ json: item })
+      if (state.failTask) return route.fulfill({ status: 500, json: { error: 'internal error' } })
+      const pending = state.taskPending === undefined ? {} : { environments_pending: state.taskPending }
+      return route.fulfill({ json: { ...item, environments: state.statuses, ...pending } })
     }
     if (path === '/v1/crates/crate-billing') {
       if (state.failCrate) return route.fulfill({ status: 500, json: { error: 'internal error' } })
@@ -502,6 +510,265 @@ test('a crate with no environment shows the page as before and reads on no timer
   expect(crateReads(state)).toBe(reads)
 })
 
+// The pending reads (component-production-feedback invariant 23;
+// req-production-feedback AC-3.2). While an answer carries
+// environments_pending true, the page reads again after 10 seconds, at most
+// six times in a row. The clock runs at its natural pace between the steps,
+// so each step jumps over a whole delay and then lets the answer settle.
+
+// hideableTab lets a test hide and show the tab. The page reads the
+// visibility state that the browser would report.
+async function hideableTab(page: Page) {
+  await page.addInitScript(() => {
+    let hidden = false
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => (hidden ? 'hidden' : 'visible'),
+    })
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
+    ;(window as unknown as { setTabHidden: (value: boolean) => void }).setTabHidden = (value: boolean) => {
+      hidden = value
+      document.dispatchEvent(new Event('visibilitychange', { bubbles: true }))
+    }
+  })
+}
+
+async function setTabHidden(page: Page, hidden: boolean) {
+  await page.evaluate(
+    (value) => (window as unknown as { setTabHidden: (value: boolean) => void }).setTabHidden(value),
+    hidden,
+  )
+}
+
+// settle lets a served answer render and the page set its next timer.
+async function settle(page: Page) {
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)))
+}
+
+type MockState = Awaited<ReturnType<typeof mockServer>>
+
+interface Surface {
+  name: string
+  path: string
+  readPath: string
+  reads: (state: MockState) => number
+  serve: (state: MockState, shown: boolean, pending: boolean | undefined) => void
+  lines: (page: Page) => ReturnType<Page['locator']>
+  leave: (page: Page) => Promise<void>
+}
+
+const pendingTaskLine = status('env-production', 'production', 'live', {
+  services: ['api'],
+  live_since: '2026-11-26T10:00:05Z',
+  as_of: '2026-11-26T10:00:05Z',
+})
+
+const surfaces: Surface[] = [
+  {
+    name: 'task',
+    path: '/w/demo/tasks/261120-a01',
+    readPath: '/v1/tasks/261120-a01',
+    reads: (state) => taskReads(state, '261120-a01'),
+    serve: (state, shown, pending) => {
+      state.statuses = shown ? [pendingTaskLine] : []
+      state.taskPending = pending
+    },
+    lines: (page) => page.locator('[data-live-environment]'),
+    leave: async (page) => {
+      await page.getByRole('button', { name: 'Close panel' }).click()
+      await expect(page.getByRole('dialog')).toHaveCount(0)
+    },
+  },
+  {
+    name: 'crate',
+    path: '/w/demo/crates/crate-billing',
+    readPath: '/v1/crates/crate-billing',
+    reads: crateReads,
+    serve: (state, shown, pending) => {
+      const detail = crate(shown ? [crateLines[0]] : [], shown)
+      state.crate = pending === undefined ? detail : { ...detail, environments_pending: pending }
+    },
+    lines: (page) => page.locator('[data-crate-live-environment]'),
+    leave: async (page) => {
+      await page.getByRole('link', { name: 'Crates' }).first().click()
+      await expect(page).toHaveURL(/\/w\/demo\/crates$/)
+    },
+  },
+]
+
+async function openSurface(page: Page, surface: Surface, state: MockState) {
+  await page.goto(surface.path)
+  await expect.poll(() => surface.reads(state)).toBeGreaterThanOrEqual(1)
+  await settle(page)
+  return surface.reads(state)
+}
+
+// step jumps the clock and checks how many reads of the surface it caused.
+async function step(page: Page, surface: Surface, state: MockState, ms: number, reads: number) {
+  const before = surface.reads(state)
+  await page.clock.fastForward(ms)
+  if (reads > 0) await expect.poll(() => surface.reads(state)).toBe(before + reads)
+  await settle(page)
+  expect(surface.reads(state)).toBe(before + reads)
+}
+
+for (const surface of surfaces) {
+  test(`the ${surface.name} page shows a line that arrives on the second read without reopening`, async ({ page }) => {
+    await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+    const state = await mockServer(page)
+    surface.serve(state, false, true)
+    await openSurface(page, surface, state)
+    await expect(page.getByRole('region', { name: 'Live status' })).toHaveCount(0)
+
+    surface.serve(state, true, false)
+    await step(page, surface, state, 9_000, 0)
+    await step(page, surface, state, 1_000, 1)
+    await expect(surface.lines(page)).toHaveCount(1)
+    await expect(surface.lines(page).first()).toContainText('production')
+
+    // The answer is not pending and shows a line, so the 60-second rule
+    // applies again.
+    await step(page, surface, state, 50_000, 0)
+    await step(page, surface, state, 10_000, 1)
+
+    // Leaving the page stops the timer.
+    surface.serve(state, false, true)
+    await step(page, surface, state, 60_000, 1)
+    await surface.leave(page)
+    await step(page, surface, state, 130_000, 0)
+  })
+
+  test(`six pending ${surface.name} reads in a row end the reads for an empty answer`, async ({ page }) => {
+    await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+    const state = await mockServer(page)
+    surface.serve(state, false, true)
+    await openSurface(page, surface, state)
+    for (let read = 1; read <= 6; read++) {
+      await step(page, surface, state, 9_000, 0)
+      await step(page, surface, state, 1_000, 1)
+    }
+    // No seventh timed read, before or after 60 seconds.
+    await step(page, surface, state, 10_000, 0)
+    await step(page, surface, state, 130_000, 0)
+    await expect(page.getByRole('region', { name: 'Live status' })).toHaveCount(0)
+  })
+
+  test(`a pending ${surface.name} answer with a line reads six times, then every 60 seconds`, async ({ page }) => {
+    await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+    const state = await mockServer(page)
+    surface.serve(state, true, true)
+    await openSurface(page, surface, state)
+    await expect(surface.lines(page)).toHaveCount(1)
+    for (let read = 1; read <= 6; read++) await step(page, surface, state, 10_000, 1)
+    // The six pending reads are spent, and the page shows a line, so the
+    // 60-second rule applies.
+    await step(page, surface, state, 50_000, 0)
+    await step(page, surface, state, 10_000, 1)
+    // A pending answer from a 60-second read starts no new run of 10-second
+    // reads.
+    await step(page, surface, state, 10_000, 0)
+    await step(page, surface, state, 40_000, 0)
+    await step(page, surface, state, 10_000, 1)
+    // An answer that is not pending ends the run, and a later pending answer
+    // from a 60-second read still starts none.
+    surface.serve(state, true, false)
+    await step(page, surface, state, 60_000, 1)
+    surface.serve(state, true, true)
+    await step(page, surface, state, 60_000, 1)
+    await step(page, surface, state, 10_000, 0)
+    await step(page, surface, state, 50_000, 1)
+    await expect(surface.lines(page)).toHaveCount(1)
+  })
+
+  test(`an empty ${surface.name} answer that is not pending sets no timer`, async ({ page }) => {
+    await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+    const state = await mockServer(page)
+    surface.serve(state, false, false)
+    await openSurface(page, surface, state)
+    await step(page, surface, state, 10_000, 0)
+    await step(page, surface, state, 130_000, 0)
+  })
+
+  test(`a hidden tab makes no pending ${surface.name} read and no catch-up read`, async ({ page }) => {
+    await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+    await hideableTab(page)
+    const state = await mockServer(page)
+    surface.serve(state, false, true)
+    await openSurface(page, surface, state)
+    await setTabHidden(page, true)
+    await step(page, surface, state, 60_000, 0)
+    // Showing the tab makes no read at once. The page waits the whole delay.
+    await setTabHidden(page, false)
+    await step(page, surface, state, 9_000, 0)
+    await step(page, surface, state, 1_000, 1)
+    // The hidden time used none of the six reads.
+    for (let read = 2; read <= 6; read++) await step(page, surface, state, 10_000, 1)
+    await step(page, surface, state, 70_000, 0)
+  })
+
+  test(`an offline browser makes no pending ${surface.name} read and no catch-up read on reconnect or reveal`, async ({
+    page,
+    context,
+  }) => {
+    await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+    await hideableTab(page)
+    const state = await mockServer(page)
+    surface.serve(state, false, true)
+    await openSurface(page, surface, state)
+    // The browser goes offline before the first pending read is due. The
+    // timer would fire in this time, but a read while offline would wait in
+    // TanStack Query's paused queue, so none starts and none counts.
+    await context.setOffline(true)
+    await step(page, surface, state, 15_000, 0)
+    await setTabHidden(page, true)
+    await step(page, surface, state, 30_000, 0)
+    // Coming back online while the tab is hidden resumes nothing.
+    await context.setOffline(false)
+    await step(page, surface, state, 30_000, 0)
+    // Showing the tab makes no read at once. The page waits the whole delay.
+    await setTabHidden(page, false)
+    await step(page, surface, state, 9_000, 0)
+    await step(page, surface, state, 1_000, 1)
+    // The offline and hidden time used none of the six reads.
+    for (let read = 2; read <= 6; read++) await step(page, surface, state, 10_000, 1)
+    await step(page, surface, state, 70_000, 0)
+  })
+}
+
+test('a failed pending crate read keeps the page, counts as one of the six, and is not retried', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+  const state = await mockServer(page)
+  const surface = surfaces[1]
+  surface.serve(state, true, true)
+  await openSurface(page, surface, state)
+  state.failCrate = true
+  await step(page, surface, state, 10_000, 1)
+  // No retry read follows the failure, and the page keeps the served line.
+  await step(page, surface, state, 5_000, 0)
+  await expect(page.getByText('This crate did not load')).toHaveCount(0)
+  await expect(surface.lines(page)).toHaveCount(1)
+  state.failCrate = false
+  await step(page, surface, state, 5_000, 1)
+  for (let read = 3; read <= 6; read++) await step(page, surface, state, 10_000, 1)
+  await step(page, surface, state, 50_000, 0)
+  await step(page, surface, state, 10_000, 1)
+})
+
+test('a failed pending task read keeps the served line and counts as one of the six', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+  const state = await mockServer(page)
+  const surface = surfaces[0]
+  surface.serve(state, true, true)
+  await openSurface(page, surface, state)
+  state.failTask = true
+  await step(page, surface, state, 10_000, 1)
+  await expect(surface.lines(page)).toHaveCount(1)
+  state.failTask = false
+  for (let read = 2; read <= 6; read++) await step(page, surface, state, 10_000, 1)
+  await step(page, surface, state, 50_000, 0)
+  await step(page, surface, state, 10_000, 1)
+})
+
 const deploymentReportsText: Record<DeploymentReportsState, string[]> = {
   on: ['Deployment reports: on. GitHub sends deployment reports to Conveyor.'],
   missing_permission: [
@@ -586,6 +853,23 @@ test.describe('visual check', () => {
       const tasks = page.locator('#crate-task-list')
       await tasks.scrollIntoViewIfNeeded()
       await tasks.screenshot({ path: join(outputDir as string, `crate-member-live-in-${width}.png`) })
+    })
+
+    test(`a status line that arrived on the second read at ${width} px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 })
+      await page.clock.install({ time: new Date('2026-11-26T10:00:00Z') })
+      const state = await mockServer(page)
+      for (const surface of surfaces) {
+        surface.serve(state, false, true)
+        await openSurface(page, surface, state)
+        await expect(page.getByRole('region', { name: 'Live status' })).toHaveCount(0)
+        surface.serve(state, true, false)
+        await step(page, surface, state, 10_000, 1)
+        const region = page.getByRole('region', { name: 'Live status' })
+        await expect(surface.lines(page)).toHaveCount(1)
+        await region.scrollIntoViewIfNeeded()
+        await capture(page, `${surface.name}-second-read-live-status`, width)
+      }
     })
 
     test(`GitHub App deployment reports at ${width} px`, async ({ page }) => {

@@ -197,13 +197,16 @@ func (v view) contains(slug, merge, head string, missing *Missing) containment {
 }
 
 // taskStatus derives one task's status in one relevant environment. ok is
-// false while an answer it needs is missing.
-func (v view) taskStatus(environment store.Environment, task store.FeedbackMergedTask) (TaskStatus, bool, Missing) {
-	var missing Missing
+// false when the status is left out. awaiting is true only when it is left
+// out because a comparison or a tracked branch head is not stored yet, so a
+// read carries environments_pending (component-production-feedback
+// invariant 20). A status left out for want of a merge commit or a
+// repository slug needs no background work and is not pending.
+func (v view) taskStatus(environment store.Environment, task store.FeedbackMergedTask) (status TaskStatus, ok, awaiting bool, missing Missing) {
 	slug := store.FeedbackRepository(v.in.Slugs[task.Repository])
-	status := TaskStatus{Environment: EnvironmentRef{ID: environment.ID, Name: environment.Name}, Services: []string{}, AsOf: v.asOf(environment.ID)}
+	status = TaskStatus{Environment: EnvironmentRef{ID: environment.ID, Name: environment.Name}, Services: []string{}, AsOf: v.asOf(environment.ID)}
 	if task.MergeCommit == "" || slug == "" {
-		return status, false, missing
+		return status, false, false, missing
 	}
 	waiting, unknown := false, false
 	judge := func(service string, version store.FeedbackVersion) containment {
@@ -242,7 +245,7 @@ func (v view) taskStatus(environment store.Environment, task store.FeedbackMerge
 		status.Status = StatusLive
 		status.Services = slices.Sorted(maps.Keys(services))
 		status.LiveSince = &liveSince
-		return status, true, missing
+		return status, true, false, missing
 	}
 	// No running version proves live, so the past deploys tell the other
 	// statuses apart.
@@ -255,75 +258,82 @@ func (v view) taskStatus(environment store.Environment, task store.FeedbackMerge
 	switch {
 	case unknown:
 		status.Status = StatusUnknown
-		return status, true, Missing{}
+		return status, true, false, Missing{}
 	case waiting:
-		return status, false, missing
+		return status, false, true, missing
 	case pastContained:
 		status.Status = StatusNoLongerLive
-		return status, true, missing
+		return status, true, false, missing
 	}
 	// No deploy contains the task, so the tracked branch is read now
 	// (req-production-feedback AC-3.2).
 	status.Status = StatusNotLiveYet
 	branch := environment.TrackedBranches[task.Repository]
 	if branch == "" {
-		return status, true, missing
+		return status, true, false, missing
 	}
 	ref := BranchRef{Slug: slug, Branch: branch}
-	head, ok := v.heads[ref]
-	if !ok {
+	head, stored := v.heads[ref]
+	if !stored {
 		missing.Branches = append(missing.Branches, ref)
-		return status, false, missing
+		return status, false, true, missing
 	}
+	// A stored head older than its age limit is still served, and a newer
+	// one is requested, so it does not make the status pending.
 	if v.in.Now.Sub(head.ObservedAt) >= store.FeedbackBranchHeadAge {
 		missing.Branches = append(missing.Branches, ref)
 	}
 	if head.Absent() {
 		// GitHub confirmed that the branch does not exist, so nothing is on
 		// it. An older head it superseded is never used.
-		return status, true, missing
+		return status, true, false, missing
 	}
 	switch v.contains(slug, task.MergeCommit, head.Commit, &missing) {
 	case pending:
-		return status, false, missing
+		return status, false, true, missing
 	case mergeMissing:
 		status.Status = StatusUnknown
 	case contained:
 		status.OnTrackedBranch = true
 	}
-	return status, true, missing
+	return status, true, false, missing
 }
 
 // TaskStatuses returns a merged task's status in each relevant unarchived
-// environment, ordered by environment name, and what storage still lacks
+// environment, ordered by environment name, whether a status was left out
+// because an answer is not stored yet, and what storage still lacks
 // (component-production-feedback invariants 15 to 17 and 20;
 // req-production-feedback AC-3.1, AC-3.2, and AC-3.6). It does no I/O.
-func TaskStatuses(in Inputs, task store.FeedbackMergedTask) ([]TaskStatus, Missing) {
+// pending is separate from missing: a served stale branch head is missing
+// and not pending.
+func TaskStatuses(in Inputs, task store.FeedbackMergedTask) (statuses []TaskStatus, pending bool, missing Missing) {
 	v := newView(in)
-	out := []TaskStatus{}
-	var missing Missing
+	statuses = []TaskStatus{}
 	for _, environment := range v.environments() {
 		if !v.relevant(environment, task.Repository) {
 			continue
 		}
-		status, ok, lacking := v.taskStatus(environment, task)
+		status, ok, waiting, lacking := v.taskStatus(environment, task)
 		missing.add(lacking)
+		pending = pending || waiting
 		if ok {
-			out = append(out, status)
+			statuses = append(statuses, status)
 		}
 	}
-	return out, missing.unique()
+	return statuses, pending, missing.unique()
 }
 
 // CrateStatus returns one line for each unarchived environment relevant to at
-// least one merged member, the environments where each member is live, and
-// what storage still lacks (invariant 18; req-production-feedback AC-3.4).
-// members are every merged member of the crate, whatever their merge commit.
-func CrateStatus(in Inputs, members []store.FeedbackMergedTask) ([]CrateLine, map[string][]string, Missing) {
+// least one merged member, the environments where each member is live,
+// whether any member's status was left out because an answer is not stored
+// yet, and what storage still lacks (invariants 18 and 20;
+// req-production-feedback AC-3.4). members are every merged member of the
+// crate, whatever their merge commit. A pending member changes no line,
+// count, or live_in entry.
+func CrateStatus(in Inputs, members []store.FeedbackMergedTask) (lines []CrateLine, liveIn map[string][]string, pending bool, missing Missing) {
 	v := newView(in)
-	lines := []CrateLine{}
-	liveIn := map[string][]string{}
-	var missing Missing
+	lines = []CrateLine{}
+	liveIn = map[string][]string{}
 	for _, environment := range v.environments() {
 		line := CrateLine{Environment: EnvironmentRef{ID: environment.ID, Name: environment.Name}, MergedTaskCount: len(members), AsOf: v.asOf(environment.ID)}
 		relevant := false
@@ -332,8 +342,9 @@ func CrateStatus(in Inputs, members []store.FeedbackMergedTask) ([]CrateLine, ma
 				continue
 			}
 			relevant = true
-			status, ok, lacking := v.taskStatus(environment, member)
+			status, ok, waiting, lacking := v.taskStatus(environment, member)
 			missing.add(lacking)
+			pending = pending || waiting
 			if !ok || status.Status != StatusLive {
 				continue
 			}
@@ -352,7 +363,7 @@ func CrateStatus(in Inputs, members []store.FeedbackMergedTask) ([]CrateLine, ma
 		}
 		lines = append(lines, line)
 	}
-	return lines, liveIn, missing.unique()
+	return lines, liveIn, pending, missing.unique()
 }
 
 // RequiredComparisons returns every stored answer that a derivation for the
