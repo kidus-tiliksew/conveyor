@@ -716,6 +716,32 @@ func TestForgeTimeoutKeepsTheOutcome(t *testing.T) {
 // answers 404 and the read of the base commit answers an ambiguous 422, the
 // pair is not stored as missing and stays eligible. Only GitHub's no-commit
 // answer stores missing.
+// TestCompareDirectStopsOnARateLimitedBaseRead proves that a compare that
+// answers 404 followed by a rate-limited read of the base commit stops the
+// pass, as a rate-limited compare does, and stores nothing.
+func TestCompareDirectStopsOnARateLimitedBaseRead(t *testing.T) {
+	f := newWorkFixture(t)
+	failing, later, head := sha("aa01"), sha("bb01"), sha("cc01")
+	f.forge.chain("acme/conveyor", "", later, head)
+	f.forge.fail["compare|acme/conveyor|"+failing+"|"+head] = github.StatusError(404, errors.New("not found"))
+	f.forge.fail["acme/conveyor|"+failing] = fmt.Errorf("read commit: %w", github.RateLimitedError(statusBase.Add(time.Hour), errors.New("rate limited")))
+	keys := []store.FeedbackComparisonKey{{Repository: "acme/conveyor", Base: failing, Head: head}, {Repository: "acme/conveyor", Base: later, Head: head}}
+	if err := f.work().CompareDirect(f.ctx, keys); err != nil {
+		t.Fatal(err)
+	}
+	if reads, compares := f.forge.calls(); reads != 1 || compares != 1 {
+		t.Fatalf("reads=%d compares=%d, want the pass to stop after the rate-limited read", reads, compares)
+	}
+	for _, base := range []string{failing, later} {
+		if got, ok := f.comparison(base, head); ok {
+			t.Fatalf("stored %+v", got)
+		}
+	}
+	if logs := strings.Join(f.logs, "\n"); !strings.Contains(logs, "category=forge_rate_limited") {
+		t.Fatalf("logs=%s", logs)
+	}
+}
+
 func TestCompareDirectKeepsAmbiguous422Pending(t *testing.T) {
 	f := newWorkFixture(t)
 	head, base := sha("ab01"), sha("ab02")

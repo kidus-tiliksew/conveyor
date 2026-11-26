@@ -359,8 +359,14 @@ func (w Work) CompareDirect(ctx context.Context, keys []store.FeedbackComparison
 			status = ""
 			category := github.ErrorCategory(github.CategorizeError(err))
 			if github.HTTPStatus(err) == http.StatusNotFound {
-				if _, readErr := w.Forge.ReadCommit(ctx, key.Repository, key.Base); errors.Is(readErr, github.ErrCommitNotFound) {
+				// The base read's own failure decides the category, so a
+				// rate-limited base read stops the pass.
+				_, readErr := w.Forge.ReadCommit(ctx, key.Repository, key.Base)
+				switch {
+				case errors.Is(readErr, github.ErrCommitNotFound):
 					status = store.FeedbackCompareMissing
+				case readErr != nil:
+					category = github.ErrorCategory(github.CategorizeError(readErr))
 				}
 			}
 			if status == "" {
