@@ -3,7 +3,7 @@
 // server serves the crate rows and crate reads in the shapes
 // internal/httpapi/crates.go writes; the dashboard derives none of the
 // counts, the shipped flag, or the next action labels.
-import { expect, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route, type TestInfo } from '@playwright/test'
 import type {
   Crate,
   CrateActivityEvent,
@@ -1952,13 +1952,27 @@ test('at 375 x 667 a pointer on a branch map line reads every title of its tall 
 
 // Short scroll areas, each split around the pointed-at block or line: the
 // first number is the room over it and the second the room under it, in
-// pixels of the crate page's scroll area. The first split leaves neither
-// side 96 px. The page scrolls there, and then a real pointer points.
-const splits: Array<[number, number]> = [
-  [64, 40],
-  [40, 140],
-  [160, 60],
+// pixels of the crate page's scroll area. The first and last splits leave
+// neither side 96 px. The page scrolls there, and then a real pointer points.
+const splits: Array<[number, number, number]> = [
+  [375, 64, 40],
+  [375, 40, 140],
+  [375, 160, 60],
+  [1280, 80, 56],
 ]
+
+// A visual record of a tight split for the pull request, after the pointer
+// wheeled the card to its last title.
+async function shootSplit(page: Page, testInfo: TestInfo, name: string) {
+  await page.evaluate(() => document.fonts.ready)
+  const image = await page.screenshot()
+  await testInfo.attach(name, { body: image, contentType: 'image/png' })
+  const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+  if (shots) {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(`${shots}/${name}`, image)
+  }
+}
 
 // The card, its first and last waiting titles, and the checks every split
 // shares: the whole card box inside the seen part, the first title whole
@@ -1980,11 +1994,11 @@ async function readTallCard(page: Page, card: ReturnType<Page['locator']>, box: 
   return cardBox
 }
 
-for (const [above, below] of splits) {
-  test(`a pointer reads every title of a tall line card with ${above} px over its block and ${below} px under it`, async ({
+for (const [width, above, below] of splits) {
+  test(`at ${width} px a pointer reads every title of a tall line card with ${above} px over its block and ${below} px under it`, async ({
     page,
-  }) => {
-    await page.setViewportSize({ width: 375, height: 900 })
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 })
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
     await page.goto('/w/demo/crates/crate-deps')
@@ -1993,11 +2007,12 @@ for (const [above, below] of splits) {
     const port = await scroller.boundingBox()
     if (!port) throw new Error('no scroll area')
     // The block's top is 7 px over the point blockUnder names, and a block
-    // on a 375 px line stands about 18 px tall.
+    // stands about 18 px tall on a 375 px line and 42 px on a 1280 px one.
+    const blockHeight = width < 768 ? 18 : 42
     const block = await blockUnder(page, deps.total, `${deps.price}>${deps.total}`)
     const top = block.y - 7
     const scrollTop = Math.round(top - (port.y + above))
-    await page.setViewportSize({ width: 375, height: Math.round(port.y + above + 18 + below) })
+    await page.setViewportSize({ width, height: Math.round(port.y + above + blockHeight + below) })
     await scroller.evaluate((element, value) => {
       element.scrollTop = value
     }, scrollTop)
@@ -2010,7 +2025,10 @@ for (const [above, below] of splits) {
     await expect(card).toHaveAttribute('data-line-card-scrolls', 'true')
     await expect(card).toBeVisible()
     const cardBox = await readTallCard(page, card, box)
-    if (above < 96 && below < 96) expect(cardBox.height).toBeLessThan(96)
+    if (above < 96 && below < 96) {
+      expect(cardBox.height).toBeLessThan(96)
+      await shootSplit(page, testInfo, `crate-deps-line-split-${above}-${below}-${width}.png`)
+    }
 
     // The card covers no part of the link to the basket price.
     const curve = await page.locator('[data-line-link-path]').boundingBox()
@@ -2030,10 +2048,10 @@ for (const [above, below] of splits) {
     await expect(page).toHaveURL(new RegExp(`/w/demo/crates/crate-deps\\?task=${deps.total}$`))
   })
 
-  test(`a pointer reads every title of a tall branch map card with ${above} px over its line and ${below} px under it`, async ({
+  test(`at ${width} px a pointer reads every title of a tall branch map card with ${above} px over its line and ${below} px under it`, async ({
     page,
-  }) => {
-    await page.setViewportSize({ width: 375, height: 900 })
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 })
     await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
     await page.goto('/w/demo/crates/crate-deps')
     const scroller = page.locator('[data-crate-scroll]')
@@ -2045,7 +2063,7 @@ for (const [above, below] of splits) {
     // The line runs through the middle of its label.
     const line = start.y + start.height / 2
     const scrollTop = Math.round(line - (port.y + above))
-    await page.setViewportSize({ width: 375, height: Math.round(port.y + above + below) })
+    await page.setViewportSize({ width, height: Math.round(port.y + above + below) })
     await scroller.evaluate((element, value) => {
       element.scrollTop = value
     }, scrollTop)
@@ -2056,7 +2074,10 @@ for (const [above, below] of splits) {
     const card = page.locator(`[data-branch-card="${deps.total}"]`)
     await expect(card).toHaveAttribute('data-branch-card-scrolls', 'true')
     const cardBox = await readTallCard(page, card, card)
-    if (above < 96 && below < 96) expect(cardBox.height).toBeLessThan(96)
+    if (above < 96 && below < 96) {
+      expect(cardBox.height).toBeLessThan(96)
+      await shootSplit(page, testInfo, `crate-deps-map-split-${above}-${below}-${width}.png`)
+    }
   })
 }
 

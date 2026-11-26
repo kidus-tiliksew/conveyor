@@ -381,6 +381,9 @@ function Block({
       : THREE.MathUtils.damp(lift.current, emphasized ? 1 : 0, 12, delta)
     node.position.set(x, y + lift.current * 0.22, z)
     node.scale.setScalar(scale * (1 + lift.current * 0.1))
+    // The card reads the lift to stand where the block rests: a card that
+    // moved with the lift would slide from under a pointer that rests on it.
+    node.userData.lift = lift.current
     if (beacon.current) {
       const pulse = reducedMotion ? 0.5 : (time * 0.9) % 1
       beacon.current.scale.setScalar(0.6 + pulse * 1.1)
@@ -703,9 +706,9 @@ interface Anchor {
 const CARD_MARGIN = 4
 // The space between a block's foot and a card that stands under it.
 const CARD_GAP = 8
-// The least room in which a card shows at all: one line of text and its
-// border. With less room on both sides of its block, the card hides.
-const CARD_LEAST_ROOM = 20
+// The least room in which a card shows at all: one whole line of text with
+// the card's padding and border, 24 px. With less room on both sides of its block, the card hides.
+const CARD_LEAST_ROOM = 24
 // How long a card stays after the pointer leaves its block or the card, so
 // the pointer can cross the gap between them.
 const CARD_REACH_MS = 250
@@ -798,11 +801,20 @@ function Projector({
     if (!card || !element || !node) return
     const inner = element.firstElementChild as HTMLElement | null
     if (!inner) return
+    // The card stands by the block where it is drawn, and it does not move
+    // with the lift that emphasis gives the block, so it stays still while
+    // its task's emphasis comes and goes under a resting pointer. Over the
+    // block, it stands where the fully lifted block puts it, clear of the
+    // links that rise from that block. Under the block, it stands under the
+    // resting block's foot, which the lifted block never reaches.
+    const raised = typeof node.userData.lift === 'number' ? node.userData.lift : 0
+    const rest = node.scale.y / (1 + raised * 0.1)
+    const base = node.position.y - raised * 0.22
     point.copy(node.position)
-    point.y += card.lift * node.scale.y
+    point.y = base + card.lift * rest * 1.1 + 0.22
     let { x, y } = project()
     point.copy(node.position)
-    point.y -= card.drop * node.scale.y
+    point.y = base - card.drop * rest
     const foot = project().y
     // The part of the canvas's rows that a person can see: inside the crate
     // page's scroll area and the window. The card may reach past the
@@ -884,6 +896,7 @@ function DrawOnChange({
   shipped,
   closed,
   dark,
+  redraw,
 }: {
   blocks: LineBlock[]
   emphasizedId: string | null
@@ -893,12 +906,19 @@ function DrawOnChange({
   shipped: boolean
   closed: boolean
   dark: boolean
+  // Set to a call that draws a frame. The page calls it when a link's
+  // element mounts: the scene renders in its own root, which can see no
+  // change while the page mounts a link again.
+  redraw: RefObject<() => void>
 }) {
   const invalidate = useThree((state) => state.invalidate)
   useEffect(() => {
     void [blocks, emphasizedId, related, links, shipped, closed, dark]
     invalidate()
   }, [invalidate, blocks, emphasizedId, related, links, shipped, closed, dark])
+  useEffect(() => {
+    redraw.current = () => invalidate()
+  }, [invalidate, redraw])
   return null
 }
 
@@ -994,6 +1014,7 @@ export default function LineScene({
   const groups = useRef(new Map<string, THREE.Group>())
   const elements = useRef<Record<string, HTMLElement | null>>({})
   const paths = useRef<Record<string, SVGPathElement | null>>({})
+  const redraw = useRef<() => void>(() => {})
   // A pointer that leaves a block clears the emphasis at once, so no late
   // clear undoes what another part of the page emphasizes. A card that
   // scrolls stays a moment longer, so the pointer can reach it, and
@@ -1208,6 +1229,7 @@ export default function LineScene({
             emphasizedId={emphasizedId}
             related={related}
             links={linksKey(shownLinks)}
+            redraw={redraw}
             shipped={shipped}
             closed={closed}
             dark={dark}
@@ -1250,6 +1272,7 @@ export default function LineScene({
           {shownLinks.map((link) => {
             const ref = (layer: string) => (element: SVGPathElement | null) => {
               paths.current[`${layer}:${link.key}`] = element
+              if (element) redraw.current()
             }
             return (
               <g key={link.key} data-line-link={link.key}>

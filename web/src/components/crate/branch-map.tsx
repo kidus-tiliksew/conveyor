@@ -41,9 +41,10 @@ const MIN_WIDTH = 680
 const CARD_ROOM = 64
 const CARD_DEPENDENCY_LINE = 16
 // The space a card keeps from the edge of what a person can see, and the
-// least room in which a card shows at all: one line of text and its border.
+// least room in which a card shows at all: one whole line of
+// text with the card's padding and border, 24 px.
 const CARD_EDGE = 4
-const CARD_LEAST_ROOM = 20
+const CARD_LEAST_ROOM = 24
 // How long a card that scrolls stays after the pointer leaves its line or
 // the card, so the pointer can cross the gap between them.
 const CARD_REACH_MS = 250
