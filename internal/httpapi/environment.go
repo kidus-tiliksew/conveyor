@@ -128,7 +128,7 @@ func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := backend.CreateEnvironment(r.Context(), input)
 	if err != nil {
-		writeEnvironmentError(w, r, err)
+		writeEnvironmentMutationError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, record)
@@ -148,7 +148,7 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := backend.UpdateEnvironment(r.Context(), chi.URLParam(r, "id"), patch)
 	if err != nil {
-		writeEnvironmentError(w, r, err)
+		writeEnvironmentMutationError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, record)
@@ -169,7 +169,7 @@ func (s *Server) issueEnvironmentKey(w http.ResponseWriter, r *http.Request) {
 	}
 	issued, err := backend.IssueEnvironmentKey(r.Context(), chi.URLParam(r, "id"), label)
 	if err != nil {
-		writeEnvironmentError(w, r, err)
+		writeEnvironmentMutationError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, issued)
@@ -184,7 +184,7 @@ func (s *Server) revokeEnvironmentKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := backend.RevokeEnvironmentKey(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "key_id")); err != nil {
-		writeEnvironmentError(w, r, err)
+		writeEnvironmentMutationError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -223,7 +223,7 @@ func (s *Server) ignoreEnvironmentSuggestion(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err := backend.IgnoreEnvironmentSuggestion(r.Context(), name); err != nil {
-		writeEnvironmentError(w, r, err)
+		writeEnvironmentMutationError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -475,6 +475,25 @@ func writeEnvironmentError(w http.ResponseWriter, r *http.Request, err error) {
 	default:
 		writeStoreFailure(w, r, err)
 	}
+}
+
+// storeRetryableMessage is the fixed message of a 503 retryable answer. It
+// repeats no store text, so no driver detail reaches the caller.
+const storeRetryableMessage = "The store could not complete the request. Send it again."
+
+// writeEnvironmentMutationError answers a store that asks for the mutation to
+// be sent again with 503 retryable and Retry-After. On SingleStore a write
+// whose predecessor is not yet visible returns store.ErrRetryable with nothing
+// written (component-persistence invariant 8). Every other error keeps the
+// answer writeEnvironmentError gives it (component-environments, Public
+// surfaces; DEC-105(1), (2)). Reads keep writeEnvironmentError alone.
+func writeEnvironmentMutationError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, store.ErrRetryable) {
+		w.Header().Set("Retry-After", "1")
+		writeEnvironmentRefusal(w, http.StatusServiceUnavailable, map[string]string{"error": "retryable", "message": storeRetryableMessage})
+		return
+	}
+	writeEnvironmentError(w, r, err)
 }
 
 func writeEnvironmentRefusal(w http.ResponseWriter, status int, body map[string]string) {
