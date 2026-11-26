@@ -50,3 +50,38 @@ func TestFeedbackDeploymentReportLiveStatus(t *testing.T) {
 		t.Fatalf("staging status=%+v, want live under app since the report", staging)
 	}
 }
+
+// TestFeedbackSignalJobsOfOneTimeStayApart proves that two accepted reports of
+// one environment with one report time each reach the background work. Two
+// GitHub deployment reports of different repositories can share a time, and
+// the second must not be taken for the first while the first job runs.
+func TestFeedbackSignalJobsOfOneTimeStayApart(t *testing.T) {
+	deployed := readsCommit("c3c3c3c3c3c3")
+	h := newReadsHarness(t, deployed)
+	release := h.forge.hold(t)
+	at := time.Date(2026, 11, 26, 9, 30, 0, 0, time.UTC)
+	first := store.FeedbackSignal{EnvironmentID: h.environment.ID, ArrivedAt: at, Services: []store.FeedbackSignalService{{Name: "app", Repository: "app", Versions: []store.FeedbackSignalVersion{{Commit: deployed}}}}}
+	second := store.FeedbackSignal{EnvironmentID: h.environment.ID, ArrivedAt: at, Services: []store.FeedbackSignalService{{Name: "web", Versions: []store.FeedbackSignalVersion{{Version: "1.0"}}}}}
+	h.server.enqueueFeedbackSignal("alpha", first)
+	select {
+	case <-h.forge.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first job made no forge call")
+	}
+	// The first job waits in the forge, so its key is still pending.
+	h.server.enqueueFeedbackSignal("alpha", second)
+	release()
+	h.settle()
+	inputs, err := h.st.ReadFeedbackInputs(h.ctx, []string{h.environment.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := []string{}
+	for _, resolution := range inputs.Resolutions {
+		services = append(services, resolution.Service)
+	}
+	slices.Sort(services)
+	if !slices.Equal(services, []string{"app", "web"}) {
+		t.Fatalf("resolved services=%v, want both reports processed", services)
+	}
+}

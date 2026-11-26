@@ -186,9 +186,15 @@ The deploy has these values:
 The report replaces the running versions of that service only. Each version
 that the service ran is recorded as stopped at the report's time. Other
 services, past deploys, and the newest signal stay as they are, so a GitHub
-report does not change whether a watcher is listening. A report of the commit
-that the service runs now changes nothing. A duplicate report therefore makes
-no second write.
+report does not change whether a watcher is listening.
+
+The server keeps each report as it keeps an accepted signal, with its time and
+its service, and the report takes the next report number of the environment.
+A signal that reaches the store later with an earlier arrival therefore ends
+at the GitHub report, as [Deploys and running versions](#deploys-and-running-versions)
+describes. A report of the commit that the service runs now records no deploy,
+but its time is kept in the same way. A repeat of a report that the server
+already holds, with the same service, commit, and time, writes nothing.
 
 An archived environment records nothing from GitHub. Conveyor runs no git
 command and writes nothing to GitHub for a report.

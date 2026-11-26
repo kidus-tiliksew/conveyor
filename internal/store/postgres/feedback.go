@@ -306,7 +306,38 @@ func nextFeedbackReport(ctx context.Context, tx pgx.Tx, workspaceID, environment
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(GREATEST(report, COALESCE(stop_report, 0))), 0) FROM feedback_deploys WHERE workspace_id=$1 AND environment_id=$2`, workspaceID, environmentID).Scan(&deploys); err != nil {
 		return 0, err
 	}
-	return store.NextFeedbackReport(signals, deploys), nil
+	var accepted int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(report), 0) FROM feedback_accepted_signals WHERE workspace_id=$1 AND environment_id=$2`, workspaceID, environmentID).Scan(&accepted); err != nil {
+		return 0, err
+	}
+	return store.NextFeedbackReport(signals, deploys, accepted), nil
+}
+
+// feedbackGitHubRepeat reads the accepted GitHub reports of the environment
+// at the signal's time and reports whether one names its service.
+func feedbackGitHubRepeat(ctx context.Context, tx pgx.Tx, workspaceID string, signal store.FeedbackSignal) (bool, error) {
+	rows, err := tx.Query(ctx, `SELECT arrived_at, report, source_label, service_digests::text FROM feedback_accepted_signals WHERE workspace_id=$1 AND environment_id=$2 AND arrived_at=$3 AND source_label=''`, workspaceID, signal.EnvironmentID, signal.ArrivedAt)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	var accepted []store.FeedbackAcceptedSignal
+	for rows.Next() {
+		var report store.FeedbackAcceptedSignal
+		var services string
+		if err := rows.Scan(&report.ArrivedAt, &report.Report, &report.Label, &services); err != nil {
+			return false, err
+		}
+		report.ArrivedAt = store.EnvironmentTime(report.ArrivedAt)
+		if err := store.ApplyFeedbackAcceptedServices(&report, []byte(services)); err != nil {
+			return false, err
+		}
+		accepted = append(accepted, report)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return store.FeedbackGitHubRepeat(signal, accepted), nil
 }
 
 // RecordFeedbackGitHubDeploy implements store.FeedbackStore. The environment
@@ -347,10 +378,19 @@ func (s *Store) RecordFeedbackGitHubDeploy(ctx context.Context, deploy store.Fee
 		}
 		origin := store.FeedbackGitHubOrigin(next)
 		changes, err := store.PlanFeedbackChanges(signal, origin, history)
-		if err != nil || !changes.Changed() {
+		if err != nil {
 			return err
 		}
+		if !changes.Changed() {
+			repeat, err := feedbackGitHubRepeat(ctx, tx, workspaceID, signal)
+			if err != nil || repeat {
+				return err
+			}
+		}
 		if err := writeFeedbackChanges(ctx, tx, workspaceID, signal, origin, changes); err != nil {
+			return err
+		}
+		if err := recordFeedbackAccepted(ctx, tx, workspaceID, signal, origin); err != nil {
 			return err
 		}
 		recorded = true

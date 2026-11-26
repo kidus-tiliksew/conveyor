@@ -70,18 +70,68 @@ func runFeedbackGitHubDeploy(t *testing.T, x Fixture) {
 		t.Fatalf("a GitHub report changed an environment or key:\nbefore %s\nafter  %s", keys, after)
 	}
 
-	// The same commit again changes nothing, so a duplicate report writes
-	// nothing.
+	// The same report again writes nothing.
 	before := e.state(t)
-	e.report(t, e.github(30*time.Second, "app", feedbackCommit("a")), false)
+	e.report(t, e.github(20*time.Second, "app", strings.ToUpper(feedbackCommit("a"))), false)
 	if after := e.state(t); after != before {
 		t.Fatalf("a repeated report changed the stored state:\nbefore %s\nafter  %s", before, after)
+	}
+	// A later report of the same commit records no deploy and keeps its time
+	// as the service's newest report.
+	e.report(t, e.github(30*time.Second, "app", feedbackCommit("a")), true)
+	e.requireDeploys(t, "app=@1+0-20", "app=@2+0-20", "app="+feedbackCommit("a")+"+20", "web=@3+0")
+	for _, version := range e.running(t) {
+		if version.Service == "app" && !version.ReportedAt.Equal(feedbackTime(30*time.Second)) {
+			t.Fatalf("running version=%+v, want the later report as its newest report", version)
+		}
 	}
 
 	// A new commit replaces the GitHub deploy.
 	e.report(t, e.github(40*time.Second, "app", feedbackCommit("b")), true)
 	e.requireRunning(t, "app="+feedbackCommit("b")+"+40", "web=@3+0")
 	e.requireDeploys(t, "app=@1+0-20", "app=@2+0-20", "app="+feedbackCommit("a")+"+20-40", "app="+feedbackCommit("b")+"+40", "web=@3+0")
+}
+
+// runFeedbackGitHubBoundaries proves that a GitHub report is a boundary of
+// the deploy history: a signal that arrives later with an earlier time ends
+// at the GitHub report, also when that report recorded no deploy or when an
+// earlier report moved the GitHub deploy's start.
+func runFeedbackGitHubBoundaries(t *testing.T, x Fixture) {
+	t.Run("RepeatedCommit", func(t *testing.T) {
+		e := newFeedbackEnvironment(t, x, "Production", "watcher")
+		e.report(t, e.github(20*time.Second, "app", feedbackCommit("a")), true)
+		e.report(t, e.github(30*time.Second, "app", feedbackCommit("a")), true)
+		// The watcher reports another version at 25, after both reports were
+		// stored. GitHub reported the commit at 30, so it runs again from 30.
+		e.send(t, 25*time.Second, feedbackService("app", "@9"))
+		e.requireRunning(t, "app="+feedbackCommit("a")+"+30")
+		e.requireDeploys(t, "app="+feedbackCommit("a")+"+20-25", "app=@9+25-30", "app="+feedbackCommit("a")+"+30")
+		for _, deploy := range e.deploys(t) {
+			if deploy.StoppedAt == nil && unnumbered(deploy.Origin) != (store.FeedbackOrigin{Source: store.FeedbackSourceGitHub, Actor: core.SystemActorID}) {
+				t.Fatalf("running deploy=%+v, want it dated by the GitHub report", deploy)
+			}
+		}
+	})
+	t.Run("MovedStart", func(t *testing.T) {
+		e := newFeedbackEnvironment(t, x, "Staging", "watcher")
+		e.report(t, e.github(20*time.Second, "app", feedbackCommit("a")), true)
+		// A late signal at 10 names the same version, so the deploy starts at
+		// 10.
+		same := feedbackService("app", feedbackCommit("a"))
+		same.Repository = "app"
+		e.send(t, 10*time.Second, same)
+		e.requireDeploys(t, "app="+feedbackCommit("a")+"+10")
+		// A later signal at 15 names another version. It ends at the GitHub
+		// report at 20, which no deploy starts at any more.
+		e.send(t, 15*time.Second, feedbackService("app", "@2"))
+		e.requireRunning(t, "app="+feedbackCommit("a")+"+20")
+		e.requireDeploys(t, "app="+feedbackCommit("a")+"+10-15", "app=@2+15-20", "app="+feedbackCommit("a")+"+20")
+		for _, deploy := range e.deploys(t) {
+			if stop, running := deploy.Stop(); !running && stop.Compare(deploy.Start()) <= 0 {
+				t.Fatalf("deploy=%+v stops before it starts", deploy)
+			}
+		}
+	})
 }
 
 // runFeedbackGitHubReportNumbers proves that signals and GitHub reports never

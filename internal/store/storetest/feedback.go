@@ -47,6 +47,7 @@ func runFeedback(t *testing.T, factory Factory) {
 		{"ConcurrentSignals", runFeedbackConcurrent},
 		{"ConcurrentRevocationAndArchive", runFeedbackConcurrentRefusal},
 		{"GitHubDeploy", runFeedbackGitHubDeploy},
+		{"GitHubBoundaries", runFeedbackGitHubBoundaries},
 		{"GitHubReportNumbers", runFeedbackGitHubReportNumbers},
 		{"GitHubRecordsNothing", runFeedbackGitHubRecordsNothing},
 		{"GitHubObservesOnly", runFeedbackGitHubObservesOnly},

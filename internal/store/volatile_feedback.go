@@ -103,10 +103,14 @@ func (m *volatileMemory) RecordFeedbackGitHubDeploy(ctx context.Context, deploy 
 	}
 	origin := FeedbackGitHubOrigin(m.nextFeedbackReportLocked(scope))
 	changes, err := PlanFeedbackChanges(signal, origin, FeedbackHistory{Running: m.feedbackState.running[scope], Later: m.feedbackState.accepted[scope], Deploys: m.feedbackState.deploys[scope]})
-	if err != nil || !changes.Changed() {
+	if err != nil {
 		return false, err
 	}
+	if !changes.Changed() && FeedbackGitHubRepeat(signal, m.feedbackState.accepted[scope]) {
+		return false, nil
+	}
 	m.applyFeedbackChangesLocked(scope, signal, origin, changes)
+	m.feedbackState.accepted[scope] = append(m.feedbackState.accepted[scope], NewFeedbackAcceptedSignal(signal, origin))
 	return true, nil
 }
 

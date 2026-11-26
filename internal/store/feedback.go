@@ -201,16 +201,19 @@ type FeedbackStore interface {
 	ListFeedbackDeploys(ctx context.Context, environmentID string) ([]FeedbackDeploy, error)
 	// RecordFeedbackGitHubDeploy records one successful GitHub deployment
 	// report that matched the environment, in one transaction, and reports
-	// whether it changed anything. The report replaces the running versions
-	// of the service named after the repository, at the report's time, as
+	// whether it wrote anything. The report replaces the running versions of
+	// the service named after the repository, at the report's time, as
 	// PlanFeedbackChanges plans it for a signal that names only that
 	// service. It takes the next report number of the environment, which
-	// signals share. An environment that is missing or archived by the time
-	// of the write, a repository outside the workspace configuration, and a
-	// report that changes nothing record nothing and answer false. It leaves
-	// the newest signal and every key unchanged (component-production-feedback
-	// invariants 6 and 10; req-production-feedback AC-1.5; req-environments
-	// AC-1.9).
+	// signals share, and it is kept as an accepted report with an empty
+	// label, so a later-arriving earlier report ends at it. A report of the
+	// commit that the service runs now records no deploy and still keeps its
+	// time. An environment that is missing or archived by the time of the
+	// write, a repository outside the workspace configuration, and a repeat
+	// of an accepted GitHub report of the same service and time that changes
+	// nothing record nothing and answer false. It leaves the newest signal
+	// and every key unchanged (component-production-feedback invariants 4 to
+	// 6 and 10; req-production-feedback AC-1.5; req-environments AC-1.9).
 	RecordFeedbackGitHubDeploy(ctx context.Context, deploy FeedbackGitHubDeploy) (recorded bool, err error)
 	// FeedbackStatusStore keeps resolved versions and comparisons and reads
 	// merged tasks (feature-production-feedback-live FB-3).
@@ -337,6 +340,15 @@ type FeedbackAcceptedSignal struct {
 	Report    int64
 	Label     string
 	Services  []string
+}
+
+// Origin is the origin of the accepted report. A GitHub deployment report is
+// kept with an empty label, which no environment key can hold.
+func (a FeedbackAcceptedSignal) Origin() FeedbackOrigin {
+	if a.Label == "" {
+		return FeedbackGitHubOrigin(a.Report)
+	}
+	return FeedbackSignalOrigin(a.Label, a.Report)
 }
 
 // NewFeedbackAcceptedSignal is the kept form of a normalized signal.
@@ -558,7 +570,7 @@ func feedbackNextReport(at FeedbackBoundary, service string, history FeedbackHis
 	digest := FeedbackServiceDigest(service)
 	for _, accepted := range history.Later {
 		if slices.Contains(accepted.Services, digest) {
-			consider(accepted.ArrivedAt, FeedbackSignalOrigin(accepted.Label, accepted.Report))
+			consider(accepted.ArrivedAt, accepted.Origin())
 		}
 	}
 	return next, origin
@@ -671,15 +683,29 @@ func FeedbackGitHubDeploySignal(deploy FeedbackGitHubDeploy) (FeedbackSignal, er
 	}, nil
 }
 
-// Changed reports whether the plan records anything. A report that names
-// exactly what the service runs changes nothing.
+// Changed reports whether the plan changes a deploy or a running version. A
+// report that names exactly what the service runs changes neither.
 func (c FeedbackChanges) Changed() bool {
 	return len(c.Deploys) > 0 || len(c.Started) > 0 || len(c.Stopped) > 0 || len(c.Updated) > 0 || len(c.Moved) > 0
 }
 
+// FeedbackGitHubRepeat reports whether accepted holds a GitHub report of the
+// signal's one service at the signal's time. A backend passes the accepted
+// reports of the environment at that time. Together with a plan that changes
+// nothing, it makes a repeated report a no-op.
+func FeedbackGitHubRepeat(signal FeedbackSignal, accepted []FeedbackAcceptedSignal) bool {
+	digest := FeedbackServiceDigest(signal.Services[0].Name)
+	for _, report := range accepted {
+		if report.Label == "" && report.ArrivedAt.Equal(signal.ArrivedAt) && slices.Contains(report.Services, digest) {
+			return true
+		}
+	}
+	return false
+}
+
 // NextFeedbackReport is the number of the next accepted report of an
 // environment: one more than the highest number that its newest signal row,
-// its accepted signals, or its deploys and stops hold. Signals and GitHub
+// its accepted reports, or its deploys and stops hold. Signals and GitHub
 // deployment reports share the numbers, so two reports never share one.
 func NextFeedbackReport(numbers ...int64) int64 {
 	var highest int64
