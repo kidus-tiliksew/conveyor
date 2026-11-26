@@ -59,8 +59,12 @@ func Compute(inputs Inputs, actions map[string]nextaction.Compact, now time.Time
 		Replay:      ReplayOf(inputs, actions, now),
 	}
 	view.ForecastDaysBeforeTarget = ForecastDaysBeforeTarget(inputs.Crate.TargetDate, view.Progress.Forecast)
+	dependencies := DependenciesOf(inputs.Members)
 	for _, member := range members {
-		view.Tasks = append(view.Tasks, TaskOf(member, actions[member.Task.ID]))
+		task := TaskOf(member, actions[member.Task.ID])
+		values := dependencies[member.Task.ID]
+		task.DependsOn, task.WaitDepth, task.WaitedOnBy = values.DependsOn, values.WaitDepth, values.WaitedOnBy
+		view.Tasks = append(view.Tasks, task)
 	}
 	view.Whereabouts = WhereaboutsOf(view.Tasks, view.Branches)
 	return view
@@ -217,6 +221,7 @@ func TaskOf(member Member, action nextaction.Compact) Task {
 		ID: member.Task.ID, Phase: phase, Station: StationOf(member.Task, action, phase, opened),
 		BaseBranch: member.Task.BaseBranch, CreatedAt: member.Task.CreatedAt.UTC(),
 		PullRequestOpenedAt: []time.Time{}, ChangesRequestedAt: []time.Time{},
+		DependsOn: []DependsOn{}, WaitedOnBy: []string{},
 	}
 	for _, event := range sortedEvents(member.Events) {
 		switch event.Kind {
@@ -541,4 +546,105 @@ func ForecastDaysBeforeTarget(targetDate *string, forecast *insight.Forecast) *i
 	// 292 years.
 	days := int((target.Unix() - forecastDay.Unix()) / secondsPerDay)
 	return &days
+}
+
+// DependencyValues are one member's dependency values on the insight view
+// (component-crates invariant 38).
+type DependencyValues struct {
+	// DependsOn holds one entry per task the member depends on, in ID order.
+	DependsOn []DependsOn
+	// WaitDepth is the member's depth over waiting member entries.
+	WaitDepth int
+	// WaitedOnBy holds the IDs of the members that wait on this member.
+	WaitedOnBy []string
+}
+
+// DependenciesOf returns every member's dependency values keyed by task ID
+// (component-crates invariant 38; req-crate-insights AC-6.1, AC-6.2;
+// DEC-151(5)). An entry is member when its task is a current member, and
+// waiting when the member is neither merged nor closed and the task is not
+// merged: a task that closed without merging still holds its dependent
+// back. WaitDepth and WaitedOnBy follow only entries that are both waiting
+// and member, so no depth or reverse link passes through a task outside
+// the crate. Every list is empty, never nil, when it holds nothing.
+//
+// Dependency writes refuse cycles, but the computation stays bounded on
+// malformed inputs: the task an entry names counts as depth 0 when that
+// entry closes a cycle, so the read always ends.
+func DependenciesOf(members []Member) map[string]DependencyValues {
+	index := make(map[string]bool, len(members))
+	ids := make([]string, 0, len(members))
+	for _, member := range members {
+		if !index[member.Task.ID] {
+			index[member.Task.ID] = true
+			ids = append(ids, member.Task.ID)
+		}
+	}
+	slices.Sort(ids)
+	values := make(map[string]DependencyValues, len(ids))
+	waitsOn := make(map[string][]string, len(ids))
+	waitedOnBy := make(map[string][]string, len(ids))
+	for _, member := range members {
+		id := member.Task.ID
+		if _, done := values[id]; done {
+			continue
+		}
+		open := member.Task.State != core.TaskMerged && member.Task.State != core.TaskClosed
+		dependencies := slices.Clone(member.Dependencies)
+		slices.SortStableFunc(dependencies, func(a, b Dependency) int { return strings.Compare(a.ID, b.ID) })
+		dependencies = slices.CompactFunc(dependencies, func(a, b Dependency) bool { return a.ID == b.ID })
+		entries := make([]DependsOn, 0, len(dependencies))
+		for _, dependency := range dependencies {
+			entry := DependsOn{
+				ID: dependency.ID, Title: dependency.Title, State: dependency.State,
+				Member:  index[dependency.ID],
+				Waiting: open && dependency.State != core.TaskMerged,
+			}
+			if entry.Waiting && entry.Member {
+				waitsOn[id] = append(waitsOn[id], dependency.ID)
+				waitedOnBy[dependency.ID] = append(waitedOnBy[dependency.ID], id)
+			}
+			entries = append(entries, entry)
+		}
+		values[id] = DependencyValues{DependsOn: entries}
+	}
+	// Depth in dependency-first order: a member's depth is one more than
+	// the highest depth among the members it waits on. visiting marks the
+	// members on the current path, so the target of an entry that closes a
+	// cycle reads as depth 0 instead of recursing again.
+	depth := make(map[string]int, len(ids))
+	visiting := make(map[string]bool, len(ids))
+	var depthOf func(id string) int
+	depthOf = func(id string) int {
+		if value, ok := depth[id]; ok {
+			return value
+		}
+		if visiting[id] {
+			return 0
+		}
+		visiting[id] = true
+		value := 0
+		for _, target := range waitsOn[id] {
+			targetDepth := 0
+			if !visiting[target] {
+				targetDepth = depthOf(target)
+			}
+			value = max(value, targetDepth+1)
+		}
+		visiting[id] = false
+		depth[id] = value
+		return value
+	}
+	for _, id := range ids {
+		entry := values[id]
+		entry.WaitDepth = depthOf(id)
+		reverse := slices.Clone(waitedOnBy[id])
+		slices.Sort(reverse)
+		entry.WaitedOnBy = slices.Compact(reverse)
+		if entry.WaitedOnBy == nil {
+			entry.WaitedOnBy = []string{}
+		}
+		values[id] = entry
+	}
+	return values
 }

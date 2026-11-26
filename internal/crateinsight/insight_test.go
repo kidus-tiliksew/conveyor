@@ -602,7 +602,7 @@ func TestViewFieldsAreExactlyTheInsightView(t *testing.T) {
 	target := "2026-12-10"
 	inputs := Inputs{Crate: Crate{TargetDate: &target}, Members: []Member{
 		{Task: task("a", core.TaskMerged, "", ago(48*hour)), Events: []Event{opened(1, ago(40*hour)), review(2, verdictApprove, ago(30*hour)), stateChanged(3, core.TaskMerged, ago(24*hour))}},
-		{Task: task("b", core.TaskQueued, core.StageSpec, ago(24*hour))},
+		{Task: task("b", core.TaskQueued, core.StageSpec, ago(24*hour)), Dependencies: []Dependency{{ID: "a", Title: "Task a", State: core.TaskMerged}}},
 	}}
 	raw, err := json.Marshal(Compute(inputs, map[string]nextaction.Compact{"a": terminal, "b": queued}, now))
 	if err != nil {
@@ -640,7 +640,12 @@ func TestViewFieldsAreExactlyTheInsightView(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireKeys("view", view.Top, "tasks", "branches", "whereabouts", "progress", "first_review", "forecast_days_before_target", "replay")
-	requireKeys("task", view.Tasks[0], "id", "phase", "station", "base_branch", "created_at", "pull_request_opened_at", "changes_requested_at", "review_rounds", "merged_at", "closed_at")
+	requireKeys("task", view.Tasks[0], "id", "phase", "station", "base_branch", "created_at", "pull_request_opened_at", "changes_requested_at", "review_rounds", "merged_at", "closed_at", "depends_on", "wait_depth", "waited_on_by")
+	var dependsOn []map[string]json.RawMessage
+	if err := json.Unmarshal(view.Tasks[0]["depends_on"], &dependsOn); err != nil || len(dependsOn) != 1 {
+		t.Fatalf("depends_on of %s = %s (%v), want one entry", view.Tasks[0]["id"], view.Tasks[0]["depends_on"], err)
+	}
+	requireKeys("depends_on", dependsOn[0], "id", "title", "state", "member", "waiting")
 	requireKeys("whereabouts", view.Whereabouts[0], "key", "branch", "task_ids")
 	requireKeys("first_review", view.FirstReview, "approved", "reviewed")
 	requireKeys("replay", view.ReplayKeys, "start", "end", "steps")
@@ -651,7 +656,8 @@ func TestViewFieldsAreExactlyTheInsightView(t *testing.T) {
 // the arguments: a call leaves its inputs and actions as they were.
 func TestComputeDoesNotMutateInputs(t *testing.T) {
 	inputs := Inputs{Members: []Member{
-		{Task: task("b", core.TaskQueued, core.StageImplement, ago(10*hour)), Events: []Event{opened(2, ago(5*hour)), claim(1, core.StageImplement, ago(6*hour))}},
+		{Task: task("b", core.TaskQueued, core.StageImplement, ago(10*hour)), Events: []Event{opened(2, ago(5*hour)), claim(1, core.StageImplement, ago(6*hour))},
+			Dependencies: []Dependency{{ID: "z", Title: "Outside", State: core.TaskRunning}, {ID: "a", Title: "Task a", State: core.TaskMerged}}},
 		{Task: task("a", core.TaskMerged, "", ago(20*hour)), Events: []Event{stateChanged(1, core.TaskMerged, ago(2*hour))}},
 	}}
 	actions := map[string]nextaction.Compact{"a": terminal, "b": queued}
@@ -699,5 +705,179 @@ func TestPackageImportsNoStoreHTTPOrClock(t *testing.T) {
 		if strings.Contains(string(source), "time.Now(") || strings.Contains(string(source), "time.Since(") {
 			t.Fatalf("%s reads the clock", name)
 		}
+	}
+}
+
+// dependencyCase is the crate of the dependency cases: a chain of three
+// open members, a member that branches onto the chain and onto a task
+// outside the crate, an open member that waits on a member that closed
+// without merging, an open member whose member dependency merged, a merged
+// and a closed member that depend on chain members, and an open member
+// whose only dependency is a merged task outside the crate. The inputs list
+// members and dependencies out of ID order.
+func dependencyCase() Inputs {
+	member := func(id string, state core.TaskState, dependencies ...Dependency) Member {
+		stage := core.StageImplement
+		if core.TaskTerminal(state) {
+			stage = ""
+		}
+		return Member{Task: task(id, state, stage, ago(10*hour)), Dependencies: dependencies}
+	}
+	on := func(id string, state core.TaskState) Dependency {
+		return Dependency{ID: id, Title: "Task " + id, State: state}
+	}
+	return Inputs{Members: []Member{
+		member("v", core.TaskQueued, on("outside-3", core.TaskMerged)),
+		member("j", core.TaskQueued, on("outside-1", core.TaskRunning), on("c3", core.TaskQueued), on("c1", core.TaskRunning)),
+		member("c3", core.TaskQueued, on("c2", core.TaskQueued)),
+		member("c2", core.TaskQueued, on("c1", core.TaskRunning)),
+		member("c1", core.TaskRunning),
+		member("k", core.TaskClosed),
+		member("x", core.TaskQueued, on("k", core.TaskClosed)),
+		member("m", core.TaskMerged),
+		member("y", core.TaskRunning, on("m", core.TaskMerged)),
+		member("ms", core.TaskMerged, on("c1", core.TaskRunning)),
+		member("cs", core.TaskClosed, on("outside-2", core.TaskClosed), on("c2", core.TaskQueued)),
+	}}
+}
+
+// TestDependencyValues walks component-crates invariant 38 member by
+// member: depends_on in ID order with member and waiting, wait_depth over
+// waiting member entries only, and waited_on_by in ID order
+// (req-crate-insights AC-6.1, AC-6.2; DEC-151(5)). A dependency that closed
+// without merging still holds its open dependent back, a merged one does
+// not, and a merged or closed member waits on nothing. No depth or reverse
+// link passes through a task outside the crate.
+func TestDependencyValues(t *testing.T) {
+	type entry = DependsOn
+	waits := func(id string, state core.TaskState, member bool) entry {
+		return entry{ID: id, Title: "Task " + id, State: state, Member: member, Waiting: true}
+	}
+	still := func(id string, state core.TaskState, member bool) entry {
+		return entry{ID: id, Title: "Task " + id, State: state, Member: member}
+	}
+	want := map[string]DependencyValues{
+		"c1": {DependsOn: []entry{}, WaitDepth: 0, WaitedOnBy: []string{"c2", "j"}},
+		"c2": {DependsOn: []entry{waits("c1", core.TaskRunning, true)}, WaitDepth: 1, WaitedOnBy: []string{"c3"}},
+		"c3": {DependsOn: []entry{waits("c2", core.TaskQueued, true)}, WaitDepth: 2, WaitedOnBy: []string{"j"}},
+		"j": {DependsOn: []entry{waits("c1", core.TaskRunning, true), waits("c3", core.TaskQueued, true), waits("outside-1", core.TaskRunning, false)},
+			WaitDepth: 3, WaitedOnBy: []string{}},
+		"k":  {DependsOn: []entry{}, WaitDepth: 0, WaitedOnBy: []string{"x"}},
+		"x":  {DependsOn: []entry{waits("k", core.TaskClosed, true)}, WaitDepth: 1, WaitedOnBy: []string{}},
+		"m":  {DependsOn: []entry{}, WaitDepth: 0, WaitedOnBy: []string{}},
+		"y":  {DependsOn: []entry{still("m", core.TaskMerged, true)}, WaitDepth: 0, WaitedOnBy: []string{}},
+		"ms": {DependsOn: []entry{still("c1", core.TaskRunning, true)}, WaitDepth: 0, WaitedOnBy: []string{}},
+		"cs": {DependsOn: []entry{still("c2", core.TaskQueued, true), still("outside-2", core.TaskClosed, false)}, WaitDepth: 0, WaitedOnBy: []string{}},
+		"v":  {DependsOn: []entry{still("outside-3", core.TaskMerged, false)}, WaitDepth: 0, WaitedOnBy: []string{}},
+	}
+	inputs := dependencyCase()
+	got := DependenciesOf(inputs.Members)
+	if len(got) != len(want) {
+		t.Fatalf("values for %d members, want %d: %+v", len(got), len(want), got)
+	}
+	for id, values := range want {
+		if !reflect.DeepEqual(got[id], values) {
+			t.Fatalf("member %s values\n got %+v\nwant %+v", id, got[id], values)
+		}
+	}
+	for _, outside := range []string{"outside-1", "outside-2", "outside-3"} {
+		if _, ok := got[outside]; ok {
+			t.Fatalf("a task outside the crate %s has member values", outside)
+		}
+	}
+
+	// Compute serves the same values on each task, keeps the other fields
+	// and the task order, and serves every empty list as [].
+	view := Compute(inputs, nil, now)
+	plain := dependencyCase()
+	for i := range plain.Members {
+		plain.Members[i].Dependencies = nil
+	}
+	without := Compute(plain, nil, now)
+	if len(view.Tasks) != len(without.Tasks) {
+		t.Fatalf("view holds %d tasks, want %d", len(view.Tasks), len(without.Tasks))
+	}
+	for i, task := range view.Tasks {
+		values := want[task.ID]
+		if !reflect.DeepEqual(task.DependsOn, values.DependsOn) || task.WaitDepth != values.WaitDepth || !reflect.DeepEqual(task.WaitedOnBy, values.WaitedOnBy) {
+			t.Fatalf("view task %s = %+v, want %+v", task.ID, task, values)
+		}
+		other := without.Tasks[i]
+		if other.ID != task.ID || other.Phase != task.Phase || other.Station != task.Station {
+			t.Fatalf("task %d: dependencies changed the order or the station: %+v against %+v", i, task, other)
+		}
+		if len(other.DependsOn) != 0 || other.DependsOn == nil || other.WaitedOnBy == nil || other.WaitDepth != 0 {
+			t.Fatalf("task %s without dependencies = %+v, want empty lists and depth 0", other.ID, other)
+		}
+	}
+	if !reflect.DeepEqual(view.Replay, without.Replay) || !reflect.DeepEqual(view.Whereabouts, without.Whereabouts) || !reflect.DeepEqual(view.Branches, without.Branches) {
+		t.Fatal("dependencies changed the replay, the whereabouts, or the branches")
+	}
+	raw, err := json.Marshal(without)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "null,\"wait_depth\"") || !strings.Contains(string(raw), `"depends_on":[],"wait_depth":0,"waited_on_by":[]`) {
+		t.Fatalf("empty dependency lists are not served as []: %s", raw)
+	}
+
+	// The briefing document names the waiting member tasks and counts the
+	// waiting tasks outside the crate, from the same entries.
+	var document struct {
+		Members []struct {
+			ID                  string   `json:"id"`
+			WaitsOn             []string `json:"waits_on"`
+			WaitsOnOutsideCrate int      `json:"waits_on_outside_crate"`
+		} `json:"members"`
+	}
+	bytes := BriefingDocument(inputs, nil, now)
+	if err := json.Unmarshal(bytes, &document); err != nil {
+		t.Fatal(err)
+	}
+	wantWaits := map[string][]string{"c2": {"c1"}, "c3": {"c2"}, "j": {"c1", "c3"}, "x": {"k"}}
+	wantOutside := map[string]int{"j": 1}
+	if len(document.Members) != len(want) {
+		t.Fatalf("document holds %d members, want %d", len(document.Members), len(want))
+	}
+	for _, member := range document.Members {
+		waits := wantWaits[member.ID]
+		if waits == nil {
+			waits = []string{}
+		}
+		if member.WaitsOn == nil || !slices.Equal(member.WaitsOn, waits) || member.WaitsOnOutsideCrate != wantOutside[member.ID] {
+			t.Fatalf("briefing member %s waits on %v and %d outside, want %v and %d", member.ID, member.WaitsOn, member.WaitsOnOutsideCrate, waits, wantOutside[member.ID])
+		}
+	}
+	if strings.Contains(string(bytes), "outside-") {
+		t.Fatalf("the briefing document names a task outside the crate: %s", bytes)
+	}
+}
+
+// TestDependencyValuesSurviveMalformedInput: dependency writes refuse
+// cycles and duplicate edges, but the computation stays bounded and
+// deterministic when an input holds them anyway.
+func TestDependencyValuesSurviveMalformedInput(t *testing.T) {
+	on := func(id string) Dependency { return Dependency{ID: id, Title: "Task " + id, State: core.TaskQueued} }
+	inputs := Inputs{Members: []Member{
+		{Task: task("a", core.TaskQueued, core.StageImplement, ago(hour)), Dependencies: []Dependency{on("b"), on("b")}},
+		{Task: task("b", core.TaskQueued, core.StageImplement, ago(hour)), Dependencies: []Dependency{on("c")}},
+		{Task: task("c", core.TaskQueued, core.StageImplement, ago(hour)), Dependencies: []Dependency{on("a")}},
+		{Task: task("s", core.TaskQueued, core.StageImplement, ago(hour)), Dependencies: []Dependency{on("s")}},
+	}}
+	first := DependenciesOf(inputs.Members)
+	for _, id := range []string{"a", "b", "c", "s"} {
+		values := first[id]
+		if values.WaitDepth < 1 || values.WaitDepth > len(inputs.Members) {
+			t.Fatalf("member %s depth %d, want a bounded positive depth", id, values.WaitDepth)
+		}
+	}
+	if got := first["a"].DependsOn; len(got) != 1 || got[0].ID != "b" {
+		t.Fatalf("a duplicate edge served twice: %+v", got)
+	}
+	if got := first["b"].WaitedOnBy; !slices.Equal(got, []string{"a"}) {
+		t.Fatalf("b waited on by %v, want [a] once", got)
+	}
+	if again := DependenciesOf(inputs.Members); !reflect.DeepEqual(first, again) {
+		t.Fatal("dependency values are not deterministic for one input")
 	}
 }

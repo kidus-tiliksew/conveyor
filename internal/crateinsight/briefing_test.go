@@ -58,6 +58,8 @@ var briefingAllowlist = []string{
 	"members[].pull_request",
 	"members[].review_rounds",
 	"members[].title",
+	"members[].waits_on[]",
+	"members[].waits_on_outside_crate",
 }
 
 // typePaths lists the JSON paths of a document type by reflection.
@@ -171,6 +173,16 @@ func briefingInputs() (Inputs, map[string]nextaction.Compact) {
 		},
 	}
 	inputs.Members[2].Task.BaseBranch = "release"
+	// The billing plan waits on the login fix, a member, and on a task
+	// outside the crate whose ID and title carry the sentinel. The login
+	// fix depends on the merged export button, so it waits on nothing. The
+	// closed report depends on the login fix and waits on nothing.
+	inputs.Members[3].Dependencies = []Dependency{
+		{ID: "outside-" + briefingSentinel, Title: "Outside " + briefingSentinel, State: core.TaskRunning},
+		{ID: "261110-aaaaaa", Title: "Fix the login redirect", State: core.TaskRunning},
+	}
+	inputs.Members[1].Dependencies = []Dependency{{ID: "261110-cccccc", Title: "Add the export button", State: core.TaskMerged}}
+	inputs.Members[2].Dependencies = []Dependency{{ID: "261110-aaaaaa", Title: "Fix the login redirect", State: core.TaskRunning}}
 	deadline := ago(-hour)
 	actions := map[string]nextaction.Compact{
 		"261110-cccccc": terminal,
@@ -211,9 +223,10 @@ func TestCrateBriefingDocumentAllowlist(t *testing.T) {
 }
 
 // TestCrateBriefingDocumentCarriesNoPrivateData: no task body, source,
-// repository, branch, assignee, crate ID, creator, event payload text, or
-// next-action summary, deadline, or blocker reaches the document. Only the
-// fields invariant 30 names are read (DEC-142(5)).
+// repository, branch, assignee, crate ID, creator, event payload text,
+// next-action summary, deadline, or blocker, and no ID or title of a task
+// outside the crate, reaches the document. Only the fields invariant 30
+// names are read (DEC-150(5)).
 func TestCrateBriefingDocumentCarriesNoPrivateData(t *testing.T) {
 	inputs, actions := briefingInputs()
 	document := BriefingDocument(inputs, actions, now)
@@ -234,8 +247,10 @@ func TestCrateBriefingDocumentCarriesNoPrivateData(t *testing.T) {
 // is 0.5 a week, so the two open members finish 28 days after Nov 18, on
 // Dec 16, 16 days after the target date. The merged member took 100 hours,
 // 4.2 days. Both open members are past intake, so they are on task
-// branches.
-const crateBriefingGolden = `{"crate":{"name":"Spring release","target_date":"2026-11-30","days_to_target":12,"counts":{"open":2,"merged":1,"total":4},"delivery":{"merged_per_week":0.5,"median_days_to_merge":4.2,"forecast_day":"2026-12-16","forecast_days_before_target":-16,"first_review":{"approved":0,"reviewed":1}},"whereabouts":[{"key":"task_branch","branch":null,"count":2},{"key":"merged","branch":"release","count":0},{"key":"merged","branch":"main","count":1}]},"members":[{"id":"261110-aaaaaa","title":"Fix the login redirect","phase":"building","next_action":{"label":"Agent is working","actor":"agent"},"base_branch":"main","created_day":"2026-11-16","merged_day":null,"pull_request":null,"review_rounds":0,"changes_requested_rounds":0},{"id":"261110-bbbbbb","title":"Approve the billing plan","phase":"needs_you","next_action":{"label":"Approve the plan","actor":"operator"},"base_branch":"main","created_day":"2026-11-18","merged_day":null,"pull_request":null,"review_rounds":0,"changes_requested_rounds":0},{"id":"261110-cccccc","title":"Add the export button","phase":"merged","next_action":{"label":"Done","actor":"none"},"base_branch":"main","created_day":"2026-11-10","merged_day":"2026-11-14","pull_request":42,"review_rounds":2,"changes_requested_rounds":1},{"id":"261110-dddddd","title":"Retire the old report","phase":"closed","next_action":{"label":"Done","actor":"none"},"base_branch":"release","created_day":"2026-11-16","merged_day":null,"pull_request":null,"review_rounds":0,"changes_requested_rounds":0}]}`
+// branches. The billing plan waits on the login fix and on one task outside
+// the crate. The login fix depends only on the merged export button, and
+// the closed report waits on nothing.
+const crateBriefingGolden = `{"crate":{"name":"Spring release","target_date":"2026-11-30","days_to_target":12,"counts":{"open":2,"merged":1,"total":4},"delivery":{"merged_per_week":0.5,"median_days_to_merge":4.2,"forecast_day":"2026-12-16","forecast_days_before_target":-16,"first_review":{"approved":0,"reviewed":1}},"whereabouts":[{"key":"task_branch","branch":null,"count":2},{"key":"merged","branch":"release","count":0},{"key":"merged","branch":"main","count":1}]},"members":[{"id":"261110-aaaaaa","title":"Fix the login redirect","phase":"building","next_action":{"label":"Agent is working","actor":"agent"},"base_branch":"main","created_day":"2026-11-16","merged_day":null,"pull_request":null,"review_rounds":0,"changes_requested_rounds":0,"waits_on":[],"waits_on_outside_crate":0},{"id":"261110-bbbbbb","title":"Approve the billing plan","phase":"needs_you","next_action":{"label":"Approve the plan","actor":"operator"},"base_branch":"main","created_day":"2026-11-18","merged_day":null,"pull_request":null,"review_rounds":0,"changes_requested_rounds":0,"waits_on":["261110-aaaaaa"],"waits_on_outside_crate":1},{"id":"261110-cccccc","title":"Add the export button","phase":"merged","next_action":{"label":"Done","actor":"none"},"base_branch":"main","created_day":"2026-11-10","merged_day":"2026-11-14","pull_request":42,"review_rounds":2,"changes_requested_rounds":1,"waits_on":[],"waits_on_outside_crate":0},{"id":"261110-dddddd","title":"Retire the old report","phase":"closed","next_action":{"label":"Done","actor":"none"},"base_branch":"release","created_day":"2026-11-16","merged_day":null,"pull_request":null,"review_rounds":0,"changes_requested_rounds":0,"waits_on":[],"waits_on_outside_crate":0}]}`
 
 // TestCrateBriefingDocumentValues pins the canonical bytes: one line of JSON
 // with members sorted by ID and every time a whole UTC day.
@@ -282,6 +297,14 @@ func TestCrateBriefingDocumentStable(t *testing.T) {
 	if got := BriefingDocument(zoned, actions, now); !bytes.Contains(got, []byte(`"id":"261110-aaaaaa","title":"Fix the login redirect","phase":"building","next_action":{"label":"Agent is working","actor":"agent"},"base_branch":"main","created_day":"2026-11-18"`)) {
 		t.Fatalf("zoned creation day: %s", got)
 	}
+	// Dependency order does not change the bytes.
+	reordered := inputs
+	reordered.Members = slices.Clone(inputs.Members)
+	reordered.Members[3].Dependencies = slices.Clone(inputs.Members[3].Dependencies)
+	slices.Reverse(reordered.Members[3].Dependencies)
+	if got := BriefingDocument(reordered, actions, now); !bytes.Equal(got, want) {
+		t.Fatalf("dependency order changed the document:\n got %s\nwant %s", got, want)
+	}
 	// A change to a recorded input changes the bytes.
 	retitled := inputs
 	retitled.Members = slices.Clone(inputs.Members)
@@ -293,7 +316,7 @@ func TestCrateBriefingDocumentStable(t *testing.T) {
 
 // crateBriefingInstructionsDigest pins the SHA-256 of BriefingInstructions,
 // so a wording change fails here before every stored briefing goes stale.
-const crateBriefingInstructionsDigest = "733d2651d69a30a085bd6bfcb1da276cd1ec49ee80c0b8894f8395cd064e20f3"
+const crateBriefingInstructionsDigest = "8075ef2370f26e3f49818a35ca7f724a9bbb4596f15f8692bd11a97826bdb440"
 
 // TestCrateBriefingFingerprint: the fingerprint is the lowercase hex
 // SHA-256 of the fixed instructions followed directly by the document
@@ -327,6 +350,24 @@ func TestCrateBriefingFingerprint(t *testing.T) {
 	if BriefingFingerprint(other, actions, now) == got {
 		t.Fatal("a document change left the fingerprint unchanged")
 	}
+	// A change to what a member waits on changes the fingerprint: the
+	// login fix merging ends the billing plan's wait on it.
+	unblocked := inputs
+	unblocked.Members = slices.Clone(inputs.Members)
+	unblocked.Members[3].Dependencies = slices.Clone(inputs.Members[3].Dependencies)
+	unblocked.Members[3].Dependencies[1].State = core.TaskMerged
+	if document := BriefingDocument(unblocked, actions, now); !bytes.Contains(document, []byte(`"waits_on":[],"waits_on_outside_crate":1`)) || BriefingFingerprint(unblocked, actions, now) == got {
+		t.Fatalf("a wait change left the fingerprint unchanged: %s", document)
+	}
+	// A title change of a task outside the crate reaches no byte, so it
+	// keeps the fingerprint.
+	retitledOutside := inputs
+	retitledOutside.Members = slices.Clone(inputs.Members)
+	retitledOutside.Members[3].Dependencies = slices.Clone(inputs.Members[3].Dependencies)
+	retitledOutside.Members[3].Dependencies[0].Title = "Renamed outside task"
+	if BriefingFingerprint(retitledOutside, actions, now) != got {
+		t.Fatal("an outside task's title changed the fingerprint")
+	}
 	instructions := sha256.Sum256(append([]byte(BriefingInstructions+" "), document...))
 	if hex.EncodeToString(instructions[:]) == got {
 		t.Fatal("an instruction change left the fingerprint unchanged")
@@ -358,6 +399,9 @@ func TestCrateBriefingInstructionsWording(t *testing.T) {
 		"reason is one line of at most 160 characters",
 		`{"headline": "...", "account": "...", "look_first": [{"task_id": "...", "tone": "attention", "reason": "..."}]}`,
 		"Every date is a whole day in UTC.",
+		"waits_on lists the ids of the member tasks that the task waits on.",
+		"waits_on_outside_crate is the number of tasks outside the crate that the task waits on.",
+		"When a task holds other member tasks back, say so and name it by what it does, never by its id.",
 	} {
 		if !strings.Contains(BriefingInstructions, phrase) {
 			t.Fatalf("instructions lack %q", phrase)

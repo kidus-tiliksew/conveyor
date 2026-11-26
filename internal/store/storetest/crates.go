@@ -14,6 +14,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // runCrates holds every backend to component-crates invariants 2, 4 to 13,
@@ -1049,12 +1050,49 @@ func insightEvents(t *testing.T, member store.CrateInsightMember) []insightEvent
 	return out
 }
 
+// crateInsightDepend records that task depends on dependency through the
+// public dependency write.
+func crateInsightDepend(t *testing.T, x Fixture, task, dependency core.Task) {
+	t.Helper()
+	result, err := x.Backend.AddTaskDependency(x.Context, store.DependencyAdditionRequest{TaskID: task.ID, DependsOnTaskID: dependency.ID, Reason: "crate insight dependency", RequestID: "crate-insight-" + task.ID + "-" + dependency.ID})
+	requireOK(t, err)
+	if !result.Added {
+		t.Fatalf("dependency %s on %s was not added", task.ID, dependency.ID)
+	}
+}
+
+// crateInsightPerform applies one lifecycle command through the command
+// plane, as task_map's fixtures move a dependency to merged or closed after
+// the edge exists.
+func crateInsightPerform(t *testing.T, x Fixture, task core.Task, command core.TaskCommand) {
+	t.Helper()
+	if _, err := taskops.New(x.Backend).Perform(x.Context, task.ID, taskops.Command{Kind: command}); err != nil {
+		t.Fatalf("%s %s: %v", task.ID, command, err)
+	}
+}
+
+// crateInsightDependencyOf is the dependency row the read returns for task
+// in state.
+func crateInsightDependencyOf(task core.Task, state core.TaskState) store.CrateInsightDependency {
+	return store.CrateInsightDependency{ID: task.ID, Title: task.Title, State: state}
+}
+
+// crateInsightDependencies sorts the expected rows by ID, the read's order.
+func crateInsightDependencies(rows ...store.CrateInsightDependency) []store.CrateInsightDependency {
+	out := append([]store.CrateInsightDependency{}, rows...)
+	slices.SortFunc(out, func(a, b store.CrateInsightDependency) int { return strings.Compare(a.ID, b.ID) })
+	return out
+}
+
 // runCrateInsightInputs holds invariant 22: the read returns the crate row
-// and, for each current member in creation order, its task row and its
+// and, for each current member in creation order, its task row, its
+// dependencies in ID order with each target's ID, title, and state, and its
 // listed events in (at, id) order, including events from before it joined,
-// each claim with its order's stage and no payload. A former member, an
-// outsider, and unlisted kinds are absent. An empty crate reads with no
-// member, and a missing or foreign crate is not found.
+// each claim with its order's stage and no payload. A dependency outside
+// the crate, a merged one, and a closed one are included. A former member,
+// an outsider, their dependency edges, and unlisted kinds are absent. An
+// empty crate reads with no member, and a missing or foreign crate is not
+// found.
 func runCrateInsightInputs(t *testing.T, x Fixture) {
 	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Insight", TargetDate: crateText("2026-12-31")})
 	requireOK(t, err)
@@ -1117,6 +1155,25 @@ func runCrateInsightInputs(t *testing.T, x Fixture) {
 	outsider := member(core.TaskQueued, core.StageImplement, "", "main", base)
 	appendAt(outsider, "pull_request.opened", base.Add(time.Hour), marker("outsider"), "")
 
+	// Dependencies: the building member depends on a queued member, a task
+	// outside the crate that later merges, and one that later closes. The
+	// joined member depends on the building member, the former member, and
+	// an open task outside the crate. The outsider's and the former
+	// member's own edges belong to no member.
+	outsideOpen := member(core.TaskQueued, core.StageImplement, "", "main", base)
+	outsideMerged := member(core.TaskQueued, core.StageImplement, "", "main", base)
+	outsideClosed := member(core.TaskQueued, core.StageImplement, "", "main", base)
+	crateInsightDepend(t, x, building, tie)
+	crateInsightDepend(t, x, building, outsideMerged)
+	crateInsightDepend(t, x, building, outsideClosed)
+	crateInsightDepend(t, x, joined, building)
+	crateInsightDepend(t, x, joined, former)
+	crateInsightDepend(t, x, joined, outsideOpen)
+	crateInsightDepend(t, x, outsider, building)
+	crateInsightDepend(t, x, former, tie)
+	crateInsightPerform(t, x, outsideMerged, core.TaskMergeRecover)
+	crateInsightPerform(t, x, outsideClosed, core.TaskCancel)
+
 	inputs, err := x.Backend.ReadCrateInsightInputs(x.Context, crate.ID)
 	requireOK(t, err)
 	if inputs.Crate.ID != crate.ID || inputs.Crate.Name != "Insight" || inputs.Crate.TargetDate == nil || *inputs.Crate.TargetDate != "2026-12-31" ||
@@ -1137,6 +1194,19 @@ func runCrateInsightInputs(t *testing.T, x Fixture) {
 			t.Fatalf("member %d = %+v, want task %s (%s from %s, next %s, %s)", i, got.Task, want.ID, want.State, want.BaseBranch, want.NextStage, want.Branch)
 		}
 		byID[got.Task.ID] = got
+	}
+	wantDependencies := map[string][]store.CrateInsightDependency{
+		building.ID: crateInsightDependencies(crateInsightDependencyOf(tie, core.TaskQueued), crateInsightDependencyOf(outsideMerged, core.TaskMerged), crateInsightDependencyOf(outsideClosed, core.TaskClosed)),
+		joined.ID:   crateInsightDependencies(crateInsightDependencyOf(building, core.TaskRunning), crateInsightDependencyOf(former, core.TaskQueued), crateInsightDependencyOf(outsideOpen, core.TaskQueued)),
+		merged.ID:   {},
+		tie.ID:      {},
+		closed.ID:   {},
+	}
+	for id, want := range wantDependencies {
+		got := byID[id].Dependencies
+		if got == nil || !slices.Equal(got, want) {
+			t.Fatalf("member %s dependencies\n got %+v\nwant %+v", id, got, want)
+		}
 	}
 	kinds := func(member store.CrateInsightMember) []string {
 		out := []string{}
@@ -1239,6 +1309,13 @@ func seedCrateInsight(t *testing.T, x Fixture, size int) string {
 	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: fmt.Sprintf("Insight scale %d", size)})
 	requireOK(t, err)
 	base := store.CrateTime(time.Now().Add(-24 * time.Hour))
+	// Every open member depends on one open task outside the crate and on
+	// the open member before it, so the read carries edges at every size.
+	outsideID := fixtureTaskID()
+	outside := core.Task{ID: outsideID, Workspace: x.Workspace, Repo: "conveyor", Title: "Insight scale outside " + outsideID, Body: "Insight scale.", State: core.TaskQueued, NextStage: core.StageImplement,
+		CreatedAt: base, BaseBranch: "main", Branch: "conveyor/task-" + outsideID}
+	requireOK(t, x.Backend.CreateTask(x.Context, outside))
+	var previous *core.Task
 	for i := range size {
 		id := fixtureTaskID()
 		state := core.TaskRunning
@@ -1251,6 +1328,13 @@ func seedCrateInsight(t *testing.T, x Fixture, size int) string {
 		task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: "Insight scale " + id, Body: "Insight scale.", State: state, NextStage: core.StageImplement,
 			CreatedAt: base.Add(time.Duration(i) * time.Second), BaseBranch: "main", Branch: "conveyor/task-" + id, Crate: &core.TaskCrate{ID: crate.ID}}
 		requireOK(t, x.Backend.CreateTask(x.Context, task))
+		if state == core.TaskRunning {
+			crateInsightDepend(t, x, task, outside)
+			if previous != nil {
+				crateInsightDepend(t, x, task, *previous)
+			}
+			previous = &task
+		}
 		order := core.WorkOrder{ID: id + "-implement-1", TaskID: id, JobID: id + "-implement-1", Stage: core.StageImplement, State: core.WorkOrderClaimed}
 		for _, event := range []core.Event{
 			{TaskID: id, Kind: "work_order.claimed", At: base.Add(time.Minute), Payload: store.WorkOrderEventPayload(order)},
@@ -1289,13 +1373,24 @@ func runCrateInsightInputsBounded(t *testing.T, x Fixture, productionCapable boo
 		if len(inputs.Members) != size {
 			t.Fatalf("size %d: read %d members", size, len(inputs.Members))
 		}
+		edges := 0
 		for _, member := range inputs.Members {
 			if len(member.Events) < 3 {
 				t.Fatalf("size %d: member %s holds %d events", size, member.Task.ID, len(member.Events))
 			}
+			if member.Dependencies == nil {
+				t.Fatalf("size %d: member %s holds nil dependencies", size, member.Task.ID)
+			}
+			if member.Task.State == core.TaskRunning && len(member.Dependencies) == 0 {
+				t.Fatalf("size %d: open member %s holds no dependency", size, member.Task.ID)
+			}
+			edges += len(member.Dependencies)
+		}
+		if edges == 0 {
+			t.Fatalf("size %d: the read carries no dependency edge", size)
 		}
 		counts[size] = statements
-		t.Logf("crate insight inputs: %d members, %d statements", size, statements)
+		t.Logf("crate insight inputs: %d members, %d dependency edges, %d statements", size, edges, statements)
 	}
 	if counts[4] == 0 || counts[4] != counts[60] {
 		t.Fatalf("insight read statements %v, want one equal nonzero count for 4 and 60 members", counts)
@@ -1324,6 +1419,18 @@ func runCrateInsightInputsMemberLeaves(t *testing.T, x Fixture, productionCapabl
 	}
 	leaver := member(base)
 	stayer := member(base.Add(time.Second))
+	// The leaver depends on an open task outside the crate, and the stayer
+	// depends on the leaver.
+	anchorID := fixtureTaskID()
+	anchor := core.Task{ID: anchorID, Workspace: x.Workspace, Repo: "conveyor", Title: "Insight anchor " + anchorID, Body: "Insight anchor.", State: core.TaskQueued, NextStage: core.StageImplement,
+		CreatedAt: base, BaseBranch: "main", Branch: "conveyor/task-" + anchorID}
+	requireOK(t, x.Backend.CreateTask(x.Context, anchor))
+	crateInsightDepend(t, x, leaver, anchor)
+	crateInsightDepend(t, x, stayer, leaver)
+	wantDependencies := map[string][]store.CrateInsightDependency{
+		leaver.ID: {crateInsightDependencyOf(anchor, core.TaskQueued)},
+		stayer.ID: {crateInsightDependencyOf(leaver, core.TaskRunning)},
+	}
 	for _, task := range []core.Task{leaver, stayer} {
 		requireOK(t, x.Backend.AppendEvent(x.Context, core.Event{TaskID: task.ID, Kind: "pull_request.opened", At: base.Add(time.Hour), Payload: core.JSONPayload(map[string]any{"marker": "pull", "number": 3})}))
 		requireOK(t, x.Backend.AppendEvent(x.Context, core.Event{TaskID: task.ID, Kind: "review.round_completed", At: base.Add(2 * time.Hour), Payload: core.JSONPayload(map[string]any{"marker": "round", "verdict": "changes_requested"})}))
@@ -1367,6 +1474,9 @@ func runCrateInsightInputsMemberLeaves(t *testing.T, x Fixture, productionCapabl
 		if events := recorded(got); !slices.Equal(events, want) {
 			t.Fatalf("member %s (moved mid-read: %t) events %v, want its recorded history %v", got.Task.ID, moved && got.Task.ID == leaver.ID, events, want)
 		}
+		if !slices.Equal(got.Dependencies, wantDependencies[got.Task.ID]) {
+			t.Fatalf("member %s (moved mid-read: %t) dependencies %+v, want %+v", got.Task.ID, moved && got.Task.ID == leaver.ID, got.Dependencies, wantDependencies[got.Task.ID])
+		}
 	}
 	if !moved {
 		// The memory backend never interleaves: the move lands after the read.
@@ -1377,5 +1487,10 @@ func runCrateInsightInputsMemberLeaves(t *testing.T, x Fixture, productionCapabl
 	requireOK(t, err)
 	if len(after.Members) != 1 || after.Members[0].Task.ID != stayer.ID || !slices.Equal(recorded(after.Members[0]), want) {
 		t.Fatalf("read after the move holds %d members, want only %s with its history", len(after.Members), stayer.ID)
+	}
+	// The leaver is no source after the move, and it stays the stayer's
+	// dependency as a task outside the crate.
+	if got := after.Members[0].Dependencies; !slices.Equal(got, wantDependencies[stayer.ID]) {
+		t.Fatalf("stayer dependencies after the move %+v, want %+v", got, wantDependencies[stayer.ID])
 	}
 }

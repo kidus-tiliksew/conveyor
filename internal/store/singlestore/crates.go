@@ -656,9 +656,10 @@ func nullableTime(value *time.Time) any {
 // insight view or the next-action projection reads it.
 var crateInsightTaskColumns = strings.Replace(taskColumns, ",body,", ",'' AS body,", 1)
 
-// ReadCrateInsightInputs implements store.CrateStore in three set-based
+// ReadCrateInsightInputs implements store.CrateStore in four set-based
 // statements without correlated subqueries, whatever the member count: the
-// crate row, the current member rows, and the events of the listed kinds
+// crate row, the current member rows, and then the dependency edges with
+// each target's ID, title, and state, and the events of the listed kinds,
 // for the member IDs those rows hold.
 // Each claim's stage comes from the order the claim records, or from the
 // order row the claim names when the recorded payload carries no stage
@@ -682,16 +683,21 @@ func (s *Store) ReadCrateInsightInputs(ctx context.Context, id string) (store.Cr
 		return store.CrateInsightInputs{}, err
 	}
 	if len(tasks) == 0 {
-		return store.AssembleCrateInsightInputs(crate, nil, nil), nil
+		return store.AssembleCrateInsightInputs(crate, nil, nil, nil), nil
 	}
 	store.RunCrateInsightMembersReadHook()
-	// The event statement reads the member IDs the member-row statement
-	// returned, scoped by workspace, so a member that leaves the crate
-	// meanwhile keeps its events (invariant 22). Events match by task ID,
-	// whatever crate an older membership event names.
+	// The dependency and event statements read the member IDs the
+	// member-row statement returned, scoped by workspace, so a member that
+	// leaves the crate meanwhile keeps its dependencies and its events
+	// (invariant 22). Events match by task ID, whatever crate an older
+	// membership event names.
 	ids := make([]string, len(tasks))
 	for i, task := range tasks {
 		ids[i] = task.ID
+	}
+	dependencies, err := s.readCrateInsightDependencies(ctx, ws, ids)
+	if err != nil {
+		return store.CrateInsightInputs{}, err
 	}
 	args := append(append([]any{ws}, taskMapArgs(ids)...), taskMapArgs(store.CrateInsightEventKinds)...)
 	rows, err := documentRows(ctx, s.db, `SELECT e.task_id,e.id,e.kind,e.at,
@@ -719,5 +725,36 @@ ORDER BY e.task_id,e.at,e.id`, args...)
 	if err := rows.Err(); err != nil {
 		return store.CrateInsightInputs{}, err
 	}
-	return store.AssembleCrateInsightInputs(crate, tasks, events), nil
+	return store.AssembleCrateInsightInputs(crate, tasks, dependencies, events), nil
+}
+
+// readCrateInsightDependencies reads, in one statement, every dependency
+// edge of the listed members with the target's ID, title, and state. Every
+// edge is read whatever its target's state or crate: the insight view keeps
+// merged and closed targets and targets outside the crate (component-crates
+// invariants 22 and 38).
+func (s *Store) readCrateInsightDependencies(ctx context.Context, ws string, ids []string) ([]store.CrateInsightDependencyRow, error) {
+	rows, err := documentRows(ctx, s.db, `SELECT d.task_id,t.id,t.title,t.state
+FROM task_dependencies d
+JOIN tasks t ON t.workspace_id=d.workspace_id AND t.id=d.depends_on_task_id
+WHERE d.workspace_id=? AND d.task_id IN (`+taskMapMarks(len(ids))+`)
+ORDER BY d.task_id,t.id`, append([]any{ws}, taskMapArgs(ids)...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var dependencies []store.CrateInsightDependencyRow
+	for rows.Next() {
+		var row store.CrateInsightDependencyRow
+		var state string
+		if err := rows.Scan(&row.TaskID, &row.Dependency.ID, &row.Dependency.Title, &state); err != nil {
+			return nil, err
+		}
+		row.Dependency.State = core.TaskState(state)
+		dependencies = append(dependencies, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return dependencies, nil
 }

@@ -1,8 +1,9 @@
 // Package crateinsight computes a crate's insight view from its insight
 // inputs: each member's phase and station, the replay steps, the branch
-// lanes and whereabouts, the delivery numbers, and the member order
-// (component-crates invariants 21 and 23 to 28; feature-crate-insights CI-1;
-// req-crate-insights REQ-1, REQ-2, REQ-4). Every function is pure: it reads
+// lanes and whereabouts, the delivery numbers, the member order, and the
+// dependency values (component-crates invariants 21, 23 to 28, and 38;
+// feature-crate-insights CI-1; req-crate-insights REQ-1, REQ-2, REQ-4,
+// REQ-6). Every function is pure: it reads
 // only its arguments, performs no I/O, reads no clock, and never mutates an
 // input. The package imports no store, HTTP, database, or model client, so
 // the crate briefing and the crate page parts reuse it as it stands.
@@ -62,14 +63,30 @@ type Event struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-// Member is one current member of the crate with its task row and its
-// events in (at, id) order. Events recorded before the task joined the
-// crate are included.
+// Dependency is one task a member depends on, as the insight read returns
+// it (component-crates invariant 22): the task's ID, title, and state. The
+// task may be outside the crate, merged, or closed.
+type Dependency struct {
+	// ID is the task ID of the task the member depends on.
+	ID string `json:"id"`
+	// Title is that task's title.
+	Title string `json:"title"`
+	// State is that task's state.
+	State core.TaskState `json:"state"`
+}
+
+// Member is one current member of the crate with its task row, its
+// dependencies in ID order, and its events in (at, id) order. Events
+// recorded before the task joined the crate are included.
 type Member struct {
 	// Task is the member's task row, usable by the shared next-action
 	// projection. Its CreatedAt, BaseBranch, NextStage, and State fields
-	// feed the computation.
+	// feed the computation. The dependencies are carried in Dependencies,
+	// not in the task row, so the projection reads the same row it reads
+	// for every other task.
 	Task core.Task `json:"task"`
+	// Dependencies are the tasks the member depends on, in ID order.
+	Dependencies []Dependency `json:"dependencies"`
 	// Events are the member's insight events in (at, id) order.
 	Events []Event `json:"events"`
 }
@@ -146,6 +163,33 @@ type Task struct {
 	MergedAt *time.Time `json:"merged_at"`
 	// ClosedAt is the member's earliest move into closed, or null.
 	ClosedAt *time.Time `json:"closed_at"`
+	// DependsOn holds one entry for each task the member depends on, in ID
+	// order, a task outside the crate included (invariant 38).
+	DependsOn []DependsOn `json:"depends_on"`
+	// WaitDepth is 0 when no DependsOn entry is both waiting and member,
+	// and otherwise one more than the highest WaitDepth among the members
+	// those entries name (invariant 38).
+	WaitDepth int `json:"wait_depth"`
+	// WaitedOnBy holds, in ID order, the IDs of the members with a waiting
+	// DependsOn entry that names this member (invariant 38).
+	WaitedOnBy []string `json:"waited_on_by"`
+}
+
+// DependsOn is one task a member depends on, on the insight view
+// (component-crates invariant 38; req-crate-insights AC-6.1).
+type DependsOn struct {
+	// ID is the task ID of the task the member depends on.
+	ID string `json:"id"`
+	// Title is that task's title.
+	Title string `json:"title"`
+	// State is that task's state. closed marks a task that closed without
+	// merging.
+	State core.TaskState `json:"state"`
+	// Member is true when that task is a current member of the crate.
+	Member bool `json:"member"`
+	// Waiting is true when the member is neither merged nor closed and
+	// that task is not merged.
+	Waiting bool `json:"waiting"`
 }
 
 // Whereabouts is one group of the branch map's counts (component-crates
