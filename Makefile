@@ -541,3 +541,11 @@ test-artifact-media:
 .PHONY: test-artifacts
 test-artifacts:
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/core ./internal/store ./internal/store/storetest ./internal/store/postgres ./internal/store/singlestore ./internal/httpapi ./internal/inprocess ./cmd/conveyor -run 'Artifact|Attachment|Image|Conformance' -count=1
+
+# Focused live status checks: the status function and the task, crate, and
+# MCP feedback reads (component-production-feedback). Full validation remains
+# make test and CI.
+.PHONY: test-feedback-live-status
+test-feedback-live-status:
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./internal/feedback -count=1
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./internal/httpapi -run 'TestFeedback|TestMCPCrate' -count=1

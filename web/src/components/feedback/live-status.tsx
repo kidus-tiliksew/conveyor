@@ -7,22 +7,17 @@ import { absoluteTime, cn, relativeTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { withQuerySignal } from '../task/use-task-detail'
 import { Badge } from '../ui/badge'
+import { LIVE_STATUS_REFRESH_MS, useLiveStatusRefresh } from './use-live-status-refresh'
 import { WatcherState } from './watcher-state'
 
 /**
- * While a page that shows live status is open and its tab is visible, its read
- * runs again every 60 seconds (component-production-feedback invariant 23;
- * component-web-dashboard invariant 15). TanStack Query stops an interval
- * while the tab is hidden, because no query sets
- * `refetchIntervalInBackground`, and stops it when the observer unmounts.
- */
-export const LIVE_STATUS_REFRESH_MS = 60_000
-
-/**
- * The interval of a live-status read: 60 seconds while its answer shows live
- * status, and no timer for an empty answer, so a page with nothing live sends
- * no timed request (component-web-dashboard invariant 15;
- * `req-quiet-idle-runtime` REQ-1).
+ * The interval of the environment rows read: 60 seconds while its answer
+ * shows a row, and no timer for an empty answer, so a page with nothing to
+ * show sends no timed request (component-web-dashboard invariant 15;
+ * `req-quiet-idle-runtime` REQ-1). TanStack Query stops an interval while the
+ * tab is hidden, because no query sets `refetchIntervalInBackground`, and
+ * stops it when the observer unmounts. The task live-status read and the
+ * crate read use `useLiveStatusRefresh`, which adds the pending reads.
  */
 export function liveStatusInterval(shown: number | undefined) {
   return shown ? LIVE_STATUS_REFRESH_MS : false
@@ -60,19 +55,34 @@ function ServedTime({ value }: { value: string }) {
  */
 export function TaskLiveStatus({ taskId }: { taskId: string }) {
   const { workspace } = useWorkspaceSelection()
+  const queryKey = taskLiveStatusQueryKey(workspace, taskId)
   const statuses = useQuery({
-    queryKey: taskLiveStatusQueryKey(workspace, taskId),
+    queryKey,
     queryFn: (context) => withQuerySignal(context, (signal) => fetchTaskLiveStatus(workspace, taskId, signal)),
     enabled: Boolean(workspace && taskId),
     retry: false,
     refetchOnWindowFocus: false,
-    refetchInterval: (query) => liveStatusInterval(query.state.data?.length),
+    refetchOnReconnect: false,
   })
   // Reading the update time re-renders the lines after each successful timed
   // read, so their relative times stay current even when the answer is
-  // unchanged.
+  // unchanged. A failed read keeps the last served lines.
   void statuses.dataUpdatedAt
-  const lines = statuses.data ?? []
+  const lines = statuses.data?.environments ?? []
+  // While the answer is pending, the read runs again after 10 seconds, at
+  // most six times in a row, and otherwise every 60 seconds while a line
+  // shows (component-production-feedback invariant 23).
+  useLiveStatusRefresh({
+    queryKey,
+    shown: lines.length,
+    pending: statuses.data?.environments_pending === true,
+    hasAnswer: statuses.data !== undefined,
+    dataUpdatedAt: statuses.dataUpdatedAt,
+    errorUpdatedAt: statuses.errorUpdatedAt,
+    isFetching: statuses.isFetching,
+    isPaused: statuses.isPaused,
+    refetch: statuses.refetch,
+  })
   const environments = useQuery({
     queryKey: environmentsQueryKey(workspace, false),
     queryFn: (context) => withQuerySignal(context, (signal) => fetchEnvironments(workspace, false, signal)),

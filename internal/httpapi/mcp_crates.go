@@ -48,6 +48,10 @@ type mcpCrateDetailRow struct {
 	// (req-production-feedback AC-10.1).
 	Environments []feedback.CrateLine `json:"environments"`
 	LiveIn       map[string][]string  `json:"live_in"`
+	// EnvironmentsPending is true when a merged member's status was left
+	// out because an answer is not stored yet (component-production-feedback
+	// invariant 20).
+	EnvironmentsPending bool `json:"environments_pending"`
 }
 
 // mcpCrateRead serves list_crates and get_crate from the lean crate reads:
@@ -121,16 +125,17 @@ func (s *Server) mcpGetCrateWithFeedback(ctx context.Context, crates crateBacken
 	if !ok {
 		return items, nil
 	}
-	lines, liveIn, err := s.feedbackCrateEnvironments(ctx, row.ID)
+	live, err := s.feedbackCrateEnvironments(ctx, row.ID)
 	if err != nil {
 		return nil, err
 	}
-	row.Environments = lines
+	row.Environments = live.Lines
+	row.EnvironmentsPending = live.Pending
 	// Each merged member that task_ids lists has a list, [] when it is live
 	// nowhere. Members that are not merged, or outside task_ids, have none.
 	row.LiveIn = map[string][]string{}
 	for _, taskID := range row.TaskIDs {
-		if names, merged := liveIn[taskID]; merged {
+		if names, merged := live.LiveIn[taskID]; merged {
 			row.LiveIn[taskID] = names
 		}
 	}
