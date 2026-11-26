@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Archive, ArchiveRestore, KeyRound, Pencil, Plus, X } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
+import { memo, type ReactNode, useCallback, useState } from 'react'
 import {
   fetchEnvironments,
   fetchEnvironmentSuggestions,
@@ -93,6 +93,18 @@ export function EnvironmentsPanel({
       ignoreEnvironmentSuggestion(workspace, suggestion.github_environment),
     onSuccess: refresh,
   })
+  // Stable callbacks, so a dialog or form change in the panel does not render
+  // every suggestion row again. A workspace can hold many thousands of them.
+  const createFromSuggestion = useCallback(
+    (suggestion: EnvironmentSuggestion) =>
+      setForm({
+        mode: 'create',
+        seed: { name: suggestion.github_environment, githubEnvironment: suggestion.github_environment },
+      }),
+    [],
+  )
+  const ignoreMutate = ignore.mutate
+  const ignoreSuggestion = useCallback((suggestion: EnvironmentSuggestion) => ignoreMutate(suggestion), [ignoreMutate])
   const archiveError = (environment: EnvironmentRecord) =>
     setArchived.error && setArchived.variables?.environment.id === environment.id ? setArchived.error : null
 
@@ -154,13 +166,8 @@ export function EnvironmentsPanel({
           suggestions={suggestions.data ?? []}
           ignoring={ignore.isPending ? ignore.variables?.github_environment : undefined}
           error={ignore.error}
-          onCreate={(suggestion) =>
-            setForm({
-              mode: 'create',
-              seed: { name: suggestion.github_environment, githubEnvironment: suggestion.github_environment },
-            })
-          }
-          onIgnore={(suggestion) => ignore.mutate(suggestion)}
+          onCreate={createFromSuggestion}
+          onIgnore={ignoreSuggestion}
         />
       )}
       {canManage && suggestions.isError && (
@@ -444,8 +451,10 @@ function EnvironmentCard({
 // Each suggested name with its repository and newest report time, and the two
 // controls of req-environments AC-1.6. Accept opens the create form with the
 // name and one GitHub environment name filled in, and writes nothing until
-// the form is sent.
-function Suggestions({
+// the form is sent. The list and each row are memoized: the panel renders the
+// whole list, which can hold many thousands of rows, only when the served
+// list or the ignore state changes.
+const Suggestions = memo(function Suggestions({
   suggestions,
   ignoring,
   error,
@@ -473,34 +482,55 @@ function Suggestions({
       )}
       <ul className="divide-y divide-border">
         {suggestions.map((suggestion) => (
-          <li
+          <SuggestionRow
             key={`${suggestion.github_environment}:${suggestion.repository}`}
-            data-environment-suggestion={suggestion.github_environment}
-            className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm"
-          >
-            <span className="min-w-0 font-medium">{suggestion.github_environment}</span>
-            <span className="text-xs text-muted">
-              {suggestion.repository} · last report <ServedTime value={suggestion.last_reported_at} />
-            </span>
-            <span className="ml-auto flex gap-1">
-              <Button size="sm" variant="outline" onClick={() => onCreate(suggestion)}>
-                <Plus />
-                Create environment
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={ignoring === suggestion.github_environment}
-                aria-label={`Ignore ${suggestion.github_environment}`}
-                onClick={() => onIgnore(suggestion)}
-              >
-                <X />
-                Ignore
-              </Button>
-            </span>
-          </li>
+            suggestion={suggestion}
+            ignoring={ignoring === suggestion.github_environment}
+            onCreate={onCreate}
+            onIgnore={onIgnore}
+          />
         ))}
       </ul>
     </section>
   )
-}
+})
+
+const SuggestionRow = memo(function SuggestionRow({
+  suggestion,
+  ignoring,
+  onCreate,
+  onIgnore,
+}: {
+  suggestion: EnvironmentSuggestion
+  ignoring: boolean
+  onCreate: (suggestion: EnvironmentSuggestion) => void
+  onIgnore: (suggestion: EnvironmentSuggestion) => void
+}) {
+  return (
+    <li
+      data-environment-suggestion={suggestion.github_environment}
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm"
+    >
+      <span className="min-w-0 font-medium">{suggestion.github_environment}</span>
+      <span className="text-xs text-muted">
+        {suggestion.repository} · last report <ServedTime value={suggestion.last_reported_at} />
+      </span>
+      <span className="ml-auto flex gap-1">
+        <Button size="sm" variant="outline" onClick={() => onCreate(suggestion)}>
+          <Plus />
+          Create environment
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={ignoring}
+          aria-label={`Ignore ${suggestion.github_environment}`}
+          onClick={() => onIgnore(suggestion)}
+        >
+          <X />
+          Ignore
+        </Button>
+      </span>
+    </li>
+  )
+})

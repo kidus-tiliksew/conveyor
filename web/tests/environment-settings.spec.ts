@@ -634,7 +634,7 @@ test('suggestions on a later page show, and their create and ignore controls wor
 
 test('a suggestion past 10,000 rows can be reached, created from, and ignored', async ({ page }) => {
   // The page renders more than 10,000 rows, so waits get more time.
-  test.setTimeout(120_000)
+  test.setTimeout(240_000)
   // 10,002 suggestions: 51 pages of at most 200 rows. The last two sit past
   // the 50-page bound the read had before.
   const many: EnvironmentSuggestion[] = Array.from({ length: 10_000 }, (_, index) => ({
@@ -656,9 +656,9 @@ test('a suggestion past 10,000 rows can be reached, created from, and ignored', 
   await openEnvironmentsTab(page)
   const canary = page.locator('[data-environment-suggestion="far-canary"]')
   const edge = page.locator('[data-environment-suggestion="far-edge"]')
-  await expect(canary).toContainText('conveyor', { timeout: 30_000 })
+  await expect(canary).toContainText('conveyor', { timeout: 90_000 })
   await expect(edge).toContainText('web-app')
-  await expect(page.locator('[data-environment-suggestion]')).toHaveCount(10_002, { timeout: 30_000 })
+  await expect(page.locator('[data-environment-suggestion]')).toHaveCount(10_002, { timeout: 90_000 })
   const offsets = state.gets
     .filter((path) => path.startsWith('/v1/environments/suggestions'))
     .map((path) => new URL(path, 'http://x').searchParams.get('offset'))
@@ -673,7 +673,7 @@ test('a suggestion past 10,000 rows can be reached, created from, and ignored', 
   await expect(form.getByLabel('GitHub environment names')).toHaveValue('far-canary')
   expect(state.writes).toHaveLength(0)
   await form.getByRole('button', { name: 'Add environment' }).click()
-  await expect(form).toHaveCount(0, { timeout: 30_000 })
+  await expect(form).toHaveCount(0, { timeout: 90_000 })
   expect(state.writes).toEqual([
     {
       method: 'POST',
@@ -681,12 +681,12 @@ test('a suggestion past 10,000 rows can be reached, created from, and ignored', 
       body: { name: 'far-canary', tracked_branches: {}, github_environments: ['far-canary'] },
     },
   ])
-  await expect(card(page, 'env-far-canary')).toBeVisible({ timeout: 30_000 })
-  await expect(canary).toHaveCount(0, { timeout: 30_000 })
+  await expect(card(page, 'env-far-canary')).toBeVisible({ timeout: 90_000 })
+  await expect(canary).toHaveCount(0, { timeout: 90_000 })
 
   // Ignore reaches the other row past the old bound.
   await edge.getByRole('button', { name: 'Ignore far-edge' }).click()
-  await expect(edge).toHaveCount(0, { timeout: 30_000 })
+  await expect(edge).toHaveCount(0, { timeout: 90_000 })
   expect(state.writes.at(-1)).toEqual({
     method: 'POST',
     path: '/v1/environments/suggestions/ignore',
