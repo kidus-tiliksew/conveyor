@@ -6,16 +6,20 @@
 // formats them and derives none.
 import { Archive, CalendarPlus, CircleCheck, Pause, Play, RotateCw } from 'lucide-react'
 import { Component, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CrateDetail, CrateInsight } from '../../lib/types'
+import type { CrateDetail, CrateInsight, CrateInsightTask } from '../../lib/types'
 import { useMediaQuery } from '../../lib/use-media-query'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
 import type { CrateEmphasis } from './crate-emphasis'
 import { formatTargetDate, targetDateHint } from './crate-parts'
+import { linksKey, relatedMembers, type WaitLink, waitLinks } from './dependency-model'
 import { type LineBlock, lineStations, phaseMeta, phasesInUse, placesAt, replaySpan, stationCounts } from './line-model'
 
 // three.js and its React bindings load with this chunk only (DEC-143(2)).
 const LineScene = lazy(() => import('./line-scene'))
+
+// The task list the scene gets before the insight view loads.
+const noTasks: CrateInsightTask[] = []
 
 // A replay plays the crate's whole history in this many milliseconds.
 const REPLAY_MS = 9000
@@ -157,16 +161,38 @@ export function CrateStage({
   const counts = useMemo(() => stationCounts(blocks), [blocks])
   const legend = useMemo(() => phasesInUse(blocks), [blocks])
 
+  // The served dependencies, kept apart from the block cache above so a
+  // change to them alone reaches the scene. At the present the scene stands
+  // a member behind the member it waits on at the same station, and draws a
+  // link for each `waiting` member entry of the emphasized task. A replay
+  // shows neither (req-crate-insights AC-6.5; component-crates invariant
+  // 39; DEC-151(3), (4)). The dimming holds at every moment (AC-6.6).
+  const presentLinks = useRef<{ key: string; links: WaitLink[] }>({ key: '', links: [] })
+  const links = useMemo(() => {
+    const next = insight && at === null ? waitLinks(insight.tasks) : []
+    const key = linksKey(next)
+    if (key !== presentLinks.current.key) presentLinks.current = { key, links: next }
+    return presentLinks.current.links
+  }, [insight, at])
+  const emphasizedId = emphasis.emphasizedId
+  const related = useMemo(() => relatedMembers(insight?.tasks ?? [], emphasizedId), [insight, emphasizedId])
+
   const textMode = sceneFailed
   const sceneShown = Boolean(insight) && !textMode
 
   return (
-    <section aria-label="Crate summary" className="overflow-hidden rounded-xl border border-border bg-card">
+    // The section does not clip: the line's card can reach past the foot of
+    // the scene (req-crate-insights AC-6.1). The band rounds its own corners.
+    <section aria-label="Crate summary" className="rounded-xl border border-border bg-card">
       <div
         ref={band}
         data-line-mode={textMode ? 'text' : 'scene'}
         data-motion={reducedMotion ? 'reduced' : 'full'}
-        className={cn('relative', !textMode && 'h-[19rem] md:h-[23rem]')}
+        className={cn(
+          'relative',
+          !textMode && 'h-[19rem] rounded-t-xl md:h-[23rem]',
+          !textMode && !(sceneShown && legend.length > 0) && 'rounded-b-xl',
+        )}
         style={
           textMode
             ? undefined
@@ -203,7 +229,10 @@ export function CrateStage({
                       compact={compact}
                       dark={dark}
                       reducedMotion={reducedMotion}
-                      emphasizedId={emphasis.emphasizedId}
+                      emphasizedId={emphasizedId}
+                      tasks={insight?.tasks ?? noTasks}
+                      related={related}
+                      links={links}
                       onEmphasize={emphasis.emphasize}
                       onSelect={onSelect}
                       onContextLost={onContextLost}

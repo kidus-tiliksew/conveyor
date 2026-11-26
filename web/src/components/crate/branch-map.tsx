@@ -8,6 +8,14 @@
 // ID. The page places each mark at its served time and derives no value
 // (component-crates invariant 21; DEC-61). Ported from the approved prototype
 // without its release marks (feature-crate-insights CI-4).
+//
+// Dependencies (req-crate-insights AC-6.3, AC-6.4; component-crates invariant
+// 39; DEC-151(2)): a lane's open lines take rows by the served `wait_depth`
+// first, a link joins the end of an open member's line to the end of each
+// open line whose `waiting` entry names it, and a mark on a member's line
+// stands at the served merge time of each member it depends on. Every line
+// and mark stays at its recorded time: the map places nothing after the
+// present.
 import { ArrowRight, GitBranch, RotateCw } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CrateDetail, CrateInsight, CrateInsightTask, CrateTask, CrateWhereabouts } from '../../lib/types'
@@ -16,6 +24,8 @@ import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
 import { Skeleton } from '../ui/skeleton'
 import type { CrateEmphasis, EmphasisTarget } from './crate-emphasis'
+import { DependencyDetails, dependencyLineCount } from './dependency-details'
+import { relatedMembers } from './dependency-model'
 import { phaseMeta } from './line-model'
 
 const DAY = 86_400_000
@@ -26,8 +36,21 @@ const TOP = 30
 const GUTTER_LEFT = 92
 // Below this width the map keeps it and scrolls sideways inside its card.
 const MIN_WIDTH = 680
-// The hover card's height, used to keep the card inside the map.
+// The hover card's height before it is measured, used to keep the card
+// inside the map, and the height each dependency line adds to it.
 const CARD_ROOM = 64
+const CARD_DEPENDENCY_LINE = 16
+// The space a card keeps from the edge of what a person can see. The room a
+// side needs before a card that scrolls stands there: one whole line of
+// text with the card's padding and border. The card's widest box, and the
+// space it keeps from its line's end when it stands beside the line.
+const CARD_EDGE = 4
+const CARD_LINE_ROOM = 30
+const CARD_WIDTH = 256
+const CARD_SIDE_GAP = 8
+// How long a card that scrolls stays after the pointer leaves its line or
+// the card, so the pointer can cross the gap between them.
+const CARD_REACH_MS = 400
 // The order in which a lane's open lines take rows, nearest the merge first.
 const OPEN_ORDER = ['gate', 'review', 'build', 'plan', 'intake', 'crate', 'aside']
 
@@ -52,6 +75,25 @@ interface Spur extends LineShape {
   path: string
   // Each change-request mark: its served x and the line's y there.
   changes: Array<{ x: number; y: number }>
+}
+
+// A link from the open member that is waited on (`from`) to the open member
+// that waits on it (`to`). The arrowhead is at the task that waits.
+interface DependencyLink {
+  from: string
+  to: string
+  d: string
+}
+
+// The merge of member `from` on the line of member `to`, which depends on
+// it: a dotted drop from the merge to the dependent line, and a ring where it
+// meets the line.
+interface DependencyMergeMark {
+  from: string
+  to: string
+  x: number
+  y: number
+  d: string | null
 }
 
 // A bend is the cubic curve from (x0, ya) to (x0 + bend, yb) whose control
@@ -223,6 +265,9 @@ function BranchMapChart({
         .filter((task) => endOf(task) === null)
         .sort(
           (a, b) =>
+            // A task takes a row below every task of the lane it waits on
+            // (req-crate-insights AC-6.3).
+            a.wait_depth - b.wait_depth ||
             OPEN_ORDER.indexOf(a.station) - OPEN_ORDER.indexOf(b.station) ||
             (served(a.created_at) ?? 0) - (served(b.created_at) ?? 0),
         )
@@ -279,7 +324,60 @@ function BranchMapChart({
     for (let day = Math.ceil(t0 / DAY) * DAY; day <= now; day += DAY) days.push(day)
     const step = Math.max(1, Math.ceil(days.length / 8))
     const ticks = days.filter((_, index) => index % step === 0)
-    return { lanes, height, x, xNow, ticks, spurs: lanes.flatMap((lane) => lane.spurs) }
+    const spurs = lanes.flatMap((lane) => lane.spurs)
+
+    // The dependency links and merge marks (AC-6.3, AC-6.4), from the
+    // served entries only.
+    const byId = new Map(spurs.map((spur) => [spur.task.id, spur]))
+    const links: DependencyLink[] = []
+    const marks: DependencyMergeMark[] = []
+    // Brackets that leave the same end step left, so they stay apart.
+    const bracketDepth = new Map<number, number>()
+    for (const waiter of spurs) {
+      for (const entry of waiter.task.depends_on) {
+        if (!entry.member) continue
+        const source = byId.get(entry.id)
+        if (!source) continue
+        if (entry.waiting && source.ends === 'open' && waiter.ends === 'open') {
+          // A bracket left of the two ends, from the task waited on to the
+          // task that waits, with the arrowhead at the task that waits.
+          const fx = source.xe
+          const fy = source.y1
+          const tx = waiter.xe
+          const ty = waiter.y1
+          const level = bracketDepth.get(Math.round(fx)) ?? 0
+          bracketDepth.set(Math.round(fx), level + 1)
+          const bx = Math.min(fx, tx) - 11 - (level % 3) * 4
+          const dir = ty > fy ? 1 : -1
+          links.push({
+            from: source.task.id,
+            to: waiter.task.id,
+            d: `M${fx - 6},${fy} H${bx + 4} Q${bx},${fy} ${bx},${fy + 4 * dir} V${ty - 4 * dir} Q${bx},${ty} ${bx + 4},${ty} H${tx - 6}`,
+          })
+          continue
+        }
+        // The merge it depends on, when that merge falls after the task's
+        // creation and before its merge or close, and no later than the
+        // present. The bounds compare served times, never positions.
+        const merged = served(source.task.merged_at)
+        const created = served(waiter.task.created_at)
+        const finished = served(waiter.task.merged_at) ?? served(waiter.task.closed_at)
+        if (merged === null || created === null || merged <= created || merged > now) continue
+        if (finished !== null && merged >= finished) continue
+        const xm = x(merged)
+        const yLine = lineYAt(waiter, xm)
+        const yFrom = source.y0
+        const dir = yLine > yFrom ? 1 : -1
+        marks.push({
+          from: source.task.id,
+          to: waiter.task.id,
+          x: xm,
+          y: yLine,
+          d: Math.abs(yLine - yFrom) > 12 ? `M${xm},${yFrom + 5 * dir} V${yLine - 4 * dir}` : null,
+        })
+      }
+    }
+    return { lanes, height, x, xNow, ticks, spurs, links, marks }
   }, [insight, width, gutterRight, rows])
 
   // Pointing at a count emphasizes the lines of its served task IDs (AC-2.4).
@@ -288,8 +386,17 @@ function BranchMapChart({
     return found ? new Set(found.task_ids) : null
   }, [insight, emphasis.emphasizedGroup])
   const { emphasizedId } = emphasis
-  const lit = (id: string) => (emphasizedId ? emphasizedId === id : groupIds ? groupIds.has(id) : true)
-  const shown = emphasizedId ? model.spurs.find((spur) => spur.task.id === emphasizedId) : undefined
+  // An emphasized task keeps the members its dependencies connect it to lit,
+  // in either direction and through any number of members (AC-6.6).
+  const related = useMemo(() => relatedMembers(insight.tasks, emphasizedId), [insight.tasks, emphasizedId])
+  const lit = (id: string) => (related ? related.has(id) : groupIds ? groupIds.has(id) : true)
+  // The card's task: the emphasized one, or for a moment after the pointer
+  // leaves, the task of a card that scrolls, so the pointer can reach it.
+  // The emphasis itself clears at once, so no late clear undoes what
+  // another part of the page emphasizes.
+  const [lingering, setLingering] = useState<string | null>(null)
+  const cardId = emphasizedId ?? lingering
+  const shown = cardId ? model.spurs.find((spur) => spur.task.id === cardId) : undefined
   const labelChars = Math.floor((gutterRight - 26) / 6.4)
 
   // A line with keyboard focus draws a ring, so focus stays visible.
@@ -297,20 +404,246 @@ function BranchMapChart({
   // The pointer and focus targets stay apart in the shared emphasis, so
   // leaving a line or count clears only the pointer's target and a line or
   // count that still has focus keeps its emphasis (AC-2.5).
-  const enter = (target: EmphasisTarget) =>
+  // Leaving clears the pointer's target. A card that scrolls stays a
+  // moment longer, and entering it emphasizes its task again. On its way,
+  // the pointer can cross another line or count: that one takes the
+  // emphasis only if the pointer still rests on it when the moment ends.
+  const leaving = useRef<number | undefined>(undefined)
+  const heldCard = useRef<string | null>(null)
+  const held = useRef<string | null>(null)
+  const hovered = useRef<EmphasisTarget | null>(null)
+  // A line can report its leave after the pointer has reached the card.
+  // While the pointer is on the card, such a late leave changes nothing.
+  const onCard = useRef(false)
+  useEffect(() => () => window.clearTimeout(leaving.current), [])
+  const show = (target: EmphasisTarget) =>
     'task' in target ? emphasis.emphasize(target.task) : emphasis.emphasizeGroup(target.group)
-  const leave = () => emphasis.emphasize(null)
+  // The moment the card stays. Each line or count the pointer crosses on
+  // its way starts the moment again, so only a pointer that rests on
+  // another one hands the emphasis to it.
+  const settle = () => {
+    window.clearTimeout(leaving.current)
+    leaving.current = window.setTimeout(() => {
+      held.current = null
+      setLingering(null)
+      const next = hovered.current
+      if (next) show(next)
+    }, CARD_REACH_MS)
+  }
+  const enter = (target: EmphasisTarget) => {
+    hovered.current = target
+    if (held.current !== null && !('task' in target && target.task === held.current)) {
+      settle()
+      return
+    }
+    window.clearTimeout(leaving.current)
+    held.current = null
+    setLingering(null)
+    show(target)
+  }
+  const leave = (target?: EmphasisTarget) => {
+    const left = hovered.current
+    if (
+      target &&
+      left &&
+      ('task' in target ? 'task' in left && left.task === target.task : 'group' in left && left.group === target.group)
+    )
+      hovered.current = null
+    if (target && onCard.current) return
+    if (held.current !== null) {
+      settle()
+      return
+    }
+    window.clearTimeout(leaving.current)
+    emphasis.emphasize(null)
+    const stays = heldCard.current
+    if (!stays) return
+    held.current = stays
+    setLingering(stays)
+    settle()
+  }
+  // The pointer reaches the card: its task takes the emphasis again.
+  const enterCard = () => {
+    onCard.current = true
+    window.clearTimeout(leaving.current)
+    const task = held.current
+    held.current = null
+    hovered.current = null
+    if (task === null) return
+    setLingering(null)
+    emphasis.emphasize(task)
+  }
   const focus = (target: EmphasisTarget) => emphasis.focus(target)
   const blur = (target: EmphasisTarget) => emphasis.blur(target)
 
-  const cardBelow = shown ? shown.y1 + 12 + CARD_ROOM <= model.height : true
-  // Below 680 px the map scrolls sideways, so a line that takes keyboard
-  // focus brings its card into view. A pointer never scrolls the map.
+  // The card. It keeps inside the part of the map a person can see, also in
+  // the map's sideways scroll below 680 px, so nothing scrolls to bring it
+  // into view.
   const card = useRef<HTMLDivElement>(null)
-  const focusedCard = focusedId !== null && shown?.task.id === focusedId
-  useEffect(() => {
-    if (focusedCard) card.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
-  }, [focusedCard, focusedId])
+  // The card's full height, measured after each render, also while it
+  // scrolls. Its placement moves it and does not change this height. Until
+  // it is measured, the estimate counts the dependency lines.
+  const [cardHeight, setCardHeight] = useState<number | null>(null)
+  const [cardWidth, setCardWidth] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const height = card.current ? card.current.scrollHeight + 2 : null
+    const cardWide = card.current ? card.current.offsetWidth : null
+    setCardHeight((current) => (current === height ? current : height))
+    setCardWidth((current) => (current === cardWide ? current : cardWide))
+  })
+  const cardRoom =
+    cardHeight ?? (shown ? CARD_ROOM + dependencyLineCount(shown.task) * CARD_DEPENDENCY_LINE : CARD_ROOM)
+  // The part of the map a person can see: inside the crate page's scroll
+  // area and the window, in the map's own rows, and inside the map's own
+  // sideways scroll. It is read again on each scroll and resize while a
+  // card shows.
+  const shownId = shown?.task.id
+  const [seen, setSeen] = useState<{ top: number; bottom: number; left: number; right: number } | null>(null)
+  useLayoutEffect(() => {
+    const element = wrapper.current
+    if (!element || !shownId) return
+    const scroller = element.closest('[data-crate-scroll]')
+    const read = () => {
+      const frame = element.getBoundingClientRect()
+      const port = scroller?.getBoundingClientRect()
+      const top = Math.max(port?.top ?? 0, 0) - frame.top
+      const bottom = Math.min(port?.bottom ?? window.innerHeight, window.innerHeight) - frame.top
+      const left = element.scrollLeft
+      const right = element.scrollLeft + element.clientWidth
+      setSeen((current) =>
+        current && current.top === top && current.bottom === bottom && current.left === left && current.right === right
+          ? current
+          : { top, bottom, left, right },
+      )
+    }
+    read()
+    const target = scroller ?? window
+    target.addEventListener('scroll', read, { passive: true })
+    element.addEventListener('scroll', read, { passive: true })
+    window.addEventListener('resize', read)
+    return () => {
+      target.removeEventListener('scroll', read)
+      element.removeEventListener('scroll', read)
+      window.removeEventListener('resize', read)
+    }
+  }, [shownId, wrapper])
+  // Where the card stands (req-crate-insights AC-6.1). While a task is
+  // emphasized, its card renders, and its whole box stays inside the part
+  // of the map a person can see, whatever room is left:
+  // 1. Below the line when the whole card fits there, else above it when it
+  //    fits there. Before the part a person can see is read, the card stands
+  //    below when it fits in the map and otherwise above, as before.
+  // 2. Else, on the side with more room when that side holds at least one
+  //    whole line, keeping to exactly that room and scrolling.
+  // 3. Else, beside the line's end: on the side of the line's end dot,
+  //    label, and links that has more room, as wide as that room allows,
+  //    over the whole height a person can see, and scrolling. It covers
+  //    neither the end of the line that the pointer rests on nor its links.
+  // A card that scrolls takes the pointer, which can move onto it from the
+  // line, and opens scrolled just far enough to show its first waiting
+  // task. The keys of a focused line scroll it too.
+  let cardBelow = shown ? shown.y1 + 12 + cardRoom <= model.height || shown.y1 - 12 - cardRoom < 0 : true
+  // The card's top edge when it stands below or beside, or its foot when
+  // above.
+  let cardEdge = shown ? (cardBelow ? shown.y1 + 12 : shown.y1 - 12) : 0
+  let cardCap: number | null = null
+  let cardPlace: 'over' | 'under' | 'beside' = cardBelow ? 'under' : 'over'
+  // Beside the line: the card's centre and widest box.
+  let besideLeft: number | null = null
+  let besideWide: number | null = null
+  if (shown && seen) {
+    const seenTop = Math.max(seen.top, 0) + CARD_EDGE
+    const seenFoot = seen.bottom - CARD_EDGE
+    const overFoot = Math.min(shown.y1 - 12, seenFoot)
+    const underTop = Math.max(shown.y1 + 12, seenTop)
+    const roomAbove = overFoot - seenTop
+    const roomBelow = seenFoot - underTop
+    const fitsBelow = cardRoom <= roomBelow
+    const fitsAbove = cardRoom <= roomAbove
+    if (cardBelow ? !fitsBelow : !fitsAbove) {
+      if (fitsBelow || fitsAbove) cardBelow = fitsBelow
+      else if (Math.max(roomAbove, roomBelow) >= CARD_LINE_ROOM) {
+        cardBelow = roomBelow >= roomAbove
+        cardCap = Math.floor(cardBelow ? roomBelow : roomAbove)
+      } else cardPlace = 'beside'
+    }
+    if (cardPlace === 'beside') {
+      const keepLeft = shown.xe - 32
+      const keepRight = shown.ends === 'open' ? shown.xe + gutterRight - 12 : shown.xe + 12
+      const roomLeft = keepLeft - CARD_SIDE_GAP - (seen.left + CARD_EDGE)
+      const roomRight = seen.right - CARD_EDGE - (keepRight + CARD_SIDE_GAP)
+      const onRight = roomRight > roomLeft
+      besideWide = Math.max(1, Math.floor(Math.min(CARD_WIDTH, onRight ? roomRight : roomLeft)))
+      besideLeft = onRight ? keepRight + CARD_SIDE_GAP + besideWide / 2 : keepLeft - CARD_SIDE_GAP - besideWide / 2
+      const height = Math.max(1, seenFoot - seenTop)
+      cardCap = cardRoom > height ? Math.floor(height) : null
+      const tall = Math.min(cardRoom, height)
+      cardEdge = Math.min(Math.max(shown.y1 - tall / 2, seenTop), seenFoot - tall)
+    } else {
+      cardPlace = cardBelow ? 'under' : 'over'
+      cardEdge = cardBelow ? underTop : overFoot
+    }
+  }
+  // The map keeps that room for the tallest such card from the start, so
+  // pointing at a line does not move the page. The shown card's measure
+  // adds any height the estimate missed.
+  const reserved = useMemo(
+    () =>
+      Math.max(
+        0,
+        ...model.spurs.map((spur) => {
+          const room = CARD_ROOM + dependencyLineCount(spur.task) * CARD_DEPENDENCY_LINE
+          const fits = spur.y1 + 12 + room <= model.height || spur.y1 - 12 - room >= 0
+          return fits ? 0 : spur.y1 + 12 + room - model.height
+        }),
+      ),
+    [model],
+  )
+  // The card's centre, kept so the whole card stands inside the part of the
+  // map's sideways scroll that a person can see.
+  let cardLeft = shown ? Math.min(Math.max((shown.xs + Math.min(shown.xe, model.xNow)) / 2, 120), width - 140) : 0
+  if (besideLeft !== null) cardLeft = besideLeft
+  else if (seen && cardWidth !== null && seen.right - seen.left >= cardWidth + 2 * CARD_EDGE)
+    cardLeft = Math.min(
+      Math.max(cardLeft, seen.left + cardWidth / 2 + CARD_EDGE),
+      seen.right - cardWidth / 2 - CARD_EDGE,
+    )
+  heldCard.current = shown && cardCap !== null ? shown.task.id : null
+  // A card that scrolls opens scrolled just far enough to show its first
+  // waiting task, once for each task it shows and each side it takes, since
+  // its width and height change with the side.
+  const openedFor = useRef<string | null>(null)
+  const capped = cardCap !== null
+  const opening = shownId && `${shownId} ${cardPlace}`
+  useLayoutEffect(() => {
+    const element = card.current
+    if (!element || !capped || !opening) {
+      if (!capped) openedFor.current = null
+      return
+    }
+    if (openedFor.current === opening) return
+    openedFor.current = opening
+    // Its first waiting task ends at the card's foot, or, when that task is
+    // taller than the card, starts at the card's top.
+    const first = element.querySelector('[data-waits-on]')
+    if (!first) return
+    const lines = first.getBoundingClientRect()
+    const top = lines.top - element.getBoundingClientRect().top - element.clientTop + element.scrollTop
+    const end = top + lines.height
+    element.scrollTop = Math.max(0, lines.height > element.clientHeight ? top : end - element.clientHeight)
+  }, [capped, opening])
+  const below = shown && cardPlace !== 'over' ? cardEdge + (cardCap ?? cardRoom) - model.height : 0
+  const mapHeight = model.height + Math.max(reserved, below)
+  // A map that scrolls sideways opens scrolled to the present, where the
+  // open lines and their links end. It does so once, after its first
+  // measure, and later refreshes keep the user's scroll.
+  const openedAtPresent = useRef(false)
+  useLayoutEffect(() => {
+    const element = wrapper.current
+    if (openedAtPresent.current || !element || measured === 0) return
+    openedAtPresent.current = true
+    if (element.scrollWidth > element.clientWidth) element.scrollLeft = element.scrollWidth
+  }, [measured, wrapper])
 
   return (
     <section aria-label="Where the work is" data-branch-map className="min-w-0 rounded-lg border border-border bg-card">
@@ -331,7 +664,7 @@ function BranchMapChart({
                   data-whereabouts-branch={item.branch ?? undefined}
                   aria-pressed={emphasis.emphasizedGroup === key}
                   onMouseEnter={() => enter(target)}
-                  onMouseLeave={leave}
+                  onMouseLeave={() => leave(target)}
                   onFocus={() => focus(target)}
                   onBlur={() => blur(target)}
                   className={cn(
@@ -367,7 +700,7 @@ function BranchMapChart({
         </ol>
       </header>
 
-      <div ref={wrapper} data-branch-map-scroll className="relative overflow-x-auto">
+      <div ref={wrapper} data-branch-map-scroll className="relative overflow-x-auto" style={{ minHeight: mapHeight }}>
         {/* biome-ignore lint/a11y/useSemanticElements: an SVG element cannot be a fieldset, and the group names the lines it holds */}
         <svg
           width={width}
@@ -444,6 +777,83 @@ function BranchMapChart({
             </g>
           ))}
 
+          {(model.links.length > 0 || model.marks.length > 0) && (
+            <g data-dependency-links aria-hidden>
+              <defs>
+                <marker
+                  id="crate-dependency-arrow"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path
+                    d="M1,1 L7,4 L1,7"
+                    fill="none"
+                    stroke="var(--color-muted)"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </marker>
+              </defs>
+              {model.links.map((link) => {
+                const on = lit(link.from) && lit(link.to)
+                const strong = emphasizedId !== null && on
+                return (
+                  <path
+                    key={`${link.from}>${link.to}`}
+                    data-dependency-link={`${link.from}>${link.to}`}
+                    data-dimmed={on ? undefined : true}
+                    d={link.d}
+                    fill="none"
+                    stroke={strong ? 'var(--color-foreground)' : 'var(--color-muted)'}
+                    strokeWidth={strong ? 1.75 : 1.25}
+                    strokeLinecap="round"
+                    opacity={on ? 0.9 : 0.12}
+                    markerEnd="url(#crate-dependency-arrow)"
+                    className="transition-opacity"
+                  />
+                )
+              })}
+              {model.marks.map((mark) => {
+                const on = lit(mark.from) && lit(mark.to)
+                const strong = emphasizedId !== null && on
+                const stroke = strong ? 'var(--color-foreground)' : 'var(--color-muted)'
+                return (
+                  <g
+                    key={`${mark.from}>${mark.to}`}
+                    data-dependency-merge={`${mark.from}>${mark.to}`}
+                    data-dimmed={on ? undefined : true}
+                    opacity={on ? (strong ? 0.95 : 0.7) : 0.12}
+                    className="transition-opacity"
+                  >
+                    {mark.d && (
+                      <path
+                        d={mark.d}
+                        fill="none"
+                        stroke={stroke}
+                        strokeWidth={1.25}
+                        strokeDasharray="1 3"
+                        strokeLinecap="round"
+                      />
+                    )}
+                    <circle
+                      cx={mark.x}
+                      cy={mark.y}
+                      r={2.75}
+                      fill="var(--color-card)"
+                      stroke={stroke}
+                      strokeWidth={1.5}
+                    />
+                  </g>
+                )
+              })}
+            </g>
+          )}
+
           {model.spurs.map((spur, index) => {
             const { task, row } = spur
             const color = phaseMeta[task.phase].color
@@ -463,7 +873,7 @@ function BranchMapChart({
                 opacity={on ? 1 : 0.22}
                 className="cursor-pointer outline-none transition-opacity"
                 onMouseEnter={() => enter(target)}
-                onMouseLeave={leave}
+                onMouseLeave={() => leave(target)}
                 onFocus={(event) => {
                   // Only keyboard focus draws the ring and scrolls the card
                   // into view. A click must not move the line under the
@@ -477,6 +887,33 @@ function BranchMapChart({
                 }}
                 onClick={() => onSelect(task.id)}
                 onKeyDown={(event) => {
+                  // The arrow, page, Home, and End keys scroll this line's
+                  // card when it scrolls, so the keyboard reaches its last
+                  // waiting task while the focus stays on the line.
+                  const scroll = shown?.task.id === task.id && cardCap !== null ? card.current : null
+                  if (scroll) {
+                    // End brings the last waiting task to the card's foot.
+                    const last = Array.from(scroll.querySelectorAll('[data-waits-on]')).at(-1)
+                    const lastFoot = last
+                      ? last.getBoundingClientRect().bottom -
+                        scroll.getBoundingClientRect().top -
+                        scroll.clientTop +
+                        scroll.scrollTop
+                      : scroll.scrollHeight
+                    const target = {
+                      ArrowDown: scroll.scrollTop + 40,
+                      ArrowUp: scroll.scrollTop - 40,
+                      PageDown: scroll.scrollTop + scroll.clientHeight - 16,
+                      PageUp: scroll.scrollTop - scroll.clientHeight + 16,
+                      End: lastFoot - scroll.clientHeight,
+                      Home: 0,
+                    }[event.key]
+                    if (target !== undefined) {
+                      event.preventDefault()
+                      scroll.scrollTop = Math.max(0, target)
+                      return
+                    }
+                  }
                   if (event.key !== 'Enter' && event.key !== ' ') return
                   // Space would scroll the page.
                   event.preventDefault()
@@ -594,14 +1031,27 @@ function BranchMapChart({
 
         {/* The task's card while it is pointed at or holds focus (AC-2.5). */}
         {shown && (
+          // biome-ignore lint/a11y/noStaticElementInteractions: the pointer that rests on a card that scrolls keeps the card; the card holds no control
           <div
             ref={card}
             data-branch-card={shown.task.id}
-            className="pointer-events-none absolute z-10 w-max max-w-64 rounded-md border border-border bg-card px-2.5 py-1.5 shadow-md"
+            data-branch-card-scrolls={cardCap !== null}
+            data-branch-card-place={cardPlace}
+            className={cn(
+              'absolute z-10 w-max max-w-64 overflow-y-auto overscroll-contain rounded-md border border-border bg-card px-2.5 py-1.5 shadow-md',
+              cardCap === null && 'pointer-events-none',
+            )}
+            onMouseEnter={enterCard}
+            onMouseLeave={() => {
+              onCard.current = false
+              leave()
+            }}
             style={{
-              left: Math.min(Math.max((shown.xs + Math.min(shown.xe, model.xNow)) / 2, 120), width - 140),
-              top: cardBelow ? shown.y1 + 12 : shown.y1 - 12,
-              transform: cardBelow ? 'translateX(-50%)' : 'translate(-50%, -100%)',
+              maxHeight: cardCap ?? undefined,
+              maxWidth: besideWide ?? undefined,
+              left: cardLeft,
+              top: cardEdge,
+              transform: cardPlace === 'over' ? 'translate(-50%, -100%)' : 'translateX(-50%)',
             }}
           >
             <p className="text-xs font-medium leading-snug text-foreground">
@@ -616,6 +1066,9 @@ function BranchMapChart({
                 {`${shown.row ? ' · ' : ''}${shown.task.review_rounds} review ${shown.task.review_rounds === 1 ? 'round' : 'rounds'}`}
               </span>
             </p>
+            {/* What the task waits on and how many members wait on it
+                (AC-6.1, AC-6.2). */}
+            <DependencyDetails task={shown.task} className="mt-1 border-t border-border pt-1" />
             <p data-branch-card-branch className="font-mono text-[11px] leading-4 text-faint">
               {shown.ends === 'merged'
                 ? `in ${shown.task.base_branch} since ${timeLabel.format(new Date(shown.task.merged_at as string))}`
@@ -654,6 +1107,31 @@ function BranchMapChart({
           </svg>
           Not started
         </span>
+        {/* Each dependency mark is named only while the map draws one. */}
+        {model.links.length > 0 && (
+          <span data-legend="waits" className="inline-flex items-center gap-1.5">
+            <svg width="22" height="12" aria-hidden="true">
+              <path d="M2,1 V5 Q2,9 6,9 H19" fill="none" stroke="var(--color-muted)" strokeWidth="1.25" />
+              <path d="M16,6.5 L19,9 L16,11.5" fill="none" stroke="var(--color-muted)" strokeWidth="1.25" />
+            </svg>
+            Waits for that task to merge
+          </span>
+        )}
+        {model.marks.length > 0 && (
+          <span data-legend="dependency-merged" className="inline-flex items-center gap-1.5">
+            <svg width="10" height="14" aria-hidden="true">
+              <path
+                d="M5,1 V7"
+                stroke="var(--color-muted)"
+                strokeWidth="1.25"
+                strokeDasharray="1 3"
+                strokeLinecap="round"
+              />
+              <circle cx="5" cy="10.5" r="2.5" fill="var(--color-card)" stroke="var(--color-muted)" strokeWidth="1.5" />
+            </svg>
+            A task it waited on merged
+          </span>
+        )}
       </footer>
     </section>
   )

@@ -9,14 +9,30 @@
 // The scene is built in code from primitive shapes and ships no model,
 // texture, or font file (DEC-143(1)). The station signs and the card of the
 // pointed-at task are page elements placed from scene positions (DEC-143(4)).
+// So is each dependency link: it shows only at the present, only while the
+// emphasized task waits on a member, from the block of each member it waits
+// on to the emphasized block (req-crate-insights AC-6.5; component-crates
+// invariant 39; DEC-151(3), (4)).
 // The page loads this file on demand, so three.js stays out of every other
 // route's bundle (DEC-143(2)).
 import { ContactShadows, RoundedBox } from '@react-three/drei'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import * as THREE from 'three'
+import type { CrateInsightTask, CratePhase, CrateStation } from '../../lib/types'
+import { cn } from '../../lib/utils'
+import { DependencyDetails } from './dependency-details'
+import { linksKey, type WaitLink } from './dependency-model'
 import { type LineBlock, type LineStation, phaseMeta } from './line-model'
-import type { CratePhase, CrateStation } from '../../lib/types'
 
 export interface LineSceneProps {
   blocks: LineBlock[]
@@ -29,6 +45,16 @@ export interface LineSceneProps {
   dark: boolean
   reducedMotion: boolean
   emphasizedId: string | null
+  // The member tasks as the insight view serves them, for what the card
+  // states about its task's dependencies (req-crate-insights AC-6.1,
+  // AC-6.2).
+  tasks: CrateInsightTask[]
+  // The members left undimmed while a task is emphasized: that task and the
+  // members its dependencies connect it to (AC-6.6). Null with no emphasis.
+  related: Set<string> | null
+  // Each served `waiting` entry that names a member, at the present. Empty
+  // during a replay (AC-6.5).
+  links: WaitLink[]
   onEmphasize: (id: string | null) => void
   onSelect: (id: string) => void
   // Called when the browser takes the canvas's WebGL context away, so the
@@ -80,15 +106,32 @@ type Place = {
 }
 
 // Where every block sits. Belt blocks fill their zone from the end nearest
-// the next station, two abreast, then stack.
-function place(blocks: LineBlock[], layout: Layout): Map<string, Place> {
+// the next station, two abreast, then stack. At the present, a member that
+// waits on a member at the same station stands behind it on the belt when
+// the station has room for every block in file (req-crate-insights AC-6.5).
+function place(blocks: LineBlock[], layout: Layout, links: WaitLink[]): Map<string, Place> {
   const places = new Map<string, Place>()
   const by = (station: CrateStation) => blocks.filter((block) => block.station === station)
 
   for (const zone of zones) {
     const [from, to] = layout.zones[zone]
     const columns = Math.max(1, Math.floor((to - from) / (MODULE + 0.16)))
-    by(zone).forEach((block, index) => {
+    const here = by(zone)
+    const inFile = fileSpots(here, links, to - from)
+    if (inFile) {
+      for (const spot of inFile.spots)
+        places.set(spot.id, {
+          kind: 'belt',
+          size: MODULE,
+          position: new THREE.Vector3(
+            to - MODULE / 2 - 0.05 - spot.column * inFile.gap,
+            BELT_Y + 0.05 + MODULE / 2,
+            inFile.single ? 0 : spot.row === 0 ? 0.36 : -0.36,
+          ),
+        })
+      continue
+    }
+    here.forEach((block, index) => {
       const perLayer = columns * 2
       const layer = Math.floor(index / perLayer)
       const slot = index % perLayer
@@ -150,6 +193,50 @@ function place(blocks: LineBlock[], layout: Layout): Map<string, Place> {
     })
   })
   return places
+}
+
+// The places of one station's blocks in file. The blocks that links join
+// form one file, each member standing ahead of every member that waits on
+// it, toward the next station. Files fill the belt's two rows. Null when no
+// two blocks here are linked, when a link loop leaves no order, or when the
+// files do not fit the station without stacking.
+function fileSpots(here: LineBlock[], links: WaitLink[], length: number) {
+  const ids = new Set(here.map((block) => block.id))
+  const inZone = links.filter((link) => ids.has(link.from) && ids.has(link.to))
+  if (inZone.length === 0) return null
+  // The linked groups, in the served block order of their first block.
+  const group = new Map(here.map((block) => [block.id, block.id]))
+  const root = (id: string): string => {
+    const parent = group.get(id) as string
+    return parent === id ? id : root(parent)
+  }
+  for (const link of inZone) group.set(root(link.to), root(link.from))
+  const files = new Map<string, string[]>()
+  for (const block of here) files.set(root(block.id), [...(files.get(root(block.id)) ?? []), block.id])
+  // Each file in dependency order: a block takes its place once every block
+  // it waits on here has one, and ties keep the served order.
+  const ordered: string[][] = []
+  for (const members of files.values()) {
+    const waitsOn = new Map(members.map((id) => [id, inZone.filter((link) => link.to === id).length]))
+    const file: string[] = []
+    while (file.length < members.length) {
+      const next = members.find((id) => !file.includes(id) && waitsOn.get(id) === 0)
+      if (next === undefined) return null
+      file.push(next)
+      for (const link of inZone) if (link.from === next) waitsOn.set(link.to, (waitsOn.get(link.to) ?? 0) - 1)
+    }
+    ordered.push(file)
+  }
+  const used = [0, 0]
+  const spots: Array<{ id: string; row: number; column: number }> = []
+  for (const file of ordered) {
+    const row = used[0] <= used[1] ? 0 : 1
+    for (const id of file) spots.push({ id, row, column: used[row]++ })
+  }
+  const longest = Math.max(...used)
+  const gap = longest > 1 ? Math.min(MODULE + 0.3, (length - MODULE) / (longest - 1)) : MODULE + 0.3
+  if (gap < MODULE + 0.08) return null
+  return { spots, gap, single: used[1] === 0 }
 }
 
 interface Palette {
@@ -223,7 +310,8 @@ function Block({
   dimmed: boolean
   reducedMotion: boolean
   groups: RefObject<Map<string, THREE.Group>>
-  onEmphasize: (id: string | null) => void
+  // `left` names the block the pointer leaves.
+  onEmphasize: (id: string | null, left?: string) => void
   onSelect: (id: string) => void
 }) {
   const group = useRef<THREE.Group>(null)
@@ -293,6 +381,9 @@ function Block({
       : THREE.MathUtils.damp(lift.current, emphasized ? 1 : 0, 12, delta)
     node.position.set(x, y + lift.current * 0.22, z)
     node.scale.setScalar(scale * (1 + lift.current * 0.1))
+    // The card reads the lift to stand where the block rests: a card that
+    // moved with the lift would slide from under a pointer that rests on it.
+    node.userData.lift = lift.current
     if (beacon.current) {
       const pulse = reducedMotion ? 0.5 : (time * 0.9) % 1
       beacon.current.scale.setScalar(0.6 + pulse * 1.1)
@@ -312,7 +403,7 @@ function Block({
           document.body.style.cursor = 'pointer'
         }}
         onPointerOut={() => {
-          onEmphasize(null)
+          onEmphasize(null, block.id)
           document.body.style.cursor = ''
         }}
         onClick={(event) => {
@@ -613,22 +704,65 @@ interface Anchor {
 }
 
 const CARD_MARGIN = 4
+// The space between a block's foot and a card that stands under it.
+const CARD_GAP = 8
+// The room a side needs before a card that scrolls stands there: one whole
+// line of text with the card's padding and border. The card's widest box.
+const CARD_LINE_ROOM = 30
+const CARD_WIDTH = 256
+// The least width of a card beside its block on the side away from its
+// links.
+const CARD_BESIDE_WIDTH = 160
+// How long a card stays after the pointer leaves its block or the card, so
+// the pointer can cross the gap between them.
+const CARD_REACH_MS = 400
+
+// A dependency link the line shows, with the heights over its two blocks'
+// centres where it starts and ends.
+interface ShownLink extends WaitLink {
+  key: string
+  liftFrom: number
+  liftTo: number
+}
 
 function Projector({
   anchors,
   card,
   groups,
   elements,
+  links,
+  paths,
+  minRise,
 }: {
   anchors: Anchor[]
-  // The emphasized block and the height over its centre where its card
-  // points.
-  card: { id: string; lift: number } | null
+  // The emphasized block, the height over its centre where its card points,
+  // the depth under its centre of its foot, and the blocks its links start
+  // from.
+  card: { id: string; lift: number; drop: number; from: string[] } | null
   groups: RefObject<Map<string, THREE.Group>>
   elements: RefObject<Record<string, HTMLElement | null>>
+  links: ShownLink[]
+  paths: RefObject<Record<string, SVGPathElement | null>>
+  // The least height, in pixels, that a link rises over its two ends.
+  minRise: number
 }) {
   const origin = useRef<THREE.Group>(null)
   const point = useMemo(() => new THREE.Vector3(), [])
+  const canvas = useThree((state) => state.gl.domElement)
+  const invalidate = useThree((state) => state.invalidate)
+  // The card fits the part of the page a person can see, so a scroll of the
+  // crate page or a new window size places it again, also when the canvas
+  // draws only on demand.
+  useEffect(() => {
+    const scroller = canvas.closest('[data-crate-scroll]') ?? window
+    const again = () => invalidate()
+    scroller.addEventListener('scroll', again, { passive: true })
+    window.addEventListener('resize', again)
+    return () => {
+      scroller.removeEventListener('scroll', again)
+      window.removeEventListener('resize', again)
+    }
+  }, [canvas, invalidate])
   useFrame(({ camera, size }) => {
     if (!origin.current) return
     // The page position of `point`, a place in the scene's own frame.
@@ -644,20 +778,172 @@ function Projector({
       element.style.transform = `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`
       element.style.visibility = 'visible'
     }
+    // Each link is a curve from the top of the block waited on, up and over,
+    // down onto the top of the block that waits. It keeps one height over
+    // the belt at both ends, so it follows the belt's slope on screen and
+    // stays under the station signs.
+    for (const link of links) {
+      const from = groups.current.get(link.from)
+      const to = groups.current.get(link.to)
+      if (!from || !to) continue
+      point.copy(from.position)
+      point.y += link.liftFrom * from.scale.y
+      const a = project()
+      point.copy(to.position)
+      point.y += link.liftTo * to.scale.y
+      const b = project()
+      const span = Math.hypot(b.x - a.x, b.y - a.y)
+      const rise = Math.min(Math.max(minRise, span * 0.42), minRise * 1.75)
+      const d = `M${a.x.toFixed(1)},${(a.y - 2).toFixed(1)} C${(a.x + (b.x - a.x) * 0.12).toFixed(1)},${(a.y - rise).toFixed(1)} ${(b.x - (b.x - a.x) * 0.12).toFixed(1)},${(b.y - rise).toFixed(1)} ${b.x.toFixed(1)},${(b.y - 5).toFixed(1)}`
+      for (const layer of ['halo', 'line']) paths.current[`${layer}:${link.key}`]?.setAttribute('d', d)
+      paths.current[`dot:${link.key}`]?.setAttribute(
+        'transform',
+        `translate(${a.x.toFixed(1)},${(a.y - 2).toFixed(1)})`,
+      )
+    }
     const element = elements.current.card
     const node = card ? groups.current.get(card.id) : undefined
     if (!card || !element || !node) return
+    const inner = element.firstElementChild as HTMLElement | null
+    if (!inner) return
+    // The card stands by the block where it is drawn, and it does not move
+    // with the lift that emphasis gives the block, so it stays still while
+    // its task's emphasis comes and goes under a resting pointer. Over the
+    // block, it stands where the fully lifted block puts it, clear of the
+    // links that rise from that block. Under the block, it stands under the
+    // resting block's foot, which the lifted block never reaches.
+    const raised = typeof node.userData.lift === 'number' ? node.userData.lift : 0
+    const rest = node.scale.y / (1 + raised * 0.1)
+    const base = node.position.y - raised * 0.22
     point.copy(node.position)
-    point.y += card.lift * node.scale.y
+    point.y = base + card.lift * rest * 1.1 + 0.22
     let { x, y } = project()
+    point.copy(node.position)
+    point.y = base - card.drop * rest
+    const foot = project().y
+    // The part of the canvas's rows that a person can see: inside the crate
+    // page's scroll area and the window. The card may reach past the
+    // scene's foot, so this part can end under the canvas.
+    const frame = canvas.getBoundingClientRect()
+    const port = canvas.closest('[data-crate-scroll]')?.getBoundingClientRect()
+    const seenTop = Math.max(port?.top ?? 0, 0) - frame.top
+    const seenBottom = Math.min(port?.bottom ?? window.innerHeight, window.innerHeight) - frame.top
+    // Where the card stands (req-crate-insights AC-6.1). While a task is
+    // emphasized, its card renders, and its whole box stays inside the seen
+    // part, whatever room is left:
+    // 1. Over its block when the whole card fits there, from the seen part's
+    //    top, or the scene's top, down to the point over the block. Else
+    //    under the block when it fits there, from the block's foot down to
+    //    the seen part's foot.
+    // 2. Else, on the side with more room when that side holds at least one
+    //    whole line, keeping to exactly that room and scrolling.
+    // 3. Else, beside the block: on the side of the block and of the blocks
+    //    its links start from that has more room, as wide as that room
+    //    allows, over the whole height of the seen part, and scrolling.
+    // The links rise over the blocks and run between them, so a card over
+    // the block, under it, or beside the block and its links covers none of
+    // them, and none covers the block. A card that scrolls takes the
+    // pointer, which can move onto it from the block, and opens scrolled
+    // just far enough to show its first waiting task. The keys of the
+    // task's focused branch map line scroll it too.
+    const overTop = Math.max(seenTop, 0) + CARD_MARGIN
+    const overFoot = Math.min(y, size.height - CARD_MARGIN, seenBottom - CARD_MARGIN)
+    const underTop = Math.max(foot + CARD_GAP, seenTop + CARD_MARGIN)
+    const underFoot = seenBottom - CARD_MARGIN
+    const above = overFoot - overTop
+    const below = underFoot - underTop
+    // The card's own height at its own width.
+    if (inner.style.maxWidth !== '') inner.style.maxWidth = ''
+    const full = inner.scrollHeight + 2
+    let place: 'over' | 'under' | 'beside'
+    if (full <= above) place = 'over'
+    else if (full <= below) place = 'under'
+    else if (Math.max(above, below) >= CARD_LINE_ROOM) place = above >= below ? 'over' : 'under'
+    else place = 'beside'
+    let room = place === 'over' ? above : below
+    let besideLeft = 0
+    let besideRight = 0
+    let onRight = true
+    if (place === 'beside') {
+      // The span the block and the blocks its links start from cover.
+      point.copy(node.position)
+      point.x -= card.drop * rest
+      const left = project().x
+      point.copy(node.position)
+      point.x += card.drop * rest
+      const right = project().x
+      let spanLeft = Math.min(left, right)
+      let spanRight = Math.max(left, right)
+      const middleX = (spanLeft + spanRight) / 2
+      // The blocks its links start from are as wide as the card's block.
+      const half = (spanRight - spanLeft) / 2
+      let fromLeft = 0
+      let fromRight = 0
+      for (const id of card.from) {
+        const from = groups.current.get(id)
+        if (!from) continue
+        point.copy(from.position)
+        const fromX = project().x
+        if (fromX < middleX) fromLeft += 1
+        else fromRight += 1
+        spanLeft = Math.min(spanLeft, fromX - half)
+        spanRight = Math.max(spanRight, fromX + half)
+      }
+      besideLeft = spanLeft - CARD_GAP
+      besideRight = spanRight + CARD_GAP
+      const roomLeft = besideLeft - CARD_MARGIN
+      const roomRight = size.width - CARD_MARGIN - besideRight
+      // The side away from the blocks its links start from, when it holds a
+      // card of readable width, so the pointer crosses none of them on its
+      // way to the card. Otherwise the side with more room.
+      const away = fromLeft > 0 && fromRight === 0 ? 'right' : fromRight > 0 && fromLeft === 0 ? 'left' : null
+      if (away === 'right' && roomRight >= CARD_BESIDE_WIDTH) onRight = true
+      else if (away === 'left' && roomLeft >= CARD_BESIDE_WIDTH) onRight = false
+      else onRight = roomRight >= roomLeft
+      const wide = Math.max(1, Math.floor(Math.min(CARD_WIDTH, onRight ? roomRight : roomLeft)))
+      inner.style.maxWidth = `${wide}px`
+      room = Math.max(1, seenBottom - seenTop - 2 * CARD_MARGIN)
+    }
+    const tall = inner.scrollHeight + 2
+    const scrolls = tall > room
+    const cap = `${Math.floor(room)}px`
+    if (inner.style.maxHeight !== (scrolls ? cap : '')) inner.style.maxHeight = scrolls ? cap : ''
+    // Only the card's own box takes the pointer. The element around it is
+    // centred on the anchor, so its box reaches past the card over the block.
+    inner.style.pointerEvents = scrolls ? 'auto' : 'none'
+    element.dataset.lineCardScrolls = String(scrolls)
+    element.dataset.lineCardPlace = place
+    // It opens again when it moves to another side, where its width and
+    // height change.
+    if (scrolls && element.dataset.lineCardOpened !== `${card.id} ${place}`) {
+      element.dataset.lineCardOpened = `${card.id} ${place}`
+      // Its first waiting task ends at the card's foot, or, when that task
+      // is taller than the card, starts at the card's top.
+      const first = inner.querySelector('[data-waits-on]')
+      if (first) {
+        const lines = first.getBoundingClientRect()
+        const top = lines.top - inner.getBoundingClientRect().top - inner.clientTop + inner.scrollTop
+        const end = top + lines.height
+        inner.scrollTop = Math.max(0, lines.height > inner.clientHeight ? top : end - inner.clientHeight)
+      }
+    }
     // The card's box runs from half its width either side of x, and from
     // its full height above y down to y.
     const width = element.offsetWidth
     const height = element.offsetHeight
-    if (size.width >= width + 2 * CARD_MARGIN)
-      x = THREE.MathUtils.clamp(x, width / 2 + CARD_MARGIN, size.width - width / 2 - CARD_MARGIN)
-    if (size.height >= height + 2 * CARD_MARGIN)
-      y = THREE.MathUtils.clamp(y, height + CARD_MARGIN, size.height - CARD_MARGIN)
+    if (place === 'beside') {
+      x = onRight ? besideRight + width / 2 : besideLeft - width / 2
+      point.copy(node.position)
+      point.y = base
+      const middle = project().y
+      const lowest = seenBottom - CARD_MARGIN
+      const highest = seenTop + CARD_MARGIN
+      y = Math.min(Math.max(middle + height / 2, highest + height), lowest)
+    } else {
+      if (size.width >= width + 2 * CARD_MARGIN)
+        x = THREE.MathUtils.clamp(x, width / 2 + CARD_MARGIN, size.width - width / 2 - CARD_MARGIN)
+      y = place === 'over' ? overFoot : underTop + height
+    }
     element.style.transform = `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`
     element.style.visibility = 'visible'
   })
@@ -682,21 +968,34 @@ function ContextLossWatch({ onLost }: { onLost: () => void }) {
 function DrawOnChange({
   blocks,
   emphasizedId,
+  related,
+  links,
   shipped,
   closed,
   dark,
+  redraw,
 }: {
   blocks: LineBlock[]
   emphasizedId: string | null
+  related: Set<string> | null
+  // The key of the shown links, so a link that appears or goes is placed.
+  links: string
   shipped: boolean
   closed: boolean
   dark: boolean
+  // Set to a call that draws a frame. The page calls it when a link's
+  // element mounts: the scene renders in its own root, which can see no
+  // change while the page mounts a link again.
+  redraw: RefObject<() => void>
 }) {
   const invalidate = useThree((state) => state.invalidate)
   useEffect(() => {
-    void [blocks, emphasizedId, shipped, closed, dark]
+    void [blocks, emphasizedId, related, links, shipped, closed, dark]
     invalidate()
-  }, [invalidate, blocks, emphasizedId, shipped, closed, dark])
+  }, [invalidate, blocks, emphasizedId, related, links, shipped, closed, dark])
+  useEffect(() => {
+    redraw.current = () => invalidate()
+  }, [invalidate, redraw])
   return null
 }
 
@@ -762,6 +1061,9 @@ export default function LineScene({
   dark,
   reducedMotion,
   emphasizedId,
+  tasks,
+  related,
+  links,
   onEmphasize,
   onSelect,
   onContextLost,
@@ -769,7 +1071,7 @@ export default function LineScene({
   padBottom,
 }: LineSceneProps) {
   const layout = useMemo(() => layoutFor(compact), [compact])
-  const places = useMemo(() => place(blocks, layout), [blocks, layout])
+  const places = useMemo(() => place(blocks, layout, links), [blocks, layout, links])
   const palette = useMemo(() => readPalette(dark), [dark])
   // The camera fits the line and every block on it, so a long row of
   // closed tasks or a tall stack at a station stays in view.
@@ -786,10 +1088,123 @@ export default function LineScene({
     }
     return box
   }, [layout, compact, places])
-  // A pointer that leaves with the scene leaves no pointer cursor behind.
+  const groups = useRef(new Map<string, THREE.Group>())
+  const elements = useRef<Record<string, HTMLElement | null>>({})
+  const paths = useRef<Record<string, SVGPathElement | null>>({})
+  const redraw = useRef<() => void>(() => {})
+  // A pointer that leaves a block clears the emphasis at once, so no late
+  // clear undoes what another part of the page emphasizes. A card that
+  // scrolls stays a moment longer, so the pointer can reach it, and
+  // entering it emphasizes its task again. On its way, the pointer can
+  // cross another block: that block takes the emphasis only if the pointer
+  // still rests on it when the moment ends. While the pointer is on a block
+  // or on the card, the card stands over the branch map's card of the same
+  // task, which the shared emphasis also shows. Otherwise the branch map's
+  // card stands over it.
+  const leaving = useRef<number | undefined>(undefined)
+  const held = useRef<string | null>(null)
+  const hovered = useRef<string | null>(null)
+  // The scene can report leaving a block after the pointer has reached the
+  // card. While the pointer is on the card, such a late leave changes
+  // nothing.
+  const onCard = useRef(false)
+  const [lingering, setLingering] = useState<string | null>(null)
+  const [pointerHere, setPointerHere] = useState(false)
+  const emphasizeBlock = useCallback(
+    (id: string | null, left?: string) => {
+      // The moment the card stays. Each block the pointer crosses on its
+      // way starts the moment again, so only a pointer that rests on
+      // another block hands the emphasis to that block.
+      const settle = () => {
+        window.clearTimeout(leaving.current)
+        leaving.current = window.setTimeout(() => {
+          held.current = null
+          setLingering(null)
+          const next = hovered.current
+          setPointerHere(next !== null)
+          if (next !== null) onEmphasize(next)
+        }, CARD_REACH_MS)
+      }
+      if (id !== null) {
+        hovered.current = id
+        if (held.current !== null && held.current !== id) {
+          settle()
+          return
+        }
+        window.clearTimeout(leaving.current)
+        held.current = null
+        setLingering(null)
+        setPointerHere(true)
+        onEmphasize(id)
+        return
+      }
+      if (left !== undefined && hovered.current === left) hovered.current = null
+      if (left !== undefined && onCard.current) return
+      if (held.current !== null) {
+        settle()
+        return
+      }
+      window.clearTimeout(leaving.current)
+      onEmphasize(null)
+      const element = elements.current.card
+      const stays = element?.dataset.lineCardScrolls === 'true' ? element.dataset.lineCard : undefined
+      if (!stays) {
+        setPointerHere(false)
+        return
+      }
+      held.current = stays
+      setLingering(stays)
+      settle()
+    },
+    [onEmphasize],
+  )
+  // The pointer reaches the card: its task takes the emphasis again.
+  const enterCard = useCallback(() => {
+    onCard.current = true
+    window.clearTimeout(leaving.current)
+    const task = held.current
+    held.current = null
+    hovered.current = null
+    if (task === null) return
+    setLingering(null)
+    setPointerHere(true)
+    onEmphasize(task)
+  }, [onEmphasize])
+  // The keyboard reaches a card that scrolls through the task's branch map
+  // line: while that line holds focus, its arrow, page, Home, and End keys
+  // scroll this card as well as the map's card.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const element = elements.current.card
+      const inner = element?.firstElementChild as HTMLElement | null | undefined
+      if (!element || !inner || element.dataset.lineCardScrolls !== 'true') return
+      if (document.activeElement?.getAttribute('data-branch-task') !== element.dataset.lineCard) return
+      // End brings the last waiting task to the card's foot.
+      const last = Array.from(inner.querySelectorAll('[data-waits-on]')).at(-1)
+      const lastFoot = last
+        ? last.getBoundingClientRect().bottom - inner.getBoundingClientRect().top - inner.clientTop + inner.scrollTop
+        : inner.scrollHeight
+      const target = {
+        ArrowDown: inner.scrollTop + 40,
+        ArrowUp: inner.scrollTop - 40,
+        PageDown: inner.scrollTop + inner.clientHeight - 16,
+        PageUp: inner.scrollTop - inner.clientHeight + 16,
+        End: lastFoot - inner.clientHeight,
+        Home: 0,
+      }[event.key]
+      if (target === undefined) return
+      event.preventDefault()
+      inner.scrollTop = Math.max(0, target)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+  // A pointer that leaves with the scene leaves no pointer cursor behind,
+  // and no clear waits after it.
   useEffect(
     () => () => {
       document.body.style.cursor = ''
+      window.clearTimeout(leaving.current)
     },
     [],
   )
@@ -836,11 +1251,33 @@ export default function LineScene({
     },
   ]
   const emphasized = emphasizedId ? blocks.find((block) => block.id === emphasizedId) : undefined
-  const emphasizedSpot = emphasized ? places.get(emphasized.id) : undefined
   const anchors: Anchor[] = signs.map((sign) => ({ id: sign.id, position: sign.position }))
-  const card = emphasized && emphasizedSpot ? { id: emphasized.id, lift: emphasizedSpot.size / 2 + 0.2 } : null
-  const groups = useRef(new Map<string, THREE.Group>())
-  const elements = useRef<Record<string, HTMLElement | null>>({})
+  // The links the line draws: one for each served `waiting` member entry of
+  // the emphasized task, and none at rest (component-crates invariant 39).
+  const shownLinks: ShownLink[] = emphasized
+    ? links.flatMap((link) => {
+        const a = places.get(link.from)
+        const b = places.get(link.to)
+        if (link.to !== emphasized.id || !a || !b) return []
+        return [{ ...link, key: `${link.from}>${link.to}`, liftFrom: a.size / 2, liftTo: b.size / 2 }]
+      })
+    : []
+  // The card's block: the emphasized one, or a card that stays a moment.
+  const cardId = emphasizedId ?? lingering
+  const cardBlock = cardId ? blocks.find((block) => block.id === cardId) : undefined
+  const cardSpot = cardBlock ? places.get(cardBlock.id) : undefined
+  const cardTask = cardId ? tasks.find((task) => task.id === cardId) : undefined
+  // The card moves up to clear the links that end on its block.
+  const cardLinked = links.some((link) => link.to === cardId && places.has(link.from))
+  const card =
+    cardBlock && cardSpot
+      ? {
+          id: cardBlock.id,
+          lift: cardSpot.size / 2 + (cardLinked ? 0.95 : 0.2),
+          drop: cardSpot.size / 2,
+          from: links.filter((link) => link.to === cardBlock.id && places.has(link.from)).map((link) => link.from),
+        }
+      : null
 
   return (
     <div className="relative size-full" data-line-scene data-motion={reducedMotion ? 'still' : 'moving'}>
@@ -890,17 +1327,34 @@ export default function LineScene({
                 index={index}
                 color={tone(block.phase)}
                 emphasized={emphasizedId === block.id}
-                dimmed={emphasizedId !== null && emphasizedId !== block.id}
+                dimmed={related !== null && !related.has(block.id)}
                 reducedMotion={reducedMotion}
-                onEmphasize={onEmphasize}
+                onEmphasize={emphasizeBlock}
                 groups={groups}
                 onSelect={onSelect}
               />
             )
           })}
-          <Projector anchors={anchors} card={card} groups={groups} elements={elements} />
+          <Projector
+            anchors={anchors}
+            card={card}
+            groups={groups}
+            elements={elements}
+            links={shownLinks}
+            paths={paths}
+            minRise={compact ? 13 : 26}
+          />
           <ContextLossWatch onLost={onContextLost} />
-          <DrawOnChange blocks={blocks} emphasizedId={emphasizedId} shipped={shipped} closed={closed} dark={dark} />
+          <DrawOnChange
+            blocks={blocks}
+            emphasizedId={emphasizedId}
+            related={related}
+            links={linksKey(shownLinks)}
+            redraw={redraw}
+            shipped={shipped}
+            closed={closed}
+            dark={dark}
+          />
           <ContactShadows
             position={[0, 0.005, 0]}
             opacity={palette.shadow}
@@ -914,6 +1368,65 @@ export default function LineScene({
       {/* The page's text list states the same counts to assistive technology,
           so the signs and the card stay out of its reach. */}
       <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+        <svg data-line-links aria-hidden="true" className="absolute inset-0 size-full overflow-visible">
+          <defs>
+            <marker
+              id="crate-line-link-arrow"
+              viewBox="0 0 10 10"
+              refX="8"
+              refY="5"
+              markerWidth="8"
+              markerHeight="8"
+              orient="auto"
+              markerUnits="userSpaceOnUse"
+            >
+              <path
+                d="M2,2 L8,5 L2,8"
+                fill="none"
+                stroke="var(--color-foreground)"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </marker>
+          </defs>
+          {shownLinks.map((link) => {
+            const ref = (layer: string) => (element: SVGPathElement | null) => {
+              paths.current[`${layer}:${link.key}`] = element
+              if (element) redraw.current()
+            }
+            return (
+              <g key={link.key} data-line-link={link.key}>
+                <path
+                  ref={ref('halo')}
+                  fill="none"
+                  stroke="var(--color-card)"
+                  strokeOpacity={0.55}
+                  strokeWidth={4.5}
+                  strokeLinecap="round"
+                />
+                <path
+                  ref={ref('line')}
+                  data-line-link-path
+                  fill="none"
+                  stroke="var(--color-foreground)"
+                  strokeWidth={1.75}
+                  strokeLinecap="round"
+                  markerEnd="url(#crate-line-link-arrow)"
+                />
+                {/* Off the canvas until the first frame places it. */}
+                <path
+                  ref={ref('dot')}
+                  transform="translate(-100,-100)"
+                  d="M-2.6,0 a2.6,2.6 0 1,0 5.2,0 a2.6,2.6 0 1,0 -5.2,0"
+                  fill="var(--color-foreground)"
+                  stroke="var(--color-card)"
+                  strokeWidth={1}
+                />
+              </g>
+            )
+          })}
+        </svg>
         {signs.map((sign) => (
           <div
             key={sign.id}
@@ -934,27 +1447,39 @@ export default function LineScene({
             <span className="font-medium tabular-nums">{sign.count}</span>
           </div>
         ))}
-        {emphasized && (
+      </div>
+      {/* The card stands over the scene without its clip, so a tall card can
+          reach past the scene's foot. It takes no pointer unless it scrolls,
+          so the blocks and the page under it keep theirs. A card that
+          scrolls stays while the pointer is on it. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0">
+        {cardBlock && (
           <div
             ref={(element) => {
               elements.current.card = element
             }}
-            data-line-card={emphasized.id}
+            data-line-card={cardBlock.id}
             style={{ visibility: 'hidden' }}
-            className="absolute top-0 left-0 z-10"
+            className={cn('absolute top-0 left-0', pointerHere ? 'z-20' : 'z-10')}
+            onPointerEnter={enterCard}
+            onPointerLeave={() => {
+              onCard.current = false
+              emphasizeBlock(null)
+            }}
           >
-            <div className="w-max max-w-64 -translate-y-1/2 rounded-md border border-border bg-card px-2.5 py-1.5 text-left shadow-md">
-              {emphasized.title && (
-                <p className="break-words text-xs font-medium leading-snug text-foreground">{emphasized.title}</p>
+            <div className="w-max max-w-64 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-md border border-border bg-card px-2.5 py-1.5 text-left shadow-md">
+              {cardBlock.title && (
+                <p className="break-words text-xs font-medium leading-snug text-foreground">{cardBlock.title}</p>
               )}
               <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-muted">
                 <span
                   className="size-1.5 shrink-0 rounded-full"
-                  style={{ background: phaseMeta[emphasized.phase].color }}
+                  style={{ background: phaseMeta[cardBlock.phase].color }}
                 />
-                {emphasized.label !== undefined && <span data-line-card-label>{emphasized.label}</span>}
-                <span className="font-mono text-faint">→ {emphasized.baseBranch}</span>
+                {cardBlock.label !== undefined && <span data-line-card-label>{cardBlock.label}</span>}
+                <span className="font-mono text-faint">→ {cardBlock.baseBranch}</span>
               </p>
+              <DependencyDetails task={cardTask} className="mt-1 border-t border-border pt-1" />
             </div>
           </div>
         )}

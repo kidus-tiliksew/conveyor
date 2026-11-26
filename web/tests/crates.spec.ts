@@ -3,7 +3,7 @@
 // server serves the crate rows and crate reads in the shapes
 // internal/httpapi/crates.go writes; the dashboard derives none of the
 // counts, the shipped flag, or the next action labels.
-import { expect, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route, type TestInfo } from '@playwright/test'
 import type {
   Crate,
   CrateActivityEvent,
@@ -11,6 +11,7 @@ import type {
   CrateBriefingView,
   CrateDetail,
   CrateInsight,
+  CrateInsightDependency,
   CrateInsightTask,
   CrateListRow,
   CratePhase,
@@ -347,6 +348,9 @@ function insightTask(
     review_rounds: 0,
     merged_at: null,
     closed_at: null,
+    depends_on: [],
+    wait_depth: 0,
+    waited_on_by: [],
     ...extra,
   }
 }
@@ -456,6 +460,142 @@ function plainInsight(crate: CrateDetail): CrateInsight {
   }
 }
 
+// A crate whose members depend on each other, as internal/crateinsight
+// serves the dependency values (component-crates invariant 38): a chain of
+// three members with the first merged (price index, then basket price, then
+// basket total), a dependency outside the crate, a member that closed
+// without merging, and a sibling that waits on the same member. Every
+// waiting flag, depth, and reverse list is the server's.
+const deps = {
+  index: '261120-a01',
+  price: '261120-b02',
+  total: '261120-c03',
+  history: '261120-d04',
+  coupon: '261120-e05',
+  tax: '261120-f06',
+  exporter: '261120-x07',
+  keys: '261101-out1',
+  legacy: '261101-out2',
+}
+
+const depsCrate: CrateDetail = {
+  ...crateRow({
+    id: 'crate-deps',
+    name: 'Checkout rebuild',
+    open_task_count: 4,
+    merged_task_count: 2,
+    total_task_count: 7,
+  }),
+  requirements: [],
+  undeclared_requirements: [],
+  tasks: [
+    member(deps.price, 'Price the basket', 'running', 'Agent building (served)'),
+    member(deps.total, 'Show the basket total', 'running', 'Agent reviewing (served)'),
+    member(deps.history, 'Export the order history', 'running', 'Agent reviewing (served)'),
+    {
+      ...member(deps.coupon, 'Apply the coupon rules', 'queued', 'Blocked by another task (served)'),
+      next_action: {
+        label: 'Blocked by another task (served)',
+        actor: 'dependency',
+        kind: 'blocked',
+        judgment: false,
+        summary: 'Blocked',
+        deadline: null,
+      },
+    },
+    member(deps.index, 'Add the price index', 'merged', 'Merged'),
+    member(deps.tax, 'Load the tax tables', 'merged', 'Merged'),
+    member(deps.exporter, 'Try the old exporter', 'closed', 'Closed'),
+  ],
+}
+
+function dependency(
+  id: string,
+  title: string,
+  state: CrateInsightDependency['state'],
+  member: boolean,
+  waiting: boolean,
+): CrateInsightDependency {
+  return { id, title, state, member, waiting }
+}
+
+const depsInsight: CrateInsight = {
+  tasks: [
+    insightTask(deps.price, 'building', 'build', '2026-11-12T09:00:00Z', {
+      depends_on: [
+        dependency(deps.legacy, 'Retire the v1 API', 'closed', false, true),
+        dependency(deps.index, 'Add the price index', 'merged', true, false),
+      ],
+      waited_on_by: [deps.total, deps.coupon],
+    }),
+    insightTask(deps.total, 'review', 'review', '2026-11-13T09:00:00Z', {
+      pull_request_opened_at: ['2026-11-17T10:00:00Z'],
+      depends_on: [
+        dependency(deps.keys, 'Rotate the API keys', 'running', false, true),
+        dependency(deps.price, 'Price the basket', 'running', true, true),
+      ],
+      wait_depth: 1,
+    }),
+    insightTask(deps.history, 'review', 'review', '2026-11-11T09:00:00Z', {
+      pull_request_opened_at: ['2026-11-17T12:00:00Z'],
+      depends_on: [dependency(deps.exporter, 'Try the old exporter', 'closed', true, true)],
+      wait_depth: 1,
+    }),
+    // Created after the price index merged, so that merge is no mark on
+    // its line.
+    insightTask(deps.coupon, 'blocked', 'build', '2026-11-15T09:00:00Z', {
+      depends_on: [
+        dependency(deps.index, 'Add the price index', 'merged', true, false),
+        dependency(deps.price, 'Price the basket', 'running', true, true),
+      ],
+      wait_depth: 1,
+    }),
+    // Merged before the tax tables it names, so that later merge is no mark
+    // on its line.
+    insightTask(deps.index, 'merged', 'crate', '2026-11-10T09:00:00Z', {
+      merged_at: '2026-11-14T09:00:00Z',
+      review_rounds: 1,
+      depends_on: [dependency(deps.tax, 'Load the tax tables', 'merged', true, false)],
+    }),
+    insightTask(deps.tax, 'merged', 'crate', '2026-11-10T12:00:00Z', {
+      merged_at: '2026-11-16T09:00:00Z',
+      review_rounds: 1,
+    }),
+    insightTask(deps.exporter, 'closed', 'aside', '2026-11-11T12:00:00Z', {
+      closed_at: '2026-11-13T09:00:00Z',
+      waited_on_by: [deps.history],
+    }),
+  ],
+  branches: ['main'],
+  whereabouts: [
+    { key: 'task_branch', branch: null, task_ids: [deps.price, deps.total, deps.history, deps.coupon] },
+    { key: 'merged', branch: 'main', task_ids: [deps.index, deps.tax] },
+  ],
+  progress: { ...emptyProgress(), delivered: 2, total: 6, open: 4 },
+  first_review: { approved: 2, reviewed: 2 },
+  forecast_days_before_target: null,
+  replay: {
+    start: '2026-11-10T09:00:00Z',
+    end: lineNow,
+    steps: [
+      step('2026-11-10T09:00:00Z', deps.index, 'queued', 'intake'),
+      step('2026-11-10T12:00:00Z', deps.tax, 'queued', 'intake'),
+      step('2026-11-11T09:00:00Z', deps.history, 'queued', 'intake'),
+      step('2026-11-11T12:00:00Z', deps.exporter, 'queued', 'intake'),
+      step('2026-11-12T09:00:00Z', deps.price, 'queued', 'intake'),
+      step('2026-11-12T15:00:00Z', deps.price, 'building', 'build'),
+      step('2026-11-13T09:00:00Z', deps.total, 'queued', 'intake'),
+      step('2026-11-13T09:00:00Z', deps.exporter, 'closed', 'aside'),
+      step('2026-11-14T09:00:00Z', deps.index, 'merged', 'crate'),
+      step('2026-11-15T09:00:00Z', deps.coupon, 'queued', 'intake'),
+      step('2026-11-16T09:00:00Z', deps.tax, 'merged', 'crate'),
+      step('2026-11-17T10:00:00Z', deps.total, 'review', 'review'),
+      step('2026-11-17T12:00:00Z', deps.history, 'review', 'review'),
+      step('2026-11-18T09:00:00Z', deps.coupon, 'blocked', 'build'),
+    ],
+  },
+}
+
 type Role = 'viewer' | 'maintainer' | 'operator'
 
 const memberNextAction = {
@@ -504,6 +644,8 @@ async function serveCrates(
   options: {
     role?: Role
     insight?: 'fail'
+    // The insight read answers only once this settles.
+    insightHold?: Promise<void>
     insights?: Record<string, CrateInsight>
     openList?: Crate[]
     closedList?: Crate[]
@@ -524,6 +666,7 @@ async function serveCrates(
     [closedUndated.id]: structuredClone(closedUndated),
     [lineCrate.id]: structuredClone(lineCrate),
     [emptyCrate.id]: structuredClone(emptyCrate),
+    [depsCrate.id]: structuredClone(depsCrate),
   }
   const insightRequests: string[] = []
   const listRequests: string[] = []
@@ -580,7 +723,10 @@ async function serveCrates(
       const crate = details[id]
       if (!crate) return route.fulfill({ status: 404, json: { error: 'crate_not_found', crate_id: id } })
       if (options.insight === 'fail') return route.fulfill({ status: 500, json: { error: 'internal error' } })
-      const served = options.insights?.[id] ?? (id === lineCrate.id ? lineInsight : plainInsight(crate))
+      await options.insightHold
+      const served =
+        options.insights?.[id] ??
+        (id === lineCrate.id ? lineInsight : id === depsCrate.id ? depsInsight : plainInsight(crate))
       return route.fulfill({ json: served })
     }
     // The briefing routes of component-crates, Public surfaces.
@@ -1342,5 +1488,930 @@ for (const width of [375, 1280]) {
     const file = `crate-task-sheet-${width}.png`
     const image = await page.screenshot({ path: shots ? `${shots}/${file}` : undefined })
     await testInfo.attach(file, { body: image, contentType: 'image/png' })
+  })
+}
+
+// Dependencies between member tasks on the crate page (req-crate-insights
+// REQ-6; component-crates invariants 33, 38, and 39; DEC-151). The fake
+// server serves every dependency value, and the page prints them.
+const memberRow = (page: Page, id: string) => page.locator(`[data-crate-task="${id}"]`)
+const branchLine = (page: Page, id: string) => page.locator(`[data-branch-task="${id}"]`)
+
+// The task reads the page makes. The dependency display reads none.
+function recordTaskReads(page: Page) {
+  const reads: string[] = []
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname
+    if (path.startsWith('/v1/tasks/')) reads.push(path)
+  })
+  return reads
+}
+
+test('a member row names what it waits on, marks outside and unmerged tasks, and counts its waiters', async ({
+  page,
+}) => {
+  let release = () => {}
+  const insightHold = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const server = await serveCrates(page, { insightHold })
+  const taskReads = recordTaskReads(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(memberRow(page, deps.price)).toBeVisible()
+  // Until the insight view answers, no row shows a dependency line.
+  await expect(page.locator('[data-crate-task] [data-dependency-details]')).toHaveCount(0)
+  release()
+  await expect(memberRow(page, deps.total).locator('[data-waits-on]')).toHaveCount(2)
+  expect(server.insightRequests).toEqual([depsCrate.id])
+
+  // The served entries in the served order, with their marks.
+  const total = memberRow(page, deps.total)
+  await expect(total.locator('[data-waits-on]')).toHaveText([
+    'Waits on Rotate the API keys (outside this crate)',
+    'Waits on Price the basket',
+  ])
+  await expect(total.locator(`[data-waits-on="${deps.keys}"]`)).toHaveAttribute('data-outside', 'true')
+  await expect(total.locator(`[data-waits-on="${deps.keys}"] button`)).toHaveCount(0)
+  await expect(total.locator(`[data-waits-on="${deps.price}"] button`)).toHaveCount(1)
+  await expect(total.locator('[data-waited-on-by]')).toHaveCount(0)
+
+  const price = memberRow(page, deps.price)
+  await expect(price.locator('[data-waits-on]')).toHaveText([
+    'Waits on Retire the v1 API (outside this crate, closed without merging)',
+  ])
+  await expect(price.locator('[data-waited-on-by]')).toHaveText('2 tasks wait on this')
+
+  await expect(memberRow(page, deps.history).locator('[data-waits-on]')).toHaveText([
+    'Waits on Try the old exporter (closed without merging)',
+  ])
+  // A merged entry is no line, and a merged member with no waiter has none.
+  await expect(memberRow(page, deps.coupon).locator('[data-waits-on]')).toHaveText(['Waits on Price the basket'])
+  await expect(memberRow(page, deps.index).locator('[data-dependency-details]')).toHaveCount(0)
+  await page.getByRole('button', { name: /Show all 7 tasks/ }).click()
+  await expect(memberRow(page, deps.exporter).locator('[data-waited-on-by]')).toHaveText('1 task waits on this')
+  // The task facts stay in each row.
+  await expect(memberRow(page, deps.price).locator('[data-task-branch]')).toHaveText(`conveyor/task-${deps.price}`)
+  expect(taskReads).toEqual([])
+
+  // A member line opens that task in the sheet over the crate page.
+  await total.locator(`[data-waits-on="${deps.price}"] button`).click()
+  await expect(page).toHaveURL(new RegExp(`/w/demo/crates/crate-deps\\?task=${deps.price}$`))
+  await expect(taskSheet(page).getByRole('heading', { level: 2 }).first()).toHaveText('Price the basket')
+  await expect(memberRow(page, deps.total)).toBeVisible()
+  expect(server.insightRequests).toEqual([depsCrate.id])
+})
+
+test('the branch map orders lines by wait depth, links waiting lines, and marks the merge a line waited for', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  const map = page.locator('[data-branch-map]')
+  await expect(map.locator('[data-branch-task]')).toHaveCount(7)
+
+  // The served depth comes before the station order, which alone would put
+  // both review lines above the basket price.
+  const open = await map
+    .locator('[data-branch-task][data-ends="open"]')
+    .evaluateAll((lines) => lines.map((line) => line.getAttribute('data-branch-task')))
+  expect(open).toEqual([deps.price, deps.history, deps.total, deps.coupon])
+  // An open line's row is where its label stands.
+  const row = async (id: string) => (await branchLine(page, id).locator('[data-open-label]').boundingBox())?.y ?? 0
+  expect(await row(deps.total)).toBeGreaterThan(await row(deps.price))
+
+  // One link from the basket price to each open line that waits on it, with
+  // the arrow at the line that waits. The closed exporter and the outside
+  // tasks draw none.
+  const links = map.locator('[data-dependency-link]')
+  await expect(links).toHaveCount(2)
+  expect(await links.evaluateAll((paths) => paths.map((path) => path.getAttribute('data-dependency-link')))).toEqual([
+    `${deps.price}>${deps.total}`,
+    `${deps.price}>${deps.coupon}`,
+  ])
+  await expect(links.first()).toHaveAttribute('marker-end', 'url(#crate-dependency-arrow)')
+
+  // One merge mark: the price index merged while the basket price was open.
+  // The coupon rules came after that merge, the index merged before the tax
+  // tables, and the exporter closed without merging, so none of those marks.
+  const marks = map.locator('[data-dependency-merge]')
+  await expect(marks).toHaveAttribute('data-dependency-merge', `${deps.index}>${deps.price}`)
+  const ring = await marks.locator('circle').boundingBox()
+  const indexMerge = await branchLine(page, deps.index).locator('[data-merge-mark]').boundingBox()
+  expect(
+    Math.abs((ring?.x ?? 0) + (ring?.width ?? 0) / 2 - ((indexMerge?.x ?? 0) + (indexMerge?.width ?? 0) / 2)),
+  ).toBeLessThan(1)
+
+  await expect(map.locator('[data-legend="waits"]')).toHaveText('Waits for that task to merge')
+  await expect(map.locator('[data-legend="dependency-merged"]')).toHaveText('A task it waited on merged')
+
+  // The card of a line states what it waits on and how many wait on it.
+  await branchLine(page, deps.price).focus()
+  const card = map.locator(`[data-branch-card="${deps.price}"]`)
+  await expect(card.locator('[data-waits-on]')).toHaveText([
+    'Waits on Retire the v1 API (outside this crate, closed without merging)',
+  ])
+  await expect(card.locator('[data-waited-on-by]')).toHaveText('2 tasks wait on this')
+  await branchLine(page, deps.total).focus()
+  await expect(map.locator(`[data-branch-card="${deps.total}"] [data-waits-on]`)).toHaveText([
+    'Waits on Rotate the API keys (outside this crate)',
+    'Waits on Price the basket',
+  ])
+
+  // Emphasis keeps the chain lit through the merged members, in both
+  // directions, and dims the rest, including a sibling that only shares a
+  // dependency.
+  const dimmed = () =>
+    map
+      .locator('[data-branch-task][data-dimmed]')
+      .evaluateAll((lines) => lines.map((line) => line.getAttribute('data-branch-task')).sort())
+  await expect.poll(dimmed).toEqual([deps.history, deps.coupon, deps.exporter].sort())
+  await expect(map.locator(`[data-dependency-link="${deps.price}>${deps.coupon}"]`)).toHaveAttribute(
+    'data-dimmed',
+    'true',
+  )
+  await expect(map.locator(`[data-dependency-link="${deps.price}>${deps.total}"]`)).not.toHaveAttribute(
+    'data-dimmed',
+    'true',
+  )
+  await branchLine(page, deps.index).focus()
+  await expect.poll(dimmed).toEqual([deps.history, deps.exporter].sort())
+  await branchLine(page, deps.history).focus()
+  await expect.poll(dimmed).toEqual([deps.price, deps.total, deps.coupon, deps.index, deps.tax].sort())
+  // Clearing the emphasis lights every line again, and a count group still
+  // emphasizes its own lines.
+  await page.locator('body').click({ position: { x: 2, y: 2 } })
+  await expect.poll(dimmed).toEqual([])
+  await map.locator('[data-whereabouts="merged"]').hover()
+  await expect.poll(dimmed).toEqual([deps.price, deps.total, deps.history, deps.coupon, deps.exporter].sort())
+})
+
+test('a crate with no dependency shows no dependency mark or legend entry', async ({ page }) => {
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-line')
+  const map = page.locator('[data-branch-map]')
+  await expect(map.locator('[data-branch-task]')).toHaveCount(8)
+  await expect(map.locator('[data-dependency-link], [data-dependency-merge]')).toHaveCount(0)
+  await expect(map.locator('[data-legend="waits"], [data-legend="dependency-merged"]')).toHaveCount(0)
+  await expect(page.locator('[data-dependency-details]')).toHaveCount(0)
+})
+
+test('a narrow branch map opens scrolled to the present', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 900 })
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  const scroller = page.locator('[data-branch-map-scroll]')
+  await expect(scroller.locator('[data-dependency-link]')).toHaveCount(2)
+  await expect
+    .poll(() => scroller.evaluate((element) => element.scrollWidth - element.clientWidth - element.scrollLeft))
+    .toBeLessThanOrEqual(1)
+  expect(await scroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0)
+  // The present's mark sits inside the scrolled view.
+  const view = await scroller.boundingBox()
+  const now = await scroller.locator('[data-now]').boundingBox()
+  expect(now?.x ?? -1).toBeGreaterThanOrEqual(view?.x ?? 0)
+  expect((now?.x ?? 0) + (now?.width ?? 0)).toBeLessThanOrEqual((view?.x ?? 0) + (view?.width ?? 0))
+})
+
+// The line's link and card (req-crate-insights AC-6.5; DEC-151(3), (4)).
+// The scene draws on demand under reduced motion, so every block stands at
+// its place in the frame each change draws. The scene renders only while it
+// is on screen, so the window is tall enough to hold the line and the task
+// list together.
+const lineLinks = (page: Page) => page.locator('[data-line-scene] [data-line-link]')
+
+// The start and end points of a link's projected curve.
+async function linkEnds(page: Page, key: string) {
+  const path = page.locator(`[data-line-link="${key}"] [data-line-link-path]`)
+  await expect(path).toHaveAttribute('d', /^M[\d.-]+,[\d.-]+ C/)
+  const d = (await path.getAttribute('d')) ?? ''
+  const numbers = (d.match(/-?\d+(\.\d+)?/g) ?? []).map(Number)
+  return { start: { x: numbers[0], y: numbers[1] }, end: { x: numbers[6], y: numbers[7] } }
+}
+
+test('the line links the pointed-at task to the members it waits on, only at the present', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1800 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-line-mode="scene"] [data-line-scene]')).toBeVisible()
+  await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+  // At rest the line holds no link.
+  await expect(lineLinks(page)).toHaveCount(0)
+
+  // Pointing at the basket total draws one link, from the basket price.
+  // The outside task it waits on has no block and no link.
+  await memberRow(page, deps.total).hover()
+  await expect(lineLinks(page)).toHaveCount(1)
+  await expect(lineLinks(page)).toHaveAttribute('data-line-link', `${deps.price}>${deps.total}`)
+  await linkEnds(page, `${deps.price}>${deps.total}`)
+  const card = page.locator(`[data-line-card="${deps.total}"]`)
+  await expect(card.locator('[data-waits-on]')).toHaveText([
+    'Waits on Rotate the API keys (outside this crate)',
+    'Waits on Price the basket',
+  ])
+
+  // The coupon rules wait on the basket price at the same station, so they
+  // stand behind it on the belt and the link runs back along it.
+  await memberRow(page, deps.coupon).hover()
+  await expect(lineLinks(page)).toHaveAttribute('data-line-link', `${deps.price}>${deps.coupon}`)
+  const along = await linkEnds(page, `${deps.price}>${deps.coupon}`)
+  expect(along.start.x - along.end.x).toBeGreaterThan(20)
+
+  // The basket price waits on no member, so it draws no link, and its card
+  // counts the members that wait on it.
+  await memberRow(page, deps.price).hover()
+  await expect(page.locator(`[data-line-card="${deps.price}"] [data-waited-on-by]`)).toHaveText('2 tasks wait on this')
+  await expect(lineLinks(page)).toHaveCount(0)
+
+  // Leaving the row clears the link.
+  await memberRow(page, deps.total).hover()
+  await expect(lineLinks(page)).toHaveCount(1)
+  await page.locator('[data-crate-side]').getByRole('heading', { name: 'Tasks' }).hover()
+  await expect(lineLinks(page)).toHaveCount(0)
+
+  // During a replay the line draws no link, and the card still shows.
+  await page.locator('[data-replay] input[type="range"]').evaluate((input: HTMLInputElement) => {
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setValue?.call(input, String(Date.parse('2026-11-18T12:00:00Z')))
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await expect(page.locator('[data-replay-time]')).not.toHaveText('Now')
+  await memberRow(page, deps.total).hover()
+  await expect(page.locator(`[data-line-card="${deps.total}"]`)).toBeVisible()
+  await expect(lineLinks(page)).toHaveCount(0)
+})
+
+// Three linked members at one station, where a depth-first walk from the
+// basket price would put the order history ahead of the coupon rules it
+// waits on. Each member stands ahead of every member that waits on it.
+const stationInsight: CrateInsight = {
+  ...depsInsight,
+  tasks: depsInsight.tasks.map((task) =>
+    task.id === deps.history
+      ? {
+          ...task,
+          phase: 'blocked',
+          station: 'build',
+          pull_request_opened_at: [],
+          depends_on: [
+            dependency(deps.price, 'Price the basket', 'running', true, true),
+            dependency(deps.coupon, 'Apply the coupon rules', 'queued', true, true),
+          ],
+          wait_depth: 2,
+        }
+      : task.id === deps.coupon
+        ? { ...task, waited_on_by: [deps.history] }
+        : task.id === deps.price
+          ? { ...task, waited_on_by: [deps.total, deps.history, deps.coupon] }
+          : task,
+  ),
+}
+
+test('a member at a station stands ahead of every member there that waits on it', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1800 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await serveCrates(page, { insights: { [depsCrate.id]: stationInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-station-sign="build"]')).toContainText('3')
+  await memberRow(page, deps.history).hover()
+  await expect(lineLinks(page)).toHaveCount(2)
+  const fromCoupon = await linkEnds(page, `${deps.coupon}>${deps.history}`)
+  const fromPrice = await linkEnds(page, `${deps.price}>${deps.history}`)
+  // The coupon rules stand ahead of the order history, and the basket price
+  // ahead of both.
+  expect(fromCoupon.start.x - fromCoupon.end.x).toBeGreaterThan(20)
+  expect(fromPrice.start.x - fromCoupon.start.x).toBeGreaterThan(20)
+})
+
+// A short map: three open lines in one lane. The first line's card is too
+// tall for the room below it and for the room above it, so it stands below,
+// where the map scrolls to it, and never loses its top.
+const shortInsight: CrateInsight = {
+  ...depsInsight,
+  tasks: depsInsight.tasks.filter((task) => [deps.price, deps.total, deps.coupon].includes(task.id)),
+  whereabouts: [{ key: 'task_branch', branch: null, task_ids: [deps.price, deps.total, deps.coupon] }],
+  replay: {
+    ...depsInsight.replay,
+    steps: depsInsight.replay.steps.filter((entry) => [deps.price, deps.total, deps.coupon].includes(entry.task_id)),
+  },
+}
+
+test('a branch map card stays whole when it fits on neither side of its line', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await serveCrates(page, { insights: { [depsCrate.id]: shortInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  const scroller = page.locator('[data-branch-map-scroll]')
+  await expect(scroller.locator('[data-branch-task]')).toHaveCount(3)
+  for (const id of [deps.price, deps.total, deps.coupon]) {
+    await branchLine(page, id).focus()
+    const card = scroller.locator(`[data-branch-card="${id}"]`)
+    await expect(card).toBeVisible()
+    const view = await scroller.boundingBox()
+    const box = await card.boundingBox()
+    // The card's top is inside the map, not cut off above it.
+    expect((box?.y ?? -1) - (view?.y ?? 0)).toBeGreaterThanOrEqual(0)
+  }
+  await expect(scroller.locator(`[data-branch-card="${deps.coupon}"] [data-waits-on]`)).toHaveCount(1)
+
+  // A pointer shows each whole card inside the map, which keeps room for it
+  // and needs no scroll to reach it.
+  for (const id of [deps.price, deps.total, deps.coupon]) {
+    await branchLine(page, id).locator('[data-open-label]').hover()
+    const card = scroller.locator(`[data-branch-card="${id}"]`)
+    await expect(card).toBeVisible()
+    const view = await scroller.boundingBox()
+    const box = await card.boundingBox()
+    expect((box?.y ?? -1) - (view?.y ?? 0)).toBeGreaterThanOrEqual(0)
+    expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual((view?.y ?? 0) + (view?.height ?? 0))
+    expect(await scroller.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(0)
+  }
+})
+
+// A task that waits on 20 tasks outside the crate and on the basket price.
+// Its line card is taller than the scene on a 375 px screen.
+const manyWaits = Array.from({ length: 20 }, (_, index) => {
+  const number = String(index + 1).padStart(2, '0')
+  return dependency(`261101-s${number}`, `Step ${number}`, 'running', false, true)
+})
+const manyWaitsInsight: CrateInsight = {
+  ...depsInsight,
+  tasks: depsInsight.tasks.map((task) =>
+    task.id === deps.total
+      ? { ...task, depends_on: [...manyWaits, dependency(deps.price, 'Price the basket', 'running', true, true)] }
+      : task,
+  ),
+}
+
+// Where a block stands on the page: the top of the block where a link ends,
+// read from the link that the row's emphasis draws, and then a few pixels
+// into the block. The emphasis clears again before the pointer moves.
+async function blockUnder(page: Page, id: string, linkKey: string) {
+  await memberRow(page, id).dispatchEvent('mouseover')
+  const ends = await linkEnds(page, linkKey)
+  const overlay = await page.locator('[data-line-links]').boundingBox()
+  await memberRow(page, id).dispatchEvent('mouseout')
+  await expect(lineLinks(page)).toHaveCount(0)
+  return { x: (overlay?.x ?? 0) + ends.end.x, y: (overlay?.y ?? 0) + ends.end.y + 12 }
+}
+
+// Both boxes inside the crate page's scroll area and the window.
+// The whole box inside the crate page's scroll area and the window, and,
+// when `clip` names a scroll area of its own, inside that one sideways.
+async function expectSeen(page: Page, locator: ReturnType<Page['locator']>, clip?: ReturnType<Page['locator']>) {
+  const box = await locator.boundingBox()
+  const port = await page.locator('[data-crate-scroll]').boundingBox()
+  const window = page.viewportSize()
+  expect(box && port && window).toBeTruthy()
+  if (!box || !port || !window) return
+  expect(box.y).toBeGreaterThanOrEqual(Math.max(port.y, 0) - 0.5)
+  expect(box.y + box.height).toBeLessThanOrEqual(Math.min(port.y + port.height, window.height) + 0.5)
+  let left = Math.max(port.x, 0)
+  let right = Math.min(port.x + port.width, window.width)
+  const inner = clip ? await clip.boundingBox() : null
+  if (inner) {
+    left = Math.max(left, inner.x)
+    right = Math.min(right, inner.x + inner.width)
+  }
+  expect(box.x).toBeGreaterThanOrEqual(left - 0.5)
+  expect(box.x + box.width).toBeLessThanOrEqual(right + 0.5)
+}
+
+test('at 375 x 667 a pointer on a block reads every title of its tall line card', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+  // The page as it opens: not scrolled.
+  await expect(page.locator('[data-crate-scroll]')).toHaveJSProperty('scrollTop', 0)
+  const block = await blockUnder(page, deps.total, `${deps.price}>${deps.total}`)
+
+  // A real pointer on the block shows the card, fitted to what the person
+  // can see, with its list in a scroll.
+  await page.mouse.move(block.x, block.y)
+  const card = page.locator(`[data-line-card="${deps.total}"]`)
+  const box = card.locator(':scope > div')
+  await expect(card).toHaveAttribute('data-line-card-scrolls', 'true')
+  const titles = card.locator('[data-waits-on]')
+  await expect(titles).toHaveCount(21)
+  await expectSeen(page, box)
+  await expect(titles.first()).toHaveText('Waits on Step 01 (outside this crate)')
+  await expect(titles.first()).toBeInViewport({ ratio: 1 })
+  await expect(titles.last()).not.toBeInViewport({ ratio: 1 })
+
+  // The card covers no part of the link to the basket price.
+  await expect(lineLinks(page)).toHaveCount(1)
+  const curve = await page.locator('[data-line-link-path]').boundingBox()
+  const cardBox = await box.boundingBox()
+  expect(curve && cardBox).toBeTruthy()
+  if (curve && cardBox)
+    expect(
+      curve.x + curve.width <= cardBox.x ||
+        cardBox.x + cardBox.width <= curve.x ||
+        curve.y + curve.height <= cardBox.y ||
+        cardBox.y + cardBox.height <= curve.y,
+      `curve ${JSON.stringify(curve)} card ${JSON.stringify(cardBox)}`,
+    ).toBe(true)
+
+  // The pointer moves from the block onto the card, which stays, and the
+  // wheel brings the last title into view.
+  if (!cardBox) return
+  await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2, { steps: 12 })
+  await expect(card).toBeVisible()
+  await page.mouse.wheel(0, 2000)
+  await expect(titles.last()).toHaveText('Waits on Price the basket')
+  await expect(titles.last()).toBeInViewport({ ratio: 1 })
+  await expect(card).toBeVisible()
+  await expect(page.locator('[data-crate-scroll]')).toHaveJSProperty('scrollTop', 0)
+
+  // Back on the block, a press still opens the task.
+  await page.mouse.move(block.x, block.y, { steps: 12 })
+  await page.mouse.click(block.x, block.y)
+  await expect(page).toHaveURL(new RegExp(`/w/demo/crates/crate-deps\\?task=${deps.total}$`))
+})
+
+test('at 375 x 667 a pointer on a branch map line reads every title of its tall card', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 })
+  await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  // The person scrolls down to the map and points at the line's label.
+  const label = branchLine(page, deps.total).locator('[data-open-label]')
+  await label.scrollIntoViewIfNeeded()
+  await label.hover()
+  const card = page.locator(`[data-branch-card="${deps.total}"]`)
+  await expect(card).toHaveAttribute('data-branch-card-scrolls', 'true')
+  const titles = card.locator('[data-waits-on]')
+  await expect(titles).toHaveCount(21)
+  await expectSeen(page, card)
+  await expect(titles.first()).toBeInViewport({ ratio: 1 })
+  await expect(titles.last()).not.toBeInViewport({ ratio: 1 })
+
+  const box = await card.boundingBox()
+  if (!box) throw new Error('no card box')
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 12 })
+  await expect(card).toBeVisible()
+  await page.mouse.wheel(0, 2000)
+  await expect(titles.last()).toHaveText('Waits on Price the basket')
+  await expect(titles.last()).toBeInViewport({ ratio: 1 })
+  await expect(card).toBeVisible()
+
+  // Off the card and off the line, the card goes.
+  await page.mouse.move(2, 2, { steps: 4 })
+  await expect(card).toHaveCount(0)
+})
+
+// The rule for both cards, swept over the room a person can see (req-crate-
+// insights AC-6.1): while a task is emphasized, its card renders, its whole
+// box lies inside the visible area, its first waiting title is in view, and
+// a real pointer and the keyboard reach its last title. The card covers
+// neither the point the pointer rests on nor, on the line, the curve, and a
+// press on the block still opens the task. Each case gives the crate page's
+// scroll area a height, from very short to a phone's, scrolls the page so
+// the task stands near the top, the middle, or the foot of that area, and
+// then uses real pointer input only.
+const sweepHeights = [60, 76, 120, 240, 520]
+const sweepPlaces: Array<['top' | 'middle' | 'foot', number]> = [
+  ['top', 0.15],
+  ['middle', 0.5],
+  ['foot', 0.85],
+]
+const sweep: Array<{ width: number; height: number; place: string; share: number }> = [
+  ...sweepHeights.flatMap((height) => sweepPlaces.map(([place, share]) => ({ width: 375, height, place, share }))),
+  { width: 1280, height: 60, place: 'middle', share: 0.5 },
+  { width: 1280, height: 240, place: 'foot', share: 0.85 },
+]
+
+// A visual record of the tightest cases for the pull request.
+async function shootSweep(page: Page, testInfo: TestInfo, name: string) {
+  await page.evaluate(() => document.fonts.ready)
+  const image = await page.screenshot()
+  await testInfo.attach(name, { body: image, contentType: 'image/png' })
+  const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+  if (shots) {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(`${shots}/${name}`, image)
+  }
+}
+
+// Gives the scroll area `height` px and scrolls it so that the page point
+// `y`, read while the page was not scrolled, stands at `share` of that
+// height. Returns how far the page scrolled.
+async function standAt(page: Page, width: number, height: number, share: number, y: number) {
+  const scroller = page.locator('[data-crate-scroll]')
+  const port = await scroller.boundingBox()
+  if (!port) throw new Error('no scroll area')
+  await page.setViewportSize({ width, height: Math.round(port.y + height) })
+  const wanted = Math.round(y - (port.y + height * share))
+  await scroller.evaluate((element, value) => {
+    element.scrollTop = value
+  }, wanted)
+  return scroller.evaluate((element) => element.scrollTop)
+}
+
+// The card that renders for the pointed task, and its first title in view.
+// The point the pointer rests on stays uncovered.
+async function expectCardAt(
+  page: Page,
+  card: ReturnType<Page['locator']>,
+  box: ReturnType<Page['locator']>,
+  pointer: { x: number; y: number },
+  clip?: ReturnType<Page['locator']>,
+) {
+  await expect(card).toBeVisible()
+  const titles = card.locator('[data-waits-on]')
+  await expect(titles).toHaveCount(21)
+  // The first title in view, whole, or, when it is taller than the card,
+  // as much of it as the card's height holds, from its start.
+  const share = await titles.first().evaluate((line) => {
+    const scroll = (line.closest('[data-line-card] > div') ?? line.closest('[data-branch-card]')) as HTMLElement
+    return Math.min(1, scroll.clientHeight / line.getBoundingClientRect().height)
+  })
+  await expect(titles.first()).toBeInViewport({ ratio: Math.min(0.99, share - 0.01) })
+  await expectSeen(page, box, clip)
+  const covered = await card.evaluate((element, point) => {
+    const hit = document.elementFromPoint(point.x, point.y)
+    return hit !== null && element.contains(hit)
+  }, pointer)
+  expect(covered, 'the card covers the point the pointer rests on').toBe(false)
+}
+
+// The pointer moves onto the card and wheels it to its last title, and the
+// card stays whole inside the visible area.
+async function wheelToLast(
+  page: Page,
+  card: ReturnType<Page['locator']>,
+  box: ReturnType<Page['locator']>,
+  clip?: ReturnType<Page['locator']>,
+) {
+  const titles = card.locator('[data-waits-on]')
+  const cardBox = await box.boundingBox()
+  if (!cardBox) throw new Error('no card box')
+  await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2, { steps: 8 })
+  await expect(card).toBeVisible()
+  // A wheel scrolls smoothly, so each step waits until the card stops.
+  const settle = async () => {
+    let before = -1
+    for (let tries = 0; tries < 40; tries += 1) {
+      const now = await box.evaluate((element) => {
+        const scroll = (element.matches('[data-line-card] > div') ? element : element) as HTMLElement
+        return scroll.scrollTop
+      })
+      if (now === before) return
+      before = now
+      await page.waitForTimeout(50)
+    }
+  }
+  await page.mouse.wheel(0, 4000)
+  await settle()
+  await expect(titles.last()).toHaveText('Waits on Price the basket')
+  // Text after the list, such as the branch, can follow the last title, so
+  // the person wheels back by the part of the last title the card's content
+  // box cuts, until it shows whole or, when it is taller than that box, fills
+  // it.
+  const shown = () =>
+    titles.last().evaluate((line) => {
+      const box = line.getBoundingClientRect()
+      const scroll = (line.closest('[data-line-card] > div') ?? line.closest('[data-branch-card]')) as HTMLElement
+      const style = getComputedStyle(scroll)
+      const top = scroll.getBoundingClientRect().top + scroll.clientTop + Number.parseFloat(style.paddingTop)
+      const room = scroll.clientHeight - Number.parseFloat(style.paddingTop) - Number.parseFloat(style.paddingBottom)
+      const foot = top + room
+      const fits = box.height <= room
+      const back = fits ? Math.min(0, box.top - top) : Math.min(0, box.bottom - foot)
+      const on = fits ? Math.max(0, box.bottom - foot) : Math.max(0, box.top - top)
+      return {
+        seen: Math.min(box.bottom, foot) - Math.max(box.top, top),
+        want: Math.min(box.height, room) - 1,
+        share: Math.min(1, room / box.height),
+        move: back < 0 ? Math.floor(back) : Math.ceil(on),
+      }
+    })
+  for (let step = 0; step < 6; step += 1) {
+    const now = await shown()
+    if (now.seen >= now.want || now.move === 0) break
+    await page.mouse.wheel(0, now.move)
+    await settle()
+  }
+  const last = await shown()
+  expect(last.seen).toBeGreaterThanOrEqual(last.want)
+  const lastShare = last.share
+  await expect(titles.last()).toBeInViewport({ ratio: Math.min(0.99, lastShare - 0.01) })
+  await expectSeen(page, box, clip)
+  return cardBox
+}
+
+for (const { width, height, place, share } of sweep) {
+  test(`at ${width} px a pointer on a block reads its tall line card in a ${height} px scroll area, task near the ${place}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+    await page.goto('/w/demo/crates/crate-deps')
+    await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+    const block = await blockUnder(page, deps.total, `${deps.price}>${deps.total}`)
+    const scrolled = await standAt(page, width, height, share, block.y)
+    const pointer = { x: block.x, y: block.y - scrolled }
+    await page.mouse.move(pointer.x, pointer.y)
+    const card = page.locator(`[data-line-card="${deps.total}"]`)
+    const box = card.locator(':scope > div')
+    await expectCardAt(page, card, box, pointer)
+
+    // The card covers no part of the link to the basket price.
+    const curve = await page.locator('[data-line-link-path]').boundingBox()
+    const cardBox = await box.boundingBox()
+    expect(curve && cardBox).toBeTruthy()
+    if (curve && cardBox)
+      expect(
+        curve.x + curve.width <= cardBox.x + 0.5 ||
+          cardBox.x + cardBox.width <= curve.x + 0.5 ||
+          curve.y + curve.height <= cardBox.y + 0.5 ||
+          cardBox.y + cardBox.height <= curve.y + 0.5,
+        `curve ${JSON.stringify(curve)} card ${JSON.stringify(cardBox)}`,
+      ).toBe(true)
+    if (height <= 76 && place === 'middle')
+      await shootSweep(page, testInfo, `crate-deps-line-sweep-${height}-${place}-${width}.png`)
+
+    await wheelToLast(page, card, box)
+
+    // Back on the block, a press still opens the task.
+    await page.mouse.move(pointer.x, pointer.y, { steps: 8 })
+    await page.mouse.click(pointer.x, pointer.y)
+    await expect(page).toHaveURL(new RegExp(`/w/demo/crates/crate-deps\\?task=${deps.total}$`))
+  })
+
+  test(`at ${width} px a pointer on a branch map line reads its tall card in a ${height} px scroll area, task near the ${place}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 })
+    await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+    await page.goto('/w/demo/crates/crate-deps')
+    const label = branchLine(page, deps.total).locator('[data-open-label]')
+    await expect(label).toHaveCount(1)
+    const start = await label.boundingBox()
+    if (!start) throw new Error('no label')
+    await standAt(page, width, height, share, start.y + start.height / 2)
+    const seen = await label.boundingBox()
+    if (!seen) throw new Error('no label')
+    const pointer = { x: seen.x + Math.min(seen.width / 2, 40), y: seen.y + seen.height / 2 }
+    await page.mouse.move(pointer.x, pointer.y)
+    const card = page.locator(`[data-branch-card="${deps.total}"]`)
+    const clip = page.locator('[data-branch-map-scroll]')
+    await expectCardAt(page, card, card, pointer, clip)
+    if (height <= 76 && place === 'middle')
+      await shootSweep(page, testInfo, `crate-deps-map-sweep-${height}-${place}-${width}.png`)
+    await wheelToLast(page, card, card, clip)
+  })
+}
+
+// The keyboard: focus on a branch map line shows its card under the same
+// rule, and the line's keys scroll the card to its last title while the
+// focus stays on the line.
+for (const height of sweepHeights) {
+  test(`at 375 px keyboard focus on a branch map line reads its tall card in a ${height} px scroll area`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 900 })
+    await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+    await page.goto('/w/demo/crates/crate-deps')
+    await expect(branchLine(page, deps.total)).toHaveCount(1)
+    const port = await page.locator('[data-crate-scroll]').boundingBox()
+    if (!port) throw new Error('no scroll area')
+    await page.setViewportSize({ width: 375, height: Math.round(port.y + height) })
+    // Keyboard use from the start, so the focus below is keyboard focus.
+    await page.keyboard.press('Tab')
+    await branchLine(page, deps.total).focus()
+    const card = page.locator(`[data-branch-card="${deps.total}"]`)
+    const clip = page.locator('[data-branch-map-scroll]')
+    await expect(card).toBeVisible()
+    const titles = card.locator('[data-waits-on]')
+    await expect(titles.first()).toBeInViewport({ ratio: 0.99 })
+    await expectSeen(page, card, clip)
+    await page.keyboard.press('End')
+    await expect(titles.last()).toBeInViewport({ ratio: 0.99 })
+    await expectSeen(page, card, clip)
+    await expect(branchLine(page, deps.total)).toBeFocused()
+  })
+}
+
+test('at 1280 x 900 keyboard focus on a branch map line shows both cards of its task and its keys reach their last titles', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+  await page.keyboard.press('Tab')
+  await branchLine(page, deps.total).focus()
+  const lineCard = page.locator(`[data-line-card="${deps.total}"]`)
+  const mapCard = page.locator(`[data-branch-card="${deps.total}"]`)
+  await expect(lineCard).toBeVisible()
+  await expect(mapCard).toBeVisible()
+  await expectSeen(page, lineCard.locator(':scope > div'))
+  await expectSeen(page, mapCard, page.locator('[data-branch-map-scroll]'))
+  await page.keyboard.press('End')
+  for (const card of [lineCard, mapCard])
+    await expect(card.locator('[data-waits-on]').last()).toBeInViewport({ ratio: 0.99 })
+  await expect(branchLine(page, deps.total)).toBeFocused()
+})
+
+// A task that waits on 40 tasks outside the crate and on the basket price:
+// at 1280 x 900 its line card scrolls while its branch map line stays on
+// screen, so real keyboard focus on the line shows both cards.
+const moreWaitsInsight: CrateInsight = {
+  ...depsInsight,
+  tasks: depsInsight.tasks.map((task) =>
+    task.id === deps.total
+      ? {
+          ...task,
+          depends_on: [
+            ...Array.from({ length: 40 }, (_, index) => {
+              const number = String(index + 1).padStart(2, '0')
+              return dependency(`261101-s${number}`, `Step ${number}`, 'running', false, true)
+            }),
+            dependency(deps.price, 'Price the basket', 'running', true, true),
+          ],
+        }
+      : task,
+  ),
+}
+
+test('the keys of a focused branch map line scroll the line card of its task', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await serveCrates(page, { insights: { [depsCrate.id]: moreWaitsInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+  await page.keyboard.press('Tab')
+  await branchLine(page, deps.total).focus()
+  const card = page.locator(`[data-line-card="${deps.total}"]`)
+  await expect(card).toHaveAttribute('data-line-card-scrolls', 'true')
+  const titles = card.locator('[data-waits-on]')
+  await expect(titles).toHaveCount(41)
+  await expect(titles.first()).toBeInViewport({ ratio: 0.99 })
+  await expect(titles.last()).not.toBeInViewport({ ratio: 0.99 })
+  await page.keyboard.press('End')
+  await expect(titles.last()).toBeInViewport({ ratio: 0.99 })
+  await expectSeen(page, card.locator(':scope > div'))
+  await page.keyboard.press('Home')
+  await expect(titles.first()).toBeInViewport()
+  await expect(branchLine(page, deps.total)).toBeFocused()
+})
+
+test('the line dims every member the pointed-at task has no dependency path to', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1800 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+  // The line and the branch map share one emphasis, so the line's lit set
+  // is the map's: pointing at a row lights the chain in both.
+  await memberRow(page, deps.total).hover()
+  await expect(page.locator(`[data-line-card="${deps.total}"]`)).toBeVisible()
+  await expect
+    .poll(() =>
+      page
+        .locator('[data-branch-task][data-dimmed]')
+        .evaluateAll((lines) => lines.map((line) => line.getAttribute('data-branch-task')).sort()),
+    )
+    .toEqual([deps.history, deps.coupon, deps.exporter].sort())
+})
+
+test('the line draws no link when the browser cannot draw the scene', async ({ page }) => {
+  await page.addInitScript(() => {
+    // Every WebGL context request answers null, as in a browser without it.
+    const original = HTMLCanvasElement.prototype.getContext
+    Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
+      value(this: HTMLCanvasElement, type: string, ...rest: unknown[]) {
+        return type.startsWith('webgl') ? null : Reflect.apply(original, this, [type, ...rest])
+      },
+    })
+  })
+  await serveCrates(page)
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-line-mode="text"]')).toBeVisible()
+  await memberRow(page, deps.total).hover()
+  await expect(memberRow(page, deps.total)).toHaveAttribute('data-emphasized', 'true')
+  await expect(page.locator('[data-line-links], [data-line-link]')).toHaveCount(0)
+  await expect(memberRow(page, deps.total).locator('[data-waits-on]')).toHaveCount(2)
+})
+
+// Visual record for the pull request: the dependency rows, the branch map
+// with its links and merge mark, and both cards of the basket total, at
+// 375 px and a desktop width. CONVEYOR_SCREENSHOT_DIR keeps a local copy,
+// and the Playwright report carries each attachment.
+for (const width of [375, 1280]) {
+  test(`the crate dependencies screenshot at ${width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: width < 768 ? 2600 : 1800 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await serveCrates(page)
+    await page.goto('/w/demo/crates/crate-deps')
+    await expect(page.locator('[data-dependency-link]')).toHaveCount(2)
+    await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+    await page.evaluate(() => document.fonts.ready)
+    await expectNoHorizontalScroll(page)
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const shoot = async (name: string, image: Buffer) => {
+      await testInfo.attach(name, { body: image, contentType: 'image/png' })
+      if (shots) {
+        const { writeFile } = await import('node:fs/promises')
+        await writeFile(`${shots}/${name}`, image)
+      }
+    }
+    // The member rows.
+    await shoot(`crate-deps-rows-${width}.png`, await page.locator('[data-crate-side]').screenshot())
+    // The line's card and link while a row points at the basket total.
+    await memberRow(page, deps.total).hover()
+    await expect(lineLinks(page)).toHaveCount(1)
+    await expect(page.locator(`[data-line-link="${deps.price}>${deps.total}"] [data-line-link-path]`)).toHaveAttribute(
+      'd',
+      /^M/,
+    )
+    await page.locator('[data-line-mode]').scrollIntoViewIfNeeded()
+    await shoot(`crate-deps-line-${width}.png`, await page.locator('[data-line-mode]').screenshot())
+    // The branch map with the basket total's card.
+    await branchLine(page, deps.total).focus()
+    await expect(page.locator(`[data-branch-card="${deps.total}"]`)).toBeVisible()
+    await page.locator('[data-branch-map]').scrollIntoViewIfNeeded()
+    await shoot(`crate-deps-map-${width}.png`, await page.locator('[data-branch-map]').screenshot())
+  })
+}
+
+// Visual record for the pull request: the line card of a task that waits on
+// 21 tasks, standing under its block and reaching past the scene's foot, at
+// 375 px and a desktop width.
+for (const width of [375, 1280]) {
+  test(`the tall line card screenshot at ${width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: width < 768 ? 667 : 900 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+    await page.goto('/w/demo/crates/crate-deps')
+    await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+    const block = await blockUnder(page, deps.total, `${deps.price}>${deps.total}`)
+    await page.mouse.move(block.x, block.y)
+    const titles = page.locator(`[data-line-card="${deps.total}"] [data-waits-on]`)
+    await expect(titles.first()).toBeInViewport({ ratio: 1 })
+    // Nothing else on the page covers a title the card shows, also not the
+    // branch map's card of the same task.
+    // The point test skips an element that takes no pointer, so the card
+    // takes it while the test reads.
+    const covered = await titles.evaluateAll((lines) => {
+      const card = lines[0]?.closest<HTMLElement>('[data-line-card] > div')
+      const before = card?.style.pointerEvents ?? ''
+      if (card) card.style.pointerEvents = 'auto'
+      const hidden = lines.flatMap((line) => {
+        const box = line.getBoundingClientRect()
+        if (box.bottom <= 0 || box.top >= window.innerHeight) return []
+        const scroll = line.closest('[data-line-card] > div')?.getBoundingClientRect()
+        if (scroll && (box.top < scroll.top || box.bottom > scroll.bottom)) return []
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+        return hit && line.contains(hit) ? [] : [line.textContent]
+      })
+      if (card) card.style.pointerEvents = before
+      return hidden
+    })
+    expect(covered).toEqual([])
+    await expect(page.locator(`[data-line-link="${deps.price}>${deps.total}"] [data-line-link-path]`)).toHaveAttribute(
+      'd',
+      /^M/,
+    )
+    await page.evaluate(() => document.fonts.ready)
+    const name = `crate-deps-line-tall-card-${width}.png`
+    const image = await page.screenshot()
+    await testInfo.attach(name, { body: image, contentType: 'image/png' })
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    if (shots) {
+      const { writeFile } = await import('node:fs/promises')
+      await writeFile(`${shots}/${name}`, image)
+    }
+    // The branch map card of the same task, under a pointer on its line.
+    await page.mouse.move(2, 2)
+    const label = branchLine(page, deps.total).locator('[data-open-label]')
+    await label.scrollIntoViewIfNeeded()
+    await label.hover()
+    await expect(page.locator(`[data-branch-card="${deps.total}"] [data-waits-on]`).first()).toBeInViewport({
+      ratio: 1,
+    })
+    // The line's card of the same task does not cover the card under the
+    // pointer.
+    const onTop = await page.locator(`[data-branch-card="${deps.total}"]`).evaluate((card: HTMLElement) => {
+      const before = card.style.pointerEvents
+      card.style.pointerEvents = 'auto'
+      const line = card.querySelector('[data-waits-on]')?.getBoundingClientRect()
+      const hit = line ? document.elementFromPoint(line.left + line.width / 2, line.top + line.height / 2) : null
+      card.style.pointerEvents = before
+      return hit !== null && card.contains(hit)
+    })
+    expect(onTop).toBe(true)
+    await page.evaluate(() => document.fonts.ready)
+    const mapName = `crate-deps-map-tall-card-${width}.png`
+    const mapImage = await page.screenshot()
+    await testInfo.attach(mapName, { body: mapImage, contentType: 'image/png' })
+    if (shots) {
+      const { writeFile } = await import('node:fs/promises')
+      await writeFile(`${shots}/${mapName}`, mapImage)
+    }
   })
 }

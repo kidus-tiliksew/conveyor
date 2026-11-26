@@ -19,13 +19,14 @@ import {
   Undo2,
   X,
 } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useMemo, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { BranchMap } from '../components/crate/branch-map'
 import { CrateBriefingSection } from '../components/crate/crate-briefing'
 import { type CrateEmphasis, useCrateEmphasis } from '../components/crate/crate-emphasis'
 import { CrateFormDialog } from '../components/crate/crate-parts'
 import { CrateStage } from '../components/crate/crate-stage'
+import { DependencyDetails } from '../components/crate/dependency-details'
 import { DeliveryStatsSheet } from '../components/crate/delivery-stats'
 import { CrateLiveLines, LiveIn } from '../components/feedback/live-status'
 import { pendingReadOptions, useLiveStatusRefresh } from '../components/feedback/use-live-status-refresh'
@@ -49,7 +50,7 @@ import {
 } from '../lib/api'
 import { taskStateLabels } from '../lib/contracts'
 import { crateActivityQueryKey, crateInsightQueryKey, crateQueryKey } from '../lib/query-keys'
-import type { CrateActivityEvent, CrateDetail, CrateRequirement, CrateTask } from '../lib/types'
+import type { CrateActivityEvent, CrateDetail, CrateInsight, CrateRequirement, CrateTask } from '../lib/types'
 import { absoluteTime, cn, relativeTime } from '../lib/utils'
 
 export interface CrateSearch {
@@ -280,6 +281,7 @@ function CrateView({ crate }: { crate: CrateDetail }) {
               <Requirements crate={crate} />
               <MemberTasks
                 crate={crate}
+                insight={insight.data}
                 canAct={canAct}
                 emphasis={emphasis}
                 onActivate={openTask}
@@ -367,9 +369,13 @@ const COLLAPSED_TASKS = 5
 // and links to the task's detail. The rows keep the served order of
 // invariant 28, and the list shows the first five until the user expands it.
 // Pointing at a row emphasizes its block on the line, and pointing at a block
-// marks its row (req-crate-insights REQ-3).
+// marks its row (req-crate-insights REQ-3). Under each row stand the tasks it
+// waits on and the count of members that wait on it, from the insight view
+// joined by task ID. A row shows none of them until that view loads
+// (req-crate-insights AC-6.1, AC-6.2; component-crates invariant 39).
 function MemberTasks({
   crate,
+  insight,
   canAct,
   emphasis,
   onActivate,
@@ -377,6 +383,7 @@ function MemberTasks({
   onRemove,
 }: {
   crate: CrateDetail
+  insight: CrateInsight | undefined
   canAct: boolean
   emphasis: CrateEmphasis
   onActivate: (id: string) => void
@@ -385,6 +392,7 @@ function MemberTasks({
 }) {
   const { workspace } = useWorkspaceSelection()
   const open = crate.state === 'open'
+  const served = useMemo(() => new Map((insight?.tasks ?? []).map((task) => [task.id, task])), [insight])
   const [expanded, setExpanded] = useState(false)
   const shown = expanded ? crate.tasks : crate.tasks.slice(0, COLLAPSED_TASKS)
   const hidden = crate.tasks.length - shown.length
@@ -482,6 +490,13 @@ function MemberTasks({
                         )}
                       </>
                     }
+                  />
+                  {/* Beside the row's own button, so each member line is a
+                      control of its own. */}
+                  <DependencyDetails
+                    task={served.get(task.id)}
+                    onActivate={onActivate}
+                    className="mb-1 ml-[30px] mr-2"
                   />
                 </div>
                 <div className="flex shrink-0 items-center gap-0.5 pt-1">
