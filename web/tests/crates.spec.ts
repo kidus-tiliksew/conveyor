@@ -1856,7 +1856,9 @@ async function blockUnder(page: Page, id: string, linkKey: string) {
 }
 
 // Both boxes inside the crate page's scroll area and the window.
-async function expectSeen(page: Page, locator: ReturnType<Page['locator']>) {
+// The whole box inside the crate page's scroll area and the window, and,
+// when `clip` names a scroll area of its own, inside that one sideways.
+async function expectSeen(page: Page, locator: ReturnType<Page['locator']>, clip?: ReturnType<Page['locator']>) {
   const box = await locator.boundingBox()
   const port = await page.locator('[data-crate-scroll]').boundingBox()
   const window = page.viewportSize()
@@ -1864,6 +1866,15 @@ async function expectSeen(page: Page, locator: ReturnType<Page['locator']>) {
   if (!box || !port || !window) return
   expect(box.y).toBeGreaterThanOrEqual(Math.max(port.y, 0) - 0.5)
   expect(box.y + box.height).toBeLessThanOrEqual(Math.min(port.y + port.height, window.height) + 0.5)
+  let left = Math.max(port.x, 0)
+  let right = Math.min(port.x + port.width, window.width)
+  const inner = clip ? await clip.boundingBox() : null
+  if (inner) {
+    left = Math.max(left, inner.x)
+    right = Math.min(right, inner.x + inner.width)
+  }
+  expect(box.x).toBeGreaterThanOrEqual(left - 0.5)
+  expect(box.x + box.width).toBeLessThanOrEqual(right + 0.5)
 }
 
 test('at 375 x 667 a pointer on a block reads every title of its tall line card', async ({ page }) => {
@@ -1950,20 +1961,29 @@ test('at 375 x 667 a pointer on a branch map line reads every title of its tall 
   await expect(card).toHaveCount(0)
 })
 
-// Short scroll areas, each split around the pointed-at block or line: the
-// first number is the room over it and the second the room under it, in
-// pixels of the crate page's scroll area. The first and last splits leave
-// neither side 96 px. The page scrolls there, and then a real pointer points.
-const splits: Array<[number, number, number]> = [
-  [375, 64, 40],
-  [375, 40, 140],
-  [375, 160, 60],
-  [1280, 80, 56],
+// The rule for both cards, swept over the room a person can see (req-crate-
+// insights AC-6.1): while a task is emphasized, its card renders, its whole
+// box lies inside the visible area, its first waiting title is in view, and
+// a real pointer and the keyboard reach its last title. The card covers
+// neither the point the pointer rests on nor, on the line, the curve, and a
+// press on the block still opens the task. Each case gives the crate page's
+// scroll area a height, from very short to a phone's, scrolls the page so
+// the task stands near the top, the middle, or the foot of that area, and
+// then uses real pointer input only.
+const sweepHeights = [60, 76, 120, 240, 520]
+const sweepPlaces: Array<['top' | 'middle' | 'foot', number]> = [
+  ['top', 0.15],
+  ['middle', 0.5],
+  ['foot', 0.85],
+]
+const sweep: Array<{ width: number; height: number; place: string; share: number }> = [
+  ...sweepHeights.flatMap((height) => sweepPlaces.map(([place, share]) => ({ width: 375, height, place, share }))),
+  { width: 1280, height: 60, place: 'middle', share: 0.5 },
+  { width: 1280, height: 240, place: 'foot', share: 0.85 },
 ]
 
-// A visual record of a tight split for the pull request, after the pointer
-// wheeled the card to its last title.
-async function shootSplit(page: Page, testInfo: TestInfo, name: string) {
+// A visual record of the tightest cases for the pull request.
+async function shootSweep(page: Page, testInfo: TestInfo, name: string) {
   await page.evaluate(() => document.fonts.ready)
   const image = await page.screenshot()
   await testInfo.attach(name, { body: image, contentType: 'image/png' })
@@ -1974,28 +1994,115 @@ async function shootSplit(page: Page, testInfo: TestInfo, name: string) {
   }
 }
 
-// The card, its first and last waiting titles, and the checks every split
-// shares: the whole card box inside the seen part, the first title whole
-// in view, and the pointer moving onto the card and wheeling the last
-// title into view while the card stays inside the seen part.
-async function readTallCard(page: Page, card: ReturnType<Page['locator']>, box: ReturnType<Page['locator']>) {
+// Gives the scroll area `height` px and scrolls it so that the page point
+// `y`, read while the page was not scrolled, stands at `share` of that
+// height. Returns how far the page scrolled.
+async function standAt(page: Page, width: number, height: number, share: number, y: number) {
+  const scroller = page.locator('[data-crate-scroll]')
+  const port = await scroller.boundingBox()
+  if (!port) throw new Error('no scroll area')
+  await page.setViewportSize({ width, height: Math.round(port.y + height) })
+  const wanted = Math.round(y - (port.y + height * share))
+  await scroller.evaluate((element, value) => {
+    element.scrollTop = value
+  }, wanted)
+  return scroller.evaluate((element) => element.scrollTop)
+}
+
+// The card that renders for the pointed task, and its first title in view.
+// The point the pointer rests on stays uncovered.
+async function expectCardAt(
+  page: Page,
+  card: ReturnType<Page['locator']>,
+  box: ReturnType<Page['locator']>,
+  pointer: { x: number; y: number },
+  clip?: ReturnType<Page['locator']>,
+) {
+  await expect(card).toBeVisible()
   const titles = card.locator('[data-waits-on]')
   await expect(titles).toHaveCount(21)
-  await expectSeen(page, box)
-  await expect(titles.first()).toBeInViewport({ ratio: 1 })
+  // The first title in view, whole, or, when it is taller than the card,
+  // as much of it as the card's height holds, from its start.
+  const share = await titles.first().evaluate((line) => {
+    const scroll = (line.closest('[data-line-card] > div') ?? line.closest('[data-branch-card]')) as HTMLElement
+    return Math.min(1, scroll.clientHeight / line.getBoundingClientRect().height)
+  })
+  await expect(titles.first()).toBeInViewport({ ratio: Math.min(0.99, share - 0.01) })
+  await expectSeen(page, box, clip)
+  const covered = await card.evaluate((element, point) => {
+    const hit = document.elementFromPoint(point.x, point.y)
+    return hit !== null && element.contains(hit)
+  }, pointer)
+  expect(covered, 'the card covers the point the pointer rests on').toBe(false)
+}
+
+// The pointer moves onto the card and wheels it to its last title, and the
+// card stays whole inside the visible area.
+async function wheelToLast(
+  page: Page,
+  card: ReturnType<Page['locator']>,
+  box: ReturnType<Page['locator']>,
+  clip?: ReturnType<Page['locator']>,
+) {
+  const titles = card.locator('[data-waits-on]')
   const cardBox = await box.boundingBox()
   if (!cardBox) throw new Error('no card box')
   await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2, { steps: 8 })
   await expect(card).toBeVisible()
-  await page.mouse.wheel(0, 3000)
+  // A wheel scrolls smoothly, so each step waits until the card stops.
+  const settle = async () => {
+    let before = -1
+    for (let tries = 0; tries < 40; tries += 1) {
+      const now = await box.evaluate((element) => {
+        const scroll = (element.matches('[data-line-card] > div') ? element : element) as HTMLElement
+        return scroll.scrollTop
+      })
+      if (now === before) return
+      before = now
+      await page.waitForTimeout(50)
+    }
+  }
+  await page.mouse.wheel(0, 4000)
+  await settle()
   await expect(titles.last()).toHaveText('Waits on Price the basket')
-  await expect(titles.last()).toBeInViewport({ ratio: 1 })
-  await expectSeen(page, box)
+  // Text after the list, such as the branch, can follow the last title, so
+  // the person wheels back by the part of the last title the card's content
+  // box cuts, until it shows whole or, when it is taller than that box, fills
+  // it.
+  const shown = () =>
+    titles.last().evaluate((line) => {
+      const box = line.getBoundingClientRect()
+      const scroll = (line.closest('[data-line-card] > div') ?? line.closest('[data-branch-card]')) as HTMLElement
+      const style = getComputedStyle(scroll)
+      const top = scroll.getBoundingClientRect().top + scroll.clientTop + Number.parseFloat(style.paddingTop)
+      const room = scroll.clientHeight - Number.parseFloat(style.paddingTop) - Number.parseFloat(style.paddingBottom)
+      const foot = top + room
+      const fits = box.height <= room
+      const back = fits ? Math.min(0, box.top - top) : Math.min(0, box.bottom - foot)
+      const on = fits ? Math.max(0, box.bottom - foot) : Math.max(0, box.top - top)
+      return {
+        seen: Math.min(box.bottom, foot) - Math.max(box.top, top),
+        want: Math.min(box.height, room) - 1,
+        share: Math.min(1, room / box.height),
+        move: back < 0 ? Math.floor(back) : Math.ceil(on),
+      }
+    })
+  for (let step = 0; step < 6; step += 1) {
+    const now = await shown()
+    if (now.seen >= now.want || now.move === 0) break
+    await page.mouse.wheel(0, now.move)
+    await settle()
+  }
+  const last = await shown()
+  expect(last.seen).toBeGreaterThanOrEqual(last.want)
+  const lastShare = last.share
+  await expect(titles.last()).toBeInViewport({ ratio: Math.min(0.99, lastShare - 0.01) })
+  await expectSeen(page, box, clip)
   return cardBox
 }
 
-for (const [width, above, below] of splits) {
-  test(`at ${width} px a pointer reads every title of a tall line card with ${above} px over its block and ${below} px under it`, async ({
+for (const { width, height, place, share } of sweep) {
+  test(`at ${width} px a pointer on a block reads its tall line card in a ${height} px scroll area, task near the ${place}`, async ({
     page,
   }, testInfo) => {
     await page.setViewportSize({ width, height: 900 })
@@ -2003,112 +2110,154 @@ for (const [width, above, below] of splits) {
     await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
     await page.goto('/w/demo/crates/crate-deps')
     await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
-    const scroller = page.locator('[data-crate-scroll]')
-    const port = await scroller.boundingBox()
-    if (!port) throw new Error('no scroll area')
-    // The block's top is 7 px over the point blockUnder names, and a block
-    // stands about 18 px tall on a 375 px line and 42 px on a 1280 px one.
-    const blockHeight = width < 768 ? 18 : 42
     const block = await blockUnder(page, deps.total, `${deps.price}>${deps.total}`)
-    const top = block.y - 7
-    const scrollTop = Math.round(top - (port.y + above))
-    await page.setViewportSize({ width, height: Math.round(port.y + above + blockHeight + below) })
-    await scroller.evaluate((element, value) => {
-      element.scrollTop = value
-    }, scrollTop)
-    await expect(scroller).toHaveJSProperty('scrollTop', scrollTop)
-    await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
-
-    await page.mouse.move(block.x, block.y - scrollTop)
+    const scrolled = await standAt(page, width, height, share, block.y)
+    const pointer = { x: block.x, y: block.y - scrolled }
+    await page.mouse.move(pointer.x, pointer.y)
     const card = page.locator(`[data-line-card="${deps.total}"]`)
     const box = card.locator(':scope > div')
-    await expect(card).toHaveAttribute('data-line-card-scrolls', 'true')
-    await expect(card).toBeVisible()
-    const cardBox = await readTallCard(page, card, box)
-    if (above < 96 && below < 96) {
-      expect(cardBox.height).toBeLessThan(96)
-      await shootSplit(page, testInfo, `crate-deps-line-split-${above}-${below}-${width}.png`)
-    }
+    await expectCardAt(page, card, box, pointer)
 
     // The card covers no part of the link to the basket price.
     const curve = await page.locator('[data-line-link-path]').boundingBox()
-    if (curve)
+    const cardBox = await box.boundingBox()
+    expect(curve && cardBox).toBeTruthy()
+    if (curve && cardBox)
       expect(
-        curve.x + curve.width <= cardBox.x ||
-          cardBox.x + cardBox.width <= curve.x ||
-          curve.y + curve.height <= cardBox.y ||
-          cardBox.y + cardBox.height <= curve.y,
+        curve.x + curve.width <= cardBox.x + 0.5 ||
+          cardBox.x + cardBox.width <= curve.x + 0.5 ||
+          curve.y + curve.height <= cardBox.y + 0.5 ||
+          cardBox.y + cardBox.height <= curve.y + 0.5,
         `curve ${JSON.stringify(curve)} card ${JSON.stringify(cardBox)}`,
       ).toBe(true)
-    else expect(curve).not.toBeNull()
+    if (height <= 76 && place === 'middle')
+      await shootSweep(page, testInfo, `crate-deps-line-sweep-${height}-${place}-${width}.png`)
+
+    await wheelToLast(page, card, box)
 
     // Back on the block, a press still opens the task.
-    await page.mouse.move(block.x, block.y - scrollTop, { steps: 8 })
-    await page.mouse.click(block.x, block.y - scrollTop)
+    await page.mouse.move(pointer.x, pointer.y, { steps: 8 })
+    await page.mouse.click(pointer.x, pointer.y)
     await expect(page).toHaveURL(new RegExp(`/w/demo/crates/crate-deps\\?task=${deps.total}$`))
   })
 
-  test(`at ${width} px a pointer reads every title of a tall branch map card with ${above} px over its line and ${below} px under it`, async ({
+  test(`at ${width} px a pointer on a branch map line reads its tall card in a ${height} px scroll area, task near the ${place}`, async ({
     page,
   }, testInfo) => {
     await page.setViewportSize({ width, height: 900 })
     await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
     await page.goto('/w/demo/crates/crate-deps')
-    const scroller = page.locator('[data-crate-scroll]')
-    const port = await scroller.boundingBox()
     const label = branchLine(page, deps.total).locator('[data-open-label]')
     await expect(label).toHaveCount(1)
     const start = await label.boundingBox()
-    if (!port || !start) throw new Error('no scroll area or label')
-    // The line runs through the middle of its label.
-    const line = start.y + start.height / 2
-    const scrollTop = Math.round(line - (port.y + above))
-    await page.setViewportSize({ width, height: Math.round(port.y + above + below) })
-    await scroller.evaluate((element, value) => {
-      element.scrollTop = value
-    }, scrollTop)
-    await expect(scroller).toHaveJSProperty('scrollTop', scrollTop)
+    if (!start) throw new Error('no label')
+    await standAt(page, width, height, share, start.y + start.height / 2)
     const seen = await label.boundingBox()
     if (!seen) throw new Error('no label')
-    await page.mouse.move(seen.x + seen.width / 2, seen.y + seen.height / 2)
+    const pointer = { x: seen.x + Math.min(seen.width / 2, 40), y: seen.y + seen.height / 2 }
+    await page.mouse.move(pointer.x, pointer.y)
     const card = page.locator(`[data-branch-card="${deps.total}"]`)
-    await expect(card).toHaveAttribute('data-branch-card-scrolls', 'true')
-    const cardBox = await readTallCard(page, card, card)
-    if (above < 96 && below < 96) {
-      expect(cardBox.height).toBeLessThan(96)
-      await shootSplit(page, testInfo, `crate-deps-map-split-${above}-${below}-${width}.png`)
-    }
+    const clip = page.locator('[data-branch-map-scroll]')
+    await expectCardAt(page, card, card, pointer, clip)
+    if (height <= 76 && place === 'middle')
+      await shootSweep(page, testInfo, `crate-deps-map-sweep-${height}-${place}-${width}.png`)
+    await wheelToLast(page, card, card, clip)
   })
 }
 
-test('at 375 x 667 keyboard focus on a branch map line keeps its whole card, which the page scrolls to', async ({
+// The keyboard: focus on a branch map line shows its card under the same
+// rule, and the line's keys scroll the card to its last title while the
+// focus stays on the line.
+for (const height of sweepHeights) {
+  test(`at 375 px keyboard focus on a branch map line reads its tall card in a ${height} px scroll area`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 900 })
+    await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+    await page.goto('/w/demo/crates/crate-deps')
+    await expect(branchLine(page, deps.total)).toHaveCount(1)
+    const port = await page.locator('[data-crate-scroll]').boundingBox()
+    if (!port) throw new Error('no scroll area')
+    await page.setViewportSize({ width: 375, height: Math.round(port.y + height) })
+    // Keyboard use from the start, so the focus below is keyboard focus.
+    await page.keyboard.press('Tab')
+    await branchLine(page, deps.total).focus()
+    const card = page.locator(`[data-branch-card="${deps.total}"]`)
+    const clip = page.locator('[data-branch-map-scroll]')
+    await expect(card).toBeVisible()
+    const titles = card.locator('[data-waits-on]')
+    await expect(titles.first()).toBeInViewport({ ratio: 0.99 })
+    await expectSeen(page, card, clip)
+    await page.keyboard.press('End')
+    await expect(titles.last()).toBeInViewport({ ratio: 0.99 })
+    await expectSeen(page, card, clip)
+    await expect(branchLine(page, deps.total)).toBeFocused()
+  })
+}
+
+test('at 1280 x 900 keyboard focus on a branch map line shows both cards of its task and its keys reach their last titles', async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 375, height: 667 })
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
   await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
   await page.goto('/w/demo/crates/crate-deps')
-  await expect(branchLine(page, deps.total)).toHaveCount(1)
-  // Keyboard use from the start, so the focus below is keyboard focus.
+  await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
   await page.keyboard.press('Tab')
   await branchLine(page, deps.total).focus()
-  const card = page.locator(`[data-branch-card="${deps.total}"]`)
-  await expect(card).toHaveAttribute('data-branch-card-scrolls', 'false')
-  const titles = card.locator('[data-waits-on]')
-  await expect(titles.first()).toBeInViewport({ ratio: 1 })
-  // The page scrolls with the keys while the focus stays on the line.
-  for (let step = 0; step < 12; step += 1) {
-    if (
-      await titles.last().evaluate((element) => {
-        const box = element.getBoundingClientRect()
-        return box.bottom <= window.innerHeight && box.top >= 0
-      })
-    )
-      break
-    await page.keyboard.press('ArrowDown')
-  }
-  await expect(titles.last()).toBeInViewport({ ratio: 1 })
+  const lineCard = page.locator(`[data-line-card="${deps.total}"]`)
+  const mapCard = page.locator(`[data-branch-card="${deps.total}"]`)
+  await expect(lineCard).toBeVisible()
+  await expect(mapCard).toBeVisible()
+  await expectSeen(page, lineCard.locator(':scope > div'))
+  await expectSeen(page, mapCard, page.locator('[data-branch-map-scroll]'))
+  await page.keyboard.press('End')
+  for (const card of [lineCard, mapCard])
+    await expect(card.locator('[data-waits-on]').last()).toBeInViewport({ ratio: 0.99 })
   await expect(branchLine(page, deps.total)).toBeFocused()
-  await expect(card).toBeVisible()
+})
+
+// A task that waits on 40 tasks outside the crate and on the basket price:
+// at 1280 x 900 its line card scrolls while its branch map line stays on
+// screen, so real keyboard focus on the line shows both cards.
+const moreWaitsInsight: CrateInsight = {
+  ...depsInsight,
+  tasks: depsInsight.tasks.map((task) =>
+    task.id === deps.total
+      ? {
+          ...task,
+          depends_on: [
+            ...Array.from({ length: 40 }, (_, index) => {
+              const number = String(index + 1).padStart(2, '0')
+              return dependency(`261101-s${number}`, `Step ${number}`, 'running', false, true)
+            }),
+            dependency(deps.price, 'Price the basket', 'running', true, true),
+          ],
+        }
+      : task,
+  ),
+}
+
+test('the keys of a focused branch map line scroll the line card of its task', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await serveCrates(page, { insights: { [depsCrate.id]: moreWaitsInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+  await page.keyboard.press('Tab')
+  await branchLine(page, deps.total).focus()
+  const card = page.locator(`[data-line-card="${deps.total}"]`)
+  await expect(card).toHaveAttribute('data-line-card-scrolls', 'true')
+  const titles = card.locator('[data-waits-on]')
+  await expect(titles).toHaveCount(41)
+  await expect(titles.first()).toBeInViewport({ ratio: 0.99 })
+  await expect(titles.last()).not.toBeInViewport({ ratio: 0.99 })
+  await page.keyboard.press('End')
+  await expect(titles.last()).toBeInViewport({ ratio: 0.99 })
+  await expectSeen(page, card.locator(':scope > div'))
+  await page.keyboard.press('Home')
+  await expect(titles.first()).toBeInViewport()
+  await expect(branchLine(page, deps.total)).toBeFocused()
 })
 
 test('the line dims every member the pointed-at task has no dependency path to', async ({ page }) => {

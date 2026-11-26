@@ -28,11 +28,11 @@ import {
   useState,
 } from 'react'
 import * as THREE from 'three'
+import type { CrateInsightTask, CratePhase, CrateStation } from '../../lib/types'
+import { cn } from '../../lib/utils'
 import { DependencyDetails } from './dependency-details'
 import { linksKey, type WaitLink } from './dependency-model'
 import { type LineBlock, type LineStation, phaseMeta } from './line-model'
-import type { CrateInsightTask, CratePhase, CrateStation } from '../../lib/types'
-import { cn } from '../../lib/utils'
 
 export interface LineSceneProps {
   blocks: LineBlock[]
@@ -706,12 +706,16 @@ interface Anchor {
 const CARD_MARGIN = 4
 // The space between a block's foot and a card that stands under it.
 const CARD_GAP = 8
-// The least room in which a card shows at all: one whole line of text with
-// the card's padding and border, 24 px. With less room on both sides of its block, the card hides.
-const CARD_LEAST_ROOM = 24
+// The room a side needs before a card that scrolls stands there: one whole
+// line of text with the card's padding and border. The card's widest box.
+const CARD_LINE_ROOM = 30
+const CARD_WIDTH = 256
+// The least width of a card beside its block on the side away from its
+// links.
+const CARD_BESIDE_WIDTH = 160
 // How long a card stays after the pointer leaves its block or the card, so
 // the pointer can cross the gap between them.
-const CARD_REACH_MS = 250
+const CARD_REACH_MS = 400
 
 // A dependency link the line shows, with the heights over its two blocks'
 // centres where it starts and ends.
@@ -732,8 +736,9 @@ function Projector({
 }: {
   anchors: Anchor[]
   // The emphasized block, the height over its centre where its card points,
-  // and the depth under its centre of its foot.
-  card: { id: string; lift: number; drop: number } | null
+  // the depth under its centre of its foot, and the blocks its links start
+  // from.
+  card: { id: string; lift: number; drop: number; from: string[] } | null
   groups: RefObject<Map<string, THREE.Group>>
   elements: RefObject<Record<string, HTMLElement | null>>
   links: ShownLink[]
@@ -823,52 +828,124 @@ function Projector({
     const port = canvas.closest('[data-crate-scroll]')?.getBoundingClientRect()
     const seenTop = Math.max(port?.top ?? 0, 0) - frame.top
     const seenBottom = Math.min(port?.bottom ?? window.innerHeight, window.innerHeight) - frame.top
-    // The card's whole box stays inside the seen part (req-crate-insights
-    // AC-6.1). Over its block, it runs from the seen part's top, or the
-    // scene's top, down to the point over the block. Under its block, it runs
-    // from the block's foot down to the seen part's foot. The links rise over
-    // the blocks and the card stands clear over them or under the block, so
-    // it covers none of them. The card stands over its block when it fits
-    // there, else under the block when it fits there. Otherwise it takes the
-    // side with more room, keeps to exactly that room, and scrolls, and only
-    // then does it take the pointer, which can move onto it from the block.
-    // It opens scrolled just far enough to show its first waiting task. With
-    // less than one line of room on both sides, it hides.
+    // Where the card stands (req-crate-insights AC-6.1). While a task is
+    // emphasized, its card renders, and its whole box stays inside the seen
+    // part, whatever room is left:
+    // 1. Over its block when the whole card fits there, from the seen part's
+    //    top, or the scene's top, down to the point over the block. Else
+    //    under the block when it fits there, from the block's foot down to
+    //    the seen part's foot.
+    // 2. Else, on the side with more room when that side holds at least one
+    //    whole line, keeping to exactly that room and scrolling.
+    // 3. Else, beside the block: on the side of the block and of the blocks
+    //    its links start from that has more room, as wide as that room
+    //    allows, over the whole height of the seen part, and scrolling.
+    // The links rise over the blocks and run between them, so a card over
+    // the block, under it, or beside the block and its links covers none of
+    // them, and none covers the block. A card that scrolls takes the
+    // pointer, which can move onto it from the block, and opens scrolled
+    // just far enough to show its first waiting task. The keys of the
+    // task's focused branch map line scroll it too.
     const overTop = Math.max(seenTop, 0) + CARD_MARGIN
     const overFoot = Math.min(y, size.height - CARD_MARGIN, seenBottom - CARD_MARGIN)
     const underTop = Math.max(foot + CARD_GAP, seenTop + CARD_MARGIN)
     const underFoot = seenBottom - CARD_MARGIN
     const above = overFoot - overTop
     const below = underFoot - underTop
+    // The card's own height at its own width.
+    if (inner.style.maxWidth !== '') inner.style.maxWidth = ''
     const full = inner.scrollHeight + 2
-    const over = full <= above || (full > below && above >= below)
-    const room = over ? above : below
-    const scrolls = full > room
-    const shows = room >= CARD_LEAST_ROOM
+    let place: 'over' | 'under' | 'beside'
+    if (full <= above) place = 'over'
+    else if (full <= below) place = 'under'
+    else if (Math.max(above, below) >= CARD_LINE_ROOM) place = above >= below ? 'over' : 'under'
+    else place = 'beside'
+    let room = place === 'over' ? above : below
+    let besideLeft = 0
+    let besideRight = 0
+    let onRight = true
+    if (place === 'beside') {
+      // The span the block and the blocks its links start from cover.
+      point.copy(node.position)
+      point.x -= card.drop * rest
+      const left = project().x
+      point.copy(node.position)
+      point.x += card.drop * rest
+      const right = project().x
+      let spanLeft = Math.min(left, right)
+      let spanRight = Math.max(left, right)
+      const middleX = (spanLeft + spanRight) / 2
+      // The blocks its links start from are as wide as the card's block.
+      const half = (spanRight - spanLeft) / 2
+      let fromLeft = 0
+      let fromRight = 0
+      for (const id of card.from) {
+        const from = groups.current.get(id)
+        if (!from) continue
+        point.copy(from.position)
+        const fromX = project().x
+        if (fromX < middleX) fromLeft += 1
+        else fromRight += 1
+        spanLeft = Math.min(spanLeft, fromX - half)
+        spanRight = Math.max(spanRight, fromX + half)
+      }
+      besideLeft = spanLeft - CARD_GAP
+      besideRight = spanRight + CARD_GAP
+      const roomLeft = besideLeft - CARD_MARGIN
+      const roomRight = size.width - CARD_MARGIN - besideRight
+      // The side away from the blocks its links start from, when it holds a
+      // card of readable width, so the pointer crosses none of them on its
+      // way to the card. Otherwise the side with more room.
+      const away = fromLeft > 0 && fromRight === 0 ? 'right' : fromRight > 0 && fromLeft === 0 ? 'left' : null
+      if (away === 'right' && roomRight >= CARD_BESIDE_WIDTH) onRight = true
+      else if (away === 'left' && roomLeft >= CARD_BESIDE_WIDTH) onRight = false
+      else onRight = roomRight >= roomLeft
+      const wide = Math.max(1, Math.floor(Math.min(CARD_WIDTH, onRight ? roomRight : roomLeft)))
+      inner.style.maxWidth = `${wide}px`
+      room = Math.max(1, seenBottom - seenTop - 2 * CARD_MARGIN)
+    }
+    const tall = inner.scrollHeight + 2
+    const scrolls = tall > room
     const cap = `${Math.floor(room)}px`
     if (inner.style.maxHeight !== (scrolls ? cap : '')) inner.style.maxHeight = scrolls ? cap : ''
     // Only the card's own box takes the pointer. The element around it is
     // centred on the anchor, so its box reaches past the card over the block.
-    inner.style.pointerEvents = scrolls && shows ? 'auto' : 'none'
+    inner.style.pointerEvents = scrolls ? 'auto' : 'none'
     element.dataset.lineCardScrolls = String(scrolls)
-    if (scrolls && element.dataset.lineCardOpened !== card.id) {
-      element.dataset.lineCardOpened = card.id
+    element.dataset.lineCardPlace = place
+    // It opens again when it moves to another side, where its width and
+    // height change.
+    if (scrolls && element.dataset.lineCardOpened !== `${card.id} ${place}`) {
+      element.dataset.lineCardOpened = `${card.id} ${place}`
+      // Its first waiting task ends at the card's foot, or, when that task
+      // is taller than the card, starts at the card's top.
       const first = inner.querySelector('[data-waits-on]')
       if (first) {
-        const end =
-          first.getBoundingClientRect().bottom - inner.getBoundingClientRect().top - inner.clientTop + inner.scrollTop
-        inner.scrollTop = Math.max(0, end - inner.clientHeight)
+        const lines = first.getBoundingClientRect()
+        const top = lines.top - inner.getBoundingClientRect().top - inner.clientTop + inner.scrollTop
+        const end = top + lines.height
+        inner.scrollTop = Math.max(0, lines.height > inner.clientHeight ? top : end - inner.clientHeight)
       }
     }
     // The card's box runs from half its width either side of x, and from
     // its full height above y down to y.
     const width = element.offsetWidth
     const height = element.offsetHeight
-    if (size.width >= width + 2 * CARD_MARGIN)
-      x = THREE.MathUtils.clamp(x, width / 2 + CARD_MARGIN, size.width - width / 2 - CARD_MARGIN)
-    y = over ? overFoot : underTop + height
+    if (place === 'beside') {
+      x = onRight ? besideRight + width / 2 : besideLeft - width / 2
+      point.copy(node.position)
+      point.y = base
+      const middle = project().y
+      const lowest = seenBottom - CARD_MARGIN
+      const highest = seenTop + CARD_MARGIN
+      y = Math.min(Math.max(middle + height / 2, highest + height), lowest)
+    } else {
+      if (size.width >= width + 2 * CARD_MARGIN)
+        x = THREE.MathUtils.clamp(x, width / 2 + CARD_MARGIN, size.width - width / 2 - CARD_MARGIN)
+      y = place === 'over' ? overFoot : underTop + height
+    }
     element.style.transform = `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`
-    element.style.visibility = shows ? 'visible' : 'hidden'
+    element.style.visibility = 'visible'
   })
   return <group ref={origin} />
 }
@@ -1035,9 +1112,25 @@ export default function LineScene({
   const [pointerHere, setPointerHere] = useState(false)
   const emphasizeBlock = useCallback(
     (id: string | null, left?: string) => {
+      // The moment the card stays. Each block the pointer crosses on its
+      // way starts the moment again, so only a pointer that rests on
+      // another block hands the emphasis to that block.
+      const settle = () => {
+        window.clearTimeout(leaving.current)
+        leaving.current = window.setTimeout(() => {
+          held.current = null
+          setLingering(null)
+          const next = hovered.current
+          setPointerHere(next !== null)
+          if (next !== null) onEmphasize(next)
+        }, CARD_REACH_MS)
+      }
       if (id !== null) {
         hovered.current = id
-        if (held.current !== null && held.current !== id) return
+        if (held.current !== null && held.current !== id) {
+          settle()
+          return
+        }
         window.clearTimeout(leaving.current)
         held.current = null
         setLingering(null)
@@ -1046,7 +1139,11 @@ export default function LineScene({
         return
       }
       if (left !== undefined && hovered.current === left) hovered.current = null
-      if (held.current !== null || (left !== undefined && onCard.current)) return
+      if (left !== undefined && onCard.current) return
+      if (held.current !== null) {
+        settle()
+        return
+      }
       window.clearTimeout(leaving.current)
       onEmphasize(null)
       const element = elements.current.card
@@ -1057,13 +1154,7 @@ export default function LineScene({
       }
       held.current = stays
       setLingering(stays)
-      leaving.current = window.setTimeout(() => {
-        held.current = null
-        setLingering(null)
-        const next = hovered.current
-        setPointerHere(next !== null)
-        if (next !== null) onEmphasize(next)
-      }, CARD_REACH_MS)
+      settle()
     },
     [onEmphasize],
   )
@@ -1079,6 +1170,35 @@ export default function LineScene({
     setPointerHere(true)
     onEmphasize(task)
   }, [onEmphasize])
+  // The keyboard reaches a card that scrolls through the task's branch map
+  // line: while that line holds focus, its arrow, page, Home, and End keys
+  // scroll this card as well as the map's card.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const element = elements.current.card
+      const inner = element?.firstElementChild as HTMLElement | null | undefined
+      if (!element || !inner || element.dataset.lineCardScrolls !== 'true') return
+      if (document.activeElement?.getAttribute('data-branch-task') !== element.dataset.lineCard) return
+      // End brings the last waiting task to the card's foot.
+      const last = Array.from(inner.querySelectorAll('[data-waits-on]')).at(-1)
+      const lastFoot = last
+        ? last.getBoundingClientRect().bottom - inner.getBoundingClientRect().top - inner.clientTop + inner.scrollTop
+        : inner.scrollHeight
+      const target = {
+        ArrowDown: inner.scrollTop + 40,
+        ArrowUp: inner.scrollTop - 40,
+        PageDown: inner.scrollTop + inner.clientHeight - 16,
+        PageUp: inner.scrollTop - inner.clientHeight + 16,
+        End: lastFoot - inner.clientHeight,
+        Home: 0,
+      }[event.key]
+      if (target === undefined) return
+      event.preventDefault()
+      inner.scrollTop = Math.max(0, target)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   // A pointer that leaves with the scene leaves no pointer cursor behind,
   // and no clear waits after it.
   useEffect(
@@ -1155,6 +1275,7 @@ export default function LineScene({
           id: cardBlock.id,
           lift: cardSpot.size / 2 + (cardLinked ? 0.95 : 0.2),
           drop: cardSpot.size / 2,
+          from: links.filter((link) => link.to === cardBlock.id && places.has(link.from)).map((link) => link.from),
         }
       : null
 
