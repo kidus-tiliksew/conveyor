@@ -48,7 +48,14 @@ The answer is 202 with the server's time of arrival and nothing else:
 {"accepted_at": "2026-11-25T12:00:00.123456Z"}
 ```
 
-Everything the signal causes is dated at that time. No time in the body is read.
+The arrival time is `accepted_at`, and it sets the signal's place in the deploy
+history. Each deploy and each stop that the signal records is dated at that
+time. A signal that reaches the store after a later report can still change the
+history at that later report's time, as
+[Deploys and running versions](#deploys-and-running-versions) describes. The
+key's `last_used_at` is the one exception. The store writes it from its own
+clock when it records the accepted signal, and not from the arrival time or the
+body. No time in the body is read.
 
 ### Body
 
@@ -85,7 +92,7 @@ A signal that breaks a rule is refused whole and records nothing.
 | 413 | The body is over 256 KiB |
 | 429 | The signal arrived less than 5 seconds before or after another accepted signal of the key, or one that is on its way to the store. `Retry-After` holds the whole seconds to wait from the answer, at least 1 |
 | 500 | The store failed, or the check of the key took more than 10 seconds. The answer holds no detail |
-| 503 | The server holds the most keys it can, and each one is inside its 5 seconds or has a request in progress that arrived inside them. Try again |
+| 503 | The server holds the most keys it can, and each one is inside its 5 seconds or has a request in progress that arrived inside them. Try again. A 503 also answers a signal whose request ends while it waits behind another signal of its key, for example because the client closed the connection. A client that left does not get that answer. Nothing was recorded |
 | 503 `retryable` | The store asks for the signal to be sent again. The answer is JSON with `error` of `retryable`, unlike the plain-text 503 above, and `Retry-After` is `1`. Nothing was recorded and the 5 seconds did not start, so send the same signal again after that second |
 
 Each rule of the body is checked before the 5 seconds. An invalid signal gets 400
@@ -148,17 +155,24 @@ workspace GitHub App has read access to deployments and subscribes to the
 [GitHub lifecycle coordination](github-lifecycle.md#deployment-reports) for the
 access and for the steps that the owner of an existing App takes.
 
-Conveyor reads four values from a report: the status's state, the status's
-GitHub environment name, the deployment's commit, and the status's creation
-time. When the status does not name an environment, the deployment's
-environment name is used. A report that does not hold all four values, or
-whose creation time is not an RFC 3339 time, is malformed and records nothing.
-The log line for a malformed report names the field and never its value.
+Conveyor reads five values from a report, and each one is required:
+
+- `repository.full_name`, which must not be empty.
+- The status's state.
+- The GitHub environment name. This is the status's name, or the deployment's
+  name when the status does not name an environment.
+- `deployment.sha`, a full commit ID of 40 hexadecimal characters. Case does
+  not count.
+- The status's creation time, which must be an RFC 3339 time.
+
+A report that does not hold all five values, or that holds one in another form,
+is malformed and records nothing. The log line for a malformed report names the
+field and never its value.
 
 The report's `repository.full_name` must match the GitHub slug of a repository
-in the workspace configuration. Case does not count. A report from any other
-repository records nothing. The workspace comes from the signed webhook
-address, never from the report.
+in the workspace configuration. Case does not count. A valid report from any
+other repository is not malformed, but it records nothing. The workspace comes
+from the signed webhook address, never from the report.
 
 ### When a report records a deploy
 
@@ -194,6 +208,8 @@ report does not change whether a watcher is listening.
 
 The server keeps each report as it keeps an accepted signal, with its time and
 its service, and the report takes the next report number of the environment.
+Deploys and stops are placed by their time, and then by report number for one
+time.
 A signal that reaches the store later with an earlier arrival therefore ends
 at the GitHub report, as [Deploys and running versions](#deploys-and-running-versions)
 describes.
@@ -225,10 +241,19 @@ report falls inside a deploy of the same commit, that deploy stops at the
 report's time and the report starts its own deploy, which ends where the
 earlier one ended. Reports at 09:00, 10:30, and 09:30 therefore give deploys
 from 09:00 to 09:30, from 09:30 to 10:30, and from 10:30, in any arrival
-order. A GitHub report at the same time as a watcher deploy of the same
-commit also gets its own deploy with the `github` source: the server takes
-the report as the later one, so the watcher deploy stops at that time and the
-GitHub deploy starts then. Signals of a watcher keep the rules in
+order.
+
+A watcher signal and a GitHub report can name the same service and commit at
+the same time. Then the report number decides which one is later:
+
+- When the signal was recorded first, the GitHub report gets its own deploy
+  with the `github` source. The watcher deploy stops at that time, and the
+  GitHub deploy starts then.
+- When the GitHub report was recorded first, the signal names a version that
+  already runs. The signal keeps the GitHub deploy and records no deploy of
+  its own for that service.
+
+Signals of a watcher keep the rules in
 [Deploys and running versions](#deploys-and-running-versions).
 
 An archived environment records nothing from GitHub. Conveyor runs no git

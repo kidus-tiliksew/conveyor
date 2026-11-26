@@ -17,7 +17,7 @@ a dashboard session and the workspace context that
 
 | Route | Request | Answer |
 | --- | --- | --- |
-| `GET /v1/environments` | `archived`: `false` (default) or `true` | 200 with an array of environment rows, ordered by name without regard to case. Each row also holds [`listening` and `last_signal_at`](production-feedback.md#listening) |
+| `GET /v1/environments` | `archived`: `false` (default) or `true` | 200 with an array of environment rows, ordered by name without regard to case. Each row also holds [`listening`, `last_signal_at`, and `newest_unresolved`](production-feedback.md#listening) |
 | `POST /v1/environments` | `name`, and optionally each other field of the next route | 201 with the environment row |
 | `PATCH /v1/environments/{id}` | Any of `name`, `tracked_branches`, `github_environments`, `version_rule`, `timing_window_minutes`, and `archived` | 200 with the environment row |
 | `POST /v1/environments/{id}/keys` | `label` | 201 with the key row and `value`, with `Cache-Control: no-store` |
@@ -43,15 +43,19 @@ A second `DELETE` of one key answers 204 and records nothing.
 | Status and code | Cause |
 | --- | --- |
 | 400 `invalid_environment` | `field` names the field, and `message` states the rule |
-| 404 `environment_not_found` | The environment, or its key, is missing or belongs to another workspace |
-| 409 `environment_archived` | The environment is archived and the request edits a field other than `archived`, or issues a key |
-| 409 `environment_key_limit` | The environment holds five keys that are not revoked |
+| 404 `environment_not_found` | The environment, or its key, is missing or belongs to another workspace. `environment_id` names the environment of the request |
+| 409 `environment_archived` | The environment is archived and the request edits a field other than `archived`, or issues a key. `environment_id` names the environment |
+| 409 `environment_key_limit` | The environment holds five keys that are not revoked. `environment_id` names the environment |
 | 503 `retryable` | A `POST`, `PATCH`, or `DELETE` that the store asks to be sent again, for example on SingleStore when the previous environment change is not visible yet. `Retry-After` is `1`. Nothing was recorded, so send the same request again after that second |
 
-Each refusal is JSON with `error` and `message`. A refused request records
-nothing. `PATCH` checks the JSON fields and their types first, then that the
-environment exists, then that it is not archived, and then the field values. A
-refused value on an archived environment therefore answers 409.
+Each refusal in this table is JSON with `error` and `message`. A 400 refusal
+also holds `field`. A 404 or 409 refusal also holds `environment_id`. The 503
+refusal holds only `error` and `message`. A body that is not one JSON object
+gets the plain-text 400 that [Routes](#routes) describes, and a larger body gets
+413. A refused request records nothing. `PATCH` checks the JSON fields and their
+types first, then that the environment exists, then that it is not archived, and
+then the field values. A refused value on an archived environment therefore
+answers 409.
 
 ## Fields
 
@@ -59,7 +63,7 @@ refused value on an archived environment therefore answers 409.
 | --- | --- |
 | `id` | `env-<yymmdd>-<6 hex>`, set by the server |
 | `name` | 1 to 40 characters after trimming. Differs, without regard to case, from the name of every unarchived environment of the workspace |
-| `tracked_branches` | An object from repository name to one branch name. Each repository is in the workspace configuration |
+| `tracked_branches` | An object from repository name to one branch name. Each repository is in the workspace configuration. Each branch is a legal Git branch name of at most 255 characters |
 | `github_environments` | At most ten names of 1 to 255 characters. No other unarchived environment lists one of them, without regard to case. A repeated name is stored once |
 | `version_rule` | `null`, or `kind` and `text` |
 | `timing_window_minutes` | A whole number from 1 to 1,440. The default is 60 |
@@ -87,11 +91,15 @@ A version rule text is at most 200 characters:
 
 ### Archive and restore
 
-`archived: true` archives an environment and keeps its records readable. While
+`archived: true` archives an environment and keeps its records readable. A
+request that archives an environment can also edit its other fields. While
 it is archived, each of its keys is refused, and a request that names any field
 other than `archived` answers 409. A key can still be revoked.
-`archived: false` restores it. A restore is refused when another unarchived
-environment took its name or one of its GitHub environment names.
+`archived: false` restores it. A request that restores an environment and also
+names another field answers 409 `environment_archived` and records nothing.
+Restore the environment first, and then edit it. A restore is refused when
+another unarchived environment took its name or one of its GitHub environment
+names.
 
 ## Keys
 
@@ -118,12 +126,14 @@ and path except `POST /v1/feedback/signals`, before routing and even beside a
 session cookie (`req-security-boundaries` AC-1.5).
 [Production feedback](production-feedback.md) describes that route.
 
-Other server components verify a presented value with
-`EnvironmentStore.VerifyEnvironmentKey`. It returns the workspace ID, the
-environment ID, the key ID, and the label. Every value that is not valid gets
-the one refusal `ErrInvalidEnvironmentKey`. Any other error is a store failure.
-`EnvironmentStore.CheckEnvironmentKey` does the same and writes no last use. Its
-caller records the use with what it accepts.
+The signal route checks a presented value with
+`EnvironmentStore.CheckEnvironmentKey` before it reads the body. The check
+finds the workspace ID, the environment ID, the key ID, and the label from the
+value alone. Every value that is not valid gets the one refusal
+`ErrInvalidEnvironmentKey`. Any other error is a store failure. The check writes
+nothing. When the store records an accepted signal, it also writes the key's
+`last_used_at`, at most once a minute. A refused signal does not change
+`last_used_at`.
 
 ## Suggestions
 
@@ -137,8 +147,15 @@ name. An ignored name stays ignored until then. An archive brings back no
 earlier report. A manager can ignore a name that GitHub has not reported yet,
 but not a name that an unarchived environment lists.
 
-`EnvironmentStore.RecordEnvironmentReport` records a suggestion. No delivery
-calls it yet.
+A `deployment_status` delivery from GitHub records a suggestion.
+`DeploymentReports.Apply` finds the configured repository of the report. When
+no unarchived environment lists the report's GitHub environment name,
+`DeploymentReports.suggest` gives the report to
+`EnvironmentStore.RecordEnvironmentReport`, whatever the report's state. The
+store records the suggestion when no workspace manager ignored the name. It
+keeps the newest report and does not replace it with an older one. A report
+from a repository outside the workspace configuration records nothing.
+[Production feedback](production-feedback.md#suggestions) describes the report.
 
 ## Events
 
@@ -148,7 +165,8 @@ Each change appends one workspace event with the actor.
 | --- | --- |
 | `environment.created` | `workspace_id`, `environment_id`, and `changes` with every field from `null` |
 | `environment.updated` | The same, with the old and new value of each changed field |
-| `environment.archived`, `environment.restored` | The same. A request that also edits fields records one event, with those changes in it |
+| `environment.archived` | The same. A request that archives and also edits fields records one event, with every change in it |
+| `environment.restored` | The same, with only the change of `archived`. A request that restores and also edits a field is refused with 409 `environment_archived` and records nothing |
 | `environment.key_issued`, `environment.key_revoked` | `workspace_id`, `environment_id`, `key_id`, and `label` |
 | `environment.suggestion_ignored` | `workspace_id`, `github_environment`, and `changes` with `ignored` |
 
