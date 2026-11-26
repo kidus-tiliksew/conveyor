@@ -56,13 +56,17 @@ func TestFeedbackWorkspaceForeignKeysMigrationIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	// Cleanups run last-registered first, so the schema drop below runs
+	// while the admin pool is still open.
+	t.Cleanup(admin.Close)
 	schema := "feedback_workspace_fk_" + strings.ReplaceAll(core.NewTaskID(), "-", "_")
 	if _, err = admin.Exec(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
+		if _, err := admin.Exec(context.Background(), "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE"); err != nil {
+			t.Errorf("drop schema %s: %v", schema, err)
+		}
 	})
 	poolConfig, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
