@@ -1623,9 +1623,9 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	}
 	// A merged task carries its live status in each relevant environment
 	// (component-production-feedback, Public surfaces; invariant 19).
-	statuses, err := s.feedbackTaskEnvironments(r.Context(), t)
+	statuses, merged, err := s.feedbackTaskEnvironments(r.Context(), t)
 	if err == nil {
-		response, err = withFeedbackEnvironments(response, statuses)
+		response, err = withFeedbackEnvironments(response, statuses, merged)
 	}
 	if err != nil {
 		writeStoreFailure(w, r, err)

@@ -254,9 +254,21 @@ never asks for that pair again. Every comparison runs in the background:
 ### The fields
 
 A read asks GitHub nothing. When a stored answer that a status needs is
-missing, the read asks the background work for it and leaves that status out.
-A later read serves it. A workspace with no unarchived environment, or a task
-with no relevant environment, gets no new field.
+missing, the read asks the background work for it and leaves out only that
+environment's status. A later read serves it. A placeholder status is never
+shown.
+
+Each list below is always present in its scope, as a JSON array. In a
+workspace with no unarchived environment, or when no environment is relevant,
+the list is `[]`, never `null` and never a missing key:
+
+| List | Where it appears | Not present on |
+| --- | --- | --- |
+| `environments` (statuses) | `GET /v1/tasks/{id}` and MCP `get_task` for a merged task | A task that is not merged |
+| `environments` (lines) | `GET /v1/crates/{id}` and MCP `get_crate` | — |
+| `live_in` | Each merged member row of `GET /v1/crates/{id}`, and each merged member's value in the MCP `get_crate` `live_in` object | A crate member that is not merged |
+
+No list endpoint carries these fields, and a task read carries no `live_in`.
 
 `GET /v1/tasks/{id}` and MCP `get_task` add `environments` to a merged task:
 
@@ -282,9 +294,11 @@ environment relevant to at least one merged member:
 | `as_of` | As on the task read |
 
 Each merged member row of `GET /v1/crates/{id}` adds `live_in`, the names of
-the environments where it is live. MCP `get_crate` adds `live_in` as an object
-from task ID to those names, for the members that `task_ids` lists. Its lines
-count every merged member, also when `task_ids` is truncated.
+the environments where it is live, or `[]`. MCP `get_crate` adds `live_in` as
+an object from task ID to those names. It has one entry for each merged member
+that `task_ids` lists, with `[]` for a member live nowhere, and no entry for a
+member that is not merged or that `task_ids` leaves out. The crate lines count
+every merged member, also when `task_ids` is truncated.
 
 Live status is a record for people to read. No gate, queue, claim, merge,
 review, next action, or work order reads it, and it changes no task.

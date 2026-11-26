@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -143,6 +144,27 @@ func decodeFields(t *testing.T, raw []byte) map[string]json.RawMessage {
 	return fields
 }
 
+// requireEmptyArray fails unless raw is exactly the JSON array []. A
+// missing key (nil) or null fails (feature-production-feedback-live v1,
+// Rollout and closure).
+func requireEmptyArray(t *testing.T, what string, raw json.RawMessage) {
+	t.Helper()
+	if raw == nil {
+		t.Fatalf("%s: the key is missing, want []", what)
+	}
+	if got := strings.TrimSpace(string(raw)); got != "[]" {
+		t.Fatalf("%s=%s, want []", what, got)
+	}
+}
+
+// requireAbsent fails when the key is present, null included.
+func requireAbsent(t *testing.T, what string, fields map[string]json.RawMessage, key string) {
+	t.Helper()
+	if raw, found := fields[key]; found {
+		t.Fatalf("%s holds %s=%s, want no such key", what, key, raw)
+	}
+}
+
 func (h *readsHarness) taskRead(id string) map[string]json.RawMessage {
 	h.t.Helper()
 	return decodeFields(h.t, h.want(http.StatusOK, http.MethodGet, "/v1/tasks/"+id, "").Body.Bytes())
@@ -190,10 +212,10 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 	live := h.merged(h.ctx, merge, crate.ID)
 	notYet := h.merged(h.ctx, later, crate.ID)
 
-	// Before any deploy no environment is relevant, so no read adds the field.
-	if _, found := h.taskRead(live.ID)["environments"]; found {
-		t.Fatal("a task read before any deploy holds environments")
-	}
+	// Before any deploy no environment is relevant, so a merged task's list
+	// is empty, not missing.
+	requireEmptyArray(t, "task environments before any deploy", h.taskRead(live.ID)["environments"])
+	requireEmptyArray(t, "MCP task environments before any deploy", h.mcpTask(live.ID)["environments"])
 	beforeTask := h.taskRead(live.ID)
 	beforeOrders, err := h.st.ListWorkOrders(h.ctx)
 	if err != nil {
@@ -254,10 +276,24 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 			t.Fatalf("row %s live_in=%v", row.ID, row.LiveIn)
 		}
 	}
+	var rawRows []map[string]json.RawMessage
+	if err := json.Unmarshal(crateBody["tasks"], &rawRows); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rawRows {
+		if string(row["id"]) == strconv.Quote(notYet.ID) {
+			requireEmptyArray(t, "crate live_in of a member live nowhere", row["live_in"])
+		}
+	}
 	page := readAs(t, h.handler, h.manager(), "get_crate", map[string]any{"workspace_id": "alpha", "crate_id": crate.ID})
 	mcpCrate := decodeFields(t, page.Items[0])
 	var mcpLines []feedback.CrateLine
-	if err := json.Unmarshal(mcpCrate["environments"], &mcpLines); err != nil || !reflect.DeepEqual(mcpLines, lines) || string(mcpCrate["live_in"]) != fmt.Sprintf(`{%q:["Production"]}`, live.ID) {
+	var mcpLiveIn map[string]json.RawMessage
+	if err := json.Unmarshal(mcpCrate["live_in"], &mcpLiveIn); err != nil || len(mcpLiveIn) != 2 || string(mcpLiveIn[live.ID]) != `["Production"]` {
+		t.Fatalf("MCP crate live_in=%s err=%v", mcpCrate["live_in"], err)
+	}
+	requireEmptyArray(t, "MCP crate live_in of a member live nowhere", mcpLiveIn[notYet.ID])
+	if err := json.Unmarshal(mcpCrate["environments"], &mcpLines); err != nil || !reflect.DeepEqual(mcpLines, lines) {
 		t.Fatalf("MCP crate environments=%s live_in=%s", mcpCrate["environments"], mcpCrate["live_in"])
 	}
 
@@ -293,9 +329,9 @@ func TestFeedbackLiveStatusReads(t *testing.T) {
 		if got.code != http.StatusOK {
 			t.Fatalf("task read status=%d body=%s", got.code, got.body)
 		}
-		if fields := decodeFields(t, got.body); fields["environments"] != nil {
-			t.Fatalf("a status that needs a missing comparison was served: %s", fields["environments"])
-		}
+		// The only status needs a comparison that is not stored, so it is
+		// left out and the merged task's list is empty.
+		requireEmptyArray(t, "task environments while the comparison is missing", decodeFields(t, got.body)["environments"])
 	case <-time.After(10 * time.Second):
 		t.Fatal("the task read waited for the forge")
 	}
@@ -348,30 +384,29 @@ func TestFeedbackEnvironmentNewestUnresolved(t *testing.T) {
 	}
 }
 
-// TestFeedbackReadsWithoutEnvironment proves that a workspace with no
-// environment gets no new field on any of the four reads.
+// TestFeedbackReadsWithoutEnvironment covers feature-production-feedback-live
+// v1, Rollout and closure, and component-production-feedback, Public
+// surfaces: in a workspace with no environment, each list in its stated
+// scope is the JSON array [], never null or a missing key. A merged task's
+// environments, a crate's environments, a merged REST crate member's live_in,
+// and the MCP crate detail's live_in value for each merged member in
+// task_ids are []. A task that is not merged has no environments, and a
+// crate member that is not merged has no live_in.
 func TestFeedbackReadsWithoutEnvironment(t *testing.T) {
 	h := newReadsHarness(t)
 	crate, err := h.st.CreateCrate(h.betaCtx, store.CrateInput{Name: "Beta wave"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	task := h.merged(h.betaCtx, readsCommit("a1"), crate.ID)
-	foreign := h.foreign
-	get := func(path string) map[string]json.RawMessage {
-		t.Helper()
-		request := h.do(foreign, http.MethodGet, path, "")
-		if request.Code != http.StatusOK {
-			t.Fatalf("%s status=%d body=%s", path, request.Code, request.Body)
-		}
-		return decodeFields(t, request.Body.Bytes())
+	merged := h.merged(h.betaCtx, readsCommit("a1"), crate.ID)
+	open := core.Task{ID: core.NewTaskID(), Workspace: "beta", Repo: "elsewhere", Title: "Open", Body: "Open.", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC(), Crate: &core.TaskCrate{ID: crate.ID}}
+	if err := h.st.CreateTask(h.betaCtx, open); err != nil {
+		t.Fatal(err)
 	}
-	// h.do names workspace alpha; beta reads go through their own header.
-	_ = get
 	beta := func(path string) map[string]json.RawMessage {
 		t.Helper()
 		request, _ := http.NewRequest(http.MethodGet, path, nil)
-		request.Header.Set("Authorization", "Bearer "+foreign)
+		request.Header.Set("Authorization", "Bearer "+h.foreign)
 		request.Header.Set("X-Workspace-ID", "beta")
 		response := h.serve(request)
 		if response.Code != http.StatusOK {
@@ -379,24 +414,62 @@ func TestFeedbackReadsWithoutEnvironment(t *testing.T) {
 		}
 		return decodeFields(t, response.Body.Bytes())
 	}
-	if _, found := beta("/v1/tasks/" + task.ID)["environments"]; found {
-		t.Fatal("task read holds environments")
+	mcp := func(tool string, args map[string]any) map[string]json.RawMessage {
+		t.Helper()
+		args["workspace_id"] = "beta"
+		page := readAs(t, h.handler, h.foreign, tool, args)
+		if len(page.Items) != 1 {
+			t.Fatalf("%s page=%+v", tool, page)
+		}
+		return decodeFields(t, page.Items[0])
 	}
+
+	// Task detail: [] for the merged task, no key for the open one.
+	requireEmptyArray(t, "REST merged task environments", beta("/v1/tasks/" + merged.ID)["environments"])
+	requireAbsent(t, "REST open task", beta("/v1/tasks/"+open.ID), "environments")
+	requireEmptyArray(t, "MCP merged task environments", mcp("get_task", map[string]any{"task_id": merged.ID})["environments"])
+	requireAbsent(t, "MCP open task", mcp("get_task", map[string]any{"task_id": open.ID}), "environments")
+
+	// REST crate detail: [] lines, [] live_in for the merged member only.
 	crateBody := beta("/v1/crates/" + crate.ID)
-	if _, found := crateBody["environments"]; found || strings.Contains(string(crateBody["tasks"]), "live_in") {
-		t.Fatalf("crate read=%s", crateBody["environments"])
+	requireEmptyArray(t, "REST crate environments", crateBody["environments"])
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal(crateBody["tasks"], &rows); err != nil || len(rows) != 2 {
+		t.Fatalf("crate rows=%s err=%v", crateBody["tasks"], err)
 	}
-	taskPage := readAs(t, h.handler, foreign, "get_task", map[string]any{"workspace_id": "beta", "task_id": task.ID})
-	if _, found := decodeFields(t, taskPage.Items[0])["environments"]; found {
-		t.Fatal("MCP get_task holds environments")
+	for _, row := range rows {
+		switch string(row["id"]) {
+		case strconv.Quote(merged.ID):
+			requireEmptyArray(t, "REST merged member live_in", row["live_in"])
+		case strconv.Quote(open.ID):
+			requireAbsent(t, "REST open member", row, "live_in")
+		default:
+			t.Fatalf("unexpected crate row %s", row["id"])
+		}
 	}
-	cratePage := readAs(t, h.handler, foreign, "get_crate", map[string]any{"workspace_id": "beta", "crate_id": crate.ID})
-	fields := decodeFields(t, cratePage.Items[0])
-	if _, found := fields["environments"]; found {
-		t.Fatal("MCP get_crate holds environments")
+
+	// MCP crate detail: [] lines, and a live_in object whose only entry is
+	// the merged member, with the value [].
+	crateFields := mcp("get_crate", map[string]any{"crate_id": crate.ID})
+	requireEmptyArray(t, "MCP crate environments", crateFields["environments"])
+	var liveIn map[string]json.RawMessage
+	if raw := crateFields["live_in"]; raw == nil || string(raw) == "null" || json.Unmarshal(raw, &liveIn) != nil {
+		t.Fatalf("MCP crate live_in=%s, want an object", raw)
 	}
-	if _, found := fields["live_in"]; found {
-		t.Fatal("MCP get_crate holds live_in")
+	if len(liveIn) != 1 {
+		t.Fatalf("MCP crate live_in=%s, want only the merged member", crateFields["live_in"])
+	}
+	requireEmptyArray(t, "MCP merged member live_in", liveIn[merged.ID])
+	if _, found := liveIn[open.ID]; found {
+		t.Fatal("MCP crate live_in names a member that is not merged")
+	}
+
+	// List endpoints get none of these fields.
+	listRequest, _ := http.NewRequest(http.MethodGet, "/v1/tasks", nil)
+	listRequest.Header.Set("Authorization", "Bearer "+h.foreign)
+	listRequest.Header.Set("X-Workspace-ID", "beta")
+	if list := h.serve(listRequest); list.Code != http.StatusOK || strings.Contains(list.Body.String(), `"environments"`) || strings.Contains(list.Body.String(), `"live_in"`) {
+		t.Fatalf("task list status=%d holds a feedback field: %s", list.Code, list.Body)
 	}
 }
 
@@ -422,6 +495,22 @@ func TestMCPCrateCountsIgnoreTheMemberWindow(t *testing.T) {
 	}
 	if err := json.Unmarshal(fields["environments"], &lines); err != nil || len(lines) != 1 || lines[0].MergedTaskCount != mcpCrateTaskIDLimit+1 || lines[0].LiveTaskCount != 0 {
 		t.Fatalf("lines=%s err=%v", fields["environments"], err)
+	}
+	// live_in holds an entry, [], for each merged member task_ids lists, and
+	// none for the member outside that window.
+	var liveIn map[string]json.RawMessage
+	if err := json.Unmarshal(fields["live_in"], &liveIn); err != nil || len(liveIn) != mcpCrateTaskIDLimit {
+		t.Fatalf("live_in entries=%d err=%v", len(liveIn), err)
+	}
+	listed := map[string]bool{}
+	for _, id := range taskIDs {
+		listed[id] = true
+		requireEmptyArray(t, "live_in of member "+id, liveIn[id])
+	}
+	for id := range liveIn {
+		if !listed[id] {
+			t.Fatalf("live_in names member %s outside task_ids", id)
+		}
 	}
 	h.settle()
 }

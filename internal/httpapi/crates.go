@@ -46,9 +46,9 @@ type crateDetailResponse struct {
 	Requirements           []store.CrateRequirementCoverage `json:"requirements"`
 	UndeclaredRequirements []store.CrateRequirementCoverage `json:"undeclared_requirements"`
 	Tasks                  []crateTaskRow                   `json:"tasks"`
-	// Environments holds one line per relevant environment
-	// (component-production-feedback invariant 18).
-	Environments []feedback.CrateLine `json:"environments,omitempty"`
+	// Environments holds one line per relevant environment, and [] when no
+	// environment is relevant (component-production-feedback invariant 18).
+	Environments []feedback.CrateLine `json:"environments"`
 }
 
 // crateTaskRow is one member task on the crate read (req-crates AC-5.3).
@@ -59,9 +59,10 @@ type crateTaskRow struct {
 	Branch      string             `json:"branch"`
 	PullRequest *cratePullRequest  `json:"pull_request"`
 	NextAction  nextaction.Compact `json:"next_action"`
-	// LiveIn names the environments where a merged member is live
+	// LiveIn names the environments where a merged member is live, [] when
+	// it is live nowhere. A member that is not merged has no live_in
 	// (component-production-feedback, Public surfaces).
-	LiveIn []string `json:"live_in,omitempty"`
+	LiveIn *[]string `json:"live_in,omitempty"`
 }
 
 // cratePullRequest names a member task's latest pull request.
@@ -252,7 +253,10 @@ func (s *Server) getCrate(w http.ResponseWriter, r *http.Request) {
 	for _, task := range detail.Tasks {
 		row := crateTaskRow{
 			ID: task.ID, Title: task.Title, State: task.State, Branch: task.Branch,
-			NextAction: actions[task.ID], LiveIn: liveIn[task.ID],
+			NextAction: actions[task.ID],
+		}
+		if names, merged := liveIn[task.ID]; merged {
+			row.LiveIn = &names
 		}
 		if event, found := pulls[task.ID]; found {
 			row.PullRequest = cratePullRequestFrom(event.Payload)
