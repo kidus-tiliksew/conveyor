@@ -199,6 +199,29 @@ func TestGitHubWebhookAcceptsOnceAndRefusesDuplicates(t *testing.T) {
 	}
 }
 
+// TestGitHubWebhookAcceptsDeploymentStatusOnce: the unchanged receiver
+// accepts a signed deployment_status delivery, hands it to the applier once,
+// refuses an unsigned one, and answers a duplicate without applying it
+// (feature-production-feedback-live FB-4; component-runtime, GitHub webhook
+// receiver).
+func TestGitHubWebhookAcceptsDeploymentStatusOnce(t *testing.T) {
+	server, _, applier := newWebhookReceiverFixture(t)
+	body := []byte(`{"action":"created","deployment_status":{"state":"success","environment":"production","created_at":"2026-11-26T09:30:00Z"},"deployment":{"sha":"5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2ab5f3c2"},"repository":{"full_name":"acme/app"}}`)
+	if w := postWebhook(server, "demo", signWebhook("wrong-secret", body), "deploy-1", "deployment_status", body); w.Code != http.StatusUnauthorized || applier.count() != 0 {
+		t.Fatalf("unsigned deployment report: %d submitted=%d", w.Code, applier.count())
+	}
+	signature := signWebhook(webhookTestSecret, body)
+	if w := postWebhook(server, "demo", signature, "deploy-1", "deployment_status", body); w.Code != http.StatusAccepted {
+		t.Fatalf("signed deployment report: %d %s", w.Code, w.Body.String())
+	}
+	if applier.count() != 1 || applier.deliveries[0].Event != "deployment_status" || applier.deliveries[0].Workspace != "demo" || !bytes.Equal(applier.deliveries[0].Body, body) {
+		t.Fatalf("deliveries=%+v", applier.deliveries)
+	}
+	if w := postWebhook(server, "demo", signature, "deploy-1", "deployment_status", body); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "duplicate") || applier.count() != 1 {
+		t.Fatalf("duplicate deployment report: %d %s submitted=%d", w.Code, w.Body.String(), applier.count())
+	}
+}
+
 // TestGitHubWebhookNeverEmitsSecret: across refused, accepted, and
 // duplicate deliveries, no log line, response, or workspace event carries
 // the webhook secret (component-identity-membership, The webhook secret).

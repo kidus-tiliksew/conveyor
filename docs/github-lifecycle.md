@@ -105,6 +105,50 @@ of internal state when GitHub fails. Categorizing those failures under the
 forge error taxonomy (component-git-delivery) remains the non-overlapping responsibility of parked task
 `260728-c0f858`.
 
+## Deployment reports
+
+The workspace GitHub App receives deployment reports for
+[production feedback](production-feedback.md#deployment-reports-from-github)
+(DEC-149(5)). Two settings on GitHub admit them:
+
+- The repository permission **Deployments** with read access.
+- The `deployment_status` webhook event.
+
+A GitHub App that Conveyor creates from workspace settings asks for both. Its
+manifest adds `deployments: read` to `default_permissions` and
+`deployment_status` to `default_events`. Conveyor changes no other permission
+or event for this, and it never changes the access of an App by itself.
+
+An App connected before this change keeps its old access. Its owner on GitHub
+adds the access in three steps:
+
+1. In the App's settings, under **Permissions & events**, set the repository
+   permission **Deployments** to **Read-only**.
+2. On the same page, under **Subscribe to events**, select
+   **Deployment status**, and save the changes.
+3. Approve the new permission on each installation of the App. GitHub asks the
+   account that installed the App to accept the change.
+
+`GET /v1/workspaces/{workspace}/github-app` states the result in
+`deployment_reports`. Conveyor reads it from the installation that GitHub
+verifies, not from the manifest and not from received deliveries:
+
+| Value | Meaning |
+| --- | --- |
+| `on` | The installation grants read access to deployments and subscribes to `deployment_status`. Write access to deployments also counts |
+| `missing_permission` | The installation subscribes to the event, but it has no access to deployments |
+| `missing_event` | The installation has access to deployments, but it does not subscribe to the event |
+| `missing_permission_and_event` | The installation has neither |
+
+The field is left out when the workspace has no installation. A missing access
+or event is status data, not an error, and every other part of the status read
+stays the same. A failed read of the installation answers as a failed coverage
+read does. A workspace whose App lacks either setting receives no deployment
+report, and nothing else changes.
+
+A deployment report creates no task, changes no task, and raises no task or
+Inbox notice.
+
 ## Explicit boundary
 
 Phase 5.3 does not create a PR before `submit_for_review`, does not create draft

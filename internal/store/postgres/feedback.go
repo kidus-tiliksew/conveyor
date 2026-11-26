@@ -264,11 +264,11 @@ func (s *Store) RecordFeedbackSignal(ctx context.Context, signal store.FeedbackS
 			return err
 		}
 		// The environment row lock makes this the next number.
-		var last int64
-		if err := tx.QueryRow(ctx, `SELECT COALESCE(max(last_report), 0) FROM feedback_signals WHERE workspace_id=$1 AND environment_id=$2`, workspaceID, signal.EnvironmentID).Scan(&last); err != nil {
+		next, err := nextFeedbackReport(ctx, tx, workspaceID, signal.EnvironmentID)
+		if err != nil {
 			return err
 		}
-		origin := store.FeedbackSignalOrigin(label, last+1)
+		origin := store.FeedbackSignalOrigin(label, next)
 		changes, err := store.PlanFeedbackChanges(signal, origin, history)
 		if err != nil {
 			return err
@@ -292,6 +292,74 @@ ON CONFLICT (workspace_id, environment_id) DO UPDATE SET last_report=EXCLUDED.la
 		}
 		return recordFeedbackAccepted(ctx, tx, workspaceID, signal, origin)
 	})
+}
+
+// nextFeedbackReport numbers the next accepted report of an environment.
+// Signals and GitHub deployment reports share the numbers, and a GitHub
+// report keeps its number only on the deploys and stops it records. The
+// caller holds the environment row lock.
+func nextFeedbackReport(ctx context.Context, tx pgx.Tx, workspaceID, environmentID string) (int64, error) {
+	var signals, deploys int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(last_report), 0) FROM feedback_signals WHERE workspace_id=$1 AND environment_id=$2`, workspaceID, environmentID).Scan(&signals); err != nil {
+		return 0, err
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(GREATEST(report, COALESCE(stop_report, 0))), 0) FROM feedback_deploys WHERE workspace_id=$1 AND environment_id=$2`, workspaceID, environmentID).Scan(&deploys); err != nil {
+		return 0, err
+	}
+	return store.NextFeedbackReport(signals, deploys), nil
+}
+
+// RecordFeedbackGitHubDeploy implements store.FeedbackStore. The environment
+// row lock serializes the report with the signals of the environment and with
+// an archive, so an archived environment records nothing.
+func (s *Store) RecordFeedbackGitHubDeploy(ctx context.Context, deploy store.FeedbackGitHubDeploy) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordFeedbackGitHubDeploy")
+	signal, err := store.FeedbackGitHubDeploySignal(deploy)
+	if err != nil {
+		return false, err
+	}
+	workspaceID := workspace(ctx)
+	recorded := false
+	err = s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+		recorded = false
+		var archived bool
+		err := tx.QueryRow(ctx, `SELECT archived FROM environments WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE`, workspaceID, signal.EnvironmentID).Scan(&archived)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && archived) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		repositories, err := feedbackRepositories(ctx, tx, workspaceID)
+		if err != nil {
+			return err
+		}
+		if !repositories[deploy.Repository] {
+			return nil
+		}
+		history, err := readFeedbackHistory(ctx, tx, workspaceID, signal)
+		if err != nil {
+			return err
+		}
+		next, err := nextFeedbackReport(ctx, tx, workspaceID, signal.EnvironmentID)
+		if err != nil {
+			return err
+		}
+		origin := store.FeedbackGitHubOrigin(next)
+		changes, err := store.PlanFeedbackChanges(signal, origin, history)
+		if err != nil || !changes.Changed() {
+			return err
+		}
+		if err := writeFeedbackChanges(ctx, tx, workspaceID, signal, origin, changes); err != nil {
+			return err
+		}
+		recorded = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return recorded, nil
 }
 
 // ListFeedbackSignals implements store.FeedbackStore.

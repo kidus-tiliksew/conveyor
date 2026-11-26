@@ -409,7 +409,7 @@ func main() {
 	}
 	monitorPolls := &monitorPoller{Store: st, Dispatcher: d, Service: srv.Monitor, Config: workOrders.ConfigProvider}
 	gitHubFallback := newGitHubFallback(st, d, listWorkspaceIDs, monitorPolls, log.Printf)
-	webhookApplier := newGitHubWebhookApplier(st, d, monitorPolls.PushedRef, monitorPolls.ChecksCompleted, gitHubFallback.WebhookDelivered, log.Printf)
+	webhookApplier := newGitHubWebhookApplier(st, d, monitorPolls.PushedRef, monitorPolls.ChecksCompleted, srv.FeedbackDeploymentReports(), gitHubFallback.WebhookDelivered, log.Printf)
 	webhookApplier.Start(ctx)
 	srv.GitHubWebhooks = st
 	srv.GitHubWebhookApplier = webhookApplier

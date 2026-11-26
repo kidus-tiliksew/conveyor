@@ -31,9 +31,12 @@ const (
 )
 
 // FeedbackSourceSignal is the source kind of a change that a watcher signal
-// made. GitHub is the other one, and nothing records it yet
-// (component-production-feedback invariant 6).
-const FeedbackSourceSignal = "signal"
+// made, and FeedbackSourceGitHub the kind of a change that a GitHub
+// deployment report made (component-production-feedback invariant 6).
+const (
+	FeedbackSourceSignal = "signal"
+	FeedbackSourceGitHub = "github"
+)
 
 // FeedbackVersion is one version exactly as it was reported. An empty member
 // was not stated. Two versions of a service are the same version only when
@@ -196,6 +199,19 @@ type FeedbackStore interface {
 	// first, then in the order of their reports, and then by service and
 	// version.
 	ListFeedbackDeploys(ctx context.Context, environmentID string) ([]FeedbackDeploy, error)
+	// RecordFeedbackGitHubDeploy records one successful GitHub deployment
+	// report that matched the environment, in one transaction, and reports
+	// whether it changed anything. The report replaces the running versions
+	// of the service named after the repository, at the report's time, as
+	// PlanFeedbackChanges plans it for a signal that names only that
+	// service. It takes the next report number of the environment, which
+	// signals share. An environment that is missing or archived by the time
+	// of the write, a repository outside the workspace configuration, and a
+	// report that changes nothing record nothing and answer false. It leaves
+	// the newest signal and every key unchanged (component-production-feedback
+	// invariants 6 and 10; req-production-feedback AC-1.5; req-environments
+	// AC-1.9).
+	RecordFeedbackGitHubDeploy(ctx context.Context, deploy FeedbackGitHubDeploy) (recorded bool, err error)
 	// FeedbackStatusStore keeps resolved versions and comparisons and reads
 	// merged tasks (feature-production-feedback-live FB-3).
 	FeedbackStatusStore
@@ -602,4 +618,73 @@ func SortFeedbackDeploys(deploys []FeedbackDeploy) {
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
+}
+
+// FeedbackGitHubDeploy is one successful GitHub deployment report that matched
+// an unarchived environment and, where the environment tracks a branch for
+// the repository, that branch. Repository is the repository's name in the
+// workspace configuration and names the service. Commit is the deployment's
+// full commit ID, and ReportedAt is the time the status reports
+// (component-production-feedback invariant 10; req-production-feedback
+// AC-1.5).
+type FeedbackGitHubDeploy struct {
+	EnvironmentID string
+	Repository    string
+	Commit        string
+	ReportedAt    time.Time
+}
+
+// FeedbackGitHubOrigin is the origin of everything a GitHub deployment report
+// records: the source GitHub and the system as the actor
+// (component-production-feedback invariant 6).
+func FeedbackGitHubOrigin(report int64) FeedbackOrigin {
+	return FeedbackOrigin{Source: FeedbackSourceGitHub, Actor: SystemActor().ID, Report: report}
+}
+
+// FeedbackGitHubDeploySignal checks a GitHub deployment report and returns it
+// as the signal that PlanFeedbackChanges reads: one service named after the
+// repository that runs exactly the deployment's commit, at the report's time.
+// The signal holds no key and no interval, so nothing that reads it changes
+// the newest signal or a key. A refusal names the field and never repeats the
+// value.
+func FeedbackGitHubDeploySignal(deploy FeedbackGitHubDeploy) (FeedbackSignal, error) {
+	if deploy.EnvironmentID == "" {
+		return FeedbackSignal{}, feedbackFieldError("environment_id", "is required")
+	}
+	if err := checkFeedbackText(redact.New(nil), "repository", deploy.Repository, feedbackNameMaxCharacters); err != nil {
+		return FeedbackSignal{}, err
+	}
+	commit := strings.ToLower(deploy.Commit)
+	if len(commit) != feedbackCommitMaxCharacters || !feedbackCommitValid(commit) {
+		return FeedbackSignal{}, feedbackFieldError("commit", "must be a full commit ID of %d hexadecimal characters", feedbackCommitMaxCharacters)
+	}
+	if deploy.ReportedAt.IsZero() {
+		return FeedbackSignal{}, feedbackFieldError("reported_at", "is required")
+	}
+	return FeedbackSignal{
+		EnvironmentID: deploy.EnvironmentID,
+		ArrivedAt:     EnvironmentTime(deploy.ReportedAt),
+		Services: []FeedbackSignalService{{
+			Name: deploy.Repository, Repository: deploy.Repository,
+			Versions: []FeedbackSignalVersion{{Commit: commit}},
+		}},
+	}, nil
+}
+
+// Changed reports whether the plan records anything. A report that names
+// exactly what the service runs changes nothing.
+func (c FeedbackChanges) Changed() bool {
+	return len(c.Deploys) > 0 || len(c.Started) > 0 || len(c.Stopped) > 0 || len(c.Updated) > 0 || len(c.Moved) > 0
+}
+
+// NextFeedbackReport is the number of the next accepted report of an
+// environment: one more than the highest number that its newest signal row,
+// its accepted signals, or its deploys and stops hold. Signals and GitHub
+// deployment reports share the numbers, so two reports never share one.
+func NextFeedbackReport(numbers ...int64) int64 {
+	var highest int64
+	for _, number := range numbers {
+		highest = max(highest, number)
+	}
+	return highest + 1
 }

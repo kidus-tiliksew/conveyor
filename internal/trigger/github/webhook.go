@@ -20,7 +20,9 @@ import (
 // intake handler on its own goroutine within 10 seconds of receipt.
 
 // WebhookEvents are the events a workspace GitHub App subscribes.
-var WebhookEvents = []string{"pull_request", "check_suite", "check_run", "status", "push", "issues"}
+// deployment_status carries GitHub's deployment reports to production
+// feedback (feature-production-feedback-live FB-4; DEC-149(5)).
+var WebhookEvents = []string{"pull_request", "check_suite", "check_run", "status", "push", "issues", "deployment_status"}
 
 // WebhookDelivery is one accepted delivery.
 type WebhookDelivery struct {
@@ -41,6 +43,19 @@ type WebhookHandlers struct {
 	Push func(ctx context.Context, repository, ref string) error
 	// ReadyIssue takes in an open issue labeled conveyor:ready.
 	ReadyIssue func(ctx context.Context, repository string, issue Issue) error
+	// DeploymentStatus applies a deployment_status delivery of any state.
+	DeploymentStatus func(ctx context.Context, repository string, status DeploymentStatus) error
+}
+
+// DeploymentStatus is one deployment report of GitHub: the status's state,
+// the GitHub environment name it reports, the deployment's full commit ID in
+// lower case, and the time the status reports (component-production-feedback
+// invariants 10 and 11).
+type DeploymentStatus struct {
+	State       string
+	Environment string
+	Commit      string
+	ReportedAt  time.Time
 }
 
 // webhookAction is a parsed delivery: the handler call it maps to, or nil.
@@ -216,8 +231,59 @@ func parseWebhook(event string, body []byte) (webhookAction, error) {
 			}
 			return h.ReadyIssue(ctx, repository, issue)
 		}, nil
+	case "deployment_status":
+		status, repository, err := parseDeploymentStatus(body)
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context, h WebhookHandlers) error {
+			if h.DeploymentStatus == nil {
+				return nil
+			}
+			return h.DeploymentStatus(ctx, repository, status)
+		}, nil
 	}
 	return nil, nil
+}
+
+// parseDeploymentStatus decodes a deployment_status delivery. The status's
+// own environment name comes first, and the deployment's environment name
+// stands in when the status omits it. The time is the status's creation time,
+// never the deployment's or the receipt's. A delivery without a state, an
+// environment name, a full commit ID, or a creation time is malformed.
+func parseDeploymentStatus(body []byte) (DeploymentStatus, string, error) {
+	var payload struct {
+		DeploymentStatus struct {
+			State       string    `json:"state"`
+			Environment string    `json:"environment"`
+			CreatedAt   time.Time `json:"created_at"`
+		} `json:"deployment_status"`
+		Deployment struct {
+			SHA         string `json:"sha"`
+			Environment string `json:"environment"`
+		} `json:"deployment"`
+		Repository webhookRepository `json:"repository"`
+	}
+	if err := webhookPayload(body, &payload); err != nil {
+		return DeploymentStatus{}, "", err
+	}
+	status := DeploymentStatus{State: payload.DeploymentStatus.State, Environment: payload.DeploymentStatus.Environment, Commit: strings.ToLower(payload.Deployment.SHA), ReportedAt: payload.DeploymentStatus.CreatedAt}
+	if status.Environment == "" {
+		status.Environment = payload.Deployment.Environment
+	}
+	switch {
+	case status.State == "":
+		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment_status has no state", errMalformedDelivery)
+	case status.Environment == "":
+		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment_status names no environment", errMalformedDelivery)
+	case !fullCommitID(status.Commit):
+		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment has no full commit ID", errMalformedDelivery)
+	case status.ReportedAt.IsZero():
+		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment_status has no creation time", errMalformedDelivery)
+	case payload.Repository.FullName == "":
+		return DeploymentStatus{}, "", fmt.Errorf("%w: deployment_status names no repository", errMalformedDelivery)
+	}
+	return status, payload.Repository.FullName, nil
 }
 
 func checksAction(repository, sha string, branches []string) webhookAction {

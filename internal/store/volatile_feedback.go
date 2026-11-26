@@ -65,13 +65,71 @@ func (m *volatileMemory) RecordFeedbackSignal(ctx context.Context, signal Feedba
 	if err := CheckFeedbackRepositories(signal, repositories); err != nil {
 		return err
 	}
-	// Each accepted signal adds one, so the count numbers this one.
-	origin := FeedbackSignalOrigin(key.Label, int64(len(m.feedbackState.accepted[scope]))+1)
+	origin := FeedbackSignalOrigin(key.Label, m.nextFeedbackReportLocked(scope))
 	// The plan reads the memory's own slices and returns new values.
 	changes, err := PlanFeedbackChanges(signal, origin, FeedbackHistory{Running: m.feedbackState.running[scope], Later: m.feedbackState.accepted[scope], Deploys: m.feedbackState.deploys[scope]})
 	if err != nil {
 		return err
 	}
+	m.applyFeedbackChangesLocked(scope, signal, origin, changes)
+	if newest, exists := m.feedbackState.signals[scope]; !exists || !newest.LastSignalAt.After(signal.ArrivedAt) {
+		m.feedbackState.signals[scope] = FeedbackSignalState{EnvironmentID: signal.EnvironmentID, LastSignalAt: signal.ArrivedAt, NextSignalSeconds: signal.NextSignalSeconds, Origin: FeedbackSignalOrigin(key.Label, 0)}
+	}
+	m.feedbackState.accepted[scope] = append(m.feedbackState.accepted[scope], NewFeedbackAcceptedSignal(signal, origin))
+	m.touchEnvironmentKeyLocked(keyScope)
+	return nil
+}
+
+// RecordFeedbackGitHubDeploy implements FeedbackStore. Every check runs before
+// the first write.
+func (m *volatileMemory) RecordFeedbackGitHubDeploy(ctx context.Context, deploy FeedbackGitHubDeploy) (bool, error) {
+	signal, err := FeedbackGitHubDeploySignal(deploy)
+	if err != nil {
+		return false, err
+	}
+	workspace := workspaceOrDefault(ctx, "")
+	scope := memoryScopedKey{workspace: workspace, id: signal.EnvironmentID}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if environment, found := m.environmentState.environments[scope]; !found || environment.Archived {
+		return false, nil
+	}
+	repositories, err := m.environmentRepositoriesLocked(workspace)
+	if err != nil {
+		return false, err
+	}
+	if !repositories[deploy.Repository] {
+		return false, nil
+	}
+	origin := FeedbackGitHubOrigin(m.nextFeedbackReportLocked(scope))
+	changes, err := PlanFeedbackChanges(signal, origin, FeedbackHistory{Running: m.feedbackState.running[scope], Later: m.feedbackState.accepted[scope], Deploys: m.feedbackState.deploys[scope]})
+	if err != nil || !changes.Changed() {
+		return false, err
+	}
+	m.applyFeedbackChangesLocked(scope, signal, origin, changes)
+	return true, nil
+}
+
+// nextFeedbackReportLocked numbers the next accepted report of an
+// environment.
+func (m *volatileMemory) nextFeedbackReportLocked(scope memoryScopedKey) int64 {
+	numbers := []int64{}
+	for _, accepted := range m.feedbackState.accepted[scope] {
+		numbers = append(numbers, accepted.Report)
+	}
+	for _, deploy := range m.feedbackState.deploys[scope] {
+		numbers = append(numbers, deploy.Origin.Report)
+		if deploy.StopOrigin != nil {
+			numbers = append(numbers, deploy.StopOrigin.Report)
+		}
+	}
+	return NextFeedbackReport(numbers...)
+}
+
+// applyFeedbackChangesLocked writes a planned change set: the stops, the
+// updated deploys, the moved and started running versions, the newest report
+// of each service, and the new deploys.
+func (m *volatileMemory) applyFeedbackChangesLocked(scope memoryScopedKey, signal FeedbackSignal, origin FeedbackOrigin, changes FeedbackChanges) {
 	deploys := slices.Clone(m.feedbackState.deploys[scope])
 	running := slices.Clone(m.feedbackState.running[scope])
 	stopped := make(map[string]bool, len(changes.Stopped))
@@ -107,12 +165,6 @@ func (m *volatileMemory) RecordFeedbackSignal(ctx context.Context, signal Feedba
 	}
 	m.feedbackState.deploys[scope] = append(deploys, changes.Deploys...)
 	m.feedbackState.running[scope] = running
-	if newest, exists := m.feedbackState.signals[scope]; !exists || !newest.LastSignalAt.After(signal.ArrivedAt) {
-		m.feedbackState.signals[scope] = FeedbackSignalState{EnvironmentID: signal.EnvironmentID, LastSignalAt: signal.ArrivedAt, NextSignalSeconds: signal.NextSignalSeconds, Origin: FeedbackSignalOrigin(key.Label, 0)}
-	}
-	m.feedbackState.accepted[scope] = append(m.feedbackState.accepted[scope], NewFeedbackAcceptedSignal(signal, origin))
-	m.touchEnvironmentKeyLocked(keyScope)
-	return nil
 }
 
 // ListFeedbackSignals implements FeedbackStore.

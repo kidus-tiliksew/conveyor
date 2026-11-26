@@ -131,6 +131,31 @@ func (s *Server) enqueueFeedbackSignal(workspace string, signal store.FeedbackSi
 	s.feedbackWorker().enqueue(feedbackJob{key: key, workspace: workspace, signal: &copied, env: s.feedbackJobEnv()})
 }
 
+// FeedbackDeploymentReports returns the handler that applies GitHub
+// deployment_status deliveries, or nil when the store keeps no environments
+// or deploys. The tracked-branch check reads through the workspace App's
+// installation token, and a recorded deploy goes to the background resolving
+// and comparing as an accepted signal does (feature-production-feedback-live
+// FB-4; component-production-feedback invariants 9 and 10; DEC-59(3)).
+func (s *Server) FeedbackDeploymentReports() func(ctx context.Context, repository string, status github.DeploymentStatus) error {
+	backend, ok := s.Store.(feedback.DeploymentStore)
+	if !ok {
+		return nil
+	}
+	reports := feedback.DeploymentReports{
+		Store: backend,
+		Repositories: func(ctx context.Context) ([]feedback.Repository, error) {
+			return feedbackRepositories(ctx, s.Store)
+		},
+		Forge: func(_ context.Context, workspace string) feedback.Forge {
+			return s.feedbackJobEnv().lazyForge(workspace)
+		},
+		Recorded: s.enqueueFeedbackSignal,
+		Logf:     log.Printf,
+	}
+	return reports.Apply
+}
+
 // requestFeedbackAnswers asks the background work for the answers a read
 // found missing (component-production-feedback invariant 20). The read does
 // not wait. Every candidate goes to the store's admission, which skips stored

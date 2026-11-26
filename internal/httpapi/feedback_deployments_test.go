@@ -1,0 +1,52 @@
+package httpapi
+
+import (
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/feedback"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+)
+
+// TestFeedbackDeploymentReportLiveStatus applies a GitHub deployment report
+// through the server's handler. The tracked-branch check reads through the
+// server's forge, the recorded deploy goes to the background work, which
+// resolves and compares it, and a merged task the deployed commit holds reads
+// as live under the repository's service at the report's time
+// (feature-production-feedback-live FB-4; component-production-feedback
+// invariants 10, 16, and 17; req-production-feedback AC-1.5).
+func TestFeedbackDeploymentReportLiveStatus(t *testing.T) {
+	merge, deployed := readsCommit("b2b2b2b2b2b2"), readsCommit("c3c3c3c3c3c3")
+	h := newReadsHarness(t, merge, deployed)
+	task := h.merged(h.ctx, merge, "")
+	environment, err := h.st.CreateEnvironment(h.ctx, store.EnvironmentInput{Name: "Staging", GitHubEnvironments: []string{"staging"}, TrackedBranches: map[string]string{"app": "main"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.forge.setBranch("acme/app", "main", deployed)
+	apply := h.server.FeedbackDeploymentReports()
+	if apply == nil {
+		t.Fatal("the server offers no deployment report handler")
+	}
+	reportedAt := time.Date(2026, 11, 26, 9, 30, 0, 0, time.UTC)
+	if err := apply(h.ctx, "Acme/App", github.DeploymentStatus{State: "success", Environment: "STAGING", Commit: deployed, ReportedAt: reportedAt}); err != nil {
+		t.Fatal(err)
+	}
+	h.settle()
+	deploys, err := h.st.ListFeedbackDeploys(h.ctx, environment.ID)
+	if err != nil || len(deploys) != 1 || deploys[0].Service != "app" || deploys[0].Origin.Source != store.FeedbackSourceGitHub {
+		t.Fatalf("deploys=%+v err=%v", deploys, err)
+	}
+	var staging *feedback.TaskStatus
+	for _, status := range statusesOf(t, h.taskRead(task.ID)["environments"]) {
+		if status.Environment.ID == environment.ID {
+			copied := status
+			staging = &copied
+		}
+	}
+	if staging == nil || staging.Status != feedback.StatusLive || !slices.Equal(staging.Services, []string{"app"}) || staging.LiveSince == nil || !staging.LiveSince.Equal(reportedAt) || staging.AsOf == nil || !staging.AsOf.Equal(reportedAt) {
+		t.Fatalf("staging status=%+v, want live under app since the report", staging)
+	}
+}

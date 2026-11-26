@@ -86,7 +86,12 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 	var conversions int
 	// limitRepositories and denyRepositories make the coverage read answer
 	// as GitHub does for an exhausted rate limit or a revoked installation.
-	var limitRepositories, denyRepositories atomic.Bool
+	var limitRepositories, denyRepositories, failInstallation atomic.Bool
+	// installationGrants is what the installation read reports as granted
+	// permissions and subscribed events (feature-production-feedback-live
+	// FB-4).
+	var installationGrants atomic.Value
+	installationGrants.Store(`,"permissions":{"metadata":"read","deployments":"read"},"events":["pull_request","deployment_status"]`)
 	reset := time.Now().Add(20 * time.Minute).Truncate(time.Second).UTC()
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -94,7 +99,12 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 			conversions++
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 41, "slug": "conveyor-alpha", "client_id": "client", "pem": private, "webhook_secret": "conversion-webhook-secret-from-github"})
 		case "/app/installations/12":
-			fmt.Fprint(w, `{"id":12,"app_id":41,"account":{"login":"org"}}`)
+			if failInstallation.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				fmt.Fprint(w, `{"message":"installation read failed upstream"}`)
+				return
+			}
+			fmt.Fprint(w, `{"id":12,"app_id":41,"account":{"login":"org"}`+installationGrants.Load().(string)+`}`)
 		case "/app/installations/99":
 			fmt.Fprint(w, `{"id":99,"app_id":999,"account":{"login":"stranger"}}`)
 		case "/app/installations/12/access_tokens":
@@ -216,13 +226,16 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 		if !ok || hook["active"] != true || hook["url"] != "https://conveyor.example/v1/github/webhook/alpha" {
 			t.Fatalf("manifest webhook=%v", result.Manifest["hook_attributes"])
 		}
+		// The deployment_status event and deployments read are the only
+		// additions for deployment reports (feature-production-feedback-live
+		// FB-4).
 		events, _ := json.Marshal(result.Manifest["default_events"])
-		if string(events) != `["pull_request","check_suite","check_run","status","push","issues"]` {
+		if string(events) != `["pull_request","check_suite","check_run","status","push","issues","deployment_status"]` {
 			t.Fatalf("manifest events=%s", events)
 		}
-		permissions, _ := result.Manifest["default_permissions"].(map[string]any)
-		if permissions["checks"] != "read" || permissions["statuses"] != "write" {
-			t.Fatalf("manifest permissions=%v", permissions)
+		permissions, _ := json.Marshal(result.Manifest["default_permissions"])
+		if string(permissions) != `{"checks":"read","contents":"write","deployments":"read","issues":"write","metadata":"read","pull_requests":"write","statuses":"write"}` {
+			t.Fatalf("manifest permissions=%s", permissions)
 		}
 		if result.Manifest["url"] != "https://conveyor.example" || result.Manifest["setup_url"] != "https://conveyor.example/v1/workspaces/alpha/github-app/setup" {
 			t.Fatal("manifest homepage/setup URLs")
@@ -264,10 +277,16 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 	// A failed installation consumes state; the settings status offers a fresh URL.
 	statusResponse := call("GET", "", "session-a", "", false)
 	var resume struct {
-		URL string `json:"installation_url"`
+		URL               string  `json:"installation_url"`
+		DeploymentReports *string `json:"deployment_reports"`
 	}
 	if err := json.Unmarshal(statusResponse.Body.Bytes(), &resume); err != nil {
 		t.Fatal(err)
+	}
+	// With no installation there is nothing to assess, so the field is
+	// left out.
+	if resume.DeploymentReports != nil {
+		t.Fatalf("deployment_reports=%q without an installation, want it left out", *resume.DeploymentReports)
 	}
 	resumeURL, err := url.Parse(resume.URL)
 	if err != nil {
@@ -282,6 +301,33 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 	if got.Code != 200 || !strings.Contains(got.Body.String(), `"covered":true`) || !strings.Contains(got.Body.String(), `"covered":false`) {
 		t.Fatalf("coverage %d %s", got.Code, got.Body.String())
 	}
+	// deployment_reports states which of deployments read and the
+	// deployment_status event the installation lacks. Write access admits
+	// reads. A lack is status data, so the read still answers 200 with its
+	// coverage (component-production-feedback invariant 12; DEC-149(5)).
+	for _, c := range []struct{ grants, want string }{
+		{`,"permissions":{"metadata":"read","deployments":"read"},"events":["pull_request","deployment_status"]`, "on"},
+		{`,"permissions":{"deployments":"write"},"events":["deployment_status"]`, "on"},
+		{`,"permissions":{"metadata":"read"},"events":["pull_request","deployment_status"]`, "missing_permission"},
+		{`,"permissions":{"deployments":"read"},"events":["pull_request"]`, "missing_event"},
+		{`,"permissions":{"metadata":"read"},"events":["pull_request"]`, "missing_permission_and_event"},
+		{``, "missing_permission_and_event"},
+	} {
+		installationGrants.Store(c.grants)
+		got = call("GET", "", "", "maintainer", false)
+		var view map[string]any
+		if err := json.Unmarshal(got.Body.Bytes(), &view); err != nil || got.Code != 200 || view["deployment_reports"] != c.want || view["repositories"] == nil {
+			t.Fatalf("grants %s: %d %s, want deployment_reports %s", c.grants, got.Code, got.Body.String(), c.want)
+		}
+	}
+	// A failed installation read keeps the status read's failure answer and
+	// repeats nothing GitHub sent.
+	failInstallation.Store(true)
+	got = call("GET", "", "", "maintainer", false)
+	if got.Code != http.StatusForbidden || !strings.Contains(got.Body.String(), `"error":"github_app_permission"`) || strings.Contains(got.Body.String(), "upstream") {
+		t.Fatalf("failed installation read %d %s", got.Code, got.Body.String())
+	}
+	failInstallation.Store(false)
 	// A rate-limited coverage read answers 503 github_app_rate_limited with
 	// GitHub's reset time; a genuine permission failure keeps the 403
 	// github_app_permission answer (component-identity-membership).

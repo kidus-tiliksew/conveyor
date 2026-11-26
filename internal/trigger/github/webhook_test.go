@@ -123,6 +123,68 @@ func TestParseWebhookMapsEachEvent(t *testing.T) {
 	}
 }
 
+// TestParseWebhookDeploymentStatus: a deployment_status delivery of any state
+// maps to the deployment handler with the repository, the status's state,
+// the status's environment name or else the deployment's, the deployment's
+// commit in lower case, and the status's creation time. A delivery without
+// one of them is malformed, never an empty report (feature-production-
+// feedback-live FB-4; component-production-feedback invariants 10 and 11).
+func TestParseWebhookDeploymentStatus(t *testing.T) {
+	const commit = "5F3C2AB5F3C2AB5F3C2AB5F3C2AB5F3C2AB5F3C2"
+	created := time.Date(2026, 11, 26, 9, 30, 0, 0, time.UTC)
+	body := func(status, deployment string) string {
+		return `{"action":"created","deployment_status":{` + status + `},"deployment":{` + deployment + `},"repository":{"full_name":"acme/app"}}`
+	}
+	if !strings.Contains(strings.Join(WebhookEvents, ","), "deployment_status") {
+		t.Fatalf("WebhookEvents=%v, want deployment_status", WebhookEvents)
+	}
+	for _, tc := range []struct {
+		name, body string
+		want       DeploymentStatus
+	}{
+		{"success", body(`"state":"success","environment":"Production","created_at":"2026-11-26T09:30:00Z","updated_at":"2026-11-26T10:00:00Z"`, `"sha":"`+commit+`","environment":"production","created_at":"2026-11-26T09:00:00Z"`), DeploymentStatus{State: "success", Environment: "Production", Commit: strings.ToLower(commit), ReportedAt: created}},
+		{"failure", body(`"state":"failure","environment":"staging","created_at":"2026-11-26T09:30:00Z"`, `"sha":"`+commit+`"`), DeploymentStatus{State: "failure", Environment: "staging", Commit: strings.ToLower(commit), ReportedAt: created}},
+		{"deployment environment stands in", body(`"state":"in_progress","created_at":"2026-11-26T09:30:00Z"`, `"sha":"`+commit+`","environment":"preview"`), DeploymentStatus{State: "in_progress", Environment: "preview", Commit: strings.ToLower(commit), ReportedAt: created}},
+		{"form-encoded", "payload=" + url.QueryEscape(body(`"state":"success","environment":"prod","created_at":"2026-11-26T09:30:00Z"`, `"sha":"`+commit+`"`)), DeploymentStatus{State: "success", Environment: "prod", Commit: strings.ToLower(commit), ReportedAt: created}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			action, err := parseWebhook("deployment_status", []byte(tc.body))
+			if err != nil || action == nil {
+				t.Fatalf("action=%v err=%v", action != nil, err)
+			}
+			var gotRepository string
+			var got DeploymentStatus
+			if err := action(context.Background(), WebhookHandlers{DeploymentStatus: func(_ context.Context, repository string, status DeploymentStatus) error {
+				gotRepository, got = repository, status
+				return nil
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			if gotRepository != "acme/app" || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("repository=%q status=%+v, want acme/app %+v", gotRepository, got, tc.want)
+			}
+			// A nil handler skips the event.
+			if err := action(context.Background(), WebhookHandlers{}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for name, malformed := range map[string]string{
+		"no state":          body(`"environment":"prod","created_at":"2026-11-26T09:30:00Z"`, `"sha":"`+commit+`"`),
+		"no environment":    body(`"state":"success","created_at":"2026-11-26T09:30:00Z"`, `"sha":"`+commit+`"`),
+		"short commit":      body(`"state":"success","environment":"prod","created_at":"2026-11-26T09:30:00Z"`, `"sha":"5f3c2ab"`),
+		"no commit":         body(`"state":"success","environment":"prod","created_at":"2026-11-26T09:30:00Z"`, ``),
+		"no creation time":  body(`"state":"success","environment":"prod"`, `"sha":"`+commit+`"`),
+		"bad creation time": body(`"state":"success","environment":"prod","created_at":"yesterday"`, `"sha":"`+commit+`"`),
+		"no repository":     `{"deployment_status":{"state":"success","environment":"prod","created_at":"2026-11-26T09:30:00Z"},"deployment":{"sha":"` + commit + `"}}`,
+		"not json":          "{not json",
+	} {
+		if _, err := parseWebhook("deployment_status", []byte(malformed)); !errors.Is(err, errMalformedDelivery) {
+			t.Errorf("%s: err=%v, want a malformed delivery", name, err)
+		}
+	}
+}
+
 type applierFixture struct {
 	applier   *WebhookApplier
 	recorder  *recordingHandlers
