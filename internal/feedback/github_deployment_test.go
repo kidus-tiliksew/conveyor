@@ -226,6 +226,32 @@ func TestDeployRedeployOfTheRunningCommit(t *testing.T) {
 	}
 }
 
+// TestDeployLateEarlierReportKeepsTheGitHubDeploy applies the newer report
+// first and the older report of the same commit second, as a redelivery after
+// a failed branch check can. Both deploy records keep their status times and
+// the GitHub origin, as in the other order.
+func TestDeployLateEarlierReportKeepsTheGitHubDeploy(t *testing.T) {
+	f := newDeploymentFixture(t)
+	environment := f.environment(store.EnvironmentInput{Name: "Production", GitHubEnvironments: []string{"production"}})
+	later := deployTime.Add(time.Hour)
+	f.mustApply("acme/app", "success", "production", deployHead, later)
+	f.mustApply("acme/app", "success", "production", deployHead, deployTime)
+	deploys := f.deploys(environment.ID)
+	if len(deploys) != 2 || !deploys[0].DeployedAt.Equal(deployTime) || deploys[0].StoppedAt == nil || !deploys[0].StoppedAt.Equal(later) || !deploys[1].DeployedAt.Equal(later) || deploys[1].StoppedAt != nil {
+		t.Fatalf("deploys=%+v, want one deploy for each report time", deploys)
+	}
+	for _, deploy := range deploys {
+		if deploy.Origin.Source != store.FeedbackSourceGitHub || (deploy.StopOrigin != nil && deploy.StopOrigin.Source != store.FeedbackSourceGitHub) {
+			t.Fatalf("deploy=%+v, want GitHub origins", deploy)
+		}
+	}
+	f.mustApply("acme/app", "success", "production", deployHead, deployTime)
+	f.mustApply("acme/app", "success", "production", deployHead, later)
+	if after := f.deploys(environment.ID); len(after) != 2 {
+		t.Fatalf("deploys=%+v after duplicates, want no second write", after)
+	}
+}
+
 // TestDeployOtherStatesRecordNoDeploy covers every state other than success
 // under a listed name.
 func TestDeployOtherStatesRecordNoDeploy(t *testing.T) {

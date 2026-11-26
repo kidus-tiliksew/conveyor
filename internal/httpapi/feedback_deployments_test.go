@@ -122,3 +122,67 @@ func TestFeedbackDeploymentRedeployAsOf(t *testing.T) {
 		t.Fatalf("staging status=%+v, want live as of the later report", staging)
 	}
 }
+
+// TestFeedbackDeploymentLateReportsKeepAsOf applies a GitHub report of a
+// commit at t2, then an earlier report of the same commit that arrives later:
+// first a GitHub report at t1, then a watcher signal at t1. The GitHub deploy
+// at t2 keeps its record and origin after each, and the environment's live
+// status stays as of t2 (component-production-feedback invariants 10 and 17;
+// req-production-feedback AC-1.5 and AC-3.6).
+func TestFeedbackDeploymentLateReportsKeepAsOf(t *testing.T) {
+	merge, deployed := readsCommit("b2b2b2b2b2b2"), readsCommit("c3c3c3c3c3c3")
+	h := newReadsHarness(t, merge, deployed)
+	task := h.merged(h.ctx, merge, "")
+	environment, err := h.st.CreateEnvironment(h.ctx, store.EnvironmentInput{Name: "Staging", GitHubEnvironments: []string{"staging"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := h.st.IssueEnvironmentKey(h.ctx, environment.ID, "watcher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := h.server.FeedbackDeploymentReports()
+	early, late := time.Date(2026, 11, 26, 9, 30, 0, 0, time.UTC), time.Date(2026, 11, 26, 10, 30, 0, 0, time.UTC)
+	report := func(at time.Time) {
+		t.Helper()
+		if err := apply(h.ctx, "acme/app", github.DeploymentStatus{State: "success", Environment: "staging", Commit: deployed, ReportedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+		h.settle()
+	}
+	requireAsOfLate := func(step string) {
+		t.Helper()
+		deploys, err := h.st.ListFeedbackDeploys(h.ctx, environment.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept := false
+		for _, deploy := range deploys {
+			if deploy.StoppedAt == nil {
+				kept = deploy.DeployedAt.Equal(late) && deploy.Origin.Source == store.FeedbackSourceGitHub
+			}
+		}
+		if !kept {
+			t.Fatalf("%s: deploys=%+v, want the GitHub deploy at the later report to keep running", step, deploys)
+		}
+		var staging *feedback.TaskStatus
+		for _, status := range statusesOf(t, h.taskRead(task.ID)["environments"]) {
+			if status.Environment.ID == environment.ID {
+				copied := status
+				staging = &copied
+			}
+		}
+		if staging == nil || staging.Status != feedback.StatusLive || staging.AsOf == nil || !staging.AsOf.Equal(late) {
+			t.Fatalf("%s: staging status=%+v, want live as of the later GitHub report", step, staging)
+		}
+	}
+	report(late)
+	requireAsOfLate("GitHub report")
+	report(early)
+	requireAsOfLate("late earlier GitHub report")
+	if err := h.st.RecordFeedbackSignal(h.ctx, store.FeedbackSignal{EnvironmentID: environment.ID, KeyID: key.ID, ArrivedAt: early.Add(time.Minute), NextSignalSeconds: 60, Services: []store.FeedbackSignalService{{Name: "app", Repository: "app", Versions: []store.FeedbackSignalVersion{{Commit: deployed}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.settle()
+	requireAsOfLate("late earlier watcher signal")
+}

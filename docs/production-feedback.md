@@ -205,6 +205,15 @@ report. A repeat of a report that the server already holds, with the same
 service, commit, and time, writes nothing. A repeated delivery with the same
 delivery ID is refused before it reaches the store.
 
+The order in which reports arrive does not change this. A GitHub deploy keeps
+its time and its `github` source when an earlier report of the same commit
+arrives after it, from GitHub or from a watcher. The earlier report's span is
+recorded as its own deploy that stops at the GitHub report's time. For
+example, GitHub reports a commit at 10:30 and then, after a redelivery, the
+same commit at 09:30. The result is the same as in the other order: one deploy
+from 09:30 to 10:30 and one from 10:30 that still runs. Signals of a watcher
+keep the rules in [Deploys and running versions](#deploys-and-running-versions).
+
 An archived environment records nothing from GitHub. Conveyor runs no git
 command and writes nothing to GitHub for a report.
 

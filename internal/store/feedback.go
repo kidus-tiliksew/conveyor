@@ -510,8 +510,14 @@ func (c *FeedbackChanges) planEarlier(signal FeedbackSignal, origin FeedbackOrig
 		case deploy.Service != service:
 		case start.Compare(next) == 0:
 			// Only the next report itself can keep what this signal names. A
-			// report after it that has the same arrival cannot.
-			resumed[deploy.FeedbackVersion] = deploy
+			// report after it that has the same arrival cannot. A GitHub
+			// deploy keeps its own record, time, and origin, so an earlier
+			// report of the same version never moves it. That span is then
+			// recorded as its own deploy that stops at the GitHub report
+			// (component-production-feedback invariants 10 and 17).
+			if deploy.Origin.Source != FeedbackSourceGitHub {
+				resumed[deploy.FeedbackVersion] = deploy
+			}
 		case start.Compare(at) > 0 || (!runs && stop.Compare(at) <= 0):
 		case slices.Contains(named, deploy.FeedbackVersion):
 			ran[deploy.FeedbackVersion] = true
@@ -695,7 +701,9 @@ func FeedbackGitHubDeploySignal(deploy FeedbackGitHubDeploy) (FeedbackSignal, er
 // (component-production-feedback invariants 10 and 17; req-production-feedback
 // AC-1.5 and AC-3.6). A report at the time the running deploy started is a
 // repeat and plans no redeploy. A report that a later report already
-// overtook is planned as PlanFeedbackChanges plans an earlier arrival.
+// overtook is planned as PlanFeedbackChanges plans an earlier arrival, which
+// never moves the start or origin of a GitHub deploy: the overtaken report's
+// span is its own deploy that stops at the next report.
 func PlanFeedbackGitHubDeploy(signal FeedbackSignal, origin FeedbackOrigin, history FeedbackHistory) (FeedbackChanges, error) {
 	changes, err := PlanFeedbackChanges(signal, origin, history)
 	if err != nil || len(signal.Services) != 1 || len(signal.Services[0].Versions) != 1 {
