@@ -2444,3 +2444,122 @@ export function addTaskToCrate(workspace: string, taskId: string, crateId: strin
 export function removeTaskFromCrate(workspace: string, taskId: string) {
   return sendCrateJSON<Task>(workspace, 'DELETE', `/v1/tasks/${encodeURIComponent(taskId)}/crate`)
 }
+
+// Environments (component-environments, Public surfaces). Reads need
+// view_workspace and every act needs manage_workspace; the server checks both.
+
+/**
+ * A refused environment request. It keeps the HTTP status, the server's error
+ * code, and the field the server names, so a form shows the refusal beside
+ * that field (component-environments invariant 2; req-environments AC-1.1 to
+ * AC-1.5).
+ */
+export class EnvironmentRequestError extends Error {
+  status: number
+  code: string
+  field: string
+
+  constructor(status: number, code: string, field: string, message: string) {
+    super(message)
+    this.status = status
+    this.code = code
+    this.field = field
+  }
+}
+
+async function environmentRequestError(response: Response) {
+  const text = await response.text()
+  let code = ''
+  let field = ''
+  try {
+    const body = JSON.parse(text) as { error?: unknown; field?: unknown }
+    if (typeof body.error === 'string') code = body.error
+    if (typeof body.field === 'string') field = body.field
+  } catch {
+    // A body that is not JSON keeps no code and no field.
+  }
+  return new EnvironmentRequestError(response.status, code, field, apiErrorMessage(text, response.statusText))
+}
+
+async function environmentRequest(workspace: string, path: string, method: string, body?: unknown) {
+  const response = await fetch(workspaceURL(path, workspace), {
+    method,
+    headers: mutationHeaders(),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!response.ok) throw await environmentRequestError(response)
+  return response
+}
+
+// The unarchived environments, or the archived ones on request
+// (req-environments AC-1.8).
+export function fetchEnvironments(workspace: string, archived: boolean, signal?: AbortSignal) {
+  return getJSON<import('./types').EnvironmentRow[]>(
+    workspaceURL(`/v1/environments?archived=${archived ? 'true' : 'false'}`, workspace),
+    signal,
+  )
+}
+
+export function fetchEnvironmentSuggestions(workspace: string, signal?: AbortSignal) {
+  return getJSON<import('./types').EnvironmentSuggestion[]>(
+    workspaceURL('/v1/environments/suggestions', workspace),
+    signal,
+  )
+}
+
+export async function createEnvironment(workspace: string, input: import('./types').EnvironmentInput) {
+  const response = await environmentRequest(workspace, '/v1/environments', 'POST', input)
+  return response.json() as Promise<import('./types').EnvironmentRecord>
+}
+
+export async function updateEnvironment(
+  workspace: string,
+  environmentId: string,
+  patch: import('./types').EnvironmentInput,
+) {
+  const response = await environmentRequest(
+    workspace,
+    `/v1/environments/${encodeURIComponent(environmentId)}`,
+    'PATCH',
+    patch,
+  )
+  return response.json() as Promise<import('./types').EnvironmentRecord>
+}
+
+// The answer is the only one that ever holds the key's value. The caller keeps
+// it in a mounted dialog's state and never in a cache (component-environments
+// invariant 11; req-environments AC-2.1).
+export async function issueEnvironmentKey(workspace: string, environmentId: string, label: string) {
+  const response = await environmentRequest(
+    workspace,
+    `/v1/environments/${encodeURIComponent(environmentId)}/keys`,
+    'POST',
+    { label },
+  )
+  return response.json() as Promise<import('./types').IssuedEnvironmentKey>
+}
+
+export async function revokeEnvironmentKey(workspace: string, environmentId: string, keyId: string) {
+  await environmentRequest(
+    workspace,
+    `/v1/environments/${encodeURIComponent(environmentId)}/keys/${encodeURIComponent(keyId)}`,
+    'DELETE',
+  )
+}
+
+export async function ignoreEnvironmentSuggestion(workspace: string, githubEnvironment: string) {
+  await environmentRequest(workspace, '/v1/environments/suggestions/ignore', 'POST', {
+    github_environment: githubEnvironment,
+  })
+}
+
+// A merged task's live status from `GET /v1/tasks/{id}`, the only task read
+// that carries `environments` (component-production-feedback, Public
+// surfaces; invariant 19). Only that field is kept.
+export async function fetchTaskLiveStatus(workspace: string, taskId: string, signal?: AbortSignal) {
+  const task = await getJSON<{ environments?: import('./types').TaskEnvironmentStatus[] | null }>(
+    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}`, workspace),
+    signal,
+  )
+  return task.environments ?? []
+}

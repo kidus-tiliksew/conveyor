@@ -33,6 +33,7 @@ import { relatedTaskRoute } from '../../lib/task-route'
 import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { useBlueprints, useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
+import { TaskLiveStatus } from '../feedback/live-status'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
@@ -425,6 +426,11 @@ export function TaskFacts({
           />
         )}
       </dl>
+
+      {/* A merged task's status in each relevant environment, in the shared
+          facts so the sheet and the full page both show it
+          (req-production-feedback AC-3.2). */}
+      {item.task.state === 'merged' && <TaskLiveStatus taskId={item.task.id} />}
 
       {canOperate && unsatisfiableIDs.size > 0 && (
         <UnlinkDependencyControl item={item} dependencyIDs={[...unsatisfiableIDs]} />

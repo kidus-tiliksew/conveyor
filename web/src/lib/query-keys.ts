@@ -84,3 +84,25 @@ export function sameWorkspacePlaceholder(workspace: string) {
 export interface MutationWorkspace {
   workspace: string
 }
+
+/**
+ * Every environment read starts `['environments', workspace]`, so one prefix
+ * refreshes the active list, the archived list, and the suggestions of that
+ * workspace only (component-environments).
+ */
+export function environmentsQueryKey(workspace: string, archived: boolean) {
+  return ['environments', workspace, archived ? 'archived' : 'active'] as const
+}
+
+export function environmentSuggestionsQueryKey(workspace: string) {
+  return ['environments', workspace, 'suggestions'] as const
+}
+
+/**
+ * A merged task's live status from the task read. It is apart from the task
+ * detail key, so the task stream and its invalidations never read it
+ * (component-production-feedback invariant 19).
+ */
+export function taskLiveStatusQueryKey(workspace: string, taskId: string) {
+  return ['task-live-status', workspace, taskId] as const
+}
