@@ -324,7 +324,6 @@ FROM tasks t
 LEFT JOIN LATERAL (
   SELECT e.payload_json->>'merge_commit_sha' AS sha, e.at, e.id FROM events e
   WHERE e.workspace_id=t.workspace_id AND e.task_id=t.id AND e.kind IN ('merge.confirmed', 'merge.reconciled')
-    AND lower(btrim(COALESCE(e.payload_json->>'merge_commit_sha', ''))) ~ '^[0-9a-f]{40}$'
   ORDER BY e.at DESC, e.id DESC LIMIT 1
 ) m ON true
 WHERE t.workspace_id=$1 AND t.state='merged'
@@ -344,8 +343,10 @@ WHERE t.workspace_id=$1 AND t.state='merged'
 		if err := rows.Scan(&task.TaskID, &task.Repository, &sha, &at, &id); err != nil {
 			return nil, err
 		}
-		if commit := store.FeedbackMergeCommit(sha); commit != "" && at.Valid {
-			task.MergeCommit, task.MergedAt, task.EventID = commit, at.Time.UTC(), id
+		// The latest merge event wins before its commit is checked, so an
+		// unusable commit leaves MergeCommit empty with that event's time.
+		if at.Valid {
+			task.MergeCommit, task.MergedAt, task.EventID = store.FeedbackMergeCommit(sha), at.Time.UTC(), id
 		}
 		out = append(out, task)
 	}

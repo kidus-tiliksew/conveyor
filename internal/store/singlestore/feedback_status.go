@@ -478,9 +478,7 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 			if err := rows.Scan(&taskID, &sha, &at, &id); err != nil {
 				return err
 			}
-			if store.FeedbackMergeCommit(sha) == "" {
-				continue
-			}
+			// The latest merge event wins before its commit is checked.
 			current, seen := latest[taskID]
 			if !seen || at.After(current.at) || (at.Equal(current.at) && id > current.id) {
 				latest[taskID] = struct {
@@ -496,10 +494,8 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 		return nil, err
 	}
 	for taskID, event := range latest {
-		if commit := store.FeedbackMergeCommit(event.sha); commit != "" {
-			task := &tasks[index[taskID]]
-			task.MergeCommit, task.MergedAt, task.EventID = commit, event.at.UTC(), event.id
-		}
+		task := &tasks[index[taskID]]
+		task.MergeCommit, task.MergedAt, task.EventID = store.FeedbackMergeCommit(event.sha), event.at.UTC(), event.id
 	}
 	store.SortFeedbackMergedTasks(tasks)
 	return tasks, nil

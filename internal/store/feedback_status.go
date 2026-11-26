@@ -128,10 +128,12 @@ func (h FeedbackBranchHead) Absent() bool {
 }
 
 // FeedbackMergedTask is one merged task with its configured repository and
-// the merge commit and time of its latest merge.confirmed or merge.reconciled
-// event that records a usable merge commit, so a later event without one does
-// not hide it. MergeCommit is empty and MergedAt is zero when the ledger holds
-// no usable merge commit for it.
+// the merge commit, time, and event ID of its latest merge.confirmed or
+// merge.reconciled event, ordered by event time and then event ID. The latest
+// event is chosen before its commit is checked: when it records no usable
+// merge commit, MergeCommit is empty and no older event's commit is used, so
+// the task counts as merged and no containment is inferred for it. MergedAt
+// is zero only when the ledger holds no merge event for it.
 type FeedbackMergedTask struct {
 	TaskID      string
 	Repository  string

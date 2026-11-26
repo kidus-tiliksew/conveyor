@@ -1,6 +1,8 @@
 package storetest
 
 import (
+	"cmp"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -326,9 +328,36 @@ func feedbackMergeEvent(kind, sha string) core.Event {
 	return core.Event{Kind: kind, Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 1, "head_sha": "head", "merge_commit_sha": sha})}
 }
 
+// feedbackMergeEventAt is feedbackMergeEvent at a given event time.
+func feedbackMergeEventAt(kind, sha string, at time.Time) core.Event {
+	event := feedbackMergeEvent(kind, sha)
+	event.At = at
+	return event
+}
+
+// feedbackLatestEvent returns the task's event with the highest ID among
+// events at the given time. A backend assigns event IDs, so a test reads
+// them back rather than assume insertion order.
+func feedbackLatestEvent(t *testing.T, x Fixture, taskID string, at time.Time) core.Event {
+	t.Helper()
+	events, err := x.Backend.ListEvents(x.Context, taskID)
+	requireOK(t, err)
+	var latest core.Event
+	for _, event := range events {
+		if event.At.Equal(at) && event.ID > latest.ID {
+			latest = event
+		}
+	}
+	if latest.ID == 0 {
+		t.Fatalf("no event at %s in %+v", at, events)
+	}
+	return latest
+}
+
 // runFeedbackMergedTasks proves the merged-task read: both merge kinds, the
-// latest event's commit and time, a merged task without a usable commit kept,
-// tasks that are not merged left out, and each filter.
+// latest event chosen by time and then ID before its commit is checked, a
+// merged task whose latest event has no usable commit kept without an older
+// event's commit, tasks that are not merged left out, and each filter.
 func runFeedbackMergedTasks(t *testing.T, x Fixture) {
 	backend, ok := x.Backend.(store.CrateStore)
 	if !ok {
@@ -338,9 +367,16 @@ func runFeedbackMergedTasks(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	confirmed := feedbackMergedTask(t, x, "conveyor", crate.ID, feedbackMergeEvent("merge.confirmed", strings.ToUpper(feedbackCommit("a1"))))
 	reconciled := feedbackMergedTask(t, x, "app", "", feedbackMergeEvent("merge.confirmed", feedbackCommit("b1")), feedbackMergeEvent("merge.reconciled", feedbackCommit("b2")))
-	// A later merge event without a usable commit does not hide the commit an
-	// earlier one recorded.
-	kept := feedbackMergedTask(t, x, "app", "", feedbackMergeEvent("merge.confirmed", feedbackCommit("d1")), feedbackMergeEvent("merge.reconciled", ""))
+	// The latest merge event wins even when it records no usable commit: the
+	// task stays merged with no commit, and no older event's commit is used.
+	kept := feedbackMergedTask(t, x, "app", "", feedbackMergeEventAt("merge.confirmed", feedbackCommit("d1"), feedbackTime(-time.Hour)), feedbackMergeEventAt("merge.reconciled", "", feedbackTime(0)))
+	// Event time decides before event ID: an event appended later with an
+	// earlier time does not win.
+	earlier := feedbackMergedTask(t, x, "app", "", feedbackMergeEventAt("merge.reconciled", feedbackCommit("e2"), feedbackTime(-2*time.Hour)), feedbackMergeEventAt("merge.confirmed", feedbackCommit("e1"), feedbackTime(-3*time.Hour)))
+	// Events at the same time: the higher event ID wins, usable or not.
+	tiedAt := feedbackTime(-4 * time.Hour)
+	tied := feedbackMergedTask(t, x, "app", "", feedbackMergeEventAt("merge.confirmed", feedbackCommit("f1"), tiedAt), feedbackMergeEventAt("merge.reconciled", feedbackCommit("f2"), tiedAt))
+	tiedUnusable := feedbackMergedTask(t, x, "app", "", feedbackMergeEventAt("merge.confirmed", feedbackCommit("f3"), tiedAt), feedbackMergeEventAt("merge.reconciled", "", tiedAt))
 	unusable := feedbackMergedTask(t, x, "conveyor", crate.ID, feedbackMergeEvent("merge.confirmed", "landed-sha"))
 	bare := feedbackMergedTask(t, x, "conveyor", crate.ID)
 	open := crateTask(t, x, core.TaskRunning, crate.ID)
@@ -351,7 +387,7 @@ func runFeedbackMergedTasks(t *testing.T, x Fixture) {
 	for _, task := range all {
 		byID[task.TaskID] = task
 	}
-	if len(all) != 5 || byID[open.ID].TaskID != "" {
+	if len(all) != 8 || byID[open.ID].TaskID != "" {
 		t.Fatalf("merged tasks=%+v", all)
 	}
 	if got := byID[confirmed.ID]; got.Repository != "conveyor" || got.MergeCommit != feedbackCommit("a1") || got.MergedAt.IsZero() || got.EventID == 0 {
@@ -360,16 +396,36 @@ func runFeedbackMergedTasks(t *testing.T, x Fixture) {
 	if got := byID[reconciled.ID]; got.Repository != "app" || got.MergeCommit != feedbackCommit("b2") {
 		t.Fatalf("reconciled=%+v", got)
 	}
-	if got := byID[kept.ID]; got.MergeCommit != feedbackCommit("d1") || got.MergedAt.IsZero() {
-		t.Fatalf("kept=%+v", got)
+	if got := byID[kept.ID]; got.MergeCommit != "" || !got.MergedAt.Equal(feedbackTime(0)) || got.EventID == 0 {
+		t.Fatalf("latest event without a usable commit=%+v", got)
 	}
-	for _, id := range []string{unusable.ID, bare.ID} {
-		if got := byID[id]; got.MergeCommit != "" || !got.MergedAt.IsZero() {
-			t.Fatalf("task without a usable merge commit=%+v", got)
+	if got := byID[earlier.ID]; got.MergeCommit != feedbackCommit("e2") || !got.MergedAt.Equal(feedbackTime(-2*time.Hour)) {
+		t.Fatalf("later event time=%+v", got)
+	}
+	for _, id := range []string{tied.ID, tiedUnusable.ID} {
+		latest := feedbackLatestEvent(t, x, id, tiedAt)
+		var payload struct {
+			MergeCommitSHA string `json:"merge_commit_sha"`
+		}
+		requireOK(t, json.Unmarshal(latest.Payload, &payload))
+		if got := byID[id]; got.MergeCommit != payload.MergeCommitSHA || got.EventID != latest.ID || !got.MergedAt.Equal(tiedAt) {
+			t.Fatalf("tied events: got %+v, want the higher event ID %d with commit %q", got, latest.ID, payload.MergeCommitSHA)
 		}
 	}
-	// Newest merge first; tasks without a commit last.
-	if all[0].TaskID != kept.ID || all[1].TaskID != reconciled.ID || all[2].TaskID != confirmed.ID {
+	if got := byID[unusable.ID]; got.MergeCommit != "" || got.MergedAt.IsZero() {
+		t.Fatalf("task whose only merge event has no usable commit=%+v", got)
+	}
+	if got := byID[bare.ID]; got.MergeCommit != "" || !got.MergedAt.IsZero() || got.EventID != 0 {
+		t.Fatalf("task without a merge event=%+v", got)
+	}
+	// Newest merge first, then by event ID; a task without a merge event
+	// last.
+	if all[len(all)-1].TaskID != bare.ID || !slices.IsSortedFunc(all, func(a, b store.FeedbackMergedTask) int {
+		if order := b.MergedAt.Compare(a.MergedAt); order != 0 {
+			return order
+		}
+		return cmp.Compare(b.EventID, a.EventID)
+	}) {
 		t.Fatalf("order=%+v", all)
 	}
 	inCrate, err := x.Backend.ListFeedbackMergedTasks(x.Context, store.FeedbackMergedTaskQuery{CrateID: crate.ID})
@@ -379,7 +435,7 @@ func runFeedbackMergedTasks(t *testing.T, x Fixture) {
 	}
 	inApp, err := x.Backend.ListFeedbackMergedTasks(x.Context, store.FeedbackMergedTaskQuery{Repository: "app"})
 	requireOK(t, err)
-	if len(inApp) != 2 || inApp[1].TaskID != reconciled.ID {
+	if len(inApp) != 5 || !slices.ContainsFunc(inApp, func(task store.FeedbackMergedTask) bool { return task.TaskID == reconciled.ID }) || !slices.ContainsFunc(inApp, func(task store.FeedbackMergedTask) bool { return task.TaskID == kept.ID }) {
 		t.Fatalf("app tasks=%+v", inApp)
 	}
 	named, err := x.Backend.ListFeedbackMergedTasks(x.Context, store.FeedbackMergedTaskQuery{TaskIDs: []string{confirmed.ID, open.ID, "task-missing"}})
