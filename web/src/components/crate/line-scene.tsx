@@ -689,6 +689,8 @@ interface Anchor {
 }
 
 const CARD_MARGIN = 4
+// The space between a block's foot and a card that stands under it.
+const CARD_GAP = 8
 
 // A dependency link the line shows, with the heights over its two blocks'
 // centres where it starts and ends.
@@ -708,9 +710,9 @@ function Projector({
   minRise,
 }: {
   anchors: Anchor[]
-  // The emphasized block and the height over its centre where its card
-  // points.
-  card: { id: string; lift: number } | null
+  // The emphasized block, the height over its centre where its card points,
+  // and the depth under its centre of its foot.
+  card: { id: string; lift: number; drop: number } | null
   groups: RefObject<Map<string, THREE.Group>>
   elements: RefObject<Record<string, HTMLElement | null>>
   links: ShownLink[]
@@ -770,8 +772,18 @@ function Projector({
     const height = element.offsetHeight
     if (size.width >= width + 2 * CARD_MARGIN)
       x = THREE.MathUtils.clamp(x, width / 2 + CARD_MARGIN, size.width - width / 2 - CARD_MARGIN)
-    if (size.height >= height + 2 * CARD_MARGIN)
-      y = THREE.MathUtils.clamp(y, height + CARD_MARGIN, size.height - CARD_MARGIN)
+    if (y - height >= CARD_MARGIN) {
+      y = Math.min(y, size.height - CARD_MARGIN)
+    } else {
+      // A card too tall to stand over its block inside the scene stands
+      // under the block's foot instead. It may reach past the foot of the
+      // scene, over the page, so every line it states stays readable
+      // (req-crate-insights AC-6.1). The links rise over the blocks, so a
+      // card under the block covers none of them.
+      point.copy(node.position)
+      point.y -= card.drop * node.scale.y
+      y = project().y + CARD_GAP + height
+    }
     element.style.transform = `translate(-50%, -50%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`
     element.style.visibility = 'visible'
   })
@@ -973,7 +985,11 @@ export default function LineScene({
   // The card moves up to clear the links that end on its block.
   const card =
     emphasized && emphasizedSpot
-      ? { id: emphasized.id, lift: emphasizedSpot.size / 2 + (shownLinks.length > 0 ? 0.95 : 0.2) }
+      ? {
+          id: emphasized.id,
+          lift: emphasizedSpot.size / 2 + (shownLinks.length > 0 ? 0.95 : 0.2),
+          drop: emphasizedSpot.size / 2,
+        }
       : null
   const groups = useRef(new Map<string, THREE.Group>())
   const elements = useRef<Record<string, HTMLElement | null>>({})
@@ -1145,6 +1161,11 @@ export default function LineScene({
             <span className="font-medium tabular-nums">{sign.count}</span>
           </div>
         ))}
+      </div>
+      {/* The card stands over the scene without its clip, so a tall card can
+          reach past the scene's foot. It takes no pointer, so the blocks and
+          the page under it keep theirs. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0">
         {emphasized && (
           <div
             ref={(element) => {

@@ -182,12 +182,18 @@ export function CrateStage({
   const sceneShown = Boolean(insight) && !textMode
 
   return (
-    <section aria-label="Crate summary" className="overflow-hidden rounded-xl border border-border bg-card">
+    // The section does not clip: the line's card can reach past the foot of
+    // the scene (req-crate-insights AC-6.1). The band rounds its own corners.
+    <section aria-label="Crate summary" className="rounded-xl border border-border bg-card">
       <div
         ref={band}
         data-line-mode={textMode ? 'text' : 'scene'}
         data-motion={reducedMotion ? 'reduced' : 'full'}
-        className={cn('relative', !textMode && 'h-[19rem] md:h-[23rem]')}
+        className={cn(
+          'relative',
+          !textMode && 'h-[19rem] rounded-t-xl md:h-[23rem]',
+          !textMode && !(sceneShown && legend.length > 0) && 'rounded-b-xl',
+        )}
         style={
           textMode
             ? undefined

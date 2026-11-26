@@ -1828,6 +1828,67 @@ test('a branch map card stays whole when it fits on neither side of its line', a
   }
 })
 
+// A task that waits on 20 tasks outside the crate and on the basket price.
+// Its line card is taller than the scene on a 375 px screen.
+const manyWaits = Array.from({ length: 20 }, (_, index) => {
+  const number = String(index + 1).padStart(2, '0')
+  return dependency(`261101-s${number}`, `Step ${number}`, 'running', false, true)
+})
+const manyWaitsInsight: CrateInsight = {
+  ...depsInsight,
+  tasks: depsInsight.tasks.map((task) =>
+    task.id === deps.total
+      ? { ...task, depends_on: [...manyWaits, dependency(deps.price, 'Price the basket', 'running', true, true)] }
+      : task,
+  ),
+}
+
+test('at 375 px the line card shows every title its task waits on, clear of the link', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+  await page.goto('/w/demo/crates/crate-deps')
+  await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+  // The pointer enters the task's row in the task list, which emphasizes
+  // the task on the line. The event moves no scroll, so the line stays on
+  // screen above the list.
+  await memberRow(page, deps.total).dispatchEvent('mouseover')
+  await expect(page.locator('[data-crate-scroll]')).toHaveJSProperty('scrollTop', 0)
+
+  const card = page.locator(`[data-line-card="${deps.total}"]`)
+  const titles = card.locator('[data-waits-on]')
+  await expect(titles).toHaveCount(21)
+  await expect(titles.first()).toHaveText('Waits on Step 01 (outside this crate)')
+  await expect(titles.last()).toHaveText('Waits on Price the basket')
+  // Readable: whole inside the window, not cut off by the scene.
+  await expect(titles.first()).toBeInViewport({ ratio: 1 })
+  await expect(titles.last()).toBeInViewport({ ratio: 1 })
+
+  // The card covers no part of the link to the basket price.
+  await expect(lineLinks(page)).toHaveCount(1)
+  const link = await linkEnds(page, `${deps.price}>${deps.total}`)
+  const curve = await page.locator('[data-line-link-path]').boundingBox()
+  const box = await card.locator(':scope > div').boundingBox()
+  expect(curve && box).toBeTruthy()
+  if (curve && box) {
+    const apart =
+      curve.x + curve.width <= box.x ||
+      box.x + box.width <= curve.x ||
+      curve.y + curve.height <= box.y ||
+      box.y + box.height <= curve.y
+    expect(apart, `curve ${JSON.stringify(curve)} card ${JSON.stringify(box)} ends ${JSON.stringify(link)}`).toBe(true)
+  }
+
+  // The card takes no pointer: a press over it reaches what is under it.
+  const through = await card.evaluate((element) => {
+    const rect = element.firstElementChild?.getBoundingClientRect()
+    if (!rect) return false
+    const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
+    return hit !== null && !element.contains(hit)
+  })
+  expect(through).toBe(true)
+})
+
 test('the line dims every member the pointed-at task has no dependency path to', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 1800 })
   await page.emulateMedia({ reducedMotion: 'reduce' })
@@ -1904,5 +1965,34 @@ for (const width of [375, 1280]) {
     await expect(page.locator(`[data-branch-card="${deps.total}"]`)).toBeVisible()
     await page.locator('[data-branch-map]').scrollIntoViewIfNeeded()
     await shoot(`crate-deps-map-${width}.png`, await page.locator('[data-branch-map]').screenshot())
+  })
+}
+
+// Visual record for the pull request: the line card of a task that waits on
+// 21 tasks, standing under its block and reaching past the scene's foot, at
+// 375 px and a desktop width.
+for (const width of [375, 1280]) {
+  test(`the tall line card screenshot at ${width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: width < 768 ? 812 : 900 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await serveCrates(page, { insights: { [depsCrate.id]: manyWaitsInsight } })
+    await page.goto('/w/demo/crates/crate-deps')
+    await expect(page.locator('[data-station-sign="build"]')).toBeVisible()
+    await memberRow(page, deps.total).dispatchEvent('mouseover')
+    const titles = page.locator(`[data-line-card="${deps.total}"] [data-waits-on]`)
+    await expect(titles.last()).toBeInViewport({ ratio: 1 })
+    await expect(page.locator(`[data-line-link="${deps.price}>${deps.total}"] [data-line-link-path]`)).toHaveAttribute(
+      'd',
+      /^M/,
+    )
+    await page.evaluate(() => document.fonts.ready)
+    const name = `crate-deps-line-tall-card-${width}.png`
+    const image = await page.screenshot()
+    await testInfo.attach(name, { body: image, contentType: 'image/png' })
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    if (shots) {
+      const { writeFile } = await import('node:fs/promises')
+      await writeFile(`${shots}/${name}`, image)
+    }
   })
 }
