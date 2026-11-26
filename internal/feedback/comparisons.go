@@ -26,6 +26,28 @@ type Work struct {
 	Logf func(format string, args ...any)
 }
 
+// OutcomeWriteTimeout bounds each save of an outcome that a forge call
+// produced.
+const OutcomeWriteTimeout = 15 * time.Second
+
+// outcomeContext is the context that saves an outcome a forge call produced.
+// It keeps the job context's values, so the workspace and the system actor
+// stay the same. It ignores the job's deadline and cancellation, and it has
+// its own bound. A forge call that returns when the job's time runs out
+// therefore still saves its outcome, and a claimed version never stays
+// pending because the save ran on a cancelled context (component-production-
+// feedback invariants 7 and 8; req-production-feedback AC-1.4).
+func outcomeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), OutcomeWriteTimeout)
+}
+
+// recordOutcome runs one save on an outcome context.
+func recordOutcome(ctx context.Context, save func(context.Context) error) error {
+	writeCtx, cancel := outcomeContext(ctx)
+	defer cancel()
+	return save(writeCtx)
+}
+
 func (w Work) now() time.Time {
 	if w.Now != nil {
 		return w.Now()
@@ -67,6 +89,11 @@ func (w Work) ProcessSignal(ctx context.Context, request SignalRequest) error {
 		}
 	}
 	for _, ref := range refs {
+		// Once the job's time is over, no further version is claimed. Each
+		// version not claimed stays eligible for a later signal.
+		if ctx.Err() != nil {
+			return nil
+		}
 		now := w.now()
 		claimed, err := w.Store.ClaimFeedbackResolution(ctx, ref, signal.ArrivedAt, now)
 		if err != nil {
@@ -83,11 +110,11 @@ func (w Work) ProcessSignal(ctx context.Context, request SignalRequest) error {
 			w.logf("feedback_resolve environment_id=%s service_digest=%s outcome=unresolved reason=%s", ref.EnvironmentID, store.FeedbackServiceDigest(ref.Service), outcome.Reason)
 		}
 		resolution := store.FeedbackResolution{FeedbackVersionRef: ref, ResolvedRepository: outcome.Repository, ResolvedCommit: outcome.Commit, Reason: outcome.Reason, AttemptedAt: now, NextAttemptAt: outcome.RetryAt}
-		if err := w.Store.RecordFeedbackResolution(ctx, resolution); err != nil {
+		if err := recordOutcome(ctx, func(writeCtx context.Context) error { return w.Store.RecordFeedbackResolution(writeCtx, resolution) }); err != nil {
 			return err
 		}
 	}
-	if request.NoApp {
+	if request.NoApp || ctx.Err() != nil {
 		return nil
 	}
 	return w.compareSignal(ctx, request, refs)
@@ -261,7 +288,7 @@ func (w Work) CompareVersion(ctx context.Context, repository Repository, head, p
 			}
 		}
 	}
-	if err := w.Store.RecordFeedbackComparisons(ctx, found); err != nil {
+	if err := recordOutcome(ctx, func(writeCtx context.Context) error { return w.Store.RecordFeedbackComparisons(writeCtx, found) }); err != nil {
 		return err
 	}
 	remaining := []store.FeedbackComparisonKey{}
@@ -293,7 +320,9 @@ func (w Work) storedComparisons(ctx context.Context, keys []store.FeedbackCompar
 // requests that actually start at most 60 in any minute, however long each
 // takes and however many workers share the workspace.
 func (w Work) admitNext(ctx context.Context, remaining *[]store.FeedbackComparisonKey) (store.FeedbackComparisonKey, bool, error) {
-	if len(*remaining) == 0 {
+	// Once the job's time is over, no new request starts. Every pair not
+	// started stays eligible for a later signal or read.
+	if len(*remaining) == 0 || ctx.Err() != nil {
 		return store.FeedbackComparisonKey{}, false, nil
 	}
 	admitted, err := w.Store.AdmitFeedbackComparisons(ctx, *remaining, w.now(), 1)
@@ -342,7 +371,8 @@ func (w Work) CompareDirect(ctx context.Context, keys []store.FeedbackComparison
 				continue
 			}
 		}
-		if err := w.Store.RecordFeedbackComparisons(ctx, []store.FeedbackComparison{{FeedbackComparisonKey: key, Status: status, ComparedAt: w.now()}}); err != nil {
+		answer := []store.FeedbackComparison{{FeedbackComparisonKey: key, Status: status, ComparedAt: w.now()}}
+		if err := recordOutcome(ctx, func(writeCtx context.Context) error { return w.Store.RecordFeedbackComparisons(writeCtx, answer) }); err != nil {
 			return err
 		}
 	}
@@ -381,7 +411,8 @@ func (w Work) RefreshBranches(ctx context.Context, branches []BranchRef) error {
 			}
 			continue
 		}
-		if err := w.Store.RecordFeedbackBranchHead(ctx, store.FeedbackBranchHead{Repository: key.Repository, Branch: key.Head, Commit: commit, ObservedAt: w.now()}); err != nil {
+		head := store.FeedbackBranchHead{Repository: key.Repository, Branch: key.Head, Commit: commit, ObservedAt: w.now()}
+		if err := recordOutcome(ctx, func(writeCtx context.Context) error { return w.Store.RecordFeedbackBranchHead(writeCtx, head) }); err != nil {
 			return err
 		}
 	}

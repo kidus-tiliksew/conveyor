@@ -192,6 +192,11 @@ resolved again. An unresolved version keeps one reason:
 | `ambiguous` | Two or more repositories hold it, even with one commit ID |
 | `forge_request`, `forge_status`, `forge_response`, `forge_rate_limited`, `forge_permission` | A GitHub read failed with that category. A failure in one candidate repository proves neither absence nor uniqueness |
 
+Each background job has a two-minute bound. A GitHub read that ends when
+that time runs out still saves its outcome, with its own short bound, so a
+claimed version never stays `pending`. No new request starts after the
+job's time is over.
+
 An unresolved version is tried again only when a later accepted signal names
 it, at least 10 minutes after the last attempt. When GitHub names a later time
 for the next request, the version waits until then. Reads and timers never try

@@ -513,3 +513,116 @@ func TestFailingPairsDoNotHoldBackLaterPairs(t *testing.T) {
 		t.Fatalf("compares=%d, want the 10 new pairs and 50 retries", compares)
 	}
 }
+
+// cancelRefusingStore refuses every call on a cancelled context, as the
+// durable backends do.
+type cancelRefusingStore struct {
+	store.FeedbackStore
+}
+
+func (s cancelRefusingStore) ClaimFeedbackResolution(ctx context.Context, ref store.FeedbackVersionRef, signalAt, now time.Time) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return s.FeedbackStore.ClaimFeedbackResolution(ctx, ref, signalAt, now)
+}
+
+func (s cancelRefusingStore) RecordFeedbackResolution(ctx context.Context, resolution store.FeedbackResolution) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.FeedbackStore.RecordFeedbackResolution(ctx, resolution)
+}
+
+func (s cancelRefusingStore) RecordFeedbackComparisons(ctx context.Context, comparisons []store.FeedbackComparison) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.FeedbackStore.RecordFeedbackComparisons(ctx, comparisons)
+}
+
+func (s cancelRefusingStore) RecordFeedbackBranchHead(ctx context.Context, head store.FeedbackBranchHead) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.FeedbackStore.RecordFeedbackBranchHead(ctx, head)
+}
+
+func (s cancelRefusingStore) AdmitFeedbackComparisons(ctx context.Context, keys []store.FeedbackComparisonKey, now time.Time, most int) ([]store.FeedbackComparisonKey, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.FeedbackStore.AdmitFeedbackComparisons(ctx, keys, now, most)
+}
+
+// expiringForge waits until its context expires. Then it fails as the REST
+// transport fails, or, with answer set, it returns that comparison answer
+// as one that arrives just as the time runs out.
+type expiringForge struct {
+	answer string
+}
+
+func (f expiringForge) ReadCommit(ctx context.Context, _, _ string) (string, error) {
+	<-ctx.Done()
+	return "", &github.Error{Category: github.ForgeRequest, Err: fmt.Errorf("GitHub REST transport: %w", ctx.Err())}
+}
+
+func (f expiringForge) Compare(ctx context.Context, _, _, _ string, _ int) (CompareResult, error) {
+	<-ctx.Done()
+	if f.answer != "" {
+		return CompareResult{Status: f.answer}, nil
+	}
+	return CompareResult{}, &github.Error{Category: github.ForgeRequest, Err: fmt.Errorf("GitHub REST transport: %w", ctx.Err())}
+}
+
+// TestForgeTimeoutKeepsTheOutcome covers component-production-feedback
+// invariants 7 and 8 and req-production-feedback AC-1.4: when the job's time
+// runs out during a forge call, the outcome is still saved, with the job's
+// workspace, on a store that refuses cancelled writes. The version keeps the
+// failure's reason and the 10-minute rule, not pending, and a later signal
+// inside the 10 minutes asks nothing.
+func TestForgeTimeoutKeepsTheOutcome(t *testing.T) {
+	f := newWorkFixture(t)
+	commit := sha("abc123456789")
+	signal := store.FeedbackSignal{EnvironmentID: f.environment.ID, KeyID: f.key.ID, ArrivedAt: statusBase, NextSignalSeconds: 60, Services: []store.FeedbackSignalService{{Name: "api", Repository: "conveyor", Versions: []store.FeedbackSignalVersion{commitVersion(commit)}}}}
+	if err := f.st.RecordFeedbackSignal(f.ctx, signal); err != nil {
+		t.Fatal(err)
+	}
+	signal.ArrivedAt = store.EnvironmentTime(signal.ArrivedAt)
+	request := SignalRequest{Signal: signal, Environment: f.environment, Repositories: []Repository{{Name: "conveyor", Slug: "acme/conveyor"}}}
+	work := Work{Store: cancelRefusingStore{FeedbackStore: f.st}, Forge: expiringForge{}, Now: f.clock}
+	jobCtx, cancel := context.WithTimeout(f.ctx, 50*time.Millisecond)
+	defer cancel()
+	if err := work.ProcessSignal(jobCtx, request); err != nil {
+		t.Fatal(err)
+	}
+	if jobCtx.Err() == nil {
+		t.Fatal("the job's time did not run out during the forge call")
+	}
+	got := f.resolution(commit)
+	if got.Resolved() || got.Reason != string(github.ForgeRequest) || !got.AttemptedAt.Equal(statusBase) || !got.NextAttemptAt.Equal(statusBase.Add(store.FeedbackResolutionRetry)) {
+		t.Fatalf("resolution after the forge timeout=%+v, want forge_request and the 10-minute rule", got)
+	}
+	// A later signal inside the 10 minutes claims nothing.
+	f.advance(5 * time.Minute)
+	later := request
+	later.Signal.ArrivedAt = f.clock()
+	if claimed, err := f.st.ClaimFeedbackResolution(f.ctx, store.FeedbackVersionRef{EnvironmentID: f.environment.ID, Service: "api", FeedbackVersion: store.FeedbackVersion{Repository: "conveyor", Commit: commit[:12]}}, later.Signal.ArrivedAt, f.clock()); err != nil || claimed {
+		t.Fatalf("a signal inside the 10 minutes claimed the version: claimed=%v err=%v", claimed, err)
+	}
+	// A comparison answer that arrives as the time runs out is saved too.
+	head, base := sha("cd00cd00cd00"), sha("ef00ef00ef00")
+	compareCtx, cancelCompare := context.WithTimeout(f.ctx, 50*time.Millisecond)
+	defer cancelCompare()
+	work.Forge = expiringForge{answer: store.FeedbackCompareAhead}
+	if err := work.CompareDirect(compareCtx, []store.FeedbackComparisonKey{{Repository: "acme/conveyor", Base: base, Head: head}, {Repository: "acme/conveyor", Base: head, Head: base}}); err != nil {
+		t.Fatal(err)
+	}
+	if answer, ok := f.comparison(base, head); !ok || answer.Status != store.FeedbackCompareAhead {
+		t.Fatalf("comparison after the timeout=%+v ok=%v", answer, ok)
+	}
+	// No second request started after the time ran out.
+	if _, ok := f.comparison(head, base); ok {
+		t.Fatal("a request started after the job's time ran out")
+	}
+}
