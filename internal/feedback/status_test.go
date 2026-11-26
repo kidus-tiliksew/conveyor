@@ -104,6 +104,31 @@ func TestTaskStatuses(t *testing.T) {
 			t.Fatalf("status=%+v", status)
 		}
 	})
+	t.Run("a proven live service is served while a stopped version's comparison is missing", func(t *testing.T) {
+		f := newStatusFixture()
+		f.environment("env-prod", "Production", nil)
+		f.deploy("env-prod", "api", old, "conveyor", 5, 10)
+		f.deploy("env-prod", "api", current, "conveyor", 10, -1)
+		f.compare("conveyor", merge, current, store.FeedbackCompareAhead)
+		// No answer is stored for the stopped version, and none is asked for.
+		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		status := only(t, statuses, "env-prod")
+		if status.Status != StatusLive || strings.Join(status.Services, ",") != "api" || !status.LiveSince.Equal(at(10)) || !missing.Empty() {
+			t.Fatalf("status=%+v missing=%+v", status, missing)
+		}
+	})
+	t.Run("a missing answer for a running version still waits", func(t *testing.T) {
+		f := newStatusFixture()
+		f.environment("env-prod", "Production", nil)
+		f.deploy("env-prod", "api", current, "conveyor", 10, -1)
+		f.deploy("env-prod", "worker", old, "conveyor", 5, -1)
+		f.compare("conveyor", merge, current, store.FeedbackCompareAhead)
+		statuses, missing := TaskStatuses(f.in, task("t1", "conveyor", merge))
+		want := store.FeedbackComparisonKey{Repository: "acme/conveyor", Base: merge, Head: old}
+		if len(statuses) != 0 || len(missing.Comparisons) != 1 || missing.Comparisons[0] != want {
+			t.Fatalf("statuses=%+v missing=%+v", statuses, missing)
+		}
+	})
 	t.Run("rollback is no longer live", func(t *testing.T) {
 		f := newStatusFixture()
 		f.environment("env-prod", "Production", nil)
@@ -250,6 +275,17 @@ func TestCrateStatus(t *testing.T) {
 	}
 	if strings.Join(liveIn["ta"], ",") != "Production,Staging" || len(liveIn["tb"]) != 0 || len(liveIn["tc"]) != 0 {
 		t.Fatalf("live_in=%+v", liveIn)
+	}
+	// A stopped version whose answer stays missing does not hide a member
+	// that a running version proves live.
+	f.deploy("env-prod", "api", sha("b0"), "conveyor", 5, 20)
+	lines, liveIn, missing = CrateStatus(f.in, members)
+	if len(lines) != 2 || lines[0].LiveTaskCount != 1 || strings.Join(liveIn["ta"], ",") != "Production,Staging" {
+		t.Fatalf("lines with a stopped version=%+v live_in=%+v", lines, liveIn)
+	}
+	// Member tb is not live, so its answer for the stopped version is asked for.
+	if len(missing.Comparisons) != 1 || missing.Comparisons[0].Base != mergeB || missing.Comparisons[0].Head != sha("b0") {
+		t.Fatalf("missing with a stopped version=%+v", missing)
 	}
 	if lines, _, _ := CrateStatus(f.in, nil); len(lines) != 0 {
 		t.Fatalf("lines without members=%+v", lines)

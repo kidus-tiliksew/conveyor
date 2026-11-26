@@ -1,6 +1,7 @@
 package feedback
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -66,6 +67,19 @@ type Missing struct {
 func (m *Missing) add(other Missing) {
 	m.Comparisons = append(m.Comparisons, other.Comparisons...)
 	m.Branches = append(m.Branches, other.Branches...)
+}
+
+// unique drops repeated requests, keeping the first of each.
+func (m Missing) unique() Missing {
+	out := Missing{Comparisons: store.NormalizeFeedbackComparisonKeys(m.Comparisons)}
+	seen := map[BranchRef]bool{}
+	for _, branch := range m.Branches {
+		if !seen[branch] {
+			seen[branch] = true
+			out.Branches = append(out.Branches, branch)
+		}
+	}
+	return out
 }
 
 // Empty reports whether nothing is missing.
@@ -208,6 +222,12 @@ func (v view) taskStatus(environment store.Environment, task store.FeedbackMerge
 		}
 		return answer
 	}
+	// Live is decided from the running versions first. When every running
+	// version has its answer and one of them contains the task, the services
+	// and live_since are proven, and no past deploy can change them, so a
+	// missing answer for a stopped version does not hide the status
+	// (component-production-feedback invariants 16, 18, and 20;
+	// req-production-feedback AC-3.1).
 	var liveSince time.Time
 	services := map[string]bool{}
 	for _, running := range v.in.State.Running[environment.ID] {
@@ -218,6 +238,14 @@ func (v view) taskStatus(environment store.Environment, task store.FeedbackMerge
 			}
 		}
 	}
+	if len(services) > 0 && !waiting && !unknown {
+		status.Status = StatusLive
+		status.Services = slices.Sorted(maps.Keys(services))
+		status.LiveSince = &liveSince
+		return status, true, missing
+	}
+	// No running version proves live, so the past deploys tell the other
+	// statuses apart.
 	pastContained := false
 	for _, deploy := range v.in.State.Deploys[environment.ID] {
 		if judge(deploy.Service, deploy.FeedbackVersion) == contained {
@@ -230,17 +258,6 @@ func (v view) taskStatus(environment store.Environment, task store.FeedbackMerge
 		return status, true, Missing{}
 	case waiting:
 		return status, false, missing
-	case len(services) > 0:
-		status.Status = StatusLive
-		status.Services = slices.Sorted(func(yield func(string) bool) {
-			for service := range services {
-				if !yield(service) {
-					return
-				}
-			}
-		})
-		status.LiveSince = &liveSince
-		return status, true, missing
 	case pastContained:
 		status.Status = StatusNoLongerLive
 		return status, true, missing
@@ -290,7 +307,7 @@ func TaskStatuses(in Inputs, task store.FeedbackMergedTask) ([]TaskStatus, Missi
 			out = append(out, status)
 		}
 	}
-	return out, missing
+	return out, missing.unique()
 }
 
 // CrateStatus returns one line for each unarchived environment relevant to at
@@ -330,7 +347,7 @@ func CrateStatus(in Inputs, members []store.FeedbackMergedTask) ([]CrateLine, ma
 		}
 		lines = append(lines, line)
 	}
-	return lines, liveIn, missing
+	return lines, liveIn, missing.unique()
 }
 
 // RequiredComparisons returns every stored answer that a derivation for the
