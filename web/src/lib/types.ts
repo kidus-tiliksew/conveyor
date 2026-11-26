@@ -324,6 +324,9 @@ export interface CrateDetail extends Crate {
   // (component-production-feedback invariant 18; req-production-feedback
   // AC-3.4).
   environments?: CrateEnvironmentLine[]
+  // True when a merged member's status is left out because an answer is not
+  // stored yet (component-production-feedback invariant 20).
+  environments_pending?: boolean
 }
 
 export type CrateActivityKind =
@@ -2708,6 +2711,14 @@ export interface TaskEnvironmentStatus {
   live_since: string | null
   on_tracked_branch?: boolean
   as_of: string | null
+}
+
+// The live status that the task read serves for a merged task: its lines and
+// whether a status is left out because an answer is not stored yet
+// (component-production-feedback, Public surfaces; invariant 20).
+export interface TaskLiveStatusAnswer {
+  environments: TaskEnvironmentStatus[]
+  environments_pending: boolean
 }
 
 export interface CrateEnvironmentLine {

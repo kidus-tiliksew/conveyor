@@ -27,7 +27,8 @@ import { type CrateEmphasis, useCrateEmphasis } from '../components/crate/crate-
 import { CrateFormDialog } from '../components/crate/crate-parts'
 import { CrateStage } from '../components/crate/crate-stage'
 import { DeliveryStatsSheet } from '../components/crate/delivery-stats'
-import { CrateLiveLines, LiveIn, liveStatusInterval } from '../components/feedback/live-status'
+import { CrateLiveLines, LiveIn } from '../components/feedback/live-status'
+import { pendingReadOptions, useLiveStatusRefresh } from '../components/feedback/use-live-status-refresh'
 import { TaskRow } from '../components/insights/shared'
 import { TaskSheet } from '../components/task/task-sheet'
 import { Button } from '../components/ui/button'
@@ -71,14 +72,30 @@ export function validateCrateSearch(search: Record<string, unknown>): CrateSearc
 export function CratePage() {
   const { crateId } = useParams({ strict: false }) as { crateId: string }
   const { workspace } = useWorkspaceSelection()
+  const queryClient = useQueryClient()
+  const queryKey = crateQueryKey(workspace, crateId)
   const crate = useQuery({
-    queryKey: crateQueryKey(workspace, crateId),
+    queryKey,
     queryFn: () => fetchCrate(workspace, crateId),
     enabled: Boolean(workspace && crateId),
-    // The crate read carries the environment lines, so it reads again every
-    // 60 seconds while the page shows one (component-production-feedback
-    // invariant 23).
-    refetchInterval: (query) => liveStatusInterval(query.state.data?.environments?.length),
+    // While the served answer is pending, no focus, reconnect, or retry read
+    // skips the pending budget. Each answer renders the page again, so the
+    // options follow the newest answer.
+    ...pendingReadOptions(queryClient.getQueryData<CrateDetail>(queryKey)?.environments_pending),
+  })
+  // The crate read carries the environment lines and environments_pending.
+  // While the answer is pending it reads again after 10 seconds, at most six
+  // times in a row, and otherwise every 60 seconds while the page shows a
+  // line (component-production-feedback invariant 23).
+  useLiveStatusRefresh({
+    identity: JSON.stringify(queryKey),
+    shown: crate.data?.environments?.length ?? 0,
+    pending: crate.data?.environments_pending === true,
+    hasAnswer: crate.data !== undefined,
+    dataUpdatedAt: crate.dataUpdatedAt,
+    errorUpdatedAt: crate.errorUpdatedAt,
+    isFetching: crate.isFetching,
+    refetch: crate.refetch,
   })
 
   // Reading the update time re-renders the page after each successful read,
