@@ -170,8 +170,12 @@ export function CrateLiveLines({ lines }: { lines: CrateEnvironmentLine[] }) {
                 'No task is live here yet.'
               )}
             </span>
-            {!line.listening && (
-              <WatcherState listening={false} lastSignalAt={line.last_signal_at} className="text-xs" />
+            {/* The served listening state and last signal of each line, both
+                when a watcher is listening and when none is. A line whose
+                answer carries no listening state shows none
+                (req-production-feedback AC-2.2, AC-3.4). */}
+            {typeof line.listening === 'boolean' && (
+              <WatcherState listening={line.listening} lastSignalAt={line.last_signal_at} className="text-xs" />
             )}
             {line.as_of && (
               <span data-live-as-of className="text-xs text-faint">

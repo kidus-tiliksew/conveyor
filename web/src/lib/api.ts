@@ -2500,11 +2500,49 @@ export function fetchEnvironments(workspace: string, archived: boolean, signal?:
   )
 }
 
-export function fetchEnvironmentSuggestions(workspace: string, signal?: AbortSignal) {
-  return getJSON<import('./types').EnvironmentSuggestion[]>(
-    workspaceURL('/v1/environments/suggestions', workspace),
-    signal,
-  )
+// The largest page the list routes serve (component-http-api invariant 19).
+const environmentSuggestionPageLimit = 200
+// A bound on the pages one read follows, so a server that never reaches its
+// stated total cannot hold the read in a loop.
+const environmentSuggestionMaxPages = 50
+
+/**
+ * Every suggestion of the workspace. The suggestions route serves a default
+ * page of 100 rows with the X-Conveyor-Total, X-Conveyor-Limit, and
+ * X-Conveyor-Offset headers, so the read follows each page until it holds the
+ * served total. A manager then sees, accepts, and ignores every suggestion
+ * (req-environments AC-1.6; component-environments invariant 16). Every page
+ * names the workspace and takes the read's abort signal. The read stops at an
+ * answer without paging headers, an empty page, an offset that does not
+ * advance, or the page bound. A suggestion that two pages repeat shows once.
+ */
+export async function fetchEnvironmentSuggestions(workspace: string, signal?: AbortSignal) {
+  type Suggestion = import('./types').EnvironmentSuggestion
+  const suggestions: Suggestion[] = []
+  const seen = new Set<string>()
+  let offset = 0
+  for (let pageIndex = 0; pageIndex < environmentSuggestionMaxPages; pageIndex++) {
+    const params = new URLSearchParams({ limit: String(environmentSuggestionPageLimit), offset: String(offset) })
+    const response = await fetch(workspaceURL(`/v1/environments/suggestions?${params.toString()}`, workspace), {
+      signal,
+    })
+    if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+    const page = (await response.json()) as Suggestion[] | null
+    const items = Array.isArray(page) ? page : []
+    for (const item of items) {
+      const key = `${item.github_environment}\u0000${item.repository}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      suggestions.push(item)
+    }
+    const totalHeader = response.headers.get('X-Conveyor-Total')
+    const total = totalHeader === null ? Number.NaN : Number(totalHeader)
+    const served = Number(response.headers.get('X-Conveyor-Offset') ?? offset)
+    const next = (Number.isFinite(served) ? served : offset) + items.length
+    if (!Number.isFinite(total) || items.length === 0 || next <= offset || next >= total) break
+    offset = next
+  }
+  return suggestions
 }
 
 export async function createEnvironment(workspace: string, input: import('./types').EnvironmentInput) {

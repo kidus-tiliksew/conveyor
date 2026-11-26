@@ -136,7 +136,7 @@ const crateLines: CrateEnvironmentLine[] = [
     merged_task_count: 2,
     newest_live_at: '2026-11-25T14:00:00Z',
     listening: true,
-    last_signal_at: '2026-11-26T09:58:00Z',
+    last_signal_at: '2026-11-26T09:57:00Z',
     as_of: '2026-11-26T09:58:00Z',
   },
   {
@@ -390,7 +390,12 @@ test('the crate page shows a line per environment and where each merged task is 
   await expect(production.locator('[data-crate-live-counts]')).toHaveText('1 of 2 merged tasks is live.')
   await expect(production).toContainText('Newest went live')
   await expect(production.locator('time').first()).toHaveAttribute('datetime', '2026-11-25T14:00:00Z')
-  await expect(production.locator('[data-watcher-state]')).toHaveCount(0)
+  // A listening environment shows the served positive state and its served
+  // last signal (req-production-feedback AC-3.4).
+  await expect(production.locator('[data-watcher-state="listening"]')).toContainText(
+    'A watcher is listening. Last signal',
+  )
+  await expect(production.locator('[data-watcher-state] time')).toHaveAttribute('datetime', '2026-11-26T09:57:00Z')
   await expect(production.locator('[data-live-as-of] time')).toHaveAttribute('datetime', '2026-11-26T09:58:00Z')
 
   const staging = section.locator('[data-crate-live-environment="env-staging"]')
