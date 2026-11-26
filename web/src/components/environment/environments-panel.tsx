@@ -348,9 +348,13 @@ function EnvironmentCard({
           </Fact>
           {!environment.archived && (
             <>
-              <Fact label="Watcher">
-                <WatcherState listening={environment.listening} lastSignalAt={environment.last_signal_at} />
-              </Fact>
+              {/* A row without a boolean listening state shows no watcher
+                  row, never a false one (req-production-feedback AC-2.3). */}
+              {typeof environment.listening === 'boolean' && (
+                <Fact label="Watcher">
+                  <WatcherState listening={environment.listening} lastSignalAt={environment.last_signal_at} />
+                </Fact>
+              )}
               <Fact label="Newest unresolved version">
                 {environment.newest_unresolved ? (
                   <span data-newest-unresolved>

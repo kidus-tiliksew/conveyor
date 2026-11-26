@@ -2502,26 +2502,31 @@ export function fetchEnvironments(workspace: string, archived: boolean, signal?:
 
 // The largest page the list routes serve (component-http-api invariant 19).
 const environmentSuggestionPageLimit = 200
-// A bound on the pages one read follows, so a server that never reaches its
-// stated total cannot hold the read in a loop.
-const environmentSuggestionMaxPages = 50
+
+/**
+ * A suggestions read whose pages stopped before the served total. The read
+ * fails with it instead of showing part of the list as the whole list.
+ */
+export class EnvironmentSuggestionPagingError extends Error {}
 
 /**
  * Every suggestion of the workspace. The suggestions route serves a default
  * page of 100 rows with the X-Conveyor-Total, X-Conveyor-Limit, and
  * X-Conveyor-Offset headers, so the read follows each page until it holds the
- * served total. A manager then sees, accepts, and ignores every suggestion
- * (req-environments AC-1.6; component-environments invariant 16). Every page
- * names the workspace and takes the read's abort signal. The read stops at an
- * answer without paging headers, an empty page, an offset that does not
- * advance, or the page bound. A suggestion that two pages repeat shows once.
+ * served total, however many pages that takes. A manager then sees, accepts,
+ * and ignores every suggestion (req-environments AC-1.6;
+ * component-environments invariant 16). Every page names the workspace and
+ * takes the read's abort signal. An answer without the total header is the
+ * whole list. A page that is empty or does not advance the offset before the
+ * total is reached fails the read, so no suggestion is dropped without a
+ * message. A suggestion that two pages repeat shows once.
  */
 export async function fetchEnvironmentSuggestions(workspace: string, signal?: AbortSignal) {
   type Suggestion = import('./types').EnvironmentSuggestion
   const suggestions: Suggestion[] = []
   const seen = new Set<string>()
   let offset = 0
-  for (let pageIndex = 0; pageIndex < environmentSuggestionMaxPages; pageIndex++) {
+  for (;;) {
     const params = new URLSearchParams({ limit: String(environmentSuggestionPageLimit), offset: String(offset) })
     const response = await fetch(workspaceURL(`/v1/environments/suggestions?${params.toString()}`, workspace), {
       signal,
@@ -2536,13 +2541,19 @@ export async function fetchEnvironmentSuggestions(workspace: string, signal?: Ab
       suggestions.push(item)
     }
     const totalHeader = response.headers.get('X-Conveyor-Total')
-    const total = totalHeader === null ? Number.NaN : Number(totalHeader)
+    if (totalHeader === null) return suggestions
+    const total = Number(totalHeader)
     const served = Number(response.headers.get('X-Conveyor-Offset') ?? offset)
-    const next = (Number.isFinite(served) ? served : offset) + items.length
-    if (!Number.isFinite(total) || items.length === 0 || next <= offset || next >= total) break
+    if (!Number.isFinite(total) || !Number.isFinite(served))
+      throw new EnvironmentSuggestionPagingError('The suggestions list sent page headers that are not numbers.')
+    const next = served + items.length
+    if (next >= total) return suggestions
+    if (items.length === 0 || next <= offset)
+      throw new EnvironmentSuggestionPagingError(
+        `The suggestions list stopped at ${next} of ${total} rows. Refresh the page to read it again.`,
+      )
     offset = next
   }
-  return suggestions
 }
 
 export async function createEnvironment(workspace: string, input: import('./types').EnvironmentInput) {

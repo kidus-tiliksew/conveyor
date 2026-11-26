@@ -132,7 +132,10 @@ function TaskLiveLine({ line, row }: { line: TaskEnvironmentStatus; row: Environ
           </span>
         )}
       </p>
-      {row && !row.listening && (
+      {/* Only an explicit false says that no watcher is listening. A row
+          without a listening state shows nothing (req-production-feedback
+          AC-2.2). */}
+      {row?.listening === false && (
         <WatcherState listening={false} lastSignalAt={row.last_signal_at} className="text-xs" />
       )}
     </li>

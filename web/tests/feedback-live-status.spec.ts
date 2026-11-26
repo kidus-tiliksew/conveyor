@@ -25,8 +25,10 @@ import { mockSettingsPage, openSettingsRow, settingsGitHubApp } from './helpers/
 
 const createdAt = '2026-11-01T09:00:00Z'
 
-function row(id: string, name: string, listening: boolean, lastSignalAt: string | null): EnvironmentRow {
-  return {
+// A row with `listening` undefined leaves the field out of the answer, as an
+// answer that states no listening state would.
+function row(id: string, name: string, listening: boolean | undefined, lastSignalAt: string | null): EnvironmentRow {
+  const value: EnvironmentRow = {
     id,
     name,
     tracked_branches: { conveyor: 'main' },
@@ -41,6 +43,8 @@ function row(id: string, name: string, listening: boolean, lastSignalAt: string 
     last_signal_at: lastSignalAt,
     newest_unresolved: null,
   }
+  if (listening === undefined) delete value.listening
+  return value
 }
 
 const environmentRows = [
@@ -48,7 +52,8 @@ const environmentRows = [
   row('env-staging', 'staging', false, '2026-11-25T18:00:00Z'),
   row('env-qa', 'qa', false, null),
   row('env-preview', 'preview', true, '2026-11-26T09:50:00Z'),
-  row('env-edge', 'edge', true, '2026-11-26T09:40:00Z'),
+  // The edge row states no listening state.
+  row('env-edge', 'edge', undefined, '2026-11-26T09:40:00Z'),
 ]
 
 function status(
@@ -312,6 +317,10 @@ async function expectTaskLines(page: Page) {
   await expect(line('env-edge')).toContainText('Unknown')
   await expect(line('env-edge')).toContainText('The repository history does not have the merge commit.')
   await expect(line('env-edge').locator('[data-live-as-of]')).toHaveCount(0)
+  // A row without a listening state shows no watcher state, where the
+  // explicit false of staging and qa shows the no-watcher message.
+  await expect(line('env-edge').locator('[data-watcher-state]')).toHaveCount(0)
+  await expect(line('env-edge')).not.toContainText('No watcher is listening.')
 
   // No line offers a delivery or gate control (req-production-feedback
   // AC-11.1).

@@ -86,6 +86,13 @@ const staging = () =>
 
 const qa = () => environment('env-qa', 'qa', { listening: false, last_signal_at: null })
 
+// A row whose answer states no listening state: the field is left out.
+const unstated = () => {
+  const row = environment('env-unstated', 'unstated', { last_signal_at: '2026-11-26T09:00:00Z' })
+  delete row.listening
+  return row
+}
+
 const legacy = () => environment('env-legacy', 'legacy', { archived: true, github_environments: ['old-prod'] })
 
 const canary: EnvironmentSuggestion = {
@@ -108,13 +115,15 @@ interface ServerOptions {
 // spec can refuse a request or hold it.
 async function mockServer(page: Page, options: ServerOptions = {}) {
   const state = {
-    active: options.active ?? [production(), staging(), qa()],
+    active: options.active ?? [production(), staging(), qa(), unstated()],
     archived: options.archived ?? [legacy()],
     suggestions: options.suggestions ?? [canary],
     gets: [] as string[],
     writes: [] as Array<{ method: string; path: string; body: unknown }>,
     reply: undefined as ((request: Request) => Promise<Reply> | Reply) | undefined,
     failActive: false,
+    // A total that overstates the served rows, to break the paging.
+    suggestionTotal: undefined as number | undefined,
   }
   const role = options.role ?? 'operator'
   await page.addInitScript(() => {
@@ -191,7 +200,7 @@ async function mockServer(page: Page, options: ServerOptions = {}) {
       return route.fulfill({
         json: state.suggestions.slice(offset, offset + limit),
         headers: {
-          'X-Conveyor-Total': String(state.suggestions.length),
+          'X-Conveyor-Total': String(state.suggestionTotal ?? state.suggestions.length),
           'X-Conveyor-Limit': String(limit),
           'X-Conveyor-Offset': String(offset),
         },
@@ -250,6 +259,12 @@ test('a viewer reads each environment with its keys and listening state, without
   await expect(stage.locator('[data-watcher-state] time')).toHaveAttribute('datetime', '2026-11-25T18:00:00Z')
   await expect(card(page, 'env-qa')).toContainText('No watcher is listening.')
   await expect(card(page, 'env-qa')).toContainText('No signal has arrived.')
+  // Without a listening state the card shows no watcher row at all, next to
+  // the explicit false of qa and staging.
+  await expect(card(page, 'env-unstated')).toBeVisible()
+  await expect(card(page, 'env-unstated').locator('[data-watcher-state]')).toHaveCount(0)
+  await expect(card(page, 'env-unstated')).not.toContainText('No watcher is listening.')
+  await expect(card(page, 'env-unstated')).not.toContainText('Watcher')
 
   for (const name of ['Add environment', 'Issue key', 'Edit', 'Archive', 'Revoke']) {
     await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
@@ -615,6 +630,84 @@ test('suggestions on a later page show, and their create and ignore controls wor
     body: { github_environment: 'late-edge' },
   })
   await expect(page.locator('[data-environment-suggestion]')).toHaveCount(200)
+})
+
+test('a suggestion past 10,000 rows can be reached, created from, and ignored', async ({ page }) => {
+  // The page renders more than 10,000 rows, so waits get more time.
+  test.setTimeout(120_000)
+  // 10,002 suggestions: 51 pages of at most 200 rows. The last two sit past
+  // the 50-page bound the read had before.
+  const many: EnvironmentSuggestion[] = Array.from({ length: 10_000 }, (_, index) => ({
+    github_environment: `bulk-${String(index).padStart(5, '0')}`,
+    repository: 'web-app',
+    last_reported_at: '2026-11-25T08:00:00Z',
+  }))
+  const farCanary: EnvironmentSuggestion = {
+    github_environment: 'far-canary',
+    repository: 'conveyor',
+    last_reported_at: '2026-11-26T09:00:00Z',
+  }
+  const farEdge: EnvironmentSuggestion = {
+    github_environment: 'far-edge',
+    repository: 'web-app',
+    last_reported_at: '2026-11-26T09:30:00Z',
+  }
+  const state = await mockServer(page, { suggestions: [...many, farCanary, farEdge] })
+  await openEnvironmentsTab(page)
+  const canary = page.locator('[data-environment-suggestion="far-canary"]')
+  const edge = page.locator('[data-environment-suggestion="far-edge"]')
+  await expect(canary).toContainText('conveyor', { timeout: 30_000 })
+  await expect(edge).toContainText('web-app')
+  await expect(page.locator('[data-environment-suggestion]')).toHaveCount(10_002, { timeout: 30_000 })
+  const offsets = state.gets
+    .filter((path) => path.startsWith('/v1/environments/suggestions'))
+    .map((path) => new URL(path, 'http://x').searchParams.get('offset'))
+  expect(offsets).toHaveLength(51)
+  expect(offsets.at(-1)).toBe('10000')
+
+  // Create fills the form, writes nothing until sent, and the suggestion
+  // leaves the list once the environment lists its name.
+  await canary.getByRole('button', { name: 'Create environment' }).click()
+  const form = page.getByRole('form', { name: 'Add environment' })
+  await expect(form.getByLabel('Name', { exact: true })).toHaveValue('far-canary')
+  await expect(form.getByLabel('GitHub environment names')).toHaveValue('far-canary')
+  expect(state.writes).toHaveLength(0)
+  await form.getByRole('button', { name: 'Add environment' }).click()
+  await expect(form).toHaveCount(0, { timeout: 30_000 })
+  expect(state.writes).toEqual([
+    {
+      method: 'POST',
+      path: '/v1/environments',
+      body: { name: 'far-canary', tracked_branches: {}, github_environments: ['far-canary'] },
+    },
+  ])
+  await expect(card(page, 'env-far-canary')).toBeVisible({ timeout: 30_000 })
+  await expect(canary).toHaveCount(0, { timeout: 30_000 })
+
+  // Ignore reaches the other row past the old bound.
+  await edge.getByRole('button', { name: 'Ignore far-edge' }).click()
+  await expect(edge).toHaveCount(0, { timeout: 30_000 })
+  expect(state.writes.at(-1)).toEqual({
+    method: 'POST',
+    path: '/v1/environments/suggestions/ignore',
+    body: { github_environment: 'far-edge' },
+  })
+})
+
+test('a suggestions read whose pages stop before the total says so and shows no partial list', async ({ page }) => {
+  const late: EnvironmentSuggestion[] = Array.from({ length: 3 }, (_, index) => ({
+    github_environment: `stop-${index}`,
+    repository: 'web-app',
+    last_reported_at: '2026-11-25T08:00:00Z',
+  }))
+  const state = await mockServer(page, { suggestions: late })
+  // The server states 500 rows but serves 3, so page 2 is empty.
+  state.suggestionTotal = 500
+  await openEnvironmentsTab(page)
+  await expect(
+    page.getByRole('alert').filter({ hasText: 'The suggestions list stopped at 3 of 500 rows.' }),
+  ).toBeVisible()
+  await expect(page.locator('[data-environment-suggestion]')).toHaveCount(0)
 })
 
 test('a failed timed read keeps the environment rows on screen and says the read failed', async ({ page }) => {

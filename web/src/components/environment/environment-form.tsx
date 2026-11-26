@@ -85,8 +85,11 @@ export function EnvironmentFormDialog({
   const save = useMutation({
     mutationFn: (input: EnvironmentInput) =>
       environment ? updateEnvironment(workspace, environment.id, input) : createEnvironment(workspace, input),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['environments', workspace] })
+    // The form closes as soon as the server records the change. The
+    // workspace's environment reads, which can span many suggestion pages,
+    // refresh behind it.
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['environments', workspace] })
       onClose()
     },
   })

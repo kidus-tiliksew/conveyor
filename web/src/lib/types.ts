@@ -2667,7 +2667,9 @@ export interface EnvironmentRecord {
 }
 
 export interface EnvironmentRow extends EnvironmentRecord {
-  listening: boolean
+  // Absent when the answer states no listening state. The dashboard then
+  // shows no watcher state, never a false one.
+  listening?: boolean
   last_signal_at: string | null
   newest_unresolved: EnvironmentUnresolvedVersion | null
 }
@@ -2713,7 +2715,7 @@ export interface CrateEnvironmentLine {
   live_task_count: number
   merged_task_count: number
   newest_live_at: string | null
-  listening: boolean
+  listening?: boolean
   last_signal_at: string | null
   as_of: string | null
 }
