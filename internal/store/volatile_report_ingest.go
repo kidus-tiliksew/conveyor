@@ -132,7 +132,18 @@ func (m *volatileMemory) RecordFeedbackReports(ctx context.Context, batch Feedba
 			matched[entry.Key] = cloneFeedbackReport(report)
 		}
 	}
-	plan, err := PlanFeedbackReports(prepared, key.Label, matched, open)
+	// Report IDs are unique in the workspace. The mutex serializes every
+	// report write, so the set holds until this request has written.
+	held := map[string]bool{}
+	for reportScope, reports := range m.feedbackReportState.reports {
+		if reportScope.workspace != workspace {
+			continue
+		}
+		for _, report := range reports {
+			held[report.ID] = true
+		}
+	}
+	plan, err := PlanFeedbackReports(ctx, prepared, key.Label, matched, open, func(id string) (bool, error) { return held[id], nil })
 	if err != nil {
 		return err
 	}

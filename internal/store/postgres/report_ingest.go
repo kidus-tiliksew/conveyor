@@ -122,7 +122,7 @@ func (s *Store) RecordFeedbackReports(ctx context.Context, batch store.FeedbackR
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM feedback_reports WHERE workspace_id=$1 AND environment_id=$2 AND state='open'`, workspaceID, prepared.EnvironmentID).Scan(&open); err != nil {
 			return err
 		}
-		plan, err := store.PlanFeedbackReports(prepared, label, stored, open)
+		plan, err := store.PlanFeedbackReports(ctx, prepared, label, stored, open, feedbackReportIDTaken(ctx, tx, workspaceID))
 		if err != nil {
 			return err
 		}
@@ -138,6 +138,29 @@ func (s *Store) RecordFeedbackReports(ctx context.Context, batch store.FeedbackR
 		}
 		return touchEnvironmentKey(ctx, tx, workspaceID, prepared.KeyID)
 	})
+}
+
+// feedbackReportIDTaken answers whether a stored report of the workspace
+// holds an ID. Report IDs are unique in the workspace, and the environment row
+// lock serializes one environment only, so the first check takes a
+// transaction lock on the workspace's report IDs. It holds until the commit,
+// so a report that another environment's request stores waits for it, and
+// the answer stays true for this request (component-feedback-reports
+// invariant 6). Every report writer takes the environment row lock first and
+// this lock second, so no two writers wait on each other in a cycle.
+func feedbackReportIDTaken(ctx context.Context, tx pgx.Tx, workspaceID string) store.FeedbackReportIDTaken {
+	locked := false
+	return func(id string) (bool, error) {
+		if !locked {
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "conveyor:feedback-report-ids:"+workspaceID); err != nil {
+				return false, err
+			}
+			locked = true
+		}
+		var held bool
+		err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM feedback_reports WHERE workspace_id=$1 AND id=$2)`, workspaceID, id).Scan(&held)
+		return held, err
+	}
 }
 
 // writeFeedbackReport inserts a new report or writes the members that a

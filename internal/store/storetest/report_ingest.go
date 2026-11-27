@@ -31,6 +31,7 @@ func runFeedbackReports(t *testing.T, factory Factory) {
 		{"Reopen", runFeedbackReportReopen},
 		{"TimesWithinOneMicrosecond", runFeedbackReportSubMicrosecond},
 		{"ArrivalWithinOneMicrosecond", runFeedbackReportArrivalMicrosecond},
+		{"ReportIDCollisions", runFeedbackReportIDCollisions},
 		{"ClosedStaysClosed", runFeedbackReportStaysClosed},
 		{"OpenReportLimit", runFeedbackReportLimit},
 		{"ConcurrentLastSlot", runFeedbackReportLastSlot},

@@ -210,6 +210,63 @@ func NewFeedbackReportID(now time.Time) (string, error) {
 	return "rpt-" + now.UTC().Format("060102") + "-" + hex.EncodeToString(b), nil
 }
 
+// MaxFeedbackReportIDDraws bounds the draws for one new report. A drawn ID
+// that the request already gave another report, or that a stored report of
+// the workspace holds, is drawn again. A request therefore makes at most this
+// many draws for each new report, so at most 50 x 64 = 3,200 draws in all.
+const MaxFeedbackReportIDDraws = 64
+
+// FeedbackReportIDDraw draws one candidate report ID for a report stored at
+// the given time.
+type FeedbackReportIDDraw func(at time.Time) (string, error)
+
+type feedbackReportIDDrawKey struct{}
+
+// WithFeedbackReportIDDraw replaces the random draw of report IDs for the
+// requests made with the returned context. Tests use it to make a taken ID
+// certain on every backend. Production code never sets it.
+func WithFeedbackReportIDDraw(ctx context.Context, draw FeedbackReportIDDraw) context.Context {
+	return context.WithValue(ctx, feedbackReportIDDrawKey{}, draw)
+}
+
+func feedbackReportIDDraw(ctx context.Context) FeedbackReportIDDraw {
+	if draw, ok := ctx.Value(feedbackReportIDDrawKey{}).(FeedbackReportIDDraw); ok && draw != nil {
+		return draw
+	}
+	return NewFeedbackReportID
+}
+
+// FeedbackReportIDTaken reports whether a stored report of the workspace
+// holds an ID. A backend answers it under the lock that serializes the report
+// writes of the whole workspace, so its answer holds until the commit.
+type FeedbackReportIDTaken func(id string) (bool, error)
+
+// allocateFeedbackReportID draws until the ID is neither given to another
+// report of the request nor held by a stored report of the workspace, as the
+// memory backend draws blueprint task IDs. After MaxFeedbackReportIDDraws
+// taken IDs it answers ErrRetryable: the request records nothing and can be
+// sent again (component-feedback-reports invariant 6).
+func allocateFeedbackReportID(draw FeedbackReportIDDraw, at time.Time, assigned map[string]bool, taken FeedbackReportIDTaken) (string, error) {
+	for range MaxFeedbackReportIDDraws {
+		id, err := draw(at)
+		if err != nil {
+			return "", err
+		}
+		if assigned[id] {
+			continue
+		}
+		held, err := taken(id)
+		if err != nil {
+			return "", err
+		}
+		if !held {
+			assigned[id] = true
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("no free report ID after %d draws: %w", MaxFeedbackReportIDDraws, ErrRetryable)
+}
+
 // checkFeedbackSummary bounds a summary. It is redacted, not refused, when it
 // holds a secret (invariant 5).
 func checkFeedbackSummary(field, value string) error {
@@ -435,15 +492,30 @@ func addFeedbackCount(stored, added int64) int64 {
 //     holds open reports that, with the new ones, pass the limit is refused
 //     whole. A reopening does not count against the limit and is never
 //     refused by it (invariant 8).
-func PlanFeedbackReports(prepared PreparedFeedbackReports, label string, stored map[string]FeedbackReport, open int) (FeedbackReportPlan, error) {
+//
+// Each new report gets an ID that no other report of the request and no
+// stored report of the workspace holds, drawn from the context's draw
+// (allocateFeedbackReportID). taken answers for the stored reports.
+func PlanFeedbackReports(ctx context.Context, prepared PreparedFeedbackReports, label string, stored map[string]FeedbackReport, open int, taken FeedbackReportIDTaken) (FeedbackReportPlan, error) {
 	origin := FeedbackReportOriginFor(label)
 	arrived := prepared.ArrivedAt
+	added := 0
+	for _, entry := range prepared.Entries {
+		if _, exists := stored[entry.Key]; !exists {
+			added++
+		}
+	}
+	// The limit is decided before any ID is drawn.
+	if added > 0 && open+added > MaxOpenFeedbackReports {
+		return FeedbackReportPlan{}, ErrOpenReportLimit
+	}
+	draw, assigned := feedbackReportIDDraw(ctx), map[string]bool{}
 	plan := FeedbackReportPlan{Changes: make([]FeedbackReportChange, 0, len(prepared.Entries))}
 	for i, entry := range prepared.Entries {
 		stated := FeedbackReportVersion{Repository: entry.Repository, Commit: entry.Commit, Version: entry.Version}
 		report, exists := stored[entry.Key]
 		if !exists {
-			id, err := NewFeedbackReportID(arrived)
+			id, err := allocateFeedbackReportID(draw, arrived, assigned, taken)
 			if err != nil {
 				return FeedbackReportPlan{}, err
 			}
@@ -479,9 +551,6 @@ func PlanFeedbackReports(prepared PreparedFeedbackReports, label string, stored 
 		}
 		change.Report = report
 		plan.Changes = append(plan.Changes, change)
-	}
-	if added := plan.NewReports(); added > 0 && open+added > MaxOpenFeedbackReports {
-		return FeedbackReportPlan{}, ErrOpenReportLimit
 	}
 	return plan, nil
 }

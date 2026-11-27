@@ -70,7 +70,7 @@ func TestFeedbackReportTimesSweepOneMicrosecond(t *testing.T) {
 				}
 				prepared := PreparedFeedbackReports{FeedbackReportBatch: normalized, Redactions: make([]core.RedactionStats, 1)}
 				// A new report stores the cut times.
-				plan, err := PlanFeedbackReports(prepared, "watcher", nil, 0)
+				plan, err := PlanFeedbackReports(t.Context(), prepared, "watcher", nil, 0, func(string) (bool, error) { return false, nil })
 				if err != nil || len(plan.Changes) != 1 || !plan.Changes[0].New {
 					t.Fatalf("%s: new report plan=%+v err=%v", label, plan, err)
 				}
@@ -90,7 +90,7 @@ func TestFeedbackReportTimesSweepOneMicrosecond(t *testing.T) {
 						FirstSeen: base.Add(-time.Hour), LastSeen: base.Add(-time.Hour), State: FeedbackReportClosed,
 						ClosedAt: &closedAt, ClosedBy: "usr-closer", CloseReason: "fixed",
 					}}
-					plan, err := PlanFeedbackReports(prepared, "watcher", stored, 0)
+					plan, err := PlanFeedbackReports(t.Context(), prepared, "watcher", stored, 0, func(string) (bool, error) { return false, nil })
 					if err != nil || len(plan.Changes) != 1 {
 						t.Fatalf("%s close=+%d: plan=%+v err=%v", label, closing, plan, err)
 					}

@@ -145,7 +145,16 @@ func (s *Store) RecordFeedbackReports(ctx context.Context, batch store.FeedbackR
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_reports WHERE workspace_id=? AND environment_id=? AND state='open'`, ws, prepared.EnvironmentID).Scan(&open); err != nil {
 			return err
 		}
-		plan, err := store.PlanFeedbackReports(prepared, label, stored, open)
+		// Report IDs are unique in the workspace. The workspace environment
+		// claim serializes the report writes of every environment of the
+		// workspace, so the answer holds until this request commits
+		// (component-feedback-reports invariant 6).
+		taken := func(id string) (bool, error) {
+			var count int
+			err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_reports WHERE workspace_id=? AND id=?`, ws, id).Scan(&count)
+			return count > 0, err
+		}
+		plan, err := store.PlanFeedbackReports(ctx, prepared, label, stored, open, taken)
 		if err != nil {
 			return err
 		}
