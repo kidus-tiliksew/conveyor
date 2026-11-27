@@ -474,11 +474,22 @@ func TestFeedbackReportQueuedComparisonsHonorTheHold(t *testing.T) {
 	h := newLinkingHarness(t)
 	keys := []store.FeedbackComparisonKey{{Repository: "acme/app", Base: readsCommit("c3"), Head: readsCommit("a2")}}
 	env := h.server.feedbackJobEnv()
+	// The job is built as it is queued, before any hold exists. The hold is
+	// recorded after that and before the job runs.
+	job, ok := env.linkingReadJob("alpha", keys)
+	if !ok {
+		t.Fatal("no linking read job for a missing comparison")
+	}
 	env.backoff.recordRateLimit("alpha", github.RateLimitedError(h.clock().Add(5*time.Minute), errors.New("rate limit")), h.clock())
+	runFeedbackJob(job)
+	if calls := h.forge.calls(); calls[2] != 0 {
+		t.Fatalf("calls=%v, want no comparison while held", calls)
+	}
+	// A job queued during the hold sends nothing either.
 	env.requestLinkingAnswers("alpha", keys)
 	h.settle()
 	if calls := h.forge.calls(); calls[2] != 0 {
-		t.Fatalf("calls=%v, want no comparison while held", calls)
+		t.Fatalf("calls=%v, want no comparison from a job queued during the hold", calls)
 	}
 	stored, err := h.st.ListFeedbackComparisons(h.ctx, keys)
 	if err != nil || len(stored) != 0 {

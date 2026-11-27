@@ -609,9 +609,18 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 // (component-production-feedback invariant 28). Comparisons that a read of
 // live status asks for keep their own job and are not held this way.
 func (env feedbackJobEnv) requestLinkingAnswers(workspace string, keys []store.FeedbackComparisonKey) {
+	if job, ok := env.linkingReadJob(workspace, keys); ok {
+		env.worker.enqueue(job)
+	}
+}
+
+// linkingReadJob is the read job of requestLinkingAnswers. The job carries
+// the environment it was queued with, and its forge checks the hold when it
+// runs, not when it was queued.
+func (env feedbackJobEnv) linkingReadJob(workspace string, keys []store.FeedbackComparisonKey) (feedbackJob, bool) {
 	comparisons := store.NormalizeFeedbackComparisonKeys(keys)
 	if len(comparisons) == 0 {
-		return
+		return feedbackJob{}, false
 	}
 	parts := make([]string, 0, len(comparisons))
 	for _, key := range comparisons {
@@ -620,5 +629,5 @@ func (env feedbackJobEnv) requestLinkingAnswers(workspace string, keys []store.F
 	slices.Sort(parts)
 	sum := sha256.Sum256([]byte(strings.Join(parts, ",")))
 	key := "link-read:" + workspace + ":" + hex.EncodeToString(sum[:])
-	env.worker.enqueue(feedbackJob{key: key, workspace: workspace, missing: feedback.Missing{Comparisons: comparisons}, linking: true, env: env})
+	return feedbackJob{key: key, workspace: workspace, missing: feedback.Missing{Comparisons: comparisons}, linking: true, env: env}, true
 }
