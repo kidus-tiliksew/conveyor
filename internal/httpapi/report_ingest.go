@@ -109,7 +109,9 @@ func (s *Server) receiveFeedbackReports(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	accepted = true
-	writeJSON(w, http.StatusAccepted, map[string]time.Time{"accepted_at": batch.ArrivedAt})
+	// The answer states the arrival at the stored precision, as the signal
+	// route does. The store decided on the exact arrival.
+	writeJSON(w, http.StatusAccepted, map[string]time.Time{"accepted_at": store.EnvironmentTime(batch.ArrivedAt)})
 }
 
 func writeFeedbackReportError(w http.ResponseWriter, r *http.Request, err error) {

@@ -301,6 +301,36 @@ func TestFeedbackReportTimesWithinOneMicrosecond(t *testing.T) {
 	}
 }
 
+// TestFeedbackReportReversedPairInArrivalMicrosecond is the reviewer's case:
+// the server captures the arrival at T+900 ns, and first-seen T+700 ns and
+// last-seen T+200 ns both fall before it. The route clamps and checks them on
+// the exact arrival, so it refuses the reversed pair, and it accepts the same
+// pair in order (component-feedback-reports invariant 4;
+// req-production-feedback AC-4.1).
+func TestFeedbackReportReversedPairInArrivalMicrosecond(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	whole := time.Date(2026, 11, 25, 12, 0, 10, 123456000, time.UTC)
+	h.mu.Lock()
+	h.now = whole.Add(900 * time.Nanosecond)
+	h.mu.Unlock()
+	reversed := reportBody(reportEntryJSON("reversed", `"first_seen":"2026-11-25T12:00:10.1234567Z","last_seen":"2026-11-25T12:00:10.1234562Z"`))
+	requireReportRefusal(t, h.sendReport(h.key.Value, reversed), "reports[0].first_seen")
+	if reports := h.reports(); len(reports) != 0 {
+		t.Fatalf("a refused request stored %+v", reports)
+	}
+	ordered := reportBody(reportEntryJSON("ordered", `"first_seen":"2026-11-25T12:00:10.1234562Z","last_seen":"2026-11-25T12:00:10.1234567Z"`))
+	response := h.sendReport(h.key.Value, ordered)
+	var answer map[string]time.Time
+	decodeEnvironmentBody(t, response, &answer)
+	if response.Code != http.StatusAccepted || !answer["accepted_at"].Equal(whole) {
+		t.Fatalf("ordered pair: status=%d body=%s, want 202 with the arrival at %v", response.Code, response.Body, whole)
+	}
+	if got := h.reportByKey("ordered"); !got.FirstSeen.Equal(whole) || !got.LastSeen.Equal(whole) || !got.CreatedAt.Equal(whole) {
+		t.Fatalf("stored first=%v last=%v created=%v, want each cut to %v", got.FirstSeen, got.LastSeen, got.CreatedAt, whole)
+	}
+}
+
 // TestFeedbackReportRedaction covers component-feedback-reports invariant 5:
 // a summary is redacted before it is stored and its removals are counted by
 // class (req-security-boundaries REQ-3, AC-3.1).

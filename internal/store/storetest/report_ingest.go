@@ -30,6 +30,7 @@ func runFeedbackReports(t *testing.T, factory Factory) {
 		{"LatestReplacedByNone", runFeedbackReportLatestCleared},
 		{"Reopen", runFeedbackReportReopen},
 		{"TimesWithinOneMicrosecond", runFeedbackReportSubMicrosecond},
+		{"ArrivalWithinOneMicrosecond", runFeedbackReportArrivalMicrosecond},
 		{"ClosedStaysClosed", runFeedbackReportStaysClosed},
 		{"OpenReportLimit", runFeedbackReportLimit},
 		{"ConcurrentLastSlot", runFeedbackReportLastSlot},
@@ -376,6 +377,126 @@ func runFeedbackReportSubMicrosecond(t *testing.T, x Fixture) {
 		t.Fatalf("the reopening appended %d events, want 1", len(all)-events)
 	}
 	requireReportEvent(t, all[len(all)-1], store.FeedbackReportReopenedEvent, got)
+}
+
+// runFeedbackReportArrivalMicrosecond holds every backend to exact times
+// inside the microsecond of the arrival: the default and the clamp use the
+// exact arrival, the order check and the reopen decision compare exact times,
+// and only the stored times are cut (component-feedback-reports invariants 4
+// and 7; req-production-feedback AC-4.1, AC-4.4). The closing time is a
+// whole microsecond, the only closing time a backend can store.
+func runFeedbackReportArrivalMicrosecond(t *testing.T, x Fixture) {
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	base := feedbackTime(-time.Minute)
+	at := func(nanoseconds int) time.Time { return base.Add(time.Duration(nanoseconds)) }
+	batch := func(arrival int, entries ...store.FeedbackReportEntry) store.FeedbackReportBatch {
+		return store.FeedbackReportBatch{EnvironmentID: e.id, KeyID: e.key.ID, ArrivedAt: at(arrival), Entries: entries}
+	}
+
+	// The reviewer's case: a request that arrives 900 nanoseconds after the
+	// closing time and leaves out both times reopens the report.
+	e.sendReports(t, -time.Hour, reportEntry("omitted"))
+	x.CloseFeedbackReport(t, x.Context, e.reportByKey(t, "omitted").ID, base)
+	requireOK(t, x.Backend.RecordFeedbackReports(x.Context, batch(900, reportEntry("omitted"))))
+	if got := e.reportByKey(t, "omitted"); got.State != store.FeedbackReportOpen || got.ReopenedAt == nil || !got.ReopenedAt.Equal(base) || !got.LastSeen.Equal(base) {
+		t.Fatalf("omitted times 900 nanoseconds after the closing gave %+v, want the report reopened at %v", got, base)
+	}
+
+	// The sweep: the arrival, first-seen, and last-seen at offsets inside one
+	// microsecond, each time also left out, against a closing time at the
+	// start of that microsecond.
+	offsets := []int{0, 200, 700, 900}
+	stated := []*int{nil}
+	for i := range offsets {
+		stated = append(stated, &offsets[i])
+	}
+	effective := func(value *int, arrival int) int {
+		if value == nil || *value > arrival {
+			return arrival
+		}
+		return *value
+	}
+	type sweepCase struct {
+		key               string
+		arrival           int
+		first, last       *int
+		refused, reopened bool
+	}
+	var cases []sweepCase
+	for _, arrival := range offsets {
+		for _, first := range stated {
+			for _, last := range stated {
+				wantFirst, wantLast := effective(first, arrival), effective(last, arrival)
+				cases = append(cases, sweepCase{key: fmt.Sprintf("sweep-%d", len(cases)), arrival: arrival, first: first, last: last,
+					refused: wantFirst > wantLast, reopened: wantFirst <= wantLast && wantLast > 0})
+			}
+		}
+	}
+	var setup []store.FeedbackReportEntry
+	for _, c := range cases {
+		setup = append(setup, reportEntry(c.key))
+	}
+	for start := 0; start < len(setup); start += store.MaxFeedbackReportEntries {
+		e.sendReports(t, -time.Hour, setup[start:min(len(setup), start+store.MaxFeedbackReportEntries)]...)
+	}
+	ids := map[string]string{}
+	for _, report := range e.reports(t) {
+		ids[report.Key] = report.ID
+	}
+	for _, c := range cases {
+		x.CloseFeedbackReport(t, x.Context, ids[c.key], base)
+	}
+	for _, c := range cases {
+		entry := reportEntry(c.key)
+		if c.first != nil {
+			value := at(*c.first)
+			entry.FirstSeen = &value
+		}
+		if c.last != nil {
+			value := at(*c.last)
+			entry.LastSeen = &value
+		}
+		err := x.Backend.RecordFeedbackReports(x.Context, batch(c.arrival, entry))
+		if c.refused {
+			requireFeedbackField(t, err, "reports[0].first_seen")
+			continue
+		}
+		requireOK(t, err)
+	}
+	stored := map[string]store.FeedbackReport{}
+	for _, report := range e.reports(t) {
+		stored[report.Key] = report
+	}
+	refused, reopened := 0, 0
+	for _, c := range cases {
+		got := stored[c.key]
+		label := fmt.Sprintf("arrival=+%dns first=%v last=%v", c.arrival, c.first != nil, c.last != nil)
+		if c.first != nil {
+			label += fmt.Sprintf(" first=+%dns", *c.first)
+		}
+		if c.last != nil {
+			label += fmt.Sprintf(" last=+%dns", *c.last)
+		}
+		switch {
+		case c.refused:
+			refused++
+			if got.Count != 1 || got.State != store.FeedbackReportClosed {
+				t.Fatalf("%s: a refused entry left %+v, want the closed report unchanged", label, got)
+			}
+		case c.reopened:
+			reopened++
+			if got.Count != 2 || got.State != store.FeedbackReportOpen || got.ReopenedAt == nil || !got.ReopenedAt.Equal(base) || !got.LastSeen.Equal(base) {
+				t.Fatalf("%s: report=%+v, want it reopened with times cut to %v", label, got, base)
+			}
+		default:
+			if got.Count != 2 || got.State != store.FeedbackReportClosed || got.ClosedAt == nil || !got.ClosedAt.Equal(base) || !got.LastSeen.Equal(base) {
+				t.Fatalf("%s: report=%+v, want it updated and closed", label, got)
+			}
+		}
+	}
+	if refused == 0 || reopened == 0 || refused+reopened == len(cases) {
+		t.Fatalf("the sweep has refused=%d reopened=%d of %d cases, want each outcome", refused, reopened, len(cases))
+	}
 }
 
 func runFeedbackReportStaysClosed(t *testing.T, x Fixture) {

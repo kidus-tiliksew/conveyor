@@ -241,7 +241,10 @@ func NormalizeFeedbackReports(batch FeedbackReportBatch) (FeedbackReportBatch, e
 	if batch.ArrivedAt.IsZero() {
 		return FeedbackReportBatch{}, fmt.Errorf("a feedback report request needs its arrival time")
 	}
-	batch.ArrivedAt = EnvironmentTime(batch.ArrivedAt)
+	// The arrival keeps the precision the server captured. Every decision
+	// about a report's times compares exact values, and a time is cut to the
+	// backend's precision only when it is stored (invariants 4 and 7).
+	batch.ArrivedAt = batch.ArrivedAt.UTC()
 	if len(batch.Entries) < 1 || len(batch.Entries) > MaxFeedbackReportEntries {
 		return FeedbackReportBatch{}, feedbackFieldError("reports", "must hold 1 to %d entries", MaxFeedbackReportEntries)
 	}
@@ -395,7 +398,7 @@ func (p FeedbackReportPlan) Events(at time.Time) []core.Event {
 			continue
 		}
 		system := SystemActor()
-		events = append(events, core.Event{Kind: kind, ActorID: system.ID, ActorRole: system.Role, At: at, Payload: FeedbackReportEventPayload(change.Report)})
+		events = append(events, core.Event{Kind: kind, ActorID: system.ID, ActorRole: system.Role, At: EnvironmentTime(at), Payload: FeedbackReportEventPayload(change.Report)})
 	}
 	return events
 }
@@ -449,25 +452,26 @@ func PlanFeedbackReports(prepared PreparedFeedbackReports, label string, stored 
 				Summary: entry.Summary, SummaryRedactions: prepared.Redactions[i], Service: entry.Service,
 				Count: entry.Count, FirstSeen: EnvironmentTime(*entry.FirstSeen), LastSeen: EnvironmentTime(*entry.LastSeen), FirstEntrySeen: EnvironmentTime(*entry.FirstSeen),
 				File: entry.File, Line: entry.Line, First: stated, Latest: stated,
-				State: FeedbackReportOpen, InInbox: true, Origin: origin, CreatedAt: arrived,
+				State: FeedbackReportOpen, InInbox: true, Origin: origin, CreatedAt: EnvironmentTime(arrived),
 			}})
 			continue
 		}
 		change := FeedbackReportChange{Updated: true}
 		report.Count = addFeedbackCount(report.Count, entry.Count)
-		// Stored times are kept at microsecond precision.
-		if first := EnvironmentTime(*entry.FirstSeen); first.Before(report.FirstSeen) {
-			report.FirstSeen = first
+		// The choice compares the entry's exact times, and the chosen time is
+		// cut to the stored precision only for the record to write.
+		if entry.FirstSeen.Before(report.FirstSeen) {
+			report.FirstSeen = EnvironmentTime(*entry.FirstSeen)
 		}
-		if last := EnvironmentTime(*entry.LastSeen); last.After(report.LastSeen) {
-			report.LastSeen = last
+		if entry.LastSeen.After(report.LastSeen) {
+			report.LastSeen = EnvironmentTime(*entry.LastSeen)
 		}
 		report.Latest = stated
 		// The entry's exact last-seen time is compared with the closing
 		// time, so a time strictly after the closing reopens the report even
 		// within the same microsecond (invariant 7; AC-4.4).
 		if report.State == FeedbackReportClosed && report.ClosedAt != nil && entry.LastSeen.After(*report.ClosedAt) {
-			reopenedAt, reopenOrigin := arrived, origin
+			reopenedAt, reopenOrigin := EnvironmentTime(arrived), origin
 			report.State, report.InInbox = FeedbackReportOpen, true
 			report.ClosedAt, report.ClosedBy, report.CloseReason = nil, "", ""
 			report.ReopenedAt, report.ReopenOrigin = &reopenedAt, &reopenOrigin
