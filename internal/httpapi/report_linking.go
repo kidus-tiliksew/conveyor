@@ -404,6 +404,15 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 		progress = *report.LineProgress
 	}
 	plan := reports.PlanResolve(request, &progress)
+	// Stored answers read with another input, after the version rule
+	// changed, or kept for a repository that is no longer a candidate are
+	// dropped at once, even when no read succeeds in this attempt, so the
+	// stored answers always belong to one input and the current candidates.
+	if prune, stale := plan.Prune(&progress); stale && !a.expired {
+		if progress, err = a.saveLineStep(ctx, prune); err != nil {
+			return reports.Outcome{}, err
+		}
+	}
 	waiting := ""
 	if plan.Final == nil && !a.expired {
 		for _, candidate := range plan.Reads {
@@ -429,7 +438,11 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 				logFeedbackReport(a.job.workspace, report.EnvironmentID, report.ID, "pending", "resolve", err)
 				continue
 			}
-			if progress, err = a.saveLineStep(ctx, store.FeedbackLineStep{Candidate: store.FeedbackRepository(candidate.Slug), Answer: answer}); err != nil {
+			// The answer is saved with the input it was read with and the
+			// current candidates, so the store never combines it with an
+			// answer for another input and drops answers for repositories that
+			// are no longer candidates.
+			if progress, err = a.saveLineStep(ctx, plan.Step(candidate, answer)); err != nil {
 				return reports.Outcome{}, err
 			}
 			if next := reports.PlanResolve(request, &progress); next.Final != nil {

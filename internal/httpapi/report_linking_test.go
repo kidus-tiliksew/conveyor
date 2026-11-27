@@ -45,6 +45,10 @@ type linkingForge struct {
 	statuses    map[string]string
 	// lineSlugs records the slug of each line read.
 	lineSlugs []string
+	// refs answers commit reads by slug|ref with a full commit, as a tag
+	// read does, and readFailures fails the commit reads of one slug.
+	refs         map[string]string
+	readFailures map[string]error
 }
 
 func newLinkingForge() *linkingForge {
@@ -72,6 +76,12 @@ func (f *linkingForge) ReadCommit(_ context.Context, slug, ref string) (string, 
 	f.readsBySlug[slug]++
 	if f.readFailure != nil {
 		return "", f.readFailure
+	}
+	if err := f.readFailures[slug]; err != nil {
+		return "", err
+	}
+	if commit := f.refs[slug+"|"+ref]; commit != "" {
+		return commit, nil
 	}
 	if slug == "acme/app" && strings.HasPrefix(linkingResolved, ref) {
 		return linkingResolved, nil

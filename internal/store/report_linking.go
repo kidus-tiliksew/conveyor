@@ -464,13 +464,19 @@ const FeedbackLineAbsent = "absent"
 // canonical GitHub slug a candidate repository named when it was read, the
 // definitive answer of that commit read: a full commit or FeedbackLineAbsent.
 // An answer is a fact about that GitHub repository, so a configured name that
-// later points at another repository is read again. Once resolving ends,
-// either Repository, Slug, and Commit hold the resolved configured name, its
-// GitHub slug, and the full commit, or Unresolved holds a definitive
-// unresolved reason. The line read uses the stored slug. A retryable failure
-// is never stored. It holds no report text.
+// later points at another repository is read again. Input is the digest of
+// the one resolution input every answer in Candidates was read with: the ref
+// read and the commit prefix a match needs. Answers for another input are
+// never combined with them, and Candidates holds only the current candidate
+// slugs, so it never holds more answers than the workspace configures
+// candidate repositories. Once resolving ends, either Repository, Slug, and
+// Commit hold the resolved configured name, its GitHub slug, and the full
+// commit, or Unresolved holds a definitive unresolved reason. That result is
+// final, and the interim answers are dropped. The line read uses the stored
+// slug. A retryable failure is never stored. It holds no report text.
 type FeedbackLineProgress struct {
 	Candidates map[string]string `json:"candidates,omitempty"`
+	Input      string            `json:"input,omitempty"`
 	Repository string            `json:"repository,omitempty"`
 	Slug       string            `json:"slug,omitempty"`
 	Commit     string            `json:"commit,omitempty"`
@@ -483,12 +489,18 @@ func (p *FeedbackLineProgress) Ended() bool {
 }
 
 // FeedbackLineStep is one definitive result of resolving to store: one
-// candidate answer (Candidate, the canonical slug read, and Answer), the
-// resolution (Repository, Slug, and Commit), or a definitive unresolved
-// reason (Unresolved). Exactly one kind is set.
+// candidate answer (Candidate, the canonical slug read, and Answer, with
+// Input, the digest of the resolution input it was read with, and Keep, the
+// canonical slugs of the current candidates), the resolution (Repository,
+// Slug, and Commit), or a definitive unresolved reason (Unresolved). A step
+// with only Input and Keep stores no answer and drops the stored answers
+// that do not belong to that input and those candidates. Exactly one kind is
+// set.
 type FeedbackLineStep struct {
 	Candidate  string
 	Answer     string
+	Input      string
+	Keep       []string
 	Repository string
 	Slug       string
 	Commit     string
@@ -503,8 +515,13 @@ var FeedbackDefinitiveUnresolved = []string{FeedbackReasonNoMatch, FeedbackReaso
 
 // ApplyFeedbackLineStep merges one step into stored progress and reports
 // whether it changed. A stored answer is never replaced: a second answer for
-// a candidate, and a second resolution or reason, change nothing. Every
-// backend writes exactly this result under the report write lock.
+// a candidate under the same input, and a second resolution or reason,
+// change nothing. A candidate answer read with another input than the stored
+// answers drops them all first, so answers for two inputs are never
+// combined, and every answer for a slug outside Keep is dropped, so the
+// answers stay within the current candidates. The resolution or reason is
+// final and drops the interim answers. Every backend writes exactly this
+// result under the report write lock.
 func ApplyFeedbackLineStep(stored *FeedbackLineProgress, step FeedbackLineStep) (FeedbackLineProgress, bool, error) {
 	progress := FeedbackLineProgress{}
 	if stored != nil {
@@ -519,6 +536,24 @@ func ApplyFeedbackLineStep(stored *FeedbackLineProgress, step FeedbackLineStep) 
 	}
 	if step.Candidate != "" && step.Candidate != FeedbackRepository(step.Candidate) {
 		return progress, false, fmt.Errorf("a candidate answer is keyed by the canonical GitHub slug")
+	}
+	if step.Input != "" || len(step.Keep) > 0 {
+		if step.Candidate == "" && step.Answer == "" {
+			kinds++
+		}
+		if !FeedbackLineInputDigest(step.Input) {
+			return progress, false, fmt.Errorf("a candidate answer needs the digest of its resolution input")
+		}
+		for _, slug := range step.Keep {
+			if slug == "" || slug != FeedbackRepository(slug) {
+				return progress, false, fmt.Errorf("the current candidates are canonical GitHub slugs")
+			}
+		}
+		if step.Candidate != "" && !slices.Contains(step.Keep, step.Candidate) {
+			return progress, false, fmt.Errorf("a candidate answer names a current candidate")
+		}
+	} else if step.Candidate != "" {
+		return progress, false, fmt.Errorf("a candidate answer needs the digest of its resolution input")
 	}
 	if step.Repository != "" || step.Slug != "" || step.Commit != "" {
 		kinds++
@@ -536,22 +571,56 @@ func ApplyFeedbackLineStep(stored *FeedbackLineProgress, step FeedbackLineStep) 
 		return progress, false, fmt.Errorf("a line step holds exactly one result")
 	}
 	switch {
-	case step.Candidate != "":
-		if _, answered := progress.Candidates[step.Candidate]; answered || progress.Ended() {
-			return progress, false, nil
+	case progress.Ended():
+		return progress, false, nil
+	case step.Input != "":
+		changed := false
+		if progress.Input != step.Input {
+			progress.Candidates, progress.Input = nil, step.Input
+			changed = true
+		}
+		for slug := range progress.Candidates {
+			if !slices.Contains(step.Keep, slug) {
+				delete(progress.Candidates, slug)
+				changed = true
+			}
+		}
+		if len(progress.Candidates) == 0 {
+			progress.Candidates = nil
+		}
+		if step.Candidate == "" {
+			return progress, changed, nil
+		}
+		if _, answered := progress.Candidates[step.Candidate]; answered {
+			return progress, changed, nil
 		}
 		if progress.Candidates == nil {
 			progress.Candidates = map[string]string{}
 		}
 		progress.Candidates[step.Candidate] = step.Answer
-	case progress.Ended():
-		return progress, false, nil
 	case step.Commit != "":
 		progress.Repository, progress.Slug, progress.Commit = step.Repository, FeedbackRepository(step.Slug), step.Commit
+		progress.Candidates, progress.Input = nil, ""
 	default:
 		progress.Unresolved = step.Unresolved
+		progress.Candidates, progress.Input = nil, ""
 	}
 	return progress, true, nil
+}
+
+// FeedbackLineInputDigest reports whether a resolution input is a digest: 64
+// lowercase hexadecimal digits. Only a digest is stored, so the stored
+// progress holds no report text.
+func FeedbackLineInputDigest(input string) bool {
+	if len(input) != 64 {
+		return false
+	}
+	for _, r := range input {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneFeedbackLineProgress(progress FeedbackLineProgress) FeedbackLineProgress {

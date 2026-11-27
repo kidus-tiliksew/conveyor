@@ -19,10 +19,12 @@ func TestPlanResolve(t *testing.T) {
 	repos := []feedback.Repository{{Name: "a", Slug: "acme/a"}, {Name: "b", Slug: "acme/b"}, {Name: "c", Slug: "acme/c"}, {Name: "docs"}}
 	request := feedback.ResolveRequest{Version: store.FeedbackVersion{Commit: "AAAAAAA"}, Repositories: repos}
 	plan := PlanResolve(request, nil)
-	if plan.Final != nil || len(plan.Reads) != 3 || plan.Ref != "aaaaaaa" || plan.Prefix != "aaaaaaa" {
+	if plan.Final != nil || len(plan.Reads) != 3 || plan.Ref != "aaaaaaa" || plan.Prefix != "aaaaaaa" || !store.FeedbackLineInputDigest(plan.Input) ||
+		!reflect.DeepEqual(plan.Keep, []string{"acme/a", "acme/b", "acme/c"}) {
 		t.Fatalf("no answers: %+v", plan)
 	}
-	progress := &store.FeedbackLineProgress{Candidates: map[string]string{"acme/a": store.FeedbackLineAbsent}}
+	input := plan.Input
+	progress := &store.FeedbackLineProgress{Input: input, Candidates: map[string]string{"acme/a": store.FeedbackLineAbsent}}
 	if plan := PlanResolve(request, progress); plan.Final != nil || len(plan.Reads) != 2 || plan.Reads[0].Name != "b" {
 		t.Fatalf("one absence: %+v", plan)
 	}
@@ -31,14 +33,14 @@ func TestPlanResolve(t *testing.T) {
 		t.Fatalf("one match, one candidate left: %+v", plan)
 	}
 	progress.Candidates["acme/c"] = store.FeedbackLineAbsent
-	if plan := PlanResolve(request, progress); plan.Final == nil || *plan.Final != (store.FeedbackLineStep{Repository: "b", Slug: "acme/b", Commit: shaA}) {
+	if plan := PlanResolve(request, progress); plan.Final == nil || !reflect.DeepEqual(*plan.Final, store.FeedbackLineStep{Repository: "b", Slug: "acme/b", Commit: shaA}) {
 		t.Fatalf("unique match: %+v", plan)
 	}
-	two := &store.FeedbackLineProgress{Candidates: map[string]string{"acme/a": shaA, "acme/c": shaA}}
+	two := &store.FeedbackLineProgress{Input: input, Candidates: map[string]string{"acme/a": shaA, "acme/c": shaA}}
 	if plan := PlanResolve(request, two); plan.Final == nil || plan.Final.Unresolved != store.FeedbackReasonAmbiguous {
 		t.Fatalf("two matches before every answer: %+v", plan)
 	}
-	none := &store.FeedbackLineProgress{Candidates: map[string]string{"acme/a": store.FeedbackLineAbsent, "acme/b": store.FeedbackLineAbsent, "acme/c": store.FeedbackLineAbsent}}
+	none := &store.FeedbackLineProgress{Input: input, Candidates: map[string]string{"acme/a": store.FeedbackLineAbsent, "acme/b": store.FeedbackLineAbsent, "acme/c": store.FeedbackLineAbsent}}
 	if plan := PlanResolve(request, none); plan.Final == nil || plan.Final.Unresolved != store.FeedbackReasonNoMatch {
 		t.Fatalf("no match: %+v", plan)
 	}
@@ -59,12 +61,105 @@ func TestPlanResolve(t *testing.T) {
 	// answer for that repository, so it is read again; the old answer stays a
 	// fact about the old repository.
 	repointed := feedback.ResolveRequest{Version: request.Version, Repositories: []feedback.Repository{{Name: "a", Slug: "Acme/A2"}, {Name: "b", Slug: "acme/b"}, {Name: "c", Slug: "acme/c"}}}
-	if plan := PlanResolve(repointed, none); plan.Final != nil || len(plan.Reads) != 1 || plan.Reads[0].Slug != "Acme/A2" {
+	if plan := PlanResolve(repointed, none); plan.Final != nil || len(plan.Reads) != 1 || plan.Reads[0].Slug != "Acme/A2" || !reflect.DeepEqual(plan.Keep, []string{"acme/a2", "acme/b", "acme/c"}) {
 		t.Fatalf("a repointed name: %+v, want one read of the new repository", plan)
 	}
 	stored := &store.FeedbackLineProgress{Unresolved: store.FeedbackReasonNoMatch}
 	if plan := PlanResolve(request, stored); plan.Final == nil || plan.Final.Unresolved != store.FeedbackReasonNoMatch || len(plan.Reads) != 0 {
 		t.Fatalf("stored reason: %+v", plan)
+	}
+}
+
+// TestPlanResolveInput covers review round 3 finding 2: stored answers are
+// used only with the resolution input they were read with. After the
+// version rule changes, the plan reads every candidate again and never
+// combines an old answer with a new one, and stored answers with no input are
+// not used. A stored resolution or reason is final and is used whatever the
+// input is now (component-production-feedback invariant 7;
+// component-feedback-reports invariant 12; approved plan version 3).
+func TestPlanResolveInput(t *testing.T) {
+	repos := []feedback.Repository{{Name: "a", Slug: "acme/a"}, {Name: "b", Slug: "acme/b"}}
+	tagRule := func(text string) *store.EnvironmentVersionRule {
+		return &store.EnvironmentVersionRule{Kind: store.EnvironmentTagTemplate, Text: text}
+	}
+	old := feedback.ResolveRequest{Version: store.FeedbackVersion{Version: "1.2"}, Rule: tagRule("v{version}"), Repositories: repos}
+	oldPlan := PlanResolve(old, nil)
+	if oldPlan.Ref != "tags/v1.2" || oldPlan.Prefix != "" || len(oldPlan.Reads) != 2 {
+		t.Fatalf("old rule: %+v", oldPlan)
+	}
+	// acme/a held the old tag; acme/b was not answered yet.
+	progress := &store.FeedbackLineProgress{Input: oldPlan.Input, Candidates: map[string]string{"acme/a": shaA}}
+	if plan := PlanResolve(old, progress); plan.Final != nil || len(plan.Reads) != 1 || plan.Reads[0].Name != "b" {
+		t.Fatalf("old rule with one answer: %+v", plan)
+	}
+	for _, tc := range []struct {
+		name string
+		rule *store.EnvironmentVersionRule
+	}{
+		{"another tag", tagRule("release-{version}")},
+		{"a commit pattern", &store.EnvironmentVersionRule{Kind: store.EnvironmentCommitPattern, Text: "{commit}"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := old
+			request.Rule = tc.rule
+			request.Version.Version = "bbbbbbb"
+			if tc.rule.Kind == store.EnvironmentTagTemplate {
+				request.Version.Version = "1.2"
+			}
+			plan := PlanResolve(request, progress)
+			if plan.Input == oldPlan.Input {
+				t.Fatalf("the input did not change: %+v", plan)
+			}
+			// The old match is not used: both candidates are read again.
+			if plan.Final != nil || len(plan.Reads) != 2 {
+				t.Fatalf("a changed rule: %+v, want both candidates read again", plan)
+			}
+			// One new answer alone decides nothing with the old match: acme/b
+			// matches under the new input, and acme/a is still unanswered.
+			mixed := &store.FeedbackLineProgress{Input: plan.Input, Candidates: map[string]string{"acme/b": shaB}}
+			if next := PlanResolve(request, mixed); next.Final != nil || len(next.Reads) != 1 || next.Reads[0].Name != "a" {
+				t.Fatalf("one new answer: %+v, want acme/a read again", next)
+			}
+			mixed.Candidates["acme/a"] = store.FeedbackLineAbsent
+			if next := PlanResolve(request, mixed); next.Final == nil || !reflect.DeepEqual(*next.Final, store.FeedbackLineStep{Repository: "b", Slug: "acme/b", Commit: shaB}) {
+				t.Fatalf("both new answers: %+v, want acme/b", next)
+			}
+		})
+	}
+	legacy := &store.FeedbackLineProgress{Candidates: map[string]string{"acme/a": shaA, "acme/b": store.FeedbackLineAbsent}}
+	if plan := PlanResolve(old, legacy); plan.Final != nil || len(plan.Reads) != 2 {
+		t.Fatalf("answers with no input: %+v, want both read again", plan)
+	}
+	changed := old
+	changed.Rule = tagRule("release-{version}")
+	for _, final := range []*store.FeedbackLineProgress{
+		{Repository: "a", Slug: "acme/a", Commit: shaA},
+		{Unresolved: store.FeedbackReasonNoVersionRule},
+	} {
+		plan := PlanResolve(changed, final)
+		want := store.FeedbackLineStep{Repository: final.Repository, Slug: final.Slug, Commit: final.Commit, Unresolved: final.Unresolved}
+		if plan.Final == nil || !reflect.DeepEqual(*plan.Final, want) || len(plan.Reads) != 0 {
+			t.Fatalf("a final result after the rule changed: %+v, want %+v", plan, want)
+		}
+	}
+	// Prune names the stored answers the plan does not use.
+	if _, stale := oldPlan.Prune(progress); stale {
+		t.Fatal("answers for the plan's input and candidates were pruned")
+	}
+	if prune, stale := PlanResolve(changed, progress).Prune(progress); !stale || prune.Candidate != "" || prune.Input == oldPlan.Input {
+		t.Fatalf("answers for another input: prune=%+v stale=%v", prune, stale)
+	}
+	removed := old
+	removed.Repositories = repos[1:]
+	if prune, stale := PlanResolve(removed, progress).Prune(progress); !stale || !reflect.DeepEqual(prune.Keep, []string{"acme/b"}) {
+		t.Fatalf("an answer of a removed repository: prune=%+v stale=%v", prune, stale)
+	}
+	if _, stale := PlanResolve(old, nil).Prune(&store.FeedbackLineProgress{Repository: "a", Slug: "acme/a", Commit: shaA}); stale {
+		t.Fatal("a final result was pruned")
+	}
+	step := oldPlan.Step(repos[1], store.FeedbackLineAbsent)
+	if step.Candidate != "acme/b" || step.Input != oldPlan.Input || !reflect.DeepEqual(step.Keep, oldPlan.Keep) {
+		t.Fatalf("step=%+v", step)
 	}
 }
 

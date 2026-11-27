@@ -37,6 +37,7 @@ func runFeedbackReportLinking(t *testing.T, factory Factory) {
 		{"ServiceSignals", runFeedbackLinkingServiceSignals},
 		{"MergePullRequest", runFeedbackLinkingMergePullRequest},
 		{"LineProgressResumes", runFeedbackLinkingLineProgress},
+		{"LineProgressOneInput", runFeedbackLinkingLineProgressInput},
 		{"TimingResultKept", runFeedbackLinkingTimingResult},
 		{"ProgressAfterTheEnd", runFeedbackLinkingProgressAfterEnd},
 	} {
@@ -583,13 +584,16 @@ func pendingReport(t *testing.T, x Fixture, e feedbackEnvironment, key string) s
 	return store.FeedbackReport{}
 }
 
+// feedbackLineInput is a resolution input digest of the conformance cases.
+func feedbackLineInput(seed string) string { return strings.Repeat(seed, 64)[:64] }
+
 // runFeedbackLinkingLineProgress proves the stored progress of resolving, so
 // a fresh worker resumes from the store alone: candidate answers are kept and
-// never replaced, the resolution or the definitive reason is stored once, a
-// retryable reason is refused, every read of the report returns the stored
-// progress, no served form of the report holds it, and another report is
-// untouched (approved plan version 3; component-feedback-reports invariants
-// 12 and 15).
+// never replaced, the resolution or the definitive reason is stored once and
+// drops the interim answers, a retryable reason is refused, every read of the
+// report returns the stored progress, no served form of the report holds it,
+// and another report is untouched (approved plan version 3;
+// component-feedback-reports invariants 12 and 15).
 func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 	e, report := linkingReport(t, x, "crash", func(entry *store.FeedbackReportEntry) {
 		entry.File, entry.Line, entry.Commit = "cmd/main.go", 12, "abcdef0"
@@ -605,14 +609,16 @@ func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 		return progress
 	}
 	commit := feedbackCommit("c0")
-	save(store.FeedbackLineStep{Candidate: "acme/app", Answer: store.FeedbackLineAbsent})
-	progress := save(store.FeedbackLineStep{Candidate: "acme/docs", Answer: commit})
-	want := store.FeedbackLineProgress{Candidates: map[string]string{"acme/app": store.FeedbackLineAbsent, "acme/docs": commit}}
+	input := feedbackLineInput("a")
+	keep := []string{"acme/app", "acme/docs"}
+	save(store.FeedbackLineStep{Candidate: "acme/app", Answer: store.FeedbackLineAbsent, Input: input, Keep: keep})
+	progress := save(store.FeedbackLineStep{Candidate: "acme/docs", Answer: commit, Input: input, Keep: keep})
+	want := store.FeedbackLineProgress{Input: input, Candidates: map[string]string{"acme/app": store.FeedbackLineAbsent, "acme/docs": commit}}
 	if !reflect.DeepEqual(progress, want) {
 		t.Fatalf("progress=%+v, want %+v", progress, want)
 	}
 	// A second answer for a candidate is not stored.
-	if again := save(store.FeedbackLineStep{Candidate: "acme/app", Answer: commit}); !reflect.DeepEqual(again, want) {
+	if again := save(store.FeedbackLineStep{Candidate: "acme/app", Answer: commit, Input: input, Keep: keep}); !reflect.DeepEqual(again, want) {
 		t.Fatalf("a second answer replaced the first: %+v", again)
 	}
 	// Retryable reasons and malformed steps are refused and store nothing.
@@ -620,11 +626,20 @@ func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 		{Unresolved: store.FeedbackReasonPending},
 		{Unresolved: "forge_status"},
 		{Unresolved: store.FeedbackReasonNoGitHubApp},
-		{Candidate: "acme/app", Answer: "abc"},
-		{Candidate: "Acme/App", Answer: store.FeedbackLineAbsent},
+		{Candidate: "acme/app", Answer: "abc", Input: input, Keep: keep},
+		{Candidate: "Acme/App", Answer: store.FeedbackLineAbsent, Input: input, Keep: keep},
 		{Repository: "docs", Slug: "acme/docs", Commit: "abc"},
 		{Repository: "docs", Commit: feedbackCommit("c0")},
-		{Candidate: "acme/app", Answer: store.FeedbackLineAbsent, Unresolved: store.FeedbackReasonNoMatch},
+		{Candidate: "acme/app", Answer: store.FeedbackLineAbsent, Unresolved: store.FeedbackReasonNoMatch, Input: input, Keep: keep},
+		// A candidate answer needs a digest input and names a current
+		// candidate; only a candidate answer names an input.
+		{Candidate: "acme/app", Answer: store.FeedbackLineAbsent, Keep: keep},
+		{Candidate: "acme/app", Answer: store.FeedbackLineAbsent, Input: "tags/v1.2", Keep: keep},
+		{Candidate: "acme/app", Answer: store.FeedbackLineAbsent, Input: strings.ToUpper(input), Keep: keep},
+		{Candidate: "acme/app", Answer: store.FeedbackLineAbsent, Input: input, Keep: []string{"acme/docs"}},
+		{Candidate: "acme/app", Answer: store.FeedbackLineAbsent, Input: input, Keep: []string{"acme/app", "Acme/Docs"}},
+		{Unresolved: store.FeedbackReasonNoMatch, Input: input},
+		{Repository: "docs", Slug: "acme/docs", Commit: commit, Keep: keep},
 		{},
 	} {
 		if _, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, step); err == nil {
@@ -634,13 +649,16 @@ func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 	if stored := pendingReport(t, x, e, "crash"); !reflect.DeepEqual(stored.LineProgress, &want) {
 		t.Fatalf("stored progress after refusals=%+v, want %+v", stored.LineProgress, want)
 	}
-	// The resolution is stored once; a later reason or answer changes nothing.
+	// The resolution is stored once and drops the interim answers; a later
+	// reason or answer changes nothing.
 	progress = save(store.FeedbackLineStep{Repository: "docs", Slug: "Acme/Docs", Commit: commit})
-	want.Repository, want.Slug, want.Commit = "docs", "acme/docs", commit
+	want = store.FeedbackLineProgress{Repository: "docs", Slug: "acme/docs", Commit: commit}
 	if !reflect.DeepEqual(progress, want) {
 		t.Fatalf("progress=%+v, want %+v", progress, want)
 	}
-	for _, step := range []store.FeedbackLineStep{{Unresolved: store.FeedbackReasonNoMatch}, {Repository: "app", Slug: "acme/app", Commit: feedbackCommit("c1")}, {Candidate: "acme/web", Answer: store.FeedbackLineAbsent}} {
+	for _, step := range []store.FeedbackLineStep{{Unresolved: store.FeedbackReasonNoMatch}, {Repository: "app", Slug: "acme/app", Commit: feedbackCommit("c1")},
+		{Candidate: "acme/web", Answer: store.FeedbackLineAbsent, Input: input, Keep: []string{"acme/web"}},
+		{Candidate: "acme/web", Answer: store.FeedbackLineAbsent, Input: feedbackLineInput("b"), Keep: []string{"acme/web"}}} {
 		if again := save(step); !reflect.DeepEqual(again, want) {
 			t.Fatalf("step %+v changed the ended progress: %+v", step, again)
 		}
@@ -672,6 +690,72 @@ func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 	}
 	if _, err := x.Backend.SaveFeedbackLineProgress(x.Context, "rpt-000000-000000", store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("an unknown report err=%v, want not found", err)
+	}
+}
+
+// runFeedbackLinkingLineProgressInput proves that stored candidate answers
+// hold one resolution input and stay within the current candidates through
+// every change between two attempts. An answer read with another input, as
+// after a version rule change, drops every stored answer before it is
+// stored, so answers for two inputs are never combined. An answer saved with
+// fewer current candidates, as after a repository was removed or repointed,
+// drops the answers of the slugs no longer listed, so the stored answers
+// never outnumber the candidates. A definitive reason after that is final
+// (approved plan version 3; component-feedback-reports invariant 12;
+// component-production-feedback invariant 7).
+func runFeedbackLinkingLineProgressInput(t *testing.T, x Fixture) {
+	e, report := linkingReport(t, x, "crash", func(entry *store.FeedbackReportEntry) {
+		entry.File, entry.Line, entry.Version = "cmd/main.go", 12, "1.2"
+	})
+	save := func(step store.FeedbackLineStep) store.FeedbackLineProgress {
+		t.Helper()
+		progress, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, step)
+		requireOK(t, err)
+		if stored := pendingReport(t, x, e, "crash"); !reflect.DeepEqual(stored.LineProgress, &progress) {
+			t.Fatalf("stored=%+v, answered %+v", stored.LineProgress, progress)
+		}
+		return progress
+	}
+	oldInput, newInput := feedbackLineInput("1"), feedbackLineInput("2")
+	match := feedbackCommit("c1")
+	steps := []struct {
+		name string
+		step store.FeedbackLineStep
+		want store.FeedbackLineProgress
+	}{
+		{"an answer under the old rule", store.FeedbackLineStep{Candidate: "acme/app", Answer: match, Input: oldInput, Keep: []string{"acme/app", "acme/other"}},
+			store.FeedbackLineProgress{Input: oldInput, Candidates: map[string]string{"acme/app": match}}},
+		{"an answer under a changed rule drops the old match", store.FeedbackLineStep{Candidate: "acme/other", Answer: feedbackCommit("c2"), Input: newInput, Keep: []string{"acme/app", "acme/other"}},
+			store.FeedbackLineProgress{Input: newInput, Candidates: map[string]string{"acme/other": feedbackCommit("c2")}}},
+		{"a slug added", store.FeedbackLineStep{Candidate: "acme/extra", Answer: store.FeedbackLineAbsent, Input: newInput, Keep: []string{"acme/app", "acme/extra", "acme/other"}},
+			store.FeedbackLineProgress{Input: newInput, Candidates: map[string]string{"acme/other": feedbackCommit("c2"), "acme/extra": store.FeedbackLineAbsent}}},
+		{"a slug repointed", store.FeedbackLineStep{Candidate: "acme/app2", Answer: store.FeedbackLineAbsent, Input: newInput, Keep: []string{"acme/app2", "acme/extra"}},
+			store.FeedbackLineProgress{Input: newInput, Candidates: map[string]string{"acme/extra": store.FeedbackLineAbsent, "acme/app2": store.FeedbackLineAbsent}}},
+		{"a slug removed, with an answer already stored", store.FeedbackLineStep{Candidate: "acme/app2", Answer: match, Input: newInput, Keep: []string{"acme/app2"}},
+			store.FeedbackLineProgress{Input: newInput, Candidates: map[string]string{"acme/app2": store.FeedbackLineAbsent}}},
+		{"a step with no answer drops the answers of a removed slug", store.FeedbackLineStep{Input: newInput, Keep: []string{"acme/blocked"}},
+			store.FeedbackLineProgress{Input: newInput}},
+		{"an answer for the input after the drop", store.FeedbackLineStep{Candidate: "acme/app2", Answer: store.FeedbackLineAbsent, Input: newInput, Keep: []string{"acme/app2", "acme/blocked"}},
+			store.FeedbackLineProgress{Input: newInput, Candidates: map[string]string{"acme/app2": store.FeedbackLineAbsent}}},
+		{"a step with no answer under a changed rule drops every answer", store.FeedbackLineStep{Input: oldInput, Keep: []string{"acme/app2", "acme/blocked"}},
+			store.FeedbackLineProgress{Input: oldInput}},
+		{"back to the old rule reads again from nothing", store.FeedbackLineStep{Candidate: "acme/app2", Answer: match, Input: oldInput, Keep: []string{"acme/app2"}},
+			store.FeedbackLineProgress{Input: oldInput, Candidates: map[string]string{"acme/app2": match}}},
+		{"a definitive reason is final", store.FeedbackLineStep{Unresolved: store.FeedbackReasonAmbiguous},
+			store.FeedbackLineProgress{Unresolved: store.FeedbackReasonAmbiguous}},
+		{"an answer after the end changes nothing", store.FeedbackLineStep{Candidate: "acme/app", Answer: match, Input: newInput, Keep: []string{"acme/app"}},
+			store.FeedbackLineProgress{Unresolved: store.FeedbackReasonAmbiguous}},
+		{"a step with no answer after the end changes nothing", store.FeedbackLineStep{Input: newInput, Keep: []string{"acme/app"}},
+			store.FeedbackLineProgress{Unresolved: store.FeedbackReasonAmbiguous}},
+	}
+	for _, s := range steps {
+		got := save(s.step)
+		if !reflect.DeepEqual(got, s.want) {
+			t.Fatalf("%s: progress=%+v, want %+v", s.name, got, s.want)
+		}
+		if len(got.Candidates) > len(s.step.Keep) {
+			t.Fatalf("%s: %d answers for %d candidates", s.name, len(got.Candidates), len(s.step.Keep))
+		}
 	}
 }
 

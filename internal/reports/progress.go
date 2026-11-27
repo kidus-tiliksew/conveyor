@@ -1,6 +1,8 @@
 package reports
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -16,14 +18,53 @@ import (
 // component-feedback-reports invariant 12; approved plan version 3). When
 // Final is set, resolving has a definitive result to store: the resolution
 // or a definitive unresolved reason. Otherwise Reads lists, in configuration
-// order, the candidate repositories whose commit read has no stored answer,
-// each read with Ref, and an answer counts as a match only when the full
-// commit starts with Prefix.
+// order, the candidate repositories whose commit read has no stored answer
+// for this input, each read with Ref, and an answer counts as a match only
+// when the full commit starts with Prefix. Input is the digest of Ref and
+// Prefix, and Keep the canonical slugs of the current candidates: a stored
+// answer is saved with both, so it is used only with the input it was read
+// with and kept only while its slug is a candidate.
 type ResolvePlan struct {
 	Final  *store.FeedbackLineStep
 	Reads  []feedback.Repository
 	Ref    string
 	Prefix string
+	Input  string
+	Keep   []string
+}
+
+// Step is the stored form of one candidate's definitive answer under the
+// plan's input.
+func (p ResolvePlan) Step(candidate feedback.Repository, answer string) store.FeedbackLineStep {
+	return store.FeedbackLineStep{Candidate: store.FeedbackRepository(candidate.Slug), Answer: answer, Input: p.Input, Keep: slices.Clone(p.Keep)}
+}
+
+// Prune is the step that drops stored answers the plan does not use: all of
+// them when they were read with another input, and those of slugs that are
+// no longer candidates. ok is false when the stored answers need no change,
+// and for a plan with a final result, whose step drops them itself.
+func (p ResolvePlan) Prune(progress *store.FeedbackLineProgress) (store.FeedbackLineStep, bool) {
+	if p.Final != nil || progress == nil || progress.Ended() || len(progress.Candidates) == 0 {
+		return store.FeedbackLineStep{}, false
+	}
+	stale := progress.Input != p.Input
+	for slug := range progress.Candidates {
+		if !slices.Contains(p.Keep, slug) {
+			stale = true
+		}
+	}
+	if !stale {
+		return store.FeedbackLineStep{}, false
+	}
+	return store.FeedbackLineStep{Input: p.Input, Keep: slices.Clone(p.Keep)}, true
+}
+
+// resolveInput is the digest of one resolution input: the ref read and the
+// prefix a match needs. Only the digest is stored, so the progress holds no
+// report text.
+func resolveInput(ref, prefix string) string {
+	sum := sha256.Sum256([]byte(ref + "\x00" + prefix))
+	return hex.EncodeToString(sum[:])
 }
 
 // PlanResolve decides the next step of resolving with the rules of
@@ -33,7 +74,12 @@ type ResolvePlan struct {
 // is; two matches are ambiguous; one match among answered candidates is the
 // resolution; no match among answered candidates is no_match. It reads
 // stored answers only, by each candidate's current GitHub slug, and never
-// asks for one of them again.
+// asks for one of them again. Stored answers read with another input, after
+// the version rule changed, are not used: every candidate is read again with
+// the current input, and no answer for one input is combined with an answer
+// for another (component-production-feedback invariant 7;
+// component-feedback-reports invariant 12). A stored resolution or reason is
+// final and is used whatever the current input is.
 func PlanResolve(request feedback.ResolveRequest, progress *store.FeedbackLineProgress) ResolvePlan {
 	if progress.Ended() {
 		if progress.Unresolved != "" {
@@ -71,9 +117,16 @@ func PlanResolve(request feedback.ResolveRequest, progress *store.FeedbackLinePr
 			plan.Ref = "tags/" + target.Tag
 		}
 	}
+	plan.Input = resolveInput(plan.Ref, plan.Prefix)
+	for _, candidate := range candidates {
+		if slug := store.FeedbackRepository(candidate.Slug); !slices.Contains(plan.Keep, slug) {
+			plan.Keep = append(plan.Keep, slug)
+		}
+	}
+	slices.Sort(plan.Keep)
 	matches := []feedback.Repository{}
 	answers := map[string]string{}
-	if progress != nil {
+	if progress != nil && progress.Input == plan.Input {
 		answers = progress.Candidates
 	}
 	// An answer is keyed by the GitHub slug read, so a name that now points at

@@ -270,8 +270,9 @@ func TestFeedbackReportRetryableFailuresStoreNothing(t *testing.T) {
 	h.advance(store.FeedbackAdmissionLease + time.Second)
 	h.attempt(report.ID)
 	after := h.reportByID(report.ID)
-	if after.LineProgress == nil || after.LineProgress.Commit != linkingResolved || len(after.LineProgress.Candidates) != 1 {
-		t.Fatalf("progress=%+v, want the resolution stored", after.LineProgress)
+	// The resolution is final and drops the interim candidate answers.
+	if after.LineProgress == nil || after.LineProgress.Commit != linkingResolved || len(after.LineProgress.Candidates) != 0 || after.LineProgress.Input != "" {
+		t.Fatalf("progress=%+v, want the resolution stored alone", after.LineProgress)
 	}
 	if _, stored, _ := h.st.ReadFeedbackReportLineRead(h.ctx, report.ID); stored {
 		t.Fatal("a failed line read stored an answer")
@@ -412,6 +413,66 @@ func TestFeedbackReportResumesFromTheStore(t *testing.T) {
 		}
 		if got := h.finalState(report.ID); got != want {
 			t.Fatalf("final=%s\nwant  %s", got, want)
+		}
+	})
+	t.Run("the timing result through later inputs", func(t *testing.T) {
+		h, report := resumeSetup(t, true, github.StatusError(http.StatusBadGateway, errors.New("bad gateway")))
+		h.settle()
+		h.freshWorker()
+		h.advance(store.FeedbackAdmissionLease + time.Second)
+		h.attempt(report.ID)
+		stored := h.reportByID(report.ID)
+		if stored.TimingResult == nil || len(stored.TimingResult.Links) != 1 || stored.LinkingEndedAt != nil {
+			t.Fatalf("timing result=%+v ended=%v", stored.TimingResult, stored.LinkingEndedAt != nil)
+		}
+		// Every input of the timing rule changes: a one-minute window, which
+		// leaves first_seen outside it, a late signal that deploys version 3
+		// and makes a watcher listen, a task merged after that, and a changed
+		// version rule. Working the rule out again would differ; the stored
+		// answer is reused.
+		window := 1
+		if _, err := h.st.UpdateEnvironment(h.ctx, h.environment.ID, store.EnvironmentPatch{TimingWindowMinutes: &window}); err != nil {
+			t.Fatal(err)
+		}
+		h.recordSignal(h.clock(), "3")
+		h.mergedTask(readsCommit("c4"), 11)
+		h.setRule(tagRule("v{version}"))
+		h.forge.set(func(f *linkingForge) { f.failure = nil })
+		h.freshWorker()
+		h.advance(store.FeedbackAdmissionLease + time.Second)
+		h.attempt(report.ID)
+		if calls := h.forge.calls(); calls[0] != 1 || calls[2] != 4 {
+			t.Fatalf("calls=%v, want one commit read and four comparisons in all", calls)
+		}
+		if after := h.reportByID(report.ID); !jsonEqual(t, after.TimingResult, stored.TimingResult) {
+			t.Fatalf("timing result=%+v, want %+v", after.TimingResult, stored.TimingResult)
+		}
+		if got := h.finalState(report.ID); got != want {
+			t.Fatalf("final=%s\nwant  %s", got, want)
+		}
+	})
+	t.Run("after linking ended", func(t *testing.T) {
+		// No act removes a link yet. Linking never runs again for a report
+		// whose linking ended, so no stored result can bring a removed link
+		// back: a fresh worker asks for nothing and writes nothing.
+		h, report := resumeSetup(t, true, nil)
+		h.settle()
+		h.advance(time.Minute + time.Second)
+		h.attempt(report.ID)
+		if h.reportByID(report.ID).LinkingEndedAt == nil {
+			t.Fatal("linking did not end")
+		}
+		before, state := h.forge.calls(), h.finalState(report.ID)
+		h.setRule(tagRule("v{version}"))
+		h.setRepositories(map[string]string{"app": "acme/other"})
+		h.freshWorker()
+		h.advance(time.Minute + time.Second)
+		h.attempt(report.ID)
+		if calls := h.forge.calls(); calls != before {
+			t.Fatalf("calls=%v, want %v", calls, before)
+		}
+		if got := h.finalState(report.ID); got != state {
+			t.Fatalf("final=%s\nwant  %s", got, state)
 		}
 	})
 	t.Run("expiry after the timing result is stored", func(t *testing.T) {
@@ -614,4 +675,228 @@ func TestFeedbackReportTimingDecidesEveryDeployAtABoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// setRepositories replaces the workspace's repositories with names on GitHub
+// slugs.
+func (h *linkingHarness) setRepositories(slugs map[string]string) {
+	h.t.Helper()
+	repos := []config.Repo{}
+	for name, slug := range slugs {
+		repos = append(repos, config.Repo{Name: name, URL: "https://example.test/" + name, Base: "main", GitHub: slug})
+	}
+	slices.SortFunc(repos, func(a, b config.Repo) int { return compareTaskIDs(a.Name, b.Name) })
+	current, err := h.st.WorkspaceConfig(h.ctx)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if _, err := h.st.UpdateWorkspaceConfig(h.ctx, current.Version, &config.Config{Workspace: "alpha", Repos: repos}); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// setRule replaces the environment's version rule.
+func (h *linkingHarness) setRule(rule *store.EnvironmentVersionRule) {
+	h.t.Helper()
+	if _, err := h.st.UpdateEnvironment(h.ctx, h.environment.ID, store.EnvironmentPatch{VersionRuleSet: true, VersionRule: rule}); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func tagRule(text string) *store.EnvironmentVersionRule {
+	return &store.EnvironmentVersionRule{Kind: store.EnvironmentTagTemplate, Text: text}
+}
+
+func (h *linkingHarness) readsOf(slug string) int {
+	h.forge.mu.Lock()
+	defer h.forge.mu.Unlock()
+	return h.forge.readsBySlug[slug]
+}
+
+// TestFeedbackReportVersionRuleChangeDropsInterimAnswers proves review round
+// 3 finding 2 for a report with a version only. Under the rule v{version},
+// acme/app holds the tag and its answer is stored, while the read of
+// acme/other fails. A manager then changes the rule to release-{version}:
+// acme/app holds no such tag and acme/other does. A fresh worker drops the
+// old answer at once, reads both repositories with the new tag, and resolves
+// in acme/other. Combining the old match with the new one would have given
+// ambiguous (req-production-feedback AC-5.1; component-feedback-reports
+// invariant 12; component-production-feedback invariant 7).
+func TestFeedbackReportVersionRuleChangeDropsInterimAnswers(t *testing.T) {
+	h := newLinkingHarness(t)
+	h.setRepositories(map[string]string{"app": "acme/app", "other": "acme/other"})
+	h.mergedTask(linkingChange, 7)
+	h.setRule(tagRule("v{version}"))
+	oldTag := readsCommit("e1")
+	h.forge.set(func(f *linkingForge) {
+		f.refs = map[string]string{"acme/app|tags/v1.2": oldTag, "acme/other|tags/release-1.2": linkingResolved}
+		f.readFailures = map[string]error{"acme/other": github.StatusError(http.StatusBadGateway, errors.New("bad gateway"))}
+	})
+	h.acceptReport(reportBody(reportEntryJSON("crash", `"file":"cmd/main.go","line":12,"version":"1.2"`)))
+	h.settle()
+	report := h.reportByKey("crash")
+	before := report.LineProgress
+	if before == nil || before.Ended() || len(before.Candidates) != 1 || before.Candidates["acme/app"] != oldTag || !store.FeedbackLineInputDigest(before.Input) {
+		t.Fatalf("progress=%+v, want the old tag's answer for acme/app alone", before)
+	}
+	h.setRule(tagRule("release-{version}"))
+	h.forge.set(func(f *linkingForge) { f.readFailures = nil })
+	h.freshWorker()
+	h.advance(store.FeedbackAdmissionLease + time.Second)
+	h.attempt(report.ID)
+	after := h.reportByID(report.ID)
+	if after.LineProgress == nil || after.LineProgress.Repository != "other" || after.LineProgress.Slug != "acme/other" || after.LineProgress.Commit != linkingResolved {
+		t.Fatalf("progress=%+v, want the resolution in acme/other", after.LineProgress)
+	}
+	if reads := h.readsOf("acme/app"); reads != 2 {
+		t.Fatalf("acme/app reads=%d, want it read again with the new tag", reads)
+	}
+	if after.LinkingEndedAt == nil || !slices.Equal(h.forge.lineSlugs, []string{"acme/other"}) {
+		t.Fatalf("ended=%v line slugs=%v, want one line read of acme/other", after.LinkingEndedAt != nil, h.forge.lineSlugs)
+	}
+	// The merged task belongs to app, so the line read in acme/other links
+	// nothing, and no commit_unresolved note is written.
+	if notes := h.notes(report.ID); len(notes) != 0 {
+		t.Fatalf("notes=%+v, want no ambiguous note", notes)
+	}
+}
+
+// TestFeedbackReportCandidatesStayWithinTheRepositories proves the bound of
+// the stored candidate answers across repository configuration changes. The
+// read of acme/blocked always fails, so resolving never ends. After each
+// change a fresh worker runs one attempt: an answer of an unchanged slug is
+// reused, and the stored answers name exactly the current candidates that
+// were answered, never a slug that was repointed or removed
+// (component-feedback-reports invariant 12; approved plan version 3).
+func TestFeedbackReportCandidatesStayWithinTheRepositories(t *testing.T) {
+	h := newLinkingHarness(t)
+	h.forge.set(func(f *linkingForge) {
+		f.readFailures = map[string]error{"acme/blocked": github.StatusError(http.StatusBadGateway, errors.New("bad gateway"))}
+	})
+	h.setRepositories(map[string]string{"app": "acme/app", "blocked": "acme/blocked"})
+	h.acceptReport(reportBody(lineEntry("crash")))
+	h.settle()
+	report := h.reportByKey("crash")
+	for i, step := range []struct {
+		name   string
+		repos  map[string]string
+		stored map[string]string
+		reads  map[string]int
+	}{
+		{"first attempt", nil, map[string]string{"acme/app": linkingResolved}, map[string]int{"acme/app": 1}},
+		{"app repointed", map[string]string{"app": "acme/app2", "blocked": "acme/blocked"}, map[string]string{"acme/app2": store.FeedbackLineAbsent}, map[string]int{"acme/app": 1, "acme/app2": 1}},
+		{"a slug added", map[string]string{"app": "acme/app2", "blocked": "acme/blocked", "extra": "acme/extra"},
+			map[string]string{"acme/app2": store.FeedbackLineAbsent, "acme/extra": store.FeedbackLineAbsent}, map[string]int{"acme/app2": 1, "acme/extra": 1}},
+		{"app removed, no read succeeds", map[string]string{"blocked": "acme/blocked", "extra": "acme/extra"}, map[string]string{"acme/extra": store.FeedbackLineAbsent}, map[string]int{"acme/app2": 1, "acme/extra": 1}},
+		{"app back on acme/app", map[string]string{"app": "acme/app", "blocked": "acme/blocked", "extra": "acme/extra"},
+			map[string]string{"acme/app": linkingResolved, "acme/extra": store.FeedbackLineAbsent}, map[string]int{"acme/app": 2, "acme/extra": 1}},
+	} {
+		if i > 0 {
+			h.setRepositories(step.repos)
+			h.freshWorker()
+			h.advance(store.FeedbackAdmissionLease + time.Second)
+			h.attempt(report.ID)
+		}
+		progress := h.reportByID(report.ID).LineProgress
+		if progress == nil || progress.Ended() || fmt.Sprint(progress.Candidates) != fmt.Sprint(step.stored) {
+			t.Fatalf("%s: progress=%+v, want answers %v", step.name, progress, step.stored)
+		}
+		for slug, want := range step.reads {
+			if got := h.readsOf(slug); got != want {
+				t.Fatalf("%s: %s reads=%d, want %d", step.name, slug, got, want)
+			}
+		}
+	}
+}
+
+// TestFeedbackReportFinalResultsSurviveInputChanges proves that the results
+// the design calls final are kept through every input change: the
+// resolution, a definitive unresolved reason, and the line read's answer. A
+// fresh worker reads none of them again after the version rule changes and
+// the repositories are repointed or added (component-feedback-reports
+// invariants 11, 12, and 15; approved plan version 3).
+func TestFeedbackReportFinalResultsSurviveInputChanges(t *testing.T) {
+	// change sets a rule that would read another tag, adds a repository,
+	// and, with repoint, points app at another GitHub repository.
+	change := func(h *linkingHarness, repoint bool) {
+		h.setRule(tagRule("v{version}"))
+		repos := map[string]string{"app": "acme/app", "extra": "acme/extra"}
+		if repoint {
+			repos["app"] = "acme/other"
+		}
+		h.setRepositories(repos)
+		h.forge.set(func(f *linkingForge) {
+			f.refs = map[string]string{"acme/other|tags/vabcdef0": readsCommit("e2"), "acme/extra|tags/vabcdef0": readsCommit("e3")}
+		})
+	}
+	t.Run("the resolution", func(t *testing.T) {
+		h := newLinkingHarness(t)
+		h.mergedTask(linkingChange, 7)
+		h.setRule(&store.EnvironmentVersionRule{Kind: store.EnvironmentCommitPattern, Text: "{commit}"})
+		h.forge.set(func(f *linkingForge) {
+			f.failure = github.StatusError(http.StatusBadGateway, errors.New("bad gateway"))
+		})
+		h.acceptReport(reportBody(reportEntryJSON("crash", `"file":"cmd/main.go","line":12,"version":"abcdef0"`)))
+		h.settle()
+		report := h.reportByKey("crash")
+		if progress := report.LineProgress; progress == nil || progress.Slug != "acme/app" || progress.Commit != linkingResolved {
+			t.Fatalf("progress=%+v, want the resolution in acme/app", progress)
+		}
+		change(h, true)
+		h.forge.set(func(f *linkingForge) { f.failure = nil })
+		h.freshWorker()
+		h.advance(store.FeedbackAdmissionLease + time.Second)
+		h.attempt(report.ID)
+		ended := h.reportByID(report.ID)
+		if calls := h.forge.calls(); calls[0] != 1 || ended.LinkingEndedAt == nil || len(h.links(report.ID)) != 1 ||
+			!slices.Equal(h.forge.lineSlugs, []string{"acme/app", "acme/app"}) {
+			t.Fatalf("calls=%v ended=%v line slugs=%v, want no second commit read and the line read of acme/app", calls, ended.LinkingEndedAt != nil, h.forge.lineSlugs)
+		}
+	})
+	t.Run("a definitive unresolved reason", func(t *testing.T) {
+		h := newLinkingHarness(t)
+		h.accept(`{"next_signal_seconds":86400,"services":[{"name":"web","versions":[{"version":"1"}]}]}`)
+		h.settle()
+		h.acceptReport(reportBody(reportEntryJSON("crash", `"file":"cmd/main.go","line":12,"version":"abcdef0","service":"api"`)))
+		h.settle()
+		report := h.reportByKey("crash")
+		if progress := report.LineProgress; progress == nil || progress.Unresolved != store.FeedbackReasonNoVersionRule || report.LinkingEndedAt != nil {
+			t.Fatalf("progress=%+v ended=%v, want no_version_rule stored while the timing rule waits", progress, report.LinkingEndedAt != nil)
+		}
+		change(h, true)
+		h.freshWorker()
+		h.advance(time.Minute + time.Second)
+		h.attempt(report.ID)
+		if calls := h.forge.calls(); calls != [3]int{} {
+			t.Fatalf("calls=%v, want none after the rule was set", calls)
+		}
+		h.freshWorker()
+		h.setNow(report.CreatedAt.Add(store.FeedbackReportLinkingDeadline))
+		h.attempt(report.ID)
+		notes := h.notes(report.ID)
+		if len(notes) == 0 || notes[0] != (store.FeedbackReportNote{Kind: store.FeedbackNoteCommitUnresolved, Reason: store.FeedbackReasonNoVersionRule}) {
+			t.Fatalf("notes=%+v, want commit_unresolved no_version_rule", notes)
+		}
+	})
+	t.Run("the line read's answer", func(t *testing.T) {
+		h, report := resumeSetup(t, true, nil)
+		h.settle()
+		if _, stored, _ := h.st.ReadFeedbackReportLineRead(h.ctx, report.ID); !stored || h.reportByID(report.ID).LinkingEndedAt != nil {
+			t.Fatal("want the line read stored and linking pending")
+		}
+		// The timing rule has not ended and compares in the configured
+		// repository, so app keeps its GitHub repository here; the
+		// repointed case is TestFeedbackReportLineReadUsesTheResolvedSlug.
+		before := h.forge.calls()
+		change(h, false)
+		h.freshWorker()
+		h.advance(time.Minute + time.Second)
+		h.attempt(report.ID)
+		if calls := h.forge.calls(); calls != before || h.reportByID(report.ID).LinkingEndedAt == nil {
+			t.Fatalf("calls=%v before=%v, want no commit read or line read again and linking ended", calls, before)
+		}
+		if links := h.links(report.ID); len(links) != 2 {
+			t.Fatalf("links=%+v, want the line link and the timing link", links)
+		}
+	})
 }
