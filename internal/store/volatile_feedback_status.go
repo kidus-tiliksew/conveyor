@@ -277,10 +277,14 @@ func (m *volatileMemory) ListFeedbackMergedTasks(ctx context.Context, query Feed
 		}
 		if found {
 			var payload struct {
-				MergeCommitSHA string `json:"merge_commit_sha"`
+				MergeCommitSHA string          `json:"merge_commit_sha"`
+				PullRequest    json.RawMessage `json:"pull_request"`
 			}
 			_ = json.Unmarshal(latest.Payload, &payload)
 			merged.MergeCommit, merged.MergedAt, merged.EventID = FeedbackMergeCommit(payload.MergeCommitSHA), latest.At.UTC(), latest.ID
+			// The pull request number comes from the same latest event
+			// (component-feedback-reports invariant 12).
+			merged.PullRequest = FeedbackMergePullRequest(string(payload.PullRequest))
 		}
 		out = append(out, merged)
 	}

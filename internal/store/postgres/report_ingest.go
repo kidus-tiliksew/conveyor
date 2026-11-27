@@ -15,7 +15,7 @@ var _ store.ReportStore = (*Store)(nil)
 
 const feedbackReportColumns = `id, environment_id, problem_key, kind, summary, summary_redactions::text, service, occurrence_count, first_seen, last_seen, first_entry_seen, file, line,
 first_repository, first_commit, first_version, latest_repository, latest_commit, latest_version, state, in_inbox, source, source_label, actor_id, created_at,
-closed_at, closed_by, close_reason, reopened_at, reopen_source, reopen_source_label, reopen_actor_id, linking_ended_at, fix_task_id`
+closed_at, closed_by, close_reason, reopened_at, reopen_source, reopen_source_label, reopen_actor_id, linking_ended_at, fix_task_id, linking_last_attempt_at`
 
 func queryFeedbackReports(ctx context.Context, q environmentQuerier, sql string, args ...any) ([]store.FeedbackReport, error) {
 	rows, err := q.Query(ctx, sql, args...)
@@ -28,13 +28,13 @@ func queryFeedbackReports(ctx context.Context, q environmentQuerier, sql string,
 		var report store.FeedbackReport
 		var redactions string
 		var line *int32
-		var closedAt, reopenedAt, linkingEndedAt pgtype.Timestamptz
+		var closedAt, reopenedAt, linkingEndedAt, linkingAttemptAt pgtype.Timestamptz
 		var closedBy, closeReason, reopenSource, reopenLabel, reopenActor, fixTask *string
 		if err := rows.Scan(&report.ID, &report.EnvironmentID, &report.Key, &report.Kind, &report.Summary, &redactions, &report.Service, &report.Count,
 			&report.FirstSeen, &report.LastSeen, &report.FirstEntrySeen, &report.File, &line,
 			&report.First.Repository, &report.First.Commit, &report.First.Version, &report.Latest.Repository, &report.Latest.Commit, &report.Latest.Version,
 			&report.State, &report.InInbox, &report.Origin.Source, &report.Origin.Label, &report.Origin.Actor, &report.CreatedAt,
-			&closedAt, &closedBy, &closeReason, &reopenedAt, &reopenSource, &reopenLabel, &reopenActor, &linkingEndedAt, &fixTask); err != nil {
+			&closedAt, &closedBy, &closeReason, &reopenedAt, &reopenSource, &reopenLabel, &reopenActor, &linkingEndedAt, &fixTask, &linkingAttemptAt); err != nil {
 			return nil, err
 		}
 		if err := store.ApplyFeedbackReportRedactions(&report, []byte(redactions)); err != nil {
@@ -56,6 +56,10 @@ func queryFeedbackReports(ctx context.Context, q environmentQuerier, sql string,
 		if linkingEndedAt.Valid {
 			at := store.EnvironmentTime(linkingEndedAt.Time)
 			report.LinkingEndedAt = &at
+		}
+		if linkingAttemptAt.Valid {
+			at := store.EnvironmentTime(linkingAttemptAt.Time)
+			report.LinkingLastAttemptAt = &at
 		}
 		if fixTask != nil {
 			report.FixTaskID = *fixTask

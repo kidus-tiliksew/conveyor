@@ -14,7 +14,7 @@ var _ store.ReportStore = (*Store)(nil)
 
 const feedbackReportColumns = `id,environment_id,problem_key,kind,summary,summary_redactions,service,occurrence_count,first_seen,last_seen,first_entry_seen,file,line,
 first_repository,first_commit,first_version,latest_repository,latest_commit,latest_version,state,in_inbox,source,source_label,actor_id,created_at,
-closed_at,closed_by,close_reason,reopened_at,reopen_source,reopen_source_label,reopen_actor_id,linking_ended_at,fix_task_id`
+closed_at,closed_by,close_reason,reopened_at,reopen_source,reopen_source_label,reopen_actor_id,linking_ended_at,fix_task_id,linking_last_attempt_at`
 
 func collectFeedbackReports(rows environmentRows) ([]store.FeedbackReport, error) {
 	defer rows.Close()
@@ -23,13 +23,13 @@ func collectFeedbackReports(rows environmentRows) ([]store.FeedbackReport, error
 		var report store.FeedbackReport
 		var redactions string
 		var line sql.NullInt64
-		var closedAt, reopenedAt, linkingEndedAt sql.NullTime
+		var closedAt, reopenedAt, linkingEndedAt, linkingAttemptAt sql.NullTime
 		var closedBy, closeReason, reopenSource, reopenLabel, reopenActor, fixTask sql.NullString
 		if err := rows.Scan(&report.ID, &report.EnvironmentID, &report.Key, &report.Kind, &report.Summary, &redactions, &report.Service, &report.Count,
 			&report.FirstSeen, &report.LastSeen, &report.FirstEntrySeen, &report.File, &line,
 			&report.First.Repository, &report.First.Commit, &report.First.Version, &report.Latest.Repository, &report.Latest.Commit, &report.Latest.Version,
 			&report.State, &report.InInbox, &report.Origin.Source, &report.Origin.Label, &report.Origin.Actor, &report.CreatedAt,
-			&closedAt, &closedBy, &closeReason, &reopenedAt, &reopenSource, &reopenLabel, &reopenActor, &linkingEndedAt, &fixTask); err != nil {
+			&closedAt, &closedBy, &closeReason, &reopenedAt, &reopenSource, &reopenLabel, &reopenActor, &linkingEndedAt, &fixTask, &linkingAttemptAt); err != nil {
 			return nil, err
 		}
 		if err := store.ApplyFeedbackReportRedactions(&report, []byte(redactions)); err != nil {
@@ -51,6 +51,10 @@ func collectFeedbackReports(rows environmentRows) ([]store.FeedbackReport, error
 		if linkingEndedAt.Valid {
 			at := store.EnvironmentTime(linkingEndedAt.Time)
 			report.LinkingEndedAt = &at
+		}
+		if linkingAttemptAt.Valid {
+			at := store.EnvironmentTime(linkingAttemptAt.Time)
+			report.LinkingLastAttemptAt = &at
 		}
 		report.FixTaskID = fixTask.String
 		reports = append(reports, report)

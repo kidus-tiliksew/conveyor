@@ -459,33 +459,31 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 	for i, task := range tasks {
 		ids[i] = task.TaskID
 	}
-	latest := map[string]struct {
-		sha string
-		at  time.Time
-		id  int64
-	}{}
+	type mergeEvent struct {
+		sha         string
+		at          time.Time
+		id          int64
+		pullRequest string
+	}
+	latest := map[string]mergeEvent{}
 	err = eachFeedbackChunk(ids, func(part []string) error {
 		list, values := feedbackList(part)
-		rows, err := documentRows(ctx, s.db, `SELECT task_id,COALESCE(JSON_EXTRACT_STRING(payload_json,'merge_commit_sha'),''),at,id FROM events_columnstore WHERE workspace_id=? AND kind IN ('merge.confirmed','merge.reconciled') AND task_id IN (`+list+`)`, append([]any{ws}, values...)...)
+		rows, err := documentRows(ctx, s.db, `SELECT task_id,COALESCE(JSON_EXTRACT_STRING(payload_json,'merge_commit_sha'),''),at,id,COALESCE(JSON_EXTRACT_STRING(payload_json,'pull_request'),'') FROM events_columnstore WHERE workspace_id=? AND kind IN ('merge.confirmed','merge.reconciled') AND task_id IN (`+list+`)`, append([]any{ws}, values...)...)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var taskID, sha string
+			var taskID, sha, pullRequest string
 			var at time.Time
 			var id int64
-			if err := rows.Scan(&taskID, &sha, &at, &id); err != nil {
+			if err := rows.Scan(&taskID, &sha, &at, &id, &pullRequest); err != nil {
 				return err
 			}
 			// The latest merge event wins before its commit is checked.
 			current, seen := latest[taskID]
 			if !seen || at.After(current.at) || (at.Equal(current.at) && id > current.id) {
-				latest[taskID] = struct {
-					sha string
-					at  time.Time
-					id  int64
-				}{sha, at, id}
+				latest[taskID] = mergeEvent{sha, at, id, pullRequest}
 			}
 		}
 		return rows.Err()
@@ -496,6 +494,9 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 	for taskID, event := range latest {
 		task := &tasks[index[taskID]]
 		task.MergeCommit, task.MergedAt, task.EventID = store.FeedbackMergeCommit(event.sha), event.at.UTC(), event.id
+		// The pull request number comes from the same latest event
+		// (component-feedback-reports invariant 12).
+		task.PullRequest = store.FeedbackMergePullRequest(event.pullRequest)
 	}
 	store.SortFeedbackMergedTasks(tasks)
 	return tasks, nil

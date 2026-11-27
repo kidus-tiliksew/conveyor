@@ -51,6 +51,13 @@ type Forge interface {
 	// Compare compares base with head and lists up to arrived commits that
 	// head holds and base lacks.
 	Compare(ctx context.Context, slug, base, head string, arrived int) (CompareResult, error)
+	// ReadLineChange asks which commit last changed a line of a file as of
+	// a full commit ID, and which merged pull requests of the repository
+	// GitHub lists for that commit, in one request
+	// (component-feedback-reports invariant 12). A file the commit does not
+	// hold answers FileFound false. Every other incomplete answer is a
+	// categorized forge failure.
+	ReadLineChange(ctx context.Context, slug, commit, path string, line int) (github.LineChange, error)
 }
 
 // ResolveRequest is one version to resolve.

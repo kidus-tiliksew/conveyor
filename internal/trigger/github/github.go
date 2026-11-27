@@ -1254,6 +1254,184 @@ func readCommit(ctx context.Context, repo, ref string, run ghRunner) (string, er
 	return sha, nil
 }
 
+// LineChange is GitHub's answer to one line read (component-feedback-reports
+// invariant 12; DEC-149(4)). FileFound is false when the commit holds no file
+// at the path, and then Commit and PullRequests are empty. Otherwise Commit
+// is the full ID of the commit that last changed the line, and PullRequests
+// holds the numbers of the merged pull requests of the same repository that
+// GitHub lists for that commit, in ascending order.
+type LineChange struct {
+	FileFound    bool
+	Commit       string
+	PullRequests []int
+}
+
+// LineChangePullRequests is the most pull requests the line read asks GitHub
+// to list for the changing commit. A commit that GitHub lists with more is a
+// partial answer, and the read fails rather than answer from part of the list.
+const LineChangePullRequests = 100
+
+// lineChangeQuery asks, at one commit, whether the file exists and which
+// commit last changed each range of its lines, with the pull requests GitHub
+// lists for each such commit. It asks for no file content.
+const lineChangeQuery = `query($owner:String!,$name:String!,$oid:GitObjectID!,$path:String!){repository(owner:$owner,name:$name){object(oid:$oid){__typename ... on Commit{file(path:$path){path} blame(path:$path){ranges{startingLine endingLine commit{oid associatedPullRequests(first:100){pageInfo{hasNextPage} nodes{number merged baseRepository{nameWithOwner}}}}}}}}}}`
+
+// ReadLineChange asks GitHub, in one GraphQL request, which commit last
+// changed one line of one file as of a full commit ID, and which merged pull
+// requests of the repository GitHub lists for that commit
+// (component-feedback-reports invariant 12; component-git-delivery;
+// DEC-149(4); DEC-59(3)). conveyord runs no git command for it. A file the
+// commit does not hold answers FileFound false. Every other outcome that is
+// not a complete answer is a failure of the existing categories: a GraphQL
+// errors member, an unreadable repository, a commit GitHub does not find
+// (ErrCommitNotFound), no blame range that holds the line, a truncated pull
+// request list, and a malformed answer.
+func ReadLineChange(ctx context.Context, repo, commit, path string, line int) (LineChange, error) {
+	return readLineChange(ctx, repo, commit, path, line, gh)
+}
+
+type lineChangeError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Path    []any  `json:"path"`
+}
+
+// blameError reports whether a GraphQL error is at the blame field. GitHub
+// can answer the blame of a path that the commit does not hold with such an
+// error, and the file field then decides.
+func (e lineChangeError) blameError() bool {
+	return len(e.Path) >= 3 && e.Path[0] == "repository" && e.Path[1] == "object" && e.Path[2] == "blame"
+}
+
+// lineChangeFailure maps GraphQL errors to the existing categories. No
+// message text is kept, so no answer text reaches a caller or a log.
+func lineChangeFailure(errs []lineChangeError) error {
+	category := ForgeResponse
+	for _, e := range errs {
+		switch strings.ToUpper(e.Type) {
+		case "RATE_LIMITED":
+			return &Error{Category: ForgeRateLimited, Err: errors.New("read line change: GitHub rate-limited the GraphQL request")}
+		case "FORBIDDEN", "NOT_FOUND":
+			category = ForgePermission
+		}
+	}
+	return &Error{Category: category, Err: fmt.Errorf("read line change: GitHub answered %d GraphQL errors", len(errs))}
+}
+
+func readLineChange(ctx context.Context, repo, commit, path string, line int, run ghRunner) (LineChange, error) {
+	owner, name, ok := strings.Cut(strings.TrimSpace(repo), "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || !fullCommitID(commit) || path == "" || line < 1 {
+		return LineChange{}, &Error{Category: ForgeRequest, Err: errors.New("a line read needs a repository slug, a full commit ID, a path, and a line")}
+	}
+	raw, err := run(ctx, "api", "graphql", "-f", "query="+lineChangeQuery, "-f", "owner="+owner, "-f", "name="+name, "-f", "oid="+commit, "-f", "path="+path)
+	if err != nil {
+		return LineChange{}, fmt.Errorf("read line change: %w", forgeCallError(err))
+	}
+	var answer struct {
+		Data *struct {
+			Repository *struct {
+				Object *struct {
+					Typename string          `json:"__typename"`
+					File     json.RawMessage `json:"file"`
+					Blame    *struct {
+						Ranges []struct {
+							StartingLine int `json:"startingLine"`
+							EndingLine   int `json:"endingLine"`
+							Commit       struct {
+								OID                    string `json:"oid"`
+								AssociatedPullRequests *struct {
+									PageInfo struct {
+										HasNextPage bool `json:"hasNextPage"`
+									} `json:"pageInfo"`
+									Nodes []struct {
+										Number         int  `json:"number"`
+										Merged         bool `json:"merged"`
+										BaseRepository *struct {
+											NameWithOwner string `json:"nameWithOwner"`
+										} `json:"baseRepository"`
+									} `json:"nodes"`
+								} `json:"associatedPullRequests"`
+							} `json:"commit"`
+						} `json:"ranges"`
+					} `json:"blame"`
+				} `json:"object"`
+			} `json:"repository"`
+		} `json:"data"`
+		Errors []lineChangeError `json:"errors"`
+	}
+	if json.Unmarshal(raw, &answer) != nil {
+		return LineChange{}, forgeResponseError("read line change: malformed GraphQL answer")
+	}
+	data := answer.Data
+	if data == nil || data.Repository == nil {
+		if len(answer.Errors) > 0 {
+			return LineChange{}, lineChangeFailure(answer.Errors)
+		}
+		return LineChange{}, forgeResponseError("read line change: the answer holds no repository")
+	}
+	object := data.Repository.Object
+	if object == nil {
+		if len(answer.Errors) > 0 {
+			return LineChange{}, lineChangeFailure(answer.Errors)
+		}
+		return LineChange{}, CommitNotFoundError(commit)
+	}
+	if object.Typename != "Commit" {
+		return LineChange{}, forgeResponseError("read line change: the object is not a commit")
+	}
+	// The file member must be present: null states that the commit holds no
+	// file at the path, and a missing member proves nothing. A RawMessage
+	// keeps the literal null, so the two differ.
+	if len(object.File) == 0 {
+		return LineChange{}, forgeResponseError("read line change: the answer holds no file member")
+	}
+	if string(object.File) == "null" {
+		for _, e := range answer.Errors {
+			if !e.blameError() {
+				return LineChange{}, lineChangeFailure(answer.Errors)
+			}
+		}
+		return LineChange{FileFound: false}, nil
+	}
+	if len(answer.Errors) > 0 {
+		return LineChange{}, lineChangeFailure(answer.Errors)
+	}
+	if object.Blame == nil {
+		return LineChange{}, forgeResponseError("read line change: the answer holds no blame")
+	}
+	for _, r := range object.Blame.Ranges {
+		if r.StartingLine < 1 || r.EndingLine < r.StartingLine || line < r.StartingLine || line > r.EndingLine {
+			continue
+		}
+		oid := strings.ToLower(r.Commit.OID)
+		if !fullCommitID(oid) {
+			return LineChange{}, forgeResponseError("read line change: malformed commit ID")
+		}
+		pulls := r.Commit.AssociatedPullRequests
+		if pulls == nil {
+			return LineChange{}, forgeResponseError("read line change: the answer holds no pull request list")
+		}
+		if pulls.PageInfo.HasNextPage || len(pulls.Nodes) > LineChangePullRequests {
+			return LineChange{}, forgeResponseError("read line change: GitHub lists more pull requests than one page holds")
+		}
+		numbers := []int{}
+		seen := map[int]bool{}
+		for _, node := range pulls.Nodes {
+			if node.Number < 1 || node.BaseRepository == nil {
+				return LineChange{}, forgeResponseError("read line change: malformed pull request")
+			}
+			if !node.Merged || !strings.EqualFold(node.BaseRepository.NameWithOwner, owner+"/"+name) || seen[node.Number] {
+				continue
+			}
+			seen[node.Number] = true
+			numbers = append(numbers, node.Number)
+		}
+		sort.Ints(numbers)
+		return LineChange{FileFound: true, Commit: oid, PullRequests: numbers}, nil
+	}
+	return LineChange{}, forgeResponseError("read line change: no blame range holds the line")
+}
+
 // SubmissionPullRequest is the existing open PR observed for a submission.
 type SubmissionPullRequest struct {
 	Number int    `json:"number"`

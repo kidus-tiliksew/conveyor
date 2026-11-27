@@ -221,9 +221,38 @@ type FeedbackStore interface {
 	// unchanged (component-production-feedback invariants 4 to 6, 10, and 17;
 	// req-production-feedback AC-1.5 and AC-3.6; req-environments AC-1.9).
 	RecordFeedbackGitHubDeploy(ctx context.Context, deploy FeedbackGitHubDeploy) (recorded bool, err error)
+	// FindFeedbackServiceSignal reads the arrival and report number of one
+	// accepted watcher signal of an environment that named a service, as
+	// the query states, from the kept accepted reports. A GitHub deployment
+	// report, which is kept with an empty label, is never found. It answers
+	// false when no signal matches (component-feedback-reports invariants 13
+	// and 15; feature-production-feedback-listening FR-2).
+	FindFeedbackServiceSignal(ctx context.Context, query FeedbackServiceSignalQuery) (FeedbackBoundary, bool, error)
 	// FeedbackStatusStore keeps resolved versions and comparisons and reads
 	// merged tasks (feature-production-feedback-live FB-3).
 	FeedbackStatusStore
+}
+
+// FeedbackServiceSignalQuery finds one accepted watcher signal of an
+// environment that named a service. Exactly one of Before and After is set.
+// Before finds the newest signal whose place among the environment's
+// reports is strictly before it. After finds the oldest signal that arrived
+// strictly after it. A GitHub deployment report is not a watcher signal and
+// is never found (component-feedback-reports invariants 13 and 15).
+type FeedbackServiceSignalQuery struct {
+	EnvironmentID string
+	Service       string
+	Before        *FeedbackBoundary
+	After         *time.Time
+}
+
+// CheckFeedbackServiceSignalQuery refuses a query that sets neither or both
+// of Before and After, or names no environment or service.
+func CheckFeedbackServiceSignalQuery(query FeedbackServiceSignalQuery) error {
+	if query.EnvironmentID == "" || query.Service == "" || (query.Before == nil) == (query.After == nil) {
+		return fmt.Errorf("a service signal query needs an environment, a service, and exactly one of before and after")
+	}
+	return nil
 }
 
 // FeedbackFieldError names the field of a signal, as a path, that holds a

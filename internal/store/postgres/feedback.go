@@ -411,6 +411,37 @@ func (s *Store) ListFeedbackSignals(ctx context.Context, environmentIDs []string
 	return out, nil
 }
 
+// FindFeedbackServiceSignal implements store.FeedbackStore. A GitHub
+// deployment report is kept with an empty label and is never found.
+func (s *Store) FindFeedbackServiceSignal(ctx context.Context, query store.FeedbackServiceSignalQuery) (store.FeedbackBoundary, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "FindFeedbackServiceSignal")
+	if err := store.CheckFeedbackServiceSignalQuery(query); err != nil {
+		return store.FeedbackBoundary{}, false, err
+	}
+	digest := store.FeedbackServiceDigest(query.Service)
+	var row pgx.Row
+	if query.Before != nil {
+		row = s.boundary.QueryRow(ctx, `SELECT arrived_at, report FROM feedback_accepted_signals
+WHERE workspace_id=$1 AND environment_id=$2 AND source_label<>'' AND service_digests @> jsonb_build_array($3::text)
+  AND (arrived_at < $4 OR (arrived_at = $4 AND report < $5))
+ORDER BY arrived_at DESC, report DESC LIMIT 1`, workspace(ctx), query.EnvironmentID, digest, query.Before.At, query.Before.Report)
+	} else {
+		row = s.boundary.QueryRow(ctx, `SELECT arrived_at, report FROM feedback_accepted_signals
+WHERE workspace_id=$1 AND environment_id=$2 AND source_label<>'' AND service_digests @> jsonb_build_array($3::text) AND arrived_at > $4
+ORDER BY arrived_at, report LIMIT 1`, workspace(ctx), query.EnvironmentID, digest, *query.After)
+	}
+	var found store.FeedbackBoundary
+	err := row.Scan(&found.At, &found.Report)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.FeedbackBoundary{}, false, nil
+	}
+	if err != nil {
+		return store.FeedbackBoundary{}, false, err
+	}
+	found.At = store.EnvironmentTime(found.At)
+	return found, true, nil
+}
+
 // ListFeedbackRunningVersions implements store.FeedbackStore.
 func (s *Store) ListFeedbackRunningVersions(ctx context.Context, environmentID string) ([]store.FeedbackRunningVersion, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackRunningVersions")

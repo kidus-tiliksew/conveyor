@@ -205,3 +205,36 @@ func (m *volatileMemory) ListFeedbackDeploys(ctx context.Context, environmentID 
 	SortFeedbackDeploys(out)
 	return out, nil
 }
+
+// FindFeedbackServiceSignal implements FeedbackStore. The accepted reports
+// are kept in the order of their numbers, and a GitHub deployment report has
+// an empty label.
+func (m *volatileMemory) FindFeedbackServiceSignal(ctx context.Context, query FeedbackServiceSignalQuery) (FeedbackBoundary, bool, error) {
+	if err := CheckFeedbackServiceSignalQuery(query); err != nil {
+		return FeedbackBoundary{}, false, err
+	}
+	digest := FeedbackServiceDigest(query.Service)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var found *FeedbackBoundary
+	for _, accepted := range m.feedbackState.accepted[memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: query.EnvironmentID}] {
+		if accepted.Label == "" || !slices.Contains(accepted.Services, digest) {
+			continue
+		}
+		place := FeedbackBoundary{At: accepted.ArrivedAt, Report: accepted.Report}
+		switch {
+		case query.Before != nil:
+			if place.Compare(*query.Before) < 0 && (found == nil || place.Compare(*found) > 0) {
+				found = &place
+			}
+		case place.At.After(*query.After):
+			if found == nil || place.Compare(*found) < 0 {
+				found = &place
+			}
+		}
+	}
+	if found == nil {
+		return FeedbackBoundary{}, false, nil
+	}
+	return *found, true, nil
+}

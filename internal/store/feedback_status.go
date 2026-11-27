@@ -140,6 +140,11 @@ type FeedbackMergedTask struct {
 	MergeCommit string
 	MergedAt    time.Time
 	EventID     int64
+	// PullRequest is the pull_request number that the same latest merge
+	// event records, or 0 when it records none. It is read from that event
+	// even when the event records no usable merge commit
+	// (component-feedback-reports invariant 12).
+	PullRequest int
 }
 
 // FeedbackMergedTaskQuery narrows the merged-task read. Every set member

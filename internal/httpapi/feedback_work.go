@@ -36,7 +36,12 @@ type feedbackJob struct {
 	workspace string
 	signal    *store.FeedbackSignal
 	missing   feedback.Missing
-	env       feedbackJobEnv
+	// reports asks for the linking of an environment's pending reports, and
+	// report runs one linking attempt of one report
+	// (component-feedback-reports invariant 15).
+	reports *feedbackReportsRequest
+	report  string
+	env     feedbackJobEnv
 }
 
 // feedbackJobEnv is what a job uses, taken from the server when the job is
@@ -49,10 +54,15 @@ type feedbackJobEnv struct {
 	client    *github.AppClient
 	clock     func() time.Time
 	backoff   *feedbackTokenBackoff
+	// linkReport queues the linking job of one report, and requestAnswers
+	// asks the background work for missing comparisons.
+	linkReport     func(workspace, reportID string)
+	requestAnswers func(workspace string, missing feedback.Missing)
 }
 
 func (s *Server) feedbackJobEnv() feedbackJobEnv {
-	env := feedbackJobEnv{store: s.Store, forge: s.feedbackForge, makeForge: s.feedbackForgeFor, client: s.appClient(), clock: time.Now, backoff: s.feedbackWorker().backoff}
+	env := feedbackJobEnv{store: s.Store, forge: s.feedbackForge, makeForge: s.feedbackForgeFor, client: s.appClient(), clock: time.Now, backoff: s.feedbackWorker().backoff,
+		linkReport: s.enqueueFeedbackReportLinking, requestAnswers: s.requestFeedbackAnswers}
 	if env.makeForge == nil {
 		env.makeForge = func(token, identity string) feedback.Forge {
 			return githubFeedbackForge{token: token, identity: identity}
@@ -134,6 +144,13 @@ func (s *Server) enqueueFeedbackSignal(workspace string, signal store.FeedbackSi
 	services := sha256.Sum256(core.JSONPayload(copied.Services))
 	key := "signal:" + workspace + ":" + signal.EnvironmentID + ":" + signal.ArrivedAt.Format(time.RFC3339Nano) + ":" + hex.EncodeToString(services[:])
 	s.feedbackWorker().enqueue(feedbackJob{key: key, workspace: workspace, signal: &copied, env: s.feedbackJobEnv()})
+	// An accepted signal also asks for the linking of the environment's
+	// pending reports. The background job reads them, so the route makes no
+	// scan (component-feedback-reports invariant 15). A GitHub deployment
+	// report is not a watcher signal and asks for none.
+	if signal.KeyID != "" {
+		s.enqueueFeedbackPendingReports(workspace, signal.EnvironmentID, nil)
+	}
 }
 
 // FeedbackDeploymentReports returns the handler that applies GitHub
@@ -199,6 +216,14 @@ func runFeedbackJob(job feedbackJob) {
 	defer cancel()
 	backend, ok := job.env.store.(store.FeedbackStore)
 	if !ok {
+		return
+	}
+	switch {
+	case job.reports != nil:
+		runFeedbackPendingReports(ctx, job)
+		return
+	case job.report != "":
+		runFeedbackReportLinking(ctx, job)
 		return
 	}
 	// The forge gets the installation token at its first request. For a
@@ -398,6 +423,14 @@ func (f *lazyFeedbackForge) Compare(ctx context.Context, slug, base, head string
 	return forge.Compare(ctx, slug, base, head, arrived)
 }
 
+func (f *lazyFeedbackForge) ReadLineChange(ctx context.Context, slug, commit, path string, line int) (github.LineChange, error) {
+	forge, err := f.acquire(ctx)
+	if err != nil {
+		return github.LineChange{}, err
+	}
+	return forge.ReadLineChange(ctx, slug, commit, path, line)
+}
+
 // githubFeedbackForge reads GitHub through the REST boundary with one
 // workspace's installation token.
 type githubFeedbackForge struct {
@@ -417,4 +450,8 @@ func (f githubFeedbackForge) Compare(ctx context.Context, slug, base, head strin
 	}
 	result, err := github.CompareArrived(ctx, slug, base, head, arrived)
 	return feedback.CompareResult{Status: result.Status, Commits: result.Commits, Complete: result.Complete}, err
+}
+
+func (f githubFeedbackForge) ReadLineChange(ctx context.Context, slug, commit, path string, line int) (github.LineChange, error) {
+	return github.ReadLineChange(github.WithCredential(ctx, f.token, f.identity), slug, commit, path, line)
 }
