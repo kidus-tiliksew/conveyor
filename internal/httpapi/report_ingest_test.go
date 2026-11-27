@@ -909,25 +909,59 @@ func TestFeedbackReportWaitEndsWithTheRequest(t *testing.T) {
 	}
 }
 
-// environmentOnlyStore is a store with environments and no report
-// capability.
-type environmentOnlyStore struct {
-	store.Store
-	store.EnvironmentStore
+// TestFeedbackReportKeyCheckLimit covers a key check that takes longer than
+// its limit on the report route: the generic 500, nothing recorded, and no
+// rate slot held, so a resend at the same time is accepted.
+func TestFeedbackReportKeyCheckLimit(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	h.advance(feedbackSignalWindow)
+	h.server.feedbackKeyTimeout = 10 * time.Millisecond
+	h.use(feedbackReportStore{Backend: h.st, checkKey: func(ctx context.Context, _ string) (store.VerifiedEnvironmentKey, error) {
+		<-ctx.Done()
+		return store.VerifiedEnvironmentKey{}, ctx.Err()
+	}})
+	before := h.reportStored()
+	response := h.sendReport(h.key.Value, feedbackMinimalReport)
+	if response.Code != http.StatusInternalServerError || strings.TrimSpace(response.Body.String()) != "credential verification failed" {
+		t.Fatalf("slow key check: status=%d body=%s, want the generic 500", response.Code, response.Body)
+	}
+	if after := h.reportStored(); after != before {
+		t.Fatalf("a failed key check changed a record:\nbefore %s\nafter  %s", before, after)
+	}
+	h.use(h.st)
+	if response := h.sendReport(h.key.Value, feedbackMinimalReport); response.Code != http.StatusAccepted {
+		t.Fatalf("resend: status=%d body=%s", response.Code, response.Body)
+	}
 }
 
+// coreOnlyStore is a store with neither environments nor reports, and
+// environmentOnlyStore is one with environments and no reports.
+type (
+	coreOnlyStore        struct{ store.Store }
+	environmentOnlyStore struct {
+		store.Store
+		store.EnvironmentStore
+	}
+)
+
 // TestFeedbackReportUnavailableStore covers the two answers for a store
-// without the capability the route needs, and a handler reached without a
+// without a capability the route needs, and a handler reached without a
 // verified key. No shipped backend lacks either capability, and the router
 // reaches the handler only through the key check.
 func TestFeedbackReportUnavailableStore(t *testing.T) {
 	t.Parallel()
 	h := newFeedbackHarness(t)
-	h.server.Store = environmentOnlyStore{Store: h.st, EnvironmentStore: h.st}
-	h.handler = h.server.Handler()
 	h.advance(feedbackSignalWindow)
-	if response := h.sendReport(h.key.Value, feedbackMinimalReport); response.Code != http.StatusNotImplemented {
-		t.Fatalf("store without reports: status=%d body=%s, want 501", response.Code, response.Body)
+	for name, st := range map[string]store.Store{
+		"store without environments": coreOnlyStore{Store: h.st},
+		"store without reports":      environmentOnlyStore{Store: h.st, EnvironmentStore: h.st},
+	} {
+		h.server.Store = st
+		h.handler = h.server.Handler()
+		if response := h.sendReport(h.key.Value, feedbackMinimalReport); response.Code != http.StatusNotImplemented {
+			t.Fatalf("%s: status=%d body=%s, want 501", name, response.Code, response.Body)
+		}
 	}
 	h.use(h.st)
 	response := httptest.NewRecorder()
