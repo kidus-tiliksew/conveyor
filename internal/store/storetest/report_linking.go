@@ -608,6 +608,7 @@ func runFeedbackLinkingMergeRepository(t *testing.T, x Fixture) {
 		event(nil, feedbackCommit("a5"), feedbackTime(time.Minute)))
 	bad := feedbackMergedTask(t, x, "app", "", event("not a slug", feedbackCommit("a6"), feedbackTime(0)))
 	number := feedbackMergedTask(t, x, "app", "", event(7, feedbackCommit("a7"), feedbackTime(0)))
+	object := feedbackMergedTask(t, x, "app", "", event(map[string]any{"slug": "acme/old"}, feedbackCommit("a8"), feedbackTime(0)))
 	merged, err := x.Backend.ListFeedbackMergedTasks(x.Context, store.FeedbackMergedTaskQuery{Repository: "app"})
 	requireOK(t, err)
 	got := map[string]store.FeedbackMergedTask{}
@@ -622,6 +623,7 @@ func runFeedbackLinkingMergeRepository(t *testing.T, x Fixture) {
 		{"latest event without a repository", missing.ID, "", feedbackCommit("a5")},
 		{"not a slug", bad.ID, "", feedbackCommit("a6")},
 		{"not text", number.ID, "", feedbackCommit("a7")},
+		{"an object", object.ID, "", feedbackCommit("a8")},
 	} {
 		task := got[c.id]
 		if task.GitHubRepository != c.want || task.MergeCommit != c.commit || task.PullRequest != 42 || task.Repository != "app" {
@@ -858,8 +860,8 @@ func runFeedbackLinkingTimingResult(t *testing.T, x Fixture) {
 	}
 }
 
-// runFeedbackLinkingProgressAfterEnd proves that progress is not written
-// after linking ended.
+// runFeedbackLinkingProgressAfterEnd proves that progress and a line answer
+// are not written after linking ended.
 func runFeedbackLinkingProgressAfterEnd(t *testing.T, x Fixture) {
 	e, report := linkingReport(t, x, "crash", nil)
 	attemptAt := claimedAt(t, x, report.ID, feedbackTime(10*time.Second))
@@ -875,6 +877,15 @@ func runFeedbackLinkingProgressAfterEnd(t *testing.T, x Fixture) {
 	stored := e.reportByKey(t, "crash")
 	if progress.Ended() || timing != nil || stored.LineProgress != nil || stored.TimingResult != nil {
 		t.Fatalf("progress after the end: %+v %+v stored %+v %+v", progress, timing, stored.LineProgress, stored.TimingResult)
+	}
+	// A line answer that arrives after the end is refused and not stored.
+	late := store.FeedbackReportLineRead{ReportID: report.ID, Repository: "app", ResolvedCommit: feedbackCommit("c0"), File: "cmd/main.go", Line: 12,
+		Answer: store.FeedbackReportLineAnswer{FileFound: true, Commit: feedbackCommit("c1"), PullRequests: []int{}}, AnsweredAt: feedbackTime(2 * time.Minute)}
+	if err := x.Backend.RecordFeedbackReportLineRead(x.Context, late); !errors.Is(err, store.ErrFeedbackLinkingSuperseded) {
+		t.Fatalf("a line answer after the end: err=%v, want superseded", err)
+	}
+	if _, found, err := x.Backend.ReadFeedbackReportLineRead(x.Context, report.ID); err != nil || found {
+		t.Fatalf("a line answer after the end was stored: found=%v err=%v", found, err)
 	}
 }
 

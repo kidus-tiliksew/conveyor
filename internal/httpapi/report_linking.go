@@ -309,13 +309,8 @@ func (a *feedbackReportAttempt) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	a.step = "merged"
-	merged, err := a.feedback.ListFeedbackMergedTasks(ctx, store.FeedbackMergedTaskQuery{})
-	if err != nil {
-		return err
-	}
 	a.step = "line"
-	line, err := a.lineRule(ctx, environment, repositories, merged)
+	line, err := a.lineRule(ctx, environment, repositories)
 	if err != nil {
 		return err
 	}
@@ -323,7 +318,7 @@ func (a *feedbackReportAttempt) run(ctx context.Context) error {
 		a.job.env.backoff.rememberLineReason(a.lineReasonKey(), line.Waiting)
 	}
 	a.step = "timing"
-	timing, err := a.timingRule(ctx, environment, repositories, merged)
+	timing, err := a.timingRule(ctx, environment, repositories)
 	if err != nil {
 		return err
 	}
@@ -399,7 +394,7 @@ func feedbackReportEnvironment(ctx context.Context, backend store.Store, environ
 // At or after 24 hours the rule sends nothing. It still uses every stored
 // result, and a result the stored answers already decide is stored, so a
 // definitive unresolved reason still ends the rule with commit_unresolved.
-func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.Environment, repositories []feedback.Repository, merged []store.FeedbackMergedTask) (reports.Outcome, error) {
+func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.Environment, repositories []feedback.Repository) (reports.Outcome, error) {
 	report := a.report
 	if !reports.LineApplies(report) {
 		return reports.Line(reports.LineInput{Report: report}), nil
@@ -415,6 +410,10 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 		slug := ""
 		if report.LineProgress != nil {
 			slug = report.LineProgress.Slug
+		}
+		merged, err := a.mergedTasks(ctx)
+		if err != nil {
+			return reports.Outcome{}, err
 		}
 		return reports.Line(reports.LineInput{Report: report, Read: &read, Slug: slug, Merged: merged}), nil
 	}
@@ -525,7 +524,22 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 	if !stored {
 		return reports.Outcome{}, store.ErrNotFound
 	}
+	merged, err := a.mergedTasks(ctx)
+	if err != nil {
+		return reports.Outcome{}, err
+	}
 	return reports.Line(reports.LineInput{Report: report, Read: &read, Slug: slug, Merged: merged}), nil
+}
+
+// mergedTasks reads the workspace's merged tasks right before a rule decides,
+// after the evidence it decides on was read: the stored line answer, or the
+// watcher signals, deploy history, and resolutions. Every merge recorded
+// before that evidence is then in the list, so a stored answer never misses
+// a task whose merge was recorded before the deploy or line answer it uses
+// (component-feedback-reports invariants 12 and 14).
+func (a *feedbackReportAttempt) mergedTasks(ctx context.Context) ([]store.FeedbackMergedTask, error) {
+	a.step = "merged"
+	return a.feedback.ListFeedbackMergedTasks(ctx, store.FeedbackMergedTaskQuery{})
 }
 
 // saveLineStep stores one definitive result of resolving at once, on a
@@ -552,7 +566,7 @@ func (a *feedbackReportAttempt) expiredLineReason() string {
 
 // timingRule runs the timing rule for the attempt from stored records. It
 // asks the background work for the comparisons the rule still needs.
-func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment store.Environment, repositories []feedback.Repository, merged []store.FeedbackMergedTask) (reports.Outcome, error) {
+func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment store.Environment, repositories []feedback.Repository) (reports.Outcome, error) {
 	report := a.report
 	if !reports.TimingApplies(report) {
 		return reports.Timing(reports.TimingInput{Report: report}), nil
@@ -594,6 +608,11 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 	}
 	// The deploy's repository comes from each stored resolution's recorded
 	// GitHub repository, never from the current workspace configuration.
+	merged, err := a.mergedTasks(ctx)
+	if err != nil {
+		return reports.Outcome{}, err
+	}
+	a.step = "timing"
 	input := reports.TimingInput{Report: report, TimingWindowMinutes: environment.TimingWindowMinutes, Deploys: deploys, PriorSignals: priors,
 		Resolutions: inputs.Resolutions, Merged: merged, SignalAfterReport: signalAfter, Listening: listening}
 	outcome := reports.Timing(input)

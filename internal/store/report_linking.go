@@ -195,8 +195,10 @@ type ReportLinkingStore interface {
 	// ReadFeedbackReportLineRead answers the stored line read of a report,
 	// and false when none is stored.
 	ReadFeedbackReportLineRead(ctx context.Context, reportID string) (FeedbackReportLineRead, bool, error)
-	// RecordFeedbackReportLineRead stores the answer of a line read. A
-	// stored answer is kept and never replaced. A report the workspace does
+	// RecordFeedbackReportLineRead stores the answer of a line read, under
+	// the lock that serializes the writes of the report. A stored answer is
+	// kept and never replaced. A report whose linking ended stores nothing
+	// and answers ErrFeedbackLinkingSuperseded. A report the workspace does
 	// not hold answers ErrNotFound.
 	RecordFeedbackReportLineRead(ctx context.Context, read FeedbackReportLineRead) error
 	// FinishFeedbackReportLinking ends the linking of a report in one
@@ -470,7 +472,9 @@ func distinctFeedbackEvidence(held, added []FeedbackReportEvidence) []FeedbackRe
 // FeedbackMergeRepository reads the GitHub repository of a merge event
 // payload's repository member, which a backend extracts as text: an
 // owner/name slug, answered in the canonical form FeedbackRepository gives.
-// Any other value, an empty one included, is no repository and answers "",
+// Only a JSON string or the text a backend extracts from one counts. Any
+// other value, an object, a number, or an empty one, is no repository and
+// answers "",
 // so a merge event without it proves no repository identity.
 func FeedbackMergeRepository(text string) string {
 	text = strings.TrimSpace(text)
@@ -482,10 +486,26 @@ func FeedbackMergeRepository(text string) string {
 		text = strings.TrimSpace(unquoted)
 	}
 	owner, name, found := strings.Cut(text, "/")
-	if !found || owner == "" || name == "" || strings.Contains(name, "/") || strings.ContainsAny(text, " \t\r\n") {
+	if !found || !feedbackSlugPart(owner) || !feedbackSlugPart(name) {
 		return ""
 	}
 	return FeedbackRepository(text)
+}
+
+// feedbackSlugPart reports whether one half of an owner/name slug uses only
+// the characters GitHub allows in an owner or repository name: letters,
+// digits, hyphens, underscores, and dots. Any other text, the JSON text of
+// an object or a number included, is no repository.
+func feedbackSlugPart(part string) bool {
+	if part == "" {
+		return false
+	}
+	for _, r := range part {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // FeedbackMergePullRequest reads the pull request number of a merge event

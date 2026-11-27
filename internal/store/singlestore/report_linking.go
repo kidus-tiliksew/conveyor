@@ -133,6 +133,9 @@ func (s *Store) RecordFeedbackReportLineRead(ctx context.Context, read store.Fee
 		if err != nil {
 			return err
 		}
+		if report.LinkingEndedAt != nil {
+			return store.ErrFeedbackLinkingSuperseded
+		}
 		var stored int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_report_line_reads WHERE workspace_id=? AND report_id=?`, ws, read.ReportID).Scan(&stored); err != nil {
 			return err

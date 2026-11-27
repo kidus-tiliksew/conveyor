@@ -77,8 +77,12 @@ func (m *volatileMemory) RecordFeedbackReportLineRead(ctx context.Context, read 
 	workspace := workspaceOrDefault(ctx, "")
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, _, _, found := m.feedbackReportLocked(workspace, read.ReportID); !found {
+	_, _, report, found := m.feedbackReportLocked(workspace, read.ReportID)
+	if !found {
 		return fmt.Errorf("%w: feedback report %s", ErrNotFound, read.ReportID)
+	}
+	if report.LinkingEndedAt != nil {
+		return ErrFeedbackLinkingSuperseded
 	}
 	key := memoryScopedKey{workspace: workspace, id: read.ReportID}
 	if _, stored := m.feedbackReportState.lineReads[key]; stored {

@@ -100,14 +100,16 @@ func (s *Store) RecordFeedbackReportLineRead(ctx context.Context, read store.Fee
 	}
 	workspaceID := workspace(ctx)
 	return s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
-		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM feedback_reports WHERE workspace_id=$1 AND id=$2)`, workspaceID, read.ReportID).Scan(&exists); err != nil {
+		// The report row lock is the lock the end of linking takes, so an
+		// answer is never stored after linking ended.
+		report, err := lockFeedbackReport(ctx, tx, workspaceID, read.ReportID)
+		if err != nil {
 			return err
 		}
-		if !exists {
-			return fmt.Errorf("%w: feedback report %s", store.ErrNotFound, read.ReportID)
+		if report.LinkingEndedAt != nil {
+			return store.ErrFeedbackLinkingSuperseded
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO feedback_report_line_reads (workspace_id, report_id, repository, resolved_commit, file, line, answer, answered_at)
+		_, err = tx.Exec(ctx, `INSERT INTO feedback_report_line_reads (workspace_id, report_id, repository, resolved_commit, file, line, answer, answered_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8) ON CONFLICT (workspace_id, report_id) DO NOTHING`,
 			workspaceID, read.ReportID, read.Repository, read.ResolvedCommit, read.File, read.Line, store.FeedbackReportLineAnswerJSON(read.Answer), read.AnsweredAt)
 		return err

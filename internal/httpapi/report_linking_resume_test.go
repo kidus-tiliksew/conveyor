@@ -1064,7 +1064,7 @@ func TestFeedbackReportTimingReadsSignalsBeforeDeploys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outcome, err := attempt.timingRule(h.ctx, environment, repositories, nil)
+	outcome, err := attempt.timingRule(h.ctx, environment, repositories)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1282,4 +1282,61 @@ func TestFeedbackReportTimingUsesRecordedRepositories(t *testing.T) {
 			t.Fatalf("ended=%v links=%v notes=%+v, want deploy_not_compared for version 2 and no link", report.LinkingEndedAt != nil, h.links(report.ID), notes)
 		}
 	})
+}
+
+// mergeDuringReadStore records a merged task when the timing rule starts
+// reading its evidence, after the attempt began: the merge is recorded
+// before the deploy history the rule reads.
+type mergeDuringReadStore struct {
+	store.FeedbackStore
+	once   sync.Once
+	record func()
+}
+
+func (s *mergeDuringReadStore) ListFeedbackSignals(ctx context.Context, environmentIDs []string) (map[string]store.FeedbackSignalState, error) {
+	s.once.Do(s.record)
+	return s.FeedbackStore.ListFeedbackSignals(ctx, environmentIDs)
+}
+
+// TestFeedbackReportTimingReadsMergesAfterDeploys proves CodeRabbit finding
+// 4723980620: the timing rule reads the merged tasks after the deploy
+// history. A task whose merge is recorded after the attempt began, but
+// before the deploy history is read, is in the stored timing result, so the
+// result never ends with no_task_deploy for a deploy that newly holds it
+// (component-feedback-reports invariant 14).
+func TestFeedbackReportTimingReadsMergesAfterDeploys(t *testing.T) {
+	h := newLinkingHarness(t)
+	h.resolvedHistory("acme/app")
+	late := readsCommit("c7")
+	h.storeComparisonsIn("acme/app", late, map[string]bool{"1": false, "2": true})
+	// A watcher keeps the timing rule waiting on the report's first attempt.
+	h.accept(`{"next_signal_seconds":60,"services":[{"name":"web","versions":[{"version":"1"}]}]}`)
+	h.settle()
+	h.acceptReport(reportBody(reportEntryJSON("crash", `"service":"api"`)))
+	h.settle()
+	report := h.reportByKey("crash")
+	if report.TimingResult != nil {
+		t.Fatalf("timing result=%+v, want the rule waiting", report.TimingResult)
+	}
+	// The watcher stops listening, so the rule decides on the next attempt.
+	h.advance(5 * time.Minute)
+	backend := h.server.feedbackJobEnv().store
+	reportStore := backend.(store.ReportStore)
+	var lateTask string
+	wrapped := &mergeDuringReadStore{FeedbackStore: backend.(store.FeedbackStore), record: func() { lateTask = h.mergedTaskIn("acme/app", late, 70) }}
+	now := h.clock()
+	claimed, ok, err := reportStore.ClaimFeedbackReportLinking(h.ctx, report.ID, now)
+	if err != nil || !ok {
+		t.Fatalf("claim ok=%v err=%v", ok, err)
+	}
+	job := feedbackJob{workspace: "alpha", report: report.ID, env: h.server.feedbackJobEnv()}
+	attempt := feedbackReportAttempt{job: job, reports: reportStore, feedback: wrapped, report: claimed, now: now}
+	attempt.forge = &feedbackAttemptForge{inner: h.forge, env: job.env, workspace: "alpha"}
+	if err := attempt.run(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	links := h.links(report.ID)
+	if _, linked := links[lateTask]; !linked || lateTask == "" {
+		t.Fatalf("links=%v notes=%+v, want the task merged before the deploy history was read", links, h.notes(report.ID))
+	}
 }
