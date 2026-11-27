@@ -47,12 +47,25 @@ type TimingInput struct {
 	Listening         bool
 }
 
-// serviceDeploys returns the deploys of the report's service in the order of
-// their places.
-func serviceDeploys(deploys []store.FeedbackDeploy, service string) []store.FeedbackDeploy {
+// environmentDeploys returns the deploys of the report's environment. A
+// deploy of another environment is never decided and is never a previous
+// version.
+func environmentDeploys(deploys []store.FeedbackDeploy, report store.FeedbackReport) []store.FeedbackDeploy {
 	out := []store.FeedbackDeploy{}
 	for _, deploy := range deploys {
-		if deploy.Service == service {
+		if deploy.EnvironmentID == report.EnvironmentID {
+			out = append(out, deploy)
+		}
+	}
+	return out
+}
+
+// serviceDeploys returns the deploys of the report's service in the report's
+// environment in the order of their places.
+func serviceDeploys(deploys []store.FeedbackDeploy, report store.FeedbackReport) []store.FeedbackDeploy {
+	out := []store.FeedbackDeploy{}
+	for _, deploy := range environmentDeploys(deploys, report) {
+		if deploy.Service == report.Service {
 			out = append(out, deploy)
 		}
 	}
@@ -62,13 +75,15 @@ func serviceDeploys(deploys []store.FeedbackDeploy, service string) []store.Feed
 
 // SignalCandidates returns the deploys recorded from a signal whose prior
 // watcher signal the timing rule can need, in the order of their places: the
-// deploys of the report's service at or after first_seen. A reader looks up
-// each in turn and can stop after the first whose prior signal arrived after
-// first_seen, because the prior signal of every later deploy arrived no
-// earlier than that deploy (component-feedback-reports invariant 13).
+// deploys of the report's service in its environment at or after
+// first_seen. Deploys that one signal recorded share one place and one prior
+// signal. A reader looks up each place in turn, gives the answer to every
+// deploy there, and can stop after the first place later than first_seen,
+// because the prior signal of every later place arrived no earlier than that
+// place (component-feedback-reports invariant 13).
 func SignalCandidates(report store.FeedbackReport, deploys []store.FeedbackDeploy) []store.FeedbackDeploy {
 	out := []store.FeedbackDeploy{}
-	for _, deploy := range serviceDeploys(deploys, report.Service) {
+	for _, deploy := range serviceDeploys(deploys, report) {
 		if deploy.Origin.Source == store.FeedbackSourceSignal && !deploy.DeployedAt.Before(report.FirstEntrySeen) {
 			out = append(out, deploy)
 		}
@@ -156,12 +171,15 @@ func Timing(input TimingInput) Outcome {
 	waiting := ""
 	links := map[string][]store.FeedbackReportEvidence{}
 	missing := map[store.FeedbackComparisonKey]bool{}
-	for _, deploy := range serviceDeploys(input.Deploys, report.Service) {
+	// Every deploy of the service is decided on its own: no deploy ends the
+	// walk, and no deploy is skipped because another one qualified.
+	history := environmentDeploys(input.Deploys, report)
+	for _, deploy := range serviceDeploys(history, report) {
 		found, ok := qualify(deploy, report.FirstEntrySeen, window, input.PriorSignals)
 		if !ok {
 			continue
 		}
-		previousRef, hasPrevious := feedback.PreviousDeployVersion(input.Deploys, deploy)
+		previousRef, hasPrevious := feedback.PreviousDeployVersion(history, deploy)
 		if !hasPrevious {
 			continue
 		}

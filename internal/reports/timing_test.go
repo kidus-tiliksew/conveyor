@@ -39,7 +39,7 @@ func (f *timingFixture) deploy(id, version, commit string, at time.Time, source 
 // heads and by no other head the fixture compares.
 func (f *timingFixture) task(id, merge string, heldBy ...string) {
 	f.merged = append(f.merged, store.FeedbackMergedTask{TaskID: id, Repository: "app", MergeCommit: merge})
-	for _, head := range []string{shaA, shaB, shaC, shaD} {
+	for _, head := range []string{shaA, shaB, shaC, shaD, shaE, shaF, shaG} {
 		if head == merge {
 			continue
 		}
@@ -162,21 +162,190 @@ func TestTimingPriorSignal(t *testing.T) {
 }
 
 // TestTimingSignalCandidates covers the deploys whose prior signal the
-// reader looks up: those of the service recorded from a signal at or after
-// first_seen, in order.
+// reader looks up: those of the service in the report's environment recorded
+// from a signal at or after first_seen, in order, with the deploys of one
+// signal next to each other.
 func TestTimingSignalCandidates(t *testing.T) {
 	f := &timingFixture{}
 	f.deploy("d-early", "1", shaA, base, store.FeedbackSourceSignal)
 	f.deploy("d-github", "2", shaB, base.Add(2*time.Hour), store.FeedbackSourceGitHub)
 	f.deploy("d-at", "3", shaC, base.Add(time.Hour), store.FeedbackSourceSignal)
 	f.deploy("d-late", "4", shaD, base.Add(3*time.Hour), store.FeedbackSourceSignal)
-	report := store.FeedbackReport{Service: "api", FirstEntrySeen: base.Add(time.Hour)}
+	f.sameSignal(f.deploy("d-late-too", "5", shaE, base.Add(3*time.Hour), store.FeedbackSourceSignal), "d-late")
+	f.deploy("d-other-environment", "6", shaF, base.Add(2*time.Hour), store.FeedbackSourceSignal)
+	f.deploys[len(f.deploys)-1].EnvironmentID = "env-2"
+	f.deploy("d-web", "7", shaG, base.Add(2*time.Hour), store.FeedbackSourceSignal)
+	f.deploys[len(f.deploys)-1].Service = "web"
+	report := store.FeedbackReport{EnvironmentID: "env-1", Service: "api", FirstEntrySeen: base.Add(time.Hour)}
 	got := []string{}
 	for _, deploy := range SignalCandidates(report, f.deploys) {
 		got = append(got, deploy.ID)
 	}
-	if !slices.Equal(got, []string{"d-at", "d-late"}) {
+	if !slices.Equal(got, []string{"d-at", "d-late", "d-late-too"}) {
 		t.Fatalf("candidates %v", got)
+	}
+}
+
+// sameSignal records the deploy as recorded by the same signal as another
+// deploy: the two share one place.
+func (f *timingFixture) sameSignal(deploy store.FeedbackDeploy, with string) {
+	for i := range f.deploys {
+		if f.deploys[i].ID == with {
+			for j := range f.deploys {
+				if f.deploys[j].ID == deploy.ID {
+					f.deploys[j].Origin.Report = f.deploys[i].Origin.Report
+					f.deploys[j].DeployedAt = f.deploys[i].DeployedAt
+				}
+			}
+		}
+	}
+}
+
+// decisions renders what an ended timing outcome decided for each deploy:
+// each link with its task, elapsed_minutes, and prior_signal_at, and each
+// note with its kind and task count.
+func decisions(t *testing.T, outcome Outcome) map[string][]string {
+	t.Helper()
+	if !outcome.Ended {
+		t.Fatalf("outcome %+v, want ended", outcome)
+	}
+	out := map[string][]string{}
+	for _, link := range outcome.Links {
+		for _, piece := range link.Evidence {
+			if piece.Kind != store.FeedbackEvidenceTiming || piece.Deploy == nil || piece.ElapsedMinutes == nil {
+				t.Fatalf("evidence %+v", piece)
+			}
+			entry := fmt.Sprintf("link %s %d", link.TaskID, *piece.ElapsedMinutes)
+			if piece.PriorSignalAt != nil {
+				entry += " prior " + piece.PriorSignalAt.Format(time.RFC3339Nano)
+			}
+			out[piece.Deploy.ID] = append(out[piece.Deploy.ID], entry)
+		}
+	}
+	for _, note := range outcome.Notes {
+		entry := "note " + note.Kind
+		if note.TaskCount != 0 {
+			entry += fmt.Sprintf(" %d", note.TaskCount)
+		}
+		out[note.Deploy.ID] = append(out[note.Deploy.ID], entry)
+	}
+	for id := range out {
+		slices.Sort(out[id])
+	}
+	return out
+}
+
+// TestTimingDecidesEveryDeploy is the table of review round 3's timing class
+// rule: the rule walks every deploy of the service in the report's
+// environment and decides each one on its own, with no early end after a
+// match and no deploy skipped because another qualified. Each row states
+// what every deploy of the history gets; a deploy with no entry gets no link
+// and no note (component-feedback-reports invariants 13 and 14;
+// req-production-feedback AC-5.2 to AC-5.4).
+func TestTimingDecidesEveryDeploy(t *testing.T) {
+	prior := store.FeedbackBoundary{At: base.Add(time.Hour), Report: 99}
+	priorText := prior.At.Format(time.RFC3339Nano)
+	for _, tc := range []struct {
+		name      string
+		build     func(f *timingFixture) (firstSeen time.Time, priors map[string]store.FeedbackBoundary)
+		decisions map[string][]string
+	}{{
+		// d-1 has no previous version. d-2 newly holds t-2. d-3 newly holds
+		// nothing. Both are in the window.
+		name: "several deploys in the window",
+		build: func(f *timingFixture) (time.Time, map[string]store.FeedbackBoundary) {
+			f.deploy("d-1", "1", shaA, base, store.FeedbackSourceGitHub)
+			f.deploy("d-2", "2", shaB, base.Add(10*time.Minute), store.FeedbackSourceGitHub)
+			f.deploy("d-3", "3", shaC, base.Add(20*time.Minute), store.FeedbackSourceGitHub)
+			f.task("t-2", shaE, shaB, shaC)
+			return base.Add(30 * time.Minute), nil
+		},
+		decisions: map[string][]string{"d-2": {"link t-2 20"}, "d-3": {"note no_task_deploy"}},
+	}, {
+		// One signal records d-2 and d-3 at one place after first_seen, and
+		// first_seen is after the signal before it. Both get the prior signal
+		// and are decided on their own.
+		name: "several deploys from one signal at one boundary",
+		build: func(f *timingFixture) (time.Time, map[string]store.FeedbackBoundary) {
+			f.deploy("d-1", "1", shaA, base, store.FeedbackSourceSignal)
+			f.deploy("d-2", "2", shaB, base.Add(2*time.Hour), store.FeedbackSourceSignal)
+			f.sameSignal(f.deploy("d-3", "3", shaC, base.Add(2*time.Hour), store.FeedbackSourceSignal), "d-2")
+			f.task("t-both", shaE, shaB, shaC)
+			f.task("t-3", shaF, shaC)
+			return base.Add(90 * time.Minute), map[string]store.FeedbackBoundary{"d-2": prior, "d-3": prior}
+		},
+		decisions: map[string][]string{"d-2": {"link t-both 0 prior " + priorText}, "d-3": {"link t-3 0 prior " + priorText, "link t-both 0 prior " + priorText}},
+	}, {
+		// d-2 is past its window and does not qualify, while d-3 after it
+		// qualifies in the second case.
+		name: "a deploy past its window beside a deploy in the second case",
+		build: func(f *timingFixture) (time.Time, map[string]store.FeedbackBoundary) {
+			f.deploy("d-1", "1", shaA, base.Add(-time.Hour), store.FeedbackSourceSignal)
+			f.deploy("d-2", "2", shaB, base, store.FeedbackSourceGitHub)
+			f.deploy("d-3", "3", shaC, base.Add(3*time.Hour), store.FeedbackSourceSignal)
+			f.task("t-2", shaE, shaB, shaC)
+			f.task("t-3", shaF, shaC)
+			return base.Add(80 * time.Minute), map[string]store.FeedbackBoundary{"d-3": prior}
+		},
+		decisions: map[string][]string{"d-3": {"link t-3 0 prior " + priorText}},
+	}, {
+		// The same history with first_seen in the window of d-2 and after the
+		// prior signal of d-3: both qualify, each in its own case.
+		name: "one deploy in each case at once",
+		build: func(f *timingFixture) (time.Time, map[string]store.FeedbackBoundary) {
+			f.deploy("d-1", "1", shaA, base.Add(-time.Hour), store.FeedbackSourceSignal)
+			f.deploy("d-2", "2", shaB, base.Add(10*time.Minute), store.FeedbackSourceGitHub)
+			f.deploy("d-3", "3", shaC, base.Add(3*time.Hour), store.FeedbackSourceSignal)
+			f.task("t-2", shaE, shaB, shaC)
+			f.task("t-3", shaF, shaC)
+			return base.Add(70 * time.Minute), map[string]store.FeedbackBoundary{"d-3": prior}
+		},
+		decisions: map[string][]string{"d-2": {"link t-2 60"}, "d-3": {"link t-3 0 prior " + priorText}},
+	}, {
+		// d-end is exactly a window before first_seen and d-start exactly at
+		// it. d-out is one nanosecond earlier than d-end, and d-after one
+		// nanosecond later than first_seen.
+		name: "a deploy exactly at each end of the window",
+		build: func(f *timingFixture) (time.Time, map[string]store.FeedbackBoundary) {
+			firstSeen := base.Add(2 * time.Hour)
+			f.deploy("d-0", "0", shaA, base, store.FeedbackSourceGitHub)
+			f.deploy("d-out", "1", shaB, firstSeen.Add(-time.Hour-time.Nanosecond), store.FeedbackSourceGitHub)
+			f.deploy("d-end", "2", shaC, firstSeen.Add(-time.Hour), store.FeedbackSourceGitHub)
+			f.deploy("d-start", "3", shaD, firstSeen, store.FeedbackSourceGitHub)
+			f.deploy("d-after", "4", shaE, firstSeen.Add(time.Nanosecond), store.FeedbackSourceGitHub)
+			f.task("t-end", shaF, shaC, shaD, shaE)
+			f.task("t-start", shaG, shaD, shaE)
+			return firstSeen, nil
+		},
+		decisions: map[string][]string{"d-end": {"link t-end 60"}, "d-start": {"link t-start 0"}},
+	}, {
+		// Deploys of web and of api in env-2 sit beside the history. They are
+		// not decided, and the env-2 deploy, which has no resolution, is not
+		// the previous version of d-2.
+		name: "deploys of another service or environment beside them",
+		build: func(f *timingFixture) (time.Time, map[string]store.FeedbackBoundary) {
+			f.deploy("d-1", "1", shaA, base, store.FeedbackSourceGitHub)
+			f.deploys = append(f.deploys,
+				store.FeedbackDeploy{ID: "d-env-2", EnvironmentID: "env-2", Service: "api", FeedbackVersion: store.FeedbackVersion{Version: "9"}, DeployedAt: base.Add(5 * time.Minute), Origin: store.FeedbackOrigin{Source: store.FeedbackSourceGitHub, Report: 50}},
+				store.FeedbackDeploy{ID: "d-web", EnvironmentID: "env-1", Service: "web", FeedbackVersion: store.FeedbackVersion{Version: "2"}, DeployedAt: base.Add(10 * time.Minute), Origin: store.FeedbackOrigin{Source: store.FeedbackSourceGitHub, Report: 51}})
+			f.deploy("d-2", "2", shaB, base.Add(10*time.Minute), store.FeedbackSourceGitHub)
+			f.task("t-2", shaE, shaB)
+			return base.Add(20 * time.Minute), map[string]store.FeedbackBoundary{"d-env-2": prior, "d-web": prior}
+		},
+		decisions: map[string][]string{"d-2": {"link t-2 10"}},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &timingFixture{}
+			firstSeen, priors := tc.build(f)
+			input := f.input(firstSeen)
+			if priors != nil {
+				input.PriorSignals = priors
+			}
+			got := decisions(t, Timing(input))
+			if fmt.Sprint(got) != fmt.Sprint(tc.decisions) {
+				t.Fatalf("decisions %v\nwant      %v", got, tc.decisions)
+			}
+		})
 	}
 }
 

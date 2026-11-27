@@ -546,21 +546,9 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 	if err != nil {
 		return reports.Outcome{}, err
 	}
-	priors := map[string]store.FeedbackBoundary{}
-	for _, deploy := range reports.SignalCandidates(report, deploys) {
-		before := deploy.Start()
-		prior, found, err := a.feedback.FindFeedbackServiceSignal(ctx, store.FeedbackServiceSignalQuery{EnvironmentID: report.EnvironmentID, Service: report.Service, Before: &before})
-		if err != nil {
-			return reports.Outcome{}, err
-		}
-		if found {
-			priors[deploy.ID] = prior
-		}
-		// The prior signal of every later deploy arrived no earlier than this
-		// deploy, so none of them can qualify by its prior signal.
-		if deploy.DeployedAt.After(report.FirstEntrySeen) {
-			break
-		}
+	priors, err := a.priorSignals(ctx, reports.SignalCandidates(report, deploys))
+	if err != nil {
+		return reports.Outcome{}, err
 	}
 	slugs := map[string]string{}
 	for _, repository := range repositories {
@@ -600,6 +588,42 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 		a.job.env.requestLinkingAnswers(a.job.workspace, outcome.Missing)
 	}
 	return outcome, nil
+}
+
+// priorSignals looks up, once for each boundary, the newest accepted
+// watcher signal that named the service before the boundary, and gives it
+// to every candidate deploy at that boundary. One signal can record several
+// deploys of the service at one boundary, and each of them is decided on its
+// own by the timing rule (component-feedback-reports invariant 13). The
+// lookups end after the first boundary later than first_seen: the prior
+// signal of every later boundary arrived no earlier than that boundary, so
+// no deploy there can qualify by its prior signal. Every deploy at that
+// first boundary still gets its prior signal.
+func (a *feedbackReportAttempt) priorSignals(ctx context.Context, candidates []store.FeedbackDeploy) (map[string]store.FeedbackBoundary, error) {
+	report := a.report
+	priors := map[string]store.FeedbackBoundary{}
+	for start := 0; start < len(candidates); {
+		boundary := candidates[start].Start()
+		end := start
+		for end < len(candidates) && candidates[end].Start().Compare(boundary) == 0 {
+			end++
+		}
+		before := boundary
+		prior, found, err := a.feedback.FindFeedbackServiceSignal(ctx, store.FeedbackServiceSignalQuery{EnvironmentID: report.EnvironmentID, Service: report.Service, Before: &before})
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			for _, deploy := range candidates[start:end] {
+				priors[deploy.ID] = prior
+			}
+		}
+		if boundary.At.After(report.FirstEntrySeen) {
+			break
+		}
+		start = end
+	}
+	return priors, nil
 }
 
 // requestLinkingAnswers queues the comparisons the timing rule needs as a

@@ -507,3 +507,111 @@ func TestFeedbackReportQueuedComparisonsHonorTheHold(t *testing.T) {
 		t.Fatalf("calls=%v, want the linking comparison after the retry time", calls)
 	}
 }
+
+// recordSignal records an accepted watcher signal of the environment that
+// names service api with the versions, and stores each version resolved in
+// app at the commit readsCommit("a"+version).
+func (h *linkingHarness) recordSignal(at time.Time, versions ...string) {
+	h.t.Helper()
+	system := store.WithActor(h.ctx, store.SystemActor())
+	stated := []store.FeedbackSignalVersion{}
+	for _, version := range versions {
+		stated = append(stated, store.FeedbackSignalVersion{Version: version})
+	}
+	signal := store.FeedbackSignal{EnvironmentID: h.environment.ID, KeyID: h.key.ID, ArrivedAt: at, NextSignalSeconds: 10,
+		Services: []store.FeedbackSignalService{{Name: "api", Versions: stated}}}
+	if err := h.st.RecordFeedbackSignal(system, signal); err != nil {
+		h.t.Fatal(err)
+	}
+	for _, version := range versions {
+		resolution := store.FeedbackResolution{FeedbackVersionRef: store.FeedbackVersionRef{EnvironmentID: h.environment.ID, Service: "api", FeedbackVersion: store.FeedbackVersion{Version: version}},
+			ResolvedRepository: "app", ResolvedCommit: readsCommit("a" + version), AttemptedAt: at}
+		if err := h.st.RecordFeedbackResolution(system, resolution); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+}
+
+// storeComparisons stores, for a merge commit, whether each version's commit
+// holds it.
+func (h *linkingHarness) storeComparisons(merge string, held map[string]bool) {
+	h.t.Helper()
+	comparisons := []store.FeedbackComparison{}
+	for version, contains := range held {
+		status := store.FeedbackCompareBehind
+		if contains {
+			status = store.FeedbackCompareAhead
+		}
+		comparisons = append(comparisons, store.FeedbackComparison{FeedbackComparisonKey: store.FeedbackComparisonKey{Repository: "acme/app", Base: merge, Head: readsCommit("a" + version)},
+			Status: status, ComparedAt: h.clock()})
+	}
+	if err := h.st.RecordFeedbackComparisons(h.ctx, comparisons); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// TestFeedbackReportTimingDecidesEveryDeployAtABoundary proves review round
+// 3 finding 1: one accepted signal deploys versions 2 and 3 of api at one
+// boundary, and first_seen falls strictly between that signal and the signal
+// before it. Each of the two deploys gets the prior signal and is decided on
+// its own: version 2 newly holds a merged task and links it with
+// elapsed_minutes 0 and prior_signal_at, and version 3 newly holds none and
+// gives the note no_task_deploy. The stored timing result names both
+// deploys, and a fresh worker answers the same from it
+// (req-production-feedback AC-5.2 to AC-5.4; component-feedback-reports
+// invariants 13 and 14).
+func TestFeedbackReportTimingDecidesEveryDeployAtABoundary(t *testing.T) {
+	for _, order := range [][]string{{"2", "3"}, {"3", "2"}} {
+		t.Run("versions "+strings.Join(order, " then "), func(t *testing.T) {
+			h := newLinkingHarness(t)
+			accepted := h.clock().Add(feedbackSignalWindow)
+			// The store keeps signal times to the microsecond.
+			predecessor := accepted.Add(-10 * time.Minute).Truncate(time.Microsecond)
+			h.recordSignal(predecessor, "1")
+			h.recordSignal(accepted.Add(5*time.Minute), order...)
+			merge := readsCommit("c2")
+			task := h.mergedTask(merge, 21)
+			h.storeComparisons(merge, map[string]bool{"1": false, "2": true, "3": false})
+			h.acceptReport(reportBody(reportEntryJSON("boundary", `"service":"api"`)))
+			h.settle()
+			report := h.reportByKey("boundary")
+			if !report.FirstEntrySeen.After(predecessor) || !report.FirstEntrySeen.Before(accepted.Add(5*time.Minute)) {
+				t.Fatalf("first_seen %v is not strictly between the two signals", report.FirstEntrySeen)
+			}
+			if report.LinkingEndedAt == nil || report.TimingResult == nil {
+				t.Fatalf("linking ended=%v timing result=%+v", report.LinkingEndedAt != nil, report.TimingResult)
+			}
+			check := func(stage string) {
+				t.Helper()
+				links := h.links(report.ID)
+				link, linked := links[task]
+				if len(links) != 1 || !linked || len(link.Evidence) != 1 {
+					t.Fatalf("%s: links=%+v, want the merged task with one piece of evidence", stage, links)
+				}
+				evidence := link.Evidence[0]
+				if evidence.Kind != store.FeedbackEvidenceTiming || evidence.Deploy == nil || evidence.Deploy.Version.Version != "2" || evidence.ElapsedMinutes == nil || *evidence.ElapsedMinutes != 0 ||
+					evidence.PriorSignalAt == nil || !evidence.PriorSignalAt.Equal(predecessor) {
+					t.Fatalf("%s: evidence=%+v deploy=%+v, want version 2 with 0 minutes and the prior signal", stage, evidence, evidence.Deploy)
+				}
+				notes := h.notes(report.ID)
+				if len(notes) != 1 || notes[0].Kind != store.FeedbackNoteNoTaskDeploy || notes[0].Deploy == nil || notes[0].Deploy.Version.Version != "3" ||
+					!notes[0].Deploy.DeployedAt.Equal(evidence.Deploy.DeployedAt) {
+					t.Fatalf("%s: notes=%+v, want no_task_deploy for version 3 at the same boundary", stage, notes)
+				}
+			}
+			check("first attempt")
+			if result := report.TimingResult; len(result.Links) != 1 || len(result.Notes) != 1 || result.Links[0].DeployID == result.Notes[0].DeployID ||
+				result.Links[0].PriorSignalAt == nil || !result.Links[0].PriorSignalAt.Equal(predecessor) {
+				t.Fatalf("timing result=%+v, want one link and one note on two deploys", result)
+			}
+			want := h.finalState(report.ID)
+			h.freshWorker()
+			h.advance(time.Minute + time.Second)
+			h.attempt(report.ID)
+			check("fresh worker")
+			if got := h.finalState(report.ID); got != want {
+				t.Fatalf("fresh worker final=%s\nwant %s", got, want)
+			}
+		})
+	}
+}

@@ -12,6 +12,9 @@ const (
 	shaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	shaC = "cccccccccccccccccccccccccccccccccccccccc"
 	shaD = "dddddddddddddddddddddddddddddddddddddddd"
+	shaE = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	shaF = "ffffffffffffffffffffffffffffffffffffffff"
+	shaG = "0123456789abcdef0123456789abcdef01234567"
 )
 
 var base = time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
