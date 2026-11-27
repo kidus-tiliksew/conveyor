@@ -131,7 +131,11 @@ func (w Work) ProcessSignal(ctx context.Context, request SignalRequest) error {
 		if outcome.Reason != "" && outcome.Reason != store.FeedbackReasonNoMatch && outcome.Reason != store.FeedbackReasonAmbiguous {
 			w.logf("feedback_resolve environment_id=%s service_digest=%s outcome=unresolved reason=%s", ref.EnvironmentID, store.FeedbackServiceDigest(ref.Service), outcome.Reason)
 		}
-		resolution := store.FeedbackResolution{FeedbackVersionRef: ref, ResolvedRepository: outcome.Repository, ResolvedCommit: outcome.Commit, Reason: outcome.Reason, AttemptedAt: now, NextAttemptAt: outcome.RetryAt}
+		// The GitHub repository the commit was read from is stored with the
+		// resolution, so the timing rule of report linking can prove a
+		// deploy's repository after a workspace name is pointed elsewhere
+		// (approved plan version 4). Live status does not read it.
+		resolution := store.FeedbackResolution{FeedbackVersionRef: ref, ResolvedRepository: outcome.Repository, ResolvedGitHubRepository: outcome.Slug, ResolvedCommit: outcome.Commit, Reason: outcome.Reason, AttemptedAt: now, NextAttemptAt: outcome.RetryAt}
 		if err := recordOutcome(ctx, func(writeCtx context.Context) error { return w.Store.RecordFeedbackResolution(writeCtx, resolution) }); err != nil {
 			return err
 		}

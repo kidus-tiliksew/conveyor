@@ -73,10 +73,19 @@ type FeedbackVersionRef struct {
 type FeedbackResolution struct {
 	FeedbackVersionRef
 	ResolvedRepository string
-	ResolvedCommit     string
-	Reason             string
-	AttemptedAt        time.Time
-	NextAttemptAt      time.Time
+	// ResolvedGitHubRepository is the canonical GitHub slug the resolved
+	// commit was read from, or empty when the resolution recorded none: every
+	// unresolved outcome and every resolution stored before the field
+	// existed. ResolvedRepository is a workspace name that can later point
+	// at another repository; this field is the repository that answered.
+	// Only the timing rule of report linking reads it, and live status
+	// never does (approved plan version 4; component-feedback-reports
+	// invariant 13).
+	ResolvedGitHubRepository string
+	ResolvedCommit           string
+	Reason                   string
+	AttemptedAt              time.Time
+	NextAttemptAt            time.Time
 }
 
 // Resolved reports whether the version holds a repository and a commit.
@@ -233,13 +242,20 @@ func NormalizeFeedbackResolution(resolution FeedbackResolution) (FeedbackResolut
 		if !FeedbackCommitID(resolution.ResolvedCommit) || resolution.ResolvedRepository == "" {
 			return FeedbackResolution{}, fmt.Errorf("a resolved version needs a repository and a full commit ID")
 		}
+		if resolution.ResolvedGitHubRepository != "" {
+			slug := FeedbackMergeRepository(resolution.ResolvedGitHubRepository)
+			if slug == "" {
+				return FeedbackResolution{}, fmt.Errorf("a resolved version's GitHub repository is an owner/name slug")
+			}
+			resolution.ResolvedGitHubRepository = slug
+		}
 		resolution.Reason, resolution.NextAttemptAt = "", time.Time{}
 		return resolution, nil
 	}
 	if resolution.Reason == "" {
 		return FeedbackResolution{}, fmt.Errorf("an unresolved version needs its reason")
 	}
-	resolution.ResolvedRepository = ""
+	resolution.ResolvedRepository, resolution.ResolvedGitHubRepository = "", ""
 	least := resolution.AttemptedAt.Add(FeedbackResolutionRetry)
 	if resolution.NextAttemptAt.Before(least) {
 		resolution.NextAttemptAt = least

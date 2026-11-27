@@ -51,14 +51,19 @@ func (s *Store) RecordFeedbackResolution(ctx context.Context, resolution store.F
 	if !resolution.Resolved() {
 		next = &resolution.NextAttemptAt
 	}
+	// A resolution with no recorded GitHub repository stores NULL.
+	var github *string
+	if resolution.ResolvedGitHubRepository != "" {
+		github = &resolution.ResolvedGitHubRepository
+	}
 	return s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
-		tag, err := tx.Exec(ctx, `INSERT INTO feedback_resolutions (workspace_id, environment_id, service_digest, version_digest, service, reported_repository, reported_commit, reported_version, resolved_repository, resolved_commit, reason, attempted_at, next_attempt_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		tag, err := tx.Exec(ctx, `INSERT INTO feedback_resolutions (workspace_id, environment_id, service_digest, version_digest, service, reported_repository, reported_commit, reported_version, resolved_repository, resolved_commit, reason, attempted_at, next_attempt_at, resolved_github_repository)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 ON CONFLICT (workspace_id, environment_id, service_digest, version_digest) DO UPDATE
-SET resolved_repository=EXCLUDED.resolved_repository, resolved_commit=EXCLUDED.resolved_commit, reason=EXCLUDED.reason, attempted_at=EXCLUDED.attempted_at, next_attempt_at=EXCLUDED.next_attempt_at
+SET resolved_repository=EXCLUDED.resolved_repository, resolved_commit=EXCLUDED.resolved_commit, reason=EXCLUDED.reason, attempted_at=EXCLUDED.attempted_at, next_attempt_at=EXCLUDED.next_attempt_at, resolved_github_repository=EXCLUDED.resolved_github_repository
 WHERE feedback_resolutions.resolved_commit = ''`,
 			workspaceID, resolution.EnvironmentID, store.FeedbackServiceDigest(resolution.Service), resolution.Digest(), resolution.Service, resolution.Repository, resolution.Commit, resolution.Version,
-			resolution.ResolvedRepository, resolution.ResolvedCommit, resolution.Reason, resolution.AttemptedAt, next)
+			resolution.ResolvedRepository, resolution.ResolvedCommit, resolution.Reason, resolution.AttemptedAt, next, github)
 		if err != nil || tag.RowsAffected() == 0 || !resolution.Resolved() {
 			return err
 		}
@@ -106,7 +111,7 @@ func (s *Store) ReadFeedbackInputs(ctx context.Context, environmentIDs []string)
 	for id := range inputs.Deploys {
 		store.SortFeedbackDeploys(inputs.Deploys[id])
 	}
-	rows, err := s.boundary.Query(ctx, `SELECT environment_id, service, reported_repository, reported_commit, reported_version, resolved_repository, resolved_commit, reason, attempted_at, next_attempt_at FROM feedback_resolutions WHERE workspace_id=$1 AND environment_id=ANY($2::text[])`, workspaceID, environmentIDs)
+	rows, err := s.boundary.Query(ctx, `SELECT environment_id, service, reported_repository, reported_commit, reported_version, resolved_repository, resolved_commit, reason, attempted_at, next_attempt_at, COALESCE(resolved_github_repository, '') FROM feedback_resolutions WHERE workspace_id=$1 AND environment_id=ANY($2::text[])`, workspaceID, environmentIDs)
 	if err != nil {
 		return store.FeedbackInputs{}, err
 	}
@@ -114,7 +119,7 @@ func (s *Store) ReadFeedbackInputs(ctx context.Context, environmentIDs []string)
 	for rows.Next() {
 		var resolution store.FeedbackResolution
 		var next pgtype.Timestamptz
-		if err := rows.Scan(&resolution.EnvironmentID, &resolution.Service, &resolution.Repository, &resolution.Commit, &resolution.Version, &resolution.ResolvedRepository, &resolution.ResolvedCommit, &resolution.Reason, &resolution.AttemptedAt, &next); err != nil {
+		if err := rows.Scan(&resolution.EnvironmentID, &resolution.Service, &resolution.Repository, &resolution.Commit, &resolution.Version, &resolution.ResolvedRepository, &resolution.ResolvedCommit, &resolution.Reason, &resolution.AttemptedAt, &next, &resolution.ResolvedGitHubRepository); err != nil {
 			return store.FeedbackInputs{}, err
 		}
 		resolution.AttemptedAt = store.EnvironmentTime(resolution.AttemptedAt)

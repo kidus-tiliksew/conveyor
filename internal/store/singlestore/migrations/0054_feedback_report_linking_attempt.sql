@@ -9,5 +9,11 @@
 -- timing_result: the stored progress of a report's linking, so that a fresh
 -- worker continues from the store alone (component-feedback-reports
 -- invariants 12 and 15). Each holds no report text and is never served. No
--- backfill.
+-- backfill. Under approved plan version 4 the same step also adds the nullable
+-- LONGTEXT column feedback_resolutions.resolved_github_repository: the
+-- canonical GitHub slug a version's commit was read from, written when the
+-- version resolves (component-feedback-reports invariant 13). Only the timing
+-- rule of report linking reads it. Live status reads it nowhere. A row
+-- without it, which includes every row stored before this step, proves no
+-- repository, and no backfill derives it from the current configuration.
 SELECT 1;

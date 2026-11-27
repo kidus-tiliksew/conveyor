@@ -74,9 +74,13 @@ type ResolveRequest struct {
 // next request, when it set one.
 type Resolution struct {
 	Repository string
-	Commit     string
-	Reason     string
-	RetryAt    time.Time
+	// Slug is the canonical GitHub slug of the matched candidate, the
+	// repository the commit was read from. It is empty for every unresolved
+	// outcome (approved plan version 4).
+	Slug    string
+	Commit  string
+	Reason  string
+	RetryAt time.Time
 }
 
 // Resolve resolves one reported version (component-production-feedback
@@ -124,7 +128,7 @@ func Resolve(ctx context.Context, forge Forge, request ResolveRequest) Resolutio
 		commit, err := forge.ReadCommit(ctx, candidate.Slug, ref)
 		switch {
 		case err == nil && store.FeedbackCommitID(commit) && strings.HasPrefix(commit, prefix):
-			matched = append(matched, Resolution{Repository: candidate.Name, Commit: commit})
+			matched = append(matched, Resolution{Repository: candidate.Name, Slug: store.FeedbackRepository(candidate.Slug), Commit: commit})
 		case err == nil, errors.Is(err, github.ErrCommitNotFound):
 			// The repository holds no such commit or tag.
 		default:

@@ -587,7 +587,7 @@ func (h *linkingHarness) recordSignal(at time.Time, versions ...string) {
 	}
 	for _, version := range versions {
 		resolution := store.FeedbackResolution{FeedbackVersionRef: store.FeedbackVersionRef{EnvironmentID: h.environment.ID, Service: "api", FeedbackVersion: store.FeedbackVersion{Version: version}},
-			ResolvedRepository: "app", ResolvedCommit: readsCommit("a" + version), AttemptedAt: at}
+			ResolvedRepository: "app", ResolvedGitHubRepository: "acme/app", ResolvedCommit: readsCommit("a" + version), AttemptedAt: at}
 		if err := h.st.RecordFeedbackResolution(system, resolution); err != nil {
 			h.t.Fatal(err)
 		}
@@ -1186,4 +1186,100 @@ func TestFeedbackReportTimingCountsOnlyTheDeployRepository(t *testing.T) {
 			t.Fatalf("link %s, want the acme/app task merged at c3", link.TaskID)
 		}
 	}
+}
+
+// resolvedHistory records two signal deploys of service api, versions 1 and
+// 2, 10 and 5 minutes before the harness clock, and stores each version
+// resolved under the name app at readsCommit("a"+version) with the recorded
+// GitHub repository github (empty records none). No watcher is listening
+// when a report arrives at the clock.
+func (h *linkingHarness) resolvedHistory(github string) {
+	h.t.Helper()
+	system := store.WithActor(h.ctx, store.SystemActor())
+	for i, version := range []string{"1", "2"} {
+		at := h.clock().Add(time.Duration(i-2) * 5 * time.Minute)
+		signal := store.FeedbackSignal{EnvironmentID: h.environment.ID, KeyID: h.key.ID, ArrivedAt: at, NextSignalSeconds: 10,
+			Services: []store.FeedbackSignalService{{Name: "api", Versions: []store.FeedbackSignalVersion{{Version: version}}}}}
+		if err := h.st.RecordFeedbackSignal(system, signal); err != nil {
+			h.t.Fatal(err)
+		}
+		resolution := store.FeedbackResolution{FeedbackVersionRef: store.FeedbackVersionRef{EnvironmentID: h.environment.ID, Service: "api", FeedbackVersion: store.FeedbackVersion{Version: version}},
+			ResolvedRepository: "app", ResolvedGitHubRepository: github, ResolvedCommit: readsCommit("a" + version), AttemptedAt: at}
+		if err := h.st.RecordFeedbackResolution(system, resolution); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+}
+
+// storeComparisonsIn stores, in one GitHub repository, whether each
+// version's commit holds a merge commit.
+func (h *linkingHarness) storeComparisonsIn(repository, merge string, held map[string]bool) {
+	h.t.Helper()
+	comparisons := []store.FeedbackComparison{}
+	for version, contains := range held {
+		status := store.FeedbackCompareBehind
+		if contains {
+			status = store.FeedbackCompareAhead
+		}
+		comparisons = append(comparisons, store.FeedbackComparison{FeedbackComparisonKey: store.FeedbackComparisonKey{Repository: repository, Base: merge, Head: readsCommit("a" + version)},
+			Status: status, ComparedAt: h.clock()})
+	}
+	if err := h.st.RecordFeedbackComparisons(h.ctx, comparisons); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// TestFeedbackReportTimingUsesRecordedRepositories is review round 5's
+// regression through the worker (approved plan version 4). Both versions
+// resolved while app pointed at acme/old, and their stored resolutions
+// record acme/old. app now points at acme/new, which shares version 2's
+// commit. A task merged in acme/new at that shared commit, with a stored
+// answer in acme/new that version 1 does not hold it, does not link. A task
+// merged in acme/old with stored answers there links. Resolutions without
+// the recorded field give deploy_not_compared and link no task
+// (req-production-feedback AC-5.2; component-feedback-reports invariant 13;
+// component-production-feedback invariant 14).
+func TestFeedbackReportTimingUsesRecordedRepositories(t *testing.T) {
+	setup := func(t *testing.T, github string) (*linkingHarness, string, string) {
+		h := newLinkingHarness(t)
+		h.setRepositories(map[string]string{"app": "acme/old"})
+		h.resolvedHistory(github)
+		oldTask := h.mergedTaskIn("acme/old", readsCommit("c9"), 9)
+		h.storeComparisonsIn("acme/old", readsCommit("c9"), map[string]bool{"1": false, "2": true})
+		h.setRepositories(map[string]string{"app": "acme/new"})
+		shared := readsCommit("a2")
+		newTask := h.mergedTaskIn("acme/new", shared, 42)
+		h.storeComparisonsIn("acme/new", shared, map[string]bool{"1": false})
+		// A contrary answer under acme/new for the acme/old task is never
+		// read for acme/old's deploy.
+		h.storeComparisonsIn("acme/new", readsCommit("c9"), map[string]bool{"1": false, "2": false})
+		h.acceptReport(reportBody(reportEntryJSON("crash", `"service":"api"`)))
+		h.settle()
+		return h, oldTask, newTask
+	}
+	t.Run("both versions recorded acme/old", func(t *testing.T) {
+		h, oldTask, newTask := setup(t, "acme/old")
+		report := h.reportByKey("crash")
+		links := h.links(report.ID)
+		if report.LinkingEndedAt == nil || len(links) != 1 {
+			t.Fatalf("ended=%v links=%v, want only the acme/old task", report.LinkingEndedAt != nil, links)
+		}
+		if _, linked := links[newTask]; linked {
+			t.Fatalf("the acme/new task %s linked", newTask)
+		}
+		if _, linked := links[oldTask]; !linked {
+			t.Fatalf("links=%v, want the acme/old task %s", links, oldTask)
+		}
+		if calls := h.forge.calls(); calls[2] != 0 {
+			t.Fatalf("calls=%v, want no comparison asked", calls)
+		}
+	})
+	t.Run("resolutions without the recorded repository", func(t *testing.T) {
+		h, _, _ := setup(t, "")
+		report := h.reportByKey("crash")
+		notes := h.notes(report.ID)
+		if report.LinkingEndedAt == nil || len(h.links(report.ID)) != 0 || len(notes) != 1 || notes[0].Kind != store.FeedbackNoteDeployNotCompare || notes[0].Deploy == nil || notes[0].Deploy.Version.Version != "2" {
+			t.Fatalf("ended=%v links=%v notes=%+v, want deploy_not_compared for version 2 and no link", report.LinkingEndedAt != nil, h.links(report.ID), notes)
+		}
+	})
 }

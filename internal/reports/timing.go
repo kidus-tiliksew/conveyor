@@ -33,11 +33,6 @@ type TimingInput struct {
 	PriorSignals map[string]store.FeedbackBoundary
 	// Resolutions are the stored answers of the environment's versions.
 	Resolutions []store.FeedbackResolution
-	// Slugs maps each configured repository name to its GitHub slug. A
-	// stored resolution records only the configured name it resolved in, so
-	// this mapping, which live status also compares in, gives the GitHub
-	// repository of each resolved commit.
-	Slugs map[string]string
 	// Merged lists the merged tasks of the workspace.
 	Merged []store.FeedbackMergedTask
 	// Comparisons are the stored comparisons among the keys Missing named.
@@ -140,9 +135,13 @@ func evidenceDeploy(deploy store.FeedbackDeploy) *store.FeedbackReportDeploy {
 //     after the report was first stored, unless no watcher is listening.
 //   - A qualifying deploy with no previous version is skipped.
 //   - A qualifying deploy whose version or previous version has no resolved
-//     commit, or whose two commits are not in one GitHub repository (compared
-//     by slug, not by configured name), gives the note deploy_not_compared.
-//     A version whose resolution is still pending leaves the rule waiting.
+//     commit, whose version or previous version has no recorded GitHub
+//     repository, or whose two recorded GitHub repositories differ, gives the
+//     note deploy_not_compared and links no task. The repository is the one
+//     each stored resolution recorded when it was read, never the current
+//     mapping of a workspace name, which can since point at another
+//     repository. A version whose resolution is still pending leaves the rule
+//     waiting.
 //   - The newly introduced tasks of a qualifying deploy are the merged tasks
 //     whose latest merge event records the deploy's GitHub repository that
 //     its version contains and its previous version does not, by merge
@@ -195,11 +194,13 @@ func Timing(input TimingInput) Outcome {
 			waiting = WaitingForResolution
 			continue
 		}
-		// The two commits are compared only in one GitHub repository: both
-		// must map to the same slug. Two configured names on one slug are one
-		// repository, and a name with no slug proves none.
-		slug := store.FeedbackRepository(input.Slugs[current.ResolvedRepository])
-		previousSlug := store.FeedbackRepository(input.Slugs[previous.ResolvedRepository])
+		// The two commits are compared only in one GitHub repository, the one
+		// both stored resolutions recorded when their commits were read
+		// (approved plan version 4). A resolution with no recorded repository,
+		// which includes every one stored before the field existed, proves
+		// none, and the current mapping of a workspace name is never used.
+		slug := store.FeedbackRepository(current.ResolvedGitHubRepository)
+		previousSlug := store.FeedbackRepository(previous.ResolvedGitHubRepository)
 		if !current.Resolved() || !previous.Resolved() || slug == "" || slug != previousSlug {
 			outcome.Notes = append(outcome.Notes, store.FeedbackReportNote{Kind: store.FeedbackNoteDeployNotCompare, Deploy: evidenceDeploy(deploy)})
 			continue

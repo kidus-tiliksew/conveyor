@@ -81,12 +81,12 @@ func (s *Store) withFeedbackStatusClaim(ctx context.Context, fn func(*sql.Tx, st
 	})
 }
 
-const feedbackResolutionColumns = `environment_id,service,reported_repository,reported_commit,reported_version,resolved_repository,resolved_commit,reason,attempted_at,next_attempt_at`
+const feedbackResolutionColumns = `environment_id,service,reported_repository,reported_commit,reported_version,resolved_repository,resolved_commit,reason,attempted_at,next_attempt_at,COALESCE(resolved_github_repository,'')`
 
 func scanFeedbackResolution(row interface{ Scan(...any) error }) (store.FeedbackResolution, error) {
 	var resolution store.FeedbackResolution
 	var next sql.NullTime
-	if err := row.Scan(&resolution.EnvironmentID, &resolution.Service, &resolution.Repository, &resolution.Commit, &resolution.Version, &resolution.ResolvedRepository, &resolution.ResolvedCommit, &resolution.Reason, &resolution.AttemptedAt, &next); err != nil {
+	if err := row.Scan(&resolution.EnvironmentID, &resolution.Service, &resolution.Repository, &resolution.Commit, &resolution.Version, &resolution.ResolvedRepository, &resolution.ResolvedCommit, &resolution.Reason, &resolution.AttemptedAt, &next, &resolution.ResolvedGitHubRepository); err != nil {
 		return store.FeedbackResolution{}, err
 	}
 	resolution.AttemptedAt = store.EnvironmentTime(resolution.AttemptedAt)
@@ -110,10 +110,15 @@ func writeFeedbackResolution(ctx context.Context, tx *sql.Tx, ws string, resolut
 	if !resolution.Resolved() {
 		next = resolution.NextAttemptAt
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO feedback_resolutions (workspace_id,environment_id,service_digest,version_digest,service,reported_repository,reported_commit,reported_version,resolved_repository,resolved_commit,reason,attempted_at,next_attempt_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON DUPLICATE KEY UPDATE resolved_repository=VALUES(resolved_repository),resolved_commit=VALUES(resolved_commit),reason=VALUES(reason),attempted_at=VALUES(attempted_at),next_attempt_at=VALUES(next_attempt_at)`,
+	// A resolution with no recorded GitHub repository stores NULL.
+	var github any
+	if resolution.ResolvedGitHubRepository != "" {
+		github = resolution.ResolvedGitHubRepository
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO feedback_resolutions (workspace_id,environment_id,service_digest,version_digest,service,reported_repository,reported_commit,reported_version,resolved_repository,resolved_commit,reason,attempted_at,next_attempt_at,resolved_github_repository) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON DUPLICATE KEY UPDATE resolved_repository=VALUES(resolved_repository),resolved_commit=VALUES(resolved_commit),reason=VALUES(reason),attempted_at=VALUES(attempted_at),next_attempt_at=VALUES(next_attempt_at),resolved_github_repository=VALUES(resolved_github_repository)`,
 		ws, resolution.EnvironmentID, store.FeedbackServiceDigest(resolution.Service), resolution.Digest(), resolution.Service, resolution.Repository, resolution.Commit, resolution.Version,
-		resolution.ResolvedRepository, resolution.ResolvedCommit, resolution.Reason, resolution.AttemptedAt, next)
+		resolution.ResolvedRepository, resolution.ResolvedCommit, resolution.Reason, resolution.AttemptedAt, next, github)
 	return err
 }
 

@@ -22,6 +22,9 @@ var feedbackReportLinkingAttemptColumns = []nullableColumn{
 	{"feedback_reports", "linking_last_attempt_at", "DATETIME(6) NULL"},
 	{"feedback_reports", "line_progress", "JSON NULL"},
 	{"feedback_reports", "timing_result", "JSON NULL"},
+	// Approved plan version 4: the GitHub repository a version's commit was
+	// read from, written when the version resolves.
+	{"feedback_resolutions", "resolved_github_repository", "LONGTEXT NULL"},
 }
 
 // lockFeedbackReport takes the workspace environment claim, the lock that

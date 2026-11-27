@@ -21,3 +21,13 @@ ALTER TABLE feedback_reports ADD COLUMN IF NOT EXISTS linking_last_attempt_at ti
 -- route or served read exposes either. NULL means that nothing was reached.
 ALTER TABLE feedback_reports ADD COLUMN IF NOT EXISTS line_progress jsonb NULL;
 ALTER TABLE feedback_reports ADD COLUMN IF NOT EXISTS timing_result jsonb NULL;
+
+-- Approved plan version 4. The canonical GitHub slug a version's commit was
+-- read from, written when the version resolves (component-feedback-reports
+-- invariant 13). The workspace repository name in resolved_repository can
+-- later point at another GitHub repository. This column records the one that
+-- answered. Only the timing rule of report linking reads it, and live status
+-- reads it nowhere. NULL proves no repository: every unresolved outcome and
+-- every row stored before this column. No backfill derives it from the
+-- current configuration.
+ALTER TABLE feedback_resolutions ADD COLUMN IF NOT EXISTS resolved_github_repository text NULL;

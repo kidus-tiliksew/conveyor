@@ -177,7 +177,9 @@ func TestProcessSignalResolvesAfterTheRule(t *testing.T) {
 	}
 	f.advance(time.Minute)
 	f.signal(commitVersion(commit))
-	if got := f.resolution(commit); !got.Resolved() || got.ResolvedCommit != commit || got.ResolvedRepository != "conveyor" {
+	// The GitHub repository the commit was read from is stored with the
+	// resolution (approved plan version 4); a failed attempt stored none.
+	if got := f.resolution(commit); !got.Resolved() || got.ResolvedCommit != commit || got.ResolvedRepository != "conveyor" || got.ResolvedGitHubRepository != "acme/conveyor" {
 		t.Fatalf("resolution=%+v", got)
 	}
 	f.advance(time.Hour)

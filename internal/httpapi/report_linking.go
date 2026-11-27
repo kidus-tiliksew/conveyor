@@ -592,12 +592,10 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 	if err != nil {
 		return reports.Outcome{}, err
 	}
-	slugs := map[string]string{}
-	for _, repository := range repositories {
-		slugs[repository.Name] = repository.Slug
-	}
+	// The deploy's repository comes from each stored resolution's recorded
+	// GitHub repository, never from the current workspace configuration.
 	input := reports.TimingInput{Report: report, TimingWindowMinutes: environment.TimingWindowMinutes, Deploys: deploys, PriorSignals: priors,
-		Resolutions: inputs.Resolutions, Slugs: slugs, Merged: merged, SignalAfterReport: signalAfter, Listening: listening}
+		Resolutions: inputs.Resolutions, Merged: merged, SignalAfterReport: signalAfter, Listening: listening}
 	outcome := reports.Timing(input)
 	if len(outcome.Missing) > 0 {
 		if input.Comparisons, err = a.feedback.ListFeedbackComparisons(ctx, outcome.Missing); err != nil {

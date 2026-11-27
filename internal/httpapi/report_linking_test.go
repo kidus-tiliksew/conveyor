@@ -465,7 +465,7 @@ func (h *linkingHarness) timingHistory() {
 			h.t.Fatal(err)
 		}
 		resolution := store.FeedbackResolution{FeedbackVersionRef: store.FeedbackVersionRef{EnvironmentID: h.environment.ID, Service: "api", FeedbackVersion: store.FeedbackVersion{Version: version}},
-			ResolvedRepository: "app", ResolvedCommit: readsCommit("a" + version), AttemptedAt: at}
+			ResolvedRepository: "app", ResolvedGitHubRepository: "acme/app", ResolvedCommit: readsCommit("a" + version), AttemptedAt: at}
 		if err := h.st.RecordFeedbackResolution(system, resolution); err != nil {
 			h.t.Fatal(err)
 		}
