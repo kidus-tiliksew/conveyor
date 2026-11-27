@@ -13,6 +13,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/feedback"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
@@ -173,8 +174,8 @@ func TestFeedbackReportResolveAcrossTheAllowance(t *testing.T) {
 		h.advance(time.Minute + time.Second)
 		h.attempt(report.ID)
 		calls := h.forge.calls()
-		if calls[0] != 61 || calls[1] != 1 {
-			t.Fatalf("calls=%v, want 61 commit reads and one line read", calls)
+		if calls[0] != 61 || calls[1] != 1 || !slices.Equal(h.forge.lineSlugs, []string{"acme/r37"}) {
+			t.Fatalf("calls=%v line slugs=%v, want 61 commit reads and one line read of acme/r37", calls, h.forge.lineSlugs)
 		}
 		for slug, reads := range h.forge.readsBySlug {
 			if reads != 1 {
@@ -182,7 +183,7 @@ func TestFeedbackReportResolveAcrossTheAllowance(t *testing.T) {
 			}
 		}
 		ended := h.reportByID(report.ID)
-		if ended.LinkingEndedAt == nil || ended.LineProgress.Repository != "r37" || ended.LineProgress.Commit != linkingResolved {
+		if ended.LinkingEndedAt == nil || ended.LineProgress.Repository != "r37" || ended.LineProgress.Slug != "acme/r37" || ended.LineProgress.Commit != linkingResolved {
 			t.Fatalf("report=%+v progress=%+v", ended, ended.LineProgress)
 		}
 		if links := h.links(report.ID); len(links) != 1 || links[task].State != store.FeedbackReportLinkPossible {
@@ -299,7 +300,7 @@ func jsonEqual(t *testing.T, a, b any) bool {
 // resumeSetup is a report that both rules apply to: the line read links the
 // task merged at linkingChange, and the timing rule links the task merged at
 // c3, which version 2 newly holds. No watcher listens.
-func resumeSetup(t *testing.T, fileFound bool) (*linkingHarness, store.FeedbackReport) {
+func resumeSetup(t *testing.T, fileFound bool, lineFailure error) (*linkingHarness, store.FeedbackReport) {
 	h := newLinkingHarness(t)
 	h.timingHistory()
 	h.mergedTask(linkingChange, 7)
@@ -311,6 +312,9 @@ func resumeSetup(t *testing.T, fileFound bool) (*linkingHarness, store.FeedbackR
 		if !fileFound {
 			f.answer = github.LineChange{FileFound: false}
 		}
+		// The failure is set before the report is sent, so the first line
+		// read already meets it. The first commit read is not affected.
+		f.failure = lineFailure
 	})
 	h.acceptReport(reportBody(lineEntry("crash", `"service":"api"`)))
 	return h, h.reportByKey("crash")
@@ -323,7 +327,7 @@ func resumeSetup(t *testing.T, fileFound bool) (*linkingHarness, store.FeedbackR
 // event as an uninterrupted run (approved plan version 3).
 func TestFeedbackReportResumesFromTheStore(t *testing.T) {
 	uninterrupted := func(t *testing.T, fileFound bool) string {
-		h, report := resumeSetup(t, fileFound)
+		h, report := resumeSetup(t, fileFound, nil)
 		h.settle()
 		h.advance(time.Minute + time.Second)
 		h.attempt(report.ID)
@@ -339,10 +343,7 @@ func TestFeedbackReportResumesFromTheStore(t *testing.T) {
 	wantMissing := uninterrupted(t, false)
 
 	t.Run("after the resolution is stored", func(t *testing.T) {
-		h, report := resumeSetup(t, true)
-		h.forge.set(func(f *linkingForge) {
-			f.failure = github.StatusError(http.StatusBadGateway, errors.New("bad gateway"))
-		})
+		h, report := resumeSetup(t, true, github.StatusError(http.StatusBadGateway, errors.New("bad gateway")))
 		h.settle()
 		stored := h.reportByID(report.ID)
 		if stored.LineProgress == nil || stored.LineProgress.Commit != linkingResolved || h.forge.calls() != [3]int{1, 1, 4} {
@@ -360,7 +361,7 @@ func TestFeedbackReportResumesFromTheStore(t *testing.T) {
 		}
 	})
 	t.Run("after the line read and the comparisons are stored", func(t *testing.T) {
-		h, report := resumeSetup(t, true)
+		h, report := resumeSetup(t, true, nil)
 		h.settle()
 		h.freshWorker()
 		h.advance(time.Minute + time.Second)
@@ -373,7 +374,7 @@ func TestFeedbackReportResumesFromTheStore(t *testing.T) {
 		}
 	})
 	t.Run("after a missing file is stored", func(t *testing.T) {
-		h, report := resumeSetup(t, false)
+		h, report := resumeSetup(t, false, nil)
 		h.settle()
 		if _, stored, _ := h.st.ReadFeedbackReportLineRead(h.ctx, report.ID); !stored {
 			t.Fatal("the missing file was not stored")
@@ -389,10 +390,7 @@ func TestFeedbackReportResumesFromTheStore(t *testing.T) {
 		}
 	})
 	t.Run("after the timing result is stored while the line rule waits", func(t *testing.T) {
-		h, report := resumeSetup(t, true)
-		h.forge.set(func(f *linkingForge) {
-			f.failure = github.StatusError(http.StatusBadGateway, errors.New("bad gateway"))
-		})
+		h, report := resumeSetup(t, true, github.StatusError(http.StatusBadGateway, errors.New("bad gateway")))
 		h.settle()
 		h.freshWorker()
 		h.advance(store.FeedbackAdmissionLease + time.Second)
@@ -417,10 +415,7 @@ func TestFeedbackReportResumesFromTheStore(t *testing.T) {
 		}
 	})
 	t.Run("expiry after the timing result is stored", func(t *testing.T) {
-		h, report := resumeSetup(t, true)
-		h.forge.set(func(f *linkingForge) {
-			f.failure = github.StatusError(http.StatusBadGateway, errors.New("bad gateway"))
-		})
+		h, report := resumeSetup(t, true, github.StatusError(http.StatusBadGateway, errors.New("bad gateway")))
 		h.settle()
 		h.freshWorker()
 		h.advance(store.FeedbackAdmissionLease + time.Second)
@@ -439,4 +434,65 @@ func TestFeedbackReportResumesFromTheStore(t *testing.T) {
 			t.Fatalf("notes=%+v links=%+v, want the stored timing link and not_checked for the line rule", notes, links)
 		}
 	})
+}
+
+// TestFeedbackReportLineReadUsesTheResolvedSlug proves that the line read asks
+// the GitHub repository that resolved the commit, by its stored slug, even
+// after the configured name points at another repository.
+func TestFeedbackReportLineReadUsesTheResolvedSlug(t *testing.T) {
+	h := newLinkingHarness(t)
+	h.forge.set(func(f *linkingForge) {
+		f.failure = github.StatusError(http.StatusBadGateway, errors.New("bad gateway"))
+	})
+	h.acceptReport(reportBody(lineEntry("crash")))
+	h.settle()
+	report := h.reportByKey("crash")
+	if report.LineProgress == nil || report.LineProgress.Slug != "acme/app" {
+		t.Fatalf("progress=%+v, want the resolution stored with slug acme/app", report.LineProgress)
+	}
+	current, err := h.st.WorkspaceConfig(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.UpdateWorkspaceConfig(h.ctx, current.Version, &config.Config{Workspace: "alpha", Repos: []config.Repo{{Name: "app", URL: "https://example.test/app", Base: "main", GitHub: "acme/other"}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.forge.set(func(f *linkingForge) { f.failure = nil })
+	h.freshWorker()
+	h.advance(store.FeedbackAdmissionLease + time.Second)
+	h.attempt(report.ID)
+	if !slices.Equal(h.forge.lineSlugs, []string{"acme/app", "acme/app"}) || h.forge.calls()[0] != 1 {
+		t.Fatalf("line slugs=%v calls=%v, want both line reads of acme/app and one commit read", h.forge.lineSlugs, h.forge.calls())
+	}
+}
+
+// TestFeedbackReportQueuedComparisonsHonorTheHold proves that a comparison
+// the linking work queued sends nothing while a retry time is ahead, even
+// when the hold was recorded after it was queued, and that it stays pending.
+// A comparison that a live-status read asks for is not held this way.
+func TestFeedbackReportQueuedComparisonsHonorTheHold(t *testing.T) {
+	h := newLinkingHarness(t)
+	keys := []store.FeedbackComparisonKey{{Repository: "acme/app", Base: readsCommit("c3"), Head: readsCommit("a2")}}
+	env := h.server.feedbackJobEnv()
+	env.backoff.recordRateLimit("alpha", github.RateLimitedError(h.clock().Add(5*time.Minute), errors.New("rate limit")), h.clock())
+	env.requestLinkingAnswers("alpha", keys)
+	h.settle()
+	if calls := h.forge.calls(); calls[2] != 0 {
+		t.Fatalf("calls=%v, want no comparison while held", calls)
+	}
+	stored, err := h.st.ListFeedbackComparisons(h.ctx, keys)
+	if err != nil || len(stored) != 0 {
+		t.Fatalf("stored=%+v err=%v, want the comparison pending", stored, err)
+	}
+	h.server.requestFeedbackAnswers("alpha", feedback.Missing{Comparisons: keys})
+	h.settle()
+	if calls := h.forge.calls(); calls[2] != 1 {
+		t.Fatalf("calls=%v, want the live-status read to compare", calls)
+	}
+	h.advance(5*time.Minute + time.Second)
+	env.requestLinkingAnswers("alpha", []store.FeedbackComparisonKey{{Repository: "acme/app", Base: readsCommit("c3"), Head: readsCommit("a1")}})
+	h.settle()
+	if calls := h.forge.calls(); calls[2] != 2 {
+		t.Fatalf("calls=%v, want the linking comparison after the retry time", calls)
+	}
 }

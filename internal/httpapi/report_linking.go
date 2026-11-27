@@ -43,9 +43,6 @@ const (
 	// of the same read still holds its admission lease, which a failed read
 	// keeps until the lease ends.
 	feedbackWaitingAllowance = "github_allowance"
-	// feedbackWaitingNoRepository: the read's repository is not in the
-	// workspace configuration any more.
-	feedbackWaitingNoRepository = "repository_not_configured"
 	// feedbackWaitingLineUnanswered: an attempt at or after 24 hours found
 	// no stored line read and no reason an earlier attempt of this process
 	// named.
@@ -204,6 +201,18 @@ type feedbackAttemptForge struct {
 func (f *feedbackAttemptForge) held() error {
 	if until, held := f.env.backoff.forgeHold(f.workspace, f.env.clock()); held {
 		return github.RateLimitedError(until, errFeedbackForgeHeld)
+	}
+	return nil
+}
+
+// Ready implements feedback.ReadyForge: while a retry time is ahead the
+// forge cannot start a request, so a read job admits and charges nothing.
+func (f *feedbackAttemptForge) Ready(ctx context.Context) error {
+	if err := f.held(); err != nil {
+		return err
+	}
+	if ready, ok := f.inner.(feedback.ReadyForge); ok {
+		return ready.Ready(ctx)
 	}
 	return nil
 }
@@ -420,7 +429,7 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 				logFeedbackReport(a.job.workspace, report.EnvironmentID, report.ID, "pending", "resolve", err)
 				continue
 			}
-			if progress, err = a.saveLineStep(ctx, store.FeedbackLineStep{Candidate: candidate.Name, Answer: answer}); err != nil {
+			if progress, err = a.saveLineStep(ctx, store.FeedbackLineStep{Candidate: store.FeedbackRepository(candidate.Slug), Answer: answer}); err != nil {
 				return reports.Outcome{}, err
 			}
 			if next := reports.PlanResolve(request, &progress); next.Final != nil {
@@ -448,15 +457,9 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 	case a.expired:
 		return reports.Outcome{Waiting: a.expiredLineReason()}, nil
 	}
-	slug := ""
-	for _, repository := range repositories {
-		if repository.Name == progress.Repository {
-			slug = repository.Slug
-		}
-	}
-	if slug == "" {
-		return reports.Outcome{Waiting: feedbackWaitingNoRepository}, nil
-	}
+	// The line read asks the GitHub repository that resolved the commit, by
+	// its stored slug, whatever the configured name points at now.
+	slug := progress.Slug
 	if ok, reason := a.mayCall(); !ok {
 		return reports.Outcome{Waiting: reason}, nil
 	}
@@ -468,7 +471,7 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 	if len(admitted) == 0 {
 		return reports.Outcome{Waiting: feedbackWaitingAllowance}, nil
 	}
-	answer, err := a.forge.ReadLineChange(ctx, store.FeedbackRepository(slug), progress.Commit, report.File, report.Line)
+	answer, err := a.forge.ReadLineChange(ctx, slug, progress.Commit, report.File, report.Line)
 	if err != nil {
 		logFeedbackReport(a.job.workspace, report.EnvironmentID, report.ID, "pending", "line_read", err)
 		return reports.Outcome{Waiting: feedbackReportErrorClass(err)}, nil
@@ -594,7 +597,28 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 	// retry time, a rate limit of this attempt's line rule included, asks for
 	// nothing, and the comparisons stay pending.
 	if ok, _ := a.mayCall(); ok && len(outcome.Missing) > 0 && a.job.env.worker != nil {
-		a.job.env.requestAnswers(a.job.workspace, feedback.Missing{Comparisons: outcome.Missing})
+		a.job.env.requestLinkingAnswers(a.job.workspace, outcome.Missing)
 	}
 	return outcome, nil
+}
+
+// requestLinkingAnswers queues the comparisons the timing rule needs as a
+// linking read job. The job sends each comparison through
+// feedbackAttemptForge, so a retry time recorded after the job was queued
+// still holds its requests, and the comparisons not sent stay pending
+// (component-production-feedback invariant 28). Comparisons that a read of
+// live status asks for keep their own job and are not held this way.
+func (env feedbackJobEnv) requestLinkingAnswers(workspace string, keys []store.FeedbackComparisonKey) {
+	comparisons := store.NormalizeFeedbackComparisonKeys(keys)
+	if len(comparisons) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(comparisons))
+	for _, key := range comparisons {
+		parts = append(parts, key.Repository+"/"+key.Base+"/"+key.Head)
+	}
+	slices.Sort(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, ",")))
+	key := "link-read:" + workspace + ":" + hex.EncodeToString(sum[:])
+	env.worker.enqueue(feedbackJob{key: key, workspace: workspace, missing: feedback.Missing{Comparisons: comparisons}, linking: true, env: env})
 }

@@ -32,13 +32,14 @@ type ResolvePlan struct {
 // the only candidate, and otherwise every configured repository with a slug
 // is; two matches are ambiguous; one match among answered candidates is the
 // resolution; no match among answered candidates is no_match. It reads
-// stored answers only and never asks for one of them again.
+// stored answers only, by each candidate's current GitHub slug, and never
+// asks for one of them again.
 func PlanResolve(request feedback.ResolveRequest, progress *store.FeedbackLineProgress) ResolvePlan {
 	if progress.Ended() {
 		if progress.Unresolved != "" {
 			return ResolvePlan{Final: &store.FeedbackLineStep{Unresolved: progress.Unresolved}}
 		}
-		return ResolvePlan{Final: &store.FeedbackLineStep{Repository: progress.Repository, Commit: progress.Commit}}
+		return ResolvePlan{Final: &store.FeedbackLineStep{Repository: progress.Repository, Slug: progress.Slug, Commit: progress.Commit}}
 	}
 	candidates := []feedback.Repository{}
 	for _, repository := range request.Repositories {
@@ -75,8 +76,10 @@ func PlanResolve(request feedback.ResolveRequest, progress *store.FeedbackLinePr
 	if progress != nil {
 		answers = progress.Candidates
 	}
+	// An answer is keyed by the GitHub slug read, so a name that now points at
+	// another repository has no answer and is read again.
 	for _, candidate := range candidates {
-		answer, answered := answers[candidate.Name]
+		answer, answered := answers[store.FeedbackRepository(candidate.Slug)]
 		switch {
 		case !answered:
 			plan.Reads = append(plan.Reads, candidate)
@@ -90,7 +93,8 @@ func PlanResolve(request feedback.ResolveRequest, progress *store.FeedbackLinePr
 	case len(plan.Reads) > 0:
 		return plan
 	case len(matches) == 1:
-		return ResolvePlan{Final: &store.FeedbackLineStep{Repository: matches[0].Name, Commit: answers[matches[0].Name]}}
+		slug := store.FeedbackRepository(matches[0].Slug)
+		return ResolvePlan{Final: &store.FeedbackLineStep{Repository: matches[0].Name, Slug: slug, Commit: answers[slug]}}
 	}
 	return ResolvePlan{Final: &store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch}}
 }

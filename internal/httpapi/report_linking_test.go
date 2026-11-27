@@ -43,6 +43,8 @@ type linkingForge struct {
 	commits     map[string]string
 	readsBySlug map[string]int
 	statuses    map[string]string
+	// lineSlugs records the slug of each line read.
+	lineSlugs []string
 }
 
 func newLinkingForge() *linkingForge {
@@ -111,6 +113,7 @@ func (f *linkingForge) ReadLineChange(_ context.Context, slug, commit, path stri
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lineReads++
+	f.lineSlugs = append(f.lineSlugs, slug)
 	if !strings.HasPrefix(slug, "acme/") || commit != linkingResolved || path != "cmd/main.go" || line != 12 {
 		return github.LineChange{}, errors.New("unexpected line read")
 	}

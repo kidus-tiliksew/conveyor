@@ -460,15 +460,19 @@ const FeedbackLineAbsent = "absent"
 
 // FeedbackLineProgress is the stored progress of a report's line rule, so a
 // fresh worker continues from the store alone (component-feedback-reports
-// invariants 12 and 15; approved plan version 3). Candidates holds, by
-// repository name of the workspace configuration, the definitive answer of
-// that repository's commit read: a full commit or FeedbackLineAbsent. Once
-// resolving ends, either Repository and Commit hold the resolved repository
-// and full commit, or Unresolved holds a definitive unresolved reason. A
-// retryable failure is never stored. It holds no report text.
+// invariants 12 and 15; approved plan version 3). Candidates holds, by the
+// canonical GitHub slug a candidate repository named when it was read, the
+// definitive answer of that commit read: a full commit or FeedbackLineAbsent.
+// An answer is a fact about that GitHub repository, so a configured name that
+// later points at another repository is read again. Once resolving ends,
+// either Repository, Slug, and Commit hold the resolved configured name, its
+// GitHub slug, and the full commit, or Unresolved holds a definitive
+// unresolved reason. The line read uses the stored slug. A retryable failure
+// is never stored. It holds no report text.
 type FeedbackLineProgress struct {
 	Candidates map[string]string `json:"candidates,omitempty"`
 	Repository string            `json:"repository,omitempty"`
+	Slug       string            `json:"slug,omitempty"`
 	Commit     string            `json:"commit,omitempty"`
 	Unresolved string            `json:"unresolved,omitempty"`
 }
@@ -479,13 +483,14 @@ func (p *FeedbackLineProgress) Ended() bool {
 }
 
 // FeedbackLineStep is one definitive result of resolving to store: one
-// candidate answer (Candidate and Answer), the resolution (Repository and
-// Commit), or a definitive unresolved reason (Unresolved). Exactly one kind
-// is set.
+// candidate answer (Candidate, the canonical slug read, and Answer), the
+// resolution (Repository, Slug, and Commit), or a definitive unresolved
+// reason (Unresolved). Exactly one kind is set.
 type FeedbackLineStep struct {
 	Candidate  string
 	Answer     string
 	Repository string
+	Slug       string
 	Commit     string
 	Unresolved string
 }
@@ -512,10 +517,13 @@ func ApplyFeedbackLineStep(stored *FeedbackLineProgress, step FeedbackLineStep) 
 			return progress, false, fmt.Errorf("a candidate answer needs a repository and a full commit or an absence")
 		}
 	}
-	if step.Repository != "" || step.Commit != "" {
+	if step.Candidate != "" && step.Candidate != FeedbackRepository(step.Candidate) {
+		return progress, false, fmt.Errorf("a candidate answer is keyed by the canonical GitHub slug")
+	}
+	if step.Repository != "" || step.Slug != "" || step.Commit != "" {
 		kinds++
-		if step.Repository == "" || !FeedbackCommitID(step.Commit) {
-			return progress, false, fmt.Errorf("a resolution needs a repository and a full commit")
+		if step.Repository == "" || FeedbackRepository(step.Slug) == "" || !FeedbackCommitID(step.Commit) {
+			return progress, false, fmt.Errorf("a resolution needs a repository, its slug, and a full commit")
 		}
 	}
 	if step.Unresolved != "" {
@@ -539,7 +547,7 @@ func ApplyFeedbackLineStep(stored *FeedbackLineProgress, step FeedbackLineStep) 
 	case progress.Ended():
 		return progress, false, nil
 	case step.Commit != "":
-		progress.Repository, progress.Commit = step.Repository, step.Commit
+		progress.Repository, progress.Slug, progress.Commit = step.Repository, FeedbackRepository(step.Slug), step.Commit
 	default:
 		progress.Unresolved = step.Unresolved
 	}

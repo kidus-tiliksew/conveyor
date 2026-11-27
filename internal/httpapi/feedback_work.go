@@ -41,6 +41,9 @@ type feedbackJob struct {
 	// (component-feedback-reports invariant 15).
 	reports *feedbackReportsRequest
 	report  string
+	// linking marks a read job that the linking work queued. Its forge calls
+	// honor the workspace's retry hold.
+	linking bool
 	env     feedbackJobEnv
 }
 
@@ -237,6 +240,9 @@ func runFeedbackJob(job feedbackJob) {
 	// retry time GitHub named (component-production-feedback invariants 7
 	// to 9; req-production-feedback AC-1.4).
 	forge := job.env.lazyForge(job.workspace)
+	if job.linking {
+		forge = &feedbackAttemptForge{inner: forge, env: job.env, workspace: job.workspace}
+	}
 	work := feedback.Work{Store: backend, Forge: forge, Now: job.env.clock, Logf: log.Printf}
 	if job.signal == nil {
 		// A rate limit on a branch read stops the job before any comparison

@@ -22,23 +22,23 @@ func TestPlanResolve(t *testing.T) {
 	if plan.Final != nil || len(plan.Reads) != 3 || plan.Ref != "aaaaaaa" || plan.Prefix != "aaaaaaa" {
 		t.Fatalf("no answers: %+v", plan)
 	}
-	progress := &store.FeedbackLineProgress{Candidates: map[string]string{"a": store.FeedbackLineAbsent}}
+	progress := &store.FeedbackLineProgress{Candidates: map[string]string{"acme/a": store.FeedbackLineAbsent}}
 	if plan := PlanResolve(request, progress); plan.Final != nil || len(plan.Reads) != 2 || plan.Reads[0].Name != "b" {
 		t.Fatalf("one absence: %+v", plan)
 	}
-	progress.Candidates["b"] = shaA
+	progress.Candidates["acme/b"] = shaA
 	if plan := PlanResolve(request, progress); plan.Final != nil || len(plan.Reads) != 1 {
 		t.Fatalf("one match, one candidate left: %+v", plan)
 	}
-	progress.Candidates["c"] = store.FeedbackLineAbsent
-	if plan := PlanResolve(request, progress); plan.Final == nil || *plan.Final != (store.FeedbackLineStep{Repository: "b", Commit: shaA}) {
+	progress.Candidates["acme/c"] = store.FeedbackLineAbsent
+	if plan := PlanResolve(request, progress); plan.Final == nil || *plan.Final != (store.FeedbackLineStep{Repository: "b", Slug: "acme/b", Commit: shaA}) {
 		t.Fatalf("unique match: %+v", plan)
 	}
-	two := &store.FeedbackLineProgress{Candidates: map[string]string{"a": shaA, "c": shaA}}
+	two := &store.FeedbackLineProgress{Candidates: map[string]string{"acme/a": shaA, "acme/c": shaA}}
 	if plan := PlanResolve(request, two); plan.Final == nil || plan.Final.Unresolved != store.FeedbackReasonAmbiguous {
 		t.Fatalf("two matches before every answer: %+v", plan)
 	}
-	none := &store.FeedbackLineProgress{Candidates: map[string]string{"a": store.FeedbackLineAbsent, "b": store.FeedbackLineAbsent, "c": store.FeedbackLineAbsent}}
+	none := &store.FeedbackLineProgress{Candidates: map[string]string{"acme/a": store.FeedbackLineAbsent, "acme/b": store.FeedbackLineAbsent, "acme/c": store.FeedbackLineAbsent}}
 	if plan := PlanResolve(request, none); plan.Final == nil || plan.Final.Unresolved != store.FeedbackReasonNoMatch {
 		t.Fatalf("no match: %+v", plan)
 	}
@@ -54,6 +54,13 @@ func TestPlanResolve(t *testing.T) {
 		if plan := PlanResolve(tc.request, nil); plan.Final == nil || plan.Final.Unresolved != tc.reason || len(plan.Reads) != 0 {
 			t.Fatalf("%s: %+v, want %s with no read", tc.name, plan, tc.reason)
 		}
+	}
+	// A configured name that now points at another GitHub repository has no
+	// answer for that repository, so it is read again; the old answer stays a
+	// fact about the old repository.
+	repointed := feedback.ResolveRequest{Version: request.Version, Repositories: []feedback.Repository{{Name: "a", Slug: "Acme/A2"}, {Name: "b", Slug: "acme/b"}, {Name: "c", Slug: "acme/c"}}}
+	if plan := PlanResolve(repointed, none); plan.Final != nil || len(plan.Reads) != 1 || plan.Reads[0].Slug != "Acme/A2" {
+		t.Fatalf("a repointed name: %+v, want one read of the new repository", plan)
 	}
 	stored := &store.FeedbackLineProgress{Unresolved: store.FeedbackReasonNoMatch}
 	if plan := PlanResolve(request, stored); plan.Final == nil || plan.Final.Unresolved != store.FeedbackReasonNoMatch || len(plan.Reads) != 0 {

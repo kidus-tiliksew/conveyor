@@ -605,14 +605,14 @@ func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 		return progress
 	}
 	commit := feedbackCommit("c0")
-	save(store.FeedbackLineStep{Candidate: "app", Answer: store.FeedbackLineAbsent})
-	progress := save(store.FeedbackLineStep{Candidate: "docs", Answer: commit})
-	want := store.FeedbackLineProgress{Candidates: map[string]string{"app": store.FeedbackLineAbsent, "docs": commit}}
+	save(store.FeedbackLineStep{Candidate: "acme/app", Answer: store.FeedbackLineAbsent})
+	progress := save(store.FeedbackLineStep{Candidate: "acme/docs", Answer: commit})
+	want := store.FeedbackLineProgress{Candidates: map[string]string{"acme/app": store.FeedbackLineAbsent, "acme/docs": commit}}
 	if !reflect.DeepEqual(progress, want) {
 		t.Fatalf("progress=%+v, want %+v", progress, want)
 	}
 	// A second answer for a candidate is not stored.
-	if again := save(store.FeedbackLineStep{Candidate: "app", Answer: commit}); !reflect.DeepEqual(again, want) {
+	if again := save(store.FeedbackLineStep{Candidate: "acme/app", Answer: commit}); !reflect.DeepEqual(again, want) {
 		t.Fatalf("a second answer replaced the first: %+v", again)
 	}
 	// Retryable reasons and malformed steps are refused and store nothing.
@@ -620,9 +620,11 @@ func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 		{Unresolved: store.FeedbackReasonPending},
 		{Unresolved: "forge_status"},
 		{Unresolved: store.FeedbackReasonNoGitHubApp},
-		{Candidate: "app", Answer: "abc"},
-		{Repository: "docs", Commit: "abc"},
-		{Candidate: "app", Answer: store.FeedbackLineAbsent, Unresolved: store.FeedbackReasonNoMatch},
+		{Candidate: "acme/app", Answer: "abc"},
+		{Candidate: "Acme/App", Answer: store.FeedbackLineAbsent},
+		{Repository: "docs", Slug: "acme/docs", Commit: "abc"},
+		{Repository: "docs", Commit: feedbackCommit("c0")},
+		{Candidate: "acme/app", Answer: store.FeedbackLineAbsent, Unresolved: store.FeedbackReasonNoMatch},
 		{},
 	} {
 		if _, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, step); err == nil {
@@ -633,12 +635,12 @@ func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 		t.Fatalf("stored progress after refusals=%+v, want %+v", stored.LineProgress, want)
 	}
 	// The resolution is stored once; a later reason or answer changes nothing.
-	progress = save(store.FeedbackLineStep{Repository: "docs", Commit: commit})
-	want.Repository, want.Commit = "docs", commit
+	progress = save(store.FeedbackLineStep{Repository: "docs", Slug: "Acme/Docs", Commit: commit})
+	want.Repository, want.Slug, want.Commit = "docs", "acme/docs", commit
 	if !reflect.DeepEqual(progress, want) {
 		t.Fatalf("progress=%+v, want %+v", progress, want)
 	}
-	for _, step := range []store.FeedbackLineStep{{Unresolved: store.FeedbackReasonNoMatch}, {Repository: "app", Commit: feedbackCommit("c1")}, {Candidate: "web", Answer: store.FeedbackLineAbsent}} {
+	for _, step := range []store.FeedbackLineStep{{Unresolved: store.FeedbackReasonNoMatch}, {Repository: "app", Slug: "acme/app", Commit: feedbackCommit("c1")}, {Candidate: "acme/web", Answer: store.FeedbackLineAbsent}} {
 		if again := save(step); !reflect.DeepEqual(again, want) {
 			t.Fatalf("step %+v changed the ended progress: %+v", step, again)
 		}
