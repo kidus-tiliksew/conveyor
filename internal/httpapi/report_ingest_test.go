@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -164,7 +165,10 @@ func TestFeedbackReportBounds(t *testing.T) {
 		t.Fatalf("report of every field=%+v", got)
 	}
 
-	h.advance(feedbackSignalWindow)
+	// The refusals are sent inside the window of an accepted request, so a
+	// check that ran after the reservation would answer 429.
+	h.acceptReport(reportBody(reportEntryJSON("window")))
+	h.advance(time.Second)
 	before := h.reportStored()
 	valid := reportEntryJSON("valid")
 	secret := "ghp_0123456789abcdefghij0123456789abcdefghij"
@@ -229,8 +233,9 @@ func TestFeedbackReportBounds(t *testing.T) {
 	if after := h.reportStored(); after != before {
 		t.Fatalf("a refused request changed a record:\nbefore %s\nafter  %s", before, after)
 	}
-	// Each refusal started no window, so a valid request at the same time
-	// is accepted.
+	// Each refusal took no rate slot: a valid request 5 seconds after the
+	// accepted one, and 4 seconds after the refusals, is accepted.
+	h.advance(feedbackSignalWindow - time.Second)
 	if response := h.sendReport(h.key.Value, reportBody(valid)); response.Code != http.StatusAccepted {
 		t.Fatalf("valid request after refusals: status=%d body=%s", response.Code, response.Body)
 	}
@@ -646,10 +651,36 @@ func TestFeedbackReportOpenLimit(t *testing.T) {
 	}
 }
 
-// feedbackReportStore replaces the report write when it is set.
+// feedbackReportStore replaces each store call of the report route that is
+// set: the key check, the read of stored secrets, the repository check, and
+// the write.
 type feedbackReportStore struct {
 	store.Backend
-	record func(context.Context, store.FeedbackReportBatch) error
+	checkKey          func(context.Context, string) (store.VerifiedEnvironmentKey, error)
+	secrets           func(context.Context) ([]string, error)
+	checkRepositories func(context.Context, store.FeedbackReportBatch) error
+	record            func(context.Context, store.FeedbackReportBatch) error
+}
+
+func (f feedbackReportStore) CheckEnvironmentKey(ctx context.Context, value string) (store.VerifiedEnvironmentKey, error) {
+	if f.checkKey == nil {
+		return f.Backend.CheckEnvironmentKey(ctx, value)
+	}
+	return f.checkKey(ctx, value)
+}
+
+func (f feedbackReportStore) ListGitHubAppKeysForRedaction(ctx context.Context) ([]string, error) {
+	if f.secrets == nil {
+		return f.Backend.ListGitHubAppKeysForRedaction(ctx)
+	}
+	return f.secrets(ctx)
+}
+
+func (f feedbackReportStore) CheckFeedbackReportRepositories(ctx context.Context, batch store.FeedbackReportBatch) error {
+	if f.checkRepositories == nil {
+		return f.Backend.CheckFeedbackReportRepositories(ctx, batch)
+	}
+	return f.checkRepositories(ctx, batch)
 }
 
 func (f feedbackReportStore) RecordFeedbackReports(ctx context.Context, batch store.FeedbackReportBatch) error {
@@ -657,6 +688,254 @@ func (f feedbackReportStore) RecordFeedbackReports(ctx context.Context, batch st
 		return f.Backend.RecordFeedbackReports(ctx, batch)
 	}
 	return f.record(ctx, batch)
+}
+
+// TestFeedbackReportStoredSecretBeforeReservation proves that a stored
+// secret in a text other than the summary is refused before the rate
+// reservation: inside the window of an accepted request it gets the fixed
+// field refusal, not 429, it never reaches the write, and it takes no rate
+// slot (component-feedback-reports invariants 3, 5, and 10).
+func TestFeedbackReportStoredSecretBeforeReservation(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	// The secret matches no pattern and is a valid commit, so only the stored
+	// secret refuses it.
+	const secret = "deadbeef48151623"
+	if clean, _ := redact.New(nil).Redact(secret); clean != secret {
+		t.Fatal("the fixture secret matches a pattern, so it does not prove the stored-secret check")
+	}
+	var writes atomic.Int32
+	h.use(feedbackReportStore{
+		Backend: h.st,
+		secrets: func(ctx context.Context) ([]string, error) {
+			stored, err := h.st.ListGitHubAppKeysForRedaction(ctx)
+			return append(stored, secret), err
+		},
+		record: func(ctx context.Context, batch store.FeedbackReportBatch) error {
+			writes.Add(1)
+			return h.st.RecordFeedbackReports(ctx, batch)
+		},
+	})
+	h.acceptReport(feedbackMinimalReport)
+	h.advance(time.Second)
+	before, written := h.reportStored(), writes.Load()
+	valid := reportEntryJSON("valid")
+	for _, c := range []struct{ member, entry string }{
+		{"key", reportEntryJSON("k-" + secret)},
+		{"service", reportEntryJSON("other", `"service":"`+secret+`"`)},
+		{"repository", reportEntryJSON("other", `"repository":"`+secret+`"`)},
+		{"commit", reportEntryJSON("other", `"commit":"`+secret+`"`)},
+		{"version", reportEntryJSON("other", `"version":"v-`+secret+`"`)},
+		{"file", reportEntryJSON("other", `"file":"dir/`+secret+`.go","line":1`)},
+	} {
+		response := h.sendReport(h.key.Value, reportBody(valid, c.entry))
+		requireReportRefusal(t, response, "reports[1]."+c.member, secret)
+		var body map[string]string
+		decodeEnvironmentBody(t, response, &body)
+		if body["message"] != "must not hold a credential or other secret" {
+			t.Fatalf("%s: message=%q, want the fixed stored-secret refusal", c.member, body["message"])
+		}
+	}
+	if writes.Load() != written {
+		t.Fatal("a request holding a stored secret reached the write")
+	}
+	if after := h.reportStored(); after != before {
+		t.Fatalf("a refused request changed a record:\nbefore %s\nafter  %s", before, after)
+	}
+	// The refusals took no rate slot: a valid request when the accepted
+	// one's window ends, 4 seconds after them, is accepted.
+	h.advance(feedbackSignalWindow - time.Second)
+	if response := h.sendReport(h.key.Value, reportBody(valid)); response.Code != http.StatusAccepted {
+		t.Fatalf("valid request after the refusals: status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+// TestFeedbackReportStoreCallFailures covers every store call of the report
+// route: the key check, the read of stored secrets, the repository check, and
+// the write. Each answers store.ErrRetryable with 503 retryable and
+// Retry-After: 1, and any other error with a generic 500. Neither answer
+// repeats store text, records anything, or holds a rate slot, so an
+// immediate valid resend is accepted (component-feedback-reports, Refusals;
+// component-persistence invariant 8; DEC-105(1)).
+func TestFeedbackReportStoreCallFailures(t *testing.T) {
+	h := newFeedbackHarness(t)
+	logs := captureStandardLog(t)
+	detail := "driver detail " + h.key.Value
+	// The entry names a repository, so every call runs.
+	body := reportBody(reportEntryJSON("named", `"repository":"app"`))
+	for _, call := range []struct {
+		name    string
+		set     func(*feedbackReportStore, error)
+		failure string
+	}{
+		{"key check", func(f *feedbackReportStore, err error) {
+			f.checkKey = func(context.Context, string) (store.VerifiedEnvironmentKey, error) {
+				return store.VerifiedEnvironmentKey{}, err
+			}
+		}, "credential verification failed"},
+		{"stored-secret read", func(f *feedbackReportStore, err error) {
+			f.secrets = func(context.Context) ([]string, error) { return nil, err }
+		}, "internal server error"},
+		{"repository check", func(f *feedbackReportStore, err error) {
+			f.checkRepositories = func(context.Context, store.FeedbackReportBatch) error { return err }
+		}, "internal server error"},
+		{"write", func(f *feedbackReportStore, err error) {
+			f.record = func(context.Context, store.FeedbackReportBatch) error { return err }
+		}, "internal server error"},
+	} {
+		for _, retryable := range []bool{true, false} {
+			h.advance(feedbackSignalWindow)
+			failing := feedbackReportStore{Backend: h.st}
+			failure := errors.New(detail)
+			if retryable {
+				failure = fmt.Errorf("%s: %w", detail, store.ErrRetryable)
+			}
+			call.set(&failing, failure)
+			h.use(failing)
+			before := h.reportStored()
+			response := h.sendReport(h.key.Value, body)
+			if retryable {
+				var answer map[string]string
+				decodeEnvironmentBody(t, response, &answer)
+				if response.Code != http.StatusServiceUnavailable || response.Header().Get("Retry-After") != "1" || !maps.Equal(answer, map[string]string{"error": "retryable", "message": storeRetryableMessage}) {
+					t.Fatalf("retryable %s: status=%d headers=%v body=%s, want 503 retryable", call.name, response.Code, response.Header(), response.Body)
+				}
+			} else if response.Code != http.StatusInternalServerError || strings.TrimSpace(response.Body.String()) != call.failure {
+				t.Fatalf("failed %s: status=%d body=%s, want the generic 500", call.name, response.Code, response.Body)
+			}
+			if after := h.reportStored(); after != before {
+				t.Fatalf("a failed %s changed a record:\nbefore %s\nafter  %s", call.name, before, after)
+			}
+			// The failure held no rate slot, so a valid resend at the same
+			// time is accepted.
+			h.use(h.st)
+			if response := h.sendReport(h.key.Value, body); response.Code != http.StatusAccepted {
+				t.Fatalf("resend after a failed %s (retryable=%v): status=%d body=%s", call.name, retryable, response.Code, response.Body)
+			}
+		}
+	}
+	if strings.Contains(logs.String(), h.key.Value) {
+		t.Fatal("the log holds the key value")
+	}
+}
+
+// TestFeedbackReportRefusedAtTheWrite covers a refusal that the store's own
+// checks give after the reservation, when the workspace configuration or the
+// stored secrets change between the route's checks and the write. It is 400
+// invalid_report, and the deferred settle releases the reservation, so an
+// immediate valid resend is accepted.
+func TestFeedbackReportRefusedAtTheWrite(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	h.advance(feedbackSignalWindow)
+	h.use(feedbackReportStore{Backend: h.st, record: func(context.Context, store.FeedbackReportBatch) error {
+		return &store.FeedbackFieldError{Field: "reports[0].repository", Message: "must name a repository of the workspace"}
+	}})
+	before := h.reportStored()
+	requireReportRefusal(t, h.sendReport(h.key.Value, reportBody(reportEntryJSON("named", `"repository":"app"`))), "reports[0].repository", "app")
+	if after := h.reportStored(); after != before {
+		t.Fatalf("a refused request changed a record:\nbefore %s\nafter  %s", before, after)
+	}
+	h.use(h.st)
+	if response := h.sendReport(h.key.Value, feedbackMinimalReport); response.Code != http.StatusAccepted {
+		t.Fatalf("resend: status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+// TestFeedbackReportWaitEndsWithTheRequest covers a request that waits for
+// the write of the key that is on its way and whose caller goes away: it is
+// answered 503 and writes nothing. The write on its way is accepted.
+func TestFeedbackReportWaitEndsWithTheRequest(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	h.advance(feedbackSignalWindow)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var writes atomic.Int32
+	h.use(feedbackReportStore{Backend: h.st, record: func(ctx context.Context, batch store.FeedbackReportBatch) error {
+		if writes.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return h.st.RecordFeedbackReports(ctx, batch)
+	}})
+	request := func(ctx context.Context) *http.Request {
+		r := httptest.NewRequestWithContext(ctx, http.MethodPost, environmentReportPath, strings.NewReader(feedbackMinimalReport))
+		r.Header.Set("Authorization", "Bearer "+h.key.Value)
+		return r
+	}
+	serve := func(r *http.Request) <-chan *httptest.ResponseRecorder {
+		answer := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			response := httptest.NewRecorder()
+			h.handler.ServeHTTP(response, r)
+			answer <- response
+		}()
+		return answer
+	}
+	first := serve(request(context.Background()))
+	<-entered
+	// The second request is far enough from the write on its way, so it
+	// waits for it instead of getting 429.
+	h.advance(feedbackSignalWindow)
+	ctx, cancel := context.WithCancel(context.Background())
+	second := serve(request(ctx))
+	limiter, key := h.server.feedbackReports(), feedbackLimiterKey{workspace: "alpha", keyID: h.key.ID}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		limiter.mu.Lock()
+		waiting := len(limiter.waiting[key])
+		limiter.mu.Unlock()
+		if waiting == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second request never waited")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Both requests are past the key check. The second one waits for the
+	// reservation, and this ends its request.
+	cancel()
+	response := <-second
+	if response.Code != http.StatusServiceUnavailable || strings.TrimSpace(response.Body.String()) != "temporarily unavailable" {
+		t.Fatalf("ended wait: status=%d body=%s, want 503", response.Code, response.Body)
+	}
+	close(release)
+	if response := <-first; response.Code != http.StatusAccepted {
+		t.Fatalf("write on its way: status=%d body=%s", response.Code, response.Body)
+	}
+	if writes.Load() != 1 {
+		t.Fatalf("writes=%d, want only the first request's", writes.Load())
+	}
+}
+
+// environmentOnlyStore is a store with environments and no report
+// capability.
+type environmentOnlyStore struct {
+	store.Store
+	store.EnvironmentStore
+}
+
+// TestFeedbackReportUnavailableStore covers the two answers for a store
+// without the capability the route needs, and a handler reached without a
+// verified key. No shipped backend lacks either capability, and the router
+// reaches the handler only through the key check.
+func TestFeedbackReportUnavailableStore(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	h.server.Store = environmentOnlyStore{Store: h.st, EnvironmentStore: h.st}
+	h.handler = h.server.Handler()
+	h.advance(feedbackSignalWindow)
+	if response := h.sendReport(h.key.Value, feedbackMinimalReport); response.Code != http.StatusNotImplemented {
+		t.Fatalf("store without reports: status=%d body=%s, want 501", response.Code, response.Body)
+	}
+	h.use(h.st)
+	response := httptest.NewRecorder()
+	h.server.receiveFeedbackReports(response, httptest.NewRequest(http.MethodPost, environmentReportPath, strings.NewReader(feedbackMinimalReport)))
+	h.requireUnauthorized(response, "a request without a verified key")
+	if len(h.reports()) != 0 {
+		t.Fatal("a refused request recorded a report")
+	}
 }
 
 // TestFeedbackReportStoreFailures covers the retryable 503, the generic 500,

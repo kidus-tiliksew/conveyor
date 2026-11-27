@@ -326,9 +326,10 @@ func (s *Server) Handler() http.Handler {
 		// AC-1.5).
 		r.With(s.requireFeedbackKey).Post("/feedback/signals", s.receiveFeedbackSignal)
 		// The report route takes the same key check with a limiter of its
-		// own (component-feedback-reports, Public surfaces, invariants 2 and
-		// 10; req-security-boundaries AC-1.5).
-		r.With(s.requireFeedbackKeyFor(s.feedbackReports)).Post("/feedback/reports", s.receiveFeedbackReports)
+		// own, and answers a retryable key check as it answers every other
+		// retryable store call (component-feedback-reports, Public surfaces,
+		// Refusals, invariants 2 and 10; req-security-boundaries AC-1.5).
+		r.With(s.requireFeedbackKeyFor(s.feedbackReports, writeFeedbackReportKeyFailure)).Post("/feedback/reports", s.receiveFeedbackReports)
 		r.Post("/sign-in/redeem", s.redeemSignInLink)
 		r.Post("/sign-in/password", s.signInWithPassword)
 		r.With(s.requireSelfServiceCredential).Post("/sign-out", s.signOutDashboardSession)

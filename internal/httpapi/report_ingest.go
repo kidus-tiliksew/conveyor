@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -61,11 +63,15 @@ func (s *Server) receiveFeedbackReports(w http.ResponseWriter, r *http.Request) 
 		batch.EnvironmentID, batch.KeyID, batch.ArrivedAt = scope.key.EnvironmentID, scope.key.KeyID, scope.arrived
 		batch, err = store.NormalizeFeedbackReports(batch)
 	}
-	// Every rule is checked before the reservation, so an invalid request
-	// gets its own refusal inside a window and never holds the key against a
-	// valid one. The store checks the repositories again when it records.
-	if err == nil && slices.ContainsFunc(batch.Entries, func(entry store.FeedbackReportEntry) bool { return entry.Repository != "" }) {
-		err = backend.CheckFeedbackReportRepositories(r.Context(), batch)
+	// Every check that can refuse the request with 400 invalid_report runs
+	// before the reservation: the shape, the bounds, the times, the
+	// credential shapes, the stored secrets, and the repository names. An
+	// invalid request gets its own refusal inside a window and never holds
+	// the key against a valid one. The store runs its checks again when it
+	// records, with the secrets and the configuration of that moment.
+	if err == nil {
+		source, _ := s.Store.(redact.SecretSource)
+		err = checkFeedbackReportsBeforeReservation(r.Context(), backend, source, batch)
 	}
 	if err != nil {
 		writeFeedbackReportError(w, r, err)
@@ -95,16 +101,11 @@ func (s *Server) receiveFeedbackReports(w http.ResponseWriter, r *http.Request) 
 	}
 	accepted := false
 	defer func() { limiter.settle(key, accepted) }()
+	// A failed write recorded nothing, and the deferred settle releases the
+	// reservation and opens no window, so an immediate resend is admitted
+	// (component-feedback-reports, Refusals; component-persistence invariant
+	// 8).
 	if err := backend.RecordFeedbackReports(r.Context(), batch); err != nil {
-		// A store that asks for the request to be sent again recorded
-		// nothing, and the deferred settle opens no window, so an immediate
-		// resend is admitted (component-feedback-reports, Refusals;
-		// component-persistence invariant 8).
-		if errors.Is(err, store.ErrRetryable) {
-			w.Header().Set("Retry-After", "1")
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "retryable", "message": storeRetryableMessage})
-			return
-		}
 		writeFeedbackReportError(w, r, err)
 		return
 	}
@@ -114,7 +115,52 @@ func (s *Server) receiveFeedbackReports(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusAccepted, map[string]time.Time{"accepted_at": store.EnvironmentTime(batch.ArrivedAt)})
 }
 
+// checkFeedbackReportsBeforeReservation runs every check that can refuse a
+// normalized request with 400 invalid_report and needs no lock: the stored
+// secrets in each text other than the summary, then the repository names.
+// The route runs it before the rate reservation, so a refused request never
+// takes a rate slot or delays another request of the key. The store runs the
+// same checks again before it writes (component-feedback-reports invariants
+// 3, 5, and 10).
+func checkFeedbackReportsBeforeReservation(ctx context.Context, backend store.ReportStore, source redact.SecretSource, batch store.FeedbackReportBatch) error {
+	if _, err := store.PrepareFeedbackReports(ctx, source, batch); err != nil {
+		return err
+	}
+	if slices.ContainsFunc(batch.Entries, func(entry store.FeedbackReportEntry) bool { return entry.Repository != "" }) {
+		return backend.CheckFeedbackReportRepositories(ctx, batch)
+	}
+	return nil
+}
+
+// writeFeedbackReportRetryable answers a store call that asks for the
+// request to be sent again with 503 retryable and Retry-After: 1, and reports
+// whether it did. Every store call of the report route, the key check
+// included, answers that error here, and the answer repeats no store text
+// (component-feedback-reports, Refusals; component-persistence invariant 8).
+func writeFeedbackReportRetryable(w http.ResponseWriter, err error) bool {
+	if !errors.Is(err, store.ErrRetryable) {
+		return false
+	}
+	w.Header().Set("Retry-After", "1")
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "retryable", "message": storeRetryableMessage})
+	return true
+}
+
+// writeFeedbackReportKeyFailure answers a key check of the report route that
+// failed for a reason other than the key.
+func writeFeedbackReportKeyFailure(w http.ResponseWriter, r *http.Request, err error) {
+	if writeFeedbackReportRetryable(w, err) {
+		return
+	}
+	writeFeedbackKeyFailure(w, r, err)
+}
+
+// writeFeedbackReportError answers an error of the report route after the
+// key check: a refusal, a retryable store call, or a store failure.
 func writeFeedbackReportError(w http.ResponseWriter, r *http.Request, err error) {
+	if writeFeedbackReportRetryable(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, store.ErrInvalidEnvironmentKey):
 		// The key was revoked or its environment archived after the check.
