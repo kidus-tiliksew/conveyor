@@ -464,26 +464,27 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 		at          time.Time
 		id          int64
 		pullRequest string
+		repository  string
 	}
 	latest := map[string]mergeEvent{}
 	err = eachFeedbackChunk(ids, func(part []string) error {
 		list, values := feedbackList(part)
-		rows, err := documentRows(ctx, s.db, `SELECT task_id,COALESCE(JSON_EXTRACT_STRING(payload_json,'merge_commit_sha'),''),at,id,COALESCE(JSON_EXTRACT_STRING(payload_json,'pull_request'),'') FROM events_columnstore WHERE workspace_id=? AND kind IN ('merge.confirmed','merge.reconciled') AND task_id IN (`+list+`)`, append([]any{ws}, values...)...)
+		rows, err := documentRows(ctx, s.db, `SELECT task_id,COALESCE(JSON_EXTRACT_STRING(payload_json,'merge_commit_sha'),''),at,id,COALESCE(JSON_EXTRACT_STRING(payload_json,'pull_request'),''),COALESCE(JSON_EXTRACT_STRING(payload_json,'repository'),'') FROM events_columnstore WHERE workspace_id=? AND kind IN ('merge.confirmed','merge.reconciled') AND task_id IN (`+list+`)`, append([]any{ws}, values...)...)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var taskID, sha, pullRequest string
+			var taskID, sha, pullRequest, repository string
 			var at time.Time
 			var id int64
-			if err := rows.Scan(&taskID, &sha, &at, &id, &pullRequest); err != nil {
+			if err := rows.Scan(&taskID, &sha, &at, &id, &pullRequest, &repository); err != nil {
 				return err
 			}
 			// The latest merge event wins before its commit is checked.
 			current, seen := latest[taskID]
 			if !seen || at.After(current.at) || (at.Equal(current.at) && id > current.id) {
-				latest[taskID] = mergeEvent{sha, at, id, pullRequest}
+				latest[taskID] = mergeEvent{sha, at, id, pullRequest, repository}
 			}
 		}
 		return rows.Err()
@@ -497,6 +498,7 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 		// The pull request number comes from the same latest event
 		// (component-feedback-reports invariant 12).
 		task.PullRequest = store.FeedbackMergePullRequest(event.pullRequest)
+		task.GitHubRepository = store.FeedbackMergeRepository(event.repository)
 	}
 	store.SortFeedbackMergedTasks(tasks)
 	return tasks, nil

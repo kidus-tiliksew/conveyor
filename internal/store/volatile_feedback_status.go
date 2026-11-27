@@ -277,6 +277,7 @@ func (m *volatileMemory) ListFeedbackMergedTasks(ctx context.Context, query Feed
 		}
 		if found {
 			var payload struct {
+				Repository     json.RawMessage `json:"repository"`
 				MergeCommitSHA string          `json:"merge_commit_sha"`
 				PullRequest    json.RawMessage `json:"pull_request"`
 			}
@@ -285,6 +286,7 @@ func (m *volatileMemory) ListFeedbackMergedTasks(ctx context.Context, query Feed
 			// The pull request number comes from the same latest event
 			// (component-feedback-reports invariant 12).
 			merged.PullRequest = FeedbackMergePullRequest(string(payload.PullRequest))
+			merged.GitHubRepository = FeedbackMergeRepository(string(payload.Repository))
 		}
 		out = append(out, merged)
 	}

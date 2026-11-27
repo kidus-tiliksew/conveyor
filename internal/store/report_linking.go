@@ -467,6 +467,27 @@ func distinctFeedbackEvidence(held, added []FeedbackReportEvidence) []FeedbackRe
 	return out
 }
 
+// FeedbackMergeRepository reads the GitHub repository of a merge event
+// payload's repository member, which a backend extracts as text: an
+// owner/name slug, answered in the canonical form FeedbackRepository gives.
+// Any other value, an empty one included, is no repository and answers "",
+// so a merge event without it proves no repository identity.
+func FeedbackMergeRepository(text string) string {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, `"`) {
+		var unquoted string
+		if err := json.Unmarshal([]byte(text), &unquoted); err != nil {
+			return ""
+		}
+		text = strings.TrimSpace(unquoted)
+	}
+	owner, name, found := strings.Cut(text, "/")
+	if !found || owner == "" || name == "" || strings.Contains(name, "/") || strings.ContainsAny(text, " \t\r\n") {
+		return ""
+	}
+	return FeedbackRepository(text)
+}
+
 // FeedbackMergePullRequest reads the pull request number of a merge event
 // payload's pull_request member, which a backend extracts as text: a
 // positive whole number, written as a JSON number or a string. Any other

@@ -1,6 +1,7 @@
 package reports
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -58,14 +59,14 @@ func TestLineApplies(t *testing.T) {
 // scope, and the evidence (req-production-feedback AC-5.1).
 func TestLineMatches(t *testing.T) {
 	merged := []store.FeedbackMergedTask{
-		{TaskID: "t-commit", Repository: "app", MergeCommit: shaA},
-		{TaskID: "t-pull", Repository: "app", MergeCommit: shaB, PullRequest: 42},
-		{TaskID: "t-pull-no-commit", Repository: "app", PullRequest: 43},
-		{TaskID: "t-other-repo", Repository: "web", MergeCommit: shaA, PullRequest: 42},
-		{TaskID: "t-unrelated", Repository: "app", MergeCommit: shaC, PullRequest: 9},
-		{TaskID: "t-no-pull", Repository: "app", MergeCommit: shaC},
+		{TaskID: "t-commit", Repository: "app", GitHubRepository: "acme/app", MergeCommit: shaA},
+		{TaskID: "t-pull", Repository: "app", GitHubRepository: "acme/app", MergeCommit: shaB, PullRequest: 42},
+		{TaskID: "t-pull-no-commit", Repository: "app", GitHubRepository: "acme/app", PullRequest: 43},
+		{TaskID: "t-other-repo", Repository: "web", GitHubRepository: "acme/web", MergeCommit: shaA, PullRequest: 42},
+		{TaskID: "t-unrelated", Repository: "app", GitHubRepository: "acme/app", MergeCommit: shaC, PullRequest: 9},
+		{TaskID: "t-no-pull", Repository: "app", GitHubRepository: "acme/app", MergeCommit: shaC},
 	}
-	outcome := Line(LineInput{Report: lineReport(), Read: lineRead(store.FeedbackReportLineAnswer{FileFound: true, Commit: shaA, PullRequests: []int{42, 43}}), Merged: merged})
+	outcome := Line(LineInput{Report: lineReport(), Read: lineRead(store.FeedbackReportLineAnswer{FileFound: true, Commit: shaA, PullRequests: []int{42, 43}}), Slug: "Acme/App", Merged: merged})
 	if !outcome.Ended || len(outcome.Notes) != 0 {
 		t.Fatalf("outcome %+v, want ended with no note", outcome)
 	}
@@ -90,9 +91,51 @@ func TestLineMatches(t *testing.T) {
 		}
 	}
 	// No task matches: the rule ends with no link and no note.
-	none := Line(LineInput{Report: lineReport(), Read: lineRead(store.FeedbackReportLineAnswer{FileFound: true, Commit: shaD, PullRequests: []int{}}), Merged: merged})
+	none := Line(LineInput{Report: lineReport(), Read: lineRead(store.FeedbackReportLineAnswer{FileFound: true, Commit: shaD, PullRequests: []int{}}), Slug: "acme/app", Merged: merged})
 	if !none.Ended || len(none.Links) != 0 || len(none.Notes) != 0 {
 		t.Fatalf("no match: %+v, want ended with nothing", none)
+	}
+}
+
+// TestLineComparesGitHubRepositories is the line rule's part of review
+// round 4: both matches ask whether a task belongs to the repository the line
+// read was sent to, and answer with the GitHub repository of the task's
+// latest merge event, never the configured name. The name app was pointed
+// from acme/old to acme/new. The read in acme/new lists pull request 42 and
+// the changing commit shaA, which a fork also holds (component-feedback-
+// reports invariant 12; req-production-feedback AC-5.1).
+func TestLineComparesGitHubRepositories(t *testing.T) {
+	merged := []store.FeedbackMergedTask{
+		// Merged in acme/old under the same name, with the colliding pull
+		// request number, and with the shared commit.
+		{TaskID: "t-old-pull", Repository: "app", GitHubRepository: "acme/old", MergeCommit: shaB, PullRequest: 42},
+		{TaskID: "t-old-commit", Repository: "app", GitHubRepository: "acme/old", MergeCommit: shaA},
+		// The same commit merged in a fork.
+		{TaskID: "t-fork-commit", Repository: "fork", GitHubRepository: "someone/new", MergeCommit: shaA, PullRequest: 42},
+		// A merge event that records no repository proves none.
+		{TaskID: "t-unknown", Repository: "app", MergeCommit: shaA, PullRequest: 42},
+		// Merged in acme/new: by pull request, by commit, and under another
+		// configured name that points at acme/new.
+		{TaskID: "t-new-pull", Repository: "app", GitHubRepository: "acme/new", MergeCommit: shaC, PullRequest: 42},
+		{TaskID: "t-new-commit", Repository: "app", GitHubRepository: "acme/new", MergeCommit: shaA},
+		{TaskID: "t-new-other-name", Repository: "new", GitHubRepository: "acme/new", PullRequest: 42},
+	}
+	read := lineRead(store.FeedbackReportLineAnswer{FileFound: true, Commit: shaA, PullRequests: []int{42}})
+	for _, tc := range []struct {
+		name string
+		slug string
+		want []string
+	}{
+		{"read in acme/new", "acme/new", []string{"t-new-commit", "t-new-other-name", "t-new-pull"}},
+		{"read in acme/old", "Acme/Old", []string{"t-old-commit", "t-old-pull"}},
+		{"no stored slug", "", []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outcome := Line(LineInput{Report: lineReport(), Read: read, Slug: tc.slug, Merged: merged})
+			if got := linkedTasks(outcome); !outcome.Ended || !slices.Equal(got, tc.want) {
+				t.Fatalf("links %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

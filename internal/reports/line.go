@@ -64,8 +64,12 @@ type LineInput struct {
 	// resolve, when no read is stored, and empty when it resolved or was not
 	// tried.
 	Unresolved string
+	// Slug is the canonical GitHub slug the line read was sent to: the slug
+	// stored with the resolution. Empty proves no repository, and the rule
+	// then links nothing.
+	Slug string
 	// Merged lists the merged tasks of the workspace. The rule keeps those
-	// of the read's repository.
+	// whose latest merge event records the read's GitHub repository.
 	Merged []store.FeedbackMergedTask
 }
 
@@ -75,11 +79,16 @@ type LineInput struct {
 //   - A report the rule does not apply to ends with no link and no note.
 //   - A stored read whose file GitHub did not find ends with the note
 //     file_not_found.
-//   - A stored read links, as possible, each merged task of the read's
-//     repository whose merge commit is the changing commit, or whose latest
-//     merge event names one of the merged pull requests GitHub lists for
-//     that commit, with the file, the line, and the changing commit as
-//     evidence.
+//   - A stored read links, as possible, each merged task whose latest merge
+//     event records the GitHub repository the read was sent to, and whose
+//     merge commit from that event is the changing commit or whose pull
+//     request number from that event is one of the merged pull requests
+//     GitHub lists for that commit, with the file, the line, and the
+//     changing commit as evidence. The repository is compared by GitHub
+//     slug, never by workspace name, because a name can be pointed at
+//     another repository and pull request numbers and commits repeat across
+//     repositories and forks. A merge event that records no repository, and
+//     a read with no stored slug, prove no repository and link nothing.
 //   - Without a read, a definitive unresolved reason ends the rule with the
 //     note commit_unresolved and the reason. Any other reason leaves the
 //     rule waiting for it.
@@ -101,8 +110,9 @@ func Line(input LineInput) Outcome {
 	evidence := store.FeedbackReportEvidence{Kind: store.FeedbackEvidenceLine, File: read.File, Line: read.Line, Commit: read.Answer.Commit}
 	outcome := Outcome{Ended: true}
 	seen := map[string]bool{}
+	slug := store.FeedbackRepository(input.Slug)
 	for _, task := range input.Merged {
-		if task.Repository != read.Repository || seen[task.TaskID] {
+		if slug == "" || task.GitHubRepository != slug || seen[task.TaskID] {
 			continue
 		}
 		byCommit := task.MergeCommit != "" && task.MergeCommit == read.Answer.Commit

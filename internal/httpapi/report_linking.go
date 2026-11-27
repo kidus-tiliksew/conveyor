@@ -409,7 +409,14 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 		return reports.Outcome{}, err
 	}
 	if stored {
-		return reports.Line(reports.LineInput{Report: report, Read: &read, Merged: merged}), nil
+		// A stored answer is matched in the GitHub repository it was read
+		// from: the slug stored with the resolution, whatever the configured
+		// name points at now. No stored slug proves no repository.
+		slug := ""
+		if report.LineProgress != nil {
+			slug = report.LineProgress.Slug
+		}
+		return reports.Line(reports.LineInput{Report: report, Read: &read, Slug: slug, Merged: merged}), nil
 	}
 	version := store.FeedbackVersion{Repository: report.First.Repository, Commit: report.First.Commit, Version: report.First.Version}
 	request := feedback.ResolveRequest{Version: version, Service: report.Service, Rule: environment.VersionRule, Repositories: repositories}
@@ -434,7 +441,7 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 				waiting = reason
 				break
 			}
-			key := store.FeedbackComparisonKey{Repository: candidate.Slug, Head: feedbackResolvePrefix + report.ID}
+			key := store.FeedbackComparisonKey{Repository: store.FeedbackRepository(candidate.Slug), Head: feedbackResolvePrefix + report.ID}
 			admitted, err := a.feedback.AdmitFeedbackComparisons(ctx, []store.FeedbackComparisonKey{key}, a.job.env.clock(), 1)
 			if err != nil {
 				return reports.Outcome{}, err
@@ -518,7 +525,7 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 	if !stored {
 		return reports.Outcome{}, store.ErrNotFound
 	}
-	return reports.Line(reports.LineInput{Report: report, Read: &read, Merged: merged}), nil
+	return reports.Line(reports.LineInput{Report: report, Read: &read, Slug: slug, Merged: merged}), nil
 }
 
 // saveLineStep stores one definitive result of resolving at once, on a

@@ -145,6 +145,14 @@ type FeedbackMergedTask struct {
 	// even when the event records no usable merge commit
 	// (component-feedback-reports invariant 12).
 	PullRequest int
+	// GitHubRepository is the canonical GitHub slug that the same latest
+	// merge event records as its repository, or empty when it records no
+	// usable one. Repository is a workspace name that an operator can point
+	// at another GitHub repository later; GitHubRepository is the repository
+	// the merge commit and the pull request number belong to. The linking
+	// rules compare it, never the name, and an empty value proves no
+	// repository (component-feedback-reports invariants 12 and 14).
+	GitHubRepository string
 }
 
 // FeedbackMergedTaskQuery narrows the merged-task read. Every set member

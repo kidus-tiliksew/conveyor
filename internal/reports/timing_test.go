@@ -38,7 +38,7 @@ func (f *timingFixture) deploy(id, version, commit string, at time.Time, source 
 // task adds a merged task of app whose merge commit is held by the listed
 // heads and by no other head the fixture compares.
 func (f *timingFixture) task(id, merge string, heldBy ...string) {
-	f.merged = append(f.merged, store.FeedbackMergedTask{TaskID: id, Repository: "app", MergeCommit: merge})
+	f.merged = append(f.merged, store.FeedbackMergedTask{TaskID: id, Repository: "app", GitHubRepository: "acme/app", MergeCommit: merge})
 	for _, head := range []string{shaA, shaB, shaC, shaD, shaE, shaF, shaG} {
 		if head == merge {
 			continue
@@ -413,7 +413,7 @@ func TestTimingNotes(t *testing.T) {
 			f.deploy("d-2", "2", shaB, base.Add(time.Hour), store.FeedbackSourceSignal)
 			for i := range count {
 				merge := fmt.Sprintf("%040x", i+1)
-				f.merged = append(f.merged, store.FeedbackMergedTask{TaskID: fmt.Sprintf("t-%02d", i), Repository: "app", MergeCommit: merge})
+				f.merged = append(f.merged, store.FeedbackMergedTask{TaskID: fmt.Sprintf("t-%02d", i), Repository: "app", GitHubRepository: "acme/app", MergeCommit: merge})
 				f.comparisons = append(f.comparisons,
 					store.FeedbackComparison{FeedbackComparisonKey: store.FeedbackComparisonKey{Repository: "acme/app", Base: merge, Head: shaB}, Status: store.FeedbackCompareAhead},
 					store.FeedbackComparison{FeedbackComparisonKey: store.FeedbackComparisonKey{Repository: "acme/app", Base: merge, Head: shaA}, Status: store.FeedbackCompareDiverged})
@@ -480,5 +480,82 @@ func TestTimingWaits(t *testing.T) {
 	web.Report.Service = "web"
 	if outcome := Timing(web); !outcome.Ended || len(outcome.Links) != 0 || len(outcome.Notes) != 0 {
 		t.Fatalf("another service's deploys: %+v, want nothing", outcome)
+	}
+}
+
+// TestTimingComparesGitHubRepositories is the timing rule's part of review
+// round 4: "the merged tasks of the deploy's repository" and "two commits in
+// different repositories" are answered with GitHub repositories, never with
+// configured names. The name app now points at acme/new, where both versions
+// resolved (component-feedback-reports invariants 13 and 14).
+func TestTimingComparesGitHubRepositories(t *testing.T) {
+	newRepo := func(f *timingFixture) {
+		f.deploy("d-1", "1", shaA, base, store.FeedbackSourceGitHub)
+		f.deploy("d-2", "2", shaB, base.Add(10*time.Minute), store.FeedbackSourceGitHub)
+	}
+	// held stores, in repository, that head holds merge or does not.
+	held := func(f *timingFixture, repository, merge string, heads map[string]bool) {
+		for head, contains := range heads {
+			status := store.FeedbackCompareBehind
+			if contains {
+				status = store.FeedbackCompareAhead
+			}
+			f.comparisons = append(f.comparisons, store.FeedbackComparison{FeedbackComparisonKey: store.FeedbackComparisonKey{Repository: repository, Base: merge, Head: head}, Status: status})
+		}
+	}
+	t.Run("a task merged in the old repository is not newly introduced", func(t *testing.T) {
+		f := &timingFixture{}
+		newRepo(f)
+		// t-old was merged under the name app while it pointed at acme/old.
+		// Even a stored answer that version 2 holds its commit does not make
+		// it a task of acme/new.
+		f.merged = append(f.merged,
+			store.FeedbackMergedTask{TaskID: "t-old", Repository: "app", GitHubRepository: "acme/old", MergeCommit: shaC},
+			store.FeedbackMergedTask{TaskID: "t-unknown", Repository: "app", MergeCommit: shaE},
+			store.FeedbackMergedTask{TaskID: "t-new", Repository: "app", GitHubRepository: "acme/new", MergeCommit: shaD})
+		held(f, "acme/new", shaC, map[string]bool{shaA: false, shaB: true})
+		held(f, "acme/new", shaE, map[string]bool{shaA: false, shaB: true})
+		held(f, "acme/new", shaD, map[string]bool{shaA: false, shaB: true})
+		input := f.input(base.Add(20 * time.Minute))
+		input.Slugs = map[string]string{"app": "acme/new"}
+		got := decisions(t, Timing(input))
+		if fmt.Sprint(got) != fmt.Sprint(map[string][]string{"d-2": {"link t-new 10"}}) {
+			t.Fatalf("decisions %v, want only t-new from d-2", got)
+		}
+	})
+	t.Run("only old-repository tasks", func(t *testing.T) {
+		f := &timingFixture{}
+		newRepo(f)
+		f.merged = append(f.merged, store.FeedbackMergedTask{TaskID: "t-old", Repository: "app", GitHubRepository: "acme/old", MergeCommit: shaC})
+		input := f.input(base.Add(20 * time.Minute))
+		input.Slugs = map[string]string{"app": "acme/new"}
+		// No comparison is asked for t-old, and d-2 newly holds no task.
+		outcome := Timing(input)
+		if got := decisions(t, outcome); len(outcome.Missing) != 0 || fmt.Sprint(got) != fmt.Sprint(map[string][]string{"d-2": {"note no_task_deploy"}}) {
+			t.Fatalf("decisions %v missing %v, want no_task_deploy and no comparison", got, outcome.Missing)
+		}
+	})
+	for _, tc := range []struct {
+		name     string
+		previous string
+		slugs    map[string]string
+		want     string
+	}{
+		{"two names on one GitHub repository are compared", "mirror", map[string]string{"app": "acme/new", "mirror": "Acme/New"}, "link t-new 10"},
+		{"two GitHub repositories are not compared", "web", map[string]string{"app": "acme/new", "web": "acme/web"}, "note deploy_not_compared"},
+		{"a name with no slug proves no repository", "docs", map[string]string{"app": "acme/new"}, "note deploy_not_compared"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &timingFixture{}
+			newRepo(f)
+			f.resolutions[0].ResolvedRepository = tc.previous
+			f.merged = append(f.merged, store.FeedbackMergedTask{TaskID: "t-new", Repository: "app", GitHubRepository: "acme/new", MergeCommit: shaD})
+			held(f, "acme/new", shaD, map[string]bool{shaA: false, shaB: true})
+			input := f.input(base.Add(20 * time.Minute))
+			input.Slugs = tc.slugs
+			if got := decisions(t, Timing(input)); fmt.Sprint(got) != fmt.Sprint(map[string][]string{"d-2": {tc.want}}) {
+				t.Fatalf("decisions %v, want d-2: %s", got, tc.want)
+			}
+		})
 	}
 }

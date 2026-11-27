@@ -1079,3 +1079,111 @@ func TestFeedbackReportTimingReadsSignalsBeforeDeploys(t *testing.T) {
 		t.Fatalf("timing result=%+v, want none stored", stored.TimingResult)
 	}
 }
+
+// mergedTaskIn creates a merged task under the configured name app whose
+// latest merge event records the GitHub repository, the merge commit, and
+// the pull request.
+func (h *linkingHarness) mergedTaskIn(repository, merge string, pull int) string {
+	h.t.Helper()
+	id := core.NewTaskID() + "-" + merge[:4]
+	if err := h.st.CreateTask(h.ctx, core.Task{ID: id, Workspace: "alpha", Repo: "app", Title: "Merged", Body: "Merged.", State: core.TaskMerged, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := h.st.AppendEvent(h.ctx, core.Event{TaskID: id, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": repository, "pull_request": pull, "merge_commit_sha": merge})}); err != nil {
+		h.t.Fatal(err)
+	}
+	return id
+}
+
+// TestFeedbackReportLineMatchesTheReadRepository proves review round 4's
+// finding through the worker. The name app pointed at acme/old, where a task
+// merged as pull request 42 with the changing commit. Then app was pointed
+// at acme/new, the report's commit resolved there, and the line read in
+// acme/new lists pull request 42 and the same commit, as a fork can. Only
+// the tasks merged in acme/new link, both when the answer is fresh and when
+// a fresh worker reads it back from the store (component-feedback-reports
+// invariant 12; req-production-feedback AC-5.1).
+func TestFeedbackReportLineMatchesTheReadRepository(t *testing.T) {
+	setup := func(t *testing.T) (*linkingHarness, string, string, string) {
+		h := newLinkingHarness(t)
+		h.setRepositories(map[string]string{"app": "acme/old"})
+		oldPull := h.mergedTaskIn("acme/old", readsCommit("e7"), 42)
+		oldCommit := h.mergedTaskIn("acme/old", linkingChange, 41)
+		h.setRepositories(map[string]string{"app": "acme/new"})
+		newPull := h.mergedTaskIn("acme/new", readsCommit("e8"), 42)
+		h.forge.set(func(f *linkingForge) {
+			f.commits = map[string]string{"acme/new": linkingResolved}
+			f.answer = github.LineChange{FileFound: true, Commit: linkingChange, PullRequests: []int{42}}
+		})
+		return h, oldPull, oldCommit, newPull
+	}
+	check := func(t *testing.T, h *linkingHarness, reportID, oldPull, oldCommit, newPull string) {
+		t.Helper()
+		links := h.links(reportID)
+		if _, ok := links[newPull]; !ok || len(links) != 1 {
+			t.Fatalf("links=%v, want only the acme/new task %s (not %s or %s)", links, newPull, oldPull, oldCommit)
+		}
+		if progress := h.reportByID(reportID).LineProgress; progress == nil || progress.Slug != "acme/new" {
+			t.Fatalf("progress=%+v, want the resolution in acme/new", progress)
+		}
+	}
+	t.Run("fresh answer", func(t *testing.T) {
+		h, oldPull, oldCommit, newPull := setup(t)
+		h.acceptReport(reportBody(lineEntry("crash")))
+		h.settle()
+		report := h.reportByKey("crash")
+		if report.LinkingEndedAt == nil {
+			t.Fatal("linking did not end")
+		}
+		check(t, h, report.ID, oldPull, oldCommit, newPull)
+	})
+	t.Run("stored answer read by a fresh worker", func(t *testing.T) {
+		h, oldPull, oldCommit, newPull := setup(t)
+		// A listening watcher keeps the timing rule waiting, so the first
+		// attempt stores the line read and linking stays pending.
+		h.accept(`{"next_signal_seconds":86400,"services":[{"name":"web","versions":[{"version":"1"}]}]}`)
+		h.settle()
+		h.acceptReport(reportBody(lineEntry("crash", `"service":"api"`)))
+		h.settle()
+		report := h.reportByKey("crash")
+		if _, stored, _ := h.st.ReadFeedbackReportLineRead(h.ctx, report.ID); !stored || h.reportByID(report.ID).LinkingEndedAt != nil {
+			t.Fatal("want the line read stored and linking pending")
+		}
+		h.freshWorker()
+		h.setNow(report.CreatedAt.Add(store.FeedbackReportLinkingDeadline))
+		h.attempt(report.ID)
+		if h.reportByID(report.ID).LinkingEndedAt == nil || h.forge.calls()[1] != 1 {
+			t.Fatalf("calls=%v, want linking ended from the stored read", h.forge.calls())
+		}
+		check(t, h, report.ID, oldPull, oldCommit, newPull)
+	})
+}
+
+// TestFeedbackReportTimingCountsOnlyTheDeployRepository proves the timing
+// rule's part of review round 4 through the worker: a task merged under the
+// name app while it pointed at acme/old is not newly introduced by a deploy
+// resolved after app points at acme/app, even when a stored comparison in
+// acme/app says the new version holds its commit (component-feedback-reports
+// invariants 13 and 14).
+func TestFeedbackReportTimingCountsOnlyTheDeployRepository(t *testing.T) {
+	h := newLinkingHarness(t)
+	h.timingHistory()
+	old := h.mergedTaskIn("acme/old", readsCommit("c5"), 5)
+	h.storeComparisons(readsCommit("c5"), map[string]bool{"1": false, "2": true})
+	h.storeComparisons(readsCommit("c3"), map[string]bool{"1": false, "2": true})
+	h.acceptReport(reportBody(reportEntryJSON("crash", `"service":"api"`)))
+	h.settle()
+	report := h.reportByKey("crash")
+	links := h.links(report.ID)
+	if report.LinkingEndedAt == nil || len(links) != 1 {
+		t.Fatalf("ended=%v links=%v, want one timing link", report.LinkingEndedAt != nil, links)
+	}
+	if _, linked := links[old]; linked {
+		t.Fatalf("links=%v, the acme/old task was counted", links)
+	}
+	for _, link := range links {
+		if !strings.HasSuffix(link.TaskID, "-"+readsCommit("c3")[:4]) {
+			t.Fatalf("link %s, want the acme/app task merged at c3", link.TaskID)
+		}
+	}
+}

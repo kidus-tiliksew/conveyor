@@ -36,6 +36,7 @@ func runFeedbackReportLinking(t *testing.T, factory Factory) {
 		{"LinkIDsSkipStoredIDs", runFeedbackLinkingLinkIDs},
 		{"ServiceSignals", runFeedbackLinkingServiceSignals},
 		{"MergePullRequest", runFeedbackLinkingMergePullRequest},
+		{"MergeRepository", runFeedbackLinkingMergeRepository},
 		{"LineProgressResumes", runFeedbackLinkingLineProgress},
 		{"LineProgressOneInput", runFeedbackLinkingLineProgressInput},
 		{"TimingResultKept", runFeedbackLinkingTimingResult},
@@ -580,6 +581,52 @@ func runFeedbackLinkingMergePullRequest(t *testing.T, x Fixture) {
 	}
 	if task := got[none.ID]; task.PullRequest != 0 || task.MergeCommit != feedbackCommit("0e") {
 		t.Fatalf("a latest event without a pull request=%+v, want 0", task)
+	}
+}
+
+// runFeedbackLinkingMergeRepository proves that the merged-task read returns
+// the GitHub repository of the latest merge event, in canonical form, from
+// the same event as the merge commit and the pull request number. It never
+// returns an older event's repository, and a latest event with no usable
+// repository returns none. The configured name is returned as it is, so a
+// name pointed at another repository later does not change the merge
+// event's repository (component-feedback-reports invariants 12 and 14).
+func runFeedbackLinkingMergeRepository(t *testing.T, x Fixture) {
+	event := func(repository any, sha string, at time.Time) core.Event {
+		payload := map[string]any{"head_sha": "head", "merge_commit_sha": sha, "pull_request": 42}
+		if repository != nil {
+			payload["repository"] = repository
+		}
+		return core.Event{Kind: "merge.confirmed", At: at, Payload: core.JSONPayload(payload)}
+	}
+	old := feedbackMergedTask(t, x, "app", "", event("Acme/Old", feedbackCommit("a1"), feedbackTime(0)))
+	moved := feedbackMergedTask(t, x, "app", "",
+		event("acme/old", feedbackCommit("a2"), feedbackTime(0)),
+		event("acme/new", feedbackCommit("a3"), feedbackTime(time.Minute)))
+	missing := feedbackMergedTask(t, x, "app", "",
+		event("acme/old", feedbackCommit("a4"), feedbackTime(0)),
+		event(nil, feedbackCommit("a5"), feedbackTime(time.Minute)))
+	bad := feedbackMergedTask(t, x, "app", "", event("not a slug", feedbackCommit("a6"), feedbackTime(0)))
+	number := feedbackMergedTask(t, x, "app", "", event(7, feedbackCommit("a7"), feedbackTime(0)))
+	merged, err := x.Backend.ListFeedbackMergedTasks(x.Context, store.FeedbackMergedTaskQuery{Repository: "app"})
+	requireOK(t, err)
+	got := map[string]store.FeedbackMergedTask{}
+	for _, task := range merged {
+		got[task.TaskID] = task
+	}
+	for _, c := range []struct {
+		name, id, want, commit string
+	}{
+		{"canonical slug", old.ID, "acme/old", feedbackCommit("a1")},
+		{"latest event wins", moved.ID, "acme/new", feedbackCommit("a3")},
+		{"latest event without a repository", missing.ID, "", feedbackCommit("a5")},
+		{"not a slug", bad.ID, "", feedbackCommit("a6")},
+		{"not text", number.ID, "", feedbackCommit("a7")},
+	} {
+		task := got[c.id]
+		if task.GitHubRepository != c.want || task.MergeCommit != c.commit || task.PullRequest != 42 || task.Repository != "app" {
+			t.Fatalf("%s: task=%+v, want repository %q with commit %s", c.name, task, c.want, c.commit)
+		}
 	}
 }
 

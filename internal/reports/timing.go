@@ -33,7 +33,10 @@ type TimingInput struct {
 	PriorSignals map[string]store.FeedbackBoundary
 	// Resolutions are the stored answers of the environment's versions.
 	Resolutions []store.FeedbackResolution
-	// Slugs maps each configured repository name to its GitHub slug.
+	// Slugs maps each configured repository name to its GitHub slug. A
+	// stored resolution records only the configured name it resolved in, so
+	// this mapping, which live status also compares in, gives the GitHub
+	// repository of each resolved commit.
 	Slugs map[string]string
 	// Merged lists the merged tasks of the workspace.
 	Merged []store.FeedbackMergedTask
@@ -137,12 +140,13 @@ func evidenceDeploy(deploy store.FeedbackDeploy) *store.FeedbackReportDeploy {
 //     after the report was first stored, unless no watcher is listening.
 //   - A qualifying deploy with no previous version is skipped.
 //   - A qualifying deploy whose version or previous version has no resolved
-//     commit, or whose two commits are in different repositories, gives the
-//     note deploy_not_compared. A version whose resolution is still pending
-//     leaves the rule waiting.
+//     commit, or whose two commits are not in one GitHub repository (compared
+//     by slug, not by configured name), gives the note deploy_not_compared.
+//     A version whose resolution is still pending leaves the rule waiting.
 //   - The newly introduced tasks of a qualifying deploy are the merged tasks
-//     of its repository that its version contains and its previous version
-//     does not, by merge commit equality or the stored comparisons. A
+//     whose latest merge event records the deploy's GitHub repository that
+//     its version contains and its previous version does not, by merge
+//     commit equality or the stored comparisons in that repository. A
 //     missing comparison is never taken as an answer: the rule names it in
 //     Missing and waits.
 //   - More than MaxTimingTasks newly introduced tasks link none and give the
@@ -191,12 +195,15 @@ func Timing(input TimingInput) Outcome {
 			waiting = WaitingForResolution
 			continue
 		}
-		slug := input.Slugs[current.ResolvedRepository]
-		if !current.Resolved() || !previous.Resolved() || current.ResolvedRepository != previous.ResolvedRepository || slug == "" {
+		// The two commits are compared only in one GitHub repository: both
+		// must map to the same slug. Two configured names on one slug are one
+		// repository, and a name with no slug proves none.
+		slug := store.FeedbackRepository(input.Slugs[current.ResolvedRepository])
+		previousSlug := store.FeedbackRepository(input.Slugs[previous.ResolvedRepository])
+		if !current.Resolved() || !previous.Resolved() || slug == "" || slug != previousSlug {
 			outcome.Notes = append(outcome.Notes, store.FeedbackReportNote{Kind: store.FeedbackNoteDeployNotCompare, Deploy: evidenceDeploy(deploy)})
 			continue
 		}
-		slug = store.FeedbackRepository(slug)
 		contains := func(head, mergeCommit string) (bool, bool) {
 			if head == mergeCommit {
 				return true, true
@@ -212,8 +219,13 @@ func Timing(input TimingInput) Outcome {
 		newly := []string{}
 		complete := true
 		seen := map[string]bool{}
+		// A merged task belongs to the deploy's repository only when its
+		// latest merge event, which gives its merge commit, records that
+		// GitHub repository. A task merged under the same workspace name in
+		// another repository, before the name was pointed elsewhere, is not
+		// one of them, and a merge event with no repository proves nothing.
 		for _, task := range input.Merged {
-			if task.Repository != current.ResolvedRepository || task.MergeCommit == "" || seen[task.TaskID] {
+			if task.GitHubRepository != slug || task.MergeCommit == "" || seen[task.TaskID] {
 				continue
 			}
 			seen[task.TaskID] = true
