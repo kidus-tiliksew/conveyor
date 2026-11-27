@@ -243,7 +243,7 @@ func NormalizeFeedbackResolution(resolution FeedbackResolution) (FeedbackResolut
 			return FeedbackResolution{}, fmt.Errorf("a resolved version needs a repository and a full commit ID")
 		}
 		if resolution.ResolvedGitHubRepository != "" {
-			slug := FeedbackMergeRepository(resolution.ResolvedGitHubRepository)
+			slug := FeedbackRepositorySlug(resolution.ResolvedGitHubRepository)
 			if slug == "" {
 				return FeedbackResolution{}, fmt.Errorf("a resolved version's GitHub repository is an owner/name slug")
 			}

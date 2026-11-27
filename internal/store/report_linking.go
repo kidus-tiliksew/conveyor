@@ -469,33 +469,24 @@ func distinctFeedbackEvidence(held, added []FeedbackReportEvidence) []FeedbackRe
 	return out
 }
 
-// FeedbackMergeRepository reads the GitHub repository of a merge event
-// payload's repository member, which a backend extracts as text: an
-// owner/name slug, answered in the canonical form FeedbackRepository gives.
-// Only a JSON string or the text a backend extracts from one counts. Any
-// other value, an object, a number, or an empty one, is no repository and
-// answers "",
-// so a merge event without it proves no repository identity.
-func FeedbackMergeRepository(text string) string {
-	text = strings.TrimSpace(text)
-	if strings.HasPrefix(text, `"`) {
-		var unquoted string
-		if err := json.Unmarshal([]byte(text), &unquoted); err != nil {
-			return ""
-		}
-		text = strings.TrimSpace(unquoted)
-	}
+// FeedbackRepositorySlug answers a GitHub repository identity in canonical
+// form, or "" when text is not exactly one owner/name slug: two non-empty
+// parts of the characters GitHub allows in an owner or repository name
+// (letters, digits, hyphens, underscores, and dots) joined by one slash, with
+// no quote, space, or further layer. It decodes nothing: every caller hands
+// it a value already decoded once at the backend boundary, so a JSON string
+// that itself holds quote characters is no slug on any backend
+// (component-feedback-reports invariants 12 and 13).
+func FeedbackRepositorySlug(text string) string {
 	owner, name, found := strings.Cut(text, "/")
 	if !found || !feedbackSlugPart(owner) || !feedbackSlugPart(name) {
 		return ""
 	}
-	return FeedbackRepository(text)
+	return strings.ToLower(text)
 }
 
 // feedbackSlugPart reports whether one half of an owner/name slug uses only
-// the characters GitHub allows in an owner or repository name: letters,
-// digits, hyphens, underscores, and dots. Any other text, the JSON text of
-// an object or a number included, is no repository.
+// the characters GitHub allows in an owner or repository name.
 func feedbackSlugPart(part string) bool {
 	if part == "" {
 		return false
@@ -508,17 +499,87 @@ func feedbackSlugPart(part string) bool {
 	return true
 }
 
-// FeedbackMergePullRequest reads the pull request number of a merge event
-// payload's pull_request member, which a backend extracts as text: a
-// positive whole number, written as a JSON number or a string. Any other
-// value is no number, and answers 0.
-func FeedbackMergePullRequest(text string) int {
-	text = strings.Trim(strings.TrimSpace(text), `"`)
-	number, err := strconv.Atoi(text)
-	if err != nil || number < 1 {
+// The merge-event decoders below read the members of a merge event payload
+// that linking uses as evidence. Each backend extracts the raw JSON of the
+// member unchanged (PostgreSQL `->` rendered as text, SingleStore
+// JSON_EXTRACT_JSON, and the memory backend the raw member), and the decoder
+// decodes it exactly once, so every backend gives the same answer for the
+// same payload. A missing member, JSON null, or a value of another type
+// proves nothing and answers the zero value.
+
+// FeedbackMergeRepositoryJSON answers the canonical GitHub slug of a merge
+// event's repository member: a JSON string holding exactly one owner/name
+// slug.
+func FeedbackMergeRepositoryJSON(raw string) string {
+	text, ok := feedbackJSONString(raw)
+	if !ok {
+		return ""
+	}
+	return FeedbackRepositorySlug(text)
+}
+
+// FeedbackMergeCommitJSON answers the merge commit of a merge event's
+// merge_commit_sha member: a JSON string holding a full 40-character commit
+// ID, answered in lower case. Padding or any other text is no commit.
+func FeedbackMergeCommitJSON(raw string) string {
+	text, ok := feedbackJSONString(raw)
+	if !ok {
+		return ""
+	}
+	commit := strings.ToLower(text)
+	if !FeedbackCommitID(commit) {
+		return ""
+	}
+	return commit
+}
+
+// FeedbackMergePullRequestJSON answers the pull request number of a merge
+// event's pull_request member: a JSON number with a positive whole value, or
+// a JSON string of decimal digits without a sign, space, leading zero, or
+// quote. Any other value is no number and answers 0.
+func FeedbackMergePullRequestJSON(raw string) int {
+	raw = strings.TrimSpace(raw)
+	const most = 1<<31 - 1
+	if strings.HasPrefix(raw, `"`) {
+		text, ok := feedbackJSONString(raw)
+		if !ok || text == "" || text[0] == '0' || strings.Trim(text, "0123456789") != "" || len(text) > 10 {
+			return 0
+		}
+		number, err := strconv.Atoi(text)
+		if err != nil || number < 1 || number > most {
+			return 0
+		}
+		return number
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if decoder.Decode(&value) != nil || decoder.More() {
 		return 0
 	}
-	return number
+	number, ok := value.(json.Number)
+	if !ok {
+		return 0
+	}
+	f, err := number.Float64()
+	if err != nil || f < 1 || f > most || f != float64(int64(f)) {
+		return 0
+	}
+	return int(f)
+}
+
+// feedbackJSONString decodes raw as exactly one JSON string. JSON null, a
+// missing member, and every other type answer false.
+func feedbackJSONString(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, `"`) {
+		return "", false
+	}
+	var text string
+	if json.Unmarshal([]byte(raw), &text) != nil {
+		return "", false
+	}
+	return text, true
 }
 
 // FeedbackLineAbsent is the stored answer of a candidate repository's commit
@@ -601,7 +662,7 @@ func ApplyFeedbackLineStep(stored *FeedbackLineProgress, step FeedbackLineStep) 
 			return progress, false, fmt.Errorf("a candidate answer needs a repository and a full commit or an absence")
 		}
 	}
-	if step.Candidate != "" && step.Candidate != FeedbackRepository(step.Candidate) {
+	if step.Candidate != "" && step.Candidate != FeedbackRepositorySlug(step.Candidate) {
 		return progress, false, fmt.Errorf("a candidate answer is keyed by the canonical GitHub slug")
 	}
 	if step.Input != "" || len(step.Keep) > 0 {
@@ -612,7 +673,7 @@ func ApplyFeedbackLineStep(stored *FeedbackLineProgress, step FeedbackLineStep) 
 			return progress, false, fmt.Errorf("a candidate answer needs the digest of its resolution input")
 		}
 		for _, slug := range step.Keep {
-			if slug == "" || slug != FeedbackRepository(slug) {
+			if slug == "" || slug != FeedbackRepositorySlug(slug) {
 				return progress, false, fmt.Errorf("the current candidates are canonical GitHub slugs")
 			}
 		}
@@ -624,7 +685,7 @@ func ApplyFeedbackLineStep(stored *FeedbackLineProgress, step FeedbackLineStep) 
 	}
 	if step.Repository != "" || step.Slug != "" || step.Commit != "" {
 		kinds++
-		if step.Repository == "" || FeedbackRepository(step.Slug) == "" || !FeedbackCommitID(step.Commit) {
+		if step.Repository == "" || FeedbackRepositorySlug(step.Slug) == "" || !FeedbackCommitID(step.Commit) {
 			return progress, false, fmt.Errorf("a resolution needs a repository, its slug, and a full commit")
 		}
 	}
@@ -666,7 +727,7 @@ func ApplyFeedbackLineStep(stored *FeedbackLineProgress, step FeedbackLineStep) 
 		}
 		progress.Candidates[step.Candidate] = step.Answer
 	case step.Commit != "":
-		progress.Repository, progress.Slug, progress.Commit = step.Repository, FeedbackRepository(step.Slug), step.Commit
+		progress.Repository, progress.Slug, progress.Commit = step.Repository, FeedbackRepositorySlug(step.Slug), step.Commit
 		progress.Candidates, progress.Input = nil, ""
 	default:
 		progress.Unresolved = step.Unresolved
@@ -751,7 +812,14 @@ func NormalizeFeedbackTimingResult(result FeedbackTimingResult) (FeedbackTimingR
 			return FeedbackTimingResult{}, fmt.Errorf("a timing note needs a deploy")
 		}
 		switch note.Kind {
-		case FeedbackNoteTooManyTasks, FeedbackNoteNoTaskDeploy, FeedbackNoteDeployNotCompare:
+		case FeedbackNoteTooManyTasks:
+			if note.TaskCount < 1 {
+				return FeedbackTimingResult{}, fmt.Errorf("a too_many_tasks note needs its task count")
+			}
+		case FeedbackNoteNoTaskDeploy, FeedbackNoteDeployNotCompare:
+			if note.TaskCount != 0 {
+				return FeedbackTimingResult{}, fmt.Errorf("only a too_many_tasks note holds a task count")
+			}
 		default:
 			return FeedbackTimingResult{}, fmt.Errorf("a timing note is too_many_tasks, no_task_deploy, or deploy_not_compared")
 		}
@@ -774,7 +842,60 @@ func ParseFeedbackLineProgress(raw []byte) (*FeedbackLineProgress, error) {
 	if err := json.Unmarshal(raw, &progress); err != nil {
 		return nil, fmt.Errorf("decode line progress: %w", err)
 	}
-	return &progress, nil
+	checked := CheckStoredFeedbackLineProgress(progress)
+	return &checked, nil
+}
+
+// CheckStoredFeedbackLineProgress keeps only the parts of stored line
+// progress that are well formed, so a malformed part proves nothing and is
+// asked again. Every backend applies it when it reads the progress: the
+// durable backends after decoding their column once, and the memory backend
+// on every read. A candidate answer is kept only under a canonical slug key
+// (FeedbackRepositorySlug) with a full commit or FeedbackLineAbsent as its
+// value, and only beside a digest input. The resolution is kept only with a
+// configured name, a canonical slug, and a full commit, and a reason only
+// when it is definitive. A resolution and a reason together prove neither.
+// An ended progress holds no interim answers.
+func CheckStoredFeedbackLineProgress(progress FeedbackLineProgress) FeedbackLineProgress {
+	out := FeedbackLineProgress{}
+	resolved := progress.Repository != "" && progress.Slug != "" && progress.Slug == FeedbackRepositorySlug(progress.Slug) && FeedbackCommitID(progress.Commit)
+	unresolved := slices.Contains(FeedbackDefinitiveUnresolved, progress.Unresolved)
+	switch {
+	case resolved && !unresolved:
+		out.Repository, out.Slug, out.Commit = progress.Repository, progress.Slug, progress.Commit
+		return out
+	case unresolved && !resolved && progress.Commit == "" && progress.Slug == "":
+		out.Unresolved = progress.Unresolved
+		return out
+	}
+	if !FeedbackLineInputDigest(progress.Input) {
+		return out
+	}
+	out.Input = progress.Input
+	for slug, answer := range progress.Candidates {
+		if slug != FeedbackRepositorySlug(slug) || (answer != FeedbackLineAbsent && !FeedbackCommitID(answer)) {
+			continue
+		}
+		if out.Candidates == nil {
+			out.Candidates = map[string]string{}
+		}
+		out.Candidates[slug] = answer
+	}
+	return out
+}
+
+// CheckStoredFeedbackReportLineRead reports whether a stored line read is
+// well formed, as NormalizeFeedbackReportLineRead requires of every write: a
+// read that found the file holds the full changing commit and positive pull
+// request numbers, and one that did not holds neither. Every backend applies
+// it after decoding the stored answer once. A malformed stored read proves
+// nothing and reads as not stored.
+func CheckStoredFeedbackReportLineRead(read FeedbackReportLineRead) (FeedbackReportLineRead, bool) {
+	checked, err := NormalizeFeedbackReportLineRead(read)
+	if err != nil {
+		return FeedbackReportLineRead{}, false
+	}
+	return checked, true
 }
 
 func FeedbackTimingResultJSON(result FeedbackTimingResult) string {
@@ -789,9 +910,11 @@ func ParseFeedbackTimingResult(raw []byte) (*FeedbackTimingResult, error) {
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return nil, fmt.Errorf("decode timing result: %w", err)
 	}
+	// A stored result that a write would refuse proves nothing and reads as
+	// not stored, so the rule works it out again.
 	normalized, err := NormalizeFeedbackTimingResult(result)
 	if err != nil {
-		return nil, err
+		return nil, nil
 	}
 	return &normalized, nil
 }

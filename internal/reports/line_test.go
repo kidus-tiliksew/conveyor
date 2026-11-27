@@ -129,6 +129,8 @@ func TestLineComparesGitHubRepositories(t *testing.T) {
 		{"read in acme/new", "acme/new", []string{"t-new-commit", "t-new-other-name", "t-new-pull"}},
 		{"read in acme/old", "Acme/Old", []string{"t-old-commit", "t-old-pull"}},
 		{"no stored slug", "", []string{}},
+		{"a stored slug with quote characters", `"acme/new"`, []string{}},
+		{"a stored slug with a further part", "acme/new/x", []string{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outcome := Line(LineInput{Report: lineReport(), Read: read, Slug: tc.slug, Merged: merged})

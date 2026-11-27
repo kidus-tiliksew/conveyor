@@ -276,17 +276,19 @@ func (m *volatileMemory) ListFeedbackMergedTasks(ctx context.Context, query Feed
 			}
 		}
 		if found {
+			// Each member is kept as raw JSON and decoded once by the shared
+			// merge-event decoders, as the durable backends do.
 			var payload struct {
 				Repository     json.RawMessage `json:"repository"`
-				MergeCommitSHA string          `json:"merge_commit_sha"`
+				MergeCommitSHA json.RawMessage `json:"merge_commit_sha"`
 				PullRequest    json.RawMessage `json:"pull_request"`
 			}
 			_ = json.Unmarshal(latest.Payload, &payload)
-			merged.MergeCommit, merged.MergedAt, merged.EventID = FeedbackMergeCommit(payload.MergeCommitSHA), latest.At.UTC(), latest.ID
+			merged.MergeCommit, merged.MergedAt, merged.EventID = FeedbackMergeCommitJSON(string(payload.MergeCommitSHA)), latest.At.UTC(), latest.ID
 			// The pull request number comes from the same latest event
 			// (component-feedback-reports invariant 12).
-			merged.PullRequest = FeedbackMergePullRequest(string(payload.PullRequest))
-			merged.GitHubRepository = FeedbackMergeRepository(string(payload.Repository))
+			merged.PullRequest = FeedbackMergePullRequestJSON(string(payload.PullRequest))
+			merged.GitHubRepository = FeedbackMergeRepositoryJSON(string(payload.Repository))
 		}
 		out = append(out, merged)
 	}

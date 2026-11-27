@@ -474,7 +474,7 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 	latest := map[string]mergeEvent{}
 	err = eachFeedbackChunk(ids, func(part []string) error {
 		list, values := feedbackList(part)
-		rows, err := documentRows(ctx, s.db, `SELECT task_id,COALESCE(JSON_EXTRACT_STRING(payload_json,'merge_commit_sha'),''),at,id,COALESCE(JSON_EXTRACT_STRING(payload_json,'pull_request'),''),COALESCE(JSON_EXTRACT_STRING(payload_json,'repository'),'') FROM events_columnstore WHERE workspace_id=? AND kind IN ('merge.confirmed','merge.reconciled') AND task_id IN (`+list+`)`, append([]any{ws}, values...)...)
+		rows, err := documentRows(ctx, s.db, `SELECT task_id,COALESCE(JSON_EXTRACT_JSON(payload_json,'merge_commit_sha'),''),at,id,COALESCE(JSON_EXTRACT_JSON(payload_json,'pull_request'),''),COALESCE(JSON_EXTRACT_JSON(payload_json,'repository'),'') FROM events_columnstore WHERE workspace_id=? AND kind IN ('merge.confirmed','merge.reconciled') AND task_id IN (`+list+`)`, append([]any{ws}, values...)...)
 		if err != nil {
 			return err
 		}
@@ -499,11 +499,13 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 	}
 	for taskID, event := range latest {
 		task := &tasks[index[taskID]]
-		task.MergeCommit, task.MergedAt, task.EventID = store.FeedbackMergeCommit(event.sha), event.at.UTC(), event.id
+		// Each member arrives as its raw JSON and is decoded once by the
+		// shared merge-event decoders.
+		task.MergeCommit, task.MergedAt, task.EventID = store.FeedbackMergeCommitJSON(event.sha), event.at.UTC(), event.id
 		// The pull request number comes from the same latest event
 		// (component-feedback-reports invariant 12).
-		task.PullRequest = store.FeedbackMergePullRequest(event.pullRequest)
-		task.GitHubRepository = store.FeedbackMergeRepository(event.repository)
+		task.PullRequest = store.FeedbackMergePullRequestJSON(event.pullRequest)
+		task.GitHubRepository = store.FeedbackMergeRepositoryJSON(event.repository)
 	}
 	store.SortFeedbackMergedTasks(tasks)
 	return tasks, nil

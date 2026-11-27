@@ -1329,26 +1329,56 @@ func lineChangeFailure(errs []lineChangeError) error {
 	return &Error{Category: category, Err: fmt.Errorf("read line change: GitHub answered %d GraphQL errors", len(errs))}
 }
 
-type lineChangeBlame struct {
-	Ranges []struct {
-		StartingLine int `json:"startingLine"`
-		EndingLine   int `json:"endingLine"`
-		Commit       struct {
-			OID                    string `json:"oid"`
-			AssociatedPullRequests *struct {
-				PageInfo *struct {
-					HasNextPage *bool `json:"hasNextPage"`
-				} `json:"pageInfo"`
-				Nodes *[]*struct {
-					Number         int   `json:"number"`
-					Merged         *bool `json:"merged"`
-					BaseRepository *struct {
-						NameWithOwner string `json:"nameWithOwner"`
-					} `json:"baseRepository"`
-				} `json:"nodes"`
-			} `json:"associatedPullRequests"`
-		} `json:"commit"`
-	} `json:"ranges"`
+// lineChangeRange is one blame range as GitHub answers it. Every member is a
+// pointer so that a missing or null member differs from a zero value.
+type lineChangeRange struct {
+	StartingLine *int `json:"startingLine"`
+	EndingLine   *int `json:"endingLine"`
+	Commit       *struct {
+		OID                    *string `json:"oid"`
+		AssociatedPullRequests *struct {
+			PageInfo *struct {
+				HasNextPage *bool `json:"hasNextPage"`
+			} `json:"pageInfo"`
+			Nodes *[]*struct {
+				Number         *int  `json:"number"`
+				Merged         *bool `json:"merged"`
+				BaseRepository *struct {
+					NameWithOwner *string `json:"nameWithOwner"`
+				} `json:"baseRepository"`
+			} `json:"nodes"`
+		} `json:"associatedPullRequests"`
+	} `json:"commit"`
+}
+
+// lineChangeSlug reports whether text is exactly one owner/name slug of the
+// characters GitHub allows, with no space, quote, or further slash.
+func lineChangeSlug(text string) bool {
+	owner, name, found := strings.Cut(text, "/")
+	part := func(p string) bool {
+		if p == "" {
+			return false
+		}
+		for _, r := range p {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+				return false
+			}
+		}
+		return true
+	}
+	return found && part(owner) && part(name)
+}
+
+// rawPresent reports whether a JSON member was present, and whether it was
+// JSON null.
+func rawPresent(raw json.RawMessage) (present, null bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "", trimmed == "null"
+}
+
+// rawObject reports whether a JSON member is an object.
+func rawObject(raw json.RawMessage) bool {
+	return strings.HasPrefix(strings.TrimSpace(string(raw)), "{")
 }
 
 func readLineChange(ctx context.Context, repo, commit, path string, line int, run ghRunner) (LineChange, error) {
@@ -1360,16 +1390,18 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 	if err != nil {
 		return LineChange{}, fmt.Errorf("read line change: %w", forgeCallError(err))
 	}
+	// Every member the query selects is checked for presence, type, and
+	// consistency with its siblings. A member that is missing, null where
+	// the schema allows no null, of another type, empty, or inconsistent is
+	// an incomplete answer in the forge_response category, and nothing is
+	// stored for it. Only a null file with errors that each name the missing
+	// path is the missing-file answer (component-feedback-reports invariant
+	// 12).
 	var answer struct {
 		Data *struct {
 			Repository *struct {
-				Commit *struct {
-					Typename string          `json:"__typename"`
-					File     json.RawMessage `json:"file"`
-				} `json:"commit"`
-				Blamed *struct {
-					Blame *lineChangeBlame `json:"blame"`
-				} `json:"blamed"`
+				Commit json.RawMessage `json:"commit"`
+				Blamed json.RawMessage `json:"blamed"`
 			} `json:"repository"`
 		} `json:"data"`
 		Errors []lineChangeError `json:"errors"`
@@ -1384,23 +1416,34 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 		}
 		return LineChange{}, forgeResponseError("read line change: the answer holds no repository")
 	}
-	object := data.Repository.Commit
-	if object == nil {
-		if len(answer.Errors) > 0 {
-			return LineChange{}, lineChangeFailure(answer.Errors)
-		}
+	present, null := rawPresent(data.Repository.Commit)
+	switch {
+	case !present:
+		return LineChange{}, forgeResponseError("read line change: the answer holds no commit member")
+	case null && len(answer.Errors) > 0:
+		return LineChange{}, lineChangeFailure(answer.Errors)
+	case null:
 		return LineChange{}, CommitNotFoundError(commit)
+	case !rawObject(data.Repository.Commit):
+		return LineChange{}, forgeResponseError("read line change: the commit member is not an object")
 	}
-	if object.Typename != "Commit" {
+	var object struct {
+		Typename *string         `json:"__typename"`
+		File     json.RawMessage `json:"file"`
+	}
+	if json.Unmarshal(data.Repository.Commit, &object) != nil {
+		return LineChange{}, forgeResponseError("read line change: malformed commit member")
+	}
+	if object.Typename == nil || *object.Typename != "Commit" {
 		return LineChange{}, forgeResponseError("read line change: the object is not a commit")
 	}
 	// The file member must be present: null states that the commit holds no
-	// file at the path, and a missing member proves nothing. A RawMessage
-	// keeps the literal null, so the two differ.
-	if len(object.File) == 0 {
+	// file at the path, and a missing member proves nothing.
+	present, null = rawPresent(object.File)
+	if !present {
 		return LineChange{}, forgeResponseError("read line change: the answer holds no file member")
 	}
-	if string(object.File) == "null" {
+	if null {
 		// A missing file is stored for good, so it needs definitive
 		// evidence: at least one error that identifies the missing path, and
 		// no other error. Commit.blame is non-null, so GitHub cannot answer
@@ -1418,50 +1461,87 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 	if len(answer.Errors) > 0 {
 		return LineChange{}, lineChangeFailure(answer.Errors)
 	}
-	if data.Repository.Blamed == nil || data.Repository.Blamed.Blame == nil {
+	// A file object proves the file only with its path, and only with the
+	// path the read asked for.
+	var file struct {
+		Path *string `json:"path"`
+	}
+	if !rawObject(object.File) || json.Unmarshal(object.File, &file) != nil || file.Path == nil || *file.Path != path {
+		return LineChange{}, forgeResponseError("read line change: the file member holds no usable path")
+	}
+	present, null = rawPresent(data.Repository.Blamed)
+	if !present || null || !rawObject(data.Repository.Blamed) {
 		return LineChange{}, forgeResponseError("read line change: the answer holds no blame")
 	}
-	for _, r := range data.Repository.Blamed.Blame.Ranges {
-		if r.StartingLine < 1 || r.EndingLine < r.StartingLine || line < r.StartingLine || line > r.EndingLine {
-			continue
+	var blamed struct {
+		Blame *struct {
+			Ranges *[]*lineChangeRange `json:"ranges"`
+		} `json:"blame"`
+	}
+	if json.Unmarshal(data.Repository.Blamed, &blamed) != nil || blamed.Blame == nil {
+		return LineChange{}, forgeResponseError("read line change: the answer holds no blame")
+	}
+	if blamed.Blame.Ranges == nil {
+		return LineChange{}, forgeResponseError("read line change: the blame holds no ranges member")
+	}
+	// Every range must be whole: its lines and its commit ID. Exactly one
+	// range must hold the line.
+	var selected *lineChangeRange
+	for _, r := range *blamed.Blame.Ranges {
+		if r == nil || r.StartingLine == nil || r.EndingLine == nil || *r.StartingLine < 1 || *r.EndingLine < *r.StartingLine {
+			return LineChange{}, forgeResponseError("read line change: malformed blame range")
 		}
-		oid := strings.ToLower(r.Commit.OID)
-		if !fullCommitID(oid) {
+		if r.Commit == nil || r.Commit.OID == nil || !fullCommitID(strings.ToLower(*r.Commit.OID)) {
 			return LineChange{}, forgeResponseError("read line change: malformed commit ID")
 		}
-		pulls := r.Commit.AssociatedPullRequests
-		if pulls == nil {
-			return LineChange{}, forgeResponseError("read line change: the answer holds no pull request list")
+		if line < *r.StartingLine || line > *r.EndingLine {
+			continue
 		}
-		// The list is complete only when GitHub states that it has no next
-		// page. Missing page information proves nothing.
-		if pulls.PageInfo == nil || pulls.PageInfo.HasNextPage == nil {
-			return LineChange{}, forgeResponseError("read line change: the pull request list holds no page information")
+		if selected != nil {
+			return LineChange{}, forgeResponseError("read line change: two blame ranges hold the line")
 		}
-		// A connection without its nodes member, or with null nodes, is not
-		// an empty list: it proves nothing about the pull requests.
-		if pulls.Nodes == nil {
-			return LineChange{}, forgeResponseError("read line change: the pull request list holds no nodes member")
-		}
-		if *pulls.PageInfo.HasNextPage || len(*pulls.Nodes) > LineChangePullRequests {
-			return LineChange{}, forgeResponseError("read line change: GitHub lists more pull requests than one page holds")
-		}
-		numbers := []int{}
-		seen := map[int]bool{}
-		for _, node := range *pulls.Nodes {
-			if node == nil || node.Number < 1 || node.Merged == nil || node.BaseRepository == nil {
-				return LineChange{}, forgeResponseError("read line change: malformed pull request")
-			}
-			if !*node.Merged || !strings.EqualFold(node.BaseRepository.NameWithOwner, owner+"/"+name) || seen[node.Number] {
-				continue
-			}
-			seen[node.Number] = true
-			numbers = append(numbers, node.Number)
-		}
-		sort.Ints(numbers)
-		return LineChange{FileFound: true, Commit: oid, PullRequests: numbers}, nil
+		selected = r
 	}
-	return LineChange{}, forgeResponseError("read line change: no blame range holds the line")
+	if selected == nil {
+		return LineChange{}, forgeResponseError("read line change: no blame range holds the line")
+	}
+	oid := strings.ToLower(*selected.Commit.OID)
+	pulls := selected.Commit.AssociatedPullRequests
+	if pulls == nil {
+		return LineChange{}, forgeResponseError("read line change: the answer holds no pull request list")
+	}
+	// The list is complete only when GitHub states that it has no next page.
+	// Missing page information proves nothing.
+	if pulls.PageInfo == nil || pulls.PageInfo.HasNextPage == nil {
+		return LineChange{}, forgeResponseError("read line change: the pull request list holds no page information")
+	}
+	// A connection without its nodes member, or with null nodes, is not an
+	// empty list: it proves nothing about the pull requests.
+	if pulls.Nodes == nil {
+		return LineChange{}, forgeResponseError("read line change: the pull request list holds no nodes member")
+	}
+	if *pulls.PageInfo.HasNextPage || len(*pulls.Nodes) > LineChangePullRequests {
+		return LineChange{}, forgeResponseError("read line change: GitHub lists more pull requests than one page holds")
+	}
+	numbers := []int{}
+	seen := map[int]bool{}
+	for _, node := range *pulls.Nodes {
+		// Every pull request must be whole, merged or not: its number, its
+		// merged state, and its base repository with an owner/name slug. An
+		// empty or missing base repository is an incomplete answer, never a
+		// different repository.
+		if node == nil || node.Number == nil || *node.Number < 1 || node.Merged == nil || node.BaseRepository == nil ||
+			node.BaseRepository.NameWithOwner == nil || !lineChangeSlug(*node.BaseRepository.NameWithOwner) {
+			return LineChange{}, forgeResponseError("read line change: malformed pull request")
+		}
+		if !*node.Merged || !strings.EqualFold(*node.BaseRepository.NameWithOwner, owner+"/"+name) || seen[*node.Number] {
+			continue
+		}
+		seen[*node.Number] = true
+		numbers = append(numbers, *node.Number)
+	}
+	sort.Ints(numbers)
+	return LineChange{FileFound: true, Commit: oid, PullRequests: numbers}, nil
 }
 
 // SubmissionPullRequest is the existing open PR observed for a submission.

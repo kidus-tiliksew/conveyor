@@ -327,7 +327,7 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 	rows, err := s.boundary.Query(ctx, `SELECT t.id, t.repo_name, COALESCE(m.sha, ''), m.at, COALESCE(m.id, 0), COALESCE(m.pull_request, ''), COALESCE(m.repository, '')
 FROM tasks t
 LEFT JOIN LATERAL (
-  SELECT e.payload_json->>'merge_commit_sha' AS sha, e.at, e.id, e.payload_json->>'pull_request' AS pull_request, e.payload_json->>'repository' AS repository FROM events e
+  SELECT (e.payload_json->'merge_commit_sha')::text AS sha, e.at, e.id, (e.payload_json->'pull_request')::text AS pull_request, (e.payload_json->'repository')::text AS repository FROM events e
   WHERE e.workspace_id=t.workspace_id AND e.task_id=t.id AND e.kind IN ('merge.confirmed', 'merge.reconciled')
   ORDER BY e.at DESC, e.id DESC LIMIT 1
 ) m ON true
@@ -353,9 +353,11 @@ WHERE t.workspace_id=$1 AND t.state='merged'
 		// Its pull request number comes from the same event
 		// (component-feedback-reports invariant 12).
 		if at.Valid {
-			task.MergeCommit, task.MergedAt, task.EventID = store.FeedbackMergeCommit(sha), at.Time.UTC(), id
-			task.PullRequest = store.FeedbackMergePullRequest(pullRequest)
-			task.GitHubRepository = store.FeedbackMergeRepository(repository)
+			// Each member arrives as its raw JSON text and is decoded once by
+			// the shared merge-event decoders.
+			task.MergeCommit, task.MergedAt, task.EventID = store.FeedbackMergeCommitJSON(sha), at.Time.UTC(), id
+			task.PullRequest = store.FeedbackMergePullRequestJSON(pullRequest)
+			task.GitHubRepository = store.FeedbackMergeRepositoryJSON(repository)
 		}
 		out = append(out, task)
 	}

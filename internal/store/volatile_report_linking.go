@@ -61,7 +61,8 @@ func (m *volatileMemory) ReadFeedbackReportLineRead(ctx context.Context, reportI
 	if err != nil {
 		return FeedbackReportLineRead{}, false, err
 	}
-	return FeedbackReportLineRead{ReportID: row.ReportID, Repository: row.Repository, ResolvedCommit: row.ResolvedCommit, File: row.File, Line: row.Line, Answer: answer, AnsweredAt: row.AnsweredAt}, true, nil
+	read, ok := CheckStoredFeedbackReportLineRead(FeedbackReportLineRead{ReportID: row.ReportID, Repository: row.Repository, ResolvedCommit: row.ResolvedCommit, File: row.File, Line: row.Line, Answer: answer, AnsweredAt: row.AnsweredAt})
+	return read, ok, nil
 }
 
 // RecordFeedbackReportLineRead implements ReportLinkingStore. A stored

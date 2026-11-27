@@ -440,7 +440,7 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 				waiting = reason
 				break
 			}
-			key := store.FeedbackComparisonKey{Repository: store.FeedbackRepository(candidate.Slug), Head: feedbackResolvePrefix + report.ID}
+			key := store.FeedbackComparisonKey{Repository: reports.CandidateSlug(candidate), Head: feedbackResolvePrefix + report.ID}
 			admitted, err := a.feedback.AdmitFeedbackComparisons(ctx, []store.FeedbackComparisonKey{key}, a.job.env.clock(), 1)
 			if err != nil {
 				return reports.Outcome{}, err
@@ -451,7 +451,7 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 				}
 				break
 			}
-			commit, err := a.forge.ReadCommit(ctx, store.FeedbackRepository(candidate.Slug), plan.Ref)
+			commit, err := a.forge.ReadCommit(ctx, reports.CandidateSlug(candidate), plan.Ref)
 			answer, definitive := reports.CandidateAnswer(plan.Prefix, commit, err)
 			if !definitive {
 				waiting = feedbackReportErrorClass(err)

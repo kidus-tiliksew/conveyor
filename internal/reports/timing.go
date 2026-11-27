@@ -199,9 +199,11 @@ func Timing(input TimingInput) Outcome {
 		// (approved plan version 4). A resolution with no recorded repository,
 		// which includes every one stored before the field existed, proves
 		// none, and the current mapping of a workspace name is never used.
-		slug := store.FeedbackRepository(current.ResolvedGitHubRepository)
-		previousSlug := store.FeedbackRepository(previous.ResolvedGitHubRepository)
-		if !current.Resolved() || !previous.Resolved() || slug == "" || slug != previousSlug {
+		slug := store.FeedbackRepositorySlug(current.ResolvedGitHubRepository)
+		previousSlug := store.FeedbackRepositorySlug(previous.ResolvedGitHubRepository)
+		// Each recorded commit must be a full commit ID: a malformed one
+		// proves nothing, and the deploy is not compared.
+		if !current.Resolved() || !previous.Resolved() || !store.FeedbackCommitID(current.ResolvedCommit) || !store.FeedbackCommitID(previous.ResolvedCommit) || slug == "" || slug != previousSlug {
 			outcome.Notes = append(outcome.Notes, store.FeedbackReportNote{Kind: store.FeedbackNoteDeployNotCompare, Deploy: evidenceDeploy(deploy)})
 			continue
 		}
@@ -211,6 +213,13 @@ func Timing(input TimingInput) Outcome {
 			}
 			key := store.FeedbackComparisonKey{Repository: slug, Base: mergeCommit, Head: head}
 			answer, stored := comparisons[key]
+			// Only a known status is an answer. Any other stored value proves
+			// nothing and counts as missing, never as "does not hold".
+			switch answer.Status {
+			case store.FeedbackCompareAhead, store.FeedbackCompareIdentical, store.FeedbackCompareBehind, store.FeedbackCompareDiverged, store.FeedbackCompareMissing:
+			default:
+				stored = false
+			}
 			if !stored {
 				missing[key] = true
 				return false, false

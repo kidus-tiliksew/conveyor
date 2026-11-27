@@ -36,7 +36,7 @@ type ResolvePlan struct {
 // Step is the stored form of one candidate's definitive answer under the
 // plan's input.
 func (p ResolvePlan) Step(candidate feedback.Repository, answer string) store.FeedbackLineStep {
-	return store.FeedbackLineStep{Candidate: store.FeedbackRepository(candidate.Slug), Answer: answer, Input: p.Input, Keep: slices.Clone(p.Keep)}
+	return store.FeedbackLineStep{Candidate: CandidateSlug(candidate), Answer: answer, Input: p.Input, Keep: slices.Clone(p.Keep)}
 }
 
 // Prune is the step that drops stored answers the plan does not use: all of
@@ -57,6 +57,13 @@ func (p ResolvePlan) Prune(progress *store.FeedbackLineProgress) (store.Feedback
 		return store.FeedbackLineStep{}, false
 	}
 	return store.FeedbackLineStep{Input: p.Input, Keep: slices.Clone(p.Keep)}, true
+}
+
+// CandidateSlug is the canonical GitHub slug of a configured candidate
+// repository, or "" when its configured slug is not exactly one owner/name
+// slug. A candidate without one is not read and proves nothing.
+func CandidateSlug(repository feedback.Repository) string {
+	return store.FeedbackRepositorySlug(strings.TrimSpace(repository.Slug))
 }
 
 // resolveInput is the digest of one resolution input: the ref read and the
@@ -92,7 +99,9 @@ func PlanResolve(request feedback.ResolveRequest, progress *store.FeedbackLinePr
 		if request.Version.Repository != "" && repository.Name != request.Version.Repository {
 			continue
 		}
-		if strings.TrimSpace(repository.Slug) != "" {
+		// A configured slug that is not exactly one owner/name slug proves
+		// no repository, so the name is no candidate.
+		if CandidateSlug(repository) != "" {
 			candidates = append(candidates, repository)
 		}
 	}
@@ -119,7 +128,7 @@ func PlanResolve(request feedback.ResolveRequest, progress *store.FeedbackLinePr
 	}
 	plan.Input = resolveInput(plan.Ref, plan.Prefix)
 	for _, candidate := range candidates {
-		if slug := store.FeedbackRepository(candidate.Slug); !slices.Contains(plan.Keep, slug) {
+		if slug := CandidateSlug(candidate); !slices.Contains(plan.Keep, slug) {
 			plan.Keep = append(plan.Keep, slug)
 		}
 	}
@@ -132,7 +141,7 @@ func PlanResolve(request feedback.ResolveRequest, progress *store.FeedbackLinePr
 	// An answer is keyed by the GitHub slug read, so a name that now points at
 	// another repository has no answer and is read again.
 	for _, candidate := range candidates {
-		answer, answered := answers[store.FeedbackRepository(candidate.Slug)]
+		answer, answered := answers[CandidateSlug(candidate)]
 		switch {
 		case !answered:
 			plan.Reads = append(plan.Reads, candidate)
@@ -146,7 +155,7 @@ func PlanResolve(request feedback.ResolveRequest, progress *store.FeedbackLinePr
 	case len(plan.Reads) > 0:
 		return plan
 	case len(matches) == 1:
-		slug := store.FeedbackRepository(matches[0].Slug)
+		slug := CandidateSlug(matches[0])
 		return ResolvePlan{Final: &store.FeedbackLineStep{Repository: matches[0].Name, Slug: slug, Commit: answers[slug]}}
 	}
 	return ResolvePlan{Final: &store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch}}
@@ -161,9 +170,10 @@ func CandidateAnswer(prefix, commit string, err error) (answer string, ok bool) 
 	switch {
 	case err == nil && store.FeedbackCommitID(commit) && strings.HasPrefix(commit, prefix):
 		return commit, true
-	case err == nil, errors.Is(err, github.ErrCommitNotFound):
+	case err == nil && store.FeedbackCommitID(commit), errors.Is(err, github.ErrCommitNotFound):
 		return store.FeedbackLineAbsent, true
 	}
+	// A malformed commit with no error proves nothing either.
 	return "", false
 }
 

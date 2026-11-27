@@ -3,6 +3,7 @@ package reports
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -606,6 +607,8 @@ func TestTimingUsesRecordedRepositories(t *testing.T) {
 		{"the current version has no recorded repository", "", "acme/old", map[string][]string{"d-2": {"note deploy_not_compared"}}},
 		{"the previous version has no recorded repository", "acme/old", "", map[string][]string{"d-2": {"note deploy_not_compared"}}},
 		{"neither version has a recorded repository", "", "", map[string][]string{"d-2": {"note deploy_not_compared"}}},
+		{"a recorded repository with quote characters", `"acme/old"`, `"acme/old"`, map[string][]string{"d-2": {"note deploy_not_compared"}}},
+		{"a recorded repository with a further part", "acme/old/x", "acme/old/x", map[string][]string{"d-2": {"note deploy_not_compared"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outcome := Timing(setup(tc.current, tc.previous))
@@ -614,5 +617,40 @@ func TestTimingUsesRecordedRepositories(t *testing.T) {
 				t.Fatalf("decisions %v missing %v, want %v", got, outcome.Missing, tc.want)
 			}
 		})
+	}
+}
+
+// TestTimingUnknownComparisonStatus proves that a stored comparison with a
+// status the store never writes proves nothing: the rule counts it as
+// missing and waits, and never reads it as "does not hold"
+// (component-production-feedback invariant 14).
+func TestTimingUnknownComparisonStatus(t *testing.T) {
+	f := &timingFixture{}
+	f.deploy("d-1", "1", shaA, base, store.FeedbackSourceGitHub)
+	f.deploy("d-2", "2", shaB, base.Add(10*time.Minute), store.FeedbackSourceGitHub)
+	f.merged = append(f.merged, store.FeedbackMergedTask{TaskID: "t-1", Repository: "app", GitHubRepository: "acme/app", MergeCommit: shaC})
+	f.comparisons = append(f.comparisons,
+		store.FeedbackComparison{FeedbackComparisonKey: store.FeedbackComparisonKey{Repository: "acme/app", Base: shaC, Head: shaB}, Status: store.FeedbackCompareAhead},
+		store.FeedbackComparison{FeedbackComparisonKey: store.FeedbackComparisonKey{Repository: "acme/app", Base: shaC, Head: shaA}, Status: "maybe"})
+	outcome := Timing(f.input(base.Add(20 * time.Minute)))
+	want := []store.FeedbackComparisonKey{{Repository: "acme/app", Base: shaC, Head: shaA}}
+	if outcome.Ended || outcome.Waiting != WaitingForComparisons || !slices.Equal(outcome.Missing, want) {
+		t.Fatalf("outcome %+v, want waiting for the unknown answer", outcome)
+	}
+}
+
+// TestTimingMalformedRecordedCommit proves that a stored resolution whose
+// commit is not a full commit ID proves nothing: the deploy gives
+// deploy_not_compared and links no task.
+func TestTimingMalformedRecordedCommit(t *testing.T) {
+	for _, bad := range []string{"abc1234", strings.ToUpper(shaB), " " + shaB} {
+		f := &timingFixture{}
+		f.deploy("d-1", "1", shaA, base, store.FeedbackSourceGitHub)
+		f.deploy("d-2", "2", shaB, base.Add(10*time.Minute), store.FeedbackSourceGitHub)
+		f.task("t-new", shaC, shaB)
+		f.resolutions[1].ResolvedCommit = bad
+		if got := decisions(t, Timing(f.input(base.Add(20*time.Minute)))); fmt.Sprint(got) != fmt.Sprint(map[string][]string{"d-2": {"note deploy_not_compared"}}) {
+			t.Fatalf("commit %q: decisions %v, want deploy_not_compared", bad, got)
+		}
 	}
 }

@@ -110,7 +110,7 @@ func Line(input LineInput) Outcome {
 	evidence := store.FeedbackReportEvidence{Kind: store.FeedbackEvidenceLine, File: read.File, Line: read.Line, Commit: read.Answer.Commit}
 	outcome := Outcome{Ended: true}
 	seen := map[string]bool{}
-	slug := store.FeedbackRepository(input.Slug)
+	slug := store.FeedbackRepositorySlug(input.Slug)
 	for _, task := range input.Merged {
 		if slug == "" || task.GitHubRepository != slug || seen[task.TaskID] {
 			continue

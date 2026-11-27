@@ -126,8 +126,12 @@ func runFeedbackResolvedGitHubRepository(t *testing.T, x Fixture) {
 	requireOK(t, x.Backend.RecordFeedbackResolution(x.Context, store.FeedbackResolution{FeedbackVersionRef: unresolved, ResolvedGitHubRepository: "acme/old", Reason: "no_match", AttemptedAt: feedbackTime(time.Second)}))
 	// A later resolution of the resolved version changes nothing.
 	requireOK(t, x.Backend.RecordFeedbackResolution(x.Context, store.FeedbackResolution{FeedbackVersionRef: with, ResolvedRepository: "app", ResolvedGitHubRepository: "acme/new", ResolvedCommit: commit, AttemptedAt: feedbackTime(time.Hour)}))
-	if err := x.Backend.RecordFeedbackResolution(x.Context, store.FeedbackResolution{FeedbackVersionRef: feedbackRef(environment.id, "web", "@v2"), ResolvedRepository: "app", ResolvedGitHubRepository: "not a slug", ResolvedCommit: commit, AttemptedAt: feedbackTime(0)}); err == nil {
-		t.Fatal("a GitHub repository that is not a slug was recorded")
+	// Only exactly one owner/name slug is a recorded repository: a quoted
+	// slug, padding, a space, a third part, and a missing half are refused.
+	for _, bad := range []string{"not a slug", `"acme/app"`, " acme/app", "acme/ app", "acme/app/x", "/app", "acme/"} {
+		if err := x.Backend.RecordFeedbackResolution(x.Context, store.FeedbackResolution{FeedbackVersionRef: feedbackRef(environment.id, "web", "@v2"), ResolvedRepository: "app", ResolvedGitHubRepository: bad, ResolvedCommit: commit, AttemptedAt: feedbackTime(0)}); err == nil {
+			t.Fatalf("the GitHub repository %q was recorded", bad)
+		}
 	}
 	inputs, err := x.Backend.ReadFeedbackInputs(x.Context, []string{environment.id})
 	requireOK(t, err)

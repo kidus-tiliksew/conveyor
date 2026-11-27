@@ -84,7 +84,10 @@ func (s *Store) ReadFeedbackReportLineRead(ctx context.Context, reportID string)
 		return store.FeedbackReportLineRead{}, false, err
 	}
 	read.AnsweredAt = store.EnvironmentTime(read.AnsweredAt)
-	return read, true, nil
+	// A stored read that a write would refuse proves nothing and reads as
+	// not stored.
+	read, ok := store.CheckStoredFeedbackReportLineRead(read)
+	return read, ok, nil
 }
 
 // RecordFeedbackReportLineRead implements store.ReportLinkingStore. A stored

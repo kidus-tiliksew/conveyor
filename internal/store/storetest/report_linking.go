@@ -37,6 +37,8 @@ func runFeedbackReportLinking(t *testing.T, factory Factory) {
 		{"ServiceSignals", runFeedbackLinkingServiceSignals},
 		{"MergePullRequest", runFeedbackLinkingMergePullRequest},
 		{"MergeRepository", runFeedbackLinkingMergeRepository},
+		{"MergeEventShapes", runFeedbackLinkingMergeEventShapes},
+		{"MalformedEvidenceRefused", runFeedbackLinkingMalformedEvidence},
 		{"LineProgressResumes", runFeedbackLinkingLineProgress},
 		{"LineProgressOneInput", runFeedbackLinkingLineProgressInput},
 		{"TimingResultKept", runFeedbackLinkingTimingResult},
@@ -608,6 +610,7 @@ func runFeedbackLinkingMergeRepository(t *testing.T, x Fixture) {
 		event(nil, feedbackCommit("a5"), feedbackTime(time.Minute)))
 	bad := feedbackMergedTask(t, x, "app", "", event("not a slug", feedbackCommit("a6"), feedbackTime(0)))
 	number := feedbackMergedTask(t, x, "app", "", event(7, feedbackCommit("a7"), feedbackTime(0)))
+	quoted := feedbackMergedTask(t, x, "app", "", event(`"acme/app"`, feedbackCommit("a9"), feedbackTime(0)))
 	object := feedbackMergedTask(t, x, "app", "", event(map[string]any{"slug": "acme/old"}, feedbackCommit("a8"), feedbackTime(0)))
 	merged, err := x.Backend.ListFeedbackMergedTasks(x.Context, store.FeedbackMergedTaskQuery{Repository: "app"})
 	requireOK(t, err)
@@ -623,12 +626,171 @@ func runFeedbackLinkingMergeRepository(t *testing.T, x Fixture) {
 		{"latest event without a repository", missing.ID, "", feedbackCommit("a5")},
 		{"not a slug", bad.ID, "", feedbackCommit("a6")},
 		{"not text", number.ID, "", feedbackCommit("a7")},
+		{"a quoted slug inside the string", quoted.ID, "", feedbackCommit("a9")},
 		{"an object", object.ID, "", feedbackCommit("a8")},
 	} {
 		task := got[c.id]
 		if task.GitHubRepository != c.want || task.MergeCommit != c.commit || task.PullRequest != 42 || task.Repository != "app" {
 			t.Fatalf("%s: task=%+v, want repository %q with commit %s", c.name, task, c.want, c.commit)
 		}
+	}
+}
+
+// runFeedbackLinkingMergeEventShapes proves, for each member of a merge
+// event that linking uses as evidence, that every backend decodes it once
+// and gives the same answer: the repository is exactly one owner/name slug,
+// the commit a full commit ID, and the pull request number a positive whole
+// number. Every malformed shape proves nothing and answers the zero value
+// (component-feedback-reports invariants 12 and 13).
+func runFeedbackLinkingMergeEventShapes(t *testing.T, x Fixture) {
+	good := map[string]json.RawMessage{
+		"repository":       json.RawMessage(`"acme/app"`),
+		"merge_commit_sha": json.RawMessage(`"` + feedbackCommit("b0") + `"`),
+		"pull_request":     json.RawMessage(`42`),
+	}
+	type shape struct {
+		name   string
+		member string
+		raw    string // "" removes the member
+		want   any
+	}
+	shapes := []shape{
+		{"repository: a quoted slug inside the string", "repository", `"\"acme/app\""`, ""},
+		{"repository: a space inside", "repository", `"acme /app"`, ""},
+		{"repository: padding", "repository", `" acme/app"`, ""},
+		{"repository: three parts", "repository", `"acme/app/x"`, ""},
+		{"repository: no owner", "repository", `"/app"`, ""},
+		{"repository: empty", "repository", `""`, ""},
+		{"repository: null", "repository", `null`, ""},
+		{"repository: missing", "repository", "", ""},
+		{"repository: an array", "repository", `["acme/app"]`, ""},
+		{"repository: a number", "repository", `12`, ""},
+		{"repository: upper case is canonical", "repository", `"Acme/App"`, "acme/app"},
+		{"commit: a quoted commit inside the string", "merge_commit_sha", `"\"` + feedbackCommit("b1") + `\""`, ""},
+		{"commit: padding", "merge_commit_sha", `" ` + feedbackCommit("b2") + `"`, ""},
+		{"commit: short", "merge_commit_sha", `"abc1234"`, ""},
+		{"commit: forty digits as a number", "merge_commit_sha", strings.Repeat("1", 40), ""},
+		{"commit: null", "merge_commit_sha", `null`, ""},
+		{"commit: missing", "merge_commit_sha", "", ""},
+		{"commit: upper case is canonical", "merge_commit_sha", `"` + strings.ToUpper(feedbackCommit("b3")) + `"`, feedbackCommit("b3")},
+		{"pull request: a digit string", "pull_request", `"42"`, 42},
+		{"pull request: a quoted number inside the string", "pull_request", `"\"42\""`, 0},
+		{"pull request: a padded string", "pull_request", `" 42"`, 0},
+		{"pull request: a leading zero", "pull_request", `"042"`, 0},
+		{"pull request: a negative number", "pull_request", `-3`, 0},
+		{"pull request: zero", "pull_request", `0`, 0},
+		{"pull request: a fraction", "pull_request", `42.5`, 0},
+		{"pull request: a whole number with a fraction part", "pull_request", `42.0`, 42},
+		{"pull request: an exponent", "pull_request", `4.2e1`, 42},
+		{"pull request: too large", "pull_request", `1e20`, 0},
+		{"pull request: a boolean", "pull_request", `true`, 0},
+		{"pull request: null", "pull_request", `null`, 0},
+		{"pull request: missing", "pull_request", "", 0},
+	}
+	ids := map[string]string{}
+	for i, sh := range shapes {
+		payload := map[string]json.RawMessage{}
+		for key, value := range good {
+			payload[key] = value
+		}
+		if sh.raw == "" {
+			delete(payload, sh.member)
+		} else {
+			payload[sh.member] = json.RawMessage(sh.raw)
+		}
+		raw, err := json.Marshal(payload)
+		requireOK(t, err)
+		task := feedbackMergedTask(t, x, "shapes", "", core.Event{Kind: "merge.confirmed", At: feedbackTime(time.Duration(i) * time.Second), Payload: raw})
+		ids[sh.name] = task.ID
+	}
+	merged, err := x.Backend.ListFeedbackMergedTasks(x.Context, store.FeedbackMergedTaskQuery{Repository: "shapes"})
+	requireOK(t, err)
+	got := map[string]store.FeedbackMergedTask{}
+	for _, task := range merged {
+		got[task.TaskID] = task
+	}
+	for _, sh := range shapes {
+		task, found := got[ids[sh.name]]
+		if !found {
+			t.Fatalf("%s: task not read", sh.name)
+		}
+		wantRepository, wantCommit, wantPull := "acme/app", feedbackCommit("b0"), 42
+		switch sh.member {
+		case "repository":
+			wantRepository = sh.want.(string)
+		case "merge_commit_sha":
+			wantCommit = sh.want.(string)
+		case "pull_request":
+			wantPull = sh.want.(int)
+		}
+		if task.GitHubRepository != wantRepository || task.MergeCommit != wantCommit || task.PullRequest != wantPull {
+			t.Fatalf("%s: repository=%q commit=%q pull=%d, want %q %q %d", sh.name, task.GitHubRepository, task.MergeCommit, task.PullRequest, wantRepository, wantCommit, wantPull)
+		}
+	}
+}
+
+// runFeedbackLinkingMalformedEvidence proves that every backend refuses each
+// malformed shape of the stored evidence that a linking rule reads, so none
+// is ever stored and none can match: line progress with a repository that is
+// not exactly one owner/name slug, a line answer whose parts disagree, and a
+// timing result whose notes or links are incomplete. Nothing is written for
+// any of them (component-feedback-reports invariants 12 to 15).
+func runFeedbackLinkingMalformedEvidence(t *testing.T, x Fixture) {
+	e, report := linkingReport(t, x, "crash", func(entry *store.FeedbackReportEntry) {
+		entry.Service, entry.File, entry.Line, entry.Commit = "api", "cmd/main.go", 12, "abcdef0"
+	})
+	attemptAt := claimedAt(t, x, report.ID, feedbackTime(10*time.Second))
+	input := feedbackLineInput("1")
+	commit := feedbackCommit("c0")
+	for _, step := range []store.FeedbackLineStep{
+		{Candidate: `"acme/app"`, Answer: commit, Input: input, Keep: []string{`"acme/app"`}},
+		{Candidate: "acme/app/x", Answer: commit, Input: input, Keep: []string{"acme/app/x"}},
+		{Candidate: "acme /app", Answer: commit, Input: input, Keep: []string{"acme /app"}},
+		{Candidate: "acme/app", Answer: commit, Input: input, Keep: []string{"acme/app", " acme/x"}},
+		{Repository: "app", Slug: `"acme/app"`, Commit: commit},
+		{Repository: "app", Slug: "acme/app/x", Commit: commit},
+		{Repository: "app", Slug: "acme", Commit: commit},
+		{Repository: "app", Slug: "acme/app", Commit: strings.ToUpper(commit)},
+		{Repository: "", Slug: "acme/app", Commit: commit},
+	} {
+		if _, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, attemptAt, step); err == nil {
+			t.Fatalf("line step %+v was stored", step)
+		}
+	}
+	answered := feedbackTime(time.Minute)
+	for name, answer := range map[string]store.FeedbackReportLineAnswer{
+		"a found file without its commit":       {FileFound: true, PullRequests: []int{}},
+		"a found file with a short commit":      {FileFound: true, Commit: "abc1234", PullRequests: []int{}},
+		"a missing file with a commit":          {FileFound: false, Commit: commit, PullRequests: []int{}},
+		"a missing file with pull requests":     {FileFound: false, PullRequests: []int{7}},
+		"a pull request number that is not one": {FileFound: true, Commit: commit, PullRequests: []int{0}},
+		"a negative pull request number":        {FileFound: true, Commit: commit, PullRequests: []int{-7}},
+		"an upper-case commit":                  {FileFound: true, Commit: strings.ToUpper(commit), PullRequests: []int{}},
+	} {
+		read := store.FeedbackReportLineRead{ReportID: report.ID, Repository: "app", ResolvedCommit: commit, File: "cmd/main.go", Line: 12, Answer: answer, AnsweredAt: answered}
+		if err := x.Backend.RecordFeedbackReportLineRead(x.Context, read); err == nil {
+			t.Fatalf("%s: the line answer was stored", name)
+		}
+	}
+	for name, result := range map[string]store.FeedbackTimingResult{
+		"a link without its task":                  {Links: []store.FeedbackTimingLink{{DeployID: "dep-1"}}},
+		"a link without its deploy":                {Links: []store.FeedbackTimingLink{{TaskID: "task-1"}}},
+		"negative minutes":                         {Links: []store.FeedbackTimingLink{{TaskID: "task-1", DeployID: "dep-1", ElapsedMinutes: -1}}},
+		"a note without its deploy":                {Notes: []store.FeedbackTimingNote{{Kind: store.FeedbackNoteNoTaskDeploy}}},
+		"too_many_tasks without a count":           {Notes: []store.FeedbackTimingNote{{Kind: store.FeedbackNoteTooManyTasks, DeployID: "dep-1"}}},
+		"no_task_deploy with a count":              {Notes: []store.FeedbackTimingNote{{Kind: store.FeedbackNoteNoTaskDeploy, DeployID: "dep-1", TaskCount: 3}}},
+		"a note kind the timing rule never writes": {Notes: []store.FeedbackTimingNote{{Kind: store.FeedbackNoteFileNotFound, DeployID: "dep-1"}}},
+	} {
+		if _, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, attemptAt, result); err == nil {
+			t.Fatalf("%s: the timing result was stored", name)
+		}
+	}
+	stored := pendingReport(t, x, e, "crash")
+	if stored.LineProgress != nil || stored.TimingResult != nil {
+		t.Fatalf("malformed evidence was stored: %+v %+v", stored.LineProgress, stored.TimingResult)
+	}
+	if _, found, err := x.Backend.ReadFeedbackReportLineRead(x.Context, report.ID); err != nil || found {
+		t.Fatalf("a malformed line answer was stored: found=%v err=%v", found, err)
 	}
 }
 

@@ -3,6 +3,7 @@ package reports
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,6 +174,12 @@ func TestCandidateAnswer(t *testing.T) {
 	}
 	if answer, ok := CandidateAnswer("aaaa", "", github.CommitNotFoundError("aaaa")); !ok || answer != store.FeedbackLineAbsent {
 		t.Fatalf("not found: %q %v", answer, ok)
+	}
+	// A malformed commit with no error proves nothing.
+	for _, commit := range []string{"", "abc", strings.ToUpper(shaA), `"` + shaA + `"`} {
+		if answer, ok := CandidateAnswer("aaaa", commit, nil); ok {
+			t.Fatalf("malformed commit %q gave the definitive answer %q", commit, answer)
+		}
 	}
 	for _, err := range []error{github.StatusError(502, errors.New("x")), github.RateLimitedError(time.Time{}, errors.New("x")), github.PermissionError(errors.New("x"))} {
 		if _, ok := CandidateAnswer("aaaa", "", err); ok {

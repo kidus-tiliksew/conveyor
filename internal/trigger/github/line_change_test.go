@@ -27,6 +27,15 @@ func blameRange(start, end int, commit string, pulls ...string) string {
 	return fmt.Sprintf(`{"startingLine":%d,"endingLine":%d,"commit":{"oid":%q,"associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[%s]}}}`, start, end, commit, strings.Join(pulls, ","))
 }
 
+// manyPulls renders count merged pull requests of acme/app.
+func manyPulls(count int) []string {
+	out := make([]string, count)
+	for i := range out {
+		out[i] = pullNode(i+1, true, "acme/app")
+	}
+	return out
+}
+
 func pullNode(number int, merged bool, base string) string {
 	return fmt.Sprintf(`{"number":%d,"merged":%t,"baseRepository":{"nameWithOwner":%q}}`, number, merged, base)
 }
@@ -92,6 +101,51 @@ func TestReadLineChange(t *testing.T) {
 		{name: "L34 HTTP permission", line: 5, status: 403, body: `{"message":"Resource not accessible by integration"}`, category: ForgePermission},
 		{name: "L35 HTTP 429 keeps the retry time", line: 5, status: 429, body: `{"message":"rate limit"}`, headers: map[string]string{"Retry-After": "90"}, category: ForgeRateLimited, retry: 90 * time.Second},
 		{name: "L36 HTTP 403 with no remaining requests keeps the retry time", line: 5, status: 403, body: `{"message":"API rate limit exceeded"}`, headers: map[string]string{"X-RateLimit-Remaining": "0", "Retry-After": "120"}, category: ForgeRateLimited, retry: 120 * time.Second},
+		{name: "L37 the data member is not an object", line: 5, body: `{"data":"x"}`, category: ForgeResponse},
+		{name: "L38 the repository member is not an object", line: 5, body: `{"data":{"repository":[]}}`, category: ForgeResponse},
+		{name: "L39 no commit member", line: 5, body: `{"data":{"repository":{"blamed":{"blame":{"ranges":[]}}}}}`, category: ForgeResponse},
+		{name: "L40 the commit member is not an object", line: 5, body: `{"data":{"repository":{"commit":"x","blamed":{"blame":{"ranges":[]}}}}}`, category: ForgeResponse},
+		{name: "L41 no __typename", line: 5, body: `{"data":{"repository":{"commit":{"file":{"path":"cmd/main.go"}},"blamed":{"blame":{"ranges":[]}}}}}`, category: ForgeResponse},
+		{name: "L42 a null __typename", line: 5, body: `{"data":{"repository":{"commit":{"__typename":null,"file":{"path":"cmd/main.go"}},"blamed":{"blame":{"ranges":[]}}}}}`, category: ForgeResponse},
+		{name: "L43 a __typename that is not a string", line: 5, body: `{"data":{"repository":{"commit":{"__typename":7,"file":{"path":"cmd/main.go"}},"blamed":{"blame":{"ranges":[]}}}}}`, category: ForgeResponse},
+		{name: "L44 a file that is not an object", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":"cmd/main.go"},"blamed":{"blame":{"ranges":[]}}}}}`, category: ForgeResponse},
+		{name: "L45 a file object without its path", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{}},"blamed":{"blame":{"ranges":[` + blameRange(1, 9, lineChangeCommit, pullNode(7, true, "acme/app")) + `]}}}}}`, category: ForgeResponse},
+		{name: "L46 a file with a null path", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":null}},"blamed":{"blame":{"ranges":[` + blameRange(1, 9, lineChangeCommit) + `]}}}}}`, category: ForgeResponse},
+		{name: "L47 a file with an empty path", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":""}},"blamed":{"blame":{"ranges":[` + blameRange(1, 9, lineChangeCommit) + `]}}}}}`, category: ForgeResponse},
+		{name: "L48 a file with another path", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"other.go"}},"blamed":{"blame":{"ranges":[` + blameRange(1, 9, lineChangeCommit) + `]}}}}}`, category: ForgeResponse},
+		{name: "L49 a file path that is not a string", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":7}},"blamed":{"blame":{"ranges":[` + blameRange(1, 9, lineChangeCommit) + `]}}}}}`, category: ForgeResponse},
+		{name: "L50 no blamed member", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}}}}}`, category: ForgeResponse},
+		{name: "L51 a null blamed member with no error", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":null}}}`, category: ForgeResponse},
+		{name: "L52 a blamed member that is not an object", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":[]}}}`, category: ForgeResponse},
+		{name: "L53 a null blame", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":{"blame":null}}}}`, category: ForgeResponse},
+		{name: "L54 a blame without ranges", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":{"blame":{}}}}}`, category: ForgeResponse},
+		{name: "L55 a blame with null ranges", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":{"blame":{"ranges":null}}}}}`, category: ForgeResponse},
+		{name: "L56 a null range", line: 5, body: blameAnswer(`null`, blameRange(1, 9, lineChangeCommit)), category: ForgeResponse},
+		{name: "L57 a range without its starting line", line: 5, body: blameAnswer(`{"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}`), category: ForgeResponse},
+		{name: "L58 a range without its ending line", line: 5, body: blameAnswer(`{"startingLine":1,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}`), category: ForgeResponse},
+		{name: "L59 a range that ends before it starts", line: 5, body: blameAnswer(blameRange(9, 1, lineChangeCommit)), category: ForgeResponse},
+		{name: "L60 a range that starts at line 0", line: 5, body: blameAnswer(blameRange(0, 9, lineChangeCommit)), category: ForgeResponse},
+		{name: "L61 a range line that is not a number", line: 5, body: blameAnswer(`{"startingLine":"1","endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}`), category: ForgeResponse},
+		{name: "L62 the range that holds the line without its commit", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9}`), category: ForgeResponse},
+		{name: "L63 another range without its commit", line: 5, body: blameAnswer(blameRange(1, 9, lineChangeCommit), `{"startingLine":10,"endingLine":20,"commit":null}`), category: ForgeResponse},
+		{name: "L64 a commit without its ID", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}`), category: ForgeResponse},
+		{name: "L65 a commit with a null ID", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":null,"associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}`), category: ForgeResponse},
+		{name: "L66 two ranges hold the line", line: 5, body: blameAnswer(blameRange(1, 9, lineChangeCommit), blameRange(5, 12, feedbackSHA)), category: ForgeResponse},
+		{name: "L67 a pull request without its number", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"merged":true,"baseRepository":{"nameWithOwner":"acme/app"}}]}}}`), category: ForgeResponse},
+		{name: "L68 a pull request with number 0", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":0,"merged":true,"baseRepository":{"nameWithOwner":"acme/app"}}]}}}`), category: ForgeResponse},
+		{name: "L69 a pull request with a null number", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":null,"merged":true,"baseRepository":{"nameWithOwner":"acme/app"}}]}}}`), category: ForgeResponse},
+		{name: "L70 a pull request number that is not a number", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":"7","merged":true,"baseRepository":{"nameWithOwner":"acme/app"}}]}}}`), category: ForgeResponse},
+		{name: "L71 a pull request with a null merged state", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":7,"merged":null,"baseRepository":{"nameWithOwner":"acme/app"}}]}}}`), category: ForgeResponse},
+		{name: "L72 a merged pull request without its base repository", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":7,"merged":true}]}}}`), category: ForgeResponse},
+		{name: "L73 a merged pull request with a null base repository", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":7,"merged":true,"baseRepository":null}]}}}`), category: ForgeResponse},
+		{name: "L74 a merged pull request with an empty base repository", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":7,"merged":true,"baseRepository":{}}]}}}`), category: ForgeResponse},
+		{name: "L75 a base repository with a null name", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":7,"merged":true,"baseRepository":{"nameWithOwner":null}}]}}}`), category: ForgeResponse},
+		{name: "L76 a base repository with an empty name", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":7,"merged":true,"baseRepository":{"nameWithOwner":""}}]}}}`), category: ForgeResponse},
+		{name: "L77 a base repository name that is not a slug", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":7,"merged":true,"baseRepository":{"nameWithOwner":"acme"}}]}}}`), category: ForgeResponse},
+		{name: "L78 a base repository name with quote characters", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":7,"merged":true,"baseRepository":{"nameWithOwner":"\"acme/app\""}}]}}}`), category: ForgeResponse},
+		{name: "L79 an open pull request with an empty base repository", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":7,"merged":false,"baseRepository":{}}]}}}`), category: ForgeResponse},
+		{name: "L80 a hasNextPage that is not a boolean", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":"false"},"nodes":[]}}}`), category: ForgeResponse},
+		{name: "L81 more nodes than one page holds", line: 5, body: blameAnswer(blameRange(1, 9, lineChangeCommit, manyPulls(LineChangePullRequests+1)...)), category: ForgeResponse},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var requests atomic.Int32
