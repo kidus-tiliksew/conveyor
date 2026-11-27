@@ -1273,8 +1273,12 @@ const LineChangePullRequests = 100
 
 // lineChangeQuery asks, at one commit, whether the file exists and which
 // commit last changed each range of its lines, with the pull requests GitHub
-// lists for each such commit. It asks for no file content.
-const lineChangeQuery = `query($owner:String!,$name:String!,$oid:GitObjectID!,$path:String!){repository(owner:$owner,name:$name){object(oid:$oid){__typename ... on Commit{file(path:$path){path} blame(path:$path){ranges{startingLine endingLine commit{oid associatedPullRequests(first:100){pageInfo{hasNextPage} nodes{number merged baseRepository{nameWithOwner}}}}}}}}}}`
+// lists for each such commit. It asks for no file content. The commit is
+// selected twice under two aliases in the one request: Commit.blame is
+// non-null, so a blame error, such as the one for a path the commit does not
+// hold, nulls only the blamed alias, and the file member of the commit alias
+// still states whether the file exists.
+const lineChangeQuery = `query($owner:String!,$name:String!,$oid:GitObjectID!,$path:String!){repository(owner:$owner,name:$name){commit:object(oid:$oid){__typename ... on Commit{file(path:$path){path}}} blamed:object(oid:$oid){... on Commit{blame(path:$path){ranges{startingLine endingLine commit{oid associatedPullRequests(first:100){pageInfo{hasNextPage} nodes{number merged baseRepository{nameWithOwner}}}}}}}}}}`
 
 // ReadLineChange asks GitHub, in one GraphQL request, which commit last
 // changed one line of one file as of a full commit ID, and which merged pull
@@ -1284,8 +1288,9 @@ const lineChangeQuery = `query($owner:String!,$name:String!,$oid:GitObjectID!,$p
 // commit does not hold answers FileFound false. Every other outcome that is
 // not a complete answer is a failure of the existing categories: a GraphQL
 // errors member, an unreadable repository, a commit GitHub does not find
-// (ErrCommitNotFound), no blame range that holds the line, a truncated pull
-// request list, and a malformed answer.
+// (ErrCommitNotFound), no blame range that holds the line, a pull request
+// list without its page information or with more than one page, and a
+// malformed answer.
 func ReadLineChange(ctx context.Context, repo, commit, path string, line int) (LineChange, error) {
 	return readLineChange(ctx, repo, commit, path, line, gh)
 }
@@ -1296,11 +1301,14 @@ type lineChangeError struct {
 	Path    []any  `json:"path"`
 }
 
-// blameError reports whether a GraphQL error is at the blame field. GitHub
-// can answer the blame of a path that the commit does not hold with such an
-// error, and the file field then decides.
-func (e lineChangeError) blameError() bool {
-	return len(e.Path) >= 3 && e.Path[0] == "repository" && e.Path[1] == "object" && e.Path[2] == "blame"
+// missingFileError reports whether a GraphQL error is one that a path the
+// commit does not hold causes: an error at the blamed alias, or a NOT_FOUND
+// error at the file member of the commit alias. The file member then decides.
+func (e lineChangeError) missingFileError() bool {
+	if len(e.Path) >= 2 && e.Path[0] == "repository" && e.Path[1] == "blamed" {
+		return true
+	}
+	return strings.EqualFold(e.Type, "NOT_FOUND") && len(e.Path) == 3 && e.Path[0] == "repository" && e.Path[1] == "commit" && e.Path[2] == "file"
 }
 
 // lineChangeFailure maps GraphQL errors to the existing categories. No
@@ -1318,6 +1326,28 @@ func lineChangeFailure(errs []lineChangeError) error {
 	return &Error{Category: category, Err: fmt.Errorf("read line change: GitHub answered %d GraphQL errors", len(errs))}
 }
 
+type lineChangeBlame struct {
+	Ranges []struct {
+		StartingLine int `json:"startingLine"`
+		EndingLine   int `json:"endingLine"`
+		Commit       struct {
+			OID                    string `json:"oid"`
+			AssociatedPullRequests *struct {
+				PageInfo *struct {
+					HasNextPage *bool `json:"hasNextPage"`
+				} `json:"pageInfo"`
+				Nodes []struct {
+					Number         int  `json:"number"`
+					Merged         bool `json:"merged"`
+					BaseRepository *struct {
+						NameWithOwner string `json:"nameWithOwner"`
+					} `json:"baseRepository"`
+				} `json:"nodes"`
+			} `json:"associatedPullRequests"`
+		} `json:"commit"`
+	} `json:"ranges"`
+}
+
 func readLineChange(ctx context.Context, repo, commit, path string, line int, run ghRunner) (LineChange, error) {
 	owner, name, ok := strings.Cut(strings.TrimSpace(repo), "/")
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || !fullCommitID(commit) || path == "" || line < 1 {
@@ -1330,31 +1360,13 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 	var answer struct {
 		Data *struct {
 			Repository *struct {
-				Object *struct {
+				Commit *struct {
 					Typename string          `json:"__typename"`
 					File     json.RawMessage `json:"file"`
-					Blame    *struct {
-						Ranges []struct {
-							StartingLine int `json:"startingLine"`
-							EndingLine   int `json:"endingLine"`
-							Commit       struct {
-								OID                    string `json:"oid"`
-								AssociatedPullRequests *struct {
-									PageInfo struct {
-										HasNextPage bool `json:"hasNextPage"`
-									} `json:"pageInfo"`
-									Nodes []struct {
-										Number         int  `json:"number"`
-										Merged         bool `json:"merged"`
-										BaseRepository *struct {
-											NameWithOwner string `json:"nameWithOwner"`
-										} `json:"baseRepository"`
-									} `json:"nodes"`
-								} `json:"associatedPullRequests"`
-							} `json:"commit"`
-						} `json:"ranges"`
-					} `json:"blame"`
-				} `json:"object"`
+				} `json:"commit"`
+				Blamed *struct {
+					Blame *lineChangeBlame `json:"blame"`
+				} `json:"blamed"`
 			} `json:"repository"`
 		} `json:"data"`
 		Errors []lineChangeError `json:"errors"`
@@ -1369,7 +1381,7 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 		}
 		return LineChange{}, forgeResponseError("read line change: the answer holds no repository")
 	}
-	object := data.Repository.Object
+	object := data.Repository.Commit
 	if object == nil {
 		if len(answer.Errors) > 0 {
 			return LineChange{}, lineChangeFailure(answer.Errors)
@@ -1387,7 +1399,7 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 	}
 	if string(object.File) == "null" {
 		for _, e := range answer.Errors {
-			if !e.blameError() {
+			if !e.missingFileError() {
 				return LineChange{}, lineChangeFailure(answer.Errors)
 			}
 		}
@@ -1396,10 +1408,10 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 	if len(answer.Errors) > 0 {
 		return LineChange{}, lineChangeFailure(answer.Errors)
 	}
-	if object.Blame == nil {
+	if data.Repository.Blamed == nil || data.Repository.Blamed.Blame == nil {
 		return LineChange{}, forgeResponseError("read line change: the answer holds no blame")
 	}
-	for _, r := range object.Blame.Ranges {
+	for _, r := range data.Repository.Blamed.Blame.Ranges {
 		if r.StartingLine < 1 || r.EndingLine < r.StartingLine || line < r.StartingLine || line > r.EndingLine {
 			continue
 		}
@@ -1411,7 +1423,12 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 		if pulls == nil {
 			return LineChange{}, forgeResponseError("read line change: the answer holds no pull request list")
 		}
-		if pulls.PageInfo.HasNextPage || len(pulls.Nodes) > LineChangePullRequests {
+		// The list is complete only when GitHub states that it has no next
+		// page. Missing page information proves nothing.
+		if pulls.PageInfo == nil || pulls.PageInfo.HasNextPage == nil {
+			return LineChange{}, forgeResponseError("read line change: the pull request list holds no page information")
+		}
+		if *pulls.PageInfo.HasNextPage || len(pulls.Nodes) > LineChangePullRequests {
 			return LineChange{}, forgeResponseError("read line change: GitHub lists more pull requests than one page holds")
 		}
 		numbers := []int{}

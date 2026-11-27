@@ -20,7 +20,7 @@ const lineChangeCommit = "fedcba9876543210fedcba9876543210fedcba98"
 // blameAnswer renders one GraphQL answer with a file and blame ranges. Each
 // range is startingLine, endingLine, commit, and its pull requests.
 func blameAnswer(ranges ...string) string {
-	return `{"data":{"repository":{"object":{"__typename":"Commit","file":{"path":"cmd/main.go"},"blame":{"ranges":[` + strings.Join(ranges, ",") + `]}}}}}`
+	return `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":{"blame":{"ranges":[` + strings.Join(ranges, ",") + `]}}}}}`
 }
 
 func blameRange(start, end int, commit string, pulls ...string) string {
@@ -54,20 +54,24 @@ func TestReadLineChange(t *testing.T) {
 			want: LineChange{FileFound: true, Commit: lineChangeCommit, PullRequests: []int{}}},
 		{name: "open pull requests and other repositories are left out", line: 5, body: blameAnswer(blameRange(1, 9, lineChangeCommit, pullNode(4, false, "acme/app"), pullNode(5, true, "acme/fork"), pullNode(6, true, "acme/app"), pullNode(6, true, "acme/app"))),
 			want: LineChange{FileFound: true, Commit: lineChangeCommit, PullRequests: []int{6}}},
-		{name: "a missing file", line: 5, body: `{"data":{"repository":{"object":{"__typename":"Commit","file":null,"blame":null}}}}`, want: LineChange{FileFound: false}},
-		{name: "a missing file with a blame error", line: 5, body: `{"data":{"repository":{"object":{"__typename":"Commit","file":null,"blame":null}}},"errors":[{"type":"NOT_FOUND","path":["repository","object","blame"],"message":"cmd/main.go not found"}]}`, want: LineChange{FileFound: false}},
-		{name: "a missing file with another error", line: 5, body: `{"data":{"repository":{"object":{"__typename":"Commit","file":null,"blame":null}}},"errors":[{"type":"SERVICE_UNAVAILABLE","path":["repository","object","file"],"message":"timeout"}]}`, category: ForgeResponse},
-		{name: "GraphQL errors on HTTP 200 with data", line: 5, body: `{"data":{"repository":{"object":{"__typename":"Commit","file":{"path":"cmd/main.go"},"blame":null}}},"errors":[{"type":"SERVICE_UNAVAILABLE","message":"timeout"}]}`, category: ForgeResponse},
+		{name: "a missing file", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":{"blame":{"ranges":[]}}}}}`, want: LineChange{FileFound: false}},
+		{name: "a missing file whose blame error nulls the blamed alias", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"NOT_FOUND","path":["repository","blamed","blame"],"message":"Could not resolve file"}]}`, want: LineChange{FileFound: false}},
+		{name: "a missing file with a NOT_FOUND error at the file member", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"NOT_FOUND","path":["repository","commit","file"],"message":"Could not resolve file"},{"type":"NOT_FOUND","path":["repository","blamed","blame"],"message":"Could not resolve file"}]}`, want: LineChange{FileFound: false}},
+		{name: "a missing file with another error", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"SERVICE_UNAVAILABLE","path":["repository","commit","file"],"message":"timeout"}]}`, category: ForgeResponse},
+		{name: "GraphQL errors on HTTP 200 with data", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":null}},"errors":[{"type":"SERVICE_UNAVAILABLE","path":["repository","blamed","blame"],"message":"timeout"}]}`, category: ForgeResponse},
 		{name: "GraphQL rate limit", line: 5, body: `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, category: ForgeRateLimited},
 		{name: "a repository the token cannot read", line: 5, body: `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"Could not resolve"}]}`, category: ForgePermission},
 		{name: "a forbidden answer", line: 5, body: `{"data":null,"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}`, category: ForgePermission},
-		{name: "an absent commit", line: 5, body: `{"data":{"repository":{"object":null}}}`, notFound: true},
-		{name: "an object that is not a commit", line: 5, body: `{"data":{"repository":{"object":{"__typename":"Tree"}}}}`, category: ForgeResponse},
-		{name: "no file member", line: 5, body: `{"data":{"repository":{"object":{"__typename":"Commit"}}}}`, category: ForgeResponse},
+		{name: "an absent commit", line: 5, body: `{"data":{"repository":{"commit":null,"blamed":null}}}`, notFound: true},
+		{name: "an object that is not a commit", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Tree"},"blamed":{}}}}`, category: ForgeResponse},
+		{name: "no file member", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit"},"blamed":{"blame":{"ranges":[]}}}}}`, category: ForgeResponse},
 		{name: "empty blame", line: 5, body: blameAnswer(), category: ForgeResponse},
 		{name: "no range holds the line", line: 50, body: blameAnswer(blameRange(1, 9, lineChangeCommit)), category: ForgeResponse},
-		{name: "a truncated pull request list", line: 5, body: `{"data":{"repository":{"object":{"__typename":"Commit","file":{"path":"cmd/main.go"},"blame":{"ranges":[{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":true},"nodes":[]}}}]}}}}}`, category: ForgeResponse},
-		{name: "no pull request list", line: 5, body: `{"data":{"repository":{"object":{"__typename":"Commit","file":{"path":"cmd/main.go"},"blame":{"ranges":[{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `"}}]}}}}}`, category: ForgeResponse},
+		{name: "a truncated pull request list", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":true},"nodes":[]}}}`), category: ForgeResponse},
+		{name: "no page information", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"nodes":[]}}}`), category: ForgeResponse},
+		{name: "a null next-page member", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":null},"nodes":[]}}}`), category: ForgeResponse},
+		{name: "no pull request list", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `"}}`), category: ForgeResponse},
+		{name: "no blame with no error", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":{}}}}`, category: ForgeResponse},
 		{name: "a malformed commit ID", line: 5, body: blameAnswer(blameRange(1, 9, "abc")), category: ForgeResponse},
 		{name: "a malformed answer", line: 5, body: `not json`, category: ForgeResponse},
 		{name: "no data and no errors", line: 5, body: `{}`, category: ForgeResponse},
