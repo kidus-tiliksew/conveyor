@@ -8,6 +8,7 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/feedback"
 	"github.com/kidus-tiliksew/conveyor/internal/reports"
@@ -31,6 +32,10 @@ type feedbackReportsRequest struct {
 // component-production-feedback invariant 28).
 const feedbackLineReadPrefix = "line-read:"
 
+// feedbackResolvePrefix starts the admission key of a commit read that
+// resolving the first entry of a report sends, for the same reasons.
+const feedbackResolvePrefix = "line-resolve:"
+
 // The reasons a rule waits that the linking work names itself.
 const (
 	// feedbackWaitingAllowance: the admission refused the line read. The
@@ -41,6 +46,10 @@ const (
 	// feedbackWaitingNoRepository: the read's repository is not in the
 	// workspace configuration any more.
 	feedbackWaitingNoRepository = "repository_not_configured"
+	// feedbackWaitingLineUnanswered: an attempt at or after 24 hours found
+	// no stored line read and no reason an earlier attempt of this process
+	// named.
+	feedbackWaitingLineUnanswered = "line_read_unanswered"
 )
 
 // enqueueFeedbackReports asks for the linking of the reports a report request
@@ -141,20 +150,25 @@ func runFeedbackPendingReports(ctx context.Context, job feedbackJob) {
 // (component-feedback-reports invariants 11 to 15; feature-production-
 // feedback-listening FR-2). The attempt is claimed in the store first, at
 // most once a minute for the report, and a report whose linking ended is
-// skipped there, before any forge call. The line rule reuses a stored line
-// read, and otherwise resolves the first entry's commit or version and asks
-// GitHub once, through the workspace allowance. The timing rule reads stored
-// records only and asks the background work for missing comparisons. When
-// both rules have ended, or 24 hours have passed since the report was first
-// stored, the links, the notes, and the linked event are written in one
-// transaction. Every store failure stops the attempt and is logged by class.
+// refused there. The claim's exact time is the attempt's time: it decides
+// whether 24 hours have passed before any call, and the end of linking uses
+// it too. The line rule reuses a stored line read, and otherwise resolves
+// the first entry's commit or version and asks GitHub once, each call
+// admitted against the workspace allowance and held back while a retry time
+// GitHub returned has not passed. The timing rule reads stored records only
+// and asks the background work for missing comparisons under the same
+// checks. When both rules have ended, or 24 hours have passed since the
+// report was first stored, the links, the notes, and the linked event are
+// written in one transaction. Every store failure stops the attempt and is
+// logged by class.
 func runFeedbackReportLinking(ctx context.Context, job feedbackJob) {
 	reportStore, ok := job.env.store.(store.ReportStore)
 	feedbackStore, isFeedback := job.env.store.(store.FeedbackStore)
 	if !ok || !isFeedback {
 		return
 	}
-	report, claimed, err := reportStore.ClaimFeedbackReportLinking(ctx, job.report, job.env.clock())
+	now := job.env.clock()
+	report, claimed, err := reportStore.ClaimFeedbackReportLinking(ctx, job.report, now)
 	if err != nil {
 		logFeedbackReport(job.workspace, "", job.report, "failed", "claim", err)
 		return
@@ -162,10 +176,69 @@ func runFeedbackReportLinking(ctx context.Context, job feedbackJob) {
 	if !claimed {
 		return
 	}
-	attempt := feedbackReportAttempt{job: job, reports: reportStore, feedback: feedbackStore, report: report}
+	attempt := feedbackReportAttempt{job: job, reports: reportStore, feedback: feedbackStore, report: report, now: now,
+		expired: !now.Before(report.CreatedAt.Add(store.FeedbackReportLinkingDeadline))}
+	attempt.forge = &feedbackAttemptForge{inner: job.env.lazyForge(job.workspace), env: job.env, workspace: job.workspace}
 	if err := attempt.run(ctx); err != nil {
 		logFeedbackReport(job.workspace, report.EnvironmentID, report.ID, "failed", attempt.step, err)
 	}
+}
+
+// errFeedbackForgeHeld is the failure of a forge call that the linking work
+// did not send because a retry time GitHub returned has not passed.
+var errFeedbackForgeHeld = errors.New("the linking work sent no request: GitHub's retry time has not passed")
+
+// feedbackAttemptForge is the forge of one linking attempt. Before each
+// call it checks that no retry time a rate-limited call of the workspace
+// returned is still ahead, and answers a rate-limited failure with that time
+// without calling GitHub. After a rate-limited call it keeps the retry time,
+// so the later calls of this attempt, and of every later attempt of the
+// workspace until that time, send nothing (component-production-feedback
+// invariant 28).
+type feedbackAttemptForge struct {
+	inner     feedback.Forge
+	env       feedbackJobEnv
+	workspace string
+}
+
+func (f *feedbackAttemptForge) held() error {
+	if until, held := f.env.backoff.forgeHold(f.workspace, f.env.clock()); held {
+		return github.RateLimitedError(until, errFeedbackForgeHeld)
+	}
+	return nil
+}
+
+func (f *feedbackAttemptForge) observe(err error) {
+	if err != nil {
+		f.env.backoff.recordRateLimit(f.workspace, err, f.env.clock())
+	}
+}
+
+func (f *feedbackAttemptForge) ReadCommit(ctx context.Context, slug, ref string) (string, error) {
+	if err := f.held(); err != nil {
+		return "", err
+	}
+	commit, err := f.inner.ReadCommit(ctx, slug, ref)
+	f.observe(err)
+	return commit, err
+}
+
+func (f *feedbackAttemptForge) Compare(ctx context.Context, slug, base, head string, arrived int) (feedback.CompareResult, error) {
+	if err := f.held(); err != nil {
+		return feedback.CompareResult{}, err
+	}
+	result, err := f.inner.Compare(ctx, slug, base, head, arrived)
+	f.observe(err)
+	return result, err
+}
+
+func (f *feedbackAttemptForge) ReadLineChange(ctx context.Context, slug, commit, path string, line int) (github.LineChange, error) {
+	if err := f.held(); err != nil {
+		return github.LineChange{}, err
+	}
+	answer, err := f.inner.ReadLineChange(ctx, slug, commit, path, line)
+	f.observe(err)
+	return answer, err
 }
 
 // feedbackReportAttempt is one claimed linking attempt.
@@ -174,8 +247,32 @@ type feedbackReportAttempt struct {
 	reports  store.ReportStore
 	feedback store.FeedbackStore
 	report   store.FeedbackReport
+	forge    *feedbackAttemptForge
+	// now is the exact time of the claim. expired is true when 24 hours have
+	// passed since the report was first stored at that time: the attempt then
+	// uses stored answers only and sends and asks for nothing.
+	now     time.Time
+	expired bool
 	// step names the step that failed, for the log line.
 	step string
+}
+
+// mayCall reports whether the attempt may send GitHub a request or ask the
+// background work for a comparison now, and the reason a rule waits when it
+// may not. The claim was taken, so linking had not ended. The 24 hours have
+// not passed at the attempt's time, and no retry time is ahead.
+func (a *feedbackReportAttempt) mayCall() (bool, string) {
+	if a.expired {
+		return false, ""
+	}
+	if _, held := a.job.env.backoff.forgeHold(a.job.workspace, a.job.env.clock()); held {
+		return false, string(github.ForgeRateLimited)
+	}
+	return true, ""
+}
+
+func (a *feedbackReportAttempt) lineReasonKey() string {
+	return a.job.workspace + "/" + a.report.ID
 }
 
 func (a *feedbackReportAttempt) run(ctx context.Context) error {
@@ -201,12 +298,15 @@ func (a *feedbackReportAttempt) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if !line.Ended && !a.expired {
+		a.job.env.backoff.rememberLineReason(a.lineReasonKey(), line.Waiting)
+	}
 	a.step = "timing"
 	timing, err := a.timingRule(ctx, environment, repositories, merged)
 	if err != nil {
 		return err
 	}
-	linking, ended := reports.Decide(a.report, line, timing, a.job.env.clock())
+	linking, ended := reports.Decide(a.report, line, timing, a.now)
 	if !ended {
 		logFeedbackReport(a.job.workspace, a.report.EnvironmentID, a.report.ID, "pending", "decide", nil)
 		return nil
@@ -220,6 +320,7 @@ func (a *feedbackReportAttempt) run(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	a.job.env.backoff.rememberLineReason(a.lineReasonKey(), "")
 	if finished {
 		logFeedbackReport(a.job.workspace, a.report.EnvironmentID, a.report.ID, "linked", "finish", nil)
 	}
@@ -255,12 +356,16 @@ func feedbackReportEnvironment(ctx context.Context, backend store.Store, environ
 }
 
 // lineRule runs the line rule for the attempt. A stored line read is reused
-// and GitHub is not asked again. Otherwise the first entry's commit or
-// version is resolved as component-production-feedback invariant 7 resolves
-// a version, and the read is admitted against the workspace allowance just
-// before it starts. A definitive answer, a missing file included, is stored
-// before the rule uses it. A forge failure leaves the rule waiting with its
-// category and stores nothing.
+// and GitHub is not asked again. Otherwise, before each call it checks that
+// the attempt may call (mayCall) and that the workspace admission admits the
+// request. The first entry's commit or version is resolved as
+// component-production-feedback invariant 7 resolves a version, with one
+// admitted request for each repository the resolving reads, and then the line
+// read is admitted and sent. A definitive answer, a missing file included, is
+// stored before the rule uses it. A forge failure leaves the rule waiting
+// with its category, stores nothing, and a rate limit keeps its retry time.
+// At or after 24 hours the rule sends nothing and waits with the reason the
+// last attempt named, so the end of linking notes not_checked.
 func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.Environment, repositories []feedback.Repository, merged []store.FeedbackMergedTask) (reports.Outcome, error) {
 	report := a.report
 	if !reports.LineApplies(report) {
@@ -273,10 +378,32 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 	if stored {
 		return reports.Line(reports.LineInput{Report: report, Read: &read, Merged: merged}), nil
 	}
-	forge := a.job.env.lazyForge(a.job.workspace)
+	if a.expired {
+		reason := a.job.env.backoff.lineReason(a.lineReasonKey())
+		if reason == "" {
+			reason = feedbackWaitingLineUnanswered
+		}
+		return reports.Outcome{Waiting: reason}, nil
+	}
+	if ok, reason := a.mayCall(); !ok {
+		return reports.Outcome{Waiting: reason}, nil
+	}
 	version := store.FeedbackVersion{Repository: report.First.Repository, Commit: report.First.Commit, Version: report.First.Version}
-	resolution := feedback.Resolve(ctx, forge, feedback.ResolveRequest{Version: version, Service: report.Service, Rule: environment.VersionRule, Repositories: repositories})
+	request := feedback.ResolveRequest{Version: version, Service: report.Service, Rule: environment.VersionRule, Repositories: repositories}
+	if keys := feedbackResolveReads(request, report.ID); len(keys) > 0 {
+		admitted, err := a.feedback.AdmitFeedbackComparisons(ctx, keys, a.job.env.clock(), len(keys))
+		if err != nil {
+			return reports.Outcome{}, err
+		}
+		if len(admitted) < len(keys) {
+			return reports.Outcome{Waiting: feedbackWaitingAllowance}, nil
+		}
+	}
+	resolution := feedback.Resolve(ctx, a.forge, request)
 	if resolution.Commit == "" {
+		if resolution.Reason == string(github.ForgeRateLimited) || !resolution.RetryAt.IsZero() {
+			logFeedbackReport(a.job.workspace, report.EnvironmentID, report.ID, "pending", "resolve", github.RateLimitedError(resolution.RetryAt, errFeedbackForgeHeld))
+		}
 		return reports.Line(reports.LineInput{Report: report, Unresolved: resolution.Reason}), nil
 	}
 	slug := ""
@@ -288,6 +415,9 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 	if slug == "" {
 		return reports.Outcome{Waiting: feedbackWaitingNoRepository}, nil
 	}
+	if ok, reason := a.mayCall(); !ok {
+		return reports.Outcome{Waiting: reason}, nil
+	}
 	key := store.FeedbackComparisonKey{Repository: slug, Head: feedbackLineReadPrefix + report.ID}
 	admitted, err := a.feedback.AdmitFeedbackComparisons(ctx, []store.FeedbackComparisonKey{key}, a.job.env.clock(), 1)
 	if err != nil {
@@ -296,7 +426,7 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 	if len(admitted) == 0 {
 		return reports.Outcome{Waiting: feedbackWaitingAllowance}, nil
 	}
-	answer, err := forge.ReadLineChange(ctx, store.FeedbackRepository(slug), resolution.Commit, report.File, report.Line)
+	answer, err := a.forge.ReadLineChange(ctx, store.FeedbackRepository(slug), resolution.Commit, report.File, report.Line)
 	if err != nil {
 		reason := feedbackReportErrorClass(err)
 		logFeedbackReport(a.job.workspace, report.EnvironmentID, report.ID, "pending", "line_read", err)
@@ -320,6 +450,32 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 	return reports.Line(reports.LineInput{Report: report, Read: &read, Merged: merged}), nil
 }
 
+// feedbackResolveReads returns one admission key for each commit read that
+// feedback.Resolve sends for the request, and none when it sends none: no
+// candidate repository with a slug, or no commit and no version rule that
+// yields one. Each key starts with a prefix that no Git ref and no
+// comparison key can hold, and it is never stored as a comparison.
+func feedbackResolveReads(request feedback.ResolveRequest, reportID string) []store.FeedbackComparisonKey {
+	if request.Version.Commit == "" {
+		if request.Rule == nil {
+			return nil
+		}
+		if _, ok, err := feedback.ApplyVersionRule(*request.Rule, request.Version.Version, request.Service); err != nil || !ok {
+			return nil
+		}
+	}
+	keys := []store.FeedbackComparisonKey{}
+	for _, repository := range request.Repositories {
+		if request.Version.Repository != "" && repository.Name != request.Version.Repository {
+			continue
+		}
+		if strings.TrimSpace(repository.Slug) != "" {
+			keys = append(keys, store.FeedbackComparisonKey{Repository: repository.Slug, Head: feedbackResolvePrefix + reportID})
+		}
+	}
+	return store.NormalizeFeedbackComparisonKeys(keys)
+}
+
 // timingRule runs the timing rule for the attempt from stored records. It
 // asks the background work for the comparisons the rule still needs.
 func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment store.Environment, repositories []feedback.Repository, merged []store.FeedbackMergedTask) (reports.Outcome, error) {
@@ -327,7 +483,7 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 	if !reports.TimingApplies(report) {
 		return reports.Timing(reports.TimingInput{Report: report}), nil
 	}
-	now := a.job.env.clock()
+	now := a.now
 	signals, err := a.feedback.ListFeedbackSignals(ctx, []string{report.EnvironmentID})
 	if err != nil {
 		return reports.Outcome{}, err
@@ -374,10 +530,12 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 		return reports.Outcome{}, err
 	}
 	outcome = reports.Timing(input)
-	if len(outcome.Missing) > 0 && a.job.env.worker != nil {
-		// A missing answer is never taken as an answer. The read job asks
-		// GitHub within the workspace allowance, and a later attempt reads
-		// the stored answer.
+	// A missing answer is never taken as an answer. The read job asks
+	// GitHub within the workspace allowance, and a later attempt reads the
+	// stored answer. An expired attempt, or one whose workspace holds a
+	// retry time, a rate limit of this attempt's line rule included, asks for
+	// nothing, and the comparisons stay pending.
+	if ok, _ := a.mayCall(); ok && len(outcome.Missing) > 0 && a.job.env.worker != nil {
 		a.job.env.requestAnswers(a.job.workspace, feedback.Missing{Comparisons: outcome.Missing})
 	}
 	return outcome, nil

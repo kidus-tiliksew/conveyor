@@ -1301,14 +1301,17 @@ type lineChangeError struct {
 	Path    []any  `json:"path"`
 }
 
-// missingFileError reports whether a GraphQL error is one that a path the
-// commit does not hold causes: an error at the blamed alias, or a NOT_FOUND
-// error at the file member of the commit alias. The file member then decides.
+// missingFileError reports whether a GraphQL error identifies a path that
+// the commit does not hold: a NOT_FOUND error at the file member of the
+// commit alias, or a NOT_FOUND error at the blame of the blamed alias. Any
+// other error, such as RATE_LIMITED, FORBIDDEN, or SERVICE_UNAVAILABLE at
+// either alias, proves nothing about the file and keeps its forge category
+// (component-feedback-reports invariant 12).
 func (e lineChangeError) missingFileError() bool {
-	if len(e.Path) >= 2 && e.Path[0] == "repository" && e.Path[1] == "blamed" {
-		return true
+	if !strings.EqualFold(e.Type, "NOT_FOUND") || len(e.Path) != 3 || e.Path[0] != "repository" {
+		return false
 	}
-	return strings.EqualFold(e.Type, "NOT_FOUND") && len(e.Path) == 3 && e.Path[0] == "repository" && e.Path[1] == "commit" && e.Path[2] == "file"
+	return (e.Path[1] == "commit" && e.Path[2] == "file") || (e.Path[1] == "blamed" && e.Path[2] == "blame")
 }
 
 // lineChangeFailure maps GraphQL errors to the existing categories. No
@@ -1336,9 +1339,9 @@ type lineChangeBlame struct {
 				PageInfo *struct {
 					HasNextPage *bool `json:"hasNextPage"`
 				} `json:"pageInfo"`
-				Nodes []struct {
-					Number         int  `json:"number"`
-					Merged         bool `json:"merged"`
+				Nodes *[]*struct {
+					Number         int   `json:"number"`
+					Merged         *bool `json:"merged"`
 					BaseRepository *struct {
 						NameWithOwner string `json:"nameWithOwner"`
 					} `json:"baseRepository"`
@@ -1398,6 +1401,13 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 		return LineChange{}, forgeResponseError("read line change: the answer holds no file member")
 	}
 	if string(object.File) == "null" {
+		// A missing file is stored for good, so it needs definitive
+		// evidence: at least one error that identifies the missing path, and
+		// no other error. Commit.blame is non-null, so GitHub cannot answer
+		// the blame of a missing path without such an error.
+		if len(answer.Errors) == 0 {
+			return LineChange{}, forgeResponseError("read line change: a null file with no error that names the missing path")
+		}
 		for _, e := range answer.Errors {
 			if !e.missingFileError() {
 				return LineChange{}, lineChangeFailure(answer.Errors)
@@ -1428,16 +1438,21 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 		if pulls.PageInfo == nil || pulls.PageInfo.HasNextPage == nil {
 			return LineChange{}, forgeResponseError("read line change: the pull request list holds no page information")
 		}
-		if *pulls.PageInfo.HasNextPage || len(pulls.Nodes) > LineChangePullRequests {
+		// A connection without its nodes member, or with null nodes, is not
+		// an empty list: it proves nothing about the pull requests.
+		if pulls.Nodes == nil {
+			return LineChange{}, forgeResponseError("read line change: the pull request list holds no nodes member")
+		}
+		if *pulls.PageInfo.HasNextPage || len(*pulls.Nodes) > LineChangePullRequests {
 			return LineChange{}, forgeResponseError("read line change: GitHub lists more pull requests than one page holds")
 		}
 		numbers := []int{}
 		seen := map[int]bool{}
-		for _, node := range pulls.Nodes {
-			if node.Number < 1 || node.BaseRepository == nil {
+		for _, node := range *pulls.Nodes {
+			if node == nil || node.Number < 1 || node.Merged == nil || node.BaseRepository == nil {
 				return LineChange{}, forgeResponseError("read line change: malformed pull request")
 			}
-			if !node.Merged || !strings.EqualFold(node.BaseRepository.NameWithOwner, owner+"/"+name) || seen[node.Number] {
+			if !*node.Merged || !strings.EqualFold(node.BaseRepository.NameWithOwner, owner+"/"+name) || seen[node.Number] {
 				continue
 			}
 			seen[node.Number] = true

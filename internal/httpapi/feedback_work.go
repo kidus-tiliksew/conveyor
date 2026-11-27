@@ -243,11 +243,11 @@ func runFeedbackJob(job feedbackJob) {
 		// starts. The branches not read and every comparison stay eligible
 		// for a later read.
 		if err := work.RefreshBranches(ctx, job.missing.Branches); err != nil {
-			logFeedbackJobStop(job.workspace, "branches", err)
+			recordFeedbackJobStop(job.env, job.workspace, "branches", err)
 			return
 		}
 		if err := work.CompareDirect(ctx, job.missing.Comparisons); err != nil {
-			logFeedbackJobStop(job.workspace, "compare", err)
+			recordFeedbackJobStop(job.env, job.workspace, "compare", err)
 		}
 		return
 	}
@@ -257,13 +257,27 @@ func runFeedbackJob(job feedbackJob) {
 		return
 	}
 	if err := work.ProcessSignal(ctx, request); err != nil {
-		logFeedbackJobStop(job.workspace, "signal", err)
+		recordFeedbackJobStop(job.env, job.workspace, "signal", err)
 	}
 }
 
 // logFeedbackJobStop logs why a job stopped early. A GitHub rate limit
 // defers the rest of the job, and it is not a failure.
 func logFeedbackJobStop(workspace, step string, err error) {
+	logFeedbackJobStopAt(workspace, step, err)
+}
+
+// recordFeedbackJobStop keeps the retry time of a job that GitHub
+// rate-limited, so the linking work of the workspace sends no request and
+// asks for no comparison before it, and then logs the stop.
+func recordFeedbackJobStop(env feedbackJobEnv, workspace, step string, err error) {
+	if errors.Is(err, feedback.ErrRateLimited) {
+		env.backoff.recordRateLimit(workspace, err, env.clock())
+	}
+	logFeedbackJobStopAt(workspace, step, err)
+}
+
+func logFeedbackJobStopAt(workspace, step string, err error) {
 	if errors.Is(err, feedback.ErrRateLimited) {
 		log.Printf("feedback_work workspace=%s outcome=deferred step=%s category=%s", workspace, step, github.ForgeRateLimited)
 		return
@@ -327,6 +341,77 @@ type feedbackTokenFailure struct {
 type feedbackTokenBackoff struct {
 	mu    sync.Mutex
 	until map[string]feedbackTokenFailure
+	// hold is, by workspace, the time before which the linking work sends
+	// GitHub no request: the latest retry time a rate-limited forge call of
+	// the workspace returned (component-production-feedback invariant 28).
+	hold map[string]time.Time
+	// lineReasons is, by workspace and report, the reason the last linking
+	// attempt of the report left its line rule unanswered. It names the
+	// not_checked note of an attempt at or after 24 hours, which sends GitHub
+	// nothing (component-feedback-reports invariant 15).
+	lineReasons map[string]string
+}
+
+// forgeHold reports whether a retry time GitHub returned has not passed at
+// now, and that time. The comparison is exact.
+func (b *feedbackTokenBackoff) forgeHold(workspace string, now time.Time) (time.Time, bool) {
+	if b == nil {
+		return time.Time{}, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	until, held := b.hold[workspace]
+	if !held || !now.Before(until) {
+		return time.Time{}, false
+	}
+	return until, true
+}
+
+// recordRateLimit keeps the retry time of a rate-limited forge failure for
+// the workspace: GitHub's time when it named one, or a minute after now. A
+// later time already kept stays. Any other failure keeps nothing.
+func (b *feedbackTokenBackoff) recordRateLimit(workspace string, err error, now time.Time) {
+	if b == nil || github.ErrorCategory(github.CategorizeError(err)) != github.ForgeRateLimited {
+		return
+	}
+	until := now.Add(feedbackTokenRetry)
+	if retryAt, ok := github.RateLimitRetryAt(err); ok && !retryAt.IsZero() {
+		until = retryAt
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.hold == nil {
+		b.hold = map[string]time.Time{}
+	}
+	if existing, ok := b.hold[workspace]; ok && !existing.Before(until) {
+		return
+	}
+	b.hold[workspace] = until
+}
+
+func (b *feedbackTokenBackoff) rememberLineReason(key, reason string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.lineReasons == nil {
+		b.lineReasons = map[string]string{}
+	}
+	if reason == "" {
+		delete(b.lineReasons, key)
+		return
+	}
+	b.lineReasons[key] = reason
+}
+
+func (b *feedbackTokenBackoff) lineReason(key string) string {
+	if b == nil {
+		return ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lineReasons[key]
 }
 
 // feedbackTokenRetry is the wait after a failed token request when GitHub

@@ -47,37 +47,51 @@ func TestReadLineChange(t *testing.T) {
 		want     LineChange
 		category ForgeErrorCategory
 		notFound bool
+		retry    time.Duration
 	}{
-		{name: "the range that starts at the line", line: 10, body: blameAnswer(blameRange(1, 9, feedbackSHA), blameRange(10, 20, strings.ToUpper(lineChangeCommit), pullNode(7, true, "acme/app"), pullNode(3, true, "Acme/App")), blameRange(21, 30, feedbackSHA)),
+		// Stored as the answer.
+		{name: "L01 data complete: the range that starts at the line, merged pull requests of the repository", line: 10, body: blameAnswer(blameRange(1, 9, feedbackSHA), blameRange(10, 20, strings.ToUpper(lineChangeCommit), pullNode(7, true, "acme/app"), pullNode(3, true, "Acme/App")), blameRange(21, 30, feedbackSHA)),
 			want: LineChange{FileFound: true, Commit: lineChangeCommit, PullRequests: []int{3, 7}}},
-		{name: "the range that ends at the line", line: 20, body: blameAnswer(blameRange(1, 9, feedbackSHA), blameRange(10, 20, lineChangeCommit)),
+		{name: "L02 data complete: the range that ends at the line, no pull request", line: 20, body: blameAnswer(blameRange(1, 9, feedbackSHA), blameRange(10, 20, lineChangeCommit)),
 			want: LineChange{FileFound: true, Commit: lineChangeCommit, PullRequests: []int{}}},
-		{name: "open pull requests and other repositories are left out", line: 5, body: blameAnswer(blameRange(1, 9, lineChangeCommit, pullNode(4, false, "acme/app"), pullNode(5, true, "acme/fork"), pullNode(6, true, "acme/app"), pullNode(6, true, "acme/app"))),
+		{name: "L03 data complete: open, closed, and other-repository pull requests are left out", line: 5, body: blameAnswer(blameRange(1, 9, lineChangeCommit, pullNode(4, false, "acme/app"), pullNode(5, true, "acme/fork"), pullNode(6, true, "acme/app"), pullNode(6, true, "acme/app"))),
 			want: LineChange{FileFound: true, Commit: lineChangeCommit, PullRequests: []int{6}}},
-		{name: "a missing file", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":{"blame":{"ranges":[]}}}}}`, want: LineChange{FileFound: false}},
-		{name: "a missing file whose blame error nulls the blamed alias", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"NOT_FOUND","path":["repository","blamed","blame"],"message":"Could not resolve file"}]}`, want: LineChange{FileFound: false}},
-		{name: "a missing file with a NOT_FOUND error at the file member", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"NOT_FOUND","path":["repository","commit","file"],"message":"Could not resolve file"},{"type":"NOT_FOUND","path":["repository","blamed","blame"],"message":"Could not resolve file"}]}`, want: LineChange{FileFound: false}},
-		{name: "a missing file with another error", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"SERVICE_UNAVAILABLE","path":["repository","commit","file"],"message":"timeout"}]}`, category: ForgeResponse},
-		{name: "GraphQL errors on HTTP 200 with data", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":null}},"errors":[{"type":"SERVICE_UNAVAILABLE","path":["repository","blamed","blame"],"message":"timeout"}]}`, category: ForgeResponse},
-		{name: "GraphQL rate limit", line: 5, body: `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, category: ForgeRateLimited},
-		{name: "a repository the token cannot read", line: 5, body: `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"Could not resolve"}]}`, category: ForgePermission},
-		{name: "a forbidden answer", line: 5, body: `{"data":null,"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}`, category: ForgePermission},
-		{name: "an absent commit", line: 5, body: `{"data":{"repository":{"commit":null,"blamed":null}}}`, notFound: true},
-		{name: "an object that is not a commit", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Tree"},"blamed":{}}}}`, category: ForgeResponse},
-		{name: "no file member", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit"},"blamed":{"blame":{"ranges":[]}}}}}`, category: ForgeResponse},
-		{name: "empty blame", line: 5, body: blameAnswer(), category: ForgeResponse},
-		{name: "no range holds the line", line: 50, body: blameAnswer(blameRange(1, 9, lineChangeCommit)), category: ForgeResponse},
-		{name: "a truncated pull request list", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":true},"nodes":[]}}}`), category: ForgeResponse},
-		{name: "no page information", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"nodes":[]}}}`), category: ForgeResponse},
-		{name: "a null next-page member", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":null},"nodes":[]}}}`), category: ForgeResponse},
-		{name: "no pull request list", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `"}}`), category: ForgeResponse},
-		{name: "no blame with no error", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":{}}}}`, category: ForgeResponse},
-		{name: "a malformed commit ID", line: 5, body: blameAnswer(blameRange(1, 9, "abc")), category: ForgeResponse},
-		{name: "a malformed answer", line: 5, body: `not json`, category: ForgeResponse},
-		{name: "no data and no errors", line: 5, body: `{}`, category: ForgeResponse},
-		{name: "server failure", line: 5, status: 502, body: `{"message":"bad gateway"}`, category: ForgeStatus},
-		{name: "permission", line: 5, status: 403, body: `{"message":"Resource not accessible by integration"}`, category: ForgePermission},
-		{name: "HTTP rate limit keeps the retry time", line: 5, status: 429, body: `{"message":"rate limit"}`, headers: map[string]string{"Retry-After": "90"}, category: ForgeRateLimited},
+		// Stored as file_not_found.
+		{name: "L04 file null with a missing-path error at the blame", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"NOT_FOUND","path":["repository","blamed","blame"],"message":"x"}]}`, want: LineChange{FileFound: false}},
+		{name: "L05 file null with missing-path errors at the file and the blame", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"NOT_FOUND","path":["repository","commit","file"],"message":"x"},{"type":"NOT_FOUND","path":["repository","blamed","blame"],"message":"x"}]}`, want: LineChange{FileFound: false}},
+		// Unanswered: a forge failure of its category.
+		{name: "L06 file null with no error", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":{"blame":{"ranges":[]}}}}}`, category: ForgeResponse},
+		{name: "L07 file null with RATE_LIMITED at the blame", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"RATE_LIMITED","path":["repository","blamed","blame"],"message":"x"}]}`, category: ForgeRateLimited},
+		{name: "L08 file null with FORBIDDEN at the blame", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"FORBIDDEN","path":["repository","blamed","blame"],"message":"x"}]}`, category: ForgePermission},
+		{name: "L09 file null with SERVICE_UNAVAILABLE at the blame", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"SERVICE_UNAVAILABLE","path":["repository","blamed","blame"],"message":"x"}]}`, category: ForgeResponse},
+		{name: "L10 file null with SERVICE_UNAVAILABLE at the file", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"SERVICE_UNAVAILABLE","path":["repository","commit","file"],"message":"x"}]}`, category: ForgeResponse},
+		{name: "L11 file null with a missing-path error and a rate limit", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"NOT_FOUND","path":["repository","blamed","blame"],"message":"x"},{"type":"RATE_LIMITED","message":"x"}]}`, category: ForgeRateLimited},
+		{name: "L12 file null with a NOT_FOUND error that names no path", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"NOT_FOUND","message":"x"}]}`, category: ForgePermission},
+		{name: "L13 partial data: the file and an error at the blame", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":null}},"errors":[{"type":"SERVICE_UNAVAILABLE","path":["repository","blamed","blame"],"message":"x"}]}`, category: ForgeResponse},
+		{name: "L14 GraphQL rate limit on HTTP 200", line: 5, body: `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, category: ForgeRateLimited},
+		{name: "L15 repository inaccessible", line: 5, body: `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"Could not resolve"}]}`, category: ForgePermission},
+		{name: "L16 forbidden with no data", line: 5, body: `{"data":null,"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}`, category: ForgePermission},
+		{name: "L17 commit absent", line: 5, body: `{"data":{"repository":{"commit":null,"blamed":null}}}`, notFound: true},
+		{name: "L18 object that is not a commit", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Tree"},"blamed":{}}}}`, category: ForgeResponse},
+		{name: "L19 no file member", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit"},"blamed":{"blame":{"ranges":[]}}}}}`, category: ForgeResponse},
+		{name: "L20 empty blame", line: 5, body: blameAnswer(), category: ForgeResponse},
+		{name: "L21 no range holds the line", line: 50, body: blameAnswer(blameRange(1, 9, lineChangeCommit)), category: ForgeResponse},
+		{name: "L22 connection with a next page", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":true},"nodes":[]}}}`), category: ForgeResponse},
+		{name: "L23 connection without pageInfo", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"nodes":[]}}}`), category: ForgeResponse},
+		{name: "L24 connection with a null hasNextPage", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":null},"nodes":[]}}}`), category: ForgeResponse},
+		{name: "L25 connection without nodes", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false}}}}`), category: ForgeResponse},
+		{name: "L26 connection with null nodes", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":null}}}`), category: ForgeResponse},
+		{name: "L27 a null node or a node without merged", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[null]}}}`), category: ForgeResponse},
+		{name: "L27 a node without merged", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `","associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":3,"baseRepository":{"nameWithOwner":"acme/app"}}]}}}`), category: ForgeResponse},
+		{name: "L28 no pull request connection", line: 5, body: blameAnswer(`{"startingLine":1,"endingLine":9,"commit":{"oid":"` + lineChangeCommit + `"}}`), category: ForgeResponse},
+		{name: "L29 no blame and no error", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":{}}}}`, category: ForgeResponse},
+		{name: "L30 malformed commit ID", line: 5, body: blameAnswer(blameRange(1, 9, "abc")), category: ForgeResponse},
+		{name: "L31 malformed JSON", line: 5, body: `not json`, category: ForgeResponse},
+		{name: "L32 no data and no errors", line: 5, body: `{}`, category: ForgeResponse},
+		{name: "L33 HTTP server failure", line: 5, status: 502, body: `{"message":"bad gateway"}`, category: ForgeStatus},
+		{name: "L34 HTTP permission", line: 5, status: 403, body: `{"message":"Resource not accessible by integration"}`, category: ForgePermission},
+		{name: "L35 HTTP 429 keeps the retry time", line: 5, status: 429, body: `{"message":"rate limit"}`, headers: map[string]string{"Retry-After": "90"}, category: ForgeRateLimited, retry: 90 * time.Second},
+		{name: "L36 HTTP 403 with no remaining requests keeps the retry time", line: 5, status: 403, body: `{"message":"API rate limit exceeded"}`, headers: map[string]string{"X-RateLimit-Remaining": "0", "Retry-After": "120"}, category: ForgeRateLimited, retry: 120 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var requests atomic.Int32
@@ -129,11 +143,15 @@ func TestReadLineChange(t *testing.T) {
 				if strings.Contains(err.Error(), "cmd/main.go") {
 					t.Fatalf("failure %q holds the file path", err)
 				}
-				if tc.headers["Retry-After"] != "" {
-					retryAt, limited := RateLimitRetryAt(err)
-					if !limited || retryAt.Before(before.Add(89*time.Second)) {
-						t.Fatalf("retry time %v limited=%v, want about 90 seconds from now", retryAt, limited)
-					}
+				retryAt, limited := RateLimitRetryAt(err)
+				if limited != (tc.category == ForgeRateLimited) {
+					t.Fatalf("rate limited=%v, want %v", limited, tc.category == ForgeRateLimited)
+				}
+				switch {
+				case tc.retry > 0 && (retryAt.Before(before.Add(tc.retry-time.Second)) || retryAt.After(time.Now().Add(tc.retry+time.Second))):
+					t.Fatalf("retry time %v, want about %v from now", retryAt, tc.retry)
+				case tc.retry == 0 && !retryAt.IsZero():
+					t.Fatalf("retry time %v, want none named", retryAt)
 				}
 			default:
 				if err != nil || got.FileFound != tc.want.FileFound || got.Commit != tc.want.Commit || !slices.Equal(got.PullRequests, tc.want.PullRequests) {
