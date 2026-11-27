@@ -70,6 +70,11 @@ CREATE TABLE IF NOT EXISTS feedback_reports (
 CREATE INDEX IF NOT EXISTS feedback_reports_environment_state_idx
     ON feedback_reports (workspace_id, environment_id, state);
 
+-- Report lists read the newest last_seen first. timestamptz holds every UTC
+-- time from year 0000 to 9999 that a report can state (invariant 4).
+CREATE INDEX IF NOT EXISTS feedback_reports_last_seen_idx
+    ON feedback_reports (workspace_id, last_seen DESC);
+
 -- One row for each link of a report to a task or a crate, with its evidence.
 -- A removed link stays, so no rule links that task again
 -- (component-feedback-reports invariants 11, 16, and 17).

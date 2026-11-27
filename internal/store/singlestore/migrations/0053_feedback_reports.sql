@@ -18,6 +18,14 @@
 -- entry's own first-seen time, which no later entry changes
 -- (component-feedback-reports invariants 6, 11, and 13). summary is redacted
 -- and summary_redactions counts its removals by pattern class (invariant 5).
+--
+-- The three times a watcher states are signed BIGINT microseconds since
+-- 1970-01-01T00:00:00Z (first_seen_us, last_seen_us, first_entry_seen_us).
+-- A report can state any UTC time from year 0000 to 9999 (invariant 4), and
+-- DATETIME(6) holds only years 1000 to 9999. The integer holds the whole
+-- range exactly, orders as the times do, and keeps newest-last-seen-first
+-- reads on an index. The other times are set by the server or a person and
+-- stay DATETIME(6).
 CREATE ROWSTORE TABLE IF NOT EXISTS feedback_reports (
  workspace_id VARCHAR(255) NOT NULL,
  id VARCHAR(64) NOT NULL,
@@ -29,9 +37,9 @@ CREATE ROWSTORE TABLE IF NOT EXISTS feedback_reports (
  summary_redactions LONGTEXT NOT NULL,
  service LONGTEXT NOT NULL,
  occurrence_count BIGINT NOT NULL,
- first_seen DATETIME(6) NOT NULL,
- last_seen DATETIME(6) NOT NULL,
- first_entry_seen DATETIME(6) NOT NULL,
+ first_seen_us BIGINT NOT NULL,
+ last_seen_us BIGINT NOT NULL,
+ first_entry_seen_us BIGINT NOT NULL,
  file LONGTEXT NOT NULL,
  line INT NULL,
  first_repository LONGTEXT NOT NULL,
@@ -60,6 +68,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS feedback_reports (
  PRIMARY KEY (workspace_id, id),
  UNIQUE KEY feedback_reports_key_idx (workspace_id, environment_id, key_digest),
  KEY feedback_reports_environment_state_idx (workspace_id, environment_id, state),
+ KEY feedback_reports_last_seen_idx (workspace_id, last_seen_us DESC),
  SHARD KEY (workspace_id)
 ) COLLATE utf8mb4_bin;
 

@@ -78,9 +78,9 @@ var ErrOpenReportLimit = errors.New("open report limit")
 
 // FeedbackReportEntry is one entry of a report request, as decoded. An empty
 // text was not stated. Count 0 and a nil time were not stated. Line is set
-// exactly when File is. After NormalizeFeedbackReports, each time holds the
-// full precision stated, so the order check and the reopen check compare the
-// exact times. A backend stores them at microsecond precision.
+// exactly when File is. Each time is the exact stated value
+// (FeedbackReportTime), and every decision compares it exactly. A backend
+// stores it at microsecond precision.
 type FeedbackReportEntry struct {
 	Kind       string
 	Key        string
@@ -90,8 +90,8 @@ type FeedbackReportEntry struct {
 	Commit     string
 	Version    string
 	Count      int64
-	FirstSeen  *time.Time
-	LastSeen   *time.Time
+	FirstSeen  *FeedbackReportTime
+	LastSeen   *FeedbackReportTime
 	File       string
 	Line       int
 }
@@ -280,13 +280,25 @@ func checkFeedbackSummary(field, value string) error {
 }
 
 // feedbackReportTime is a stated time or the arrival, and the arrival when
-// the stated time is later (invariant 4). It keeps the stated precision, so
-// two stated times within one microsecond keep their order.
-func feedbackReportTime(stated *time.Time, arrived time.Time) time.Time {
-	if stated == nil || stated.After(arrived) {
-		return arrived
+// the stated time is later (invariant 4). It keeps every stated digit, so two
+// stated times keep their exact order. A time before 0000-01-01T00:00:00Z,
+// which a valid RFC 3339 time with an offset can denote, is the one time no
+// stored report can hold, and it is refused. A time after 9999 is later than
+// the arrival and is taken as the arrival.
+func feedbackReportTime(field string, stated *FeedbackReportTime, arrived time.Time) (FeedbackReportTime, error) {
+	arrival := FeedbackReportTime{At: arrived}
+	if stated == nil {
+		return arrival, nil
 	}
-	return stated.UTC()
+	exact := *stated
+	exact.At = exact.At.UTC()
+	if exact.At.Before(feedbackReportEarliest) {
+		return FeedbackReportTime{}, feedbackFieldError(field, "must not be earlier than the start of year 0000 in UTC")
+	}
+	if exact.Compare(arrival) > 0 {
+		return arrival, nil
+	}
+	return exact, nil
 }
 
 // NormalizeFeedbackReports applies the rules of component-feedback-reports
@@ -357,8 +369,15 @@ func NormalizeFeedbackReports(batch FeedbackReportBatch) (FeedbackReportBatch, e
 				return FeedbackReportBatch{}, feedbackFieldError(FeedbackReportField(i, "line"), "must be a whole number from 1 to %d", MaxFeedbackReportLine)
 			}
 		}
-		first, last := feedbackReportTime(entry.FirstSeen, batch.ArrivedAt), feedbackReportTime(entry.LastSeen, batch.ArrivedAt)
-		if first.After(last) {
+		first, err := feedbackReportTime(FeedbackReportField(i, "first_seen"), entry.FirstSeen, batch.ArrivedAt)
+		if err != nil {
+			return FeedbackReportBatch{}, err
+		}
+		last, err := feedbackReportTime(FeedbackReportField(i, "last_seen"), entry.LastSeen, batch.ArrivedAt)
+		if err != nil {
+			return FeedbackReportBatch{}, err
+		}
+		if first.Compare(last) > 0 {
 			return FeedbackReportBatch{}, feedbackFieldError(FeedbackReportField(i, "first_seen"), "must not be later than last_seen")
 		}
 		entry.FirstSeen, entry.LastSeen = &first, &last
@@ -398,6 +417,24 @@ func PrepareFeedbackReports(ctx context.Context, source redact.SecretSource, bat
 	redactor, err := redact.WithSecrets(ctx, source, nil)
 	if err != nil {
 		return PreparedFeedbackReports{}, err
+	}
+	// A text other than the summary is refused, not redacted, when the
+	// redactor with the stored secrets would change it, as the normalizer
+	// refuses a credential shape. The refusal names the field with a fixed
+	// message, and the whole request records nothing (invariant 5;
+	// req-security-boundaries REQ-3).
+	for i, entry := range batch.Entries {
+		for _, text := range []struct{ member, value string }{
+			{"key", entry.Key}, {"service", entry.Service}, {"repository", entry.Repository},
+			{"commit", entry.Commit}, {"version", entry.Version}, {"file", entry.File},
+		} {
+			if text.value == "" {
+				continue
+			}
+			if clean, _ := redactor.Redact(text.value); clean != text.value {
+				return PreparedFeedbackReports{}, feedbackFieldError(FeedbackReportField(i, text.member), "must not hold a credential or other secret")
+			}
+		}
 	}
 	prepared := PreparedFeedbackReports{FeedbackReportBatch: batch, Redactions: make([]core.RedactionStats, len(batch.Entries))}
 	for i := range prepared.Entries {
@@ -522,7 +559,7 @@ func PlanFeedbackReports(ctx context.Context, prepared PreparedFeedbackReports, 
 			plan.Changes = append(plan.Changes, FeedbackReportChange{New: true, Report: FeedbackReport{
 				ID: id, EnvironmentID: prepared.EnvironmentID, Kind: entry.Kind, Key: entry.Key,
 				Summary: entry.Summary, SummaryRedactions: prepared.Redactions[i], Service: entry.Service,
-				Count: entry.Count, FirstSeen: EnvironmentTime(*entry.FirstSeen), LastSeen: EnvironmentTime(*entry.LastSeen), FirstEntrySeen: EnvironmentTime(*entry.FirstSeen),
+				Count: entry.Count, FirstSeen: entry.FirstSeen.Stored(), LastSeen: entry.LastSeen.Stored(), FirstEntrySeen: entry.FirstSeen.Stored(),
 				File: entry.File, Line: entry.Line, First: stated, Latest: stated,
 				State: FeedbackReportOpen, InInbox: true, Origin: origin, CreatedAt: EnvironmentTime(arrived),
 			}})
@@ -532,17 +569,17 @@ func PlanFeedbackReports(ctx context.Context, prepared PreparedFeedbackReports, 
 		report.Count = addFeedbackCount(report.Count, entry.Count)
 		// The choice compares the entry's exact times, and the chosen time is
 		// cut to the stored precision only for the record to write.
-		if entry.FirstSeen.Before(report.FirstSeen) {
-			report.FirstSeen = EnvironmentTime(*entry.FirstSeen)
+		if entry.FirstSeen.Compare(feedbackReportStoredTime(report.FirstSeen)) < 0 {
+			report.FirstSeen = entry.FirstSeen.Stored()
 		}
-		if entry.LastSeen.After(report.LastSeen) {
-			report.LastSeen = EnvironmentTime(*entry.LastSeen)
+		if entry.LastSeen.Compare(feedbackReportStoredTime(report.LastSeen)) > 0 {
+			report.LastSeen = entry.LastSeen.Stored()
 		}
 		report.Latest = stated
 		// The entry's exact last-seen time is compared with the closing
 		// time, so a time strictly after the closing reopens the report even
 		// within the same microsecond (invariant 7; AC-4.4).
-		if report.State == FeedbackReportClosed && report.ClosedAt != nil && entry.LastSeen.After(*report.ClosedAt) {
+		if report.State == FeedbackReportClosed && report.ClosedAt != nil && entry.LastSeen.Compare(feedbackReportStoredTime(*report.ClosedAt)) > 0 {
 			reopenedAt, reopenOrigin := EnvironmentTime(arrived), origin
 			report.State, report.InInbox = FeedbackReportOpen, true
 			report.ClosedAt, report.ClosedBy, report.CloseReason = nil, "", ""

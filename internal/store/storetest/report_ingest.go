@@ -32,6 +32,7 @@ func runFeedbackReports(t *testing.T, factory Factory) {
 		{"TimesWithinOneMicrosecond", runFeedbackReportSubMicrosecond},
 		{"ArrivalWithinOneMicrosecond", runFeedbackReportArrivalMicrosecond},
 		{"ReportIDCollisions", runFeedbackReportIDCollisions},
+		{"TimesAcrossTheRange", runFeedbackReportTimeRange},
 		{"ClosedStaysClosed", runFeedbackReportStaysClosed},
 		{"OpenReportLimit", runFeedbackReportLimit},
 		{"ConcurrentLastSlot", runFeedbackReportLastSlot},
@@ -55,9 +56,8 @@ func runFeedbackReports(t *testing.T, factory Factory) {
 
 var feedbackReportIDPattern = regexp.MustCompile(`^rpt-[0-9]{6}-[0-9a-f]{6}$`)
 
-func feedbackReportTimePtr(offset time.Duration) *time.Time {
-	at := feedbackTime(offset)
-	return &at
+func feedbackReportTimePtr(offset time.Duration) *store.FeedbackReportTime {
+	return store.StatedFeedbackReportTime(feedbackTime(offset))
 }
 
 // reportEntry is an entry with a kind, a key, and a summary.
@@ -337,9 +337,8 @@ func runFeedbackReportReopen(t *testing.T, x Fixture) {
 func runFeedbackReportSubMicrosecond(t *testing.T, x Fixture) {
 	e := newFeedbackEnvironment(t, x, "Production", "watcher")
 	base := feedbackTime(-time.Minute)
-	at := func(nanoseconds int) *time.Time {
-		value := base.Add(time.Duration(nanoseconds))
-		return &value
+	at := func(nanoseconds int) *store.FeedbackReportTime {
+		return store.StatedFeedbackReportTime(base.Add(time.Duration(nanoseconds)))
 	}
 	before := e.reportState(t)
 	reversed := reportEntry("reversed")
@@ -451,11 +450,11 @@ func runFeedbackReportArrivalMicrosecond(t *testing.T, x Fixture) {
 		entry := reportEntry(c.key)
 		if c.first != nil {
 			value := at(*c.first)
-			entry.FirstSeen = &value
+			entry.FirstSeen = store.StatedFeedbackReportTime(value)
 		}
 		if c.last != nil {
 			value := at(*c.last)
-			entry.LastSeen = &value
+			entry.LastSeen = store.StatedFeedbackReportTime(value)
 		}
 		err := x.Backend.RecordFeedbackReports(x.Context, batch(c.arrival, entry))
 		if c.refused {
@@ -497,6 +496,70 @@ func runFeedbackReportArrivalMicrosecond(t *testing.T, x Fixture) {
 	}
 	if refused == 0 || reopened == 0 || refused+reopened == len(cases) {
 		t.Fatalf("the sweep has refused=%d reopened=%d of %d cases, want each outcome", refused, reopened, len(cases))
+	}
+}
+
+// runFeedbackReportTimeRange holds every backend to the stored range of a
+// report's stated times: every UTC time from year 0000 to 9999 writes and
+// reads back equal for first-seen, last-seen, and the first entry's
+// first-seen time. A time below the range is refused on its field and
+// records nothing, and a time above it is later than the arrival and is
+// taken as the arrival. The arrival is the last stored microsecond, so every
+// year of the range lies before it (component-feedback-reports invariants 4
+// and 6; req-production-feedback AC-4.1, AC-4.3).
+func runFeedbackReportTimeRange(t *testing.T, x Fixture) {
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	latest := time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC)
+	batch := func(entries ...store.FeedbackReportEntry) store.FeedbackReportBatch {
+		return store.FeedbackReportBatch{EnvironmentID: e.id, KeyID: e.key.ID, ArrivedAt: latest, Entries: entries}
+	}
+	stated := func(year int) (time.Time, time.Time) {
+		return time.Date(year, 1, 1, 0, 0, 0, 1000, time.UTC), time.Date(year, 12, 31, 23, 59, 59, 999999000, time.UTC)
+	}
+	years := []int{0, 999, 1000, 9999}
+	var entries []store.FeedbackReportEntry
+	for _, year := range years {
+		first, last := stated(year)
+		entry := reportEntry(fmt.Sprintf("year-%04d", year))
+		entry.FirstSeen, entry.LastSeen = store.StatedFeedbackReportTime(first), store.StatedFeedbackReportTime(last)
+		entries = append(entries, entry)
+	}
+	requireOK(t, x.Backend.RecordFeedbackReports(x.Context, batch(entries...)))
+	for _, year := range years {
+		first, last := stated(year)
+		got := e.reportByKey(t, fmt.Sprintf("year-%04d", year))
+		if !got.FirstSeen.Equal(first) || !got.LastSeen.Equal(last) || !got.FirstEntrySeen.Equal(first) {
+			t.Fatalf("year %04d read back first=%v last=%v first entry=%v, want %v, %v, %v", year, got.FirstSeen, got.LastSeen, got.FirstEntrySeen, first, last, first)
+		}
+	}
+
+	// A later entry moves the earliest first-seen back to year 0000 and
+	// leaves the first entry's own time as stored.
+	earliest := time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC)
+	merge := reportEntry("year-0999")
+	merge.FirstSeen, merge.LastSeen = store.StatedFeedbackReportTime(earliest), store.StatedFeedbackReportTime(earliest)
+	requireOK(t, x.Backend.RecordFeedbackReports(x.Context, batch(merge)))
+	first, last := stated(999)
+	if got := e.reportByKey(t, "year-0999"); !got.FirstSeen.Equal(earliest) || !got.FirstEntrySeen.Equal(first) || !got.LastSeen.Equal(last) || got.Count != 2 {
+		t.Fatalf("after a year 0000 entry: %+v, want first-seen %v, first entry %v, last-seen %v", got, earliest, first, last)
+	}
+
+	// Below the range: the one UTC time a valid RFC 3339 time with an offset
+	// can denote and no backend can store. It is refused on its field.
+	before := e.reportState(t)
+	below := reportEntry("below")
+	below.FirstSeen = store.StatedFeedbackReportTime(earliest.Add(-time.Hour))
+	err := x.Backend.RecordFeedbackReports(x.Context, batch(reportEntry("year-1000"), below))
+	requireFeedbackField(t, err, "reports[1].first_seen")
+	if after := e.reportState(t); after != before {
+		t.Fatalf("a time below the range changed the store:\nbefore %s\nafter  %s", before, after)
+	}
+	// Above the range: later than the arrival, so it is the arrival.
+	above := reportEntry("above")
+	above.LastSeen = store.StatedFeedbackReportTime(time.Date(10000, 1, 1, 0, 30, 0, 0, time.UTC))
+	requireOK(t, x.Backend.RecordFeedbackReports(x.Context, batch(above)))
+	if got := e.reportByKey(t, "above"); !got.FirstSeen.Equal(latest) || !got.LastSeen.Equal(latest) || !got.FirstEntrySeen.Equal(latest) {
+		t.Fatalf("a time above the range read back first=%v last=%v first entry=%v, want the arrival %v", got.FirstSeen, got.LastSeen, got.FirstEntrySeen, latest)
 	}
 }
 
@@ -631,8 +694,16 @@ func runFeedbackReportTwoEntries(t *testing.T, x Fixture) {
 	requireFeedbackField(t, x.Backend.RecordFeedbackReports(x.Context, e.reportBatch(20*time.Second, reportEntry("one"), bad)), "reports[1].kind")
 	ghost := reportEntry("three")
 	ghost.Repository = "ghost"
-	requireFeedbackField(t, x.Backend.RecordFeedbackReports(x.Context, e.reportBatch(20*time.Second, reportEntry("one"), ghost)), "reports[1].repository")
-	requireFeedbackField(t, x.Backend.CheckFeedbackReportRepositories(x.Context, e.reportBatch(20*time.Second, reportEntry("one"), ghost)), "reports[1].repository")
+	// Both refusals name the field and repeat no submitted value.
+	for _, err := range []error{
+		x.Backend.RecordFeedbackReports(x.Context, e.reportBatch(20*time.Second, reportEntry("one"), ghost)),
+		x.Backend.CheckFeedbackReportRepositories(x.Context, e.reportBatch(20*time.Second, reportEntry("one"), ghost)),
+	} {
+		requireFeedbackField(t, err, "reports[1].repository")
+		if strings.Contains(err.Error(), "ghost") {
+			t.Fatalf("refusal %q repeats the submitted repository", err)
+		}
+	}
 	if after := e.reportState(t); after != before {
 		t.Fatalf("a refused request changed the store:\nbefore %s\nafter  %s", before, after)
 	}

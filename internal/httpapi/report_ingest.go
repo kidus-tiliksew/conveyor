@@ -120,7 +120,7 @@ func writeFeedbackReportError(w http.ResponseWriter, r *http.Request, err error)
 		// The key was revoked or its environment archived after the check.
 		refuseFeedbackCredential(w)
 	case errors.Is(err, store.ErrOpenReportLimit):
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "open_report_limit", "message": fmt.Sprintf("the environment holds %d open reports, so the request would store a new report beyond the limit", store.MaxOpenFeedbackReports)})
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "open_report_limit", "message": fmt.Sprintf("accepting the request would store new reports beyond the limit of %d open reports in the environment", store.MaxOpenFeedbackReports)})
 	case errors.As(err, new(*store.FeedbackFieldError)):
 		writeFeedbackReportRefusal(w, err)
 	default:
@@ -220,7 +220,7 @@ func feedbackWholeNumber(path string, raw json.RawMessage, most int64) (int64, e
 // feedbackReportTime reads one optional RFC 3339 time. An omitted field is
 // nil, and the store takes it as the arrival (component-feedback-reports
 // invariant 4).
-func feedbackReportTime(path string, raw json.RawMessage) (*time.Time, error) {
+func feedbackReportTime(path string, raw json.RawMessage) (*store.FeedbackReportTime, error) {
 	if raw == nil {
 		return nil, nil
 	}
@@ -228,8 +228,11 @@ func feedbackReportTime(path string, raw json.RawMessage) (*time.Time, error) {
 	if environmentNull(raw) || json.Unmarshal(raw, &text) != nil {
 		return nil, feedbackRefusal(path, "must be an RFC 3339 time")
 	}
-	at, err := time.Parse(time.RFC3339Nano, text)
-	if err != nil {
+	// The strict parser keeps every fractional digit and refuses what
+	// RFC 3339 does not allow, such as an offset hour above 23, which
+	// time.Parse accepts (component-feedback-reports invariant 4).
+	at, ok := store.ParseFeedbackReportTime(text)
+	if !ok {
 		return nil, feedbackRefusal(path, "must be an RFC 3339 time")
 	}
 	return &at, nil

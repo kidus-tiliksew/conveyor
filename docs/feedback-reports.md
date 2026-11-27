@@ -86,13 +86,29 @@ problem, not a running total. Conveyor adds each `count` to the stored count.
 `file` is a path from the root of the repository, such as
 `internal/checkout/pay.go`, with `line` as the line number in that file.
 
-A time later than the arrival time is taken as the arrival time. An entry whose
-`first_seen` is later than its `last_seen` is refused.
+`first_seen` and `last_seen` must be RFC 3339 date-times, such as
+`2026-11-27T11:58:02.5Z` or `2026-11-27T13:58:02+02:00`. Conveyor refuses
+anything else, including an offset hour above 23, an offset minute above 59,
+and a day that the month does not have. A leap second is accepted only where
+it ends UTC 23:59.
+
+Conveyor compares the times exactly as you send them, every fractional digit
+included. It stores them to the microsecond.
+
+- A time later than the arrival time is taken as the arrival time.
+- An entry whose `first_seen` is later than its `last_seen` is refused.
+- Conveyor stores any UTC time from year 0000 to year 9999. A time with an
+  offset can fall before 0000-01-01T00:00:00Z, for example
+  `0000-01-01T00:00:00+01:00`. Conveyor refuses such a time on its field. A
+  time after year 9999 is later than the arrival, so it is taken as the
+  arrival.
 
 Keys, services, versions, and files are kept and compared exactly as sent, so
-case and spaces count. A `key`, `service`, `version`, or `file` that holds a
-credential or another secret is refused. Conveyor removes each secret from a
-`summary` before it stores it, and records how many it removed of each kind.
+case and spaces count. A request is refused whole when a `key`, `service`,
+`repository`, `commit`, `version`, or `file` holds a credential or another
+secret. The secrets checked include every secret that Conveyor stores. Conveyor
+removes each secret from a `summary` before it stores it, and records how many
+it removed of each kind.
 
 ### One record for each problem
 
@@ -118,8 +134,8 @@ and records nothing.
 
 ### Open reports
 
-An environment holds at most 200 open reports. A request that would store a new
-report while the environment already holds that many is refused whole with 409
+An environment holds at most 200 open reports. A request whose new reports would
+take the environment beyond 200 open reports is refused whole with 409
 `open_report_limit`. A request that only updates or reopens reports is not
 refused by this limit.
 
@@ -129,7 +145,7 @@ refused by this limit.
 | --- | --- |
 | 400 `invalid_report` | `field` names the field by its path, such as `reports[0].summary`, and `message` states the rule. `body` names the whole body. The answer repeats no value that you sent |
 | 401 | The credential is missing, is not an environment key, is revoked, or belongs to an archived environment. The answer does not say which |
-| 409 `open_report_limit` | The request would store a new report in an environment that holds 200 open reports. Nothing was recorded |
+| 409 `open_report_limit` | Accepting the request would store new reports beyond the limit of 200 open reports in the environment. Nothing was recorded |
 | 413 | The body is over 256 KiB |
 | 429 | The request arrived less than 5 seconds before or after another accepted report request of the key, or one that is on its way to the store. `Retry-After` holds the whole seconds to wait from the answer, from 1 to 5 |
 | 500 | The store failed, or the check of the key took more than 10 seconds. The answer holds no detail |

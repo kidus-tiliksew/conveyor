@@ -291,7 +291,7 @@ func TestFeedbackReportTimesWithinOneMicrosecond(t *testing.T) {
 	}})
 	h.acceptReport(reportBody(reportEntryJSON("ordered", `"first_seen":"2026-11-25T11:00:00.0000001Z","last_seen":"2026-11-25T13:00:00.0000005+02:00"`)))
 	first, last := time.Date(2026, 11, 25, 11, 0, 0, 100, time.UTC), time.Date(2026, 11, 25, 11, 0, 0, 500, time.UTC)
-	if len(received) != 1 || received[0].FirstSeen == nil || received[0].LastSeen == nil || !received[0].FirstSeen.Equal(first) || !received[0].LastSeen.Equal(last) {
+	if len(received) != 1 || received[0].FirstSeen == nil || received[0].LastSeen == nil || !received[0].FirstSeen.At.Equal(first) || !received[0].LastSeen.At.Equal(last) {
 		t.Fatalf("the store received %+v, want first-seen %v and last-seen %v exactly", received, first, last)
 	}
 	stored := h.reportByKey("ordered")
@@ -328,6 +328,53 @@ func TestFeedbackReportReversedPairInArrivalMicrosecond(t *testing.T) {
 	}
 	if got := h.reportByKey("ordered"); !got.FirstSeen.Equal(whole) || !got.LastSeen.Equal(whole) || !got.CreatedAt.Equal(whole) {
 		t.Fatalf("stored first=%v last=%v created=%v, want each cut to %v", got.FirstSeen, got.LastSeen, got.CreatedAt, whole)
+	}
+}
+
+// TestFeedbackReportStrictTimes covers the strict RFC 3339 parse at the
+// route: digits beyond nanoseconds decide the order, a valid nonzero offset is
+// read exactly, an offset RFC 3339 does not allow is refused, a time below
+// the stored range is refused with a fixed message, and a time above it is
+// taken as the arrival. No case answers 500 (component-feedback-reports
+// invariants 4 and 7; req-production-feedback AC-4.1).
+func TestFeedbackReportStrictTimes(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	for _, c := range []struct{ name, field, members string }{
+		{"reversed beyond nanoseconds", "reports[0].first_seen", `"first_seen":"2026-11-25T11:00:00.1234567899Z","last_seen":"2026-11-25T11:00:00.1234567891Z"`},
+		{"offset hour 24", "reports[0].first_seen", `"first_seen":"2026-11-25T11:00:00+24:00"`},
+		{"offset minute 60", "reports[0].last_seen", `"last_seen":"2026-11-25T11:00:00+01:60"`},
+		{"offset without a colon", "reports[0].first_seen", `"first_seen":"2026-11-25T11:00:00+0100"`},
+		{"a day the month does not hold", "reports[0].first_seen", `"first_seen":"2026-02-30T11:00:00Z"`},
+		{"below the stored range", "reports[0].first_seen", `"first_seen":"0000-01-01T00:00:00+01:00"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h.t = t
+			h.advance(feedbackSignalWindow)
+			requireReportRefusal(t, h.sendReport(h.key.Value, reportBody(reportEntryJSON("strict", c.members))), c.field, "2026-11-25", "0000-01-01")
+		})
+	}
+	h.t = t
+	if reports := h.reports(); len(reports) != 0 {
+		t.Fatalf("refused requests stored %+v", reports)
+	}
+	h.acceptReport(reportBody(
+		reportEntryJSON("ordered-beyond", `"first_seen":"2026-11-25T11:00:00.1234567891Z","last_seen":"2026-11-25T11:00:00.1234567899Z"`),
+		reportEntryJSON("offset", `"first_seen":"2026-11-25T13:00:00+02:00","last_seen":"2026-11-25T11:30:00-00:30"`),
+		reportEntryJSON("above", `"first_seen":"9999-12-31T23:30:00-01:00"`),
+		reportEntryJSON("year-zero", `"first_seen":"0000-01-01T00:00:00Z","last_seen":"0000-01-01T01:00:00+01:00"`),
+	))
+	arrived := store.EnvironmentTime(h.clock())
+	for key, want := range map[string][2]time.Time{
+		"ordered-beyond": {time.Date(2026, 11, 25, 11, 0, 0, 123456000, time.UTC), time.Date(2026, 11, 25, 11, 0, 0, 123456000, time.UTC)},
+		"offset":         {time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC), time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)},
+		"above":          {arrived, arrived},
+		"year-zero":      {time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC)},
+	} {
+		got := h.reportByKey(key)
+		if !got.FirstSeen.Equal(want[0]) || !got.LastSeen.Equal(want[1]) || !got.FirstEntrySeen.Equal(want[0]) {
+			t.Fatalf("%s: first=%v last=%v first entry=%v, want %v and %v", key, got.FirstSeen, got.LastSeen, got.FirstEntrySeen, want[0], want[1])
+		}
 	}
 }
 
@@ -565,7 +612,7 @@ func TestFeedbackReportOpenLimit(t *testing.T) {
 	response := h.sendReport(h.key.Value, reportBody(reportEntryJSON("fill-0-0"), reportEntryJSON("one-too-many")))
 	var body map[string]string
 	decodeEnvironmentBody(t, response, &body)
-	if response.Code != http.StatusConflict || body["error"] != "open_report_limit" || body["message"] == "" || len(body) != 2 || strings.Contains(response.Body.String(), "one-too-many") {
+	if response.Code != http.StatusConflict || body["error"] != "open_report_limit" || !strings.Contains(body["message"], "beyond the limit of 200 open reports") || len(body) != 2 || strings.Contains(response.Body.String(), "one-too-many") {
 		t.Fatalf("status=%d body=%s, want 409 open_report_limit", response.Code, response.Body)
 	}
 	if after := h.reportStored(); after != before {

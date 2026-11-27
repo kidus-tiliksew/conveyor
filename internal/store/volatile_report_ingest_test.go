@@ -67,8 +67,15 @@ func TestVolatileFeedbackReportStorage(t *testing.T) {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if len(m.feedbackReportState.reports) != 1 || len(m.feedbackReportState.links) != 0 || len(m.feedbackReportState.notes) != 0 || len(m.feedbackReportState.lineReads) != 0 {
-		t.Fatalf("after one report: reports=%d links=%d notes=%d line reads=%d, want 1, 0, 0, 0",
-			len(m.feedbackReportState.reports), len(m.feedbackReportState.links), len(m.feedbackReportState.notes), len(m.feedbackReportState.lineReads))
+	// The environment's scope holds exactly the one report, and no other
+	// scope holds any.
+	scope := memoryScopedKey{workspace: "reports", id: environment.ID}
+	reports := m.feedbackReportState.reports[scope]
+	if report, ok := reports["crash"]; len(m.feedbackReportState.reports) != 1 || len(reports) != 1 || !ok || report.Key != "crash" || report.EnvironmentID != environment.ID {
+		t.Fatalf("after one report: scopes=%d reports of the environment=%+v, want exactly the crash report", len(m.feedbackReportState.reports), reports)
+	}
+	if len(m.feedbackReportState.links) != 0 || len(m.feedbackReportState.notes) != 0 || len(m.feedbackReportState.lineReads) != 0 {
+		t.Fatalf("after one report: links=%d notes=%d line reads=%d, want 0, 0, 0",
+			len(m.feedbackReportState.links), len(m.feedbackReportState.notes), len(m.feedbackReportState.lineReads))
 	}
 }
