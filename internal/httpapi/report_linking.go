@@ -259,6 +259,11 @@ func (f *feedbackAttemptForge) ReadLineChange(ctx context.Context, slug, commit,
 	}
 	answer, err := f.inner.ReadLineChange(ctx, slug, commit, path, line)
 	f.observe(err)
+	// A complete answer can state that no request is left until a reset.
+	// The answer is used, and the workspace holds its calls until then.
+	if err == nil && !answer.RetryAt.IsZero() {
+		f.observe(github.RateLimitedError(answer.RetryAt, errors.New("GitHub stated that no request is left until its reset")))
+	}
 	return answer, err
 }
 

@@ -1264,6 +1264,11 @@ type LineChange struct {
 	FileFound    bool
 	Commit       string
 	PullRequests []int
+	// RetryAt is set on a complete answer whose response stated that no
+	// request is left (X-RateLimit-Remaining 0): the time GitHub allows the
+	// next request. The answer is complete; the caller sends nothing more
+	// before that time.
+	RetryAt time.Time
 }
 
 // LineChangePullRequests is the most pull requests the line read asks GitHub
@@ -1314,14 +1319,16 @@ func (e lineChangeError) missingFileError() bool {
 	return (e.Path[1] == "commit" && e.Path[2] == "file") || (e.Path[1] == "blamed" && e.Path[2] == "blame")
 }
 
-// lineChangeFailure maps GraphQL errors to the existing categories. No
-// message text is kept, so no answer text reaches a caller or a log.
-func lineChangeFailure(errs []lineChangeError) error {
+// lineChangeFailure maps GraphQL errors to the existing categories. A
+// RATE_LIMITED error keeps retryAt, the retry time the same HTTP response
+// stated, so the caller sends nothing before it. No message text is kept, so
+// no answer text reaches a caller or a log.
+func lineChangeFailure(errs []lineChangeError, retryAt time.Time) error {
 	category := ForgeResponse
 	for _, e := range errs {
 		switch strings.ToUpper(e.Type) {
 		case "RATE_LIMITED":
-			return &Error{Category: ForgeRateLimited, Err: errors.New("read line change: GitHub rate-limited the GraphQL request")}
+			return &Error{Category: ForgeRateLimited, RetryAt: retryAt, Err: errors.New("read line change: GitHub rate-limited the GraphQL request")}
 		case "FORBIDDEN", "NOT_FOUND":
 			category = ForgePermission
 		}
@@ -1386,10 +1393,32 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || !fullCommitID(commit) || path == "" || line < 1 {
 		return LineChange{}, &Error{Category: ForgeRequest, Err: errors.New("a line read needs a repository slug, a full commit ID, a path, and a line")}
 	}
-	raw, err := run(ctx, "api", "graphql", "-f", "query="+lineChangeQuery, "-f", "owner="+owner, "-f", "name="+name, "-f", "oid="+commit, "-f", "path="+path)
+	// The one query asks for GitHub's retry signals beside the body: an HTTP
+	// 200 answer can still be a rate limit, and only its headers state when
+	// GitHub allows the next request. A refused HTTP status already carries
+	// its retry time in the error.
+	enveloped, err := run(ctx, "api", "graphql", graphqlRetryEnvelope, "-f", "query="+lineChangeQuery, "-f", "owner="+owner, "-f", "name="+name, "-f", "oid="+commit, "-f", "path="+path)
 	if err != nil {
 		return LineChange{}, fmt.Errorf("read line change: %w", forgeCallError(err))
 	}
+	var envelope graphqlEnvelope
+	if json.Unmarshal(enveloped, &envelope) != nil {
+		return LineChange{}, forgeResponseError("read line change: malformed GraphQL answer")
+	}
+	raw, retryAt := envelope.Body, envelope.RetryAt
+	change, err := decodeLineChange(raw, commit, path, line, owner, name, retryAt)
+	if err != nil {
+		return LineChange{}, err
+	}
+	if change.FileFound && envelope.RemainingZero && !retryAt.IsZero() {
+		change.RetryAt = retryAt
+	}
+	return change, nil
+}
+
+// decodeLineChange decodes one line-read answer. retryAt is the retry time
+// the same HTTP response stated, kept on a rate-limited failure.
+func decodeLineChange(raw []byte, commit, path string, line int, owner, name string, retryAt time.Time) (LineChange, error) {
 	// Every member the query selects is checked for presence, type, and
 	// consistency with its siblings. A member that is missing, null where
 	// the schema allows no null, of another type, empty, or inconsistent is
@@ -1412,7 +1441,7 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 	data := answer.Data
 	if data == nil || data.Repository == nil {
 		if len(answer.Errors) > 0 {
-			return LineChange{}, lineChangeFailure(answer.Errors)
+			return LineChange{}, lineChangeFailure(answer.Errors, retryAt)
 		}
 		return LineChange{}, forgeResponseError("read line change: the answer holds no repository")
 	}
@@ -1421,7 +1450,7 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 	case !present:
 		return LineChange{}, forgeResponseError("read line change: the answer holds no commit member")
 	case null && len(answer.Errors) > 0:
-		return LineChange{}, lineChangeFailure(answer.Errors)
+		return LineChange{}, lineChangeFailure(answer.Errors, retryAt)
 	case null:
 		return LineChange{}, CommitNotFoundError(commit)
 	case !rawObject(data.Repository.Commit):
@@ -1453,13 +1482,13 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 		}
 		for _, e := range answer.Errors {
 			if !e.missingFileError() {
-				return LineChange{}, lineChangeFailure(answer.Errors)
+				return LineChange{}, lineChangeFailure(answer.Errors, retryAt)
 			}
 		}
 		return LineChange{FileFound: false}, nil
 	}
 	if len(answer.Errors) > 0 {
-		return LineChange{}, lineChangeFailure(answer.Errors)
+		return LineChange{}, lineChangeFailure(answer.Errors, retryAt)
 	}
 	// A file object proves the file only with its path, and only with the
 	// path the read asked for.

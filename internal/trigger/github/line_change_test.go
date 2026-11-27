@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -57,6 +58,10 @@ func TestReadLineChange(t *testing.T) {
 		category ForgeErrorCategory
 		notFound bool
 		retry    time.Duration
+		// resetIn sets X-RateLimit-Reset to that long after the request, and
+		// answerRetry is the retry time a complete answer carries.
+		resetIn     time.Duration
+		answerRetry time.Duration
 	}{
 		// Stored as the answer.
 		{name: "L01 data complete: the range that starts at the line, merged pull requests of the repository", line: 10, body: blameAnswer(blameRange(1, 9, feedbackSHA), blameRange(10, 20, strings.ToUpper(lineChangeCommit), pullNode(7, true, "acme/app"), pullNode(3, true, "Acme/App")), blameRange(21, 30, feedbackSHA)),
@@ -101,6 +106,21 @@ func TestReadLineChange(t *testing.T) {
 		{name: "L34 HTTP permission", line: 5, status: 403, body: `{"message":"Resource not accessible by integration"}`, category: ForgePermission},
 		{name: "L35 HTTP 429 keeps the retry time", line: 5, status: 429, body: `{"message":"rate limit"}`, headers: map[string]string{"Retry-After": "90"}, category: ForgeRateLimited, retry: 90 * time.Second},
 		{name: "L36 HTTP 403 with no remaining requests keeps the retry time", line: 5, status: 403, body: `{"message":"API rate limit exceeded"}`, headers: map[string]string{"X-RateLimit-Remaining": "0", "Retry-After": "120"}, category: ForgeRateLimited, retry: 120 * time.Second},
+		// Retry times (review round 7): GitHub answers a GraphQL rate limit with
+		// HTTP 200, and its headers state when it allows the next request. The
+		// later of Retry-After and X-RateLimit-Reset is kept.
+		{name: "L82 HTTP 200 RATE_LIMITED keeps a reset ten minutes away", line: 5, body: `{"data":{"repository":{"commit":null,"blamed":null}},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, headers: map[string]string{"X-RateLimit-Remaining": "0"}, resetIn: 10 * time.Minute, category: ForgeRateLimited, retry: 10 * time.Minute},
+		{name: "L83 HTTP 200 RATE_LIMITED keeps the reset when it is later than Retry-After", line: 5, body: `{"data":{"repository":{"commit":null,"blamed":null}},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, headers: map[string]string{"Retry-After": "90"}, resetIn: 10 * time.Minute, category: ForgeRateLimited, retry: 10 * time.Minute},
+		{name: "L84 HTTP 200 RATE_LIMITED keeps Retry-After when it is later than the reset", line: 5, body: `{"data":{"repository":{"commit":null,"blamed":null}},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, headers: map[string]string{"Retry-After": "900"}, resetIn: 10 * time.Minute, category: ForgeRateLimited, retry: 15 * time.Minute},
+		{name: "L85 HTTP 200 RATE_LIMITED beside partial data keeps the reset", line: 5, body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":null}},"errors":[{"type":"RATE_LIMITED","path":["repository","blamed","blame"],"message":"x"}]}`, resetIn: 10 * time.Minute, category: ForgeRateLimited, retry: 10 * time.Minute},
+		{name: "L86 HTTP 429 keeps the later reset", line: 5, status: 429, body: `{"message":"rate limit"}`, headers: map[string]string{"Retry-After": "60"}, resetIn: 10 * time.Minute, category: ForgeRateLimited, retry: 10 * time.Minute},
+		{name: "L87 HTTP 403 with no request left keeps the reset", line: 5, status: 403, body: `{"message":"API rate limit exceeded"}`, headers: map[string]string{"X-RateLimit-Remaining": "0"}, resetIn: 10 * time.Minute, category: ForgeRateLimited, retry: 10 * time.Minute},
+		{name: "L88 HTTP 403 secondary limit keeps Retry-After", line: 5, status: 403, body: `{"message":"You have exceeded a secondary rate limit"}`, headers: map[string]string{"Retry-After": "300"}, category: ForgeRateLimited, retry: 5 * time.Minute},
+		{name: "L89 HTTP 502 holds no retry time", line: 5, status: 502, body: `{"message":"bad gateway"}`, headers: map[string]string{"Retry-After": "300"}, category: ForgeStatus},
+		{name: "L90 a complete answer with no request left carries the reset", line: 5, body: blameAnswer(blameRange(1, 9, lineChangeCommit)), headers: map[string]string{"X-RateLimit-Remaining": "0"}, resetIn: 10 * time.Minute,
+			want: LineChange{FileFound: true, Commit: lineChangeCommit, PullRequests: []int{}}, answerRetry: 10 * time.Minute},
+		{name: "L91 a complete answer with requests left carries no retry time", line: 5, body: blameAnswer(blameRange(1, 9, lineChangeCommit)), headers: map[string]string{"X-RateLimit-Remaining": "4999"}, resetIn: 10 * time.Minute,
+			want: LineChange{FileFound: true, Commit: lineChangeCommit, PullRequests: []int{}}},
 		{name: "L37 the data member is not an object", line: 5, body: `{"data":"x"}`, category: ForgeResponse},
 		{name: "L38 the repository member is not an object", line: 5, body: `{"data":{"repository":[]}}`, category: ForgeResponse},
 		{name: "L39 no commit member", line: 5, body: `{"data":{"repository":{"blamed":{"blame":{"ranges":[]}}}}}`, category: ForgeResponse},
@@ -174,6 +194,9 @@ func TestReadLineChange(t *testing.T) {
 				for name, value := range tc.headers {
 					w.Header().Set(name, value)
 				}
+				if tc.resetIn != 0 {
+					w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(tc.resetIn).Unix(), 10))
+				}
 				if tc.status != 0 {
 					w.WriteHeader(tc.status)
 				}
@@ -211,6 +234,12 @@ func TestReadLineChange(t *testing.T) {
 				if err != nil || got.FileFound != tc.want.FileFound || got.Commit != tc.want.Commit || !slices.Equal(got.PullRequests, tc.want.PullRequests) {
 					t.Fatalf("got %+v err %v, want %+v", got, err, tc.want)
 				}
+				switch {
+				case tc.answerRetry > 0 && (got.RetryAt.Before(before.Add(tc.answerRetry-time.Second)) || got.RetryAt.After(time.Now().Add(tc.answerRetry+time.Second))):
+					t.Fatalf("answer retry time %v, want about %v from now", got.RetryAt, tc.answerRetry)
+				case tc.answerRetry == 0 && !got.RetryAt.IsZero():
+					t.Fatalf("answer retry time %v, want none", got.RetryAt)
+				}
 			}
 		})
 	}
@@ -238,5 +267,50 @@ func TestReadLineChangeRefusesBadParameters(t *testing.T) {
 				t.Fatalf("called=%v err=%v, want a request failure before any call", called, err)
 			}
 		})
+	}
+}
+
+// TestReadLineChangeTimeout proves that a line read that times out is a
+// request failure with no retry time: nothing is stored, and the worker asks
+// again on its next attempt (review round 7).
+func TestReadLineChangeTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := readLineChange(ctx, "acme/app", feedbackSHA, "cmd/main.go", 5, newRESTRunner(server.Client(), server.URL, "workspace-token", "workspace demo GitHub App"))
+	if ErrorCategory(err) != ForgeRequest {
+		t.Fatalf("err %v category %q, want a request failure", err, ErrorCategory(err))
+	}
+	if _, limited := RateLimitRetryAt(err); limited {
+		t.Fatal("a timeout carried a rate limit")
+	}
+}
+
+// TestGraphQLWithoutTheRetryEnvelope proves that every other GraphQL caller
+// gets the body alone, as before: without the line read's flag, an HTTP 200
+// answer with rate-limit headers is returned unchanged.
+func TestGraphQLWithoutTheRetryEnvelope(t *testing.T) {
+	body := `{"data":{"viewer":{"login":"x"}}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+		fmt.Fprint(w, body)
+	}))
+	defer server.Close()
+	run := newRESTRunner(server.Client(), server.URL, "workspace-token", "workspace demo GitHub App")
+	raw, err := run(t.Context(), "api", "graphql", "-f", "query={viewer{login}}")
+	if err != nil || string(raw) != body {
+		t.Fatalf("raw %s err %v, want the body unchanged", raw, err)
+	}
+	enveloped, err := run(t.Context(), "api", "graphql", graphqlRetryEnvelope, "-f", "query={viewer{login}}")
+	var envelope graphqlEnvelope
+	if err != nil || json.Unmarshal(enveloped, &envelope) != nil || string(envelope.Body) != body || !envelope.RemainingZero || envelope.RetryAt.Before(time.Now().Add(59*time.Minute)) {
+		t.Fatalf("enveloped %s err %v, want the body with the reset", enveloped, err)
 	}
 }

@@ -306,10 +306,32 @@ func nextLink(header string) string {
 	return ""
 }
 
+// graphqlRetryEnvelope is the flag with which a caller asks the GraphQL
+// call for GitHub's retry signals beside the body. Only the line read
+// passes it. Every other caller gets the body alone, as before.
+const graphqlRetryEnvelope = "--retry-envelope"
+
+// graphqlEnvelope is the answer of a GraphQL call made with
+// graphqlRetryEnvelope: the body as GitHub sent it, and the retry signals of
+// the same HTTP response. GitHub answers a GraphQL rate limit with HTTP 200,
+// so these headers are the only place its retry time appears. RetryAt is the
+// later of Retry-After and X-RateLimit-Reset, and zero when neither parses.
+// RemainingZero is true when X-RateLimit-Remaining is 0.
+type graphqlEnvelope struct {
+	Body          []byte    `json:"body"`
+	RetryAt       time.Time `json:"retry_at"`
+	RemainingZero bool      `json:"remaining_zero"`
+}
+
 func (c *restClient) graphql(ctx context.Context, args ...string) ([]byte, error) {
 	query := ""
 	variables := map[string]any{}
+	envelope := false
 	for i := 0; i < len(args); i++ {
+		if args[i] == graphqlRetryEnvelope {
+			envelope = true
+			continue
+		}
 		if (args[i] == "-f" || args[i] == "-F") && i+1 < len(args) {
 			typed := args[i] == "-F"
 			i++
@@ -324,8 +346,15 @@ func (c *restClient) graphql(ctx context.Context, args ...string) ([]byte, error
 			}
 		}
 	}
-	raw, _, _, err := c.request(ctx, http.MethodPost, "graphql", "application/vnd.github+json", map[string]any{"query": query, "variables": variables})
-	return raw, err
+	raw, header, _, err := c.request(ctx, http.MethodPost, "graphql", "application/vnd.github+json", map[string]any{"query": query, "variables": variables})
+	if err != nil || !envelope {
+		return raw, err
+	}
+	encoded, encodeErr := json.Marshal(graphqlEnvelope{Body: raw, RetryAt: rateLimitRetryAt(header, time.Now()), RemainingZero: strings.TrimSpace(header.Get("X-RateLimit-Remaining")) == "0"})
+	if encodeErr != nil {
+		return nil, &Error{Category: ForgeResponse, Err: fmt.Errorf("encode GitHub GraphQL answer: %w", encodeErr)}
+	}
+	return encoded, nil
 }
 
 func option(args []string, name string) string {
