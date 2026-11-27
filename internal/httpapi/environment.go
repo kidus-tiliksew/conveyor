@@ -20,9 +20,14 @@ import (
 // (component-http-api invariant 17).
 const environmentBodyLimit = 256 << 10
 
-// environmentSignalPath is the one route that admits an environment key, with
+// environmentSignalPath is the first route that admits an environment key, with
 // POST only (component-environments invariant 15).
 const environmentSignalPath = "/v1/feedback/signals"
+
+// environmentReportPath is the second route that admits an environment key,
+// with POST only (component-feedback-reports, Public surfaces; component-http-api
+// invariant 4).
+const environmentReportPath = "/v1/feedback/reports"
 
 // environmentKeyPresented reports whether any Authorization header of the
 // request presents an environment key as its bearer. Only the prefix is read,
@@ -35,15 +40,16 @@ func environmentKeyPresented(r *http.Request) bool {
 }
 
 // refuseEnvironmentKeyOutsideSignals refuses an environment key on every
-// route and method but POST of the signal route, before routing, so no open route, REST route,
+// route and method but POST of the signal route and of the report route,
+// before routing, so no open route, REST route,
 // claim-bound delivery route, /mcp, or dashboard path can admit it, even
 // beside a session cookie (component-environments invariant 15;
 // req-security-boundaries AC-1.5; DEC-148(6)). The exception compares the
-// escaped path, which is what the router matches, so an encoded form of the
-// signal path that the router would send elsewhere is refused too.
+// escaped path, which is what the router matches, so an encoded form of
+// either path that the router would send elsewhere is refused too.
 func (s *Server) refuseEnvironmentKeyOutsideSignals(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (r.Method == http.MethodPost && r.URL.EscapedPath() == environmentSignalPath) || !environmentKeyPresented(r) {
+		if (r.Method == http.MethodPost && (r.URL.EscapedPath() == environmentSignalPath || r.URL.EscapedPath() == environmentReportPath)) || !environmentKeyPresented(r) {
 			next.ServeHTTP(w, r)
 			return
 		}

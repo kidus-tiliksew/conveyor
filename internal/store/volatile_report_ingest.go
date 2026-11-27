@@ -35,6 +35,11 @@ func (m *volatileMemory) CheckFeedbackReportRepositories(ctx context.Context, ba
 // before the mutex is taken. Every check and the whole plan run before the
 // first write, so a refusal leaves the store as it was.
 func (m *volatileMemory) RecordFeedbackReports(ctx context.Context, batch FeedbackReportBatch) error {
+	// The events carry the system actor, and a request without an actor is
+	// refused before any write (component-persistence, Actor context).
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	prepared, err := PrepareFeedbackReports(ctx, m, batch)
 	if err != nil {
 		return err

@@ -75,8 +75,13 @@ type Server struct {
 	// bound of its key check in tests.
 	feedbackLimiterOnce sync.Once
 	feedbackLimiter     *feedbackLimiter
-	feedbackClock       func() time.Time
-	feedbackKeyTimeout  time.Duration
+	// feedbackReportLimiter keeps the 5-second rule of the report route with
+	// a state of its own, so a report request and a signal of one key do not
+	// delay each other (component-feedback-reports invariant 10).
+	feedbackReportLimiterOnce sync.Once
+	feedbackReportLimiter     *feedbackLimiter
+	feedbackClock             func() time.Time
+	feedbackKeyTimeout        time.Duration
 	// feedbackWork runs resolving and comparing in the background, after the
 	// signal route answers and when a read finds an answer missing.
 	// feedbackForge replaces the workspace App's GitHub reads in tests.
@@ -320,6 +325,10 @@ func (s *Server) Handler() http.Handler {
 		// (component-production-feedback invariant 2; req-security-boundaries
 		// AC-1.5).
 		r.With(s.requireFeedbackKey).Post("/feedback/signals", s.receiveFeedbackSignal)
+		// The report route takes the same key check with a limiter of its
+		// own (component-feedback-reports, Public surfaces, invariants 2 and
+		// 10; req-security-boundaries AC-1.5).
+		r.With(s.requireFeedbackKeyFor(s.feedbackReports)).Post("/feedback/reports", s.receiveFeedbackReports)
 		r.Post("/sign-in/redeem", s.redeemSignInLink)
 		r.Post("/sign-in/password", s.signInWithPassword)
 		r.With(s.requireSelfServiceCredential).Post("/sign-out", s.signOutDashboardSession)

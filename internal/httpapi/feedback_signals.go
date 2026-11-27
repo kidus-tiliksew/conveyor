@@ -75,8 +75,22 @@ func refuseFeedbackCredential(w http.ResponseWriter) {
 // refused signal leaves no trace. The accepted signal records the key's last
 // use. Only the verified key sets the workspace of the request.
 func (s *Server) requireFeedbackKey(next http.Handler) http.Handler {
+	return s.requireFeedbackKeyFor(s.feedbackSignals)(next)
+}
+
+// requireFeedbackKeyFor is requireFeedbackKey with the limiter of the route
+// it guards. The signal route and the report route each pass their own, so
+// the arrival of one never holds a window of the other
+// (component-feedback-reports invariant 10).
+func (s *Server) requireFeedbackKeyFor(limiterFor func() *feedbackLimiter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return s.feedbackKeyHandler(limiterFor, next)
+	}
+}
+
+func (s *Server) feedbackKeyHandler(limiterFor func() *feedbackLimiter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		limiter := s.feedbackSignals()
+		limiter := limiterFor()
 		arrival := limiter.arrive(s.feedbackNow)
 		defer limiter.leave(arrival)
 		headers := r.Header.Values("Authorization")

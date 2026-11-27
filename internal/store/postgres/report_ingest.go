@@ -82,6 +82,11 @@ func (s *Store) CheckFeedbackReportRepositories(ctx context.Context, batch store
 // (component-feedback-reports invariants 6 and 8).
 func (s *Store) RecordFeedbackReports(ctx context.Context, batch store.FeedbackReportBatch) error {
 	ctx = dbmetrics.WithReadLabel(ctx, "RecordFeedbackReports")
+	// A request without an actor is refused before any write
+	// (component-persistence, Actor context).
+	if _, err := store.RequireActor(ctx); err != nil {
+		return err
+	}
 	prepared, err := store.PrepareFeedbackReports(ctx, s, batch)
 	if err != nil {
 		return err

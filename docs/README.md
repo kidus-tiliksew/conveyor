@@ -26,6 +26,7 @@ hold no setup procedure (DEC-93).
 - [Tasks](tasks.md): how work is created, given context, executed, reviewed, and linked
 - [Environments](environments.md): the routes, fields, key format, and events of the places the software runs
 - [Production feedback](production-feedback.md): the signal route, its body, its refusals, the listening state, resolving versions, and live status
+- [Feedback reports](feedback-reports.md): the report route, its body, its refusals, and one record for each problem
 - [Misalignment](misalignment.md): drift, staleness, and pending proposals
 
 ## Operations

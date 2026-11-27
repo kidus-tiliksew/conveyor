@@ -111,7 +111,7 @@ no user, role, capability, or session (DEC-148).
 | `id` | `envkey_<12 random bytes in URL-safe base64>` |
 | `label` | 1 to 60 characters after trimming |
 | `created_by`, `created_at` | Set by the server |
-| `last_used_at` | `null` before the first use. Written at most once a minute. A refused signal does not write it |
+| `last_used_at` | `null` before the first use. Written at most once a minute. A refused signal or report request does not write it |
 | `value` | `cv_env_<key id>_<32 random bytes in URL-safe base64>` |
 
 `value` is only in the answer to `POST /v1/environments/{id}/keys`. The server
@@ -121,19 +121,25 @@ events hold neither, and the credential redactor covers the shape.
 A revoked key is refused at its next use. Revocation is final. A revoked key is
 in no read.
 
-The server refuses a bearer with the `cv_env_` prefix with 401 on every method
-and path except `POST /v1/feedback/signals`, before routing and even beside a
-session cookie (`req-security-boundaries` AC-1.5).
-[Production feedback](production-feedback.md) describes that route.
+The server accepts a key on two routes only:
 
-The signal route checks a presented value with
+1. `POST /v1/feedback/signals`, which
+   [Production feedback](production-feedback.md) describes.
+2. `POST /v1/feedback/reports`, which
+   [Feedback reports](feedback-reports.md) describes.
+
+The server refuses a bearer with the `cv_env_` prefix with 401 on every other
+method and path, before routing and even beside a session cookie
+(`req-security-boundaries` AC-1.5).
+
+Both routes check a presented value with
 `EnvironmentStore.CheckEnvironmentKey` before it reads the body. The check
 finds the workspace ID, the environment ID, the key ID, and the label from the
 value alone. Every value that is not valid gets the one refusal
 `ErrInvalidEnvironmentKey`. Any other error is a store failure. The check writes
-nothing. When the store records an accepted signal, it also writes the key's
-`last_used_at`, at most once a minute. A refused signal does not change
-`last_used_at`.
+nothing. When the store records an accepted signal or report request, it also
+writes the key's `last_used_at`, at most once a minute. A refused request does
+not change `last_used_at`.
 
 ## Suggestions
 
