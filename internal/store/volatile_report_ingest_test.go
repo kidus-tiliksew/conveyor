@@ -201,7 +201,7 @@ func TestMergeEventDecoders(t *testing.T) {
 			t.Fatalf("commit %s: %q, want %q", raw, got, want)
 		}
 	}
-	for raw, want := range map[string]int{`42`: 42, `"42"`: 42, `42.0`: 42, `4.2e1`: 42, `"\"42\""`: 0, `" 42"`: 0, `"042"`: 0, `-3`: 0, `0`: 0, `42.5`: 0, `1e20`: 0, `true`: 0, `null`: 0, ``: 0, `42 43`: 0} {
+	for raw, want := range map[string]int{`42`: 42, `"42"`: 42, `42.0`: 42, `4.2e1`: 42, `"\"42\""`: 0, `" 42"`: 0, `"042"`: 0, `-3`: 0, `0`: 0, `42.5`: 0, `1e20`: 0, `true`: 0, `null`: 0, ``: 0, `42 43`: 0, `1.00000000000000001`: 0, `42.000000000000000001`: 0, `1e0`: 1, `1.0`: 1} {
 		if got := FeedbackMergePullRequestJSON(raw); got != want {
 			t.Fatalf("pull request %s: %d, want %d", raw, got, want)
 		}

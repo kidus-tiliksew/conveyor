@@ -680,6 +680,7 @@ func runFeedbackLinkingMergeEventShapes(t *testing.T, x Fixture) {
 		{"pull request: a negative number", "pull_request", `-3`, 0},
 		{"pull request: zero", "pull_request", `0`, 0},
 		{"pull request: a fraction", "pull_request", `42.5`, 0},
+		{"pull request: a fraction too small for a float", "pull_request", `42.000000000000000001`, 0},
 		{"pull request: a whole number with a fraction part", "pull_request", `42.0`, 42},
 		{"pull request: an exponent", "pull_request", `4.2e1`, 42},
 		{"pull request: too large", "pull_request", `1e20`, 0},

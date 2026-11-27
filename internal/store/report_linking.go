@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"reflect"
 	"slices"
 	"sort"
@@ -561,11 +562,13 @@ func FeedbackMergePullRequestJSON(raw string) int {
 	if !ok {
 		return 0
 	}
-	f, err := number.Float64()
-	if err != nil || f < 1 || f > most || f != float64(int64(f)) {
+	// The decimal value is checked exactly, before any rounding: a value
+	// that is not whole, however close, is no number.
+	exact, ok := new(big.Rat).SetString(number.String())
+	if !ok || !exact.IsInt() || exact.Cmp(big.NewRat(1, 1)) < 0 || exact.Cmp(big.NewRat(most, 1)) > 0 {
 		return 0
 	}
-	return int(f)
+	return int(exact.Num().Int64())
 }
 
 // feedbackJSONString decodes raw as exactly one JSON string. JSON null, a
