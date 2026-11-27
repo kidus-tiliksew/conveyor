@@ -700,10 +700,10 @@ func runFeedbackLinkingMergeEventShapes(t *testing.T, x Fixture) {
 		}
 		raw, err := json.Marshal(payload)
 		requireOK(t, err)
-		task := feedbackMergedTask(t, x, "shapes", "", core.Event{Kind: "merge.confirmed", At: feedbackTime(time.Duration(i) * time.Second), Payload: raw})
+		task := feedbackMergedTask(t, x, "app", "", core.Event{Kind: "merge.confirmed", At: feedbackTime(time.Duration(i) * time.Second), Payload: raw})
 		ids[sh.name] = task.ID
 	}
-	merged, err := x.Backend.ListFeedbackMergedTasks(x.Context, store.FeedbackMergedTaskQuery{Repository: "shapes"})
+	merged, err := x.Backend.ListFeedbackMergedTasks(x.Context, store.FeedbackMergedTaskQuery{Repository: "app"})
 	requireOK(t, err)
 	got := map[string]store.FeedbackMergedTask{}
 	for _, task := range merged {
