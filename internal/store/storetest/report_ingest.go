@@ -29,6 +29,7 @@ func runFeedbackReports(t *testing.T, factory Factory) {
 		{"LaterEntry", runFeedbackReportLaterEntry},
 		{"LatestReplacedByNone", runFeedbackReportLatestCleared},
 		{"Reopen", runFeedbackReportReopen},
+		{"TimesWithinOneMicrosecond", runFeedbackReportSubMicrosecond},
 		{"ClosedStaysClosed", runFeedbackReportStaysClosed},
 		{"OpenReportLimit", runFeedbackReportLimit},
 		{"ConcurrentLastSlot", runFeedbackReportLastSlot},
@@ -323,6 +324,58 @@ func runFeedbackReportReopen(t *testing.T, x Fixture) {
 	if n := awaitNotice(t, notices, "workspace notice after a reopening"); n.Kind != changes.Workspace || n.Workspace != x.Workspace {
 		t.Fatalf("notice=%+v", n)
 	}
+}
+
+// runFeedbackReportSubMicrosecond holds every backend to the exact order of
+// stated times that differ by less than one microsecond, which no backend can
+// store (component-feedback-reports invariants 4 and 7;
+// req-production-feedback AC-4.1, AC-4.4). A reversed pair is refused. A
+// last-seen time strictly after the closing time reopens the report, and the
+// stored times keep microsecond precision.
+func runFeedbackReportSubMicrosecond(t *testing.T, x Fixture) {
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	base := feedbackTime(-time.Minute)
+	at := func(nanoseconds int) *time.Time {
+		value := base.Add(time.Duration(nanoseconds))
+		return &value
+	}
+	before := e.reportState(t)
+	reversed := reportEntry("reversed")
+	reversed.FirstSeen, reversed.LastSeen = at(500), at(100)
+	requireFeedbackField(t, x.Backend.RecordFeedbackReports(x.Context, e.reportBatch(0, reversed)), "reports[0].first_seen")
+	if after := e.reportState(t); after != before {
+		t.Fatalf("a reversed pair within one microsecond changed the store:\nbefore %s\nafter  %s", before, after)
+	}
+	ordered := reportEntry("ordered")
+	ordered.FirstSeen, ordered.LastSeen = at(100), at(500)
+	e.sendReports(t, 0, ordered)
+	if got := e.reportByKey(t, "ordered"); !got.FirstSeen.Equal(base) || !got.LastSeen.Equal(base) || !got.FirstEntrySeen.Equal(base) {
+		t.Fatalf("stored times first=%v last=%v first entry=%v, want each at %v", got.FirstSeen, got.LastSeen, got.FirstEntrySeen, base)
+	}
+	// The closing time is stored at microsecond precision. A last-seen
+	// time equal to it leaves the report closed, and one 500 nanoseconds
+	// later reopens it.
+	report := e.reportByKey(t, "ordered")
+	x.CloseFeedbackReport(t, x.Context, report.ID, base)
+	same := reportEntry("ordered")
+	same.FirstSeen, same.LastSeen = at(0), at(0)
+	e.sendReports(t, 10*time.Second, same)
+	if got := e.reportByKey(t, "ordered"); got.State != store.FeedbackReportClosed || got.Count != 2 {
+		t.Fatalf("a last-seen equal to the closing time gave %+v, want the report closed", got)
+	}
+	events := len(reportEvents(t, x))
+	later := reportEntry("ordered")
+	later.FirstSeen, later.LastSeen = at(0), at(500)
+	e.sendReports(t, 20*time.Second, later)
+	got := e.reportByKey(t, "ordered")
+	if got.State != store.FeedbackReportOpen || got.ReopenedAt == nil || !got.ReopenedAt.Equal(feedbackTime(20*time.Second)) || got.Count != 3 || !got.LastSeen.Equal(base) {
+		t.Fatalf("a last-seen 500 nanoseconds after the closing time gave %+v, want the report reopened", got)
+	}
+	all := reportEvents(t, x)
+	if len(all) != events+1 {
+		t.Fatalf("the reopening appended %d events, want 1", len(all)-events)
+	}
+	requireReportEvent(t, all[len(all)-1], store.FeedbackReportReopenedEvent, got)
 }
 
 func runFeedbackReportStaysClosed(t *testing.T, x Fixture) {

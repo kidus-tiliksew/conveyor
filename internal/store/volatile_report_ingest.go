@@ -2,20 +2,78 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
+	"time"
 )
 
-// feedbackReportState mirrors the report table of the durable backends: each
-// environment's reports by problem key. Every mutation runs under the memory
-// write mutex, the volatile backend's critical section, which signals take
-// too (component-feedback-reports invariant 6).
+// feedbackReportState mirrors the four report tables of the durable
+// backends. reports holds each environment's reports by problem key. links,
+// notes, and lineReads hold the rows of feedback_report_links,
+// feedback_report_notes, and feedback_report_line_reads with the same keys
+// and fields. Ingest writes reports only, and the links, notes, and
+// line-read answers stay empty until their writers exist. Every mutation runs
+// under the memory write mutex, the volatile backend's critical section,
+// which signals take too (component-feedback-reports invariant 6, Storage).
 type feedbackReportState struct {
 	reports map[memoryScopedKey]map[string]FeedbackReport
+	// links is keyed by workspace and link ID, as the table's primary key.
+	links map[memoryScopedKey]feedbackReportLinkRow
+	// notes is keyed by workspace and note ID, as the table's primary key.
+	notes map[memoryScopedKey]feedbackReportNoteRow
+	// lineReads is keyed by workspace and report ID, as the table's primary
+	// key: one answer for each report.
+	lineReads map[memoryScopedKey]feedbackReportLineReadRow
+}
+
+// feedbackReportLinkRow is one row of feedback_report_links. Exactly one of
+// TaskID and CrateID is set. State is possible, confirmed, or removed. A nil
+// time and its empty actor were not recorded.
+type feedbackReportLinkRow struct {
+	ID          string
+	ReportID    string
+	TaskID      *string
+	CrateID     *string
+	State       string
+	Evidence    json.RawMessage
+	CreatedAt   time.Time
+	CreatedBy   string
+	ConfirmedBy *string
+	ConfirmedAt *time.Time
+	RemovedBy   *string
+	RemovedAt   *time.Time
+}
+
+// feedbackReportNoteRow is one row of feedback_report_notes. Detail holds
+// what the note names.
+type feedbackReportNoteRow struct {
+	ID        string
+	ReportID  string
+	Kind      string
+	Detail    json.RawMessage
+	CreatedAt time.Time
+}
+
+// feedbackReportLineReadRow is one row of feedback_report_line_reads: the
+// answer of the line read of one report.
+type feedbackReportLineReadRow struct {
+	ReportID       string
+	Repository     string
+	ResolvedCommit string
+	File           string
+	Line           int
+	Answer         json.RawMessage
+	AnsweredAt     time.Time
 }
 
 func newFeedbackReportState() feedbackReportState {
-	return feedbackReportState{reports: map[memoryScopedKey]map[string]FeedbackReport{}}
+	return feedbackReportState{
+		reports:   map[memoryScopedKey]map[string]FeedbackReport{},
+		links:     map[memoryScopedKey]feedbackReportLinkRow{},
+		notes:     map[memoryScopedKey]feedbackReportNoteRow{},
+		lineReads: map[memoryScopedKey]feedbackReportLineReadRow{},
+	}
 }
 
 var _ ReportStore = (*volatileMemory)(nil)

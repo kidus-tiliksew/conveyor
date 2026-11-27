@@ -269,6 +269,38 @@ func TestFeedbackReportTimes(t *testing.T) {
 	h.acceptReport(reportBody(reportEntryJSON("both-future", `"first_seen":"2030-01-02T00:00:00Z","last_seen":"2030-01-01T00:00:00Z"`)))
 }
 
+// TestFeedbackReportTimesWithinOneMicrosecond proves that the route keeps the
+// stated precision of each time until the store has checked it: a reversed
+// pair within one microsecond is refused, an ordered pair within one
+// microsecond is accepted, and the store receives each time exactly as
+// stated, so its reopen check compares the exact last-seen time
+// (component-feedback-reports invariants 4 and 7; req-production-feedback
+// AC-4.1, AC-4.4).
+func TestFeedbackReportTimesWithinOneMicrosecond(t *testing.T) {
+	t.Parallel()
+	h := newFeedbackHarness(t)
+	h.advance(feedbackSignalWindow)
+	requireReportRefusal(t, h.sendReport(h.key.Value, reportBody(reportEntryJSON("reversed", `"first_seen":"2026-11-25T11:00:00.0000005Z","last_seen":"2026-11-25T11:00:00.0000001Z"`))), "reports[0].first_seen")
+	if reports := h.reports(); len(reports) != 0 {
+		t.Fatalf("a refused request stored %+v", reports)
+	}
+	var received []store.FeedbackReportEntry
+	h.use(feedbackReportStore{Backend: h.st, record: func(ctx context.Context, batch store.FeedbackReportBatch) error {
+		received = batch.Entries
+		return h.st.RecordFeedbackReports(ctx, batch)
+	}})
+	h.acceptReport(reportBody(reportEntryJSON("ordered", `"first_seen":"2026-11-25T11:00:00.0000001Z","last_seen":"2026-11-25T13:00:00.0000005+02:00"`)))
+	first, last := time.Date(2026, 11, 25, 11, 0, 0, 100, time.UTC), time.Date(2026, 11, 25, 11, 0, 0, 500, time.UTC)
+	if len(received) != 1 || received[0].FirstSeen == nil || received[0].LastSeen == nil || !received[0].FirstSeen.Equal(first) || !received[0].LastSeen.Equal(last) {
+		t.Fatalf("the store received %+v, want first-seen %v and last-seen %v exactly", received, first, last)
+	}
+	stored := h.reportByKey("ordered")
+	at := time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC)
+	if !stored.FirstSeen.Equal(at) || !stored.LastSeen.Equal(at) {
+		t.Fatalf("stored first=%v last=%v, want both at the microsecond %v", stored.FirstSeen, stored.LastSeen, at)
+	}
+}
+
 // TestFeedbackReportRedaction covers component-feedback-reports invariant 5:
 // a summary is redacted before it is stored and its removals are counted by
 // class (req-security-boundaries REQ-3, AC-3.1).

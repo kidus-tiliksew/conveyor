@@ -78,7 +78,9 @@ var ErrOpenReportLimit = errors.New("open report limit")
 
 // FeedbackReportEntry is one entry of a report request, as decoded. An empty
 // text was not stated. Count 0 and a nil time were not stated. Line is set
-// exactly when File is.
+// exactly when File is. After NormalizeFeedbackReports, each time holds the
+// full precision stated, so the order check and the reopen check compare the
+// exact times. A backend stores them at microsecond precision.
 type FeedbackReportEntry struct {
 	Kind       string
 	Key        string
@@ -221,16 +223,13 @@ func checkFeedbackSummary(field, value string) error {
 }
 
 // feedbackReportTime is a stated time or the arrival, and the arrival when
-// the stated time is later (invariant 4).
+// the stated time is later (invariant 4). It keeps the stated precision, so
+// two stated times within one microsecond keep their order.
 func feedbackReportTime(stated *time.Time, arrived time.Time) time.Time {
-	if stated == nil {
+	if stated == nil || stated.After(arrived) {
 		return arrived
 	}
-	at := EnvironmentTime(*stated)
-	if at.After(arrived) {
-		return arrived
-	}
-	return at
+	return stated.UTC()
 }
 
 // NormalizeFeedbackReports applies the rules of component-feedback-reports
@@ -448,7 +447,7 @@ func PlanFeedbackReports(prepared PreparedFeedbackReports, label string, stored 
 			plan.Changes = append(plan.Changes, FeedbackReportChange{New: true, Report: FeedbackReport{
 				ID: id, EnvironmentID: prepared.EnvironmentID, Kind: entry.Kind, Key: entry.Key,
 				Summary: entry.Summary, SummaryRedactions: prepared.Redactions[i], Service: entry.Service,
-				Count: entry.Count, FirstSeen: *entry.FirstSeen, LastSeen: *entry.LastSeen, FirstEntrySeen: *entry.FirstSeen,
+				Count: entry.Count, FirstSeen: EnvironmentTime(*entry.FirstSeen), LastSeen: EnvironmentTime(*entry.LastSeen), FirstEntrySeen: EnvironmentTime(*entry.FirstSeen),
 				File: entry.File, Line: entry.Line, First: stated, Latest: stated,
 				State: FeedbackReportOpen, InInbox: true, Origin: origin, CreatedAt: arrived,
 			}})
@@ -456,13 +455,17 @@ func PlanFeedbackReports(prepared PreparedFeedbackReports, label string, stored 
 		}
 		change := FeedbackReportChange{Updated: true}
 		report.Count = addFeedbackCount(report.Count, entry.Count)
-		if entry.FirstSeen.Before(report.FirstSeen) {
-			report.FirstSeen = *entry.FirstSeen
+		// Stored times are kept at microsecond precision.
+		if first := EnvironmentTime(*entry.FirstSeen); first.Before(report.FirstSeen) {
+			report.FirstSeen = first
 		}
-		if entry.LastSeen.After(report.LastSeen) {
-			report.LastSeen = *entry.LastSeen
+		if last := EnvironmentTime(*entry.LastSeen); last.After(report.LastSeen) {
+			report.LastSeen = last
 		}
 		report.Latest = stated
+		// The entry's exact last-seen time is compared with the closing
+		// time, so a time strictly after the closing reopens the report even
+		// within the same microsecond (invariant 7; AC-4.4).
 		if report.State == FeedbackReportClosed && report.ClosedAt != nil && entry.LastSeen.After(*report.ClosedAt) {
 			reopenedAt, reopenOrigin := arrived, origin
 			report.State, report.InInbox = FeedbackReportOpen, true
