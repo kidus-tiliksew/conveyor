@@ -35,6 +35,7 @@ type Backend interface {
 	CrateStore
 	EnvironmentStore
 	FeedbackStore
+	ReportStore
 	OAuthStore
 	Close()
 	ConfigureGitHubAppKeyEncryptionKey([]byte)

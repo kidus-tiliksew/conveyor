@@ -75,8 +75,29 @@ func refuseFeedbackCredential(w http.ResponseWriter) {
 // refused signal leaves no trace. The accepted signal records the key's last
 // use. Only the verified key sets the workspace of the request.
 func (s *Server) requireFeedbackKey(next http.Handler) http.Handler {
+	return s.requireFeedbackKeyFor(s.feedbackSignals, writeFeedbackKeyFailure)(next)
+}
+
+// requireFeedbackKeyFor is requireFeedbackKey with the limiter of the route
+// it guards and the answer to a failed key check. The signal route and the
+// report route each pass their own limiter, so the arrival of one never holds
+// a window of the other (component-feedback-reports invariant 10).
+func (s *Server) requireFeedbackKeyFor(limiterFor func() *feedbackLimiter, keyFailure func(http.ResponseWriter, *http.Request, error)) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return s.feedbackKeyHandler(limiterFor, keyFailure, next)
+	}
+}
+
+// writeFeedbackKeyFailure answers a key check that failed for a reason other
+// than the key: it logs the cause, redacted, and answers a generic 500.
+func writeFeedbackKeyFailure(w http.ResponseWriter, r *http.Request, err error) {
+	log.Printf("httpapi: environment key verification failed: request_id=%q error=%q", middleware.GetReqID(r.Context()), redactedErrorLogText(err))
+	http.Error(w, "credential verification failed", http.StatusInternalServerError)
+}
+
+func (s *Server) feedbackKeyHandler(limiterFor func() *feedbackLimiter, keyFailure func(http.ResponseWriter, *http.Request, error), next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		limiter := s.feedbackSignals()
+		limiter := limiterFor()
 		arrival := limiter.arrive(s.feedbackNow)
 		defer limiter.leave(arrival)
 		headers := r.Header.Values("Authorization")
@@ -101,8 +122,7 @@ func (s *Server) requireFeedbackKey(next http.Handler) http.Handler {
 			return
 		}
 		if err != nil {
-			log.Printf("httpapi: environment key verification failed: request_id=%q error=%q", middleware.GetReqID(r.Context()), redactedErrorLogText(err))
-			http.Error(w, "credential verification failed", http.StatusInternalServerError)
+			keyFailure(w, r, err)
 			return
 		}
 		limiter.identify(arrival, feedbackLimiterKey{workspace: key.Workspace, keyID: key.KeyID})

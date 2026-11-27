@@ -179,6 +179,12 @@ type Fixture struct {
 	// (component-environments invariants 11 and 14).
 	AgeEnvironmentKey    func(t *testing.T, ctx context.Context, keyID string, by time.Duration)
 	StoredEnvironmentKey func(t *testing.T, ctx context.Context, keyID string) EnvironmentStoredKey
+	// CloseFeedbackReport writes one stored report as closed at the given
+	// time, by the given user, with a reason. Closing is an act of a sibling
+	// task that no backend offers yet, so each test binary supplies it. The
+	// FeedbackReports cases require it and never skip
+	// (component-feedback-reports invariant 7).
+	CloseFeedbackReport func(t *testing.T, ctx context.Context, reportID string, at time.Time)
 }
 
 // requireStoredTaskHoldSeed returns the fixture's historical hold seed or
@@ -270,6 +276,7 @@ func RunAll(t *testing.T, factory Factory) {
 	run("Environments", func(t *testing.T) { runEnvironments(t, factory) })
 	run("Feedback", func(t *testing.T) { runFeedback(t, factory) })
 	run("FeedbackStatus", func(t *testing.T) { runFeedbackStatus(t, factory) })
+	run("FeedbackReports", func(t *testing.T) { runFeedbackReports(t, factory) })
 	run("OAuth", func(t *testing.T) { runOAuth(t, factory) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })

@@ -34,7 +34,10 @@ type volatileMemory struct {
 	environmentState environmentState
 	// feedbackState holds the feedback tables under the memory mutex
 	// (component-production-feedback).
-	feedbackState          feedbackState
+	feedbackState feedbackState
+	// feedbackReportState holds the report table under the memory mutex
+	// (component-feedback-reports).
+	feedbackReportState    feedbackReportState
 	orgName                string
 	gitHubAppEncryptionKey []byte
 	log                    eventlog.Store
@@ -60,8 +63,10 @@ func NewVolatileBackend() Backend {
 		oauth:            newOAuthState(),
 		environmentState: newEnvironmentState(),
 		feedbackState:    newFeedbackState(),
-		orgName:          "Conveyor",
-		log:              logqueue.Notify(memlog.New(), mem.changes),
+		// feedbackReportState is keyed by workspace and environment ID.
+		feedbackReportState: newFeedbackReportState(),
+		orgName:             "Conveyor",
+		log:                 logqueue.Notify(memlog.New(), mem.changes),
 	}
 	backend.readClockPolicy = func(workspace string) (config.RecoveryPolicy, time.Duration, error) {
 		record, ok := backend.workspaces[workspace]

@@ -4,8 +4,8 @@ package store
 // changes what a statement read serves without a task event: a requirement
 // version, System Design version, or decision proposed, confirmed, or
 // dismissed, a workspace role granted, changed, or revoked, including an
-// invitation redeemed at sign-up, and a crate created, renamed, closed, or
-// reopened. Each raises one `workspace` notice for its
+// invitation redeemed at sign-up, a crate created, renamed, closed, or
+// reopened, and each feedback report change. Each raises one `workspace` notice for its
 // workspace when it commits, so a response memo that holds the pending
 // proposals or the caller's capabilities is dropped at once (DEC-140(3);
 // component-persistence invariant 23; component-next-action invariant 58).
@@ -34,6 +34,16 @@ var workspaceNoticeEventKinds = map[string]bool{
 	CrateUpdatedEvent:  true,
 	CrateClosedEvent:   true,
 	CrateReopenedEvent: true,
+	// A report change raises its workspace notice, so an open page learns of
+	// it. A later entry that only updates a report appends no event and
+	// raises none (component-feedback-reports invariant 20).
+	FeedbackReportOpenedEvent:        true,
+	FeedbackReportReopenedEvent:      true,
+	FeedbackReportLinkedEvent:        true,
+	FeedbackReportLinkConfirmedEvent: true,
+	FeedbackReportLinkRemovedEvent:   true,
+	FeedbackReportClosedEvent:        true,
+	FeedbackReportFixTaskSetEvent:    true,
 }
 
 // WorkspaceEventRaisesNotice reports whether a committed task-less event of
