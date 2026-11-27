@@ -35,11 +35,35 @@ func CloseFeedbackReportForTest(t *testing.T, st Backend, ctx context.Context, r
 	t.Fatalf("feedback report %q is missing", reportID)
 }
 
+// SeedFeedbackReportLinkForTest writes one volatile link row as given.
+// Confirming and removing belong to a sibling task, so the memory
+// conformance entry point supplies this as Fixture.SeedFeedbackReportLink.
+func SeedFeedbackReportLinkForTest(t *testing.T, st Backend, ctx context.Context, link FeedbackReportLink) {
+	t.Helper()
+	m := st.(*volatileMemory)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	if _, _, _, found := m.feedbackReportLocked(workspace, link.ReportID); !found {
+		t.Fatalf("feedback report %q is missing", link.ReportID)
+	}
+	link.CreatedAt = EnvironmentTime(link.CreatedAt)
+	if link.ConfirmedAt != nil {
+		at := EnvironmentTime(*link.ConfirmedAt)
+		link.ConfirmedAt = &at
+	}
+	if link.RemovedAt != nil {
+		at := EnvironmentTime(*link.RemovedAt)
+		link.RemovedAt = &at
+	}
+	m.feedbackReportState.links[memoryScopedKey{workspace: workspace, id: link.ID}] = feedbackReportLinkRowOf(link)
+}
+
 // TestVolatileFeedbackReportStorage proves that the memory backend allocates
 // the four report tables of the durable backends, and that a report request
-// writes reports only: the link, note, and line-read stores stay empty
-// until their writers exist (component-feedback-reports, Storage;
-// feature-production-feedback-listening FR-1).
+// writes reports only: the link, note, and line-read stores stay empty until
+// the linking work writes them (component-feedback-reports, Storage;
+// feature-production-feedback-listening FR-1 and FR-2).
 func TestVolatileFeedbackReportStorage(t *testing.T) {
 	st := NewVolatileBackend()
 	m := st.(*volatileMemory)

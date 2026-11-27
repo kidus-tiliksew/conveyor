@@ -1,0 +1,568 @@
+package storetest
+
+import (
+	"encoding/json"
+	"errors"
+	"reflect"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+)
+
+// runFeedbackReportLinking holds every backend to the storage rules of the
+// linking work: the once-a-minute claim, the stored line read, the end of
+// linking with its links, notes, and event, the watcher signals that named a
+// service, and the pull request of the latest merge event
+// (component-feedback-reports invariants 11 to 16 and 20;
+// feature-production-feedback-listening FR-2; req-production-feedback AC-5.1
+// to AC-5.6, AC-7.2, and AC-11.1). Each case starts from a fresh workspace.
+func runFeedbackReportLinking(t *testing.T, factory Factory) {
+	for _, c := range []struct {
+		name string
+		run  func(*testing.T, Fixture)
+	}{
+		{"ClaimOncePerMinute", runFeedbackLinkingClaim},
+		{"ClaimAtTheSixtySecondBoundary", runFeedbackLinkingBoundary},
+		{"TwoWorkersOneMinute", runFeedbackLinkingTwoWorkers},
+		{"LineReadKept", runFeedbackLinkingLineRead},
+		{"FinishLinks", runFeedbackLinkingFinish},
+		{"FinishAfterLaterEntries", runFeedbackLinkingLaterEntries},
+		{"LinkIDsSkipStoredIDs", runFeedbackLinkingLinkIDs},
+		{"ServiceSignals", runFeedbackLinkingServiceSignals},
+		{"MergePullRequest", runFeedbackLinkingMergePullRequest},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			x := factory.fresh(t, nil)
+			if x.SeedFeedbackReportLink == nil || x.WorkspaceEvents == nil {
+				t.Fatal("conformance fixture must provide SeedFeedbackReportLink and WorkspaceEvents for the linking cases")
+			}
+			c.run(t, x)
+		})
+	}
+}
+
+// linkingReport stores one report and returns it.
+func linkingReport(t *testing.T, x Fixture, key string, more func(*store.FeedbackReportEntry)) (feedbackEnvironment, store.FeedbackReport) {
+	t.Helper()
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	entry := reportEntry(key)
+	if more != nil {
+		more(&entry)
+	}
+	e.sendReports(t, 0, entry)
+	return e, e.reportByKey(t, key)
+}
+
+func claimLinking(t *testing.T, x Fixture, reportID string, now time.Time) (store.FeedbackReport, bool) {
+	t.Helper()
+	report, claimed, err := x.Backend.ClaimFeedbackReportLinking(x.Context, reportID, now)
+	requireOK(t, err)
+	return report, claimed
+}
+
+func requireAttempt(t *testing.T, e feedbackEnvironment, key string, want time.Time) {
+	t.Helper()
+	report := e.reportByKey(t, key)
+	if report.LinkingLastAttemptAt == nil || !report.LinkingLastAttemptAt.Equal(want) {
+		t.Fatalf("stored last attempt=%v, want %v", report.LinkingLastAttemptAt, want)
+	}
+}
+
+func runFeedbackLinkingClaim(t *testing.T, x Fixture) {
+	e, report := linkingReport(t, x, "crash", nil)
+	if report.LinkingLastAttemptAt != nil || report.LinkingEndedAt != nil {
+		t.Fatalf("a new report=%+v, want no attempt and linking not ended", report)
+	}
+	first := feedbackTime(time.Minute)
+	claimed, ok := claimLinking(t, x, report.ID, first)
+	if !ok || claimed.ID != report.ID || claimed.LinkingLastAttemptAt == nil || !claimed.LinkingLastAttemptAt.Equal(first) {
+		t.Fatalf("first claim=%+v ok=%v", claimed, ok)
+	}
+	requireAttempt(t, e, "crash", first)
+	// A claim within the minute writes nothing.
+	if _, ok := claimLinking(t, x, report.ID, first.Add(30*time.Second)); ok {
+		t.Fatal("a claim 30 seconds later succeeded")
+	}
+	requireAttempt(t, e, "crash", first)
+	// The claim does not change what ingest stored.
+	after := e.reportByKey(t, "crash")
+	after.LinkingLastAttemptAt = nil
+	requireReport(t, after, report)
+	// A report the workspace does not hold.
+	if _, _, err := x.Backend.ClaimFeedbackReportLinking(x.Context, "rpt-000000-000000", first); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an unknown report err=%v, want not found", err)
+	}
+	// A report whose linking ended is never claimed again.
+	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: first.Add(2 * time.Minute)})
+	requireOK(t, err)
+	if !finished {
+		t.Fatal("the end of linking wrote nothing")
+	}
+	if _, ok := claimLinking(t, x, report.ID, first.Add(time.Hour)); ok {
+		t.Fatal("a report whose linking ended was claimed")
+	}
+	requireAttempt(t, e, "crash", first)
+}
+
+// runFeedbackLinkingBoundary proves that the claim compares the exact attempt
+// time with the stored last attempt: an attempt one nanosecond or one
+// microsecond under 60 seconds after it is refused, and one at 60 seconds
+// succeeds. The stored time is the attempt cut to the microsecond.
+func runFeedbackLinkingBoundary(t *testing.T, x Fixture) {
+	e, report := linkingReport(t, x, "crash", nil)
+	// An attempt time with nanoseconds is stored cut to the microsecond.
+	first := feedbackTime(time.Minute).Add(789 * time.Nanosecond)
+	stored := store.EnvironmentTime(first)
+	if _, ok := claimLinking(t, x, report.ID, first); !ok {
+		t.Fatal("first claim refused")
+	}
+	requireAttempt(t, e, "crash", stored)
+	for _, under := range []time.Duration{time.Microsecond, time.Nanosecond} {
+		if _, ok := claimLinking(t, x, report.ID, stored.Add(time.Minute-under)); ok {
+			t.Fatalf("a claim %v under 60 seconds after the stored attempt succeeded", under)
+		}
+		requireAttempt(t, e, "crash", stored)
+	}
+	second := stored.Add(time.Minute)
+	if _, ok := claimLinking(t, x, report.ID, second); !ok {
+		t.Fatal("a claim at 60 seconds was refused")
+	}
+	requireAttempt(t, e, "crash", second)
+}
+
+// runFeedbackLinkingTwoWorkers proves that of two workers that claim one
+// report in the same minute only one succeeds, both when they race and when
+// they come one after the other.
+func runFeedbackLinkingTwoWorkers(t *testing.T, x Fixture) {
+	e, report := linkingReport(t, x, "crash", nil)
+	now := feedbackTime(time.Minute)
+	var wg sync.WaitGroup
+	results := make([]bool, 2)
+	failures := make([]error, 2)
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, results[i], failures[i] = x.Backend.ClaimFeedbackReportLinking(x.Context, report.ID, now.Add(time.Duration(i)*time.Second))
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range failures {
+		requireOK(t, err)
+	}
+	if results[0] == results[1] {
+		t.Fatalf("racing claims=%v, want exactly one", results)
+	}
+	winner := now
+	if results[1] {
+		winner = now.Add(time.Second)
+	}
+	requireAttempt(t, e, "crash", winner)
+	if _, ok := claimLinking(t, x, report.ID, winner.Add(59*time.Second)); ok {
+		t.Fatal("a third claim within the minute succeeded")
+	}
+}
+
+func runFeedbackLinkingLineRead(t *testing.T, x Fixture) {
+	_, report := linkingReport(t, x, "crash", func(entry *store.FeedbackReportEntry) {
+		entry.File, entry.Line, entry.Commit = "cmd/main.go", 12, "abcdef0"
+	})
+	if _, found, err := x.Backend.ReadFeedbackReportLineRead(x.Context, report.ID); err != nil || found {
+		t.Fatalf("a read before any answer found=%v err=%v", found, err)
+	}
+	answered := feedbackTime(time.Minute).Add(321 * time.Nanosecond)
+	read := store.FeedbackReportLineRead{ReportID: report.ID, Repository: "app", ResolvedCommit: feedbackCommit("e5"), File: "cmd/main.go", Line: 12,
+		Answer: store.FeedbackReportLineAnswer{FileFound: true, Commit: feedbackCommit("c4"), PullRequests: []int{9, 3, 9}}, AnsweredAt: answered}
+	requireOK(t, x.Backend.RecordFeedbackReportLineRead(x.Context, read))
+	got, found, err := x.Backend.ReadFeedbackReportLineRead(x.Context, report.ID)
+	requireOK(t, err)
+	want := read
+	want.Answer.PullRequests, want.AnsweredAt = []int{3, 9}, store.EnvironmentTime(answered)
+	if !found || !reflect.DeepEqual(got, want) {
+		t.Fatalf("stored read=%+v found=%v, want %+v", got, found, want)
+	}
+	// A stored answer is kept: a second answer changes nothing.
+	other := read
+	other.Answer = store.FeedbackReportLineAnswer{FileFound: false}
+	other.AnsweredAt = answered.Add(time.Minute)
+	requireOK(t, x.Backend.RecordFeedbackReportLineRead(x.Context, other))
+	if again, _, err := x.Backend.ReadFeedbackReportLineRead(x.Context, report.ID); err != nil || !reflect.DeepEqual(again, want) {
+		t.Fatalf("after a second answer=%+v err=%v, want %+v", again, err, want)
+	}
+	// A missing-file answer is an answer too.
+	_, missing := linkingReportIn(t, x, "missing-file")
+	requireOK(t, x.Backend.RecordFeedbackReportLineRead(x.Context, store.FeedbackReportLineRead{ReportID: missing.ID, Repository: "app", ResolvedCommit: feedbackCommit("e5"), File: "gone.go", Line: 1, AnsweredAt: answered}))
+	if stored, found, err := x.Backend.ReadFeedbackReportLineRead(x.Context, missing.ID); err != nil || !found || stored.Answer.FileFound || stored.Answer.Commit != "" || len(stored.Answer.PullRequests) != 0 {
+		t.Fatalf("missing file read=%+v found=%v err=%v", stored, found, err)
+	}
+	// Refusals record nothing.
+	if err := x.Backend.RecordFeedbackReportLineRead(x.Context, store.FeedbackReportLineRead{ReportID: "rpt-000000-000000", Repository: "app", ResolvedCommit: feedbackCommit("e5"), File: "a.go", Line: 1, AnsweredAt: answered}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an unknown report err=%v, want not found", err)
+	}
+	if err := x.Backend.RecordFeedbackReportLineRead(x.Context, store.FeedbackReportLineRead{ReportID: report.ID, Repository: "app", ResolvedCommit: "abc", File: "a.go", Line: 1, AnsweredAt: answered}); err == nil {
+		t.Fatal("a short resolved commit was accepted")
+	}
+}
+
+// linkingReportIn stores one more report in a new environment.
+func linkingReportIn(t *testing.T, x Fixture, key string) (feedbackEnvironment, store.FeedbackReport) {
+	t.Helper()
+	e := newFeedbackEnvironment(t, x, "Staging "+key, "watcher-"+key)
+	e.sendReports(t, 0, reportEntry(key))
+	return e, e.reportByKey(t, key)
+}
+
+func lineEvidence(commit string) store.FeedbackReportEvidence {
+	return store.FeedbackReportEvidence{Kind: store.FeedbackEvidenceLine, File: "cmd/main.go", Line: 12, Commit: commit}
+}
+
+func timingEvidence(deployID string, elapsed int64, prior *time.Time) store.FeedbackReportEvidence {
+	return store.FeedbackReportEvidence{Kind: store.FeedbackEvidenceTiming, Deploy: &store.FeedbackReportDeploy{ID: deployID, Service: "api",
+		Version: store.FeedbackReportVersion{Version: "2.0"}, DeployedAt: feedbackTime(time.Minute).Add(7 * time.Microsecond), Source: store.FeedbackSourceSignal},
+		ElapsedMinutes: &elapsed, PriorSignalAt: prior}
+}
+
+func linksByTask(t *testing.T, x Fixture, reportID string) map[string]store.FeedbackReportLink {
+	t.Helper()
+	links, err := x.Backend.ListFeedbackReportLinks(x.Context, reportID)
+	requireOK(t, err)
+	out := map[string]store.FeedbackReportLink{}
+	for _, link := range links {
+		out[link.TaskID] = link
+	}
+	return out
+}
+
+func linkedEvents(t *testing.T, x Fixture) []core.Event {
+	t.Helper()
+	events := []core.Event{}
+	for _, event := range reportEvents(t, x) {
+		if event.Kind == store.FeedbackReportLinkedEvent {
+			events = append(events, event)
+		}
+	}
+	return events
+}
+
+// runFeedbackLinkingFinish proves the end of linking: a new link is possible
+// with the system as its creator, a confirmed link keeps its state and gains
+// only evidence it lacks, a removed link is not restored and keeps its
+// evidence, the notes keep their order, linking ends with one task-less
+// linked event and one workspace notice, and a second end writes nothing
+// (invariants 11, 15 to 17, and 20; AC-5.6, AC-7.2).
+func runFeedbackLinkingFinish(t *testing.T, x Fixture) {
+	e, report := linkingReport(t, x, "crash", func(entry *store.FeedbackReportEntry) {
+		entry.Service, entry.File, entry.Line, entry.Commit = "api", "cmd/main.go", 12, "abcdef0"
+	})
+	confirmedAt := feedbackTime(30 * time.Second)
+	removedAt := feedbackTime(40 * time.Second)
+	held := lineEvidence(feedbackCommit("be"))
+	x.SeedFeedbackReportLink(t, x.Context, store.FeedbackReportLink{ID: store.FeedbackReportLinkID(report.ID, 1), ReportID: report.ID, TaskID: "task-confirmed", State: store.FeedbackReportLinkConfirmed,
+		Evidence: []store.FeedbackReportEvidence{held}, CreatedAt: confirmedAt, CreatedBy: "usr-operator", ConfirmedBy: "usr-operator", ConfirmedAt: &confirmedAt})
+	x.SeedFeedbackReportLink(t, x.Context, store.FeedbackReportLink{ID: store.FeedbackReportLinkID(report.ID, 2), ReportID: report.ID, TaskID: "task-removed", State: store.FeedbackReportLinkRemoved,
+		Evidence: []store.FeedbackReportEvidence{held}, CreatedAt: confirmedAt, CreatedBy: store.SystemActor().ID, RemovedBy: "usr-operator", RemovedAt: &removedAt})
+	before := linksByTask(t, x, report.ID)
+	prior := feedbackTime(-time.Hour).Add(3 * time.Microsecond)
+	timing := timingEvidence("dep-1", 0, &prior)
+	fresh := lineEvidence(feedbackCommit("f5"))
+	notes := []store.FeedbackReportNote{
+		{Kind: store.FeedbackNoteNoTaskDeploy, Deploy: timing.Deploy},
+		{Kind: store.FeedbackNoteTooManyTasks, Deploy: timing.Deploy, TaskCount: 11},
+		{Kind: store.FeedbackNoteNotChecked, Rule: store.FeedbackRuleLine, Reason: store.FeedbackReasonNoGitHubApp},
+	}
+	ended := feedbackTime(2 * time.Minute).Add(999 * time.Nanosecond)
+	notices := x.Backend.Changes().Subscribe(x.Workspace, changes.Workspace)
+	defer notices.Close()
+	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: ended, Notes: notes, Links: []store.FeedbackReportLinkCandidate{
+		{TaskID: "task-new", Evidence: []store.FeedbackReportEvidence{fresh, timing, fresh}},
+		{TaskID: "task-confirmed", Evidence: []store.FeedbackReportEvidence{held, timing}},
+		{TaskID: "task-removed", Evidence: []store.FeedbackReportEvidence{timing}},
+	}})
+	requireOK(t, err)
+	if !finished {
+		t.Fatal("the end of linking wrote nothing")
+	}
+	if n := awaitNotice(t, notices, "workspace notice after the end of linking"); n.Kind != changes.Workspace || n.Workspace != x.Workspace {
+		t.Fatalf("notice=%+v", n)
+	}
+	settle(notices)
+	links := linksByTask(t, x, report.ID)
+	if len(links) != 3 {
+		t.Fatalf("links=%+v, want three", links)
+	}
+	endedAt := store.EnvironmentTime(ended)
+	created := links["task-new"]
+	if created.State != store.FeedbackReportLinkPossible || created.CreatedBy != store.SystemActor().ID || !created.CreatedAt.Equal(endedAt) || created.ConfirmedAt != nil || created.RemovedAt != nil ||
+		!reflect.DeepEqual(created.Evidence, []store.FeedbackReportEvidence{fresh, timing}) || !strings.HasPrefix(created.ID, "lnk:"+report.ID+":") || created.ID == before["task-confirmed"].ID || created.ID == before["task-removed"].ID {
+		t.Fatalf("new link=%+v", created)
+	}
+	confirmed := links["task-confirmed"]
+	wantConfirmed := before["task-confirmed"]
+	wantConfirmed.Evidence = []store.FeedbackReportEvidence{held, timing}
+	if !reflect.DeepEqual(confirmed, wantConfirmed) {
+		t.Fatalf("confirmed link=%+v, want %+v", confirmed, wantConfirmed)
+	}
+	if removed := links["task-removed"]; !reflect.DeepEqual(removed, before["task-removed"]) {
+		t.Fatalf("removed link=%+v, want it unchanged %+v", removed, before["task-removed"])
+	}
+	storedNotes, err := x.Backend.ListFeedbackReportNotes(x.Context, report.ID)
+	requireOK(t, err)
+	if !reflect.DeepEqual(storedNotes, notes) {
+		t.Fatalf("notes=%+v, want %+v", storedNotes, notes)
+	}
+	after := e.reportByKey(t, "crash")
+	if after.LinkingEndedAt == nil || !after.LinkingEndedAt.Equal(endedAt) {
+		t.Fatalf("linking ended at %v, want %v", after.LinkingEndedAt, endedAt)
+	}
+	events := linkedEvents(t, x)
+	if len(events) != 1 {
+		t.Fatalf("linked events=%+v, want one", events)
+	}
+	event := events[0]
+	if event.TaskID != "" || event.ActorID != store.SystemActor().ID || event.ActorRole != core.ActorSystem {
+		t.Fatalf("linked event=%+v, want a task-less event by the system", event)
+	}
+	var payload struct {
+		ReportID      string   `json:"report_id"`
+		EnvironmentID string   `json:"environment_id"`
+		TaskIDs       []string `json:"task_ids"`
+	}
+	requireOK(t, json.Unmarshal(event.Payload, &payload))
+	if payload.ReportID != report.ID || payload.EnvironmentID != report.EnvironmentID || !slices.Equal(payload.TaskIDs, []string{"task-confirmed", "task-new"}) {
+		t.Fatalf("linked payload=%s", event.Payload)
+	}
+	for _, text := range []string{report.Key, report.Summary, "cmd/main.go"} {
+		if strings.Contains(string(event.Payload), text) {
+			t.Fatalf("linked payload %s holds report text %q", event.Payload, text)
+		}
+	}
+	// A second end writes nothing: no link, note, event, or notice.
+	finished, err = x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: ended.Add(time.Hour), Notes: notes,
+		Links: []store.FeedbackReportLinkCandidate{{TaskID: "task-late", Evidence: []store.FeedbackReportEvidence{fresh}}}})
+	requireOK(t, err)
+	if finished {
+		t.Fatal("a second end of linking wrote")
+	}
+	expectQuiet(t, notices, "a second end of linking")
+	if again := linksByTask(t, x, report.ID); !reflect.DeepEqual(again, links) {
+		t.Fatalf("links after a second end=%+v", again)
+	}
+	if again, _ := x.Backend.ListFeedbackReportNotes(x.Context, report.ID); len(again) != len(notes) {
+		t.Fatalf("notes after a second end=%+v", again)
+	}
+	if len(linkedEvents(t, x)) != 1 {
+		t.Fatal("a second end appended an event")
+	}
+	if again := e.reportByKey(t, "crash"); !again.LinkingEndedAt.Equal(endedAt) {
+		t.Fatalf("a second end moved the end to %v", again.LinkingEndedAt)
+	}
+	// An unknown report.
+	if _, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: "rpt-000000-000000", EndedAt: ended}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an unknown report err=%v, want not found", err)
+	}
+}
+
+// runFeedbackLinkingLaterEntries proves that a later entry under the key,
+// before and after the end of linking, changes no link, no note, and the
+// first entry's first-seen time the rules read, and that a report that
+// another environment holds is untouched (invariants 6 and 11; AC-5.6).
+func runFeedbackLinkingLaterEntries(t *testing.T, x Fixture) {
+	firstSeen := feedbackReportTimePtr(-time.Hour)
+	e, report := linkingReport(t, x, "crash", func(entry *store.FeedbackReportEntry) { entry.FirstSeen = firstSeen })
+	_, other := linkingReportIn(t, x, "other")
+	earlier := reportEntry("crash")
+	earlier.FirstSeen = feedbackReportTimePtr(-2 * time.Hour)
+	e.sendReports(t, 10*time.Second, earlier)
+	if updated := e.reportByKey(t, "crash"); !updated.FirstEntrySeen.Equal(report.FirstEntrySeen) || !updated.FirstSeen.Equal(*earlier.FirstSeen) {
+		t.Fatalf("after an earlier entry=%+v, want the first entry's first-seen kept", updated)
+	}
+	if _, ok := claimLinking(t, x, report.ID, feedbackTime(time.Minute)); !ok {
+		t.Fatal("claim refused")
+	}
+	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: feedbackTime(2 * time.Minute),
+		Links: []store.FeedbackReportLinkCandidate{{TaskID: "task-1", Evidence: []store.FeedbackReportEvidence{lineEvidence(feedbackCommit("01"))}}}})
+	requireOK(t, err)
+	if !finished {
+		t.Fatal("the end of linking wrote nothing")
+	}
+	links := linksByTask(t, x, report.ID)
+	e.sendReports(t, 20*time.Second, reportEntry("crash"))
+	if again := linksByTask(t, x, report.ID); !reflect.DeepEqual(again, links) {
+		t.Fatalf("a later entry changed links: %+v", again)
+	}
+	if updated := e.reportByKey(t, "crash"); updated.LinkingEndedAt == nil || updated.Count != 3 || !updated.FirstEntrySeen.Equal(report.FirstEntrySeen) {
+		t.Fatalf("after the end and a later entry=%+v", updated)
+	}
+	if otherLinks, err := x.Backend.ListFeedbackReportLinks(x.Context, other.ID); err != nil || len(otherLinks) != 0 {
+		t.Fatalf("another report's links=%+v err=%v", otherLinks, err)
+	}
+	if pending, err := x.Backend.ListPendingFeedbackReports(x.Context, e.id); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after the end=%+v err=%v", pending, err)
+	}
+}
+
+// runFeedbackLinkingLinkIDs proves that a new link never takes an ID that a
+// stored link of the report holds, whatever task that link names: the link
+// IDs of a report are numbered under the report write lock, and a taken
+// number is skipped.
+func runFeedbackLinkingLinkIDs(t *testing.T, x Fixture) {
+	e, report := linkingReport(t, x, "crash", nil)
+	// A link stored with the first and third numbers, as another writer of
+	// the report could have stored them.
+	at := feedbackTime(30 * time.Second)
+	for _, n := range []int{1, 3} {
+		x.SeedFeedbackReportLink(t, x.Context, store.FeedbackReportLink{ID: store.FeedbackReportLinkID(report.ID, n), ReportID: report.ID, TaskID: "task-seeded-" + string(rune('0'+n)),
+			State: store.FeedbackReportLinkConfirmed, Evidence: []store.FeedbackReportEvidence{}, CreatedAt: at, CreatedBy: "usr-operator", ConfirmedBy: "usr-operator", ConfirmedAt: &at})
+	}
+	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: feedbackTime(time.Minute), Links: []store.FeedbackReportLinkCandidate{
+		{TaskID: "task-a", Evidence: []store.FeedbackReportEvidence{lineEvidence(feedbackCommit("a"))}},
+		{TaskID: "task-b", Evidence: []store.FeedbackReportEvidence{lineEvidence(feedbackCommit("b"))}},
+	}})
+	requireOK(t, err)
+	if !finished {
+		t.Fatal("the end of linking wrote nothing")
+	}
+	links := linksByTask(t, x, report.ID)
+	if links["task-a"].ID != store.FeedbackReportLinkID(report.ID, 2) || links["task-b"].ID != store.FeedbackReportLinkID(report.ID, 4) {
+		t.Fatalf("new link IDs a=%s b=%s, want numbers 2 and 4", links["task-a"].ID, links["task-b"].ID)
+	}
+	ids := map[string]bool{}
+	for _, link := range links {
+		if ids[link.ID] {
+			t.Fatalf("two links share ID %s", link.ID)
+		}
+		ids[link.ID] = true
+	}
+	// Another report's first link number names that report, so it never
+	// equals a link ID of this one.
+	_, other := linkingReportIn(t, x, "other")
+	finished, err = x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: other.ID, EndedAt: feedbackTime(time.Minute), Links: []store.FeedbackReportLinkCandidate{
+		{TaskID: "task-a", Evidence: []store.FeedbackReportEvidence{lineEvidence(feedbackCommit("a"))}}}})
+	requireOK(t, err)
+	if otherLinks := linksByTask(t, x, other.ID); !finished || otherLinks["task-a"].ID != store.FeedbackReportLinkID(other.ID, 1) || ids[otherLinks["task-a"].ID] {
+		t.Fatalf("other report links=%+v", otherLinks)
+	}
+	_ = e
+}
+
+// runFeedbackLinkingServiceSignals proves the read of the watcher signals
+// that named a service: scoped by environment and service, GitHub
+// deployment reports left out, ties at one arrival ordered by report number,
+// and strict bounds on both sides (invariants 13 and 15).
+func runFeedbackLinkingServiceSignals(t *testing.T, x Fixture) {
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	other := newFeedbackEnvironment(t, x, "Staging", "staging-watcher")
+	e.send(t, 0, feedbackService("api", "@1"))
+	e.send(t, 10*time.Second, feedbackService("web", "@1"))
+	// Two signals at one arrival: report numbers order them.
+	e.send(t, 20*time.Second, feedbackService("api", "@2"))
+	e.send(t, 20*time.Second, feedbackService("api", "@2"), feedbackService("web", "@1"))
+	app := feedbackService("app", "@1")
+	app.Repository = "app"
+	e.send(t, 25*time.Second, app)
+	e.report(t, e.github(30*time.Second, "app", feedbackCommit("a")), true)
+	other.send(t, 40*time.Second, feedbackService("api", "@9"))
+	find := func(query store.FeedbackServiceSignalQuery) (store.FeedbackBoundary, bool) {
+		t.Helper()
+		found, ok, err := x.Backend.FindFeedbackServiceSignal(x.Context, query)
+		requireOK(t, err)
+		return found, ok
+	}
+	deploysAt := func(service string, at time.Time) []store.FeedbackDeploy {
+		out := []store.FeedbackDeploy{}
+		for _, deploy := range e.deploys(t) {
+			if deploy.Service == service && deploy.DeployedAt.Equal(at) {
+				out = append(out, deploy)
+			}
+		}
+		return out
+	}
+	tied := deploysAt("api", feedbackTime(20*time.Second))
+	if len(tied) != 1 {
+		t.Fatalf("api deploys at 20 seconds=%+v", tied)
+	}
+	// Before the first tied signal: the signal at 0 seconds.
+	before := tied[0].Start()
+	if found, ok := find(store.FeedbackServiceSignalQuery{EnvironmentID: e.id, Service: "api", Before: &before}); !ok || !found.At.Equal(feedbackTime(0)) {
+		t.Fatalf("before the tied deploy=%+v ok=%v, want the signal at 0", found, ok)
+	}
+	// Before a place after both tied signals: the later of the two.
+	late := store.FeedbackBoundary{At: feedbackTime(20 * time.Second), Report: before.Report + 100}
+	found, ok := find(store.FeedbackServiceSignalQuery{EnvironmentID: e.id, Service: "api", Before: &late})
+	if !ok || !found.At.Equal(feedbackTime(20*time.Second)) || found.Report <= before.Report {
+		t.Fatalf("before a later place=%+v ok=%v, want the second tied signal", found, ok)
+	}
+	// After: strictly later arrivals only, and the oldest of them.
+	at0 := feedbackTime(0)
+	if found, ok := find(store.FeedbackServiceSignalQuery{EnvironmentID: e.id, Service: "api", After: &at0}); !ok || !found.At.Equal(feedbackTime(20*time.Second)) || found.Report != before.Report {
+		t.Fatalf("after 0 seconds=%+v ok=%v, want the first signal at 20 seconds", found, ok)
+	}
+	at20 := feedbackTime(20 * time.Second)
+	if found, ok := find(store.FeedbackServiceSignalQuery{EnvironmentID: e.id, Service: "api", After: &at20}); ok {
+		t.Fatalf("after 20 seconds=%+v, want none in this environment", found)
+	}
+	// A GitHub deployment report of service app is never found.
+	at25 := feedbackTime(25 * time.Second)
+	if found, ok := find(store.FeedbackServiceSignalQuery{EnvironmentID: e.id, Service: "app", After: &at25}); ok {
+		t.Fatalf("after 25 seconds for app=%+v, want the GitHub report left out", found)
+	}
+	github := deploysAt("app", feedbackTime(30*time.Second))
+	if len(github) != 1 {
+		t.Fatalf("GitHub deploys=%+v", github)
+	}
+	githubPlace := github[0].Start()
+	if found, ok := find(store.FeedbackServiceSignalQuery{EnvironmentID: e.id, Service: "app", Before: &githubPlace}); !ok || !found.At.Equal(at25) {
+		t.Fatalf("before the GitHub deploy=%+v ok=%v, want the watcher signal at 25 seconds", found, ok)
+	}
+	// Another service, another environment, and a bad query.
+	if found, ok := find(store.FeedbackServiceSignalQuery{EnvironmentID: e.id, Service: "worker", After: &at0}); ok {
+		t.Fatalf("a service no signal named=%+v", found)
+	}
+	if found, ok := find(store.FeedbackServiceSignalQuery{EnvironmentID: other.id, Service: "api", After: &at0}); !ok || !found.At.Equal(feedbackTime(40*time.Second)) {
+		t.Fatalf("the other environment=%+v ok=%v", found, ok)
+	}
+	if _, _, err := x.Backend.FindFeedbackServiceSignal(x.Context, store.FeedbackServiceSignalQuery{EnvironmentID: e.id, Service: "api"}); err == nil {
+		t.Fatal("a query with neither bound was accepted")
+	}
+}
+
+// runFeedbackLinkingMergePullRequest proves that the merged-task read returns
+// the pull request of the latest merge event, also when that event holds no
+// usable merge commit, and never an older event's (invariant 12).
+func runFeedbackLinkingMergePullRequest(t *testing.T, x Fixture) {
+	event := func(kind, sha string, pull any, at time.Time) core.Event {
+		payload := map[string]any{"repository": "acme/conveyor", "head_sha": "head", "merge_commit_sha": sha}
+		if pull != nil {
+			payload["pull_request"] = pull
+		}
+		return core.Event{Kind: kind, At: at, Payload: core.JSONPayload(payload)}
+	}
+	latest := feedbackMergedTask(t, x, "app", "",
+		event("merge.confirmed", feedbackCommit("01d"), 5, feedbackTime(0)),
+		event("merge.reconciled", "not-a-commit", 9, feedbackTime(time.Minute)))
+	text := feedbackMergedTask(t, x, "app", "", event("merge.confirmed", feedbackCommit("7e"), "12", feedbackTime(0)))
+	none := feedbackMergedTask(t, x, "app", "",
+		event("merge.confirmed", feedbackCommit("f1"), 4, feedbackTime(0)),
+		event("merge.confirmed", feedbackCommit("0e"), nil, feedbackTime(time.Minute)))
+	merged, err := x.Backend.ListFeedbackMergedTasks(x.Context, store.FeedbackMergedTaskQuery{Repository: "app"})
+	requireOK(t, err)
+	got := map[string]store.FeedbackMergedTask{}
+	for _, task := range merged {
+		got[task.TaskID] = task
+	}
+	if task := got[latest.ID]; task.PullRequest != 9 || task.MergeCommit != "" {
+		t.Fatalf("latest event without a commit=%+v, want pull request 9 and no commit", task)
+	}
+	if task := got[text.ID]; task.PullRequest != 12 || task.MergeCommit != feedbackCommit("7e") {
+		t.Fatalf("a pull request as text=%+v", task)
+	}
+	if task := got[none.ID]; task.PullRequest != 0 || task.MergeCommit != feedbackCommit("0e") {
+		t.Fatalf("a latest event without a pull request=%+v, want 0", task)
+	}
+}

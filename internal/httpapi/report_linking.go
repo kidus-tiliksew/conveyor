@@ -33,8 +33,10 @@ const feedbackLineReadPrefix = "line-read:"
 
 // The reasons a rule waits that the linking work names itself.
 const (
-	// feedbackWaitingAllowance: the workspace's 60 requests of the minute
-	// are spent, or the line read is in flight elsewhere.
+	// feedbackWaitingAllowance: the admission refused the line read. The
+	// workspace's 60 requests of the minute are spent, or an earlier attempt
+	// of the same read still holds its admission lease, which a failed read
+	// keeps until the lease ends.
 	feedbackWaitingAllowance = "github_allowance"
 	// feedbackWaitingNoRepository: the read's repository is not in the
 	// workspace configuration any more.
@@ -76,7 +78,13 @@ func (s *Server) enqueueFeedbackPendingReports(workspace, environmentID string, 
 // is deduplicated by report: a report whose job is queued or running is not
 // queued again.
 func (s *Server) enqueueFeedbackReportLinking(workspace, reportID string) {
-	s.feedbackWorker().enqueue(feedbackJob{key: "report:" + workspace + ":" + reportID, workspace: workspace, report: reportID, env: s.feedbackJobEnv()})
+	s.feedbackJobEnv().linkReport(workspace, reportID)
+}
+
+// linkReport queues the linking job of one report with this environment, so
+// a running job can queue it without reading a server field.
+func (env feedbackJobEnv) linkReport(workspace, reportID string) {
+	env.worker.enqueue(feedbackJob{key: "report:" + workspace + ":" + reportID, workspace: workspace, report: reportID, env: env})
 }
 
 // feedbackReportErrorClass names a failure of the linking work for a log
@@ -113,7 +121,7 @@ func logFeedbackReport(workspace, environmentID, reportID, outcome, step string,
 // again.
 func runFeedbackPendingReports(ctx context.Context, job feedbackJob) {
 	backend, ok := job.env.store.(store.ReportStore)
-	if !ok || job.env.linkReport == nil {
+	if !ok || job.env.worker == nil {
 		return
 	}
 	pending, err := backend.ListPendingFeedbackReports(ctx, job.reports.environmentID)
@@ -366,7 +374,7 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 		return reports.Outcome{}, err
 	}
 	outcome = reports.Timing(input)
-	if len(outcome.Missing) > 0 && a.job.env.requestAnswers != nil {
+	if len(outcome.Missing) > 0 && a.job.env.worker != nil {
 		// A missing answer is never taken as an answer. The read job asks
 		// GitHub within the workspace allowance, and a later attempt reads
 		// the stored answer.

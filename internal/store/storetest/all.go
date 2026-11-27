@@ -185,6 +185,12 @@ type Fixture struct {
 	// FeedbackReports cases require it and never skip
 	// (component-feedback-reports invariant 7).
 	CloseFeedbackReport func(t *testing.T, ctx context.Context, reportID string, at time.Time)
+	// SeedFeedbackReportLink writes one stored link of a report as given,
+	// such as a link a user confirmed or removed. Confirming and removing are
+	// acts of a sibling task that no backend offers yet, so each test binary
+	// supplies it. The FeedbackReportLinking cases require it and never skip
+	// (component-feedback-reports invariants 11 and 17).
+	SeedFeedbackReportLink func(t *testing.T, ctx context.Context, link store.FeedbackReportLink)
 }
 
 // requireStoredTaskHoldSeed returns the fixture's historical hold seed or
@@ -277,6 +283,7 @@ func RunAll(t *testing.T, factory Factory) {
 	run("Feedback", func(t *testing.T) { runFeedback(t, factory) })
 	run("FeedbackStatus", func(t *testing.T) { runFeedbackStatus(t, factory) })
 	run("FeedbackReports", func(t *testing.T) { runFeedbackReports(t, factory) })
+	run("FeedbackReportLinking", func(t *testing.T) { runFeedbackReportLinking(t, factory) })
 	run("OAuth", func(t *testing.T) { runOAuth(t, factory) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })

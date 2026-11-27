@@ -54,15 +54,14 @@ type feedbackJobEnv struct {
 	client    *github.AppClient
 	clock     func() time.Time
 	backoff   *feedbackTokenBackoff
-	// linkReport queues the linking job of one report, and requestAnswers
-	// asks the background work for missing comparisons.
-	linkReport     func(workspace, reportID string)
-	requestAnswers func(workspace string, missing feedback.Missing)
+	// worker is the queue a job hands further jobs to. A further job takes
+	// this environment, so a running job reads no server field.
+	worker *feedbackWorker
 }
 
 func (s *Server) feedbackJobEnv() feedbackJobEnv {
-	env := feedbackJobEnv{store: s.Store, forge: s.feedbackForge, makeForge: s.feedbackForgeFor, client: s.appClient(), clock: time.Now, backoff: s.feedbackWorker().backoff,
-		linkReport: s.enqueueFeedbackReportLinking, requestAnswers: s.requestFeedbackAnswers}
+	worker := s.feedbackWorker()
+	env := feedbackJobEnv{store: s.Store, forge: s.feedbackForge, makeForge: s.feedbackForgeFor, client: s.appClient(), clock: time.Now, backoff: worker.backoff, worker: worker}
 	if env.makeForge == nil {
 		env.makeForge = func(token, identity string) feedback.Forge {
 			return githubFeedbackForge{token: token, identity: identity}
@@ -184,6 +183,12 @@ func (s *Server) FeedbackDeploymentReports() func(ctx context.Context, repositor
 // and in-flight pairs and admits at most the workspace allowance, so a pair
 // that keeps failing never holds back the pairs after it.
 func (s *Server) requestFeedbackAnswers(workspace string, missing feedback.Missing) {
+	s.feedbackJobEnv().requestAnswers(workspace, missing)
+}
+
+// requestAnswers queues the read job for missing answers with this
+// environment, so a running job can ask without reading a server field.
+func (env feedbackJobEnv) requestAnswers(workspace string, missing feedback.Missing) {
 	comparisons := store.NormalizeFeedbackComparisonKeys(missing.Comparisons)
 	branches := []feedback.BranchRef{}
 	seen := map[feedback.BranchRef]bool{}
@@ -206,7 +211,7 @@ func (s *Server) requestFeedbackAnswers(workspace string, missing feedback.Missi
 	sort.Strings(parts)
 	digest := sha256.Sum256([]byte(strings.Join(parts, ",")))
 	key := "read:" + workspace + ":" + hex.EncodeToString(digest[:])
-	s.feedbackWorker().enqueue(feedbackJob{key: key, workspace: workspace, missing: feedback.Missing{Comparisons: comparisons, Branches: branches}, env: s.feedbackJobEnv()})
+	env.worker.enqueue(feedbackJob{key: key, workspace: workspace, missing: feedback.Missing{Comparisons: comparisons, Branches: branches}, env: env})
 }
 
 // runFeedbackJob runs one job under a fresh, bounded context that carries the
