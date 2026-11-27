@@ -133,24 +133,184 @@ func decodeCrateBriefing(t *testing.T, status int, raw []byte, want int) crateBr
 // generated_by, and current. No token count is served.
 func requireCrateBriefingKeys(t *testing.T, raw []byte, stored bool) {
 	t.Helper()
-	if keys := crateJSONKeys(t, raw); !slices.Equal(keys, []string{"briefing", "can_generate", "fingerprint"}) {
-		t.Fatalf("view keys %v", keys)
+	if err := crateBriefingViewError(raw, stored); err != nil {
+		t.Fatalf("%v: %s", err, raw)
 	}
-	var view map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &view); err != nil {
-		t.Fatal(err)
+}
+
+// crateBriefingViewError checks a raw briefing view against component-crates
+// Public surfaces and the rule that the view serves no token count. It reads
+// the decoded structure, never the raw bytes, so digits inside a random
+// fingerprint, a task ID, or a timestamp cannot fail a correct view.
+//
+// The view has no numeric field, so a JSON number at any depth is refused:
+// a token count cannot pass under any key. A key that names tokens is
+// refused at any depth. The outer, stored, and look_first entry key sets are
+// exact, and every look_first value is a string, so a count cannot pass as a
+// string under an extra entry key either.
+func crateBriefingViewError(raw []byte, stored bool) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("decode view: %w", err)
+	}
+	if err := crateBriefingNoTokenCounts("$", decoded); err != nil {
+		return err
+	}
+	view, ok := decoded.(map[string]any)
+	if !ok {
+		return fmt.Errorf("view is %T, want an object", decoded)
+	}
+	if keys := crateSortedKeys(view); !slices.Equal(keys, []string{"briefing", "can_generate", "fingerprint"}) {
+		return fmt.Errorf("view keys %v", keys)
 	}
 	if !stored {
-		if string(view["briefing"]) != "null" {
-			t.Fatalf("briefing %s, want null", view["briefing"])
+		if view["briefing"] != nil {
+			return fmt.Errorf("briefing %v, want null", view["briefing"])
 		}
-		return
+		return nil
 	}
-	if keys := crateJSONKeys(t, view["briefing"]); !slices.Equal(keys, []string{"account", "current", "generated_at", "generated_by", "headline", "look_first", "model"}) {
-		t.Fatalf("briefing keys %v", keys)
+	briefing, ok := view["briefing"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("briefing is %T, want an object", view["briefing"])
 	}
-	if bytes.Contains(raw, []byte("tokens")) || bytes.Contains(raw, []byte("900")) {
-		t.Fatalf("the view serves token counts: %s", raw)
+	if keys := crateSortedKeys(briefing); !slices.Equal(keys, []string{"account", "current", "generated_at", "generated_by", "headline", "look_first", "model"}) {
+		return fmt.Errorf("briefing keys %v", keys)
+	}
+	entries, ok := briefing["look_first"].([]any)
+	if !ok {
+		return fmt.Errorf("look_first is %T, want an array", briefing["look_first"])
+	}
+	for i, value := range entries {
+		entry, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("look_first[%d] is %T, want an object", i, value)
+		}
+		keys := crateSortedKeys(entry)
+		if !slices.Equal(keys, []string{"reason", "task_id", "tone"}) {
+			return fmt.Errorf("look_first[%d] keys %v", i, keys)
+		}
+		for _, key := range keys {
+			if _, ok := entry[key].(string); !ok {
+				return fmt.Errorf("look_first[%d].%s is %T, want a string", i, key, entry[key])
+			}
+		}
+	}
+	return nil
+}
+
+// crateBriefingNoTokenCounts walks a decoded view and refuses any JSON
+// number and any key that names tokens, naming the path it found.
+func crateBriefingNoTokenCounts(path string, value any) error {
+	switch v := value.(type) {
+	case json.Number:
+		return fmt.Errorf("the view serves a number at %s: %s", path, v)
+	case map[string]any:
+		for _, key := range crateSortedKeys(v) {
+			child := path + "." + key
+			if strings.Contains(strings.ToLower(key), "token") {
+				return fmt.Errorf("the view serves a token key at %s", child)
+			}
+			if err := crateBriefingNoTokenCounts(child, v[key]); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, item := range v {
+			if err := crateBriefingNoTokenCounts(fmt.Sprintf("%s[%d]", path, i), item); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func crateSortedKeys(object map[string]any) []string {
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// TestCrateBriefingViewRejectsTokenCounts: the view check accepts a correct
+// view whose fingerprint, task ID, requester, and timestamp hold the
+// harness's token-count digits, and refuses a view that serves a count as a
+// number under any key, under a key that names tokens, or as a string under
+// an extra look_first key (component-crates Public surfaces).
+func TestCrateBriefingViewRejectsTokenCounts(t *testing.T) {
+	valid := crateBriefingView{
+		Briefing: &crateBriefingStoredView{
+			Headline:    crateBriefingHeadline,
+			Account:     crateBriefingAccount,
+			LookFirst:   []crateinsight.BriefingEntry{{TaskID: "261120-a120f9", Tone: crateinsight.ToneAttention, Reason: "It is the next task to review."}},
+			Model:       "served-model-2026",
+			GeneratedAt: time.Date(2026, 11, 20, 9, 0, 12, 900120000, time.UTC),
+			GeneratedBy: "user:usr_900120",
+			Current:     true,
+		},
+		Fingerprint: "sha256:3c1a900f120e900d9001200000000000000000000000000000000000000900",
+		CanGenerate: true,
+	}
+	raw, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, digits := range []string{"900", "120"} {
+		if !strings.Contains(string(raw), digits) {
+			t.Fatalf("the fixed view must hold %s to prove digits cannot fail it: %s", digits, raw)
+		}
+	}
+	requireCrateBriefingKeys(t, raw, true)
+	unstored, err := json.Marshal(crateBriefingView{Fingerprint: valid.Fingerprint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCrateBriefingKeys(t, unstored, false)
+
+	entry := func(view map[string]any) map[string]any {
+		return view["briefing"].(map[string]any)["look_first"].([]any)[0].(map[string]any)
+	}
+	briefing := func(view map[string]any) map[string]any { return view["briefing"].(map[string]any) }
+	cases := []struct {
+		name   string
+		stored bool
+		mutate func(view map[string]any)
+		want   string
+	}{
+		{"900 under an innocuous nested key", true, func(v map[string]any) {
+			briefing(v)["detail"] = map[string]any{"usage": map[string]any{"in": 900}}
+		}, "number at $.briefing.detail.usage.in"},
+		{"120 under an innocuous look_first key", true, func(v map[string]any) { entry(v)["meta"] = map[string]any{"out": 120} }, "number at $.briefing.look_first[0].meta.out"},
+		{"counts in an outer array", true, func(v map[string]any) { v["stats"] = []any{"ok", 900, 120} }, "number at $.stats[1]"},
+		{"a number in the model field", true, func(v map[string]any) { briefing(v)["model"] = 900 }, "number at $.briefing.model"},
+		{"a number in the reason field", true, func(v map[string]any) { entry(v)["reason"] = 120 }, "number at $.briefing.look_first[0].reason"},
+		{"a number beside an unstored briefing", false, func(v map[string]any) { v["briefing"] = nil; v["fingerprint"] = 900 }, "number at $.fingerprint"},
+		{"a tokens key with a string value", true, func(v map[string]any) { briefing(v)["tokens"] = "hidden" }, "token key at $.briefing.tokens"},
+		{"a nested tokens_in key", true, func(v map[string]any) { v["usage"] = map[string]any{"tokens_in": "900"} }, "token key at $.usage.tokens_in"},
+		{"a count as a string under an extra look_first key", true, func(v map[string]any) { entry(v)["count"] = "900" }, "look_first[0] keys [count reason task_id tone]"},
+		{"a look_first value that is not a string", true, func(v map[string]any) { entry(v)["tone"] = true }, "look_first[0].tone is bool, want a string"},
+		{"an extra briefing key", true, func(v map[string]any) { briefing(v)["usage"] = "900 in, 120 out" }, "briefing keys"},
+		{"a stored briefing where none is stored", false, func(map[string]any) {}, "want null"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var view map[string]any
+			if err := json.Unmarshal(raw, &view); err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(view)
+			mutated, err := json.Marshal(view)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = crateBriefingViewError(mutated, tc.stored)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("view %s: error %v, want one containing %q", mutated, err, tc.want)
+			}
+		})
 	}
 }
 
