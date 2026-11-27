@@ -134,6 +134,9 @@ func (s *Store) FinishFeedbackReportLinking(ctx context.Context, linking store.F
 		if report.LinkingEndedAt != nil {
 			return nil
 		}
+		if !store.FeedbackLinkingAttemptHolds(report, linking.AttemptAt) {
+			return store.ErrFeedbackLinkingSuperseded
+		}
 		stored, err := queryFeedbackReportLinks(ctx, tx, workspaceID, report.ID)
 		if err != nil {
 			return err
@@ -252,7 +255,7 @@ func (s *Store) ListPendingFeedbackReports(ctx context.Context, environmentID st
 
 // SaveFeedbackLineProgress implements store.ReportLinkingStore under the
 // report row lock.
-func (s *Store) SaveFeedbackLineProgress(ctx context.Context, reportID string, step store.FeedbackLineStep) (store.FeedbackLineProgress, error) {
+func (s *Store) SaveFeedbackLineProgress(ctx context.Context, reportID string, attemptAt time.Time, step store.FeedbackLineStep) (store.FeedbackLineProgress, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "SaveFeedbackLineProgress")
 	if _, err := store.RequireActor(ctx); err != nil {
 		return store.FeedbackLineProgress{}, err
@@ -267,6 +270,9 @@ func (s *Store) SaveFeedbackLineProgress(ctx context.Context, reportID string, s
 		progress, changed, err := store.ApplyFeedbackLineStep(report.LineProgress, step)
 		if err != nil {
 			return err
+		}
+		if report.LinkingEndedAt == nil && !store.FeedbackLinkingAttemptHolds(report, attemptAt) {
+			return store.ErrFeedbackLinkingSuperseded
 		}
 		if !changed || report.LinkingEndedAt != nil {
 			saved = store.FeedbackLineProgress{}
@@ -289,7 +295,7 @@ func (s *Store) SaveFeedbackLineProgress(ctx context.Context, reportID string, s
 
 // SaveFeedbackTimingResult implements store.ReportLinkingStore under the
 // report row lock.
-func (s *Store) SaveFeedbackTimingResult(ctx context.Context, reportID string, result store.FeedbackTimingResult) (*store.FeedbackTimingResult, error) {
+func (s *Store) SaveFeedbackTimingResult(ctx context.Context, reportID string, attemptAt time.Time, result store.FeedbackTimingResult) (*store.FeedbackTimingResult, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "SaveFeedbackTimingResult")
 	if _, err := store.RequireActor(ctx); err != nil {
 		return nil, err
@@ -304,6 +310,9 @@ func (s *Store) SaveFeedbackTimingResult(ctx context.Context, reportID string, r
 		report, err := lockFeedbackReport(ctx, tx, workspaceID, reportID)
 		if err != nil {
 			return err
+		}
+		if report.LinkingEndedAt == nil && !store.FeedbackLinkingAttemptHolds(report, attemptAt) {
+			return store.ErrFeedbackLinkingSuperseded
 		}
 		if report.TimingResult != nil || report.LinkingEndedAt != nil {
 			saved = report.TimingResult

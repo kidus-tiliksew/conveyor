@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -624,52 +625,74 @@ func (h *linkingHarness) storeComparisons(merge string, held map[string]bool) {
 func TestFeedbackReportTimingDecidesEveryDeployAtABoundary(t *testing.T) {
 	for _, order := range [][]string{{"2", "3"}, {"3", "2"}} {
 		t.Run("versions "+strings.Join(order, " then "), func(t *testing.T) {
-			h := newLinkingHarness(t)
-			accepted := h.clock().Add(feedbackSignalWindow)
-			// The store keeps signal times to the microsecond.
-			predecessor := accepted.Add(-10 * time.Minute).Truncate(time.Microsecond)
-			h.recordSignal(predecessor, "1")
-			h.recordSignal(accepted.Add(5*time.Minute), order...)
-			merge := readsCommit("c2")
-			task := h.mergedTask(merge, 21)
-			h.storeComparisons(merge, map[string]bool{"1": false, "2": true, "3": false})
-			h.acceptReport(reportBody(reportEntryJSON("boundary", `"service":"api"`)))
-			h.settle()
-			report := h.reportByKey("boundary")
-			if !report.FirstEntrySeen.After(predecessor) || !report.FirstEntrySeen.Before(accepted.Add(5*time.Minute)) {
-				t.Fatalf("first_seen %v is not strictly between the two signals", report.FirstEntrySeen)
+			// setup records the two signals and the merged task, and sends a
+			// report that both rules apply to. lineFailure fails the line
+			// read, so the line rule stays pending after the first attempt.
+			setup := func(t *testing.T, lineFailure error) (*linkingHarness, store.FeedbackReport, string, time.Time) {
+				h := newLinkingHarness(t)
+				accepted := h.clock().Add(feedbackSignalWindow)
+				// The store keeps signal times to the microsecond.
+				predecessor := accepted.Add(-10 * time.Minute).Truncate(time.Microsecond)
+				h.recordSignal(predecessor, "1")
+				h.recordSignal(accepted.Add(5*time.Minute), order...)
+				merge := readsCommit("c2")
+				task := h.mergedTask(merge, 21)
+				h.storeComparisons(merge, map[string]bool{"1": false, "2": true, "3": false})
+				h.forge.set(func(f *linkingForge) { f.failure = lineFailure })
+				h.acceptReport(reportBody(lineEntry("boundary", `"service":"api"`)))
+				h.settle()
+				report := h.reportByKey("boundary")
+				if !report.FirstEntrySeen.After(predecessor) || !report.FirstEntrySeen.Before(accepted.Add(5*time.Minute)) {
+					t.Fatalf("first_seen %v is not strictly between the two signals", report.FirstEntrySeen)
+				}
+				if result := report.TimingResult; result == nil || len(result.Links) != 1 || len(result.Notes) != 1 || result.Links[0].DeployID == result.Notes[0].DeployID ||
+					result.Links[0].PriorSignalAt == nil || !result.Links[0].PriorSignalAt.Equal(predecessor) {
+					t.Fatalf("timing result=%+v, want one link and one note on two deploys", result)
+				}
+				return h, report, task, predecessor
 			}
-			if report.LinkingEndedAt == nil || report.TimingResult == nil {
-				t.Fatalf("linking ended=%v timing result=%+v", report.LinkingEndedAt != nil, report.TimingResult)
-			}
-			check := func(stage string) {
+			check := func(t *testing.T, h *linkingHarness, report store.FeedbackReport, task string, predecessor time.Time) {
 				t.Helper()
 				links := h.links(report.ID)
 				link, linked := links[task]
 				if len(links) != 1 || !linked || len(link.Evidence) != 1 {
-					t.Fatalf("%s: links=%+v, want the merged task with one piece of evidence", stage, links)
+					t.Fatalf("links=%+v, want the merged task with one piece of evidence", links)
 				}
 				evidence := link.Evidence[0]
 				if evidence.Kind != store.FeedbackEvidenceTiming || evidence.Deploy == nil || evidence.Deploy.Version.Version != "2" || evidence.ElapsedMinutes == nil || *evidence.ElapsedMinutes != 0 ||
 					evidence.PriorSignalAt == nil || !evidence.PriorSignalAt.Equal(predecessor) {
-					t.Fatalf("%s: evidence=%+v deploy=%+v, want version 2 with 0 minutes and the prior signal", stage, evidence, evidence.Deploy)
+					t.Fatalf("evidence=%+v deploy=%+v, want version 2 with 0 minutes and the prior signal", evidence, evidence.Deploy)
 				}
 				notes := h.notes(report.ID)
 				if len(notes) != 1 || notes[0].Kind != store.FeedbackNoteNoTaskDeploy || notes[0].Deploy == nil || notes[0].Deploy.Version.Version != "3" ||
 					!notes[0].Deploy.DeployedAt.Equal(evidence.Deploy.DeployedAt) {
-					t.Fatalf("%s: notes=%+v, want no_task_deploy for version 3 at the same boundary", stage, notes)
+					t.Fatalf("notes=%+v, want no_task_deploy for version 3 at the same boundary", notes)
 				}
 			}
-			check("first attempt")
-			if result := report.TimingResult; len(result.Links) != 1 || len(result.Notes) != 1 || result.Links[0].DeployID == result.Notes[0].DeployID ||
-				result.Links[0].PriorSignalAt == nil || !result.Links[0].PriorSignalAt.Equal(predecessor) {
-				t.Fatalf("timing result=%+v, want one link and one note on two deploys", result)
+			// Uninterrupted, linking ends in the first attempt.
+			h, report, task, predecessor := setup(t, nil)
+			if h.reportByID(report.ID).LinkingEndedAt == nil {
+				t.Fatal("the uninterrupted run did not end")
 			}
+			check(t, h, report, task, predecessor)
 			want := h.finalState(report.ID)
+			// Interrupted, the first attempt stores the timing result while
+			// the line read fails. A fresh worker ends linking from the
+			// stored timing result alone and writes the same.
+			h, report, task, predecessor = setup(t, github.StatusError(http.StatusBadGateway, errors.New("bad gateway")))
+			if pending := h.reportByID(report.ID); pending.LinkingEndedAt != nil || len(h.links(report.ID)) != 0 || len(h.notes(report.ID)) != 0 {
+				t.Fatalf("ended=%v links=%v, want linking pending with nothing written", pending.LinkingEndedAt != nil, h.links(report.ID))
+			}
+			stored := h.reportByID(report.ID).TimingResult
+			h.forge.set(func(f *linkingForge) { f.failure = nil })
 			h.freshWorker()
-			h.advance(time.Minute + time.Second)
+			h.advance(store.FeedbackAdmissionLease + time.Second)
 			h.attempt(report.ID)
-			check("fresh worker")
+			ended := h.reportByID(report.ID)
+			if ended.LinkingEndedAt == nil || !jsonEqual(t, ended.TimingResult, stored) || h.forge.calls()[2] != 0 {
+				t.Fatalf("ended=%v timing result=%+v calls=%v, want linking ended from the stored result", ended.LinkingEndedAt != nil, ended.TimingResult, h.forge.calls())
+			}
+			check(t, h, report, task, predecessor)
 			if got := h.finalState(report.ID); got != want {
 				t.Fatalf("fresh worker final=%s\nwant %s", got, want)
 			}
@@ -899,4 +922,160 @@ func TestFeedbackReportFinalResultsSurviveInputChanges(t *testing.T) {
 			t.Fatalf("links=%+v, want the line link and the timing link", links)
 		}
 	})
+}
+
+// TestFeedbackReportOlderAttemptWritesNothing proves CodeRabbit finding
+// 4723513198: an attempt that lost its claim to a later one, as when two
+// server processes overlap, stops at its first write and writes nothing, so
+// an answer it read with an input that has since changed can never be
+// stored. The log names the stop as superseded, not as a failure
+// (component-feedback-reports invariant 15; approved plan version 3).
+func TestFeedbackReportOlderAttemptWritesNothing(t *testing.T) {
+	h := newLinkingHarness(t)
+	h.setRepositories(map[string]string{"app": "acme/app", "other": "acme/other"})
+	h.setRule(tagRule("v{version}"))
+	h.forge.set(func(f *linkingForge) {
+		f.readFailure = github.StatusError(http.StatusBadGateway, errors.New("bad gateway"))
+	})
+	h.acceptReport(reportBody(reportEntryJSON("crash", `"file":"cmd/main.go","line":12,"version":"1.2"`)))
+	h.settle()
+	report := h.reportByKey("crash")
+	if report.LineProgress != nil || report.LinkingLastAttemptAt == nil {
+		t.Fatalf("progress=%+v attempt=%v, want a claimed attempt that stored nothing", report.LineProgress, report.LinkingLastAttemptAt)
+	}
+	// The older attempt claims; then another process claims a minute later
+	// under a changed rule, before the older attempt writes.
+	backend := h.server.feedbackJobEnv().store
+	reportStore := backend.(store.ReportStore)
+	h.advance(store.FeedbackAdmissionLease + time.Second)
+	older := h.clock()
+	claimed, ok, err := reportStore.ClaimFeedbackReportLinking(h.ctx, report.ID, older)
+	if err != nil || !ok {
+		t.Fatalf("older claim ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := reportStore.ClaimFeedbackReportLinking(h.ctx, report.ID, older.Add(store.FeedbackReportLinkingRetry)); err != nil || !ok {
+		t.Fatalf("newer claim ok=%v err=%v", ok, err)
+	}
+	h.forge.set(func(f *linkingForge) {
+		f.readFailure = nil
+		f.refs = map[string]string{"acme/app|tags/v1.2": readsCommit("e1")}
+	})
+	job := feedbackJob{workspace: "alpha", report: report.ID, env: h.server.feedbackJobEnv()}
+	attempt := feedbackReportAttempt{job: job, reports: reportStore, feedback: backend.(store.FeedbackStore), report: claimed, now: older}
+	attempt.forge = &feedbackAttemptForge{inner: h.forge, env: job.env, workspace: "alpha"}
+	if err := attempt.run(h.ctx); !errors.Is(err, store.ErrFeedbackLinkingSuperseded) {
+		t.Fatalf("older attempt err=%v, want superseded", err)
+	}
+	after := h.reportByID(report.ID)
+	if after.LineProgress != nil || after.TimingResult != nil || after.LinkingEndedAt != nil {
+		t.Fatalf("older attempt wrote progress=%+v timing=%+v ended=%v", after.LineProgress, after.TimingResult, after.LinkingEndedAt != nil)
+	}
+	if got := feedbackReportErrorClass(store.ErrFeedbackLinkingSuperseded); got != "superseded" {
+		t.Fatalf("class=%q", got)
+	}
+}
+
+// readyLimitedForge fails readiness with a rate limit, as a lazy forge does
+// when GitHub rate-limits the installation token request.
+type readyLimitedForge struct {
+	*linkingForge
+	until time.Time
+}
+
+func (f readyLimitedForge) Ready(context.Context) error {
+	return github.RateLimitedError(f.until, errors.New("token rate limit"))
+}
+
+// TestFeedbackReportReadyRateLimitHolds proves CodeRabbit finding
+// 4723513177: a rate limit met while getting the installation token holds
+// the workspace's later linking calls, as a rate-limited call does
+// (component-production-feedback invariant 28).
+func TestFeedbackReportReadyRateLimitHolds(t *testing.T) {
+	h := newLinkingHarness(t)
+	env := h.server.feedbackJobEnv()
+	until := h.clock().Add(5 * time.Minute)
+	forge := &feedbackAttemptForge{inner: readyLimitedForge{linkingForge: h.forge, until: until}, env: env, workspace: "alpha"}
+	if err := forge.Ready(h.ctx); github.ErrorCategory(err) != github.ForgeRateLimited {
+		t.Fatalf("ready err=%v, want the rate limit", err)
+	}
+	if held, ok := env.backoff.forgeHold("alpha", h.clock()); !ok || !held.Equal(until) {
+		t.Fatalf("hold=%v ok=%v, want the workspace held until %v", held, ok, until)
+	}
+}
+
+// signalDuringReadStore records a watcher signal right after the timing rule
+// read the deploy history, as a watcher can at any moment.
+type signalDuringReadStore struct {
+	store.FeedbackStore
+	once   sync.Once
+	record func()
+}
+
+func (s *signalDuringReadStore) ReadFeedbackInputs(ctx context.Context, environmentIDs []string) (store.FeedbackInputs, error) {
+	inputs, err := s.FeedbackStore.ReadFeedbackInputs(ctx, environmentIDs)
+	s.once.Do(s.record)
+	return inputs, err
+}
+
+// TestFeedbackReportTimingReadsSignalsBeforeDeploys proves CodeRabbit
+// finding 4723513184: the timing rule reads the watcher signals before the
+// deploy history. A watcher listens, so the rule waits for a signal after
+// the report. One arrives right after the rule read the deploy history, and
+// it deploys a version. Read in the other order, the rule would count that
+// signal but miss its deploy and store an empty answer. Here it has not seen
+// the signal, keeps waiting, and stores nothing.
+func TestFeedbackReportTimingReadsSignalsBeforeDeploys(t *testing.T) {
+	h := newLinkingHarness(t)
+	h.accept(`{"next_signal_seconds":86400,"services":[{"name":"api","versions":[{"version":"1"}]}]}`)
+	h.settle()
+	h.forge.set(func(f *linkingForge) {
+		f.failure = github.StatusError(http.StatusBadGateway, errors.New("bad gateway"))
+	})
+	h.acceptReport(reportBody(lineEntry("late", `"service":"api"`)))
+	h.settle()
+	report := h.reportByKey("late")
+	if report.TimingResult != nil || report.LinkingEndedAt != nil {
+		t.Fatalf("timing result=%+v, want the rule waiting for a signal", report.TimingResult)
+	}
+	h.advance(store.FeedbackAdmissionLease + time.Second)
+	backend := h.server.feedbackJobEnv().store
+	system := store.WithActor(h.ctx, store.SystemActor())
+	wrapped := &signalDuringReadStore{FeedbackStore: backend.(store.FeedbackStore), record: func() {
+		signal := store.FeedbackSignal{EnvironmentID: h.environment.ID, KeyID: h.key.ID, ArrivedAt: h.clock(), NextSignalSeconds: 86400,
+			Services: []store.FeedbackSignalService{{Name: "api", Versions: []store.FeedbackSignalVersion{{Version: "2"}}}}}
+		if err := h.st.RecordFeedbackSignal(system, signal); err != nil {
+			t.Error(err)
+		}
+	}}
+	reportStore := backend.(store.ReportStore)
+	now := h.clock()
+	claimed, ok, err := reportStore.ClaimFeedbackReportLinking(h.ctx, report.ID, now)
+	if err != nil || !ok {
+		t.Fatalf("claim ok=%v err=%v", ok, err)
+	}
+	job := feedbackJob{workspace: "alpha", report: report.ID, env: h.server.feedbackJobEnv()}
+	attempt := feedbackReportAttempt{job: job, reports: reportStore, feedback: wrapped, report: claimed, now: now}
+	attempt.forge = &feedbackAttemptForge{inner: h.forge, env: job.env, workspace: "alpha"}
+	environment, _, err := feedbackReportEnvironment(h.ctx, backend, report.EnvironmentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositories, err := feedbackRepositories(h.ctx, backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := attempt.timingRule(h.ctx, environment, repositories, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, err := backend.(store.FeedbackStore).ReadFeedbackInputs(h.ctx, []string{report.EnvironmentID})
+	if err != nil || len(inputs.Deploys[report.EnvironmentID]) != 2 {
+		t.Fatalf("deploys=%+v err=%v, want the late signal's deploy recorded", inputs.Deploys[report.EnvironmentID], err)
+	}
+	if outcome.Ended || outcome.Waiting == "" {
+		t.Fatalf("outcome=%+v, want the rule still waiting", outcome)
+	}
+	if stored := h.reportByID(report.ID); stored.TimingResult != nil {
+		t.Fatalf("timing result=%+v, want none stored", stored.TimingResult)
+	}
 }

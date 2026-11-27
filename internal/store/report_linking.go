@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -154,6 +155,25 @@ type FeedbackReportLinking struct {
 	Links    []FeedbackReportLinkCandidate
 	Notes    []FeedbackReportNote
 	EndedAt  time.Time
+	// AttemptAt is the claim time of the attempt that ends linking. Only
+	// the attempt that holds the current claim may end it.
+	AttemptAt time.Time
+}
+
+// ErrFeedbackLinkingSuperseded answers a linking write from an attempt that
+// no longer holds the report's current claim: a later attempt claimed the
+// report, so this one writes nothing (component-feedback-reports invariant
+// 15; approved plan version 3).
+var ErrFeedbackLinkingSuperseded = errors.New("feedback report linking attempt superseded")
+
+// FeedbackLinkingAttemptHolds reports whether the attempt claimed at
+// attemptAt holds the report's current claim: the stored last attempt time is
+// attemptAt cut to the stored precision, as the claim wrote it. Each backend
+// decides it under the report write lock before it writes stored progress or
+// ends linking, so an older attempt in another process can never write
+// after a later attempt claimed the report.
+func FeedbackLinkingAttemptHolds(report FeedbackReport, attemptAt time.Time) bool {
+	return !attemptAt.IsZero() && report.LinkingLastAttemptAt != nil && report.LinkingLastAttemptAt.Equal(EnvironmentTime(attemptAt))
 }
 
 // ReportLinkingStore keeps what the background linking work of reports
@@ -184,21 +204,27 @@ type ReportLinkingStore interface {
 	// as PlanFeedbackReportLinking plans it. It writes the links and the
 	// notes, sets the time linking ended, and appends one
 	// feedback_report.linked event with the system actor that names no task.
-	// It answers false and writes nothing when linking had already ended. A
-	// report the workspace does not hold answers ErrNotFound.
+	// It answers false and writes nothing when linking had already ended,
+	// and ErrFeedbackLinkingSuperseded when linking.AttemptAt does not hold
+	// the current claim (FeedbackLinkingAttemptHolds). A report the
+	// workspace does not hold answers ErrNotFound.
 	FinishFeedbackReportLinking(ctx context.Context, linking FeedbackReportLinking) (bool, error)
 	// SaveFeedbackLineProgress stores one definitive result of resolving
 	// the first entry of a report, under the report write lock, as
 	// ApplyFeedbackLineStep merges it, and answers the progress as stored. A
 	// stored answer is never replaced. A report whose linking ended is left
-	// as it is. A report the workspace does not hold answers ErrNotFound.
-	SaveFeedbackLineProgress(ctx context.Context, reportID string, step FeedbackLineStep) (FeedbackLineProgress, error)
+	// as it is. An attempt claimed at attemptAt that does not hold the
+	// current claim writes nothing and gets ErrFeedbackLinkingSuperseded. A
+	// report the workspace does not hold answers ErrNotFound.
+	SaveFeedbackLineProgress(ctx context.Context, reportID string, attemptAt time.Time, step FeedbackLineStep) (FeedbackLineProgress, error)
 	// SaveFeedbackTimingResult stores the timing rule's answer of a report
 	// once, under the report write lock, and answers the result as stored: a
 	// stored result is kept. A report whose linking ended is left as it is,
-	// and the answer is then the stored result or nil. A report the
-	// workspace does not hold answers ErrNotFound.
-	SaveFeedbackTimingResult(ctx context.Context, reportID string, result FeedbackTimingResult) (*FeedbackTimingResult, error)
+	// and the answer is then the stored result or nil. An attempt that does
+	// not hold the current claim writes nothing and gets
+	// ErrFeedbackLinkingSuperseded. A report the workspace does not hold
+	// answers ErrNotFound.
+	SaveFeedbackTimingResult(ctx context.Context, reportID string, attemptAt time.Time, result FeedbackTimingResult) (*FeedbackTimingResult, error)
 	// ListPendingFeedbackReports returns the reports of one environment
 	// whose linking has not ended, open and closed, ordered by ID.
 	ListPendingFeedbackReports(ctx context.Context, environmentID string) ([]FeedbackReport, error)

@@ -107,6 +107,8 @@ func feedbackReportErrorClass(err error) string {
 		return "store_retryable"
 	case errors.Is(err, store.ErrNotFound):
 		return "not_found"
+	case errors.Is(err, store.ErrFeedbackLinkingSuperseded):
+		return "superseded"
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return "timeout"
 	}
@@ -177,6 +179,12 @@ func runFeedbackReportLinking(ctx context.Context, job feedbackJob) {
 		expired: !now.Before(report.CreatedAt.Add(store.FeedbackReportLinkingDeadline))}
 	attempt.forge = &feedbackAttemptForge{inner: job.env.lazyForge(job.workspace), env: job.env, workspace: job.workspace}
 	if err := attempt.run(ctx); err != nil {
+		// A later attempt claimed the report, in this process or another, so
+		// this one stopped without writing; the later attempt carries on.
+		if errors.Is(err, store.ErrFeedbackLinkingSuperseded) {
+			logFeedbackReport(job.workspace, report.EnvironmentID, report.ID, "superseded", attempt.step, nil)
+			return
+		}
 		logFeedbackReport(job.workspace, report.EnvironmentID, report.ID, "failed", attempt.step, err)
 	}
 }
@@ -212,7 +220,11 @@ func (f *feedbackAttemptForge) Ready(ctx context.Context) error {
 		return err
 	}
 	if ready, ok := f.inner.(feedback.ReadyForge); ok {
-		return ready.Ready(ctx)
+		// Getting the installation token is a request too: a rate limit it
+		// meets holds the workspace's later calls as a call's would.
+		err := ready.Ready(ctx)
+		f.observe(err)
+		return err
 	}
 	return nil
 }
@@ -316,6 +328,8 @@ func (a *feedbackReportAttempt) run(ctx context.Context) error {
 		return err
 	}
 	linking, ended := reports.Decide(a.report, line, timing, a.now)
+	// Only the attempt that holds the report's current claim ends linking.
+	linking.AttemptAt = a.now
 	if !ended {
 		logFeedbackReport(a.job.workspace, a.report.EnvironmentID, a.report.ID, "pending", "decide", nil)
 		return nil
@@ -514,7 +528,7 @@ func (a *feedbackReportAttempt) saveLineStep(ctx context.Context, step store.Fee
 	var saved store.FeedbackLineProgress
 	err := recordFeedbackReportOutcome(ctx, func(writeCtx context.Context) error {
 		var err error
-		saved, err = a.reports.SaveFeedbackLineProgress(writeCtx, a.report.ID, step)
+		saved, err = a.reports.SaveFeedbackLineProgress(writeCtx, a.report.ID, a.now, step)
 		return err
 	})
 	return saved, err
@@ -536,17 +550,20 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 	if !reports.TimingApplies(report) {
 		return reports.Timing(reports.TimingInput{Report: report}), nil
 	}
-	inputs, err := a.feedback.ReadFeedbackInputs(ctx, []string{report.EnvironmentID})
-	if err != nil {
-		return reports.Outcome{}, err
-	}
-	deploys := inputs.Deploys[report.EnvironmentID]
 	// A stored timing result is the rule's answer and is never worked out
 	// again, even when it holds no link and no note (approved plan version
 	// 3).
 	if report.TimingResult != nil {
-		return reports.TimingFromResult(*report.TimingResult, deploys)
+		inputs, err := a.feedback.ReadFeedbackInputs(ctx, []string{report.EnvironmentID})
+		if err != nil {
+			return reports.Outcome{}, err
+		}
+		return reports.TimingFromResult(*report.TimingResult, inputs.Deploys[report.EnvironmentID])
 	}
+	// The watcher signals are read before the deploy history. A signal and
+	// the deploys it records are stored in one write, so every signal the
+	// rule counts here has its deploys in the history read after it, and the
+	// rule never ends without a deploy of a signal it waited for.
 	now := a.now
 	signals, err := a.feedback.ListFeedbackSignals(ctx, []string{report.EnvironmentID})
 	if err != nil {
@@ -559,6 +576,11 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 	if err != nil {
 		return reports.Outcome{}, err
 	}
+	inputs, err := a.feedback.ReadFeedbackInputs(ctx, []string{report.EnvironmentID})
+	if err != nil {
+		return reports.Outcome{}, err
+	}
+	deploys := inputs.Deploys[report.EnvironmentID]
 	priors, err := a.priorSignals(ctx, reports.SignalCandidates(report, deploys))
 	if err != nil {
 		return reports.Outcome{}, err
@@ -582,7 +604,7 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 		var saved *store.FeedbackTimingResult
 		if err := recordFeedbackReportOutcome(ctx, func(writeCtx context.Context) error {
 			var err error
-			saved, err = a.reports.SaveFeedbackTimingResult(writeCtx, report.ID, reports.TimingResultOf(outcome))
+			saved, err = a.reports.SaveFeedbackTimingResult(writeCtx, report.ID, a.now, reports.TimingResultOf(outcome))
 			return err
 		}); err != nil {
 			return reports.Outcome{}, err

@@ -40,6 +40,7 @@ func runFeedbackReportLinking(t *testing.T, factory Factory) {
 		{"LineProgressOneInput", runFeedbackLinkingLineProgressInput},
 		{"TimingResultKept", runFeedbackLinkingTimingResult},
 		{"ProgressAfterTheEnd", runFeedbackLinkingProgressAfterEnd},
+		{"WritesNeedTheCurrentClaim", runFeedbackLinkingWritesNeedTheClaim},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			x := factory.fresh(t, nil)
@@ -68,6 +69,16 @@ func claimLinking(t *testing.T, x Fixture, reportID string, now time.Time) (stor
 	report, claimed, err := x.Backend.ClaimFeedbackReportLinking(x.Context, reportID, now)
 	requireOK(t, err)
 	return report, claimed
+}
+
+// claimedAt claims one linking attempt of a report at now and returns now,
+// the claim time an attempt passes with each of its writes.
+func claimedAt(t *testing.T, x Fixture, reportID string, now time.Time) time.Time {
+	t.Helper()
+	if _, ok := claimLinking(t, x, reportID, now); !ok {
+		t.Fatalf("the claim of %s at %v was refused", reportID, now)
+	}
+	return now
 }
 
 func requireAttempt(t *testing.T, e feedbackEnvironment, key string, want time.Time) {
@@ -103,7 +114,7 @@ func runFeedbackLinkingClaim(t *testing.T, x Fixture) {
 		t.Fatalf("an unknown report err=%v, want not found", err)
 	}
 	// A report whose linking ended is never claimed again.
-	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: first.Add(2 * time.Minute)})
+	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: first.Add(2 * time.Minute), AttemptAt: first})
 	requireOK(t, err)
 	if !finished {
 		t.Fatal("the end of linking wrote nothing")
@@ -283,7 +294,8 @@ func runFeedbackLinkingFinish(t *testing.T, x Fixture) {
 	ended := feedbackTime(2 * time.Minute).Add(999 * time.Nanosecond)
 	notices := x.Backend.Changes().Subscribe(x.Workspace, changes.Workspace)
 	defer notices.Close()
-	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: ended, Notes: notes, Links: []store.FeedbackReportLinkCandidate{
+	attemptAt := claimedAt(t, x, report.ID, feedbackTime(time.Minute))
+	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: ended, AttemptAt: attemptAt, Notes: notes, Links: []store.FeedbackReportLinkCandidate{
 		{TaskID: "task-new", Evidence: []store.FeedbackReportEvidence{fresh, timing, fresh}},
 		{TaskID: "task-confirmed", Evidence: []store.FeedbackReportEvidence{held, timing}},
 		{TaskID: "task-removed", Evidence: []store.FeedbackReportEvidence{timing}},
@@ -389,7 +401,7 @@ func runFeedbackLinkingLaterEntries(t *testing.T, x Fixture) {
 	if _, ok := claimLinking(t, x, report.ID, feedbackTime(time.Minute)); !ok {
 		t.Fatal("claim refused")
 	}
-	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: feedbackTime(2 * time.Minute),
+	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: feedbackTime(2 * time.Minute), AttemptAt: feedbackTime(time.Minute),
 		Links: []store.FeedbackReportLinkCandidate{{TaskID: "task-1", Evidence: []store.FeedbackReportEvidence{lineEvidence(feedbackCommit("01"))}}}})
 	requireOK(t, err)
 	if !finished {
@@ -424,7 +436,7 @@ func runFeedbackLinkingLinkIDs(t *testing.T, x Fixture) {
 		x.SeedFeedbackReportLink(t, x.Context, store.FeedbackReportLink{ID: store.FeedbackReportLinkID(report.ID, n), ReportID: report.ID, TaskID: "task-seeded-" + string(rune('0'+n)),
 			State: store.FeedbackReportLinkConfirmed, Evidence: []store.FeedbackReportEvidence{}, CreatedAt: at, CreatedBy: "usr-operator", ConfirmedBy: "usr-operator", ConfirmedAt: &at})
 	}
-	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: feedbackTime(time.Minute), Links: []store.FeedbackReportLinkCandidate{
+	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: feedbackTime(time.Minute), AttemptAt: claimedAt(t, x, report.ID, feedbackTime(time.Minute)), Links: []store.FeedbackReportLinkCandidate{
 		{TaskID: "task-a", Evidence: []store.FeedbackReportEvidence{lineEvidence(feedbackCommit("a"))}},
 		{TaskID: "task-b", Evidence: []store.FeedbackReportEvidence{lineEvidence(feedbackCommit("b"))}},
 	}})
@@ -446,7 +458,7 @@ func runFeedbackLinkingLinkIDs(t *testing.T, x Fixture) {
 	// Another report's first link number names that report, so it never
 	// equals a link ID of this one.
 	_, other := linkingReportIn(t, x, "other")
-	finished, err = x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: other.ID, EndedAt: feedbackTime(time.Minute), Links: []store.FeedbackReportLinkCandidate{
+	finished, err = x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: other.ID, EndedAt: feedbackTime(time.Minute), AttemptAt: claimedAt(t, x, other.ID, feedbackTime(time.Minute)), Links: []store.FeedbackReportLinkCandidate{
 		{TaskID: "task-a", Evidence: []store.FeedbackReportEvidence{lineEvidence(feedbackCommit("a"))}}}})
 	requireOK(t, err)
 	if otherLinks := linksByTask(t, x, other.ID); !finished || otherLinks["task-a"].ID != store.FeedbackReportLinkID(other.ID, 1) || ids[otherLinks["task-a"].ID] {
@@ -602,9 +614,10 @@ func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 	if report.LineProgress != nil || report.TimingResult != nil {
 		t.Fatalf("a new report holds progress %+v %+v", report.LineProgress, report.TimingResult)
 	}
+	attemptAt := claimedAt(t, x, report.ID, feedbackTime(-time.Minute))
 	save := func(step store.FeedbackLineStep) store.FeedbackLineProgress {
 		t.Helper()
-		progress, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, step)
+		progress, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, attemptAt, step)
 		requireOK(t, err)
 		return progress
 	}
@@ -642,7 +655,7 @@ func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 		{Repository: "docs", Slug: "acme/docs", Commit: commit, Keep: keep},
 		{},
 	} {
-		if _, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, step); err == nil {
+		if _, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, attemptAt, step); err == nil {
 			t.Fatalf("step %+v was stored", step)
 		}
 	}
@@ -680,7 +693,7 @@ func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 		}
 	}
 	// A definitive reason on another report.
-	unresolved, err := x.Backend.SaveFeedbackLineProgress(x.Context, other.ID, store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch})
+	unresolved, err := x.Backend.SaveFeedbackLineProgress(x.Context, other.ID, claimedAt(t, x, other.ID, feedbackTime(10*time.Second)), store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch})
 	requireOK(t, err)
 	if unresolved.Unresolved != store.FeedbackReasonNoMatch || len(unresolved.Candidates) != 0 {
 		t.Fatalf("other progress=%+v", unresolved)
@@ -688,7 +701,7 @@ func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
 	if stored := pendingReport(t, x, e, "crash"); !reflect.DeepEqual(stored.LineProgress, &want) {
 		t.Fatalf("another report's write changed this one: %+v", stored.LineProgress)
 	}
-	if _, err := x.Backend.SaveFeedbackLineProgress(x.Context, "rpt-000000-000000", store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch}); !errors.Is(err, store.ErrNotFound) {
+	if _, err := x.Backend.SaveFeedbackLineProgress(x.Context, "rpt-000000-000000", attemptAt, store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("an unknown report err=%v, want not found", err)
 	}
 }
@@ -707,9 +720,10 @@ func runFeedbackLinkingLineProgressInput(t *testing.T, x Fixture) {
 	e, report := linkingReport(t, x, "crash", func(entry *store.FeedbackReportEntry) {
 		entry.File, entry.Line, entry.Version = "cmd/main.go", 12, "1.2"
 	})
+	attemptAt := claimedAt(t, x, report.ID, feedbackTime(10*time.Second))
 	save := func(step store.FeedbackLineStep) store.FeedbackLineProgress {
 		t.Helper()
-		progress, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, step)
+		progress, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, attemptAt, step)
 		requireOK(t, err)
 		if stored := pendingReport(t, x, e, "crash"); !reflect.DeepEqual(stored.LineProgress, &progress) {
 			t.Fatalf("stored=%+v, answered %+v", stored.LineProgress, progress)
@@ -763,14 +777,15 @@ func runFeedbackLinkingLineProgressInput(t *testing.T, x Fixture) {
 // stored once and reused, also when it holds no link and no note.
 func runFeedbackLinkingTimingResult(t *testing.T, x Fixture) {
 	e, report := linkingReport(t, x, "crash", func(entry *store.FeedbackReportEntry) { entry.Service = "api" })
-	empty, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, store.FeedbackTimingResult{})
+	attemptAt := claimedAt(t, x, report.ID, feedbackTime(10*time.Second))
+	empty, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, attemptAt, store.FeedbackTimingResult{})
 	requireOK(t, err)
 	want := &store.FeedbackTimingResult{Links: []store.FeedbackTimingLink{}, Notes: []store.FeedbackTimingNote{}}
 	if !reflect.DeepEqual(empty, want) {
 		t.Fatalf("saved=%+v, want an empty result", empty)
 	}
 	prior := feedbackTime(-time.Hour)
-	again, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, store.FeedbackTimingResult{
+	again, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, attemptAt, store.FeedbackTimingResult{
 		Links: []store.FeedbackTimingLink{{TaskID: "task-1", DeployID: "dep-1", PriorSignalAt: &prior}}, Notes: []store.FeedbackTimingNote{{Kind: store.FeedbackNoteNoTaskDeploy, DeployID: "dep-2"}}})
 	requireOK(t, err)
 	if !reflect.DeepEqual(again, want) {
@@ -783,15 +798,15 @@ func runFeedbackLinkingTimingResult(t *testing.T, x Fixture) {
 	_, other := linkingReportIn(t, x, "other")
 	full := store.FeedbackTimingResult{Links: []store.FeedbackTimingLink{{TaskID: "task-1", DeployID: "dep-1", ElapsedMinutes: 3}, {TaskID: "task-1", DeployID: "dep-3", PriorSignalAt: &prior}},
 		Notes: []store.FeedbackTimingNote{{Kind: store.FeedbackNoteTooManyTasks, DeployID: "dep-2", TaskCount: 11}}}
-	saved, err := x.Backend.SaveFeedbackTimingResult(x.Context, other.ID, full)
+	saved, err := x.Backend.SaveFeedbackTimingResult(x.Context, other.ID, claimedAt(t, x, other.ID, feedbackTime(10*time.Second)), full)
 	requireOK(t, err)
 	if !reflect.DeepEqual(saved, &full) {
 		t.Fatalf("saved=%+v, want %+v", saved, full)
 	}
-	if _, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, store.FeedbackTimingResult{Notes: []store.FeedbackTimingNote{{Kind: store.FeedbackNoteNotChecked, DeployID: "dep"}}}); err == nil {
+	if _, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, attemptAt, store.FeedbackTimingResult{Notes: []store.FeedbackTimingNote{{Kind: store.FeedbackNoteNotChecked, DeployID: "dep"}}}); err == nil {
 		t.Fatal("a not_checked timing note was accepted")
 	}
-	if _, err := x.Backend.SaveFeedbackTimingResult(x.Context, "rpt-000000-000000", store.FeedbackTimingResult{}); !errors.Is(err, store.ErrNotFound) {
+	if _, err := x.Backend.SaveFeedbackTimingResult(x.Context, "rpt-000000-000000", attemptAt, store.FeedbackTimingResult{}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("an unknown report err=%v, want not found", err)
 	}
 }
@@ -800,17 +815,83 @@ func runFeedbackLinkingTimingResult(t *testing.T, x Fixture) {
 // after linking ended.
 func runFeedbackLinkingProgressAfterEnd(t *testing.T, x Fixture) {
 	e, report := linkingReport(t, x, "crash", nil)
-	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: feedbackTime(time.Minute)})
+	attemptAt := claimedAt(t, x, report.ID, feedbackTime(10*time.Second))
+	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: feedbackTime(time.Minute), AttemptAt: attemptAt})
 	requireOK(t, err)
 	if !finished {
 		t.Fatal("the end of linking wrote nothing")
 	}
-	progress, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch})
+	progress, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, attemptAt, store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch})
 	requireOK(t, err)
-	timing, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, store.FeedbackTimingResult{})
+	timing, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, attemptAt, store.FeedbackTimingResult{})
 	requireOK(t, err)
 	stored := e.reportByKey(t, "crash")
 	if progress.Ended() || timing != nil || stored.LineProgress != nil || stored.TimingResult != nil {
 		t.Fatalf("progress after the end: %+v %+v stored %+v %+v", progress, timing, stored.LineProgress, stored.TimingResult)
+	}
+}
+
+// runFeedbackLinkingWritesNeedTheClaim proves that only the attempt that
+// holds a report's current claim writes its stored progress or ends its
+// linking. An attempt that never claimed, and an older attempt after a later
+// one claimed the report, as two server processes can overlap, write nothing
+// and get ErrFeedbackLinkingSuperseded. The claim time is compared as the
+// claim stored it, so an attempt time with nanoseconds still holds its own
+// claim (component-feedback-reports invariant 15; approved plan version 3).
+func runFeedbackLinkingWritesNeedTheClaim(t *testing.T, x Fixture) {
+	e, report := linkingReport(t, x, "crash", func(entry *store.FeedbackReportEntry) {
+		entry.Service, entry.File, entry.Line, entry.Version = "api", "cmd/main.go", 12, "1.2"
+	})
+	step := store.FeedbackLineStep{Candidate: "acme/app", Answer: store.FeedbackLineAbsent, Input: feedbackLineInput("1"), Keep: []string{"acme/app"}}
+	superseded := func(name string, err error) {
+		t.Helper()
+		if !errors.Is(err, store.ErrFeedbackLinkingSuperseded) {
+			t.Fatalf("%s: err=%v, want superseded", name, err)
+		}
+	}
+	unchanged := func(name string) {
+		t.Helper()
+		stored := pendingReport(t, x, e, "crash")
+		if stored.LineProgress != nil || stored.TimingResult != nil || stored.LinkingEndedAt != nil {
+			t.Fatalf("%s: stored progress %+v %+v ended %v, want nothing written", name, stored.LineProgress, stored.TimingResult, stored.LinkingEndedAt)
+		}
+	}
+	never := feedbackTime(5 * time.Second)
+	_, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, never, step)
+	superseded("no claim, line progress", err)
+	_, err = x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, never, store.FeedbackTimingResult{})
+	superseded("no claim, timing result", err)
+	_, err = x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: never, AttemptAt: never})
+	superseded("no claim, finish", err)
+	unchanged("no claim")
+
+	older := claimedAt(t, x, report.ID, feedbackTime(10*time.Second).Add(123*time.Nanosecond))
+	if _, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, older, step); err != nil {
+		t.Fatalf("the attempt that holds the claim: %v", err)
+	}
+	newer := claimedAt(t, x, report.ID, older.Add(store.FeedbackReportLinkingRetry))
+	changed := store.FeedbackLineStep{Candidate: "acme/app", Answer: feedbackCommit("c1"), Input: feedbackLineInput("2"), Keep: []string{"acme/app"}}
+	_, err = x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, older, changed)
+	superseded("older attempt, line progress", err)
+	_, err = x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, older, store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch})
+	superseded("older attempt, unresolved", err)
+	_, err = x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, older, store.FeedbackTimingResult{})
+	superseded("older attempt, timing result", err)
+	_, err = x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: newer, AttemptAt: older})
+	superseded("older attempt, finish", err)
+	want := store.FeedbackLineProgress{Input: feedbackLineInput("1"), Candidates: map[string]string{"acme/app": store.FeedbackLineAbsent}}
+	if stored := pendingReport(t, x, e, "crash"); !reflect.DeepEqual(stored.LineProgress, &want) || stored.TimingResult != nil {
+		t.Fatalf("after the older attempt: %+v %+v, want only the first answer", stored.LineProgress, stored.TimingResult)
+	}
+	// The newer attempt writes, and ends linking.
+	progress, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, newer, changed)
+	requireOK(t, err)
+	if progress.Input != feedbackLineInput("2") || progress.Candidates["acme/app"] != feedbackCommit("c1") {
+		t.Fatalf("newer attempt progress=%+v", progress)
+	}
+	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: newer.Add(time.Second), AttemptAt: newer})
+	requireOK(t, err)
+	if !finished {
+		t.Fatal("the attempt that holds the claim did not end linking")
 	}
 }

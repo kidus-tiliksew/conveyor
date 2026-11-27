@@ -108,6 +108,9 @@ func (m *volatileMemory) FinishFeedbackReportLinking(ctx context.Context, linkin
 	if report.LinkingEndedAt != nil {
 		return false, nil
 	}
+	if !FeedbackLinkingAttemptHolds(report, linking.AttemptAt) {
+		return false, ErrFeedbackLinkingSuperseded
+	}
 	stored, err := m.feedbackReportLinksLocked(workspace, report.ID)
 	if err != nil {
 		return false, err
@@ -230,7 +233,7 @@ func (m *volatileMemory) ListPendingFeedbackReports(ctx context.Context, environ
 
 // SaveFeedbackLineProgress implements ReportLinkingStore. The memory write
 // mutex is the report write lock.
-func (m *volatileMemory) SaveFeedbackLineProgress(ctx context.Context, reportID string, step FeedbackLineStep) (FeedbackLineProgress, error) {
+func (m *volatileMemory) SaveFeedbackLineProgress(ctx context.Context, reportID string, attemptAt time.Time, step FeedbackLineStep) (FeedbackLineProgress, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return FeedbackLineProgress{}, err
 	}
@@ -245,6 +248,9 @@ func (m *volatileMemory) SaveFeedbackLineProgress(ctx context.Context, reportID 
 	if err != nil {
 		return FeedbackLineProgress{}, err
 	}
+	if report.LinkingEndedAt == nil && !FeedbackLinkingAttemptHolds(report, attemptAt) {
+		return FeedbackLineProgress{}, ErrFeedbackLinkingSuperseded
+	}
 	if !changed || report.LinkingEndedAt != nil {
 		if report.LineProgress == nil {
 			return FeedbackLineProgress{}, nil
@@ -257,7 +263,7 @@ func (m *volatileMemory) SaveFeedbackLineProgress(ctx context.Context, reportID 
 }
 
 // SaveFeedbackTimingResult implements ReportLinkingStore.
-func (m *volatileMemory) SaveFeedbackTimingResult(ctx context.Context, reportID string, result FeedbackTimingResult) (*FeedbackTimingResult, error) {
+func (m *volatileMemory) SaveFeedbackTimingResult(ctx context.Context, reportID string, attemptAt time.Time, result FeedbackTimingResult) (*FeedbackTimingResult, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return nil, err
 	}
@@ -271,6 +277,9 @@ func (m *volatileMemory) SaveFeedbackTimingResult(ctx context.Context, reportID 
 	scope, key, report, found := m.feedbackReportLocked(workspace, reportID)
 	if !found {
 		return nil, fmt.Errorf("%w: feedback report %s", ErrNotFound, reportID)
+	}
+	if report.LinkingEndedAt == nil && !FeedbackLinkingAttemptHolds(report, attemptAt) {
+		return nil, ErrFeedbackLinkingSuperseded
 	}
 	if report.TimingResult == nil && report.LinkingEndedAt == nil {
 		report.TimingResult = &result
