@@ -37,6 +37,12 @@ type linkingForge struct {
 	failure        error
 	gate           chan struct{}
 	entered        chan struct{}
+	// commits answers commit reads by slug with a full commit, and
+	// readsBySlug counts the reads of each slug. statuses answers
+	// comparisons by base|head.
+	commits     map[string]string
+	readsBySlug map[string]int
+	statuses    map[string]string
 }
 
 func newLinkingForge() *linkingForge {
@@ -58,21 +64,31 @@ func (f *linkingForge) ReadCommit(_ context.Context, slug, ref string) (string, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads++
+	if f.readsBySlug == nil {
+		f.readsBySlug = map[string]int{}
+	}
+	f.readsBySlug[slug]++
 	if f.readFailure != nil {
 		return "", f.readFailure
 	}
 	if slug == "acme/app" && strings.HasPrefix(linkingResolved, ref) {
 		return linkingResolved, nil
 	}
+	if commit := f.commits[slug]; commit != "" && strings.HasPrefix(commit, ref) {
+		return commit, nil
+	}
 	return "", github.CommitNotFoundError(ref)
 }
 
-func (f *linkingForge) Compare(context.Context, string, string, string, int) (feedback.CompareResult, error) {
+func (f *linkingForge) Compare(_ context.Context, _, base, head string, _ int) (feedback.CompareResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.compares++
 	if f.compareFailure != nil {
 		return feedback.CompareResult{}, f.compareFailure
+	}
+	if status := f.statuses[base+"|"+head]; status != "" {
+		return feedback.CompareResult{Status: status}, nil
 	}
 	return feedback.CompareResult{}, errors.New("this forge stub compares nothing")
 }
@@ -95,7 +111,7 @@ func (f *linkingForge) ReadLineChange(_ context.Context, slug, commit, path stri
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lineReads++
-	if slug != "acme/app" || commit != linkingResolved || path != "cmd/main.go" || line != 12 {
+	if !strings.HasPrefix(slug, "acme/") || commit != linkingResolved || path != "cmd/main.go" || line != 12 {
 		return github.LineChange{}, errors.New("unexpected line read")
 	}
 	if f.failure != nil {
