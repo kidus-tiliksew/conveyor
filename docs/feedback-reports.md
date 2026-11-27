@@ -87,21 +87,27 @@ problem, not a running total. Conveyor adds each `count` to the stored count.
 `internal/checkout/pay.go`, with `line` as the line number in that file.
 
 `first_seen` and `last_seen` must be RFC 3339 date-times, such as
-`2026-11-27T11:58:02.5Z` or `2026-11-27T13:58:02+02:00`. Conveyor refuses
-anything else, including an offset hour above 23, an offset minute above 59,
-and a day that the month does not have. A leap second is accepted only where
-it ends UTC 23:59.
+`2026-11-27T11:58:02.5Z` or `2026-11-27T13:58:02+02:00`. The `T` and the `Z`
+can be upper or lower case. Conveyor refuses anything else, for example an
+offset hour above 23, an offset minute above 59, or a day that the month does
+not have.
 
-Conveyor compares the times exactly as you send them, every fractional digit
-included. It stores them to the microsecond.
+Conveyor also refuses a time in these three cases:
+
+- The time states a second of 60, for example `2016-12-31T23:59:60Z`.
+- The time states more than nine digits after the decimal point of the
+  seconds.
+- The time is earlier than 1970-01-01T00:00:00Z. Conveyor compares the
+  instant, so `1970-01-01T00:59:59+01:00` is refused too.
+
+Each refusal is 400 `invalid_report` on the field, and nothing in the request
+is recorded.
+
+Conveyor compares the times exactly as you send them, to the nanosecond. It
+stores them to the microsecond.
 
 - A time later than the arrival time is taken as the arrival time.
 - An entry whose `first_seen` is later than its `last_seen` is refused.
-- Conveyor stores any UTC time from year 0000 to year 9999. A time with an
-  offset can fall before 0000-01-01T00:00:00Z, for example
-  `0000-01-01T00:00:00+01:00`. Conveyor refuses such a time on its field. A
-  time after year 9999 is later than the arrival, so it is taken as the
-  arrival.
 
 Keys, services, versions, and files are kept and compared exactly as sent, so
 case and spaces count. A request is refused whole when a `key`, `service`,

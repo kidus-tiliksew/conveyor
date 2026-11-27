@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
@@ -13,7 +12,7 @@ import (
 
 var _ store.ReportStore = (*Store)(nil)
 
-const feedbackReportColumns = `id,environment_id,problem_key,kind,summary,summary_redactions,service,occurrence_count,first_seen_us,last_seen_us,first_entry_seen_us,file,line,
+const feedbackReportColumns = `id,environment_id,problem_key,kind,summary,summary_redactions,service,occurrence_count,first_seen,last_seen,first_entry_seen,file,line,
 first_repository,first_commit,first_version,latest_repository,latest_commit,latest_version,state,in_inbox,source,source_label,actor_id,created_at,
 closed_at,closed_by,close_reason,reopened_at,reopen_source,reopen_source_label,reopen_actor_id,linking_ended_at,fix_task_id`
 
@@ -23,12 +22,11 @@ func collectFeedbackReports(rows environmentRows) ([]store.FeedbackReport, error
 	for rows.Next() {
 		var report store.FeedbackReport
 		var redactions string
-		var firstSeen, lastSeen, firstEntrySeen int64
 		var line sql.NullInt64
 		var closedAt, reopenedAt, linkingEndedAt sql.NullTime
 		var closedBy, closeReason, reopenSource, reopenLabel, reopenActor, fixTask sql.NullString
 		if err := rows.Scan(&report.ID, &report.EnvironmentID, &report.Key, &report.Kind, &report.Summary, &redactions, &report.Service, &report.Count,
-			&firstSeen, &lastSeen, &firstEntrySeen, &report.File, &line,
+			&report.FirstSeen, &report.LastSeen, &report.FirstEntrySeen, &report.File, &line,
 			&report.First.Repository, &report.First.Commit, &report.First.Version, &report.Latest.Repository, &report.Latest.Commit, &report.Latest.Version,
 			&report.State, &report.InInbox, &report.Origin.Source, &report.Origin.Label, &report.Origin.Actor, &report.CreatedAt,
 			&closedAt, &closedBy, &closeReason, &reopenedAt, &reopenSource, &reopenLabel, &reopenActor, &linkingEndedAt, &fixTask); err != nil {
@@ -37,8 +35,8 @@ func collectFeedbackReports(rows environmentRows) ([]store.FeedbackReport, error
 		if err := store.ApplyFeedbackReportRedactions(&report, []byte(redactions)); err != nil {
 			return nil, err
 		}
-		report.FirstSeen, report.LastSeen, report.FirstEntrySeen = feedbackReportTimeOf(firstSeen), feedbackReportTimeOf(lastSeen), feedbackReportTimeOf(firstEntrySeen)
-		report.CreatedAt = store.EnvironmentTime(report.CreatedAt)
+		report.FirstSeen, report.LastSeen = store.EnvironmentTime(report.FirstSeen), store.EnvironmentTime(report.LastSeen)
+		report.FirstEntrySeen, report.CreatedAt = store.EnvironmentTime(report.FirstEntrySeen), store.EnvironmentTime(report.CreatedAt)
 		if line.Valid {
 			report.Line = int(line.Int64)
 		}
@@ -58,13 +56,6 @@ func collectFeedbackReports(rows environmentRows) ([]store.FeedbackReport, error
 		reports = append(reports, report)
 	}
 	return reports, rows.Err()
-}
-
-// feedbackReportTimeOf reads a stated time that SingleStore keeps as signed
-// microseconds since 1970-01-01T00:00:00Z, so every year from 0000 to 9999
-// reads back exactly (component-feedback-reports invariants 4 and 6).
-func feedbackReportTimeOf(microseconds int64) time.Time {
-	return time.UnixMicro(microseconds).UTC()
 }
 
 // CheckFeedbackReportRepositories implements store.ReportStore.
@@ -195,22 +186,22 @@ func writeFeedbackReport(ctx context.Context, tx *sql.Tx, ws string, change stor
 			line = r.Line
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO feedback_reports (workspace_id,id,environment_id,key_digest,problem_key,kind,summary,summary_redactions,service,occurrence_count,
-first_seen_us,last_seen_us,first_entry_seen_us,file,line,first_repository,first_commit,first_version,latest_repository,latest_commit,latest_version,
+first_seen,last_seen,first_entry_seen,file,line,first_repository,first_commit,first_version,latest_repository,latest_commit,latest_version,
 state,in_inbox,source,source_label,actor_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			ws, r.ID, r.EnvironmentID, store.FeedbackReportKeyDigest(r.Key), r.Key, r.Kind, r.Summary, store.FeedbackReportRedactionsJSON(r.SummaryRedactions), r.Service, r.Count,
-			r.FirstSeen.UnixMicro(), r.LastSeen.UnixMicro(), r.FirstEntrySeen.UnixMicro(), r.File, line, r.First.Repository, r.First.Commit, r.First.Version, r.Latest.Repository, r.Latest.Commit, r.Latest.Version,
+			r.FirstSeen, r.LastSeen, r.FirstEntrySeen, r.File, line, r.First.Repository, r.First.Commit, r.First.Version, r.Latest.Repository, r.Latest.Commit, r.Latest.Version,
 			r.State, r.InInbox, r.Origin.Source, r.Origin.Label, r.Origin.Actor, r.CreatedAt)
 		return err
 	}
 	if change.Reopened {
-		_, err := tx.ExecContext(ctx, `UPDATE feedback_reports SET occurrence_count=?,first_seen_us=?,last_seen_us=?,latest_repository=?,latest_commit=?,latest_version=?,
+		_, err := tx.ExecContext(ctx, `UPDATE feedback_reports SET occurrence_count=?,first_seen=?,last_seen=?,latest_repository=?,latest_commit=?,latest_version=?,
 state='open',in_inbox=1,closed_at=NULL,closed_by=NULL,close_reason=NULL,reopened_at=?,reopen_source=?,reopen_source_label=?,reopen_actor_id=? WHERE workspace_id=? AND id=?`,
-			r.Count, r.FirstSeen.UnixMicro(), r.LastSeen.UnixMicro(), r.Latest.Repository, r.Latest.Commit, r.Latest.Version,
+			r.Count, r.FirstSeen, r.LastSeen, r.Latest.Repository, r.Latest.Commit, r.Latest.Version,
 			*r.ReopenedAt, r.ReopenOrigin.Source, r.ReopenOrigin.Label, r.ReopenOrigin.Actor, ws, r.ID)
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE feedback_reports SET occurrence_count=?,first_seen_us=?,last_seen_us=?,latest_repository=?,latest_commit=?,latest_version=? WHERE workspace_id=? AND id=?`,
-		r.Count, r.FirstSeen.UnixMicro(), r.LastSeen.UnixMicro(), r.Latest.Repository, r.Latest.Commit, r.Latest.Version, ws, r.ID)
+	_, err := tx.ExecContext(ctx, `UPDATE feedback_reports SET occurrence_count=?,first_seen=?,last_seen=?,latest_repository=?,latest_commit=?,latest_version=? WHERE workspace_id=? AND id=?`,
+		r.Count, r.FirstSeen, r.LastSeen, r.Latest.Repository, r.Latest.Commit, r.Latest.Version, ws, r.ID)
 	return err
 }
 

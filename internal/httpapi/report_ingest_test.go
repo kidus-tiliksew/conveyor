@@ -291,7 +291,7 @@ func TestFeedbackReportTimesWithinOneMicrosecond(t *testing.T) {
 	}})
 	h.acceptReport(reportBody(reportEntryJSON("ordered", `"first_seen":"2026-11-25T11:00:00.0000001Z","last_seen":"2026-11-25T13:00:00.0000005+02:00"`)))
 	first, last := time.Date(2026, 11, 25, 11, 0, 0, 100, time.UTC), time.Date(2026, 11, 25, 11, 0, 0, 500, time.UTC)
-	if len(received) != 1 || received[0].FirstSeen == nil || received[0].LastSeen == nil || !received[0].FirstSeen.At.Equal(first) || !received[0].LastSeen.At.Equal(last) {
+	if len(received) != 1 || received[0].FirstSeen == nil || received[0].LastSeen == nil || !received[0].FirstSeen.Equal(first) || !received[0].LastSeen.Equal(last) {
 		t.Fatalf("the store received %+v, want first-seen %v and last-seen %v exactly", received, first, last)
 	}
 	stored := h.reportByKey("ordered")
@@ -331,27 +331,41 @@ func TestFeedbackReportReversedPairInArrivalMicrosecond(t *testing.T) {
 	}
 }
 
-// TestFeedbackReportStrictTimes covers the strict RFC 3339 parse at the
-// route: digits beyond nanoseconds decide the order, a valid nonzero offset is
-// read exactly, an offset RFC 3339 does not allow is refused, a time below
-// the stored range is refused with a fixed message, and a time above it is
-// taken as the arrival. No case answers 500 (component-feedback-reports
-// invariants 4 and 7; req-production-feedback AC-4.1).
+// TestFeedbackReportStrictTimes covers the time rules of
+// component-feedback-reports v2 invariant 4 at the route. Each refusal is 400
+// invalid_report on the field with a fixed message that repeats no submitted
+// value, and it refuses the whole request: an RFC 3339 grammar error, a
+// second of 60, more than nine fraction digits, and an instant before
+// 1970-01-01T00:00:00Z, also through an offset. Both cases of T and Z, nine
+// fraction digits, the floor through either offset sign, and a year 9999 time
+// whose offset puts it later than the arrival are accepted. No case answers
+// 500 (req-production-feedback AC-4.1).
 func TestFeedbackReportStrictTimes(t *testing.T) {
 	t.Parallel()
 	h := newFeedbackHarness(t)
-	for _, c := range []struct{ name, field, members string }{
-		{"reversed beyond nanoseconds", "reports[0].first_seen", `"first_seen":"2026-11-25T11:00:00.1234567899Z","last_seen":"2026-11-25T11:00:00.1234567891Z"`},
-		{"offset hour 24", "reports[0].first_seen", `"first_seen":"2026-11-25T11:00:00+24:00"`},
-		{"offset minute 60", "reports[0].last_seen", `"last_seen":"2026-11-25T11:00:00+01:60"`},
-		{"offset without a colon", "reports[0].first_seen", `"first_seen":"2026-11-25T11:00:00+0100"`},
-		{"a day the month does not hold", "reports[0].first_seen", `"first_seen":"2026-02-30T11:00:00Z"`},
-		{"below the stored range", "reports[0].first_seen", `"first_seen":"0000-01-01T00:00:00+01:00"`},
+	valid := reportEntryJSON("valid")
+	for _, c := range []struct{ name, field, message, members string }{
+		{"offset hour 24", "reports[1].first_seen", store.FeedbackReportTimeInvalid, `"first_seen":"2026-11-25T11:00:00+24:00"`},
+		{"offset minute 60", "reports[1].last_seen", store.FeedbackReportTimeInvalid, `"last_seen":"2026-11-25T11:00:00+01:60"`},
+		{"offset without a colon", "reports[1].first_seen", store.FeedbackReportTimeInvalid, `"first_seen":"2026-11-25T11:00:00+0100"`},
+		{"a day the month does not hold", "reports[1].first_seen", store.FeedbackReportTimeInvalid, `"first_seen":"2026-02-30T11:00:00Z"`},
+		{"second 60", "reports[1].first_seen", store.FeedbackReportTimeLeapSecond, `"first_seen":"2016-12-31T23:59:60Z"`},
+		{"second 60 through an offset", "reports[1].last_seen", store.FeedbackReportTimeLeapSecond, `"last_seen":"2016-12-31T15:59:60-08:00"`},
+		{"ten fraction digits", "reports[1].first_seen", store.FeedbackReportTimeTooPrecise, `"first_seen":"2026-11-25T11:00:00.1234567899Z"`},
+		{"before the floor", "reports[1].first_seen", store.FeedbackReportTimeBeforeEpoch, `"first_seen":"1969-12-31T23:59:59.999999999Z"`},
+		{"before the floor through an offset", "reports[1].last_seen", store.FeedbackReportTimeBeforeEpoch, `"last_seen":"1970-01-01T00:59:59+01:00"`},
+		{"reversed one nanosecond apart", "reports[1].first_seen", "must not be later than last_seen", `"first_seen":"2026-11-25T11:00:00.000000002Z","last_seen":"2026-11-25T11:00:00.000000001Z"`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h.t = t
 			h.advance(feedbackSignalWindow)
-			requireReportRefusal(t, h.sendReport(h.key.Value, reportBody(reportEntryJSON("strict", c.members))), c.field, "2026-11-25", "0000-01-01")
+			response := h.sendReport(h.key.Value, reportBody(valid, reportEntryJSON("strict", c.members)))
+			requireReportRefusal(t, response, c.field, "2026-11-25", "2016-12-31", "1969-12-31", "1970-01-01T00:59")
+			var body map[string]string
+			decodeEnvironmentBody(t, response, &body)
+			if body["message"] != c.message {
+				t.Fatalf("message=%q, want %q", body["message"], c.message)
+			}
 		})
 	}
 	h.t = t
@@ -359,17 +373,24 @@ func TestFeedbackReportStrictTimes(t *testing.T) {
 		t.Fatalf("refused requests stored %+v", reports)
 	}
 	h.acceptReport(reportBody(
-		reportEntryJSON("ordered-beyond", `"first_seen":"2026-11-25T11:00:00.1234567891Z","last_seen":"2026-11-25T11:00:00.1234567899Z"`),
+		reportEntryJSON("uppercase", `"first_seen":"2026-11-25T11:00:00Z"`),
+		reportEntryJSON("lowercase", `"first_seen":"2026-11-25t11:00:00z"`),
+		reportEntryJSON("nine-digits", `"first_seen":"2026-11-25T11:00:00.123456789Z","last_seen":"2026-11-25T11:00:00.123456790Z"`),
 		reportEntryJSON("offset", `"first_seen":"2026-11-25T13:00:00+02:00","last_seen":"2026-11-25T11:30:00-00:30"`),
+		reportEntryJSON("floor", `"first_seen":"1970-01-01T00:00:00Z","last_seen":"1970-01-01T01:00:00+01:00"`),
+		reportEntryJSON("floor-negative-offset", `"first_seen":"1969-12-31T23:00:00-01:00"`),
 		reportEntryJSON("above", `"first_seen":"9999-12-31T23:30:00-01:00"`),
-		reportEntryJSON("year-zero", `"first_seen":"0000-01-01T00:00:00Z","last_seen":"0000-01-01T01:00:00+01:00"`),
 	))
 	arrived := store.EnvironmentTime(h.clock())
+	floor := time.Unix(0, 0).UTC()
 	for key, want := range map[string][2]time.Time{
-		"ordered-beyond": {time.Date(2026, 11, 25, 11, 0, 0, 123456000, time.UTC), time.Date(2026, 11, 25, 11, 0, 0, 123456000, time.UTC)},
-		"offset":         {time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC), time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)},
-		"above":          {arrived, arrived},
-		"year-zero":      {time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC)},
+		"uppercase":             {time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC), arrived},
+		"lowercase":             {time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC), arrived},
+		"nine-digits":           {time.Date(2026, 11, 25, 11, 0, 0, 123456000, time.UTC), time.Date(2026, 11, 25, 11, 0, 0, 123456000, time.UTC)},
+		"offset":                {time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC), time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)},
+		"floor":                 {floor, floor},
+		"floor-negative-offset": {floor, arrived},
+		"above":                 {arrived, arrived},
 	} {
 		got := h.reportByKey(key)
 		if !got.FirstSeen.Equal(want[0]) || !got.LastSeen.Equal(want[1]) || !got.FirstEntrySeen.Equal(want[0]) {

@@ -220,20 +220,21 @@ func feedbackWholeNumber(path string, raw json.RawMessage, most int64) (int64, e
 // feedbackReportTime reads one optional RFC 3339 time. An omitted field is
 // nil, and the store takes it as the arrival (component-feedback-reports
 // invariant 4).
-func feedbackReportTime(path string, raw json.RawMessage) (*store.FeedbackReportTime, error) {
+func feedbackReportTime(path string, raw json.RawMessage) (*time.Time, error) {
 	if raw == nil {
 		return nil, nil
 	}
 	var text string
 	if environmentNull(raw) || json.Unmarshal(raw, &text) != nil {
-		return nil, feedbackRefusal(path, "must be an RFC 3339 time")
+		return nil, feedbackRefusal(path, store.FeedbackReportTimeInvalid)
 	}
-	// The strict parser keeps every fractional digit and refuses what
-	// RFC 3339 does not allow, such as an offset hour above 23, which
-	// time.Parse accepts (component-feedback-reports invariant 4).
-	at, ok := store.ParseFeedbackReportTime(text)
-	if !ok {
-		return nil, feedbackRefusal(path, "must be an RFC 3339 time")
+	// The strict parser refuses what RFC 3339 does not allow, such as an
+	// offset hour above 23, which time.Parse accepts, and a second of 60 or
+	// more than nine fraction digits (component-feedback-reports v2
+	// invariant 4). The store refuses an instant before 1970.
+	at, refusal := store.ParseFeedbackReportTime(text)
+	if refusal != "" {
+		return nil, feedbackRefusal(path, refusal)
 	}
 	return &at, nil
 }
