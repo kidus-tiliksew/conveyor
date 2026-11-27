@@ -197,5 +197,15 @@ func cloneFeedbackReport(report FeedbackReport) FeedbackReport {
 		at := *report.LinkingLastAttemptAt
 		report.LinkingLastAttemptAt = &at
 	}
+	if report.LineProgress != nil {
+		progress := cloneFeedbackLineProgress(*report.LineProgress)
+		report.LineProgress = &progress
+	}
+	if report.TimingResult != nil {
+		// A JSON round trip copies every slice and time pointer, as the
+		// durable backends' columns do.
+		copied, _ := ParseFeedbackTimingResult([]byte(FeedbackTimingResultJSON(*report.TimingResult)))
+		report.TimingResult = copied
+	}
 	return report
 }

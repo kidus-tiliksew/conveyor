@@ -227,3 +227,54 @@ func (m *volatileMemory) ListPendingFeedbackReports(ctx context.Context, environ
 	slices.SortFunc(reports, func(a, b FeedbackReport) int { return strings.Compare(a.ID, b.ID) })
 	return reports, nil
 }
+
+// SaveFeedbackLineProgress implements ReportLinkingStore. The memory write
+// mutex is the report write lock.
+func (m *volatileMemory) SaveFeedbackLineProgress(ctx context.Context, reportID string, step FeedbackLineStep) (FeedbackLineProgress, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return FeedbackLineProgress{}, err
+	}
+	workspace := workspaceOrDefault(ctx, "")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope, key, report, found := m.feedbackReportLocked(workspace, reportID)
+	if !found {
+		return FeedbackLineProgress{}, fmt.Errorf("%w: feedback report %s", ErrNotFound, reportID)
+	}
+	progress, changed, err := ApplyFeedbackLineStep(report.LineProgress, step)
+	if err != nil {
+		return FeedbackLineProgress{}, err
+	}
+	if !changed || report.LinkingEndedAt != nil {
+		if report.LineProgress == nil {
+			return FeedbackLineProgress{}, nil
+		}
+		return cloneFeedbackLineProgress(*report.LineProgress), nil
+	}
+	report.LineProgress = &progress
+	m.feedbackReportState.reports[scope][key] = cloneFeedbackReport(report)
+	return cloneFeedbackLineProgress(progress), nil
+}
+
+// SaveFeedbackTimingResult implements ReportLinkingStore.
+func (m *volatileMemory) SaveFeedbackTimingResult(ctx context.Context, reportID string, result FeedbackTimingResult) (*FeedbackTimingResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return nil, err
+	}
+	result, err := NormalizeFeedbackTimingResult(result)
+	if err != nil {
+		return nil, err
+	}
+	workspace := workspaceOrDefault(ctx, "")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope, key, report, found := m.feedbackReportLocked(workspace, reportID)
+	if !found {
+		return nil, fmt.Errorf("%w: feedback report %s", ErrNotFound, reportID)
+	}
+	if report.TimingResult == nil && report.LinkingEndedAt == nil {
+		report.TimingResult = &result
+		m.feedbackReportState.reports[scope][key] = cloneFeedbackReport(report)
+	}
+	return cloneFeedbackReport(m.feedbackReportState.reports[scope][key]).TimingResult, nil
+}

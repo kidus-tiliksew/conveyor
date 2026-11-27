@@ -36,6 +36,9 @@ func runFeedbackReportLinking(t *testing.T, factory Factory) {
 		{"LinkIDsSkipStoredIDs", runFeedbackLinkingLinkIDs},
 		{"ServiceSignals", runFeedbackLinkingServiceSignals},
 		{"MergePullRequest", runFeedbackLinkingMergePullRequest},
+		{"LineProgressResumes", runFeedbackLinkingLineProgress},
+		{"TimingResultKept", runFeedbackLinkingTimingResult},
+		{"ProgressAfterTheEnd", runFeedbackLinkingProgressAfterEnd},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			x := factory.fresh(t, nil)
@@ -564,5 +567,164 @@ func runFeedbackLinkingMergePullRequest(t *testing.T, x Fixture) {
 	}
 	if task := got[none.ID]; task.PullRequest != 0 || task.MergeCommit != feedbackCommit("0e") {
 		t.Fatalf("a latest event without a pull request=%+v, want 0", task)
+	}
+}
+
+func pendingReport(t *testing.T, x Fixture, e feedbackEnvironment, key string) store.FeedbackReport {
+	t.Helper()
+	pending, err := x.Backend.ListPendingFeedbackReports(x.Context, e.id)
+	requireOK(t, err)
+	for _, report := range pending {
+		if report.Key == key {
+			return report
+		}
+	}
+	t.Fatalf("no pending report of key %q", key)
+	return store.FeedbackReport{}
+}
+
+// runFeedbackLinkingLineProgress proves the stored progress of resolving, so
+// a fresh worker resumes from the store alone: candidate answers are kept and
+// never replaced, the resolution or the definitive reason is stored once, a
+// retryable reason is refused, every read of the report returns the stored
+// progress, no served form of the report holds it, and another report is
+// untouched (approved plan version 3; component-feedback-reports invariants
+// 12 and 15).
+func runFeedbackLinkingLineProgress(t *testing.T, x Fixture) {
+	e, report := linkingReport(t, x, "crash", func(entry *store.FeedbackReportEntry) {
+		entry.File, entry.Line, entry.Commit = "cmd/main.go", 12, "abcdef0"
+	})
+	_, other := linkingReportIn(t, x, "other")
+	if report.LineProgress != nil || report.TimingResult != nil {
+		t.Fatalf("a new report holds progress %+v %+v", report.LineProgress, report.TimingResult)
+	}
+	save := func(step store.FeedbackLineStep) store.FeedbackLineProgress {
+		t.Helper()
+		progress, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, step)
+		requireOK(t, err)
+		return progress
+	}
+	commit := feedbackCommit("c0")
+	save(store.FeedbackLineStep{Candidate: "app", Answer: store.FeedbackLineAbsent})
+	progress := save(store.FeedbackLineStep{Candidate: "docs", Answer: commit})
+	want := store.FeedbackLineProgress{Candidates: map[string]string{"app": store.FeedbackLineAbsent, "docs": commit}}
+	if !reflect.DeepEqual(progress, want) {
+		t.Fatalf("progress=%+v, want %+v", progress, want)
+	}
+	// A second answer for a candidate is not stored.
+	if again := save(store.FeedbackLineStep{Candidate: "app", Answer: commit}); !reflect.DeepEqual(again, want) {
+		t.Fatalf("a second answer replaced the first: %+v", again)
+	}
+	// Retryable reasons and malformed steps are refused and store nothing.
+	for _, step := range []store.FeedbackLineStep{
+		{Unresolved: store.FeedbackReasonPending},
+		{Unresolved: "forge_status"},
+		{Unresolved: store.FeedbackReasonNoGitHubApp},
+		{Candidate: "app", Answer: "abc"},
+		{Repository: "docs", Commit: "abc"},
+		{Candidate: "app", Answer: store.FeedbackLineAbsent, Unresolved: store.FeedbackReasonNoMatch},
+		{},
+	} {
+		if _, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, step); err == nil {
+			t.Fatalf("step %+v was stored", step)
+		}
+	}
+	if stored := pendingReport(t, x, e, "crash"); !reflect.DeepEqual(stored.LineProgress, &want) {
+		t.Fatalf("stored progress after refusals=%+v, want %+v", stored.LineProgress, want)
+	}
+	// The resolution is stored once; a later reason or answer changes nothing.
+	progress = save(store.FeedbackLineStep{Repository: "docs", Commit: commit})
+	want.Repository, want.Commit = "docs", commit
+	if !reflect.DeepEqual(progress, want) {
+		t.Fatalf("progress=%+v, want %+v", progress, want)
+	}
+	for _, step := range []store.FeedbackLineStep{{Unresolved: store.FeedbackReasonNoMatch}, {Repository: "app", Commit: feedbackCommit("c1")}, {Candidate: "web", Answer: store.FeedbackLineAbsent}} {
+		if again := save(step); !reflect.DeepEqual(again, want) {
+			t.Fatalf("step %+v changed the ended progress: %+v", step, again)
+		}
+	}
+	// Every read of the report returns it, and the claim answers it too.
+	claimed, ok := claimLinking(t, x, report.ID, feedbackTime(time.Minute))
+	if !ok || !reflect.DeepEqual(claimed.LineProgress, &want) {
+		t.Fatalf("claim progress=%+v ok=%v", claimed.LineProgress, ok)
+	}
+	if listed := e.reportByKey(t, "crash"); !reflect.DeepEqual(listed.LineProgress, &want) {
+		t.Fatalf("listed progress=%+v", listed.LineProgress)
+	}
+	// No served form holds it.
+	raw, err := json.Marshal(claimed)
+	requireOK(t, err)
+	for _, member := range []string{"line_progress", "timing_result", "candidates", commit} {
+		if strings.Contains(string(raw), member) {
+			t.Fatalf("the report's JSON %s holds %q", raw, member)
+		}
+	}
+	// A definitive reason on another report.
+	unresolved, err := x.Backend.SaveFeedbackLineProgress(x.Context, other.ID, store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch})
+	requireOK(t, err)
+	if unresolved.Unresolved != store.FeedbackReasonNoMatch || len(unresolved.Candidates) != 0 {
+		t.Fatalf("other progress=%+v", unresolved)
+	}
+	if stored := pendingReport(t, x, e, "crash"); !reflect.DeepEqual(stored.LineProgress, &want) {
+		t.Fatalf("another report's write changed this one: %+v", stored.LineProgress)
+	}
+	if _, err := x.Backend.SaveFeedbackLineProgress(x.Context, "rpt-000000-000000", store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an unknown report err=%v, want not found", err)
+	}
+}
+
+// runFeedbackLinkingTimingResult proves that the timing rule's answer is
+// stored once and reused, also when it holds no link and no note.
+func runFeedbackLinkingTimingResult(t *testing.T, x Fixture) {
+	e, report := linkingReport(t, x, "crash", func(entry *store.FeedbackReportEntry) { entry.Service = "api" })
+	empty, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, store.FeedbackTimingResult{})
+	requireOK(t, err)
+	want := &store.FeedbackTimingResult{Links: []store.FeedbackTimingLink{}, Notes: []store.FeedbackTimingNote{}}
+	if !reflect.DeepEqual(empty, want) {
+		t.Fatalf("saved=%+v, want an empty result", empty)
+	}
+	prior := feedbackTime(-time.Hour)
+	again, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, store.FeedbackTimingResult{
+		Links: []store.FeedbackTimingLink{{TaskID: "task-1", DeployID: "dep-1", PriorSignalAt: &prior}}, Notes: []store.FeedbackTimingNote{{Kind: store.FeedbackNoteNoTaskDeploy, DeployID: "dep-2"}}})
+	requireOK(t, err)
+	if !reflect.DeepEqual(again, want) {
+		t.Fatalf("a second result replaced the first: %+v", again)
+	}
+	if stored := pendingReport(t, x, e, "crash"); !reflect.DeepEqual(stored.TimingResult, want) || stored.LineProgress != nil {
+		t.Fatalf("stored=%+v line=%+v", stored.TimingResult, stored.LineProgress)
+	}
+	// A result with links and notes on another report keeps every member.
+	_, other := linkingReportIn(t, x, "other")
+	full := store.FeedbackTimingResult{Links: []store.FeedbackTimingLink{{TaskID: "task-1", DeployID: "dep-1", ElapsedMinutes: 3}, {TaskID: "task-1", DeployID: "dep-3", PriorSignalAt: &prior}},
+		Notes: []store.FeedbackTimingNote{{Kind: store.FeedbackNoteTooManyTasks, DeployID: "dep-2", TaskCount: 11}}}
+	saved, err := x.Backend.SaveFeedbackTimingResult(x.Context, other.ID, full)
+	requireOK(t, err)
+	if !reflect.DeepEqual(saved, &full) {
+		t.Fatalf("saved=%+v, want %+v", saved, full)
+	}
+	if _, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, store.FeedbackTimingResult{Notes: []store.FeedbackTimingNote{{Kind: store.FeedbackNoteNotChecked, DeployID: "dep"}}}); err == nil {
+		t.Fatal("a not_checked timing note was accepted")
+	}
+	if _, err := x.Backend.SaveFeedbackTimingResult(x.Context, "rpt-000000-000000", store.FeedbackTimingResult{}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an unknown report err=%v, want not found", err)
+	}
+}
+
+// runFeedbackLinkingProgressAfterEnd proves that progress is not written
+// after linking ended.
+func runFeedbackLinkingProgressAfterEnd(t *testing.T, x Fixture) {
+	e, report := linkingReport(t, x, "crash", nil)
+	finished, err := x.Backend.FinishFeedbackReportLinking(x.Context, store.FeedbackReportLinking{ReportID: report.ID, EndedAt: feedbackTime(time.Minute)})
+	requireOK(t, err)
+	if !finished {
+		t.Fatal("the end of linking wrote nothing")
+	}
+	progress, err := x.Backend.SaveFeedbackLineProgress(x.Context, report.ID, store.FeedbackLineStep{Unresolved: store.FeedbackReasonNoMatch})
+	requireOK(t, err)
+	timing, err := x.Backend.SaveFeedbackTimingResult(x.Context, report.ID, store.FeedbackTimingResult{})
+	requireOK(t, err)
+	stored := e.reportByKey(t, "crash")
+	if progress.Ended() || timing != nil || stored.LineProgress != nil || stored.TimingResult != nil {
+		t.Fatalf("progress after the end: %+v %+v stored %+v %+v", progress, timing, stored.LineProgress, stored.TimingResult)
 	}
 }

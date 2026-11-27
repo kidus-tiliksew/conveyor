@@ -257,7 +257,7 @@ func (s *Store) migrateFiles(ctx context.Context, files []migration) error {
 			}
 		}
 		if file.version == feedbackReportLinkingAttemptMigrationVersion {
-			if err := s.addNullableColumns(ctx, feedbackReportLinkingAttemptColumn); err != nil {
+			if err := s.addNullableColumns(ctx, feedbackReportLinkingAttemptColumns...); err != nil {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}

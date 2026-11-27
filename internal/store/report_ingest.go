@@ -164,7 +164,12 @@ type FeedbackReport struct {
 	// stored at the backend's precision, and nil before the first one
 	// (component-feedback-reports invariant 15).
 	LinkingLastAttemptAt *time.Time `json:"linking_last_attempt_at"`
-	FixTaskID            string     `json:"fix_task_id"`
+	// LineProgress and TimingResult are the stored progress of linking
+	// (approved plan version 3). No route or served read exposes them, so
+	// neither has a JSON member.
+	LineProgress *FeedbackLineProgress `json:"-"`
+	TimingResult *FeedbackTimingResult `json:"-"`
+	FixTaskID    string                `json:"fix_task_id"`
 }
 
 // ReportStore keeps feedback reports (component-feedback-reports;

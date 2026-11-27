@@ -18,7 +18,11 @@ var _ store.ReportLinkingStore = (*Store)(nil)
 // invariant 15).
 const feedbackReportLinkingAttemptMigrationVersion = 54
 
-var feedbackReportLinkingAttemptColumn = nullableColumn{"feedback_reports", "linking_last_attempt_at", "DATETIME(6) NULL"}
+var feedbackReportLinkingAttemptColumns = []nullableColumn{
+	{"feedback_reports", "linking_last_attempt_at", "DATETIME(6) NULL"},
+	{"feedback_reports", "line_progress", "JSON NULL"},
+	{"feedback_reports", "timing_result", "JSON NULL"},
+}
 
 // lockFeedbackReport takes the workspace environment claim, the lock that
 // serializes every report write of the workspace, and reads one report under
@@ -294,4 +298,87 @@ func (s *Store) ListPendingFeedbackReports(ctx context.Context, environmentID st
 		return nil, err
 	}
 	return collectFeedbackReports(rows)
+}
+
+// SaveFeedbackLineProgress implements store.ReportLinkingStore under the
+// workspace environment claim.
+func (s *Store) SaveFeedbackLineProgress(ctx context.Context, reportID string, step store.FeedbackLineStep) (store.FeedbackLineProgress, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SaveFeedbackLineProgress")
+	if _, err := store.RequireActor(ctx); err != nil {
+		return store.FeedbackLineProgress{}, err
+	}
+	ws, err := workspace(ctx)
+	if err != nil {
+		return store.FeedbackLineProgress{}, err
+	}
+	var saved store.FeedbackLineProgress
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		claim, report, err := lockFeedbackReport(ctx, tx, ws, reportID)
+		if err != nil {
+			return err
+		}
+		progress, changed, err := store.ApplyFeedbackLineStep(report.LineProgress, step)
+		if err != nil {
+			return err
+		}
+		if !changed || report.LinkingEndedAt != nil {
+			saved = store.FeedbackLineProgress{}
+			if report.LineProgress != nil {
+				saved = *report.LineProgress
+			}
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE feedback_reports SET line_progress=? WHERE workspace_id=? AND id=?`, store.FeedbackLineProgressJSON(progress), ws, reportID); err != nil {
+			return err
+		}
+		if err := claim.touchEnvironment(ctx, tx, report.EnvironmentID); err != nil {
+			return err
+		}
+		saved = progress
+		return nil
+	})
+	if err != nil {
+		return store.FeedbackLineProgress{}, err
+	}
+	return saved, nil
+}
+
+// SaveFeedbackTimingResult implements store.ReportLinkingStore under the
+// workspace environment claim.
+func (s *Store) SaveFeedbackTimingResult(ctx context.Context, reportID string, result store.FeedbackTimingResult) (*store.FeedbackTimingResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SaveFeedbackTimingResult")
+	if _, err := store.RequireActor(ctx); err != nil {
+		return nil, err
+	}
+	result, err := store.NormalizeFeedbackTimingResult(result)
+	if err != nil {
+		return nil, err
+	}
+	ws, err := workspace(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var saved *store.FeedbackTimingResult
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		claim, report, err := lockFeedbackReport(ctx, tx, ws, reportID)
+		if err != nil {
+			return err
+		}
+		if report.TimingResult != nil || report.LinkingEndedAt != nil {
+			saved = report.TimingResult
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE feedback_reports SET timing_result=? WHERE workspace_id=? AND id=?`, store.FeedbackTimingResultJSON(result), ws, reportID); err != nil {
+			return err
+		}
+		if err := claim.touchEnvironment(ctx, tx, report.EnvironmentID); err != nil {
+			return err
+		}
+		saved = &result
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return saved, nil
 }

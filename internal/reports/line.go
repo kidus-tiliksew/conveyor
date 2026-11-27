@@ -51,12 +51,7 @@ func LineApplies(report store.FeedbackReport) bool {
 // failure prove nothing, so the rule waits for them
 // (component-feedback-reports invariant 12; State and failure).
 func DefinitiveUnresolved(reason string) bool {
-	switch reason {
-	case store.FeedbackReasonNoMatch, store.FeedbackReasonAmbiguous, store.FeedbackReasonNoVersionRule,
-		store.FeedbackReasonRuleMismatch, store.FeedbackReasonNoRepository:
-		return true
-	}
-	return false
+	return slices.Contains(store.FeedbackDefinitiveUnresolved, reason)
 }
 
 // LineInput is what the line rule reads for one report.

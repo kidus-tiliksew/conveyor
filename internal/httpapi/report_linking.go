@@ -355,17 +355,27 @@ func feedbackReportEnvironment(ctx context.Context, backend store.Store, environ
 	return store.Environment{}, false, nil
 }
 
-// lineRule runs the line rule for the attempt. A stored line read is reused
-// and GitHub is not asked again. Otherwise, before each call it checks that
-// the attempt may call (mayCall) and that the workspace admission admits the
-// request. The first entry's commit or version is resolved as
-// component-production-feedback invariant 7 resolves a version, with one
-// admitted request for each repository the resolving reads, and then the line
-// read is admitted and sent. A definitive answer, a missing file included, is
-// stored before the rule uses it. A forge failure leaves the rule waiting
-// with its category, stores nothing, and a rate limit keeps its retry time.
-// At or after 24 hours the rule sends nothing and waits with the reason the
-// last attempt named, so the end of linking notes not_checked.
+// lineRule runs one step of the line rule. Every attempt reads what earlier
+// attempts stored first, so a fresh worker with empty memory continues from
+// the store alone, and nothing stored is asked for again (approved plan
+// version 3; component-feedback-reports invariants 12 and 15):
+//
+//   - A stored line read, an answer or a missing file, ends the rule.
+//   - A stored definitive unresolved reason ends the rule with
+//     commit_unresolved.
+//   - A stored resolution goes straight to the line read.
+//   - Otherwise each candidate repository without a stored answer is read
+//     on its own: the attempt checks mayCall, admits the one read against
+//     the workspace allowance, sends it, and stores its definitive answer at
+//     once. A retryable failure stores nothing. When the stored answers
+//     decide resolving, the resolution or the definitive reason is stored at
+//     once.
+//   - The line read is admitted and sent, and its definitive answer is
+//     stored before the rule uses it.
+//
+// At or after 24 hours the rule sends nothing. It still uses every stored
+// result, and a result the stored answers already decide is stored, so a
+// definitive unresolved reason still ends the rule with commit_unresolved.
 func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.Environment, repositories []feedback.Repository, merged []store.FeedbackMergedTask) (reports.Outcome, error) {
 	report := a.report
 	if !reports.LineApplies(report) {
@@ -378,37 +388,69 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 	if stored {
 		return reports.Line(reports.LineInput{Report: report, Read: &read, Merged: merged}), nil
 	}
-	if a.expired {
-		reason := a.job.env.backoff.lineReason(a.lineReasonKey())
-		if reason == "" {
-			reason = feedbackWaitingLineUnanswered
-		}
-		return reports.Outcome{Waiting: reason}, nil
-	}
-	if ok, reason := a.mayCall(); !ok {
-		return reports.Outcome{Waiting: reason}, nil
-	}
 	version := store.FeedbackVersion{Repository: report.First.Repository, Commit: report.First.Commit, Version: report.First.Version}
 	request := feedback.ResolveRequest{Version: version, Service: report.Service, Rule: environment.VersionRule, Repositories: repositories}
-	if keys := feedbackResolveReads(request, report.ID); len(keys) > 0 {
-		admitted, err := a.feedback.AdmitFeedbackComparisons(ctx, keys, a.job.env.clock(), len(keys))
-		if err != nil {
+	progress := store.FeedbackLineProgress{}
+	if report.LineProgress != nil {
+		progress = *report.LineProgress
+	}
+	plan := reports.PlanResolve(request, &progress)
+	waiting := ""
+	if plan.Final == nil && !a.expired {
+		for _, candidate := range plan.Reads {
+			if ok, reason := a.mayCall(); !ok {
+				waiting = reason
+				break
+			}
+			key := store.FeedbackComparisonKey{Repository: candidate.Slug, Head: feedbackResolvePrefix + report.ID}
+			admitted, err := a.feedback.AdmitFeedbackComparisons(ctx, []store.FeedbackComparisonKey{key}, a.job.env.clock(), 1)
+			if err != nil {
+				return reports.Outcome{}, err
+			}
+			if len(admitted) == 0 {
+				if waiting == "" {
+					waiting = feedbackWaitingAllowance
+				}
+				break
+			}
+			commit, err := a.forge.ReadCommit(ctx, store.FeedbackRepository(candidate.Slug), plan.Ref)
+			answer, definitive := reports.CandidateAnswer(plan.Prefix, commit, err)
+			if !definitive {
+				waiting = feedbackReportErrorClass(err)
+				logFeedbackReport(a.job.workspace, report.EnvironmentID, report.ID, "pending", "resolve", err)
+				continue
+			}
+			if progress, err = a.saveLineStep(ctx, store.FeedbackLineStep{Candidate: candidate.Name, Answer: answer}); err != nil {
+				return reports.Outcome{}, err
+			}
+			if next := reports.PlanResolve(request, &progress); next.Final != nil {
+				break
+			}
+		}
+		plan = reports.PlanResolve(request, &progress)
+	}
+	if plan.Final != nil && !progress.Ended() {
+		if progress, err = a.saveLineStep(ctx, *plan.Final); err != nil {
 			return reports.Outcome{}, err
 		}
-		if len(admitted) < len(keys) {
-			return reports.Outcome{Waiting: feedbackWaitingAllowance}, nil
-		}
 	}
-	resolution := feedback.Resolve(ctx, a.forge, request)
-	if resolution.Commit == "" {
-		if resolution.Reason == string(github.ForgeRateLimited) || !resolution.RetryAt.IsZero() {
-			logFeedbackReport(a.job.workspace, report.EnvironmentID, report.ID, "pending", "resolve", github.RateLimitedError(resolution.RetryAt, errFeedbackForgeHeld))
+	switch {
+	case progress.Unresolved != "":
+		return reports.Line(reports.LineInput{Report: report, Unresolved: progress.Unresolved}), nil
+	case progress.Commit == "":
+		if a.expired {
+			return reports.Outcome{Waiting: a.expiredLineReason()}, nil
 		}
-		return reports.Line(reports.LineInput{Report: report, Unresolved: resolution.Reason}), nil
+		if waiting == "" {
+			waiting = feedbackWaitingAllowance
+		}
+		return reports.Outcome{Waiting: waiting}, nil
+	case a.expired:
+		return reports.Outcome{Waiting: a.expiredLineReason()}, nil
 	}
 	slug := ""
 	for _, repository := range repositories {
-		if repository.Name == resolution.Repository {
+		if repository.Name == progress.Repository {
 			slug = repository.Slug
 		}
 	}
@@ -426,13 +468,12 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 	if len(admitted) == 0 {
 		return reports.Outcome{Waiting: feedbackWaitingAllowance}, nil
 	}
-	answer, err := a.forge.ReadLineChange(ctx, store.FeedbackRepository(slug), resolution.Commit, report.File, report.Line)
+	answer, err := a.forge.ReadLineChange(ctx, store.FeedbackRepository(slug), progress.Commit, report.File, report.Line)
 	if err != nil {
-		reason := feedbackReportErrorClass(err)
 		logFeedbackReport(a.job.workspace, report.EnvironmentID, report.ID, "pending", "line_read", err)
-		return reports.Outcome{Waiting: reason}, nil
+		return reports.Outcome{Waiting: feedbackReportErrorClass(err)}, nil
 	}
-	read = store.FeedbackReportLineRead{ReportID: report.ID, Repository: resolution.Repository, ResolvedCommit: resolution.Commit, File: report.File, Line: report.Line,
+	read = store.FeedbackReportLineRead{ReportID: report.ID, Repository: progress.Repository, ResolvedCommit: progress.Commit, File: report.File, Line: report.Line,
 		Answer:     store.FeedbackReportLineAnswer{FileFound: answer.FileFound, Commit: answer.Commit, PullRequests: answer.PullRequests},
 		AnsweredAt: a.job.env.clock()}
 	if err := recordFeedbackReportOutcome(ctx, func(writeCtx context.Context) error { return a.reports.RecordFeedbackReportLineRead(writeCtx, read) }); err != nil {
@@ -450,30 +491,26 @@ func (a *feedbackReportAttempt) lineRule(ctx context.Context, environment store.
 	return reports.Line(reports.LineInput{Report: report, Read: &read, Merged: merged}), nil
 }
 
-// feedbackResolveReads returns one admission key for each commit read that
-// feedback.Resolve sends for the request, and none when it sends none: no
-// candidate repository with a slug, or no commit and no version rule that
-// yields one. Each key starts with a prefix that no Git ref and no
-// comparison key can hold, and it is never stored as a comparison.
-func feedbackResolveReads(request feedback.ResolveRequest, reportID string) []store.FeedbackComparisonKey {
-	if request.Version.Commit == "" {
-		if request.Rule == nil {
-			return nil
-		}
-		if _, ok, err := feedback.ApplyVersionRule(*request.Rule, request.Version.Version, request.Service); err != nil || !ok {
-			return nil
-		}
+// saveLineStep stores one definitive result of resolving at once, on a
+// context that outlives the job's deadline, and answers the progress as
+// stored. A result that another attempt stored first is kept.
+func (a *feedbackReportAttempt) saveLineStep(ctx context.Context, step store.FeedbackLineStep) (store.FeedbackLineProgress, error) {
+	var saved store.FeedbackLineProgress
+	err := recordFeedbackReportOutcome(ctx, func(writeCtx context.Context) error {
+		var err error
+		saved, err = a.reports.SaveFeedbackLineProgress(writeCtx, a.report.ID, step)
+		return err
+	})
+	return saved, err
+}
+
+// expiredLineReason is the reason of the not_checked note of a line rule
+// that has no definitive result at 24 hours.
+func (a *feedbackReportAttempt) expiredLineReason() string {
+	if reason := a.job.env.backoff.lineReason(a.lineReasonKey()); reason != "" {
+		return reason
 	}
-	keys := []store.FeedbackComparisonKey{}
-	for _, repository := range request.Repositories {
-		if request.Version.Repository != "" && repository.Name != request.Version.Repository {
-			continue
-		}
-		if strings.TrimSpace(repository.Slug) != "" {
-			keys = append(keys, store.FeedbackComparisonKey{Repository: repository.Slug, Head: feedbackResolvePrefix + reportID})
-		}
-	}
-	return store.NormalizeFeedbackComparisonKeys(keys)
+	return feedbackWaitingLineUnanswered
 }
 
 // timingRule runs the timing rule for the attempt from stored records. It
@@ -482,6 +519,17 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 	report := a.report
 	if !reports.TimingApplies(report) {
 		return reports.Timing(reports.TimingInput{Report: report}), nil
+	}
+	inputs, err := a.feedback.ReadFeedbackInputs(ctx, []string{report.EnvironmentID})
+	if err != nil {
+		return reports.Outcome{}, err
+	}
+	deploys := inputs.Deploys[report.EnvironmentID]
+	// A stored timing result is the rule's answer and is never worked out
+	// again, even when it holds no link and no note (approved plan version
+	// 3).
+	if report.TimingResult != nil {
+		return reports.TimingFromResult(*report.TimingResult, deploys)
 	}
 	now := a.now
 	signals, err := a.feedback.ListFeedbackSignals(ctx, []string{report.EnvironmentID})
@@ -495,11 +543,6 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 	if err != nil {
 		return reports.Outcome{}, err
 	}
-	inputs, err := a.feedback.ReadFeedbackInputs(ctx, []string{report.EnvironmentID})
-	if err != nil {
-		return reports.Outcome{}, err
-	}
-	deploys := inputs.Deploys[report.EnvironmentID]
 	priors := map[string]store.FeedbackBoundary{}
 	for _, deploy := range reports.SignalCandidates(report, deploys) {
 		before := deploy.Start()
@@ -523,13 +566,28 @@ func (a *feedbackReportAttempt) timingRule(ctx context.Context, environment stor
 	input := reports.TimingInput{Report: report, TimingWindowMinutes: environment.TimingWindowMinutes, Deploys: deploys, PriorSignals: priors,
 		Resolutions: inputs.Resolutions, Slugs: slugs, Merged: merged, SignalAfterReport: signalAfter, Listening: listening}
 	outcome := reports.Timing(input)
-	if len(outcome.Missing) == 0 {
+	if len(outcome.Missing) > 0 {
+		if input.Comparisons, err = a.feedback.ListFeedbackComparisons(ctx, outcome.Missing); err != nil {
+			return reports.Outcome{}, err
+		}
+		outcome = reports.Timing(input)
+	}
+	if outcome.Ended {
+		// The answer is stored at once. A result that another attempt stored
+		// first is the one used.
+		var saved *store.FeedbackTimingResult
+		if err := recordFeedbackReportOutcome(ctx, func(writeCtx context.Context) error {
+			var err error
+			saved, err = a.reports.SaveFeedbackTimingResult(writeCtx, report.ID, reports.TimingResultOf(outcome))
+			return err
+		}); err != nil {
+			return reports.Outcome{}, err
+		}
+		if saved != nil {
+			return reports.TimingFromResult(*saved, deploys)
+		}
 		return outcome, nil
 	}
-	if input.Comparisons, err = a.feedback.ListFeedbackComparisons(ctx, outcome.Missing); err != nil {
-		return reports.Outcome{}, err
-	}
-	outcome = reports.Timing(input)
 	// A missing answer is never taken as an answer. The read job asks
 	// GitHub within the workspace allowance, and a later attempt reads the
 	// stored answer. An expired attempt, or one whose workspace holds a

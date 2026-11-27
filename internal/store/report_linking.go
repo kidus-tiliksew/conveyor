@@ -187,6 +187,18 @@ type ReportLinkingStore interface {
 	// It answers false and writes nothing when linking had already ended. A
 	// report the workspace does not hold answers ErrNotFound.
 	FinishFeedbackReportLinking(ctx context.Context, linking FeedbackReportLinking) (bool, error)
+	// SaveFeedbackLineProgress stores one definitive result of resolving
+	// the first entry of a report, under the report write lock, as
+	// ApplyFeedbackLineStep merges it, and answers the progress as stored. A
+	// stored answer is never replaced. A report whose linking ended is left
+	// as it is. A report the workspace does not hold answers ErrNotFound.
+	SaveFeedbackLineProgress(ctx context.Context, reportID string, step FeedbackLineStep) (FeedbackLineProgress, error)
+	// SaveFeedbackTimingResult stores the timing rule's answer of a report
+	// once, under the report write lock, and answers the result as stored: a
+	// stored result is kept. A report whose linking ended is left as it is,
+	// and the answer is then the stored result or nil. A report the
+	// workspace does not hold answers ErrNotFound.
+	SaveFeedbackTimingResult(ctx context.Context, reportID string, result FeedbackTimingResult) (*FeedbackTimingResult, error)
 	// ListPendingFeedbackReports returns the reports of one environment
 	// whose linking has not ended, open and closed, ordered by ID.
 	ListPendingFeedbackReports(ctx context.Context, environmentID string) ([]FeedbackReport, error)
@@ -440,4 +452,202 @@ func FeedbackMergePullRequest(text string) int {
 		return 0
 	}
 	return number
+}
+
+// FeedbackLineAbsent is the stored answer of a candidate repository's commit
+// read when GitHub proved that the repository holds no such commit or tag.
+const FeedbackLineAbsent = "absent"
+
+// FeedbackLineProgress is the stored progress of a report's line rule, so a
+// fresh worker continues from the store alone (component-feedback-reports
+// invariants 12 and 15; approved plan version 3). Candidates holds, by
+// repository name of the workspace configuration, the definitive answer of
+// that repository's commit read: a full commit or FeedbackLineAbsent. Once
+// resolving ends, either Repository and Commit hold the resolved repository
+// and full commit, or Unresolved holds a definitive unresolved reason. A
+// retryable failure is never stored. It holds no report text.
+type FeedbackLineProgress struct {
+	Candidates map[string]string `json:"candidates,omitempty"`
+	Repository string            `json:"repository,omitempty"`
+	Commit     string            `json:"commit,omitempty"`
+	Unresolved string            `json:"unresolved,omitempty"`
+}
+
+// Ended reports whether resolving has ended.
+func (p *FeedbackLineProgress) Ended() bool {
+	return p != nil && (p.Commit != "" || p.Unresolved != "")
+}
+
+// FeedbackLineStep is one definitive result of resolving to store: one
+// candidate answer (Candidate and Answer), the resolution (Repository and
+// Commit), or a definitive unresolved reason (Unresolved). Exactly one kind
+// is set.
+type FeedbackLineStep struct {
+	Candidate  string
+	Answer     string
+	Repository string
+	Commit     string
+	Unresolved string
+}
+
+// FeedbackDefinitiveUnresolved lists the unresolved reasons of
+// component-production-feedback invariant 7 that are final for the line
+// rule. Every other reason, a forge failure, a missing App, and pending
+// included, proves nothing and is never stored.
+var FeedbackDefinitiveUnresolved = []string{FeedbackReasonNoMatch, FeedbackReasonAmbiguous, FeedbackReasonNoVersionRule, FeedbackReasonRuleMismatch, FeedbackReasonNoRepository}
+
+// ApplyFeedbackLineStep merges one step into stored progress and reports
+// whether it changed. A stored answer is never replaced: a second answer for
+// a candidate, and a second resolution or reason, change nothing. Every
+// backend writes exactly this result under the report write lock.
+func ApplyFeedbackLineStep(stored *FeedbackLineProgress, step FeedbackLineStep) (FeedbackLineProgress, bool, error) {
+	progress := FeedbackLineProgress{}
+	if stored != nil {
+		progress = cloneFeedbackLineProgress(*stored)
+	}
+	kinds := 0
+	if step.Candidate != "" || step.Answer != "" {
+		kinds++
+		if step.Candidate == "" || (step.Answer != FeedbackLineAbsent && !FeedbackCommitID(step.Answer)) {
+			return progress, false, fmt.Errorf("a candidate answer needs a repository and a full commit or an absence")
+		}
+	}
+	if step.Repository != "" || step.Commit != "" {
+		kinds++
+		if step.Repository == "" || !FeedbackCommitID(step.Commit) {
+			return progress, false, fmt.Errorf("a resolution needs a repository and a full commit")
+		}
+	}
+	if step.Unresolved != "" {
+		kinds++
+		if !slices.Contains(FeedbackDefinitiveUnresolved, step.Unresolved) {
+			return progress, false, fmt.Errorf("only a definitive unresolved reason is stored")
+		}
+	}
+	if kinds != 1 {
+		return progress, false, fmt.Errorf("a line step holds exactly one result")
+	}
+	switch {
+	case step.Candidate != "":
+		if _, answered := progress.Candidates[step.Candidate]; answered || progress.Ended() {
+			return progress, false, nil
+		}
+		if progress.Candidates == nil {
+			progress.Candidates = map[string]string{}
+		}
+		progress.Candidates[step.Candidate] = step.Answer
+	case progress.Ended():
+		return progress, false, nil
+	case step.Commit != "":
+		progress.Repository, progress.Commit = step.Repository, step.Commit
+	default:
+		progress.Unresolved = step.Unresolved
+	}
+	return progress, true, nil
+}
+
+func cloneFeedbackLineProgress(progress FeedbackLineProgress) FeedbackLineProgress {
+	if progress.Candidates != nil {
+		candidates := make(map[string]string, len(progress.Candidates))
+		for name, answer := range progress.Candidates {
+			candidates[name] = answer
+		}
+		progress.Candidates = candidates
+	}
+	return progress
+}
+
+// FeedbackTimingLink is one piece of timing evidence of a stored timing
+// result: the task, the deploy by its record ID, the whole minutes, and the
+// prior signal's arrival in the second case.
+type FeedbackTimingLink struct {
+	TaskID         string     `json:"task_id"`
+	DeployID       string     `json:"deploy_id"`
+	ElapsedMinutes int64      `json:"elapsed_minutes"`
+	PriorSignalAt  *time.Time `json:"prior_signal_at,omitempty"`
+}
+
+// FeedbackTimingNote is one note of a stored timing result, naming its deploy
+// by record ID.
+type FeedbackTimingNote struct {
+	Kind      string `json:"kind"`
+	DeployID  string `json:"deploy_id"`
+	TaskCount int    `json:"task_count,omitempty"`
+}
+
+// FeedbackTimingResult is the stored answer of a report's timing rule once it
+// ended, so it is reused and never worked out again (approved plan version
+// 3). Deploys are named by record ID, so it holds no report text. An empty
+// result, with no link and no note, is an answer too.
+type FeedbackTimingResult struct {
+	Links []FeedbackTimingLink `json:"links"`
+	Notes []FeedbackTimingNote `json:"notes"`
+}
+
+// NormalizeFeedbackTimingResult checks a timing result before a backend
+// stores it.
+func NormalizeFeedbackTimingResult(result FeedbackTimingResult) (FeedbackTimingResult, error) {
+	if result.Links == nil {
+		result.Links = []FeedbackTimingLink{}
+	}
+	if result.Notes == nil {
+		result.Notes = []FeedbackTimingNote{}
+	}
+	for i, link := range result.Links {
+		if link.TaskID == "" || link.DeployID == "" || link.ElapsedMinutes < 0 {
+			return FeedbackTimingResult{}, fmt.Errorf("a timing link needs a task, a deploy, and whole minutes")
+		}
+		if link.PriorSignalAt != nil {
+			at := link.PriorSignalAt.UTC()
+			result.Links[i].PriorSignalAt = &at
+		}
+	}
+	for _, note := range result.Notes {
+		if note.DeployID == "" {
+			return FeedbackTimingResult{}, fmt.Errorf("a timing note needs a deploy")
+		}
+		switch note.Kind {
+		case FeedbackNoteTooManyTasks, FeedbackNoteNoTaskDeploy, FeedbackNoteDeployNotCompare:
+		default:
+			return FeedbackTimingResult{}, fmt.Errorf("a timing note is too_many_tasks, no_task_deploy, or deploy_not_compared")
+		}
+	}
+	return result, nil
+}
+
+// FeedbackLineProgressJSON and FeedbackTimingResultJSON render the stored
+// progress for a durable backend's column, and the Parse functions read it
+// back. A NULL column is nil.
+func FeedbackLineProgressJSON(progress FeedbackLineProgress) string {
+	return string(core.JSONPayload(progress))
+}
+
+func ParseFeedbackLineProgress(raw []byte) (*FeedbackLineProgress, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var progress FeedbackLineProgress
+	if err := json.Unmarshal(raw, &progress); err != nil {
+		return nil, fmt.Errorf("decode line progress: %w", err)
+	}
+	return &progress, nil
+}
+
+func FeedbackTimingResultJSON(result FeedbackTimingResult) string {
+	return string(core.JSONPayload(result))
+}
+
+func ParseFeedbackTimingResult(raw []byte) (*FeedbackTimingResult, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var result FeedbackTimingResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("decode timing result: %w", err)
+	}
+	normalized, err := NormalizeFeedbackTimingResult(result)
+	if err != nil {
+		return nil, err
+	}
+	return &normalized, nil
 }

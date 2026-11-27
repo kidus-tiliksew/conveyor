@@ -4,5 +4,10 @@
 -- time of a report's last linking attempt, before this file runs. SingleStore
 -- DDL commits implicitly and has no ADD COLUMN IF NOT EXISTS, so the add lives
 -- in Go behind an information_schema check, and an interrupted startup can run
--- it again. NULL means that no attempt was claimed yet. No backfill.
+-- it again. NULL means that no attempt was claimed yet. Under approved plan
+-- version 3 the same step adds the nullable JSON columns line_progress and
+-- timing_result: the stored progress of a report's linking, so that a fresh
+-- worker continues from the store alone (component-feedback-reports
+-- invariants 12 and 15). Each holds no report text and is never served. No
+-- backfill.
 SELECT 1;

@@ -249,3 +249,74 @@ func (s *Store) ListPendingFeedbackReports(ctx context.Context, environmentID st
 	ctx = dbmetrics.WithReadLabel(ctx, "ListPendingFeedbackReports")
 	return queryFeedbackReports(ctx, s.boundary, `SELECT `+feedbackReportColumns+` FROM feedback_reports WHERE workspace_id=$1 AND environment_id=$2 AND linking_ended_at IS NULL ORDER BY id`, workspace(ctx), environmentID)
 }
+
+// SaveFeedbackLineProgress implements store.ReportLinkingStore under the
+// report row lock.
+func (s *Store) SaveFeedbackLineProgress(ctx context.Context, reportID string, step store.FeedbackLineStep) (store.FeedbackLineProgress, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SaveFeedbackLineProgress")
+	if _, err := store.RequireActor(ctx); err != nil {
+		return store.FeedbackLineProgress{}, err
+	}
+	workspaceID := workspace(ctx)
+	var saved store.FeedbackLineProgress
+	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+		report, err := lockFeedbackReport(ctx, tx, workspaceID, reportID)
+		if err != nil {
+			return err
+		}
+		progress, changed, err := store.ApplyFeedbackLineStep(report.LineProgress, step)
+		if err != nil {
+			return err
+		}
+		if !changed || report.LinkingEndedAt != nil {
+			saved = store.FeedbackLineProgress{}
+			if report.LineProgress != nil {
+				saved = *report.LineProgress
+			}
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `UPDATE feedback_reports SET line_progress=$3::text::jsonb WHERE workspace_id=$1 AND id=$2`, workspaceID, reportID, store.FeedbackLineProgressJSON(progress)); err != nil {
+			return err
+		}
+		saved = progress
+		return nil
+	})
+	if err != nil {
+		return store.FeedbackLineProgress{}, err
+	}
+	return saved, nil
+}
+
+// SaveFeedbackTimingResult implements store.ReportLinkingStore under the
+// report row lock.
+func (s *Store) SaveFeedbackTimingResult(ctx context.Context, reportID string, result store.FeedbackTimingResult) (*store.FeedbackTimingResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SaveFeedbackTimingResult")
+	if _, err := store.RequireActor(ctx); err != nil {
+		return nil, err
+	}
+	result, err := store.NormalizeFeedbackTimingResult(result)
+	if err != nil {
+		return nil, err
+	}
+	workspaceID := workspace(ctx)
+	var saved *store.FeedbackTimingResult
+	err = s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+		report, err := lockFeedbackReport(ctx, tx, workspaceID, reportID)
+		if err != nil {
+			return err
+		}
+		if report.TimingResult != nil || report.LinkingEndedAt != nil {
+			saved = report.TimingResult
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `UPDATE feedback_reports SET timing_result=$3::text::jsonb WHERE workspace_id=$1 AND id=$2`, workspaceID, reportID, store.FeedbackTimingResultJSON(result)); err != nil {
+			return err
+		}
+		saved = &result
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return saved, nil
+}
