@@ -22,8 +22,16 @@ var _ store.FeedbackStore = (*Store)(nil)
 // after it. FOR NO KEY UPDATE does not block an insert of a row that
 // references the environment.
 func lockFeedbackKey(ctx context.Context, tx pgx.Tx, workspaceID string, signal store.FeedbackSignal) (string, error) {
+	return lockEnvironmentKey(ctx, tx, workspaceID, signal.EnvironmentID, signal.KeyID)
+}
+
+// lockEnvironmentKey takes the two locks of lockFeedbackKey for any request
+// under an environment key: a signal or a report request. Both take the
+// environment row first, so the writes of one environment run one at a time
+// (component-feedback-reports invariant 6).
+func lockEnvironmentKey(ctx context.Context, tx pgx.Tx, workspaceID, environmentID, keyID string) (string, error) {
 	var archived bool
-	err := tx.QueryRow(ctx, `SELECT archived FROM environments WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE`, workspaceID, signal.EnvironmentID).Scan(&archived)
+	err := tx.QueryRow(ctx, `SELECT archived FROM environments WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE`, workspaceID, environmentID).Scan(&archived)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && archived) {
 		return "", store.ErrInvalidEnvironmentKey
 	}
@@ -31,7 +39,7 @@ func lockFeedbackKey(ctx context.Context, tx pgx.Tx, workspaceID string, signal 
 		return "", err
 	}
 	var label string
-	err = tx.QueryRow(ctx, `SELECT label FROM environment_keys WHERE workspace_id=$1 AND id=$2 AND environment_id=$3 AND revoked_at IS NULL FOR NO KEY UPDATE`, workspaceID, signal.KeyID, signal.EnvironmentID).Scan(&label)
+	err = tx.QueryRow(ctx, `SELECT label FROM environment_keys WHERE workspace_id=$1 AND id=$2 AND environment_id=$3 AND revoked_at IS NULL FOR NO KEY UPDATE`, workspaceID, keyID, environmentID).Scan(&label)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", store.ErrInvalidEnvironmentKey
 	}
@@ -208,6 +216,15 @@ SELECT $1::text, $2::text, $3::timestamptz, $3::timestamptz, d.* FROM unnest($4:
 	return err
 }
 
+// touchEnvironmentKey writes a key's last use at most once a minute, inside
+// the transaction that accepts what the key sent (component-environments
+// invariant 14).
+func touchEnvironmentKey(ctx context.Context, tx pgx.Tx, workspaceID, keyID string) error {
+	_, err := tx.Exec(ctx, `UPDATE environment_keys SET last_used_at=now() WHERE workspace_id=$1 AND id=$2 AND (last_used_at IS NULL OR last_used_at < now() - $3::bigint * interval '1 microsecond')`,
+		workspaceID, keyID, store.EnvironmentKeyUseGranularity.Microseconds())
+	return err
+}
+
 // recordFeedbackAccepted keeps the signal as a boundary of the deploy history.
 func recordFeedbackAccepted(ctx context.Context, tx pgx.Tx, workspaceID string, signal store.FeedbackSignal, origin store.FeedbackOrigin) error {
 	accepted := store.NewFeedbackAcceptedSignal(signal, origin)
@@ -276,8 +293,7 @@ func (s *Store) RecordFeedbackSignal(ctx context.Context, signal store.FeedbackS
 		if err := writeFeedbackChanges(ctx, tx, workspaceID, signal, origin, changes); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE environment_keys SET last_used_at=now() WHERE workspace_id=$1 AND id=$2 AND (last_used_at IS NULL OR last_used_at < now() - $3::bigint * interval '1 microsecond')`,
-			workspaceID, signal.KeyID, store.EnvironmentKeyUseGranularity.Microseconds()); err != nil {
+		if err := touchEnvironmentKey(ctx, tx, workspaceID, signal.KeyID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO feedback_signals (workspace_id, environment_id, last_signal_at, next_signal_seconds, source, source_label, actor_id, last_report) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)

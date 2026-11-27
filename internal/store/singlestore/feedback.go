@@ -41,9 +41,15 @@ func eachFeedbackChunk[T any](values []T, fn func([]T) error) error {
 // the workspace environment claim, which an archive and a revocation take
 // too, so the result stays true until the signal commits.
 func feedbackKeyLabel(ctx context.Context, tx *sql.Tx, ws string, signal store.FeedbackSignal) (string, error) {
+	return environmentKeyLabel(ctx, tx, ws, signal.EnvironmentID, signal.KeyID)
+}
+
+// environmentKeyLabel is feedbackKeyLabel for any request under an
+// environment key: a signal or a report request.
+func environmentKeyLabel(ctx context.Context, tx *sql.Tx, ws, environmentID, keyID string) (string, error) {
 	var label string
 	err := tx.QueryRowContext(ctx, `SELECT k.label FROM environment_keys k JOIN environments e ON e.workspace_id=k.workspace_id AND e.id=k.environment_id WHERE k.workspace_id=? AND k.id=? AND k.environment_id=? AND k.revoked_at IS NULL AND e.archived=0`,
-		ws, signal.KeyID, signal.EnvironmentID).Scan(&label)
+		ws, keyID, environmentID).Scan(&label)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", store.ErrInvalidEnvironmentKey
 	}
@@ -311,8 +317,7 @@ func (s *Store) RecordFeedbackSignal(ctx context.Context, signal store.FeedbackS
 		if err := writeFeedbackChanges(ctx, tx, ws, signal, origin, changes); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE environment_keys SET last_used_at=CURRENT_TIMESTAMP(6) WHERE workspace_id=? AND id=? AND (last_used_at IS NULL OR last_used_at<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND))",
-			ws, signal.KeyID, store.EnvironmentKeyUseGranularity.Microseconds()); err != nil {
+		if err := touchEnvironmentKey(ctx, tx, ws, signal.KeyID); err != nil {
 			return err
 		}
 		if err := recordFeedbackNewest(ctx, tx, ws, signal, origin); err != nil {
@@ -323,6 +328,15 @@ func (s *Store) RecordFeedbackSignal(ctx context.Context, signal store.FeedbackS
 		}
 		return claim.touchEnvironment(ctx, tx, signal.EnvironmentID)
 	})
+}
+
+// touchEnvironmentKey writes a key's last use at most once a minute, inside
+// the transaction that accepts what the key sent (component-environments
+// invariant 14).
+func touchEnvironmentKey(ctx context.Context, tx *sql.Tx, ws, keyID string) error {
+	_, err := tx.ExecContext(ctx, "UPDATE environment_keys SET last_used_at=CURRENT_TIMESTAMP(6) WHERE workspace_id=? AND id=? AND (last_used_at IS NULL OR last_used_at<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND))",
+		ws, keyID, store.EnvironmentKeyUseGranularity.Microseconds())
+	return err
 }
 
 // writeFeedbackChanges records a planned change set: the stops, the new
