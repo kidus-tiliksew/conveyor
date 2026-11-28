@@ -148,7 +148,16 @@ func (s *Server) feedbackCrateEnvironments(ctx context.Context, crateID string) 
 	if !ok {
 		return live, nil
 	}
-	derived, names, pending, missing := feedback.CrateStatus(inputs, members)
+	// The open-report counts use the crate rule of the report list, so the
+	// count on a line and the list of the crate's reports agree
+	// (component-feedback-reports invariants 21 and 23).
+	openReports := map[string]int{}
+	if reports, ok := s.Store.(store.ReportStore); ok {
+		if openReports, err = reports.CountCrateOpenFeedbackReports(ctx, crateID); err != nil {
+			return feedbackCrateLive{}, err
+		}
+	}
+	derived, names, pending, missing := feedback.CrateStatus(inputs, members, openReports)
 	s.requestFeedbackMissing(ctx, missing)
 	for taskID, environments := range names {
 		live.LiveIn[taskID] = append(live.LiveIn[taskID], environments...)

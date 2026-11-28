@@ -120,6 +120,8 @@ func TestMemoryConformance(t *testing.T) {
 				store.CloseFeedbackReportForTest(t, st, ctx, reportID, at)
 			}, SeedFeedbackReportLink: func(t *testing.T, ctx context.Context, link store.FeedbackReportLink) {
 				store.SeedFeedbackReportLinkForTest(t, st, ctx, link)
+			}, DrainFeedbackReportReadCopies: func() uint64 {
+				return store.DrainFeedbackReportReadCopiesForTest(st)
 			}, LineageHTTP: func(*testing.T) http.Handler {
 				// The shared-token operator fixture (component-lineage).
 				server := httpapi.NewServer(st)

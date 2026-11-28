@@ -190,6 +190,12 @@ FROM feedback_report_links WHERE workspace_id=$1 AND report_id=$2 ORDER BY id`, 
 	if err != nil {
 		return nil, err
 	}
+	return collectPostgresFeedbackReportLinks(rows)
+}
+
+// collectPostgresFeedbackReportLinks decodes link rows in the column order
+// of queryFeedbackReportLinks.
+func collectPostgresFeedbackReportLinks(rows pgx.Rows) ([]store.FeedbackReportLink, error) {
 	defer rows.Close()
 	links := []store.FeedbackReportLink{}
 	for rows.Next() {
@@ -197,6 +203,7 @@ FROM feedback_report_links WHERE workspace_id=$1 AND report_id=$2 ORDER BY id`, 
 		var taskID, crateID, confirmedBy, removedBy *string
 		var confirmedAt, removedAt pgtype.Timestamptz
 		var evidence string
+		var err error
 		if err := rows.Scan(&link.ID, &link.ReportID, &taskID, &crateID, &link.State, &evidence, &link.CreatedAt, &link.CreatedBy, &confirmedBy, &confirmedAt, &removedBy, &removedAt); err != nil {
 			return nil, err
 		}

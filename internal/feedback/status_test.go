@@ -278,7 +278,7 @@ func TestCrateStatus(t *testing.T) {
 	f.compare("conveyor", mergeA, version, store.FeedbackCompareAhead)
 	f.compare("conveyor", mergeB, version, store.FeedbackCompareDiverged)
 	members := []store.FeedbackMergedTask{task("ta", "conveyor", mergeA), task("tb", "conveyor", mergeB), task("tc", "conveyor", "")}
-	lines, liveIn, _, missing := CrateStatus(f.in, members)
+	lines, liveIn, _, missing := CrateStatus(f.in, members, nil)
 	if len(lines) != 2 || !missing.Empty() {
 		t.Fatalf("lines=%+v missing=%+v", lines, missing)
 	}
@@ -295,7 +295,7 @@ func TestCrateStatus(t *testing.T) {
 	// A stopped version whose answer stays missing does not hide a member
 	// that a running version proves live.
 	f.deploy("env-prod", "api", sha("b0"), "conveyor", 5, 20)
-	lines, liveIn, _, missing = CrateStatus(f.in, members)
+	lines, liveIn, _, missing = CrateStatus(f.in, members, nil)
 	if len(lines) != 2 || lines[0].LiveTaskCount != 1 || strings.Join(liveIn["ta"], ",") != "Production,Staging" {
 		t.Fatalf("lines with a stopped version=%+v live_in=%+v", lines, liveIn)
 	}
@@ -303,8 +303,51 @@ func TestCrateStatus(t *testing.T) {
 	if len(missing.Comparisons) != 1 || missing.Comparisons[0].Base != mergeB || missing.Comparisons[0].Head != sha("b0") {
 		t.Fatalf("missing with a stopped version=%+v", missing)
 	}
-	if lines, _, _, _ := CrateStatus(f.in, nil); len(lines) != 0 {
+	if lines, _, _, _ := CrateStatus(f.in, nil, nil); len(lines) != 0 {
 		t.Fatalf("lines without members=%+v", lines)
+	}
+}
+
+// TestCrateStatusOpenReportCounts proves the count on each environment line
+// at the crate projection boundary: a line carries its environment's count
+// and 0 when it has none; a count with no environment, and a count of an
+// environment that has no line, make no line and reach no line
+// (component-feedback-reports invariant 23; feature-production-feedback-listening
+// approved plan: environment-less reports stay out of the counts).
+func TestCrateStatusOpenReportCounts(t *testing.T) {
+	merge, version := sha("a1"), sha("b1")
+	f := newStatusFixture()
+	f.environment("env-prod", "Production", nil)
+	f.environment("env-stage", "Staging", nil)
+	f.environment("env-app", "App", nil)
+	f.deploy("env-prod", "api", version, "conveyor", 20, -1)
+	f.deploy("env-stage", "api", version, "conveyor", 30, -1)
+	f.deploy("env-app", "web", sha("c1"), "app", 30, -1)
+	f.compare("conveyor", merge, version, store.FeedbackCompareAhead)
+	members := []store.FeedbackMergedTask{task("ta", "conveyor", merge)}
+	counts := map[string]int{"env-prod": 3, "": 7, "env-app": 5, "env-unknown": 9}
+	lines, _, _, _ := CrateStatus(f.in, members, counts)
+	if len(lines) != 2 {
+		t.Fatalf("lines=%+v, want only the two relevant environments", lines)
+	}
+	got := map[string]int{}
+	for _, line := range lines {
+		got[line.Environment.ID] = line.OpenReportCount
+	}
+	if want := map[string]int{"env-prod": 3, "env-stage": 0}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("counts on the lines=%v, want %v", got, want)
+	}
+	total := 0
+	for _, line := range lines {
+		total += line.OpenReportCount
+	}
+	if total != 3 {
+		t.Fatalf("the lines count %d reports, want 3: no environment-less count reaches a line", total)
+	}
+	// Without counts every line shows 0, and the lines are the same.
+	plain, _, _, _ := CrateStatus(f.in, members, nil)
+	if len(plain) != len(lines) || plain[0].OpenReportCount != 0 || plain[1].OpenReportCount != 0 {
+		t.Fatalf("lines without counts=%+v", plain)
 	}
 }
 
@@ -393,7 +436,7 @@ func TestCrateStatusPending(t *testing.T) {
 	f.deploy("env-prod", "api", version, "conveyor", 20, -1)
 	f.compare("conveyor", mergeA, version, store.FeedbackCompareAhead)
 	members := []store.FeedbackMergedTask{task("ta", "conveyor", mergeA), task("tb", "conveyor", mergeB)}
-	lines, liveIn, pending, missing := CrateStatus(f.in, members)
+	lines, liveIn, pending, missing := CrateStatus(f.in, members, nil)
 	if !pending || len(missing.Comparisons) != 1 || missing.Comparisons[0].Base != mergeB {
 		t.Fatalf("pending=%v missing=%+v", pending, missing)
 	}
@@ -403,7 +446,7 @@ func TestCrateStatusPending(t *testing.T) {
 	// Once the answer is stored, the same lines are served and nothing is
 	// pending.
 	f.compare("conveyor", mergeB, version, store.FeedbackCompareDiverged)
-	settled, settledLiveIn, pending, missing := CrateStatus(f.in, members)
+	settled, settledLiveIn, pending, missing := CrateStatus(f.in, members, nil)
 	if pending || !missing.Empty() || !reflect.DeepEqual(settled, lines) || strings.Join(settledLiveIn["ta"], ",") != "Production" {
 		t.Fatalf("pending=%v missing=%+v lines=%+v", pending, missing, settled)
 	}
@@ -411,10 +454,10 @@ func TestCrateStatusPending(t *testing.T) {
 	f = newStatusFixture()
 	f.environment("env-prod", "Production", nil)
 	f.deploy("env-prod", "api", version, "conveyor", 20, -1)
-	if lines, _, pending, _ := CrateStatus(f.in, []store.FeedbackMergedTask{task("tc", "conveyor", "")}); pending || len(lines) != 1 || lines[0].LiveTaskCount != 0 {
+	if lines, _, pending, _ := CrateStatus(f.in, []store.FeedbackMergedTask{task("tc", "conveyor", "")}, nil); pending || len(lines) != 1 || lines[0].LiveTaskCount != 0 {
 		t.Fatalf("pending=%v lines=%+v", pending, lines)
 	}
-	if lines, _, pending, _ := CrateStatus(newStatusFixture().in, members); pending || len(lines) != 0 {
+	if lines, _, pending, _ := CrateStatus(newStatusFixture().in, members, nil); pending || len(lines) != 0 {
 		t.Fatalf("no environment: pending=%v lines=%+v", pending, lines)
 	}
 }
@@ -491,7 +534,7 @@ func TestStatusIgnoresResolvedGitHubRepository(t *testing.T) {
 	run := func(in Inputs) answer {
 		tasks := []store.FeedbackMergedTask{task("t1", "conveyor", merge), task("t2", "conveyor", sha("cc"))}
 		statuses, pending, missing := TaskStatuses(in, tasks[0])
-		lines, liveIn, _, _ := CrateStatus(in, tasks)
+		lines, liveIn, _, _ := CrateStatus(in, tasks, nil)
 		return answer{statuses, pending, missing, lines, liveIn, RequiredComparisons(in, tasks)}
 	}
 	want := run(build(""))

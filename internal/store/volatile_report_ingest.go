@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,6 +26,27 @@ type feedbackReportState struct {
 	// lineReads is keyed by workspace and report ID, as the table's primary
 	// key: one answer for each report.
 	lineReads map[memoryScopedKey]feedbackReportLineReadRow
+	// byID locates each report by workspace and report ID, as the table's
+	// primary key does, so a read of one report reads no other report.
+	byID map[memoryScopedKey]feedbackReportLocation
+	// linksByReport and notesByReport hold, by workspace and report ID, the
+	// IDs of a report's link and note rows, as the tables' report indexes
+	// do, so the links and notes of one report are read without reading the
+	// rows of other reports.
+	linksByReport map[memoryScopedKey]map[string]bool
+	notesByReport map[memoryScopedKey]map[string]bool
+	// readCopies counts what report reads keep: the references a list
+	// keeps for its page, and the report records, links, and notes reads
+	// copy out, so a test can prove that a read's work follows its page and
+	// not the workspace's history. It is shared by every copy of the state.
+	readCopies *atomic.Int64
+}
+
+// feedbackReportLocation is where a report is kept: its environment's map
+// key and its problem key.
+type feedbackReportLocation struct {
+	scope memoryScopedKey
+	key   string
 }
 
 // feedbackReportLinkRow is one row of feedback_report_links. Exactly one of
@@ -73,7 +95,34 @@ func newFeedbackReportState() feedbackReportState {
 		links:     map[memoryScopedKey]feedbackReportLinkRow{},
 		notes:     map[memoryScopedKey]feedbackReportNoteRow{},
 		lineReads: map[memoryScopedKey]feedbackReportLineReadRow{},
+		byID:      map[memoryScopedKey]feedbackReportLocation{},
+
+		linksByReport: map[memoryScopedKey]map[string]bool{},
+		notesByReport: map[memoryScopedKey]map[string]bool{},
+		readCopies:    new(atomic.Int64),
 	}
+}
+
+// putFeedbackReportLinkLocked writes one link row and its report index
+// entry under the held write mutex. Every link write goes through it.
+func (m *volatileMemory) putFeedbackReportLinkLocked(workspace string, row feedbackReportLinkRow) {
+	m.feedbackReportState.links[memoryScopedKey{workspace: workspace, id: row.ID}] = row
+	index := memoryScopedKey{workspace: workspace, id: row.ReportID}
+	if m.feedbackReportState.linksByReport[index] == nil {
+		m.feedbackReportState.linksByReport[index] = map[string]bool{}
+	}
+	m.feedbackReportState.linksByReport[index][row.ID] = true
+}
+
+// putFeedbackReportNoteLocked writes one note row and its report index
+// entry under the held write mutex. Every note write goes through it.
+func (m *volatileMemory) putFeedbackReportNoteLocked(workspace string, row feedbackReportNoteRow) {
+	m.feedbackReportState.notes[memoryScopedKey{workspace: workspace, id: row.ID}] = row
+	index := memoryScopedKey{workspace: workspace, id: row.ReportID}
+	if m.feedbackReportState.notesByReport[index] == nil {
+		m.feedbackReportState.notesByReport[index] = map[string]bool{}
+	}
+	m.feedbackReportState.notesByReport[index][row.ID] = true
 }
 
 var _ ReportStore = (*volatileMemory)(nil)
@@ -153,6 +202,9 @@ func (m *volatileMemory) RecordFeedbackReports(ctx context.Context, batch Feedba
 	}
 	for _, change := range plan.Changes {
 		stored[change.Report.Key] = cloneFeedbackReport(change.Report)
+		if change.New {
+			m.feedbackReportState.byID[memoryScopedKey{workspace: workspace, id: change.Report.ID}] = feedbackReportLocation{scope: scope, key: change.Report.Key}
+		}
 	}
 	for _, event := range plan.Events(prepared.ArrivedAt) {
 		m.appendEventLocked(ctx, event)
@@ -196,6 +248,10 @@ func cloneFeedbackReport(report FeedbackReport) FeedbackReport {
 	if report.LinkingLastAttemptAt != nil {
 		at := *report.LinkingLastAttemptAt
 		report.LinkingLastAttemptAt = &at
+	}
+	if report.FixTaskSetAt != nil {
+		at := *report.FixTaskSetAt
+		report.FixTaskSetAt = &at
 	}
 	if report.LineProgress != nil {
 		progress := CheckStoredFeedbackLineProgress(cloneFeedbackLineProgress(*report.LineProgress))

@@ -586,6 +586,7 @@ var mcpCapabilities = map[string]core.Capability{
 
 	"get_decision":               core.CapabilityViewWorkspace,
 	"list_environments":          core.CapabilityViewWorkspace,
+	"list_feedback_reports":      core.CapabilityViewWorkspace,
 	"list_crates":                core.CapabilityViewWorkspace,
 	"get_crate":                  core.CapabilityViewWorkspace,
 	"get_lineage":                core.CapabilityViewWorkspace,

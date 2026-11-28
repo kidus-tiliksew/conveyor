@@ -78,6 +78,7 @@ func mcpReadDefinitions() []mcpReadDefinition {
 		{"list_crates", listCratesDescription, map[string]any{"state": enum("open", "closed", "all")}, nil},
 		{"get_crate", getCrateDescription, map[string]any{"crate_id": str()}, []string{"crate_id"}},
 		{"list_environments", listEnvironmentsDescription, nil, nil},
+		{"list_feedback_reports", listFeedbackReportsDescription, map[string]any{"state": enum("open", "closed"), "environment_id": str(), "task_id": str(), "crate_id": str()}, nil},
 		{"get_lineage", "Walk the lineage graph from one root under the operator read budget. Items are the reached nodes in walk order, each with label, depth, the edge_path that admitted it, and status (task or work-order state, version status, verdict outcome and seat). traversal reports the budget, truncation, omissions per axis, and the reached link count. root_type is a lineage node type such as requirement, task, or system_design_version. direction is out, in, or both; edge_kind and node_type take comma-separated edge kinds and node types. The graph is read-only: no tool accepts a link.", map[string]any{"root_type": str(), "root_id": str(), "direction": enum("out", "in", "both"), "edge_kind": str(), "node_type": str(), "max_depth": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadDepth}, "max_nodes": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadNodes}, "max_links": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadNodes * config.DefaultLineageContextLinksPerNode}}, []string{"root_type", "root_id"}},
 	}
 }
@@ -384,6 +385,10 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 	if name == "get_document" {
 		s.recordDocumentConsultation(ctx, credential, workspace, args, page)
 	}
+	// The served page asks for its own follow-up work only now that it has
+	// passed every bound, on a fresh read and on a snapshot page alike
+	// (component-feedback-reports invariant 15).
+	s.requestServedMCPLinking(ctx, name, page.Items)
 	return page, nil
 }
 
@@ -594,6 +599,8 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 		return s.mcpCrateRead(ctx, name, a)
 	case "list_environments":
 		return s.mcpEnvironmentRead(ctx)
+	case "list_feedback_reports":
+		return s.mcpFeedbackReportRead(ctx, a)
 	case "list_documents":
 		return s.mcpDocumentList(ctx, a)
 	case "get_document":

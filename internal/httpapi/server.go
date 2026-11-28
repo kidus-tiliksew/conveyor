@@ -81,7 +81,14 @@ type Server struct {
 	feedbackReportLimiterOnce sync.Once
 	feedbackReportLimiter     *feedbackLimiter
 	feedbackClock             func() time.Time
-	feedbackKeyTimeout        time.Duration
+	// feedbackLinkingAsked, when set by a test, observes each report a read
+	// asks the linking job for (component-feedback-reports invariant 15).
+	feedbackLinkingAsked func(workspace, reportID string)
+	// feedbackReportsListed, when set by a test, observes each store list
+	// list_feedback_reports makes, with the page the store answered
+	// (component-feedback-reports invariant 24).
+	feedbackReportsListed func(query store.FeedbackReportQuery, page store.FeedbackReportPage)
+	feedbackKeyTimeout    time.Duration
 	// feedbackWork runs resolving and comparing in the background, after the
 	// signal route answers and when a read finds an answer missing.
 	// feedbackForge replaces the workspace App's GitHub reads in tests.
@@ -496,6 +503,16 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Patch("/crates/{id}", s.patchCrate)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Put("/tasks/{id}/crate", s.setTaskCrate)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Delete("/tasks/{id}/crate", s.clearTaskCrate)
+			// Feedback reports: reads need view_workspace, which this group
+			// requires, and every act needs create_tasks
+			// (component-feedback-reports, Public surfaces; DEC-149(2)).
+			r.Get("/feedback-reports", s.listFeedbackReports)
+			r.Get("/feedback-reports/{id}", s.getFeedbackReport)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/feedback-reports/{id}/links", s.linkFeedbackReport)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Delete("/feedback-reports/{id}/links/{link_id}", s.removeFeedbackReportLink)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/feedback-reports/{id}/close", s.closeFeedbackReport)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/feedback-reports/{id}/reopen", s.reopenFeedbackReport)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Put("/feedback-reports/{id}/fix-task", s.setFeedbackReportFixTask)
 			// Environments: reads need view_workspace, which this group
 			// requires, and every mutation needs manage_workspace
 			// (component-environments invariant 2).

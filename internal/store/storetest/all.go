@@ -191,6 +191,12 @@ type Fixture struct {
 	// supplies it. The FeedbackReportLinking cases require it and never skip
 	// (component-feedback-reports invariants 11 and 17).
 	SeedFeedbackReportLink func(t *testing.T, ctx context.Context, link store.FeedbackReportLink)
+	// DrainFeedbackReportReadCopies answers what the backend's report reads
+	// kept since the previous drain: the references a list kept for its
+	// page, and the report records, links, and notes copied out.
+	// The volatile backend, which keeps no read ledger, supplies it, so the
+	// ReadWorkBoundedByThePage case counts its work too.
+	DrainFeedbackReportReadCopies func() uint64
 }
 
 // requireStoredTaskHoldSeed returns the fixture's historical hold seed or
@@ -284,6 +290,7 @@ func RunAll(t *testing.T, factory Factory) {
 	run("FeedbackStatus", func(t *testing.T) { runFeedbackStatus(t, factory) })
 	run("FeedbackReports", func(t *testing.T) { runFeedbackReports(t, factory) })
 	run("FeedbackReportLinking", func(t *testing.T) { runFeedbackReportLinking(t, factory) })
+	run("FeedbackReportActs", func(t *testing.T) { runFeedbackReportActs(t, factory) })
 	run("OAuth", func(t *testing.T) { runOAuth(t, factory) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
