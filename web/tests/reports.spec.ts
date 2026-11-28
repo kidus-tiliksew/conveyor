@@ -18,6 +18,7 @@ import {
   mockReportServer,
   now,
   priorSignalEvidence,
+  production,
   qa,
   report,
   reportReads,
@@ -4111,4 +4112,91 @@ test.describe('requests from the click on, offline and on reconnect', () => {
       expect(server.acts[0]).toEqual(item.expected)
     })
   }
+})
+
+// Class: lookups by ID. A record that a served report or a valid address
+// names is never shown as unknown, and it can always be chosen as the filter
+// that selects it.
+test.describe('records a report or an address names', () => {
+  const legacy = { ...production, id: 'env-legacy', name: 'legacy' }
+  const archivedReport = report('rpt-261127-g00061', {
+    summary: 'Report from an archived environment',
+    environment: legacy,
+    last_seen: '2026-11-27T11:58:00Z',
+  })
+  const environmentReads = (server: Server) => server.gets.filter((get) => get.startsWith('/v1/environments'))
+
+  test('the Monitor filter offers an archived environment, selects it, and names it after a reload', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [lineLinked, archivedReport] })
+    await page.goto('/w/demo/monitor')
+    const picker = page.getByRole('combobox', { name: 'Environment' })
+    await expect(picker.locator('optgroup[label="Archived"] option')).toHaveText(['legacy'])
+    await picker.selectOption('env-legacy')
+    await expect(page).toHaveURL('/w/demo/monitor?environment=env-legacy')
+    await expect
+      .poll(() => new URLSearchParams(listReads(server).at(-1)?.split('?')[1]).get('environment_id'))
+      .toBe('env-legacy')
+    await expect(page.locator('[data-report-card]')).toHaveCount(1)
+    await expect(card(page, archivedReport.id)).toBeVisible()
+    await page.reload()
+    await expect(picker).toHaveValue('env-legacy')
+    await expect(picker.locator('option:checked')).toHaveText('legacy')
+    await expect(page.getByText('The address names an environment that is not in the list')).toHaveCount(0)
+    expect(environmentReads(server).some((get) => get.includes('archived=true'))).toBe(true)
+  })
+
+  test('an address that names an archived environment is not unknown, and other filters stay', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [archivedReport] })
+    await page.goto('/w/demo/monitor?no_crate=true&environment=env-legacy')
+    const picker = page.getByRole('combobox', { name: 'Environment' })
+    await expect(picker).toHaveValue('env-legacy')
+    await expect(picker.locator('option:checked')).toHaveText('legacy')
+    await expect(page).toHaveURL('/w/demo/monitor?no_crate=true&environment=env-legacy')
+    await expect(page.getByText('The address names an environment that is not in the list')).toHaveCount(0)
+    await expect.poll(() => listReads(server).length).toBeGreaterThan(0)
+    const params = new URLSearchParams(listReads(server).at(-1)?.split('?')[1])
+    expect(params.get('environment_id')).toBe('env-legacy')
+    expect(params.get('no_crate')).toBe('true')
+  })
+
+  test('when the archived environments do not load, a valid address is not called unknown', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [archivedReport] })
+    server.failArchivedEnvironments = true
+    await page.goto('/w/demo/monitor?environment=env-legacy')
+    const picker = page.getByRole('combobox', { name: 'Environment' })
+    await expect(picker).toHaveValue('env-legacy')
+    await expect(picker.locator('option:checked')).toHaveText('An environment whose name did not load')
+    await expect(
+      page.getByText('The archived environments did not load, so the filter does not offer them.'),
+    ).toBeVisible()
+    await expect(page.getByText('The address names an environment that is not in the list')).toHaveCount(0)
+    // The report list still reads with the filter, and the card names the
+    // environment from the served report.
+    await expect(card(page, archivedReport.id).getByText('legacy', { exact: true })).toBeVisible()
+  })
+
+  test('an address that names an environment no list holds is called unknown', async ({ page }) => {
+    await mockReportServer(page, { reports: [lineLinked] })
+    await page.goto('/w/demo/monitor?environment=env-gone')
+    await expect(page.getByRole('combobox', { name: 'Environment' })).toHaveValue('env-gone')
+    await expect(page.getByText('The address names an environment that is not in the list')).toBeVisible()
+  })
+
+  test('a card names an archived environment from the served report', async ({ page }) => {
+    await mockReportServer(page, { reports: [archivedReport] })
+    await page.goto('/w/demo/monitor')
+    await expect(card(page, archivedReport.id).getByText('legacy', { exact: true })).toBeVisible()
+  })
+
+  test('the link form offers closed crates as well as open ones', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [actReport] })
+    await page.goto('/w/demo/monitor')
+    const item = card(page, actReport.id)
+    await item.getByRole('button', { name: 'Link a task or crate' }).click()
+    await item.getByRole('radio', { name: 'A crate' }).check()
+    const crateRead = () => server.gets.filter((get) => get.startsWith('/v1/crates?')).at(-1) ?? ''
+    await expect.poll(() => new URLSearchParams(crateRead().split('?')[1]).get('state')).toBe('all')
+  })
 })

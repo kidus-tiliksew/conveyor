@@ -286,6 +286,8 @@ export interface Server {
   refuseCreateStatus: number
   // The attachment names of each task intake request, in order.
   attachments: string[][]
+  // Fails the read of the archived environments.
+  failArchivedEnvironments: boolean
   // The request and task stored under each intake key.
   intakeRequests: Map<string, { id: string; request: string }>
 }
@@ -423,6 +425,7 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
     refuseCreates: 0,
     refuseCreateStatus: 400,
     attachments: [],
+    failArchivedEnvironments: false,
     intakeRequests: new Map(),
   }
   const role = options.role ?? 'operator'
@@ -488,6 +491,11 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
           },
         ],
       })
+    // One archived environment, which reports can still name.
+    if (path === '/v1/environments' && url.searchParams.get('archived') === 'true') {
+      if (state.failArchivedEnvironments) return route.fulfill({ status: 500, json: { error: 'internal error' } })
+      return route.fulfill({ json: [{ ...environmentRow('env-legacy', 'legacy'), archived: true }] })
+    }
     if (path === '/v1/environments')
       return route.fulfill({
         json: [environmentRow('env-production', 'production'), environmentRow('env-staging', 'staging')],

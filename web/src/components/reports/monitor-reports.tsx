@@ -45,6 +45,10 @@ export function MonitorReports() {
       params: { workspaceId: workspace },
       search: validateMonitorSearch({ ...search, ...change }),
     })
+  // A report names any environment of the workspace, archived ones too, so
+  // the filter offers both lists: the archived ones in their own group,
+  // marked Archived as the environment settings mark them. Neither list is
+  // paged: the route serves every environment when the read names no limit.
   const environments = useQuery({
     queryKey: ['environments', workspace, 'monitor-report-filter'],
     queryFn: (context) => withQuerySignal(context, (signal) => fetchEnvironments(workspace, false, signal)),
@@ -52,11 +56,21 @@ export function MonitorReports() {
     retry: false,
     refetchOnWindowFocus: false,
   })
+  const archivedEnvironments = useQuery({
+    queryKey: ['environments', workspace, 'monitor-report-filter', 'archived'],
+    queryFn: (context) => withQuerySignal(context, (signal) => fetchEnvironments(workspace, true, signal)),
+    enabled: Boolean(workspace),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
   const rows = environments.data ?? []
-  const unknownEnvironment =
-    search.environment !== undefined &&
-    environments.data !== undefined &&
-    !rows.some((row) => row.id === search.environment)
+  const archivedRows = archivedEnvironments.data ?? []
+  const known = (environmentId: string) =>
+    rows.some((row) => row.id === environmentId) || archivedRows.some((row) => row.id === environmentId)
+  // An environment is unknown only when both lists answered and neither
+  // holds it: a list that did not load never makes a valid choice unknown.
+  const bothLoaded = environments.data !== undefined && archivedEnvironments.data !== undefined
+  const unknownEnvironment = search.environment !== undefined && bothLoaded && !known(search.environment)
   const closed = search.show === 'closed'
   return (
     <Card className="mt-6" data-monitor-reports>
@@ -81,8 +95,23 @@ export function MonitorReports() {
                   {row.name}
                 </option>
               ))}
-              {search.environment !== undefined && !rows.some((row) => row.id === search.environment) && (
-                <option value={search.environment}>An environment that is not in the list</option>
+              {archivedRows.length > 0 && (
+                <optgroup label="Archived">
+                  {archivedRows.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {search.environment !== undefined && !known(search.environment) && (
+                <option value={search.environment}>
+                  {unknownEnvironment
+                    ? 'An environment that is not in the list'
+                    : environments.error != null || archivedEnvironments.error != null
+                      ? 'An environment whose name did not load'
+                      : 'Loading the environment…'}
+                </option>
               )}
             </Select>
           </div>
@@ -112,6 +141,11 @@ export function MonitorReports() {
         {environments.error != null && (
           <p role="status" className="text-xs text-failure">
             The environments did not load, so the filter shows only All environments.
+          </p>
+        )}
+        {environments.error == null && archivedEnvironments.error != null && (
+          <p role="status" className="text-xs text-failure">
+            The archived environments did not load, so the filter does not offer them.
           </p>
         )}
         <ReportList
