@@ -685,6 +685,35 @@ func TestFeedbackInboxOrderPagingAndFilters(t *testing.T) {
 		t.Fatalf("task-filtered inbox = %v, want %v", got, ids)
 	}
 
+	// Two reports stored by one request enter at one time. A page boundary
+	// between them still lists each once, in sort-key order.
+	h.advance(time.Second)
+	if err := h.st.RecordFeedbackReports(h.ctx, store.FeedbackReportBatch{EnvironmentID: h.environment.ID, KeyID: h.key.ID, ArrivedAt: h.clock(), Entries: []store.FeedbackReportEntry{
+		{Kind: store.FeedbackReportError, Key: "tie-b", Summary: "Tie B"},
+		{Kind: store.FeedbackReportError, Key: "tie-a", Summary: "Tie A"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	tieA, tieB := h.reportByKey("tie-a"), h.reportByKey("tie-b")
+	if !tieA.CreatedAt.Equal(tieB.CreatedAt) {
+		t.Fatalf("one request stored two entry times %s and %s", tieA.CreatedAt, tieB.CreatedAt)
+	}
+	tied := []string{tieA.ID, tieB.ID}
+	slices.Sort(tied)
+	want := append(slices.Clone(ids), tied...)
+	h.requireFeedbackInbox(want)
+	seen = []string{}
+	for offset := 0; offset < 7; offset += 3 {
+		read := h.inbox(fmt.Sprintf("?limit=3&offset=%d", offset))
+		if read.total != "7" {
+			t.Fatalf("page at %d total=%s, want 7", offset, read.total)
+		}
+		seen = append(seen, read.reportIDs(t)...)
+	}
+	if !slices.Equal(seen, want) {
+		t.Fatalf("paged reports across a tie = %v, want %v", seen, want)
+	}
+
 	// A tie at one entry time: a report, a task, and a proposal order by
 	// their sort keys, the same way on every sort.
 	at := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
@@ -695,15 +724,15 @@ func TestFeedbackInboxOrderPagingAndFilters(t *testing.T) {
 	earlier := inboxItem{Kind: feedbackReportInboxKind, Band: "decisions", LastEventAt: at.Add(-time.Nanosecond), SortID: inboxFeedbackReportSortPrefix + "rpt-261128-ffffff"}
 	deadline := at.Add(time.Hour)
 	due := inboxItem{Band: "decisions", LastEventAt: at.Add(time.Hour), Deadline: &deadline, SortID: "261128-zzzzzz"}
-	want := []string{due.SortID, earlier.SortID, task.SortID, proposal.SortID, first.SortID, second.SortID}
+	sorted := []string{due.SortID, earlier.SortID, task.SortID, proposal.SortID, first.SortID, second.SortID}
 	for _, order := range [][]inboxItem{{second, first, proposal, task, earlier, due}, {first, task, due, second, earlier, proposal}} {
 		sortInbox(order)
 		got := make([]string, len(order))
 		for i, item := range order {
 			got[i] = item.SortID
 		}
-		if !slices.Equal(got, want) {
-			t.Fatalf("sorted = %v, want %v", got, want)
+		if !slices.Equal(got, sorted) {
+			t.Fatalf("sorted = %v, want %v", got, sorted)
 		}
 	}
 }
