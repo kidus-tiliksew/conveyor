@@ -1,4 +1,3 @@
-import { hashKey, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { Check } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
@@ -12,7 +11,7 @@ import { InboxReviewDetail, ReportActWatcher } from '../components/inbox/inbox-r
 import { InboxReviewList } from '../components/inbox/inbox-review-list'
 import type { InboxSearch } from '../components/inbox/inbox-search'
 import { inboxItemKey, steppedKey, survivingNeighbour } from '../components/inbox/inbox-selection'
-import { nextActionsQueryKey, useNextActions } from '../components/inbox/use-next-actions'
+import { useNextActions } from '../components/inbox/use-next-actions'
 import { ErrorState } from '../components/ui/error-state'
 import { PageHeader } from '../components/ui/page-header'
 import { Skeleton } from '../components/ui/skeleton'
@@ -70,12 +69,9 @@ export function InboxPage() {
   // stays on the list (AC-2.8).
   const keys = decisions.map(inboxItemKey)
   // The selection after an act on a report (AC-2.10; component-next-action
-  // invariant 37) follows one rule, stated in full at `ReportHold`. In short:
-  // the act keeps the order the list showed and the report's place in it;
-  // nothing is chosen when the act answers; the first Inbox read that
-  // started after a 200 and no longer lists the report chooses its nearest
-  // surviving neighbour in that order. Until then the report stays selected
-  // and in view.
+  // invariant 37) follows the rule stated at `ReportHold`: the mark of the
+  // task and proposal path below, plus the order and the card kept from the
+  // click, because a report can leave the list before its act answers.
   const [holds, setHolds] = useState<Record<string, ReportHold>>({})
   const view = searchView(search)
   const shownHold = Object.values(holds).find(
@@ -89,23 +85,8 @@ export function InboxPage() {
       ? decisions[keys.indexOf(selectedKey)]
       : undefined
 
-  // Which Inbox read an answer came from: every fetch start and every
-  // answer of the workspace's Inbox query takes the next tick, so a read
-  // that started after an act answered has a larger tick than the answer.
-  const queryClient = useQueryClient()
-  const reads = useRef({ tick: 0, fetchStarted: 0, lastAnswerStarted: 0 })
-  useEffect(() => {
-    const hash = hashKey(nextActionsQueryKey(workspace))
-    return queryClient.getQueryCache().subscribe((event) => {
-      if (event.type !== 'updated' || event.query.queryHash !== hash) return
-      if (event.action.type === 'fetch') reads.current.fetchStarted = ++reads.current.tick
-      else if (event.action.type === 'success' && !event.action.manual)
-        reads.current.lastAnswerStarted = reads.current.fetchStarted
-    })
-  }, [queryClient, workspace])
-
-  // Applies the rule to each hold on every read and every change of the
-  // address, the band, the filter, or the workspace.
+  // Applies the rule to each hold whenever the list, the address, the band,
+  // the filter, or the workspace changes.
   const keyList = keys.join('\n')
   useEffect(() => {
     const entries = Object.entries(holds)
@@ -114,32 +95,18 @@ export function InboxPage() {
     let changed = false
     let choose: { selected: string | undefined } | undefined
     for (const [id, hold] of entries) {
-      // Lines 4 and 5: a selection the person made, or a change of band,
-      // filter, or workspace, ends the rule; the page's own behaviour applies.
+      // A selection the person made, or a change of band, filter, or
+      // workspace, ends the rule; the page's own behaviour applies.
       if (hold.workspace !== workspace || hold.view !== view || hold.address !== search.selected) {
         delete next[id]
         changed = true
         continue
       }
-      // Line 2: before a 200, and until a read that started after it has
-      // answered, nothing moves. Line 7: a failed read gives no answer.
-      if (hold.answeredAt === undefined || !inbox.data) continue
-      const answer = reads.current.lastAnswerStarted
-      if (answer <= hold.answeredAt || answer <= hold.readSeen) continue
-      if (keys.includes(hold.key)) {
-        // Line 6: the read still lists the report; it stays selected, and
-        // the rule takes the next read, up to `holdListedReads` of them.
-        const listedReads = hold.listedReads + 1
-        if (listedReads >= holdListedReads) {
-          delete next[id]
-          if (hold.address !== hold.key) choose = { selected: hold.key }
-        } else next[id] = { ...hold, listedReads, readSeen: answer }
-        changed = true
-        continue
-      }
-      // Line 3: the deciding read. The nearest item after the report's place
-      // in the prior order that the read lists, else the nearest before it;
-      // none at all is the empty state.
+      // Until a 200, and while the list still lists the report, nothing moves.
+      if (!hold.recorded || !inbox.data || keys.includes(hold.key)) continue
+      // The list no longer lists the report: the nearest item after its place
+      // in the order at the click that the list still lists, else the nearest
+      // before it; none at all is the empty state.
       delete next[id]
       changed = true
       choose = { selected: survivingNeighbour(hold.order, hold.key, keys) }
@@ -149,9 +116,7 @@ export function InboxPage() {
       const selected = choose.selected
       void navigate({ search: (current) => ({ ...current, selected }), replace: true, resetScroll: false })
     }
-    // dataUpdatedAt reruns the rule for a read whose answer equals the last.
-    void inbox.dataUpdatedAt
-  }, [holds, inbox.data, inbox.dataUpdatedAt, keyList, workspace, view, search.selected, navigate])
+  }, [holds, inbox.data, keyList, workspace, view, search.selected, navigate])
 
   // Acts recorded from this page, by workspace and item. When the selected
   // item leaves after one of them, the selection moves to its surviving
@@ -193,8 +158,8 @@ export function InboxPage() {
   const shown = useRef({ workspace, keys, selectedKey, selectedItem, address: search.selected, view })
   shown.current = { workspace, keys, selectedKey, selectedItem, address: search.selected, view }
   const holdKey = (id: string) => `${workspace}\n${id}`
-  // Line 1: an act starts on the report the detail shows, which is the
-  // selected one; the hold keeps the order the list showed and the address.
+  // An act starts on the report the detail shows, which is the selected
+  // one; the hold keeps the order the list showed, the card, and the address.
   const reportActStarted = (id: string) => {
     const now = shown.current
     if (now.workspace !== workspace || now.selectedKey !== id || !now.selectedItem) return
@@ -205,22 +170,20 @@ export function InboxPage() {
       order: now.keys,
       address: now.address,
       view: now.view,
-      listedReads: 0,
-      readSeen: 0,
+      recorded: false,
     }
     setHolds((current) => ({ ...current, [holdKey(id)]: hold }))
   }
-  // Line 2: a 200 chooses nothing; it marks the answer, and only a read that
-  // starts after this tick can decide. Line 8: a refusal, a retryable or
-  // unknown answer, or a failed request ends the rule, and an item that left
-  // falls back as any stale selection does.
+  // A 200 marks the hold as recorded; the choice waits for a list that no
+  // longer lists the report. A refusal, a retryable or unknown answer, or a
+  // failed request ends the rule, and an item that left falls back as any
+  // stale selection does.
   const reportActSettled = (id: string, recorded: boolean) => {
-    const answeredAt = ++reads.current.tick
     setHolds((current) => {
       const hold = current[holdKey(id)]
       if (!hold) return current
       const next = { ...current }
-      if (recorded) next[holdKey(id)] = { ...hold, answeredAt }
+      if (recorded) next[holdKey(id)] = { ...hold, recorded: true }
       else delete next[holdKey(id)]
       return next
     })
@@ -430,30 +393,30 @@ function EmptyDecisions() {
 }
 
 // The rule for the selection after an act on a report (AC-2.10;
-// component-next-action invariant 37):
+// component-next-action invariant 37). It is the task and proposal rule (a
+// mark set by a local act that stays until the item leaves, then the
+// surviving neighbour in the earlier order), with two additions: the order
+// and the card are kept from the click, because the report can leave the
+// list before its act answers, and the choice is made from a list in which
+// the report is gone.
 // 1. When the person sends an act on the selected report, the page keeps the
-//    order of the list as it showed it then and the report's place in it.
-// 2. Nothing is chosen when the act answers. The choice is made from the
-//    first Inbox read that started after the act answered 200 and that no
-//    longer lists the report (the deciding read). Until then the report's
-//    detail stays in view in its settled state and the selection does not
-//    move.
-// 3. From the deciding read: the nearest item after the report's place in
-//    the prior order that the read still lists; if none, the nearest item
-//    before it; if the read lists no decision, the empty state.
-// 4. A selection the person makes before the deciding read stays, and ends
-//    the rule for that act.
-// 5. A change of band, filter, or workspace before the deciding read ends
-//    the rule; the page's behaviour for that change applies.
-// 6. A read that started after the answer and still lists the report keeps
-//    the report selected, and the rule takes the next read. Reads come only
-//    from the existing refresh: the Inbox read the act's own answer starts,
-//    and the read of each workspace stream frame (the act's own notice gives
-//    one) or window focus. The rule takes at most `holdListedReads` such
-//    reads, then stops with the report selected. No timer is added.
-// 7. A read that fails gives no answer: the rule takes the next read, and
-//    the page shows the failure as it does for any read.
-// 8. A refused, retryable, unknown (500), or failed act, and an item that
+//    order of the list as it showed it then and the report's place in it,
+//    and keeps the report's card in view.
+// 2. Nothing is chosen when the act answers. After a 200, the first list the
+//    page shows that no longer lists the report decides: it is the answer of
+//    an existing refresh (the read the 200 starts, a workspace stream frame,
+//    or window focus), or the list already shown at the 200 when a refresh
+//    dropped the report before the answer. Until then the report stays
+//    selected and in view, through any number of reads that still list it.
+// 3. From that list: the nearest item after the report's place in the order
+//    at the click that the list still lists; if none, the nearest item before
+//    it; if the list holds no decision, the empty state.
+// 4. A selection the person makes before that list stays, and ends the rule.
+// 5. A change of band, filter, or workspace before that list ends the rule;
+//    the page's behaviour for that change applies.
+// 6. A read that fails changes no list: the page shows the failure as it
+//    does for any read, and the next list decides.
+// 7. A refused, retryable, unknown (500), or failed act, and an item that
 //    leaves through someone else's act, end or never start the rule: the
 //    stale-selection fallback applies.
 interface ReportHold {
@@ -463,17 +426,9 @@ interface ReportHold {
   order: string[]
   address: string | undefined
   view: string
-  // The read tick of the 200; absent while the act is on its way.
-  answeredAt?: number
-  // Reads that started after the answer and still listed the report.
-  listedReads: number
-  // The newest read the rule has taken.
-  readSeen: number
+  // Set by a 200.
+  recorded: boolean
 }
-
-// Two reads follow a 200 even with no other change: the one the answer
-// starts and the one of the act's own stream frame.
-const holdListedReads = 2
 
 // The band and filters of the address: a change of them ends the rule.
 function searchView(search: InboxSearch) {

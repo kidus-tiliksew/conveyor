@@ -2464,9 +2464,25 @@ test.describe('the selection rule after an act on a report', () => {
     await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
   })
 
-  // Line 6: a read after the answer that still lists the report keeps it
-  // selected; the next read decides.
-  test('line 6: a read that still lists the report keeps it selected, and the next read decides', async ({ page }) => {
+  // Line 2: reads after the answer that still list the report keep it
+  // selected, however many there are (the response memo can serve the same
+  // list for a while); the first list that drops it decides. Each listed
+  // read shows a new title for report B, so the case waits until the page
+  // has applied that read.
+  const listedRead = async (page: Page, setup: Setup, n: number) => {
+    setup.fixture.items = setup.fixture.items.map((item) =>
+      (item.report as { id?: string } | undefined)?.id === REPORT_B
+        ? { ...item, report: { ...(item.report as Record<string, unknown>), summary: `Payment queue read ${n}` } }
+        : item,
+    )
+    await frame(setup)
+    await expect(reportRow(page, REPORT_B).locator('[data-row-title]')).toHaveText(`Payment queue read ${n}`)
+    await expect(reportRow(page, REPORT_A)).toHaveCount(1)
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+    await expect(reportDetail(page).locator(`[data-report-card="${REPORT_A}"]`)).toBeVisible()
+  }
+
+  test('line 2: a read that still lists the report keeps it selected, and the next read decides', async ({ page }) => {
     const setup = await start(page)
     await close(page, setup, () => {})
     await expect(reportRow(page, REPORT_A)).toHaveCount(1)
@@ -2476,25 +2492,23 @@ test.describe('the selection rule after an act on a report', () => {
     await expect(page).toHaveURL(new RegExp(`selected=${REPORT_B}`))
   })
 
-  test('line 6: after two reads that still list the report, the rule stops with the report selected', async ({
+  test('line 2: many reads that still list the report keep it selected, and the first that drops it selects T-mid', async ({
     page,
   }) => {
     const setup = await start(page)
     await close(page, setup, () => {})
-    await frame(setup)
-    await expect(reportRow(page, REPORT_A)).toHaveCount(1)
-    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
-    // The rule has stopped: a later removal is the stale-selection fallback.
+    for (const n of [1, 2, 3, 4, 5]) await listedRead(page, setup, n)
     without(setup.fixture, [REPORT_A])
     await frame(setup)
     await expect(reportRow(page, REPORT_A)).toHaveCount(0)
-    await expect(title(page)).toHaveText('Zeta plan everyone waits on')
+    await expect(page).toHaveURL(/selected=T-mid/)
+    await expect(title(page)).toHaveText('Mid item without a deadline')
   })
 
-  // Line 7: a failed read decides nothing. The Inbox query retries a failed
+  // Line 6: a failed read decides nothing. The Inbox query retries a failed
   // read (its existing behaviour); when the read fails in the end the page
   // shows the failure, the report stays selected, and the next read decides.
-  test('line 7: a failed read decides nothing, and the next read decides', async ({ page }) => {
+  test('line 6: a failed read decides nothing, and the next read decides', async ({ page }) => {
     const setup = await start(page)
     setup.harness.failInbox = 4
     await close(page, setup, (fixture) => without(fixture, [REPORT_A, 'T-mid']))
@@ -2505,7 +2519,7 @@ test.describe('the selection rule after an act on a report', () => {
     await expect(page).toHaveURL(new RegExp(`selected=${REPORT_B}`))
   })
 
-  test('line 7: a failed try that its retry answers decides from the retry', async ({ page }) => {
+  test('line 6: a failed try that its retry answers decides from the retry', async ({ page }) => {
     const setup = await start(page)
     setup.harness.failInbox = 1
     const reads = setup.harness.inboxRequests.length
