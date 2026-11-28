@@ -41,7 +41,11 @@ func (h *reportRoutesHarness) reportActState(reportID string) (report string, de
 	}
 	raw, _ := json.Marshal([]any{stored, links, reportEvents})
 	parts := []string{}
-	for _, path := range []string{"/v1/tasks", "/v1/tasks?state=merged", "/v1/work-orders", "/v1/next-actions"} {
+	// The decisions band also lists the report itself, its one call on
+	// attention, and that read asks the linking job again for a pending
+	// report. Each task's next action is on the task list, and the other
+	// bands list no report (feature-production-feedback-listening FR-5).
+	for _, path := range []string{"/v1/tasks", "/v1/tasks?state=merged", "/v1/work-orders", "/v1/next-actions?band=blocked", "/v1/next-actions?band=automatic"} {
 		parts = append(parts, h.want(http.StatusOK, http.MethodGet, path, "").Body.String())
 	}
 	return string(raw), strings.Join(parts, "\n")

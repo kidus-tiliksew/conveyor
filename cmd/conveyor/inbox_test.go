@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -143,5 +144,55 @@ func TestInboxPrintsProposalIdentity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A feedback report prints on exactly one line: its kind, ID, environment,
+// and summary, the summary labelled as untrusted data, with every text that
+// could start a line or change the terminal escaped
+// (feature-production-feedback-listening FR-5; component-feedback-reports
+// invariant 5).
+func TestInboxPrintsFeedbackReportOnOneLine(t *testing.T) {
+	for _, tc := range []struct {
+		name, environment, summary, want string
+	}{
+		{"plain", "Production", "Checkout timed out", `"Production": untrusted summary "Checkout timed out"`},
+		{"markdown and html", "Prod", "**bold** <img src=x onerror=alert(1)> [link](javascript:alert(1))", `"Prod": untrusted summary "**bold** <img src=x onerror=alert(1)> [link](javascript:alert(1))"`},
+		{"backticks", "Prod", "``````code``````", "\"Prod\": untrusted summary \"``````code``````\""},
+		{"line breaks and tabs", "Prod\nfake line", "first\nsecond\r\nthird\tcolumn", `"Prod\nfake line": untrusted summary "first\nsecond\r\nthird\tcolumn"`},
+		{"terminal escape", "\x1b[2J\x1b[31mred", "\x1b]0;title\x07bell\x1b[0m", `"\x1b[2J\x1b[31mred": untrusted summary "\x1b]0;title\abell\x1b[0m"`},
+		{"other control characters", "a\x00b\x7fc", "\x08back\x0bvertical\x0cfeed\u0085next", `"a\x00b\x7fc": untrusted summary "\bback\vvertical\ffeed\u0085next"`},
+		{"right-to-left and separators", "\u202eevil", "abc\u202edef\u2066x\u2069\u2028line\u2029para", `"\u202eevil": untrusted summary "abc\u202edef\u2066x\u2069\u2028line\u2029para"`},
+		{"quotes and backslashes", `say "hi"`, `C:\path\"x"`, `"say \"hi\"": untrusted summary "C:\\path\\\"x\""`},
+		{"very long word", "Prod", strings.Repeat("w", 1000), `"Prod": untrusted summary "` + strings.Repeat("w", 1000) + `"`},
+		{"non-ASCII", "Zürich", "Fehler beim Bezahlen – 支付失败", `"Z\u00fcrich": untrusted summary "Fehler beim Bezahlen \u2013 \u652f\u4ed8\u5931\u8d25"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item := map[string]any{"kind": "feedback_report", "band": "decisions", "report": map[string]any{
+				"id": "rpt-261128-abc123", "summary": tc.summary, "environment": map[string]any{"id": "env-1", "name": tc.environment},
+			}}
+			body, err := json.Marshal(map[string]any{"items": []any{item}, "acts": []any{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, _ := serveInbox(t, string(body), "1")
+			var out bytes.Buffer
+			if err := runInbox(c, &out, inboxOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			want := "decisions\n  feedback_report rpt-261128-abc123 environment " + tc.want + "\nshowing 1 of 1\nfactory acts: 0\n"
+			if out.String() != want {
+				t.Fatalf("stdout =\n%q\nwant\n%q", out.String(), want)
+			}
+			for _, r := range out.String() {
+				if r != '\n' && (r < 0x20 || r == 0x7f || r > 0x7e) {
+					t.Fatalf("stdout holds the character %U", r)
+				}
+			}
+		})
+	}
+	// An ID that is not a plain identifier is quoted too.
+	if got := inboxReportLine("feedback_report", inboxReportView{ID: "rpt\nx", Summary: "s", Environment: inboxReportEnvironmentView{ID: "env-1"}}); got != `  feedback_report "rpt\nx" environment "env-1": untrusted summary "s"` {
+		t.Fatalf("line = %q", got)
 	}
 }

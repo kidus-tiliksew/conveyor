@@ -1030,7 +1030,12 @@ func TestFeedbackReportObservesOnly(t *testing.T) {
 		var parts []string
 		for _, path := range []string{"/v1/tasks", "/v1/tasks/report-task", "/v1/tasks/report-task/events", "/v1/work-orders", "/v1/attention/tasks", "/v1/next-actions"} {
 			response := h.want(http.StatusOK, http.MethodGet, path, "")
-			parts = append(parts, path+" "+response.Body.String())
+			body := response.Body.String()
+			if path == "/v1/next-actions" {
+				// A report's Inbox item is its one call on attention.
+				body = inboxWithoutReports(t, body)
+			}
+			parts = append(parts, path+" "+body)
 		}
 		signals, err := h.st.ListFeedbackSignals(h.ctx, []string{h.environment.ID})
 		if err != nil {

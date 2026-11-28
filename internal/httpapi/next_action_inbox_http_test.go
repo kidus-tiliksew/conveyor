@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -421,4 +424,411 @@ func TestNextActionInboxPullRequestIsTheRecordedPullRequest(t *testing.T) {
 	if pr, listed := got[issueOnly.ID]; !listed || pr != "" {
 		t.Fatalf("issue-only pull_request = %q (listed %v), want none", pr, listed)
 	}
+}
+
+// The Inbox items of feedback reports (component-feedback-reports v5
+// invariants 19, 21; component-next-action invariants 21, 22, 24;
+// feature-production-feedback-listening FR-5). The memo clock is the
+// harness clock, so a memo entry ends only when a notice drops it or the
+// test moves the clock past readMemoLifetime.
+
+type feedbackInboxRead struct {
+	items []map[string]json.RawMessage
+	total string
+	etag  string
+}
+
+func (h *reportRoutesHarness) inbox(query string) feedbackInboxRead {
+	h.t.Helper()
+	response := h.want(http.StatusOK, http.MethodGet, "/v1/next-actions"+query, "")
+	var body struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		h.t.Fatalf("decode inbox %s: %v", response.Body, err)
+	}
+	return feedbackInboxRead{items: body.Items, total: response.Header().Get("X-Conveyor-Total"), etag: response.Header().Get("ETag")}
+}
+
+// reportIDs lists the report IDs of the read's feedback_report items in
+// order, and checks each item's shape.
+func (r feedbackInboxRead) reportIDs(t *testing.T) []string {
+	t.Helper()
+	ids := []string{}
+	for _, item := range r.items {
+		var kind, band string
+		_ = json.Unmarshal(item["kind"], &kind)
+		_ = json.Unmarshal(item["band"], &band)
+		if kind != feedbackReportInboxKind {
+			continue
+		}
+		var report servedFeedbackReport
+		if err := json.Unmarshal(item["report"], &report); err != nil {
+			t.Fatalf("decode report of %v: %v", item, err)
+		}
+		if band != "decisions" || !report.InInbox || report.State != store.FeedbackReportOpen || item["task"] != nil || item["proposal"] != nil {
+			t.Fatalf("report item band=%s in_inbox=%v state=%s task=%s proposal=%s", band, report.InInbox, report.State, item["task"], item["proposal"])
+		}
+		ids = append(ids, report.ID)
+	}
+	return ids
+}
+
+func (r feedbackInboxRead) decisions() int {
+	count := 0
+	for _, item := range r.items {
+		var band string
+		_ = json.Unmarshal(item["band"], &band)
+		if band == "decisions" {
+			count++
+		}
+	}
+	return count
+}
+
+// attention reads the attention summary of GET /v1/pending-proposals.
+func (h *reportRoutesHarness) attention() attentionSummary {
+	h.t.Helper()
+	response := h.want(http.StatusOK, http.MethodGet, "/v1/pending-proposals", "")
+	var body pendingProposalsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		h.t.Fatalf("decode pending proposals %s: %v", response.Body, err)
+	}
+	return body.Attention
+}
+
+// servedInInbox reads in_inbox of every open and closed report from the
+// list route, by ID.
+func (h *reportRoutesHarness) servedInInbox() map[string]bool {
+	h.t.Helper()
+	out := map[string]bool{}
+	for _, state := range []string{"open", "closed"} {
+		response := h.want(http.StatusOK, http.MethodGet, "/v1/feedback-reports?limit=200&state="+state, "")
+		var reports []servedFeedbackReport
+		if err := json.Unmarshal(response.Body.Bytes(), &reports); err != nil {
+			h.t.Fatal(err)
+		}
+		for _, report := range reports {
+			out[report.ID] = report.InInbox
+		}
+	}
+	return out
+}
+
+// requireFeedbackInbox checks that the Inbox lists exactly want, in order,
+// that the attention count is the Inbox's decisions count, and that every
+// served report's in_inbox agrees with the Inbox.
+func (h *reportRoutesHarness) requireFeedbackInbox(want []string) feedbackInboxRead {
+	h.t.Helper()
+	read := h.inbox("")
+	if got := read.reportIDs(h.t); !slices.Equal(got, want) {
+		h.t.Fatalf("inbox reports = %v, want %v", got, want)
+	}
+	attention := h.attention()
+	if attention.OperatorDecisions != read.decisions() || attention.Total != attention.OperatorDecisions {
+		h.t.Fatalf("attention = %+v, inbox decisions = %d", attention, read.decisions())
+	}
+	listed := map[string]bool{}
+	for _, id := range want {
+		listed[id] = true
+	}
+	for id, inInbox := range h.servedInInbox() {
+		if inInbox != listed[id] {
+			h.t.Fatalf("report %s: served in_inbox=%v, listed in the Inbox=%v", id, inInbox, listed[id])
+		}
+	}
+	return read
+}
+
+func TestFeedbackInboxMembershipAndCountAgree(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	h.server.UseReadMemoClock(h.clock)
+	h.requireFeedbackInbox([]string{})
+	tasksBefore := h.want(http.StatusOK, http.MethodGet, "/v1/attention/tasks", "").Body.String()
+
+	never := h.storeReport("never", nil)
+	confirmed := h.storeReport("confirmed", nil)
+	added := h.storeReport("added", nil)
+	removed := h.storeReport("removed", nil)
+	closedReport := h.storeReport("closed", nil)
+	fixed := h.storeReport("fixed", nil)
+	unchanged := h.storeReport("unchanged", nil)
+	userReopened := h.storeReport("user-reopened", nil)
+	reportReopened := h.storeReport("report-reopened", nil)
+	// The end of linking, with possible links, before any read asks the
+	// linking job.
+	cause := h.mergedTask("")
+	h.endLinking(confirmed, []store.FeedbackReportLinkCandidate{{TaskID: cause.ID, Evidence: []store.FeedbackReportEvidence{{Kind: store.FeedbackEvidenceLine, File: "a.go", Line: 1, Commit: readsCommit("ab")}}}}, nil)
+	h.endLinking(removed, []store.FeedbackReportLinkCandidate{{TaskID: cause.ID, Evidence: []store.FeedbackReportEvidence{{Kind: store.FeedbackEvidenceLine, File: "b.go", Line: 2, Commit: readsCommit("cd")}}}}, nil)
+	staging := h.create(`{"name":"Staging"}`)
+	stagingKey := h.issue(staging.ID)
+	h.advance(time.Second)
+	if err := h.st.RecordFeedbackReports(h.ctx, store.FeedbackReportBatch{EnvironmentID: staging.ID, KeyID: stagingKey.ID, ArrivedAt: h.clock(), Entries: []store.FeedbackReportEntry{{Kind: store.FeedbackReportAlert, Key: "staging", Summary: "Staging queue is deep"}}}); err != nil {
+		t.Fatal(err)
+	}
+	stagingReports, err := h.st.ListEnvironmentFeedbackReports(h.ctx, staging.ID)
+	if err != nil || len(stagingReports) != 1 {
+		t.Fatalf("staging reports = %v, %v", stagingReports, err)
+	}
+	// A report of another workspace is never an Inbox item here.
+	foreignEnvironment, err := h.st.CreateEnvironment(h.betaCtx, store.EnvironmentInput{Name: "Beta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignKey, err := h.st.IssueEnvironmentKey(h.betaCtx, foreignEnvironment.ID, "watcher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.RecordFeedbackReports(h.betaCtx, store.FeedbackReportBatch{EnvironmentID: foreignEnvironment.ID, KeyID: foreignKey.ID, ArrivedAt: h.clock(), Entries: []store.FeedbackReportEntry{{Kind: store.FeedbackReportError, Key: "foreign", Summary: "Foreign"}}}); err != nil {
+		t.Fatal(err)
+	}
+	all := []string{never.ID, confirmed.ID, added.ID, removed.ID, closedReport.ID, fixed.ID, unchanged.ID, userReopened.ID, reportReopened.ID, stagingReports[0].ID}
+	// Every new report is in the Inbox, oldest entry first.
+	h.requireFeedbackInbox(all)
+
+	// The end of linking is not a person's act: both stay in the Inbox.
+	h.requireFeedbackInbox(all)
+
+	// Each act of a person takes its report out of the Inbox, through the
+	// routes, so the act's notice drops the memo.
+	h.want(http.StatusOK, http.MethodPost, "/v1/feedback-reports/"+confirmed.ID+"/links", `{"task_id":"`+cause.ID+`"}`)
+	h.want(http.StatusOK, http.MethodPost, "/v1/feedback-reports/"+added.ID+"/links", `{"crate_id":"`+h.crate("Checkout").ID+`"}`)
+	links, err := h.st.ListFeedbackReportLinks(h.ctx, removed.ID)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("links = %v, %v", links, err)
+	}
+	h.want(http.StatusOK, http.MethodDelete, "/v1/feedback-reports/"+removed.ID+"/links/"+links[0].ID, "")
+	h.want(http.StatusOK, http.MethodPost, "/v1/feedback-reports/"+closedReport.ID+"/close", `{"reason":"Fixed by the last deploy."}`)
+	h.want(http.StatusOK, http.MethodPut, "/v1/feedback-reports/"+fixed.ID+"/fix-task", `{"task_id":"`+h.openTask().ID+`"}`)
+	// An act that changes nothing records nothing and leaves the report in
+	// the Inbox.
+	h.want(http.StatusOK, http.MethodPost, "/v1/feedback-reports/"+unchanged.ID+"/reopen", "")
+	// Closed and reopened by a person: open, and out of the Inbox.
+	h.want(http.StatusOK, http.MethodPost, "/v1/feedback-reports/"+userReopened.ID+"/close", `{"reason":"Not a bug."}`)
+	h.want(http.StatusOK, http.MethodPost, "/v1/feedback-reports/"+userReopened.ID+"/reopen", "")
+	h.want(http.StatusOK, http.MethodPost, "/v1/feedback-reports/"+reportReopened.ID+"/close", `{"reason":"Gone."}`)
+	h.requireFeedbackInbox([]string{never.ID, unchanged.ID, stagingReports[0].ID})
+
+	// A later entry after the close reopens the report: it is back once, at
+	// the time of the reopening, so it is now the newest entry.
+	again := h.storeReport("report-reopened", nil)
+	if again.ReopenedAt == nil || again.State != store.FeedbackReportOpen || !again.InInbox {
+		t.Fatalf("reopened by a report = %+v", again)
+	}
+	read := h.requireFeedbackInbox([]string{never.ID, unchanged.ID, stagingReports[0].ID, reportReopened.ID})
+	for _, item := range read.items {
+		var report struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(item["report"], &report)
+		var at time.Time
+		_ = json.Unmarshal(item["last_event_at"], &at)
+		switch report.ID {
+		case reportReopened.ID:
+			if !at.Equal(again.ReopenedAt.UTC()) {
+				t.Fatalf("reopened report entered at %s, want its reopening %s", at, again.ReopenedAt)
+			}
+		case never.ID:
+			if !at.Equal(never.CreatedAt.UTC()) {
+				t.Fatalf("new report entered at %s, want its creation %s", at, never.CreatedAt)
+			}
+		}
+	}
+	// A later entry that only updates an open report changes neither the
+	// membership nor the entry time.
+	h.storeReport("never", nil)
+	h.requireFeedbackInbox([]string{never.ID, unchanged.ID, stagingReports[0].ID, reportReopened.ID})
+
+	// Reports change no task's attention (req-production-feedback AC-11.1).
+	if tasksAfter := h.want(http.StatusOK, http.MethodGet, "/v1/attention/tasks", "").Body.String(); tasksAfter != tasksBefore {
+		t.Fatalf("attention tasks changed: %s then %s", tasksBefore, tasksAfter)
+	}
+	if attention := h.attention(); attention.TaskCount != 0 || attention.PendingProposalCount != 0 || attention.OperatorDecisions != 4 {
+		t.Fatalf("attention = %+v, want 4 reports and no task or proposal", attention)
+	}
+}
+
+// Reports keep the Inbox order: within the decisions band, entry time
+// ascending with the sort key breaking a tie, and a band or task filter
+// treats them as a document proposal (component-next-action invariant 22;
+// req-operator-next-action AC-2.12).
+func TestFeedbackInboxOrderPagingAndFilters(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	h.server.UseReadMemoClock(h.clock)
+	ids := []string{}
+	for i := range 5 {
+		ids = append(ids, h.storeReport(fmt.Sprintf("paged-%d", i), nil).ID)
+	}
+	h.requireFeedbackInbox(ids)
+	// Pages of two: every report once, in order, with the same total.
+	seen := []string{}
+	for offset := 0; offset < 6; offset += 2 {
+		read := h.inbox(fmt.Sprintf("?limit=2&offset=%d", offset))
+		if read.total != "5" {
+			t.Fatalf("page at %d total=%s, want 5", offset, read.total)
+		}
+		seen = append(seen, read.reportIDs(t)...)
+	}
+	if !slices.Equal(seen, ids) {
+		t.Fatalf("paged reports = %v, want %v", seen, ids)
+	}
+	if got := h.inbox("?band=decisions").reportIDs(t); !slices.Equal(got, ids) {
+		t.Fatalf("decisions band = %v", got)
+	}
+	for _, band := range []string{"blocked", "automatic"} {
+		if got := h.inbox("?band=" + band).reportIDs(t); len(got) != 0 {
+			t.Fatalf("%s band lists reports %v", band, got)
+		}
+	}
+	// A task filter does not remove a report.
+	if got := h.inbox("?repo=elsewhere").reportIDs(t); !slices.Equal(got, ids) {
+		t.Fatalf("task-filtered inbox = %v, want %v", got, ids)
+	}
+
+	// A tie at one entry time: a report, a task, and a proposal order by
+	// their sort keys, the same way on every sort.
+	at := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	task := inboxItem{Band: "decisions", LastEventAt: at, SortID: "261128-aaaaaa"}
+	proposal := inboxItem{Kind: "document_proposal", Band: "decisions", LastEventAt: at, SortID: "component-x"}
+	first := inboxItem{Kind: feedbackReportInboxKind, Band: "decisions", LastEventAt: at, SortID: inboxFeedbackReportSortPrefix + "rpt-261128-000001"}
+	second := inboxItem{Kind: feedbackReportInboxKind, Band: "decisions", LastEventAt: at, SortID: inboxFeedbackReportSortPrefix + "rpt-261128-000002"}
+	earlier := inboxItem{Kind: feedbackReportInboxKind, Band: "decisions", LastEventAt: at.Add(-time.Nanosecond), SortID: inboxFeedbackReportSortPrefix + "rpt-261128-ffffff"}
+	deadline := at.Add(time.Hour)
+	due := inboxItem{Band: "decisions", LastEventAt: at.Add(time.Hour), Deadline: &deadline, SortID: "261128-zzzzzz"}
+	want := []string{due.SortID, earlier.SortID, task.SortID, proposal.SortID, first.SortID, second.SortID}
+	for _, order := range [][]inboxItem{{second, first, proposal, task, earlier, due}, {first, task, due, second, earlier, proposal}} {
+		sortInbox(order)
+		got := make([]string, len(order))
+		for i, item := range order {
+			got[i] = item.SortID
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("sorted = %v, want %v", got, want)
+		}
+	}
+}
+
+// The MCP inbox returns the report item as the route does.
+func TestFeedbackInboxMCPItemIsTheRouteItem(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	report := h.storeReport("mcp", nil)
+	h.endLinking(report, nil, nil)
+	route := h.inbox("")
+	page := readAs(t, h.handler, h.manager(), "list_operator_inbox", map[string]any{"workspace_id": "alpha"})
+	if len(page.Items) != 1 || len(route.items) != 1 {
+		t.Fatalf("mcp items=%d route items=%d", len(page.Items), len(route.items))
+	}
+	mcp := decodeFields(t, page.Items[0])
+	var fromMCP, fromRoute servedFeedbackReport
+	if err := json.Unmarshal(mcp["report"], &fromMCP); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(route.items[0]["report"], &fromRoute); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fromMCP, fromRoute) || fromMCP.ID != report.ID || string(mcp["kind"]) != `"feedback_report"` || string(mcp["last_event_at"]) != string(route.items[0]["last_event_at"]) {
+		t.Fatalf("mcp item %s, route item %s", page.Items[0], route.items[0]["report"])
+	}
+}
+
+// feedbackInboxStepStore runs a hook once at one step of the Inbox read.
+type feedbackInboxStepStore struct {
+	store.Backend
+	beforeProposals, beforeActs func()
+}
+
+func (s *feedbackInboxStepStore) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
+	if hook := s.beforeProposals; hook != nil {
+		s.beforeProposals = nil
+		hook()
+	}
+	return s.Backend.ListPendingProposals(ctx)
+}
+
+func (s *feedbackInboxStepStore) ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error) {
+	if hook := s.beforeActs; hook != nil {
+		s.beforeActs = nil
+		hook()
+	}
+	return s.Backend.ListFactoryActs(ctx, since, limit)
+}
+
+// An act, a close, or a reopening between two steps of the Inbox read
+// changes the state the read started from, so its answer is sent once with
+// no tag and is not kept; the next read builds again. Every answer's items,
+// total, and page come from one built list, so they agree
+// (component-next-action invariant 58).
+func TestFeedbackInboxChangeBetweenReadStepsIsNotKept(t *testing.T) {
+	for _, step := range []string{"before the report read", "after the report read"} {
+		t.Run(step, func(t *testing.T) {
+			h := newReportRoutesHarness(t)
+			h.server.UseReadMemoClock(h.clock)
+			h.server.Changes = nil
+			first := h.storeReport("first", nil)
+			second := h.storeReport("second", nil)
+			h.endLinking(first, nil, nil)
+			h.endLinking(second, nil, nil)
+			steps := &feedbackInboxStepStore{Backend: h.st}
+			h.server.Store = steps
+			closeFirst := func() {
+				h.storeAct(store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: first.ID, Reason: "Done."})
+			}
+			if step == "before the report read" {
+				steps.beforeProposals = closeFirst
+			} else {
+				steps.beforeActs = closeFirst
+			}
+			changed := h.inbox("?limit=1")
+			if changed.etag != "" {
+				t.Fatalf("an answer read across a change carries tag %q", changed.etag)
+			}
+			ids := changed.reportIDs(t)
+			want := map[string][]string{"before the report read": {second.ID}, "after the report read": {first.ID}}[step]
+			if !slices.Equal(ids, want) {
+				t.Fatalf("changed read = %v, want %v", ids, want)
+			}
+			wantTotal := map[string]string{"before the report read": "1", "after the report read": "2"}[step]
+			if changed.total != wantTotal {
+				t.Fatalf("changed read total=%s, want %s from the same list", changed.total, wantTotal)
+			}
+			// Nothing was kept: the next read builds from the state after
+			// the close and is tagged.
+			next := h.inbox("?limit=1")
+			if next.etag == "" || !slices.Equal(next.reportIDs(t), []string{second.ID}) || next.total != "1" {
+				t.Fatalf("next read etag=%q items=%v total=%s", next.etag, next.reportIDs(t), next.total)
+			}
+		})
+	}
+}
+
+// inboxWithoutReports drops the feedback_report items from an Inbox body.
+// A report's Inbox item is its one call on attention, so a check that a
+// report changes no delivery read compares the Inbox without it
+// (component-feedback-reports invariant 1).
+func inboxWithoutReports(t *testing.T, body string) string {
+	t.Helper()
+	var page map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &page); err != nil {
+		t.Fatalf("decode inbox %s: %v", body, err)
+	}
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(page["items"], &items); err != nil {
+		t.Fatalf("decode inbox items %s: %v", page["items"], err)
+	}
+	kept := make([]map[string]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		if string(item["kind"]) != `"`+feedbackReportInboxKind+`"` {
+			kept = append(kept, item)
+		}
+	}
+	encoded, err := json.Marshal(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page["items"] = encoded
+	out, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }

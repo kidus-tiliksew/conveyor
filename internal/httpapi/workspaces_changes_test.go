@@ -2,13 +2,16 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -181,5 +184,130 @@ func TestWorkspaceChangesStream(t *testing.T) {
 	<-unknown.done
 	if unknown.recorder.code != http.StatusNotFound {
 		t.Fatalf("unknown workspace status=%d", unknown.recorder.code)
+	}
+}
+
+// hubSubscriptions counts the hub's open subscriptions. The test reads it
+// only while the handler is held in a flush or has returned.
+func hubSubscriptions(hub *changes.Hub) int {
+	return reflect.ValueOf(hub).Elem().FieldByName("subs").Len()
+}
+
+// failingFlusher fails every write once fail is set.
+type failingFlusher struct {
+	*countingFlusher
+	fail atomic.Bool
+}
+
+func (r *failingFlusher) Write(p []byte) (int, error) {
+	if r.fail.Load() {
+		return 0, errors.New("client went away")
+	}
+	return r.countingFlusher.Write(p)
+}
+
+// The workspace stream also writes one activity frame with {} for each
+// `workspace` notice of its workspace, such as a new feedback report or a
+// document proposal, and still reads nothing from the store
+// (component-http-api invariant 30; feature-production-feedback-listening
+// FR-5).
+func TestFeedbackWorkspaceStreamWritesWorkspaceNotices(t *testing.T) {
+	base := store.NewMemory()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
+	demo := store.WithWorkspace(ctx, historyWorkspace)
+	if err := base.CreateTask(demo, core.Task{ID: "ws-a", Workspace: historyWorkspace, State: core.TaskRunning, CreatedAt: historyEpoch}); err != nil {
+		t.Fatal(err)
+	}
+	counter := &storeCallCounter{Store: base}
+	h := newHistoryHarness(t, counter)
+	hub := memoryHub(t, base)
+	h.srv.Changes = hub
+	keepalive := make(chan time.Time)
+	h.srv.StreamKeepalive = func() (<-chan time.Time, func()) { return keepalive, func() {} }
+	h.handler = h.srv.Handler()
+	workspaceNotice := func(workspace string) {
+		hub.Publish(changes.Notice{Workspace: workspace, Kind: changes.Workspace})
+	}
+	idle := hubSubscriptions(hub)
+
+	connection := openWorkspaceChanges(h, historyWorkspace, historyTokenA)
+	// The handler is held in the ready flush: it has subscribed, so a
+	// notice now is written after ready.
+	connection.flusher.waitFlushes(t, 1)
+	if got := hubSubscriptions(hub); got != idle+2 {
+		t.Fatalf("an open stream holds %d subscriptions, want %d", got-idle, 2)
+	}
+	workspaceNotice(historyWorkspace)
+	if frame := <-connection.recorder.flushes; frame != readyFrame {
+		t.Fatalf("first frame=%q", frame)
+	}
+	if frame := <-connection.recorder.flushes; frame != activityFrame {
+		t.Fatalf("workspace notice frame=%q, want %q", frame, activityFrame)
+	}
+	// A task notice keeps its payload.
+	if err := base.AppendEvent(demo, core.Event{TaskID: "ws-a", Kind: "dispatch.reconciled"}); err != nil {
+		t.Fatal(err)
+	}
+	if frame := <-connection.recorder.flushes; frame != "event: activity\ndata: {\"task_id\":\"ws-a\"}\n\n" {
+		t.Fatalf("task frame=%q", frame)
+	}
+	// A burst of workspace notices while the handler is held in a flush
+	// coalesces into one frame.
+	workspaceNotice(historyWorkspace)
+	connection.flusher.waitFlushes(t, 4)
+	for range 5 {
+		workspaceNotice(historyWorkspace)
+	}
+	if frame := <-connection.recorder.flushes; frame != activityFrame {
+		t.Fatalf("frame before the burst=%q", frame)
+	}
+	if frame := <-connection.recorder.flushes; frame != activityFrame {
+		t.Fatalf("burst frame=%q", frame)
+	}
+	// Another workspace's notice writes nothing: the next flush is the
+	// keep-alive.
+	workspaceNotice("other")
+	keepalive <- time.Time{}
+	if frame := <-connection.recorder.flushes; frame != keepaliveComment {
+		t.Fatalf("frame after another workspace's notice=%q", frame)
+	}
+	if got := counter.count(); got != 0 {
+		t.Fatalf("workspace stream made %d store reads", got)
+	}
+	// A client that goes away ends both subscriptions.
+	connection.cancel()
+	<-connection.done
+	if got := hubSubscriptions(hub); got != idle {
+		t.Fatalf("after the client went away %d subscriptions stay open", got-idle)
+	}
+
+	// A write that fails ends the stream and both subscriptions.
+	request := httptest.NewRequest(http.MethodGet, "/v1/workspaces/"+historyWorkspace+"/changes", nil)
+	request.Header.Set("Authorization", "Bearer "+historyTokenA)
+	failing := &failingFlusher{countingFlusher: &countingFlusher{sseRecorder: newSSERecorder()}}
+	done := make(chan struct{})
+	go func() {
+		h.handler.ServeHTTP(failing, request)
+		close(done)
+		close(failing.flushes)
+	}()
+	if frame := <-failing.flushes; frame != readyFrame {
+		t.Fatalf("first frame=%q", frame)
+	}
+	failing.fail.Store(true)
+	workspaceNotice(historyWorkspace)
+	<-done
+	if got := hubSubscriptions(hub); got != idle {
+		t.Fatalf("after a failed write %d subscriptions stay open", got-idle)
+	}
+
+	// A wake that closes after a normal return ends both subscriptions.
+	wake := h.srv.openWorkspaceWake(historyWorkspace)
+	if got := hubSubscriptions(hub); got != idle+2 {
+		t.Fatalf("a wake holds %d subscriptions", got-idle)
+	}
+	wake.close()
+	if got := hubSubscriptions(hub); got != idle {
+		t.Fatalf("after close %d subscriptions stay open", got-idle)
 	}
 }
