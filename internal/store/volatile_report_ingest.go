@@ -35,10 +35,10 @@ type feedbackReportState struct {
 	// rows of other reports.
 	linksByReport map[memoryScopedKey]map[string]bool
 	notesByReport map[memoryScopedKey]map[string]bool
-	// readCopies counts the report records, links, and notes that report
-	// reads copy out, so a test can prove that a read's work follows its
-	// page and not the workspace's history. It is shared by every copy of
-	// the state.
+	// readCopies counts what report reads keep: the references a list
+	// keeps for its page, and the report records, links, and notes reads
+	// copy out, so a test can prove that a read's work follows its page and
+	// not the workspace's history. It is shared by every copy of the state.
 	readCopies *atomic.Int64
 }
 

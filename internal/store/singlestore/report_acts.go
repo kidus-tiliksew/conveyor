@@ -14,27 +14,28 @@ import (
 
 var _ store.ReportReadStore = (*Store)(nil)
 
-// feedbackServedLinkReports is a subquery of the report IDs that have a
-// served link meeting cond: a possible or confirmed link to a task or a crate
-// the workspace holds. tc is the crate a linked task is a member of at the
-// read, and lc the crate a link names. It states the rule of
+// feedbackServedLink is a predicate on the report r: it has a served link
+// meeting cond, a possible or confirmed link to a task or a crate the
+// workspace holds. tc is the crate a linked task is a member of at the read,
+// and lc the crate a link names. It states the rule of
 // store.FeedbackReportServed and store.FeedbackReportInCrate
-// (component-feedback-reports invariant 21). The subquery's first
-// placeholder is the workspace ID. It runs in the database over the link,
-// task, and crate keys and transfers no row.
-func feedbackServedLinkReports(cond string) string {
-	return `SELECT l.report_id FROM feedback_report_links l
+// (component-feedback-reports invariant 21). It is correlated on the report,
+// so each candidate report probes its own links through
+// feedback_report_links_report_idx and the predicate keeps no set of report
+// IDs, and it transfers no row.
+func feedbackServedLink(cond string) string {
+	return `EXISTS (SELECT 1 FROM feedback_report_links l
 LEFT JOIN tasks t ON t.workspace_id=l.workspace_id AND t.id=l.task_id
 LEFT JOIN crates lc ON lc.workspace_id=l.workspace_id AND lc.id=l.crate_id
 LEFT JOIN crates tc ON tc.workspace_id=t.workspace_id AND tc.id=t.crate_id
-WHERE l.workspace_id=? AND l.state IN ('possible','confirmed')
+WHERE l.workspace_id=r.workspace_id AND l.report_id=r.id AND l.state IN ('possible','confirmed')
 AND ((l.task_id IS NOT NULL AND l.crate_id IS NULL AND t.id IS NOT NULL) OR (l.crate_id IS NOT NULL AND l.task_id IS NULL AND lc.id IS NOT NULL))
-AND ` + cond
+AND ` + cond + `)`
 }
 
 // feedbackReportFilter renders the WHERE clause of a list and its arguments.
-// Every filter is a predicate of the one statement, so it runs before the
-// page and the count, and IN keeps a report that matches twice to one row.
+// Every filter is a predicate of each statement, so it runs before the page
+// and the count, and EXISTS keeps a report that matches twice to one row.
 func feedbackReportFilter(ws string, query store.FeedbackReportQuery) (string, []any) {
 	clauses := []string{"r.workspace_id=?", "r.state=?"}
 	args := []any{ws, query.State}
@@ -43,16 +44,15 @@ func feedbackReportFilter(ws string, query store.FeedbackReportQuery) (string, [
 		args = append(args, query.EnvironmentID)
 	}
 	if query.TaskID != "" {
-		clauses = append(clauses, "r.id IN ("+feedbackServedLinkReports("l.task_id=?")+")")
-		args = append(args, ws, query.TaskID)
+		clauses = append(clauses, feedbackServedLink("l.task_id=?"))
+		args = append(args, query.TaskID)
 	}
 	if query.CrateID != "" {
-		clauses = append(clauses, "r.id IN ("+feedbackServedLinkReports("(lc.id=? OR tc.id=?)")+")")
-		args = append(args, ws, query.CrateID, query.CrateID)
+		clauses = append(clauses, feedbackServedLink("(lc.id=? OR tc.id=?)"))
+		args = append(args, query.CrateID, query.CrateID)
 	}
 	if query.NoCrate {
-		clauses = append(clauses, "r.id NOT IN ("+feedbackServedLinkReports("(lc.id IS NOT NULL OR tc.id IS NOT NULL)")+")")
-		args = append(args, ws)
+		clauses = append(clauses, "NOT "+feedbackServedLink("(lc.id IS NOT NULL OR tc.id IS NOT NULL)"))
 	}
 	return strings.Join(clauses, " AND "), args
 }
@@ -67,72 +67,51 @@ func prefixFeedbackReportColumns(alias string) string {
 	return strings.Join(columns, ",")
 }
 
-// feedbackReportNullableColumns are the report columns that hold NULL in a
-// stored row. Every other column is NOT NULL.
-var feedbackReportNullableColumns = map[string]bool{
-	"line": true, "closed_at": true, "closed_by": true, "close_reason": true, "reopened_at": true, "reopen_source": true,
-	"reopen_source_label": true, "reopen_actor_id": true, "linking_ended_at": true, "fix_task_id": true,
-	"linking_last_attempt_at": true, "line_progress": true, "timing_result": true, "fix_task_set_by": true, "fix_task_set_at": true,
-}
-
-// feedbackReportPageColumns selects the report columns of the page
-// subquery p for a row that may have no report. A NOT NULL column gets a
-// placeholder of its type, so the one row of an empty page decodes and is
-// recognized by its empty ID.
-func feedbackReportPageColumns() string {
-	columns := strings.Split(strings.ReplaceAll(feedbackReportColumns, "\n", ""), ",")
-	for i, column := range columns {
-		column = strings.TrimSpace(column)
-		switch {
-		case feedbackReportNullableColumns[column]:
-			columns[i] = "p." + column
-		case column == "first_seen" || column == "last_seen" || column == "first_entry_seen" || column == "created_at":
-			columns[i] = "COALESCE(p." + column + ",CAST('1970-01-01 00:00:00' AS DATETIME(6)))"
-		case column == "occurrence_count" || column == "in_inbox":
-			columns[i] = "COALESCE(p." + column + ",0)"
-		case column == "summary_redactions":
-			columns[i] = "COALESCE(p." + column + ",'{}')"
-		default:
-			columns[i] = "COALESCE(p." + column + ",'')"
-		}
-	}
-	return strings.Join(columns, ",")
-}
-
-func emptyFeedbackReportDetails() store.FeedbackReportDetails {
-	return store.FeedbackReportDetails{Links: map[string][]store.FeedbackReportLink{}, Notes: map[string][]store.FeedbackReportNote{},
-		Tasks: map[string]store.FeedbackReportTaskRef{}, Crates: map[string]store.FeedbackReportCrateRef{}}
-}
-
-// feedbackReportViewAttempts bounds the reads of one view when a linked
-// task moves between crates while the view is read.
+// feedbackReportViewAttempts bounds the reads of one view when a task
+// change commits while the view is read.
 const feedbackReportViewAttempts = 3
 
-// errFeedbackReportViewMoved reports that the membership the page's links
-// were read with no longer selects a page report, so the view is read again.
-var errFeedbackReportViewMoved = errors.New("crate membership changed during the report read")
+// errFeedbackReportViewMoved reports that a task change committed while the
+// view was read, so the view is read again.
+var errFeedbackReportViewMoved = errors.New("a task changed during the report read")
+
+// feedbackReportTaskPosition reads the workspace's task event position: the
+// counter every transaction that commits a task event advances once, under
+// its row lock, just before it commits (change_notices_positions.go). A
+// task's crate, title, and existence change only in such a transaction. The
+// counter row is sharded by workspace like the task, crate, and report
+// tables, so it is on the same partition as everything the view reads.
+func feedbackReportTaskPosition(ctx context.Context, tx *sql.Tx, ws string) (int64, error) {
+	var position int64
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position),0) FROM task_event_positions WHERE workspace_id=?`, ws).Scan(&position)
+	return position, err
+}
 
 // readFeedbackReportView reads one consistent view of a page of reports,
-// with the work bounded by the page. The transaction takes the workspace
-// environment claim, the lock every report write takes (report entries, the
-// linking work, and the acts), and waits until the last write under it is
-// visible, so no report write runs while the view is read: SingleStore's
-// read committed isolation keeps no view across statements, or even across
-// the tables of one statement. Under the claim it runs:
+// with the work bounded by the page. SingleStore's read committed isolation
+// keeps no view across statements, or even across the scans of one
+// statement, so each input is held still or watched:
 //
-//   - when refuseAbove is positive, the count, an aggregate in the database
-//     that transfers one row, and stops there when the selection passes it;
-//   - one statement of the count and the page's records, with the filters as
-//     semi-joins in the database, transferring the page and one count;
-//   - the links and the notes of the page's reports only;
-//   - the tasks and crates those links and fix tasks name only.
+//   - The workspace environment claim is the lock every write of a report, a
+//     link, a note, a fix task, an environment, and a signal takes, and the
+//     claim waits until the last write under it is visible. So none of these
+//     change while the claim is held.
+//   - A task's crate, title, and existence change under the task's lock, not
+//     under the claim, in a transaction that advances the workspace's task
+//     event position. The view reads the position first and last, and a
+//     change in between reads the whole view again, at most
+//     feedbackReportViewAttempts times, and then answers store.ErrRetryable.
+//   - A crate's name changes under the crate's lock and is read once, only
+//     for the details. Crates are never removed, so the filters do not read
+//     a crate's name.
 //
-// A task's crate changes under the task's own lock, not under the claim. So
-// when validate is set, each page report is checked against the filters with
-// the links and membership read for the page, and the page against the
-// total. A page report that no longer matches, or a page that ends before
-// its limit away from the total, makes the whole view read again, at most
-// feedbackReportViewAttempts times, and then store.ErrRetryable
+// Under the claim it runs: the position; the count, an aggregate that keeps
+// one number, which stops the read when it passes refuseAbove; the page,
+// ORDER BY ... LIMIT, a top-N sort that keeps Offset+Limit rows; the links,
+// notes, tasks, crates, environments, and signals of the page only; and the
+// position again. When validate is set, each page report is also checked
+// against the filters with the details read for it, and the page against
+// the total; a failed check reads the view again in the same way
 // (component-feedback-reports invariants 18, 21, and 24;
 // component-persistence invariant 8).
 func (s *Store) readFeedbackReportView(ctx context.Context, ws, where string, whereArgs []any, limit, offset, refuseAbove int, validate *store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
@@ -148,62 +127,47 @@ func (s *Store) readFeedbackReportView(ctx context.Context, ws, where string, wh
 func (s *Store) readFeedbackReportViewOnce(ctx context.Context, ws, where string, whereArgs []any, limit, offset, refuseAbove int, validate *store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
 	page := store.FeedbackReportPage{}
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		page = store.FeedbackReportPage{Reports: []store.FeedbackReport{}, Details: emptyFeedbackReportDetails()}
+		page = store.FeedbackReportPage{Reports: []store.FeedbackReport{}, Details: store.NewFeedbackReportDetails()}
 		if _, err := claimEnvironments(ctx, tx, ws); err != nil {
 			return err
 		}
-		if refuseAbove > 0 {
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_reports r WHERE `+where, whereArgs...).Scan(&page.Total); err != nil {
+		before, err := feedbackReportTaskPosition(ctx, tx, ws)
+		if err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_reports r WHERE `+where, whereArgs...).Scan(&page.Total); err != nil {
+			return err
+		}
+		refused := refuseAbove > 0 && page.Total > refuseAbove
+		if !refused && page.Total > offset {
+			if page.Reports, err = queryFeedbackReportPage(ctx, tx, `SELECT `+prefixFeedbackReportColumns("r")+` FROM feedback_reports r WHERE `+where+
+				` ORDER BY r.last_seen DESC, r.id LIMIT ? OFFSET ?`, append(append([]any{}, whereArgs...), limit, offset)...); err != nil {
 				return err
 			}
-			if page.Total > refuseAbove {
-				return nil
+			if page.Details, err = readFeedbackReportPageDetails(ctx, tx, ws, page.Reports); err != nil {
+				return err
 			}
 		}
-		statement := `SELECT ` + feedbackReportPageColumns() + `, t.total FROM (SELECT COUNT(*) AS total FROM feedback_reports r WHERE ` + where + `) t
-LEFT JOIN (SELECT ` + prefixFeedbackReportColumns("r") + ` FROM feedback_reports r WHERE ` + where + ` ORDER BY r.last_seen DESC, r.id LIMIT ? OFFSET ?) p ON 1=1
-ORDER BY p.last_seen DESC, p.id`
-		rows, err := tx.QueryContext(ctx, statement, append(append(append([]any{}, whereArgs...), whereArgs...), limit, offset)...)
+		after, err := feedbackReportTaskPosition(ctx, tx, ws)
 		if err != nil {
 			return err
 		}
-		err = func() error {
-			defer rows.Close()
-			for rows.Next() {
-				var total int64
-				report, err := decodeFeedbackReportRow(rows, &total)
-				if err != nil {
-					return err
-				}
-				page.Total = int(total)
-				if report.ID != "" {
-					page.Reports = append(page.Reports, report)
-				}
-			}
-			return rows.Err()
-		}()
-		if err != nil {
-			return err
-		}
-		// The count and the page are two parts of one statement, which need
-		// not see one membership either: a page that ends before its limit
-		// must end at the total, and a page that holds reports must end at
-		// or before it.
-		served := offset + len(page.Reports)
-		if validate != nil && ((len(page.Reports) > 0 && page.Total < served) || (len(page.Reports) < limit && page.Total > served)) {
+		if after != before {
 			return errFeedbackReportViewMoved
 		}
-		if len(page.Reports) == 0 {
+		if validate == nil || refused {
 			return nil
 		}
-		if page.Details, err = readFeedbackReportPageDetails(ctx, tx, ws, page.Reports); err != nil {
-			return err
+		// A second check from the page alone: a page that holds reports ends
+		// at or before the total, a page that ends before its limit ends at
+		// the total, and each page report matches the filters by its details.
+		served := offset + len(page.Reports)
+		if (len(page.Reports) > 0 && page.Total < served) || (len(page.Reports) < limit && page.Total > served) {
+			return errFeedbackReportViewMoved
 		}
-		if validate != nil {
-			for _, report := range page.Reports {
-				if !store.FeedbackReportMatches(*validate, page.Details.Links[report.ID], page.Details.Tasks, page.Details.Crates) {
-					return errFeedbackReportViewMoved
-				}
+		for _, report := range page.Reports {
+			if !store.FeedbackReportMatches(*validate, page.Details.Links[report.ID], page.Details.Tasks, page.Details.Crates) {
+				return errFeedbackReportViewMoved
 			}
 		}
 		return nil
@@ -214,11 +178,30 @@ ORDER BY p.last_seen DESC, p.id`
 	return page, nil
 }
 
+// queryFeedbackReportPage reads report rows in the order of
+// feedbackReportColumns.
+func queryFeedbackReportPage(ctx context.Context, tx *sql.Tx, statement string, args ...any) ([]store.FeedbackReport, error) {
+	rows, err := tx.QueryContext(ctx, statement, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	reports := []store.FeedbackReport{}
+	for rows.Next() {
+		report, err := decodeFeedbackReportRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		reports = append(reports, report)
+	}
+	return reports, rows.Err()
+}
+
 // readFeedbackReportPageDetails reads, in the view's transaction, the links
-// and notes of the given reports and the tasks and crates they name, and
-// nothing else.
+// and notes of the given reports, the tasks and crates they name, and the
+// reports' environments with their newest signals, and nothing else.
 func readFeedbackReportPageDetails(ctx context.Context, tx *sql.Tx, ws string, reports []store.FeedbackReport) (store.FeedbackReportDetails, error) {
-	details := emptyFeedbackReportDetails()
+	details := store.NewFeedbackReportDetails()
 	ids := []any{ws}
 	taskIDs, crateIDs := []string{}, []string{}
 	for _, report := range reports {
@@ -323,7 +306,36 @@ WHERE t.workspace_id=? AND t.id IN (`+inList(len(taskIDs))+`)`, args...)
 			return details, err
 		}
 	}
-	return details, nil
+	environmentIDs := []any{ws}
+	seen := map[string]bool{}
+	for _, report := range reports {
+		if !seen[report.EnvironmentID] {
+			seen[report.EnvironmentID] = true
+			environmentIDs = append(environmentIDs, report.EnvironmentID)
+		}
+	}
+	environmentRows, err := tx.QueryContext(ctx, `SELECT e.id,e.name,s.last_signal_at,s.next_signal_seconds,s.source,s.source_label,s.actor_id
+FROM environments e LEFT JOIN feedback_signals s ON s.workspace_id=e.workspace_id AND s.environment_id=e.id
+WHERE e.workspace_id=? AND e.id IN (`+inList(len(environmentIDs)-1)+`)`, environmentIDs...)
+	if err != nil {
+		return details, err
+	}
+	defer environmentRows.Close()
+	for environmentRows.Next() {
+		var ref store.FeedbackReportEnvironment
+		var at sql.NullTime
+		var seconds sql.NullInt64
+		var source, label, actor sql.NullString
+		if err := environmentRows.Scan(&ref.ID, &ref.Name, &at, &seconds, &source, &label, &actor); err != nil {
+			return details, err
+		}
+		if at.Valid && seconds.Valid && source.Valid && label.Valid && actor.Valid {
+			ref.Signal = &store.FeedbackSignalState{EnvironmentID: ref.ID, LastSignalAt: store.EnvironmentTime(at.Time), NextSignalSeconds: int(seconds.Int64),
+				Origin: store.FeedbackOrigin{Source: source.String, Label: label.String, Actor: actor.String}}
+		}
+		details.Environments[ref.ID] = ref
+	}
+	return details, environmentRows.Err()
 }
 
 // ListFeedbackReports implements store.ReportReadStore with one consistent
@@ -347,7 +359,7 @@ func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackRep
 func (s *Store) ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]store.FeedbackReport, store.FeedbackReportDetails, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ReadFeedbackReports")
 	if len(reportIDs) == 0 {
-		return []store.FeedbackReport{}, emptyFeedbackReportDetails(), nil
+		return []store.FeedbackReport{}, store.NewFeedbackReportDetails(), nil
 	}
 	ws, err := workspace(ctx)
 	if err != nil {
@@ -417,8 +429,11 @@ func inList(count int) string {
 
 // CountCrateOpenFeedbackReports implements store.ReportReadStore with the
 // crate filter of the list, one aggregate in the database that transfers one
-// row for each environment, under the workspace environment claim, so the
-// count and the list agree on what belongs to a crate
+// row for each environment. It reads as readFeedbackReportView does: under
+// the workspace environment claim, between two reads of the task event
+// position, and again when a task change commits in between, at most
+// feedbackReportViewAttempts times, so the counts are what one state of the
+// store gives and agree with the list on what belongs to a crate
 // (component-feedback-reports invariants 21 and 23).
 func (s *Store) CountCrateOpenFeedbackReports(ctx context.Context, crateID string) (map[string]int, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "CountCrateOpenFeedbackReports")
@@ -430,27 +445,52 @@ func (s *Store) CountCrateOpenFeedbackReports(ctx context.Context, crateID strin
 	if err != nil {
 		return nil, err
 	}
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		counts = map[string]int{}
-		if _, err := claimEnvironments(ctx, tx, ws); err != nil {
-			return err
-		}
-		rows, err := tx.QueryContext(ctx, `SELECT r.environment_id,COUNT(*) FROM feedback_reports r WHERE r.workspace_id=? AND r.state='open' AND r.id IN (`+
-			feedbackServedLinkReports("(lc.id=? OR tc.id=?)")+`) GROUP BY r.environment_id`, ws, ws, crateID, crateID)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var environmentID string
-			var count int
-			if err := rows.Scan(&environmentID, &count); err != nil {
+	for range feedbackReportViewAttempts {
+		err = s.withTx(ctx, func(tx *sql.Tx) error {
+			counts = map[string]int{}
+			if _, err := claimEnvironments(ctx, tx, ws); err != nil {
 				return err
 			}
-			counts[environmentID] = count
+			before, err := feedbackReportTaskPosition(ctx, tx, ws)
+			if err != nil {
+				return err
+			}
+			rows, err := tx.QueryContext(ctx, `SELECT r.environment_id,COUNT(*) FROM feedback_reports r WHERE r.workspace_id=? AND r.state='open' AND `+
+				feedbackServedLink("(lc.id=? OR tc.id=?)")+` GROUP BY r.environment_id`, ws, crateID, crateID)
+			if err != nil {
+				return err
+			}
+			err = func() error {
+				defer rows.Close()
+				for rows.Next() {
+					var environmentID string
+					var count int
+					if err := rows.Scan(&environmentID, &count); err != nil {
+						return err
+					}
+					counts[environmentID] = count
+				}
+				return rows.Err()
+			}()
+			if err != nil {
+				return err
+			}
+			after, err := feedbackReportTaskPosition(ctx, tx, ws)
+			if err != nil {
+				return err
+			}
+			if after != before {
+				return errFeedbackReportViewMoved
+			}
+			return nil
+		})
+		if !errors.Is(err, errFeedbackReportViewMoved) {
+			break
 		}
-		return rows.Err()
-	})
+	}
+	if errors.Is(err, errFeedbackReportViewMoved) {
+		return nil, fmt.Errorf("%w: %v", store.ErrRetryable, err)
+	}
 	if err != nil {
 		return nil, err
 	}

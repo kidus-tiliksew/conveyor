@@ -136,16 +136,35 @@ type FeedbackReportCrateRef struct {
 	Name string
 }
 
+// FeedbackReportEnvironment is the environment of a report, read with the
+// report: its name, and the newest signal of the environment when one is
+// stored.
+type FeedbackReportEnvironment struct {
+	ID     string
+	Name   string
+	Signal *FeedbackSignalState
+}
+
 // FeedbackReportDetails holds what a served report needs beyond its record:
 // every stored link of each report, removed links included and ordered by ID,
-// the notes of each report in order, and the tasks and crates the links and
-// fix tasks name that the workspace holds. A task or crate the workspace does
-// not hold has no entry.
+// the notes of each report in order, the tasks and crates the links and fix
+// tasks name that the workspace holds, and the environments of the reports
+// with their newest signals. A task, crate, or environment the workspace
+// does not hold has no entry. Every value is read in the same view as the
+// records, so a served report never mixes values from two moments
+// (component-feedback-reports invariant 21).
 type FeedbackReportDetails struct {
-	Links  map[string][]FeedbackReportLink
-	Notes  map[string][]FeedbackReportNote
-	Tasks  map[string]FeedbackReportTaskRef
-	Crates map[string]FeedbackReportCrateRef
+	Links        map[string][]FeedbackReportLink
+	Notes        map[string][]FeedbackReportNote
+	Tasks        map[string]FeedbackReportTaskRef
+	Crates       map[string]FeedbackReportCrateRef
+	Environments map[string]FeedbackReportEnvironment
+}
+
+// NewFeedbackReportDetails answers details with every map empty.
+func NewFeedbackReportDetails() FeedbackReportDetails {
+	return FeedbackReportDetails{Links: map[string][]FeedbackReportLink{}, Notes: map[string][]FeedbackReportNote{},
+		Tasks: map[string]FeedbackReportTaskRef{}, Crates: map[string]FeedbackReportCrateRef{}, Environments: map[string]FeedbackReportEnvironment{}}
 }
 
 // ReportReadStore keeps the reads and the acts of reports for people
@@ -162,10 +181,16 @@ type ReportReadStore interface {
 	// before the page and the count, and a report that matches twice is
 	// counted once (FeedbackReportServed and FeedbackReportInCrate state
 	// what a filter matches). The work follows the page, not the history:
-	// the filters and the count run over keys and indexes, and only the
-	// page's records, their links and notes, and the tasks and crates those
-	// name are loaded, so the lock or claim a backend holds for the view is
-	// held for the page alone (component-feedback-reports invariant 24).
+	// while the read runs it keeps a count, at most Offset+Limit sort keys,
+	// and the records and details of the page, and nothing else that grows
+	// with the number of matches. A query over its RefuseAbove keeps the
+	// count alone. The lock or claim a backend holds for the view is held for
+	// that work (component-feedback-reports invariant 24). Every input of
+	// the read (the records, the links, the tasks and their crates, the
+	// crates, the fix task, and the environments with their signals) is read
+	// so that the page, the count, and the details are what one state of the
+	// store gives; a backend that detects a change during the read answers
+	// ErrRetryable after a bounded number of reads.
 	ListFeedbackReports(ctx context.Context, query FeedbackReportQuery) (FeedbackReportPage, error)
 	// GetFeedbackReport answers one report, or ErrNotFound.
 	GetFeedbackReport(ctx context.Context, reportID string) (FeedbackReport, error)

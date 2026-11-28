@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -17,27 +18,28 @@ import (
 
 var _ store.ReportReadStore = (*Store)(nil)
 
-// feedbackServedLinkReports is a subquery of the report IDs that have a
-// served link meeting cond: a possible or confirmed link to a task or a crate
-// the workspace holds. tc is the crate a linked task is a member of at the
-// read, and lc the crate a link names. It states the rule of
+// feedbackServedLink is a predicate on the report r: it has a served link
+// meeting cond, a possible or confirmed link to a task or a crate the
+// workspace holds. tc is the crate a linked task is a member of at the read,
+// and lc the crate a link names. It states the rule of
 // store.FeedbackReportServed and store.FeedbackReportInCrate
-// (component-feedback-reports invariant 21). workspace is the placeholder of
-// the workspace ID.
-func feedbackServedLinkReports(workspace, cond string) string {
-	return `SELECT l.report_id FROM feedback_report_links l
+// (component-feedback-reports invariant 21). It is correlated on the report,
+// so each candidate report probes its own links through the report link
+// indexes and the predicate keeps no set of report IDs.
+func feedbackServedLink(cond string) string {
+	return `EXISTS (SELECT 1 FROM feedback_report_links l
 LEFT JOIN tasks t ON t.workspace_id=l.workspace_id AND t.id=l.task_id
 LEFT JOIN crates lc ON lc.workspace_id=l.workspace_id AND lc.id=l.crate_id
 LEFT JOIN crates tc ON tc.workspace_id=t.workspace_id AND tc.id=t.crate_id
-WHERE l.workspace_id=` + workspace + ` AND l.state IN ('possible', 'confirmed')
+WHERE l.workspace_id=r.workspace_id AND l.report_id=r.id AND l.state IN ('possible', 'confirmed')
 AND ((l.task_id IS NOT NULL AND l.crate_id IS NULL AND t.id IS NOT NULL) OR (l.crate_id IS NOT NULL AND l.task_id IS NULL AND lc.id IS NOT NULL))
-AND ` + cond
+AND ` + cond + `)`
 }
 
 // feedbackReportFilter renders the WHERE clause of a list and its
 // arguments. Every filter is a predicate of the one statement, so it runs
-// before the page and the count, and IN keeps a report that matches twice to
-// one row.
+// before the page and the count, and EXISTS keeps a report that matches
+// twice to one row.
 func feedbackReportFilter(workspaceID string, query store.FeedbackReportQuery) (string, []any) {
 	args := []any{workspaceID, query.State}
 	clauses := []string{"r.workspace_id=$1", "r.state=$2"}
@@ -49,25 +51,27 @@ func feedbackReportFilter(workspaceID string, query store.FeedbackReportQuery) (
 		clauses = append(clauses, "r.environment_id="+next(query.EnvironmentID))
 	}
 	if query.TaskID != "" {
-		clauses = append(clauses, "r.id IN ("+feedbackServedLinkReports("$1", "l.task_id="+next(query.TaskID))+")")
+		clauses = append(clauses, feedbackServedLink("l.task_id="+next(query.TaskID)))
 	}
 	if query.CrateID != "" {
 		crate := next(query.CrateID)
-		clauses = append(clauses, "r.id IN ("+feedbackServedLinkReports("$1", "(lc.id="+crate+" OR tc.id="+crate+")")+")")
+		clauses = append(clauses, feedbackServedLink("(lc.id="+crate+" OR tc.id="+crate+")"))
 	}
 	if query.NoCrate {
-		clauses = append(clauses, "r.id NOT IN ("+feedbackServedLinkReports("$1", "(lc.id IS NOT NULL OR tc.id IS NOT NULL)")+")")
+		clauses = append(clauses, "NOT "+feedbackServedLink("(lc.id IS NOT NULL OR tc.id IS NOT NULL)"))
 	}
 	return strings.Join(clauses, " AND "), args
 }
 
-// ListFeedbackReports implements store.ReportReadStore. The page, the
-// count, and the details are read in one REPEATABLE READ snapshot, so they
-// agree: the count is a window over every selected row before the page is
-// cut, and a page past the end reads the count alone in the same snapshot.
-// The filters run in the database as semi-joins over the report, link, task,
-// and crate keys; only the page's rows, their links, notes, tasks, and
-// crates cross the connection.
+// ListFeedbackReports implements store.ReportReadStore. The count, the
+// page, and the details are read in one read-only REPEATABLE READ snapshot,
+// so every input of the read (the records, the links, the tasks and their
+// crates, the crates, the fix task, and the environments with their signals)
+// is one state. The count is an aggregate that keeps one number. A query over
+// its RefuseAbove stops there. The page is ORDER BY ... LIMIT, which the
+// server answers with a top-N sort that keeps Offset+Limit rows, and only the
+// page's rows, their links, notes, tasks, crates, and environments cross the
+// connection (component-feedback-reports invariants 21 and 24).
 func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackReports")
 	query, err := store.NormalizeFeedbackReportQuery(query)
@@ -77,39 +81,24 @@ func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackRep
 	workspaceID := workspace(ctx)
 	where, args := feedbackReportFilter(workspaceID, query)
 	limit, offset := len(args)+1, len(args)+2
-	sql := `SELECT ` + prefixFeedbackReportColumns("r") + `, count(*) OVER () FROM feedback_reports r WHERE ` + where +
+	sql := `SELECT ` + prefixFeedbackReportColumns("r") + ` FROM feedback_reports r WHERE ` + where +
 		` ORDER BY r.last_seen DESC, r.id LIMIT $` + strconv.Itoa(limit) + ` OFFSET $` + strconv.Itoa(offset)
 	tx, err := s.beginWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return store.FeedbackReportPage{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	// An over-limit selection answers its count, an indexed aggregate that
-	// transfers one row, and loads no record or details.
-	if query.RefuseAbove > 0 {
-		var total int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM feedback_reports r WHERE `+where, args...).Scan(&total); err != nil {
-			return store.FeedbackReportPage{}, err
-		}
-		if total > query.RefuseAbove {
-			return store.FeedbackReportPage{Reports: []store.FeedbackReport{}, Total: total, Details: emptyPostgresFeedbackReportDetails()}, nil
-		}
-	}
-	rows, err := tx.Query(ctx, sql, append(append([]any{}, args...), query.Limit, query.Offset)...)
-	if err != nil {
+	page := store.FeedbackReportPage{Reports: []store.FeedbackReport{}, Details: store.NewFeedbackReportDetails()}
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM feedback_reports r WHERE `+where, args...).Scan(&page.Total); err != nil {
 		return store.FeedbackReportPage{}, err
 	}
-	reports, totals, err := scanFeedbackReportsWithTotal(rows)
-	if err != nil {
+	if page.Refused(query) || page.Total <= query.Offset {
+		return page, nil
+	}
+	if page.Reports, err = queryFeedbackReports(ctx, tx, sql, append(append([]any{}, args...), query.Limit, query.Offset)...); err != nil {
 		return store.FeedbackReportPage{}, err
 	}
-	page := store.FeedbackReportPage{Reports: reports}
-	if len(totals) > 0 {
-		page.Total = totals[0]
-	} else if err := tx.QueryRow(ctx, `SELECT count(*) FROM feedback_reports r WHERE `+where, args...).Scan(&page.Total); err != nil {
-		return store.FeedbackReportPage{}, err
-	}
-	if page.Details, err = readFeedbackReportDetailsTx(ctx, tx, workspaceID, reports); err != nil {
+	if page.Details, err = readFeedbackReportDetailsTx(ctx, tx, workspaceID, page.Reports); err != nil {
 		return store.FeedbackReportPage{}, err
 	}
 	return page, nil
@@ -147,24 +136,6 @@ func prefixFeedbackReportColumns(alias string) string {
 		columns[i] = alias + "." + strings.TrimSpace(column)
 	}
 	return strings.Join(columns, ", ")
-}
-
-// scanFeedbackReportsWithTotal reads report rows that end with the window
-// count. It decodes each report as queryFeedbackReports does.
-func scanFeedbackReportsWithTotal(rows pgx.Rows) ([]store.FeedbackReport, []int, error) {
-	defer rows.Close()
-	reports := []store.FeedbackReport{}
-	totals := []int{}
-	for rows.Next() {
-		var total int64
-		report, err := decodeFeedbackReportRow(rows, &total)
-		if err != nil {
-			return nil, nil, err
-		}
-		reports = append(reports, report)
-		totals = append(totals, int(total))
-	}
-	return reports, totals, rows.Err()
 }
 
 // GetFeedbackReport implements store.ReportReadStore.
@@ -215,15 +186,15 @@ func (s *Store) ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]
 // readFeedbackReportDetailsTx reads the links, notes, tasks, and crates of
 // reports in the caller's transaction.
 func readFeedbackReportDetailsTx(ctx context.Context, tx pgx.Tx, workspaceID string, reports []store.FeedbackReport) (store.FeedbackReportDetails, error) {
-	details := store.FeedbackReportDetails{Links: map[string][]store.FeedbackReportLink{}, Notes: map[string][]store.FeedbackReportNote{},
-		Tasks: map[string]store.FeedbackReportTaskRef{}, Crates: map[string]store.FeedbackReportCrateRef{}}
+	details := store.NewFeedbackReportDetails()
 	if len(reports) == 0 {
 		return details, nil
 	}
 	ids := make([]string, len(reports))
-	taskIDs, crateIDs := []string{}, []string{}
+	taskIDs, crateIDs, environmentIDs := []string{}, []string{}, []string{}
 	for i, report := range reports {
 		ids[i] = report.ID
+		environmentIDs = append(environmentIDs, report.EnvironmentID)
 		details.Links[report.ID], details.Notes[report.ID] = []store.FeedbackReportLink{}, []store.FeedbackReportNote{}
 		if report.FixTaskID != "" {
 			taskIDs = append(taskIDs, report.FixTaskID)
@@ -267,7 +238,39 @@ FROM feedback_report_links WHERE workspace_id=$1 AND report_id=ANY($2::text[]) O
 	if details.Tasks, details.Crates, err = queryFeedbackReportRefs(ctx, tx, workspaceID, taskIDs, crateIDs); err != nil {
 		return store.FeedbackReportDetails{}, err
 	}
+	if details.Environments, err = queryFeedbackReportEnvironments(ctx, tx, workspaceID, environmentIDs); err != nil {
+		return store.FeedbackReportDetails{}, err
+	}
 	return details, nil
+}
+
+// queryFeedbackReportEnvironments reads, in the caller's snapshot, the
+// environments the given IDs name with the newest signal of each, and no
+// other environment.
+func queryFeedbackReportEnvironments(ctx context.Context, tx pgx.Tx, workspaceID string, environmentIDs []string) (map[string]store.FeedbackReportEnvironment, error) {
+	environments := map[string]store.FeedbackReportEnvironment{}
+	rows, err := tx.Query(ctx, `SELECT e.id, e.name, s.last_signal_at, s.next_signal_seconds, s.source, s.source_label, s.actor_id
+FROM environments e LEFT JOIN feedback_signals s ON s.workspace_id=e.workspace_id AND s.environment_id=e.id
+WHERE e.workspace_id=$1 AND e.id=ANY($2::text[])`, workspaceID, environmentIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ref store.FeedbackReportEnvironment
+		var at *time.Time
+		var seconds *int
+		var source, label, actor *string
+		if err := rows.Scan(&ref.ID, &ref.Name, &at, &seconds, &source, &label, &actor); err != nil {
+			return nil, err
+		}
+		if at != nil && seconds != nil && source != nil && label != nil && actor != nil {
+			ref.Signal = &store.FeedbackSignalState{EnvironmentID: ref.ID, LastSignalAt: store.EnvironmentTime(*at), NextSignalSeconds: *seconds,
+				Origin: store.FeedbackOrigin{Source: *source, Label: *label, Actor: *actor}}
+		}
+		environments[ref.ID] = ref
+	}
+	return environments, rows.Err()
 }
 
 // queryFeedbackReportRefs reads the tasks and crates the given IDs name,
@@ -329,8 +332,8 @@ func (s *Store) CountCrateOpenFeedbackReports(ctx context.Context, crateID strin
 	if crateID == "" {
 		return counts, nil
 	}
-	rows, err := s.boundary.Query(ctx, `SELECT r.environment_id, count(*) FROM feedback_reports r WHERE r.workspace_id=$1 AND r.state='open' AND r.id IN (`+
-		feedbackServedLinkReports("$1", "(lc.id=$2 OR tc.id=$2)")+`) GROUP BY r.environment_id`, workspace(ctx), crateID)
+	rows, err := s.boundary.Query(ctx, `SELECT r.environment_id, count(*) FROM feedback_reports r WHERE r.workspace_id=$1 AND r.state='open' AND `+
+		feedbackServedLink("(lc.id=$2 OR tc.id=$2)")+` GROUP BY r.environment_id`, workspace(ctx), crateID)
 	if err != nil {
 		return nil, err
 	}
@@ -490,9 +493,4 @@ func feedbackOptionalText(value string) *string {
 		return nil
 	}
 	return &value
-}
-
-func emptyPostgresFeedbackReportDetails() store.FeedbackReportDetails {
-	return store.FeedbackReportDetails{Links: map[string][]store.FeedbackReportLink{}, Notes: map[string][]store.FeedbackReportNote{},
-		Tasks: map[string]store.FeedbackReportTaskRef{}, Crates: map[string]store.FeedbackReportCrateRef{}}
 }

@@ -37,8 +37,9 @@ func CloseFeedbackReportForTest(t *testing.T, st Backend, ctx context.Context, r
 	t.Fatalf("feedback report %q is missing", reportID)
 }
 
-// DrainFeedbackReportReadCopiesForTest answers the report records, links,
-// and notes the volatile report reads copied out since the previous drain.
+// DrainFeedbackReportReadCopiesForTest answers what the volatile report
+// reads kept since the previous drain: the references a list kept for its
+// page, and the report records, links, and notes copied out.
 // The memory conformance entry point supplies it as
 // Fixture.DrainFeedbackReportReadCopies.
 func DrainFeedbackReportReadCopiesForTest(st Backend) uint64 {

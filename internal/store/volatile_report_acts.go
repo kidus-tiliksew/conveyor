@@ -46,7 +46,8 @@ func (m *volatileMemory) feedbackReportRefsLocked(workspace string, taskIDs, cra
 }
 
 // feedbackReportRef is a report the filters selected, held by reference: its
-// order keys and where it is kept. Selecting copies no record.
+// order keys and where it is kept. Selecting copies no record, and a list
+// keeps at most Offset+Limit of them (feedbackReportTopRefs).
 type feedbackReportRef struct {
 	lastSeen time.Time
 	id       string
@@ -105,21 +106,62 @@ func (m *volatileMemory) feedbackReportLinkMatchesLocked(workspace, reportID str
 	return (query.TaskID == "" || taskMatched) && (query.CrateID == "" || crateMatched) && (!query.NoCrate || !inAnyCrate)
 }
 
-// ListFeedbackReports implements ReportReadStore under one read lock. The
-// filters select reports by reference over the in-process maps and copy
-// nothing. The count is the number selected. A selection over RefuseAbove
-// answers the count alone. Only the page's records are copied, and only
-// their links and notes are read (component-feedback-reports invariants 21
-// and 24).
-func (m *volatileMemory) ListFeedbackReports(ctx context.Context, query FeedbackReportQuery) (FeedbackReportPage, error) {
-	query, err := NormalizeFeedbackReportQuery(query)
-	if err != nil {
-		return FeedbackReportPage{}, err
+// feedbackReportRefsBefore orders references as a list does: newest
+// last_seen first, then by ID.
+func feedbackReportRefsBefore(a, b feedbackReportRef) bool {
+	if n := a.lastSeen.Compare(b.lastSeen); n != 0 {
+		return n > 0
 	}
-	workspace := workspaceOrDefault(ctx, "")
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	selected := []feedbackReportRef{}
+	return a.id < b.id
+}
+
+// feedbackReportTopRefs keeps at most keep references, the first ones in
+// list order, as a heap whose root is the last kept reference. A reference
+// after the root is dropped at once, so the kept set never passes keep.
+type feedbackReportTopRefs struct {
+	keep int
+	refs []feedbackReportRef
+}
+
+func (h *feedbackReportTopRefs) offer(ref feedbackReportRef) {
+	if h.keep <= 0 {
+		return
+	}
+	if len(h.refs) < h.keep {
+		h.refs = append(h.refs, ref)
+		for i := len(h.refs) - 1; i > 0; {
+			parent := (i - 1) / 2
+			if !feedbackReportRefsBefore(h.refs[parent], h.refs[i]) {
+				break
+			}
+			h.refs[parent], h.refs[i] = h.refs[i], h.refs[parent]
+			i = parent
+		}
+		return
+	}
+	if !feedbackReportRefsBefore(ref, h.refs[0]) {
+		return
+	}
+	h.refs[0] = ref
+	for i := 0; ; {
+		last, left, right := i, 2*i+1, 2*i+2
+		if left < len(h.refs) && feedbackReportRefsBefore(h.refs[last], h.refs[left]) {
+			last = left
+		}
+		if right < len(h.refs) && feedbackReportRefsBefore(h.refs[last], h.refs[right]) {
+			last = right
+		}
+		if last == i {
+			return
+		}
+		h.refs[i], h.refs[last] = h.refs[last], h.refs[i]
+		i = last
+	}
+}
+
+// forEachFeedbackReportMatchLocked calls fn with each report of the
+// workspace that the query selects, by reference, under the held mutex.
+func (m *volatileMemory) forEachFeedbackReportMatchLocked(workspace string, query FeedbackReportQuery, fn func(feedbackReportRef)) {
 	for scope, reports := range m.feedbackReportState.reports {
 		if scope.workspace != workspace || (query.EnvironmentID != "" && scope.id != query.EnvironmentID) {
 			continue
@@ -128,22 +170,47 @@ func (m *volatileMemory) ListFeedbackReports(ctx context.Context, query Feedback
 			if report.State != query.State || !m.feedbackReportLinkMatchesLocked(workspace, report.ID, query) {
 				continue
 			}
-			selected = append(selected, feedbackReportRef{lastSeen: report.LastSeen, id: report.ID, location: feedbackReportLocation{scope: scope, key: key}})
+			fn(feedbackReportRef{lastSeen: report.LastSeen, id: report.ID, location: feedbackReportLocation{scope: scope, key: key}})
 		}
 	}
-	page := FeedbackReportPage{Reports: []FeedbackReport{}, Total: len(selected), Details: FeedbackReportDetails{Links: map[string][]FeedbackReportLink{},
-		Notes: map[string][]FeedbackReportNote{}, Tasks: map[string]FeedbackReportTaskRef{}, Crates: map[string]FeedbackReportCrateRef{}}}
-	if page.Refused(query) {
-		return page, nil
+}
+
+// ListFeedbackReports implements ReportReadStore under one read lock, so
+// every input of the read is one state. While it runs it keeps a count, at
+// most Offset+Limit references (sort keys and where a report is kept), and
+// the page's records and details. A query with RefuseAbove counts first and
+// keeps nothing else, and a count over RefuseAbove answers the count alone
+// (component-feedback-reports invariants 21 and 24).
+func (m *volatileMemory) ListFeedbackReports(ctx context.Context, query FeedbackReportQuery) (FeedbackReportPage, error) {
+	query, err := NormalizeFeedbackReportQuery(query)
+	if err != nil {
+		return FeedbackReportPage{}, err
 	}
-	slices.SortFunc(selected, func(a, b feedbackReportRef) int {
-		if n := b.lastSeen.Compare(a.lastSeen); n != 0 {
-			return n
+	workspace := workspaceOrDefault(ctx, "")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	page := FeedbackReportPage{Reports: []FeedbackReport{}, Details: NewFeedbackReportDetails()}
+	if query.RefuseAbove > 0 {
+		m.forEachFeedbackReportMatchLocked(workspace, query, func(feedbackReportRef) { page.Total++ })
+		if page.Refused(query) {
+			return page, nil
 		}
-		return strings.Compare(a.id, b.id)
+		page.Total = 0
+	}
+	top := feedbackReportTopRefs{keep: query.Offset + query.Limit}
+	m.forEachFeedbackReportMatchLocked(workspace, query, func(ref feedbackReportRef) {
+		page.Total++
+		top.offer(ref)
 	})
-	if query.Offset < len(selected) {
-		for _, ref := range selected[query.Offset:min(len(selected), query.Offset+query.Limit)] {
+	m.feedbackReportState.readCopies.Add(int64(len(top.refs)))
+	slices.SortFunc(top.refs, func(a, b feedbackReportRef) int {
+		if feedbackReportRefsBefore(a, b) {
+			return -1
+		}
+		return 1
+	})
+	if query.Offset < len(top.refs) {
+		for _, ref := range top.refs[query.Offset:] {
 			page.Reports = append(page.Reports, cloneFeedbackReport(m.feedbackReportState.reports[ref.location.scope][ref.location.key]))
 		}
 	}
@@ -208,9 +275,19 @@ func (m *volatileMemory) ReadFeedbackReports(ctx context.Context, reportIDs []st
 // feedbackReportDetailsLocked reads the details of reports under the held
 // mutex.
 func (m *volatileMemory) feedbackReportDetailsLocked(workspace string, reports []FeedbackReport) (FeedbackReportDetails, error) {
-	details := FeedbackReportDetails{Links: map[string][]FeedbackReportLink{}, Notes: map[string][]FeedbackReportNote{}}
+	details := NewFeedbackReportDetails()
 	taskIDs, crateIDs := []string{}, []string{}
 	for _, report := range reports {
+		if _, ok := details.Environments[report.EnvironmentID]; !ok {
+			key := memoryScopedKey{workspace: workspace, id: report.EnvironmentID}
+			if environment, ok := m.environmentState.environments[key]; ok {
+				ref := FeedbackReportEnvironment{ID: environment.ID, Name: environment.Name}
+				if signal, ok := m.feedbackState.signals[key]; ok {
+					ref.Signal = &signal
+				}
+				details.Environments[report.EnvironmentID] = ref
+			}
+		}
 		links, err := m.feedbackReportLinksLocked(workspace, report.ID)
 		if err != nil {
 			return FeedbackReportDetails{}, err

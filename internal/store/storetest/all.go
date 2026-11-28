@@ -191,8 +191,9 @@ type Fixture struct {
 	// supplies it. The FeedbackReportLinking cases require it and never skip
 	// (component-feedback-reports invariants 11 and 17).
 	SeedFeedbackReportLink func(t *testing.T, ctx context.Context, link store.FeedbackReportLink)
-	// DrainFeedbackReportReadCopies answers the report records, links, and
-	// notes the backend's report reads copied out since the previous drain.
+	// DrainFeedbackReportReadCopies answers what the backend's report reads
+	// kept since the previous drain: the references a list kept for its
+	// page, and the report records, links, and notes copied out.
 	// The volatile backend, which keeps no read ledger, supplies it, so the
 	// ReadWorkBoundedByThePage case counts its work too.
 	DrainFeedbackReportReadCopies func() uint64

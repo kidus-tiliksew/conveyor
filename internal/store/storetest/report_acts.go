@@ -49,10 +49,11 @@ func runFeedbackReportActs(t *testing.T, factory Factory) {
 		{"SameActTwiceAtOnce", runFeedbackActConcurrentSame},
 		{"RemovalAgainstTheEndOfLinking", runFeedbackActConcurrentLinking},
 		{"ActsAgainstAReportEntry", runFeedbackActConcurrentEntry},
-		{"TaskFilteredPageAgainstRemovals", runFeedbackReadTaskFilterConcurrent},
+		{"TaskFilteredPageAgainstLinksAndRemovals", runFeedbackReadTaskFilterConcurrent},
 		{"FixTaskAndCausesReadTogether", runFeedbackReadFixTaskConcurrent},
 		{"CratePageAgainstMembershipChanges", runFeedbackReadCrateConcurrent},
 		{"PageAndTotalAgainstCloses", runFeedbackReadTotalConcurrent},
+		{"EnvironmentAndSignalReadWithThePage", runFeedbackReadEnvironmentConcurrent},
 		{"ListFiltersOrderAndPaging", runFeedbackReportListFilters},
 		{"CrateCountsAgreeWithTheList", runFeedbackReportCrateCounts},
 		{"Details", runFeedbackReportDetails},
@@ -1022,75 +1023,6 @@ func runFeedbackReportDetails(t *testing.T, x Fixture) {
 	}
 }
 
-// readUntil runs read repeatedly until write returns, and once more after,
-// and fails on the first error either returns.
-func readUntil(t *testing.T, write func() error, read func() error) {
-	t.Helper()
-	done := make(chan error, 1)
-	go func() { done <- write() }()
-	for {
-		select {
-		case err := <-done:
-			requireOK(t, err)
-			requireOK(t, read())
-			return
-		default:
-			if err := read(); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-}
-
-// runFeedbackReadTaskFilterConcurrent removes the links of many reports to
-// one task while lists filtered by that task run. Every report a page serves
-// holds, in the details read with it, a served link to the task: the filter
-// and the projected links come from one view (component-feedback-reports
-// invariant 21).
-func runFeedbackReadTaskFilterConcurrent(t *testing.T, x Fixture) {
-	e := newFeedbackEnvironment(t, x, "Production", "watcher")
-	task := mergedActTask(t, x, "")
-	ctx := actContext(x)
-	entries := []store.FeedbackReportEntry{}
-	for i := range 30 {
-		entries = append(entries, reportEntry(fmt.Sprintf("crash-%02d", i)))
-	}
-	e.sendReports(t, 0, entries...)
-	links := []store.FeedbackReportAct{}
-	for _, report := range e.reports(t) {
-		_, err := x.Backend.RecordFeedbackReportAct(ctx, store.FeedbackReportAct{Kind: store.FeedbackReportActLink, ReportID: report.ID, TaskID: task.ID, At: feedbackTime(time.Hour)})
-		requireOK(t, err)
-		links = append(links, store.FeedbackReportAct{Kind: store.FeedbackReportActRemoveLink, ReportID: report.ID, LinkID: store.FeedbackReportLinkID(report.ID, 1), At: feedbackTime(2 * time.Hour)})
-	}
-	readUntil(t, func() error {
-		for _, act := range links {
-			if _, err := x.Backend.RecordFeedbackReportAct(ctx, act); err != nil {
-				return err
-			}
-		}
-		return nil
-	}, func() error {
-		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, TaskID: task.ID, Limit: 100})
-		if err != nil {
-			return err
-		}
-		if len(page.Reports) != page.Total {
-			return fmt.Errorf("page of %d reports with total %d", len(page.Reports), page.Total)
-		}
-		for _, report := range page.Reports {
-			if !slices.ContainsFunc(page.Details.Links[report.ID], func(link store.FeedbackReportLink) bool {
-				return link.TaskID == task.ID && store.FeedbackReportServed(link, page.Details.Tasks, page.Details.Crates)
-			}) {
-				return fmt.Errorf("report %s is on a page filtered by task %s without a served link to it: %+v", report.ID, task.ID, page.Details.Links[report.ID])
-			}
-		}
-		return nil
-	})
-	if ids, total := listIDs(t, x, store.FeedbackReportQuery{TaskID: task.ID}); len(ids) != 0 || total != 0 {
-		t.Fatalf("task list after every removal=%v total=%d", ids, total)
-	}
-}
-
 // runFeedbackReadFixTaskConcurrent records a fix task with one cause on many
 // reports while the reports are read. A read that shows the cause link
 // confirmed shows the fix task, and the reverse: the fix task and the cause
@@ -1158,102 +1090,11 @@ func runFeedbackReadFixTaskConcurrent(t *testing.T, x Fixture) {
 	})
 }
 
-// runFeedbackReadCrateConcurrent moves the member task of a crate in and
-// out of the crate while lists filtered by the crate run. Every report a
-// page serves belongs to the crate by the links and the membership read
-// with it (component-feedback-reports invariant 21).
-func runFeedbackReadCrateConcurrent(t *testing.T, x Fixture) {
-	e := newFeedbackEnvironment(t, x, "Production", "watcher")
-	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Spring"})
-	requireOK(t, err)
-	member := mergedActTask(t, x, crate.ID)
-	ctx := actContext(x)
-	entries := []store.FeedbackReportEntry{}
-	for i := range 10 {
-		entries = append(entries, reportEntry(fmt.Sprintf("crash-%02d", i)))
-	}
-	e.sendReports(t, 0, entries...)
-	for _, report := range e.reports(t) {
-		_, err := x.Backend.RecordFeedbackReportAct(ctx, store.FeedbackReportAct{Kind: store.FeedbackReportActLink, ReportID: report.ID, TaskID: member.ID, At: feedbackTime(time.Hour)})
-		requireOK(t, err)
-	}
-	readUntil(t, func() error {
-		for range 10 {
-			if _, err := x.Backend.ClearTaskCrate(x.Context, member.ID); err != nil {
-				return err
-			}
-			if _, err := x.Backend.SetTaskCrate(x.Context, member.ID, crate.ID); err != nil {
-				return err
-			}
-		}
-		return nil
-	}, func() error {
-		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, CrateID: crate.ID, Limit: 100})
-		if err != nil {
-			return err
-		}
-		if len(page.Reports) != page.Total {
-			return fmt.Errorf("page of %d reports with total %d", len(page.Reports), page.Total)
-		}
-		for _, report := range page.Reports {
-			if !slices.ContainsFunc(page.Details.Links[report.ID], func(link store.FeedbackReportLink) bool {
-				return store.FeedbackReportInCrate(link, page.Details.Tasks, page.Details.Crates, crate.ID)
-			}) {
-				return fmt.Errorf("report %s is on the crate page without belonging to the crate by its details", report.ID)
-			}
-		}
-		return nil
-	})
-}
-
-// runFeedbackReadTotalConcurrent closes reports while open lists run. A page
-// that starts at the first report and holds every selected report serves
-// as many reports as its total.
-func runFeedbackReadTotalConcurrent(t *testing.T, x Fixture) {
-	e := newFeedbackEnvironment(t, x, "Production", "watcher")
-	ctx := actContext(x)
-	entries := []store.FeedbackReportEntry{}
-	for i := range 30 {
-		entries = append(entries, reportEntry(fmt.Sprintf("crash-%02d", i)))
-	}
-	e.sendReports(t, 0, entries...)
-	reports := e.reports(t)
-	readUntil(t, func() error {
-		for _, report := range reports {
-			if _, err := x.Backend.RecordFeedbackReportAct(ctx, store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: report.ID, Reason: "done", At: feedbackTime(time.Hour)}); err != nil {
-				return err
-			}
-		}
-		return nil
-	}, func() error {
-		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 100})
-		if err != nil {
-			return err
-		}
-		if len(page.Reports) != page.Total {
-			return fmt.Errorf("page of %d reports with total %d", len(page.Reports), page.Total)
-		}
-		for _, report := range page.Reports {
-			if report.State != store.FeedbackReportOpen {
-				return fmt.Errorf("closed report %s on an open page", report.ID)
-			}
-		}
-		// A page past the end still counts in the same view.
-		past, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportClosed, Limit: 1, Offset: 1000})
-		if err != nil {
-			return err
-		}
-		if len(past.Reports) != 0 || past.Total > len(reports) {
-			return fmt.Errorf("page past the end=%d reports, total %d", len(past.Reports), past.Total)
-		}
-		return nil
-	})
-}
-
 // feedbackReadWorkRows bounds the rows one read or act of this case may
 // read: on a database every row of every statement, the claim and the lock
-// included, and in memory every record, link, and note copied out. The
-// case's history holds more than eight times as many rows.
+// included, and in memory every sort key a list keeps and every record,
+// link, and note copied out. The case's history holds more than eight times
+// as many rows.
 const feedbackReadWorkRows = 30
 
 // runFeedbackReportReadWork holds every read and act of reports to work the
@@ -1262,9 +1103,10 @@ const feedbackReadWorkRows = 30
 // workspace of 120 reports, 120 links, 30 tasks, and 21 crates, a page of
 // two under each filter, the read of one report, a crate's counts, and an
 // act each read at most feedbackReadWorkRows rows, and a list over its
-// RefuseAbove reads its count and no report. A database backend counts with
-// its read ledger, and the volatile backend counts the records, links, and
-// notes it copies out.
+// RefuseAbove reads its count and no report, and keeps nothing else. A page
+// at offset 40 keeps at most 42 sort keys. A database backend counts with
+// its read ledger, and the volatile backend counts the sort keys it keeps
+// and the records, links, and notes it copies out.
 func runFeedbackReportReadWork(t *testing.T, x Fixture) {
 	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Spring"})
 	requireOK(t, err)
@@ -1361,6 +1203,20 @@ func runFeedbackReportReadWork(t *testing.T, x Fixture) {
 			t.Fatalf("list under its RefuseAbove=%d reports, total %d", len(listed.Reports), listed.Total)
 		}
 	})
+	// A page far down the list keeps at most Offset+Limit sort keys: in
+	// memory they are counted, and a database sorts them in the server and
+	// sends the page alone.
+	deep := uint64(feedbackReadWorkRows)
+	if x.DrainReadRows == nil {
+		deep += 40
+	}
+	measureWithin("a page far down the list", deep, func() {
+		listed, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 2, Offset: 40})
+		requireOK(t, err)
+		if listed.Total != 120 || len(listed.Reports) != 2 {
+			t.Fatalf("page at offset 40=%d reports, total %d", len(listed.Reports), listed.Total)
+		}
+	})
 	measure("the read of one report", func() {
 		read, details, err := x.Backend.ReadFeedbackReport(x.Context, reports[7].ID)
 		requireOK(t, err)
@@ -1385,5 +1241,302 @@ func runFeedbackReportReadWork(t *testing.T, x Fixture) {
 		if !result.Changed {
 			t.Fatal("the act changed nothing")
 		}
+	})
+}
+
+// readUntil runs read repeatedly until write returns, and once more after,
+// and fails on the first error either returns. While write runs, a read may
+// answer store.ErrRetryable: a backend that detects a change during a read
+// says so instead of answering a mixed view. The read after write returns
+// must succeed.
+func readUntil(t *testing.T, write func() error, read func() error) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- write() }()
+	for {
+		select {
+		case err := <-done:
+			requireOK(t, err)
+			requireOK(t, read())
+			return
+		default:
+			if err := read(); err != nil && !errors.Is(err, store.ErrRetryable) {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+// feedbackReadState is what one state of the store gives a read: the IDs of
+// the page in order and the total, and any detail the case checks.
+type feedbackReadState struct {
+	ids    []string
+	total  int
+	detail string
+}
+
+// requireOneState fails unless got equals one of the states the writer
+// moves the store through, so a page and a total that no single state gives
+// fail the case.
+func requireOneState(name string, got feedbackReadState, states []feedbackReadState) error {
+	for _, state := range states {
+		if slices.Equal(state.ids, got.ids) && state.total == got.total && state.detail == got.detail {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s read page %v, total %d, detail %q, which no single state gives", name, got.ids, got.total, got.detail)
+}
+
+func feedbackPageIDs(page store.FeedbackReportPage) []string {
+	ids := []string{}
+	for _, report := range page.Reports {
+		ids = append(ids, report.ID)
+	}
+	return ids
+}
+
+// firstIDs answers at most n IDs of the sorted set, in order.
+func firstIDs(sorted []string, n int) []string {
+	return append([]string{}, sorted[:min(n, len(sorted))]...)
+}
+
+// runFeedbackReadCrateConcurrent moves a task in and out of a crate while
+// crate pages, pages of no crate, and the crate's counts are read, as the
+// review of round 3 describes: the first report in list order is linked to
+// the task, and the second to the crate itself. A full page of one and its
+// exact total, the served details, and the counts must each be what one
+// membership gives.
+func runFeedbackReadCrateConcurrent(t *testing.T, x Fixture) {
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Spring"})
+	requireOK(t, err)
+	member := mergedActTask(t, x, "")
+	ctx := actContext(x)
+	e.sendReports(t, 0, reportEntry("older"))
+	e.sendReports(t, time.Hour, reportEntry("newer"))
+	all, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 2})
+	requireOK(t, err)
+	if all.Total != 2 {
+		t.Fatalf("reports=%d, want 2", all.Total)
+	}
+	first, second := all.Reports[0].ID, all.Reports[1].ID
+	for _, act := range []store.FeedbackReportAct{
+		{Kind: store.FeedbackReportActLink, ReportID: first, TaskID: member.ID},
+		{Kind: store.FeedbackReportActLink, ReportID: second, CrateID: crate.ID},
+	} {
+		act.At = feedbackTime(2 * time.Hour)
+		_, err := x.Backend.RecordFeedbackReportAct(ctx, act)
+		requireOK(t, err)
+	}
+	inCrate := []feedbackReadState{{ids: []string{first}, total: 2, detail: crate.ID}, {ids: []string{second}, total: 1, detail: ""}}
+	noCrate := []feedbackReadState{{ids: []string{}, total: 0}, {ids: []string{first}, total: 1, detail: ""}}
+	counts := []feedbackReadState{{ids: []string{}, total: 2}, {ids: []string{}, total: 1}}
+	readUntil(t, func() error {
+		for range 20 {
+			if _, err := x.Backend.SetTaskCrate(x.Context, member.ID, crate.ID); err != nil {
+				return err
+			}
+			if _, err := x.Backend.ClearTaskCrate(x.Context, member.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, func() error {
+		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, CrateID: crate.ID, Limit: 1})
+		if err != nil {
+			return err
+		}
+		got := feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}
+		if len(page.Reports) == 1 && page.Reports[0].ID == first {
+			got.detail = page.Details.Tasks[member.ID].CrateID
+		}
+		if err := requireOneState("the crate page", got, inCrate); err != nil {
+			return err
+		}
+		page, err = x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, NoCrate: true, Limit: 1})
+		if err != nil {
+			return err
+		}
+		got = feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}
+		if len(page.Reports) == 1 {
+			got.detail = page.Details.Tasks[member.ID].CrateID
+		}
+		if err := requireOneState("the page of no crate", got, noCrate); err != nil {
+			return err
+		}
+		count, err := x.Backend.CountCrateOpenFeedbackReports(x.Context, crate.ID)
+		if err != nil {
+			return err
+		}
+		if len(count) != 1 {
+			return fmt.Errorf("crate counts=%v, want one environment", count)
+		}
+		return requireOneState("the crate count", feedbackReadState{ids: []string{}, total: count[e.id]}, counts)
+	})
+}
+
+// runFeedbackReadTaskFilterConcurrent links reports to a task one at a time
+// and then removes the links one at a time while the task's pages are read.
+// Each page of three and its total must be what one set of served links
+// gives, and each page report carries its served link.
+func runFeedbackReadTaskFilterConcurrent(t *testing.T, x Fixture) {
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	task := mergedActTask(t, x, "")
+	ctx := actContext(x)
+	entries := []store.FeedbackReportEntry{}
+	for i := range 10 {
+		entries = append(entries, reportEntry(fmt.Sprintf("crash-%02d", i)))
+	}
+	e.sendReports(t, 0, entries...)
+	all, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 10})
+	requireOK(t, err)
+	sorted := feedbackPageIDs(all)
+	// Links are added from the last report in list order to the first, then
+	// removed from the first to the last.
+	states := []feedbackReadState{{ids: []string{}, total: 0}}
+	for k := 1; k <= len(sorted); k++ {
+		linked := sorted[len(sorted)-k:]
+		states = append(states, feedbackReadState{ids: firstIDs(linked, 3), total: len(linked)})
+	}
+	for k := 1; k <= len(sorted); k++ {
+		linked := sorted[k:]
+		states = append(states, feedbackReadState{ids: firstIDs(linked, 3), total: len(linked)})
+	}
+	readUntil(t, func() error {
+		for k := len(sorted) - 1; k >= 0; k-- {
+			if _, err := x.Backend.RecordFeedbackReportAct(ctx, store.FeedbackReportAct{Kind: store.FeedbackReportActLink, ReportID: sorted[k], TaskID: task.ID, At: feedbackTime(time.Hour)}); err != nil {
+				return err
+			}
+		}
+		for _, id := range sorted {
+			if _, err := x.Backend.RecordFeedbackReportAct(ctx, store.FeedbackReportAct{Kind: store.FeedbackReportActRemoveLink, ReportID: id, LinkID: store.FeedbackReportLinkID(id, 1), At: feedbackTime(2 * time.Hour)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, func() error {
+		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, TaskID: task.ID, Limit: 3})
+		if err != nil {
+			return err
+		}
+		for _, report := range page.Reports {
+			if !slices.ContainsFunc(page.Details.Links[report.ID], func(link store.FeedbackReportLink) bool {
+				return link.TaskID == task.ID && store.FeedbackReportServed(link, page.Details.Tasks, page.Details.Crates)
+			}) {
+				return fmt.Errorf("report %s is on a page filtered by task %s without a served link to it: %+v", report.ID, task.ID, page.Details.Links[report.ID])
+			}
+		}
+		return requireOneState("the task page", feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}, states)
+	})
+	if ids, total := listIDs(t, x, store.FeedbackReportQuery{TaskID: task.ID}); len(ids) != 0 || total != 0 {
+		t.Fatalf("task list after every removal=%v total=%d", ids, total)
+	}
+}
+
+// runFeedbackReadTotalConcurrent closes reports one at a time, in list
+// order, while open pages are read. Each page of five and its total must be
+// what one number of closes gives, and a page past the end counts in the
+// same view.
+func runFeedbackReadTotalConcurrent(t *testing.T, x Fixture) {
+	e := newFeedbackEnvironment(t, x, "Production", "watcher")
+	ctx := actContext(x)
+	entries := []store.FeedbackReportEntry{}
+	for i := range 30 {
+		entries = append(entries, reportEntry(fmt.Sprintf("crash-%02d", i)))
+	}
+	e.sendReports(t, 0, entries...)
+	all, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 30})
+	requireOK(t, err)
+	sorted := feedbackPageIDs(all)
+	open, closed := []feedbackReadState{}, []feedbackReadState{}
+	for k := 0; k <= len(sorted); k++ {
+		open = append(open, feedbackReadState{ids: firstIDs(sorted[k:], 5), total: len(sorted) - k})
+		closed = append(closed, feedbackReadState{ids: []string{}, total: k})
+	}
+	readUntil(t, func() error {
+		for _, id := range sorted {
+			if _, err := x.Backend.RecordFeedbackReportAct(ctx, store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: id, Reason: "done", At: feedbackTime(time.Hour)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, func() error {
+		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 5})
+		if err != nil {
+			return err
+		}
+		for _, report := range page.Reports {
+			if report.State != store.FeedbackReportOpen {
+				return fmt.Errorf("closed report %s on an open page", report.ID)
+			}
+		}
+		if err := requireOneState("the open page", feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}, open); err != nil {
+			return err
+		}
+		past, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportClosed, Limit: 1, Offset: 1000})
+		if err != nil {
+			return err
+		}
+		return requireOneState("the closed page past the end", feedbackReadState{ids: feedbackPageIDs(past), total: past.Total}, closed)
+	})
+}
+
+// runFeedbackReadEnvironmentConcurrent renames the environment, records a
+// signal, and closes a report, in that order for each step, while open
+// pages are read. The environment's name and newest signal in the details,
+// the page, and the total must be what one point of that sequence gives.
+func runFeedbackReadEnvironmentConcurrent(t *testing.T, x Fixture) {
+	e := newFeedbackEnvironment(t, x, "Region 00", "watcher")
+	api := feedbackService("api", "@9")
+	e.send(t, 0, api)
+	ctx := actContext(x)
+	entries := []store.FeedbackReportEntry{}
+	for i := range 12 {
+		entries = append(entries, reportEntry(fmt.Sprintf("crash-%02d", i)))
+	}
+	e.sendReports(t, 0, entries...)
+	all, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 12})
+	requireOK(t, err)
+	sorted := feedbackPageIDs(all)
+	state := func(name, signal, closes int) feedbackReadState {
+		return feedbackReadState{ids: firstIDs(sorted[closes:], 4), total: len(sorted) - closes, detail: fmt.Sprintf("Region %02d at %d", name, signal)}
+	}
+	// Eight steps leave four reports open, so every page holds a report and
+	// its environment.
+	const steps = 8
+	states := []feedbackReadState{state(0, 0, 0)}
+	for k := 1; k <= steps; k++ {
+		states = append(states, state(k, k-1, k-1), state(k, k, k-1), state(k, k, k))
+	}
+	readUntil(t, func() error {
+		for k := 1; k <= steps; k++ {
+			name := fmt.Sprintf("Region %02d", k)
+			if _, err := x.Backend.UpdateEnvironment(x.Context, e.id, store.EnvironmentPatch{Name: &name}); err != nil {
+				return err
+			}
+			if err := x.Backend.RecordFeedbackSignal(x.Context, e.signal(time.Duration(k)*time.Minute, api)); err != nil {
+				return err
+			}
+			if _, err := x.Backend.RecordFeedbackReportAct(ctx, store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: sorted[k-1], Reason: "done", At: feedbackTime(time.Hour)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, func() error {
+		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 4})
+		if err != nil {
+			return err
+		}
+		environment, ok := page.Details.Environments[e.id]
+		if !ok || environment.Signal == nil {
+			return fmt.Errorf("the page's details hold environment %+v, want its name and signal", environment)
+		}
+		var name int
+		if _, err := fmt.Sscanf(environment.Name, "Region %d", &name); err != nil {
+			return fmt.Errorf("environment name %q", environment.Name)
+		}
+		signal := int(environment.Signal.LastSignalAt.Sub(feedbackTime(0)) / time.Minute)
+		got := feedbackReadState{ids: feedbackPageIDs(page), total: page.Total, detail: fmt.Sprintf("Region %02d at %d", name, signal)}
+		return requireOneState("the open page with its environment", got, states)
 	})
 }

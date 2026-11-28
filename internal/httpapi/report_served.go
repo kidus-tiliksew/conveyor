@@ -315,47 +315,21 @@ func (s *Server) loadServedFeedbackReports(ctx context.Context, backend store.Re
 	return served, nil
 }
 
-// servedFeedbackReports builds the served form of stored reports and the
-// details read with them, with one read of their environments and the newest
-// signal of each environment, at one read clock. A failed read fails the
-// whole result: no partial list is served. A report whose environment the
-// workspace does not hold is a store failure.
+// servedFeedbackReports builds the served form of stored reports from the
+// details read with them, at one read clock. The environment and its newest
+// signal come from the details, which the store reads in the same view as
+// the records, so no served value comes from a second read. A report whose
+// environment the details do not hold is a store failure, and a failure
+// serves no partial list.
 func (s *Server) servedFeedbackReports(ctx context.Context, reports []store.FeedbackReport, details store.FeedbackReportDetails) ([]servedFeedbackReport, error) {
 	served := make([]servedFeedbackReport, 0, len(reports))
-	if len(reports) == 0 {
-		return served, nil
-	}
 	now := s.feedbackNow()
-	var err error
-	environments := map[string]store.Environment{}
-	if listing, ok := s.Store.(store.EnvironmentStore); ok {
-		listed, err := listing.ListEnvironments(ctx, store.EnvironmentListQuery{})
-		if err != nil {
-			return nil, err
-		}
-		for _, environment := range listed {
-			environments[environment.ID] = environment
-		}
-	}
-	ids := []string{}
 	for _, report := range reports {
-		if _, ok := environments[report.EnvironmentID]; !ok {
+		environment, ok := details.Environments[report.EnvironmentID]
+		if !ok {
 			return nil, fmt.Errorf("feedback report %s names environment %s that the workspace does not hold", report.ID, report.EnvironmentID)
 		}
-		ids = append(ids, report.EnvironmentID)
-	}
-	signals := map[string]store.FeedbackSignalState{}
-	if feedbackStore, ok := s.Store.(store.FeedbackStore); ok {
-		if signals, err = feedbackStore.ListFeedbackSignals(ctx, ids); err != nil {
-			return nil, err
-		}
-	}
-	for _, report := range reports {
-		var signal *store.FeedbackSignalState
-		if state, ok := signals[report.EnvironmentID]; ok {
-			signal = &state
-		}
-		served = append(served, buildServedFeedbackReport(report, details, environments[report.EnvironmentID], signal, now))
+		served = append(served, buildServedFeedbackReport(report, details, store.Environment{ID: environment.ID, Name: environment.Name}, environment.Signal, now))
 	}
 	return served, nil
 }
