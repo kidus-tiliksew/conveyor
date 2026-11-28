@@ -1,5 +1,6 @@
 import type { Query, QueryClient, QueryKey } from '@tanstack/react-query'
 import { nextActionsQueryKey } from '../components/inbox/use-next-actions'
+import { feedbackReportsQueryKey } from '../components/reports/query-keys'
 import { workspaceChangeStreamURL } from './api'
 
 // Waits before reopening the stream, indexed by consecutive connections that
@@ -101,6 +102,9 @@ export function startWorkspaceChangeRefresh(
     refreshQueries(['pending-proposals', workspace])
     refreshQueries(['workspace', workspace])
     refreshQueries(['task-map', workspace])
+    // Every report list and single report (component-feedback-reports
+    // invariant 27). Only a read that a page shows sends a request.
+    refreshQueries(feedbackReportsQueryKey(workspace))
     // Off the Blueprints routes a task sheet keeps the five-minute slow read.
     if (options.blueprintsActive()) refreshQueries(['blueprints', workspace])
     // A member task's change moves the crate's counts, rows, and activity.

@@ -5,6 +5,7 @@ import { validateBoardSearch } from './components/board/board-search'
 import { validateDecisionsSearch } from './components/decisions/decision-model'
 import { type ReviewSearch, validateReviewSearch } from './components/documents/document-review'
 import { validateInboxSearch } from './components/inbox/inbox-search'
+import { validateMonitorSearch } from './components/reports/monitor-search'
 import { TaskSheet } from './components/task/task-sheet'
 import { CreateWorkspaceDialog } from './components/workspace/create-workspace-dialog'
 import { LegacyAddress, PageNotFound, WorkspaceLayout } from './components/workspace/workspace-address'
@@ -287,6 +288,9 @@ const crateRoute = createRoute({
 const monitorRoute = createRoute({
   getParentRoute: () => workspaceLayoutRoute,
   path: '/monitor',
+  // The report filters: environment, no_crate, and show
+  // (component-feedback-reports invariant 26).
+  validateSearch: validateMonitorSearch,
   component: MonitorPage,
 })
 

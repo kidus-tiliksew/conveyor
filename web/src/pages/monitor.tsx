@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { ExternalLink } from 'lucide-react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
+import { MonitorReports } from '../components/reports/monitor-reports'
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { readableError } from '../components/ui/error-state'
@@ -104,6 +105,9 @@ export function MonitorPage() {
               </CardContent>
             </Card>
           )}
+          {/* The workspace's reports with their filters in the address
+              (component-feedback-reports invariant 26). */}
+          <MonitorReports />
           <Card className="mt-6">
             <CardHeader>
               <CardTitle>Unreconciled changes</CardTitle>

@@ -34,6 +34,7 @@ import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { useBlueprints, useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { TaskLiveStatus } from '../feedback/live-status'
+import { TaskReports } from '../reports/report-list'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
@@ -431,6 +432,10 @@ export function TaskFacts({
           facts so the sheet and the full page both show it
           (req-production-feedback AC-3.2). */}
       {item.task.state === 'merged' && <TaskLiveStatus taskId={item.task.id} />}
+      {/* A merged task's open reports, after its live status. A task with no
+          open report shows no new part (component-feedback-reports
+          invariant 26). */}
+      {item.task.state === 'merged' && <TaskReports taskId={item.task.id} />}
 
       {canOperate && unsatisfiableIDs.size > 0 && (
         <UnlinkDependencyControl item={item} dependencyIDs={[...unsatisfiableIDs]} />

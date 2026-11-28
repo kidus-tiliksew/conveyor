@@ -26,11 +26,12 @@ import { CrateBriefingSection } from '../components/crate/crate-briefing'
 import { type CrateEmphasis, useCrateEmphasis } from '../components/crate/crate-emphasis'
 import { CrateFormDialog } from '../components/crate/crate-parts'
 import { CrateStage } from '../components/crate/crate-stage'
-import { DependencyDetails } from '../components/crate/dependency-details'
 import { DeliveryStatsSheet } from '../components/crate/delivery-stats'
+import { DependencyDetails } from '../components/crate/dependency-details'
 import { CrateLiveLines, LiveIn } from '../components/feedback/live-status'
 import { pendingReadOptions, useLiveStatusRefresh } from '../components/feedback/use-live-status-refresh'
 import { TaskRow } from '../components/insights/shared'
+import { CrateReports } from '../components/reports/report-list'
 import { TaskSheet } from '../components/task/task-sheet'
 import { Button } from '../components/ui/button'
 import { Dialog } from '../components/ui/dialog'
@@ -246,6 +247,9 @@ function CrateView({ crate }: { crate: CrateDetail }) {
           {/* One line per relevant environment, under the page header
               (req-production-feedback AC-3.4). */}
           <CrateLiveLines lines={crate.environments ?? []} />
+          {/* The crate's open reports, each with its member task
+              (component-feedback-reports invariant 26). */}
+          <CrateReports crateId={crate.id} />
           <CrateStage
             crate={crate}
             insight={insight.data}

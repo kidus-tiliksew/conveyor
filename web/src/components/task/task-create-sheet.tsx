@@ -16,6 +16,7 @@ import type { CrateDetail, PlanState } from '../../lib/types'
 import { cn, formatBytes } from '../../lib/utils'
 import { useWorkspace, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import type { BoardSearch } from '../board/board-search'
+import { FixTaskPanel, useFixTaskFlow } from '../reports/fix-task'
 import { Button } from '../ui/button'
 import { Input, Select, Textarea } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
@@ -47,7 +48,9 @@ export function TaskCreateSheet() {
   const repos = workspace?.repos ?? []
   // Intake opened from a crate's page names that crate (component-crates
   // invariant 17; req-crates AC-3.2).
-  const { crate: crateId } = useSearch({ strict: false }) as BoardSearch
+  // Intake opened from a feedback report starts a fix task for it, and names
+  // no crate (component-feedback-reports invariant 18).
+  const { crate: crateId, report: reportId } = useSearch({ strict: false }) as BoardSearch
   const crate = useQuery({
     queryKey: crateQueryKey(workspaceId, crateId ?? ''),
     queryFn: () => fetchCrate(workspaceId, crateId ?? ''),
@@ -96,7 +99,17 @@ export function TaskCreateSheet() {
   const [files, setFiles] = useState<File[]>([])
   const fileInput = useRef<HTMLInputElement>(null)
   const intakeKey = useRef(crypto.randomUUID())
-  const repoName = repo || repos[0]?.name || ''
+  // A fix task preselects no repository (component-feedback-reports
+  // invariant 18). Any other intake opens on the first one.
+  const repoName = reportId ? repo : repo || repos[0]?.name || ''
+  // The new task opens in the Board's sheet over the view intake came from.
+  const openTask = (taskId: string) =>
+    void navigate({
+      to: '/w/$workspaceId/tasks/$taskId',
+      params: { workspaceId, taskId },
+      search: ({ create: _create, crate: _crate, report: _report, ...prev }) => prev,
+    })
+  const fixTask = useFixTaskFlow({ workspace: workspaceId, reportId, setBody, onRecorded: openTask })
   const defaultPlanState = workspace?.default_plan_state
   const shownPlanState = chosenPlanState || defaultPlanState || ''
   // A plan sends no plan state (AC-2.6). The select sends one only when the
@@ -126,8 +139,11 @@ export function TaskCreateSheet() {
       : void navigate({
           to: '/w/$workspaceId/',
           params: { workspaceId },
-          search: ({ create: _create, crate: _crate, ...prev }) => prev,
+          search: ({ create: _create, crate: _crate, report: _report, ...prev }) => prev,
         })
+  // Leaves the fix-task flow and keeps the sheet open as ordinary intake.
+  const leaveReport = () =>
+    void navigate({ to: '/w/$workspaceId/', params: { workspaceId }, search: ({ report: _report, ...prev }) => prev })
   // A closed crate takes no new task (req-crates AC-2.1), so the form sends no
   // request that names it. "Not in a crate" creates the task without it.
   const crateClosed = Boolean(crateId) && crate.data?.state === 'closed'
@@ -135,7 +151,8 @@ export function TaskCreateSheet() {
     void navigate({ to: '/w/$workspaceId/', params: { workspaceId }, search: ({ crate: _crate, ...prev }) => prev })
 
   const mutation = useMutation({
-    mutationFn: async () => {
+    // A fix task passes the causes ticked at the moment of Create.
+    mutationFn: async (_causeTaskIds: string[] | undefined) => {
       const task = await createTask(
         workspaceId,
         {
@@ -157,15 +174,16 @@ export function TaskCreateSheet() {
       )
       return task
     },
-    onSuccess: (task) => {
+    onSuccess: (task, causeTaskIds) => {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       if (crateId) void queryClient.invalidateQueries({ queryKey: ['crates', workspaceId] })
-      // The new task opens in the Board's sheet over the view intake came from.
-      void navigate({
-        to: '/w/$workspaceId/tasks/$taskId',
-        params: { workspaceId, taskId: task.id },
-        search: ({ create: _create, crate: _crate, ...prev }) => prev,
-      })
+      // A fix task stays in the sheet until the report records it, and then
+      // opens (component-feedback-reports invariant 18).
+      if (reportId) {
+        fixTask.onCreated(task, causeTaskIds ?? [])
+        return
+      }
+      openTask(task.id)
     },
     onError: (error) => {
       if (error instanceof TaskIntakeError && error.code === 'invalid_dependencies') setAdvancedOpen(true)
@@ -254,6 +272,7 @@ export function TaskCreateSheet() {
 
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
         <EmptyRepositoryNotice />
+        {reportId && <FixTaskPanel flow={fixTask} workspace={workspaceId} onLeaveReport={leaveReport} />}
         {crateId && (
           <CrateIntakeNotice
             crateId={crateId}
@@ -279,6 +298,7 @@ export function TaskCreateSheet() {
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Repository">
             <Select aria-label="Repository" value={repoName} onChange={(event) => setRepo(event.target.value)}>
+              {reportId && repos.length > 0 && <option value="">Choose a repository</option>}
               {repos.map((entry) => (
                 <option key={entry.name} value={entry.name}>
                   {entry.name}
@@ -515,11 +535,12 @@ export function TaskCreateSheet() {
               repos.length === 0 ||
               mutation.isPending ||
               baseCommitError !== '' ||
-              crateClosed
+              crateClosed ||
+              (reportId !== undefined && !fixTask.ready)
             }
-            onClick={() => mutation.mutate()}
+            onClick={() => mutation.mutate(reportId ? [...fixTask.causes] : undefined)}
           >
-            {mutation.isPending ? 'Creating…' : 'Create task'}
+            {mutation.isPending ? 'Creating…' : fixTask.created ? 'Task created' : 'Create task'}
           </Button>
         </div>
       </footer>
