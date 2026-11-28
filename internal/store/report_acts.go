@@ -146,18 +146,22 @@ type FeedbackReportDetails struct {
 type ReportReadStore interface {
 	// ListFeedbackReports answers one page of the reports the query
 	// selects, newest last_seen first and then by ID, the number the filters
-	// select, and the details of the page's reports. Every filter applies before the page and the count,
+	// select, and the details of the page's reports, all from one
+	// consistent view: the filters, the records, the links, crate
+	// membership, the fix task, and the count agree. Every filter applies before the page and the count,
 	// and a report that matches twice is counted once (FeedbackReportServed
 	// and FeedbackReportInCrate state what a filter matches).
 	ListFeedbackReports(ctx context.Context, query FeedbackReportQuery) (FeedbackReportPage, error)
 	// GetFeedbackReport answers one report, or ErrNotFound.
 	GetFeedbackReport(ctx context.Context, reportID string) (FeedbackReport, error)
-	// ReadFeedbackReport answers one report with its details, read
-	// together, or ErrNotFound.
+	// ReadFeedbackReport answers one report with its details from one
+	// consistent view, or ErrNotFound.
 	ReadFeedbackReport(ctx context.Context, reportID string) (FeedbackReport, FeedbackReportDetails, error)
-	// ReadFeedbackReportDetails answers the links, notes, tasks, and crates
-	// of the given reports.
-	ReadFeedbackReportDetails(ctx context.Context, reports []FeedbackReport) (FeedbackReportDetails, error)
+	// ReadFeedbackReports answers the reports of the given IDs that the
+	// workspace holds, in the order of the IDs, with their details, all
+	// from one consistent view. An ID the workspace does not hold has no
+	// report.
+	ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]FeedbackReport, FeedbackReportDetails, error)
 	// CountCrateOpenFeedbackReports answers, by environment ID, the number
 	// of open reports that belong to the crate (invariant 23). An
 	// environment with none has no entry.

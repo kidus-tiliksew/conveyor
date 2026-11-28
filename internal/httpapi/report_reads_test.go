@@ -236,11 +236,7 @@ func TestFeedbackReportServedFields(t *testing.T) {
 	seen := requireServedFieldNames(t, served)
 	// The entry point that reads details itself, for a surface such as the
 	// Inbox, serves the same report.
-	stored, err := h.st.GetFeedbackReport(h.ctx, report.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := h.server.loadServedFeedbackReports(h.ctx, h.st, []store.FeedbackReport{stored})
+	loaded, err := h.server.loadServedFeedbackReports(h.ctx, h.st, []string{report.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,8 +489,8 @@ func (f *faultyReportStore) RecordFeedbackReportAct(context.Context, store.Feedb
 	return store.FeedbackReportActResult{}, f.err
 }
 
-func (f *faultyReportStore) ReadFeedbackReportDetails(context.Context, []store.FeedbackReport) (store.FeedbackReportDetails, error) {
-	return store.FeedbackReportDetails{}, f.err
+func (f *faultyReportStore) ReadFeedbackReports(context.Context, []string) ([]store.FeedbackReport, store.FeedbackReportDetails, error) {
+	return nil, store.FeedbackReportDetails{}, f.err
 }
 
 // TestFeedbackReportRouteStoreFailures sends every route through a store that

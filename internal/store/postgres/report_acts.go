@@ -166,16 +166,36 @@ func (s *Store) GetFeedbackReport(ctx context.Context, reportID string) (store.F
 	return reports[0], nil
 }
 
-// ReadFeedbackReportDetails implements store.ReportReadStore in one
-// snapshot, so the links, notes, and records it reads agree.
-func (s *Store) ReadFeedbackReportDetails(ctx context.Context, reports []store.FeedbackReport) (store.FeedbackReportDetails, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ReadFeedbackReportDetails")
+// ReadFeedbackReports implements store.ReportReadStore: the records and
+// their details in one REPEATABLE READ snapshot.
+func (s *Store) ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]store.FeedbackReport, store.FeedbackReportDetails, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadFeedbackReports")
+	workspaceID := workspace(ctx)
 	tx, err := s.beginWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return store.FeedbackReportDetails{}, err
+		return nil, store.FeedbackReportDetails{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	return readFeedbackReportDetailsTx(ctx, tx, workspace(ctx), reports)
+	stored, err := queryFeedbackReports(ctx, tx, `SELECT `+feedbackReportColumns+` FROM feedback_reports WHERE workspace_id=$1 AND id=ANY($2::text[])`, workspaceID, reportIDs)
+	if err != nil {
+		return nil, store.FeedbackReportDetails{}, err
+	}
+	byID := make(map[string]store.FeedbackReport, len(stored))
+	for _, report := range stored {
+		byID[report.ID] = report
+	}
+	reports := []store.FeedbackReport{}
+	for _, id := range reportIDs {
+		if report, ok := byID[id]; ok {
+			reports = append(reports, report)
+			delete(byID, id)
+		}
+	}
+	details, err := readFeedbackReportDetailsTx(ctx, tx, workspaceID, reports)
+	if err != nil {
+		return nil, store.FeedbackReportDetails{}, err
+	}
+	return reports, details, nil
 }
 
 // readFeedbackReportDetailsTx reads the links, notes, tasks, and crates of

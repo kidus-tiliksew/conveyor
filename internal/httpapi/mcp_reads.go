@@ -254,11 +254,6 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 		return nil, fmt.Errorf("workspace_not_found: workspace not found")
 	}
 	ctx := store.WithWorkspace(r.Context(), workspace)
-	// Work that a read asks for once it succeeds runs only after the
-	// response passes every bound below (component-feedback-reports
-	// invariant 15).
-	var onSuccess []func()
-	ctx = withMCPReadSuccess(ctx, &onSuccess)
 	if name == "get_board" {
 		page, _, err := s.readBoardPage(ctx, limit, offset)
 		return page, err
@@ -390,9 +385,10 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 	if name == "get_document" {
 		s.recordDocumentConsultation(ctx, credential, workspace, args, page)
 	}
-	for _, fn := range onSuccess {
-		fn()
-	}
+	// The served page asks for its own follow-up work only now that it has
+	// passed every bound, on a fresh read and on a snapshot page alike
+	// (component-feedback-reports invariant 15).
+	s.requestServedMCPLinking(ctx, name, page.Items)
 	return page, nil
 }
 

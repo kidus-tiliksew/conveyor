@@ -81,7 +81,10 @@ type Server struct {
 	feedbackReportLimiterOnce sync.Once
 	feedbackReportLimiter     *feedbackLimiter
 	feedbackClock             func() time.Time
-	feedbackKeyTimeout        time.Duration
+	// feedbackLinkingAsked, when set by a test, observes each report a read
+	// asks the linking job for (component-feedback-reports invariant 15).
+	feedbackLinkingAsked func(workspace, reportID string)
+	feedbackKeyTimeout   time.Duration
 	// feedbackWork runs resolving and comparing in the background, after the
 	// signal route answers and when a read finds an answer missing.
 	// feedbackForge replaces the workspace App's GitHub reads in tests.

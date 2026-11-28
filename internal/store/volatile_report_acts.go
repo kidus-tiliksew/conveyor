@@ -132,12 +132,22 @@ func (m *volatileMemory) GetFeedbackReport(ctx context.Context, reportID string)
 	return cloneFeedbackReport(report), nil
 }
 
-// ReadFeedbackReportDetails implements ReportReadStore.
-func (m *volatileMemory) ReadFeedbackReportDetails(ctx context.Context, reports []FeedbackReport) (FeedbackReportDetails, error) {
+// ReadFeedbackReports implements ReportReadStore under one read lock.
+func (m *volatileMemory) ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]FeedbackReport, FeedbackReportDetails, error) {
 	workspace := workspaceOrDefault(ctx, "")
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.feedbackReportDetailsLocked(workspace, reports)
+	reports := []FeedbackReport{}
+	for _, id := range reportIDs {
+		if _, _, report, found := m.feedbackReportLocked(workspace, id); found {
+			reports = append(reports, cloneFeedbackReport(report))
+		}
+	}
+	details, err := m.feedbackReportDetailsLocked(workspace, reports)
+	if err != nil {
+		return nil, FeedbackReportDetails{}, err
+	}
+	return reports, details, nil
 }
 
 // feedbackReportDetailsLocked reads the details of reports under the held

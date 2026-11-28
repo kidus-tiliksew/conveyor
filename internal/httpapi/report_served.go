@@ -293,18 +293,26 @@ func buildServedFeedbackReport(report store.FeedbackReport, details store.Feedba
 	return served
 }
 
-// loadServedFeedbackReports builds the served form of stored reports with
-// one read of their details. A surface that holds no details read with its
-// reports, such as the Inbox, calls it.
-func (s *Server) loadServedFeedbackReports(ctx context.Context, backend store.ReportStore, reports []store.FeedbackReport) ([]servedFeedbackReport, error) {
-	if len(reports) == 0 {
+// loadServedFeedbackReports is the entry point of a surface that serves
+// reports it found by ID, such as the Inbox: it reads the reports of the IDs
+// with their details from one consistent view, builds their served form, and
+// asks the linking job again for each pending report it returns. The caller
+// passes exactly the IDs it serves, so the ask covers no report it does not
+// serve (component-feedback-reports invariants 15 and 21).
+func (s *Server) loadServedFeedbackReports(ctx context.Context, backend store.ReportStore, reportIDs []string) ([]servedFeedbackReport, error) {
+	if len(reportIDs) == 0 {
 		return []servedFeedbackReport{}, nil
 	}
-	details, err := backend.ReadFeedbackReportDetails(ctx, reports)
+	reports, details, err := backend.ReadFeedbackReports(ctx, reportIDs)
 	if err != nil {
 		return nil, err
 	}
-	return s.servedFeedbackReports(ctx, reports, details)
+	served, err := s.servedFeedbackReports(ctx, reports, details)
+	if err != nil {
+		return nil, err
+	}
+	s.requestPendingFeedbackLinking(ctx, reports)
+	return served, nil
 }
 
 // servedFeedbackReports builds the served form of stored reports and the
@@ -353,18 +361,34 @@ func (s *Server) servedFeedbackReports(ctx context.Context, reports []store.Feed
 }
 
 // requestPendingFeedbackLinking asks the linking job again for each served
-// report whose links are pending, through the job's own entry point. The job
-// is deduplicated by report and claims an attempt no more than once a
+// report whose links are pending, through the job's own entry point. Every
+// path that serves reports calls it with exactly the reports it served, after
+// it served them: the HTTP list with its page, the HTTP read and every act
+// answer with their one report, loadServedFeedbackReports with what it
+// returns, and the MCP read with the admitted page (requestServedMCPLinking).
+// The job is deduplicated by report and claims an attempt no more than once a
 // minute, so a read never works out a link itself and never waits for one
 // (component-feedback-reports invariant 15).
 func (s *Server) requestPendingFeedbackLinking(ctx context.Context, reports []store.FeedbackReport) {
+	ids := []string{}
+	for _, report := range reports {
+		if report.LinkingEndedAt == nil {
+			ids = append(ids, report.ID)
+		}
+	}
+	s.requestFeedbackLinking(ctx, ids)
+}
+
+// requestFeedbackLinking asks the linking job for each report ID.
+func (s *Server) requestFeedbackLinking(ctx context.Context, reportIDs []string) {
 	workspace, ok := store.WorkspaceFromContext(ctx)
 	if !ok || workspace == "" {
 		return
 	}
-	for _, report := range reports {
-		if report.LinkingEndedAt == nil {
-			s.enqueueFeedbackReportLinking(workspace, report.ID)
+	for _, id := range reportIDs {
+		if s.feedbackLinkingAsked != nil {
+			s.feedbackLinkingAsked(workspace, id)
 		}
+		s.enqueueFeedbackReportLinking(workspace, id)
 	}
 }
