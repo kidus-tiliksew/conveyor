@@ -2469,3 +2469,64 @@ test.describe('screenshots of pages and blocked cards', () => {
     })
   }
 })
+
+// The fix-task record takes part in the shared act state of its report.
+test.describe('unknown outcomes and the fix-task record', () => {
+  const linked = report('rpt-261127-m00001', {
+    summary: 'Record and act',
+    links: [taskLink('lnk-m1', '261120-a01', 'Send invoices by email', { evidence: [lineEvidence] })],
+  })
+  const address = `/w/demo/?create=true&report=${linked.id}`
+  const path = `/v1/feedback-reports/${linked.id}/fix-task`
+  const moveTo = (page: Page, to: string) =>
+    page.evaluate((target) => {
+      history.pushState({}, '', target)
+      dispatchEvent(new PopStateEvent('popstate'))
+    }, to)
+
+  test('a record request waits while another act of the report is unresolved, and sends after a read answers', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [linked] })
+    await page.goto('/w/demo/monitor')
+    const item = card(page, linked.id)
+    const confirm = item.getByRole('button', { name: 'Confirm the link to Send invoices by email' })
+    await expect(confirm).toBeEnabled()
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    server.listAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    await confirm.click()
+    await expect(item.locator('[data-report-act-stale]')).toBeVisible()
+    server.listAnswer = null
+    await moveTo(page, address)
+    await createFixTask(page, [])
+    await expect(sheet(page).locator('[data-fix-task-error]')).toHaveText(
+      'Another act on this report is not settled yet. Read the report again before you record the task.',
+    )
+    expect(server.acts.filter((act) => act.path === path)).toHaveLength(0)
+    await expect(recordButton(page)).toHaveCount(0)
+    await sheet(page).getByRole('button', { name: 'Read the report again' }).click()
+    await recordButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.acts.filter((act) => act.path === path)).toHaveLength(1)
+    expect(server.created).toHaveLength(1)
+  })
+
+  test('a record request on its way blocks every card of the report until it answers', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [linked] })
+    await page.goto(address)
+    const held = gate()
+    server.actGate = held.promise
+    await createFixTask(page, [])
+    await expect.poll(() => server.acts.filter((act) => act.path === path).length).toBe(1)
+    await moveTo(page, '/w/demo/monitor')
+    const item = card(page, linked.id)
+    await expect(item).toBeVisible()
+    await expect(item.getByRole('button', { name: 'Confirm the link to Send invoices by email' })).toBeDisabled()
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeDisabled()
+    held.open()
+    server.actGate = null
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeEnabled()
+    await expect(item.locator('[data-report-fix-task]')).toContainText('Fix task:')
+    expect(server.acts).toHaveLength(1)
+  })
+})

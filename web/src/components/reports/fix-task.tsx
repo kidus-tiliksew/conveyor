@@ -8,7 +8,16 @@ import { Button } from '../ui/button'
 import { feedbackReportQueryKey } from './query-keys'
 import { Untrusted } from './report-card'
 import { fixTaskDescription, MAX_CAUSE_TASKS } from './report-text'
-import { refreshAfterWrite, reportActKey, staleMessage, writeReportActState } from './use-report-act'
+import {
+  type ReportActState,
+  readReportActState,
+  refreshAfterWrite,
+  reportActBlocked,
+  reportActKey,
+  reportActMessage,
+  staleMessage,
+  writeReportActState,
+} from './use-report-act'
 
 /**
  * A fix task that intake created and the report has not recorded yet. It is
@@ -35,6 +44,24 @@ export interface FixTaskTarget {
 function flowOf(target: FixTaskTarget) {
   return `${target.workspace}\u0000${target.reportId}`
 }
+
+// The record request takes part in the act state of its report
+// (`reportActKey`), under a target of its own, so it blocks every card of the
+// report while it is on its way or its outcome is unknown, and it only ever
+// changes a state that it wrote itself.
+function fixActTarget(target: FixTaskTarget) {
+  return `fix:${flowOf(target)}`
+}
+
+function setOwnFixState(target: FixTaskTarget, next: ReportActState) {
+  const key = reportActKey(target.workspace, target.reportId)
+  const current = readReportActState(key)
+  if (current.phase === 'idle' || ('target' in current && current.target === fixActTarget(target)))
+    writeReportActState(key, next)
+}
+
+const blockedRecordMessage =
+  'Another act on this report is not settled yet. Read the report again before you record the task.'
 
 function storageKey(workspace: string, reportId: string) {
   return `conveyor-fix-task:${workspace}:${reportId}`
@@ -218,7 +245,7 @@ export function useFixTaskFlow({
   const finish = useCallback(
     (entry: CreatedFixTask, target: FixTaskTarget) => {
       writeCreatedFixTask(target.workspace, target.reportId, null)
-      writeReportActState(reportActKey(target.workspace, target.reportId), { phase: 'idle' })
+      setOwnFixState(target, { phase: 'idle' })
       void refreshAfterWrite(queryClient, target.workspace)
       if (!live(flowOf(target))) return
       setCreated(null)
@@ -246,6 +273,16 @@ export function useFixTaskFlow({
       const save = (status: CreatedFixTask['status']) =>
         writeCreatedFixTask(target.workspace, target.reportId, { ...entry, status })
       const actKey = reportActKey(target.workspace, target.reportId)
+      const fixTarget = fixActTarget(target)
+      // Another act of the report is on its way or unresolved: the record
+      // waits for a read that answers.
+      if (reportActBlocked(readReportActState(actKey))) {
+        sending.current.delete(flow)
+        save('not_recorded')
+        if (live(flow)) setRecord({ phase: 'failed', canSend: false, message: blockedRecordMessage })
+        return
+      }
+      writeReportActState(actKey, { phase: 'sending', act: 'fix', target: fixTarget })
       save('sending')
       if (live(flow)) setRecord({ phase: 'sending' })
       try {
@@ -256,24 +293,18 @@ export function useFixTaskFlow({
           // The record may be stored. Every copy of the report waits, and a
           // read that starts now decides the next step.
           save('unknown')
-          writeReportActState(actKey, { phase: 'checking', act: 'fix', target: `report:${target.reportId}` })
+          setOwnFixState(target, { phase: 'checking', act: 'fix', target: fixTarget })
           if (live(flow)) setRecord({ phase: 'checking' })
           const fresh = await freshRead(target)
           if (fresh?.fix_task?.id === entry.taskId) {
             finish(entry, target)
             return
           }
-          writeReportActState(
-            actKey,
+          setOwnFixState(
+            target,
             fresh
               ? { phase: 'idle' }
-              : {
-                  phase: 'stale',
-                  act: 'fix',
-                  target: `report:${target.reportId}`,
-                  message: staleMessage,
-                  reading: false,
-                },
+              : { phase: 'stale', act: 'fix', target: fixTarget, message: staleMessage, reading: false },
           )
           if (live(flow))
             setRecord({
@@ -286,6 +317,7 @@ export function useFixTaskFlow({
             })
         } else {
           save('not_recorded')
+          setOwnFixState(target, { phase: 'idle' })
           if (!live(flow)) return
           if (error instanceof FeedbackReportActError && error.code === 'report_closed')
             void queryClient.invalidateQueries({
@@ -328,7 +360,23 @@ export function useFixTaskFlow({
         finish(created, target)
         return
       }
-      if (fresh) writeReportActState(reportActKey(workspace, reportId), { phase: 'idle' })
+      // A fresh read of the report answered after any unknown outcome, so it
+      // settles the report: its own state goes, and another act's failed read
+      // becomes the note after a read.
+      if (fresh) {
+        const key = reportActKey(workspace, reportId)
+        const current = readReportActState(key)
+        if (current.phase === 'stale' && current.target !== fixActTarget(target))
+          writeReportActState(key, {
+            phase: 'failed',
+            act: current.act,
+            target: current.target,
+            field: '',
+            message: reportActMessage(new FeedbackReportActError(0, '', '', '', 'unknown')),
+            afterUnknown: true,
+          })
+        else setOwnFixState(target, { phase: 'idle' })
+      }
       if (!live(flow)) return
       if (fresh)
         setRecord(
