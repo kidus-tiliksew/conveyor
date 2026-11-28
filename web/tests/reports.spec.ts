@@ -2996,10 +2996,18 @@ test.describe('fix-task reads that overlap', () => {
     const reads = reportReads(server, fixReport.id)
     await createFixTask(page, [])
     await expect.poll(() => reportReads(server, fixReport.id)).toBe(reads + 1)
-    // A newer read of the report starts later and answers first.
+    // A newer read of the report starts later and answers first. Its answer
+    // reaches the page before the older read is released.
     server.readGate = null
+    const newerAnswer = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === `/v1/feedback-reports/${fixReport.id}` &&
+        response.request().method() === 'GET',
+    )
     await server.stream.ready()
-    await expect.poll(() => reportReads(server, fixReport.id)).toBe(reads + 2)
+    await newerAnswer
+    expect(reportReads(server, fixReport.id)).toBe(reads + 2)
+    await page.waitForTimeout(300)
     held.open()
     // The newer answer stands: the task is recorded, and it opens.
     await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
@@ -3016,9 +3024,13 @@ test.describe('fix-task reads that overlap', () => {
     await expect.poll(() => fixPuts(server).length).toBe(1)
     // The server committed the record; a refresh shows it before the answer.
     server.reports[0] = { ...server.reports[0], fix_task: { id: '261127-fix', title: 'Fix the checkout timeout' } }
-    const reads = reportReads(server, fixReport.id)
+    const refreshed = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === `/v1/feedback-reports/${fixReport.id}` &&
+        response.request().method() === 'GET',
+    )
     await server.stream.ready()
-    await expect.poll(() => reportReads(server, fixReport.id)).toBeGreaterThan(reads)
+    await refreshed
     await page.waitForTimeout(300)
     await expect(page).toHaveURL(fixAddress)
     await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('Conveyor records it on the report now…')
