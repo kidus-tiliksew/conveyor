@@ -206,11 +206,20 @@ export function ReportActWatcher({
       started.current()
       return
     }
-    if (!reportActBlocked(before) || reportActBlocked(state)) return
+    // An act settles when it is no longer on its way or being read again:
+    // with a 200 (idle), a refusal or another failure (failed), or an unknown
+    // answer whose read again failed (stale). A stale report stays blocked
+    // for every act until a read answers; it is not a 200.
+    if (!actInFlight(before) || actInFlight(state)) return
     // A 200 ends `sending` with `idle`; every other answer ends it another way.
     settled.current(before.phase === 'sending' && state.phase === 'idle')
     void queryClient.invalidateQueries({ queryKey: nextActionsQueryKey(workspace) })
     void queryClient.invalidateQueries({ queryKey: ['pending-proposals', workspace] })
   }, [state, queryClient, workspace])
   return null
+}
+
+// An act on its way, or an unknown answer whose read again is on its way.
+function actInFlight(state: ReturnType<typeof useReportAct>['state']) {
+  return state.phase === 'sending' || state.phase === 'checking'
 }

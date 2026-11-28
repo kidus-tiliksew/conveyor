@@ -2148,6 +2148,11 @@ const orderRows: { steps: OrderStep[]; end: OrderEnd; note?: string; only?: bool
   { steps: ['send', 'notice', 'answer 503'], end: 'fallback' },
   { steps: ['send', 'notice', 'answer 500'], end: 'fallback' },
   { steps: ['send', 'notice', 'no answer'], end: 'fallback' },
+  {
+    steps: ['send', 'notice', 'answer 500, read fails'],
+    end: 'fallback',
+    note: 'an unknown answer whose read again fails',
+  },
   { steps: ['send', 'select', 'answer 200'], end: 'person' },
   { steps: ['send', 'select', 'answer 409'], end: 'person' },
   { steps: ['send', 'select', 'notice', 'answer 200'], end: 'person' },
