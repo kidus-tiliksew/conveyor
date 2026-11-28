@@ -1058,64 +1058,6 @@ test.describe('the three pages', () => {
     await expect.poll(() => listReads(server).length).toBe(1)
     await expect(page.getByRole('heading', { name: 'Open reports' })).toHaveCount(0)
   })
-
-  test('Monitor lists the workspace’s reports newest first, shows more in one read, and states the total', async ({
-    page,
-  }) => {
-    const reports = Array.from({ length: 60 }, (_, index) =>
-      report(`rpt-261127-f${String(index).padStart(5, '0')}`, {
-        summary: `Report ${index}`,
-        last_seen: new Date(Date.UTC(2026, 10, 27, 11, 0, index)).toISOString(),
-      }),
-    )
-    const server = await mockReportServer(page, { reports })
-    await page.goto('/w/demo/monitor')
-    const cards = page.locator('[data-report-card]')
-    await expect(cards).toHaveCount(50)
-    await expect(cards.first().locator('[data-report-summary]')).toHaveText('Report 59')
-    await expect(cards.nth(49).locator('[data-report-summary]')).toHaveText('Report 10')
-    await expect(page.locator('[data-report-list-count]')).toHaveText('This list shows the newest 50 of 60 reports.')
-    // A report moves to the top between the two reads. One read of 100
-    // shows every report once.
-    server.reports[0] = { ...server.reports[0], last_seen: '2026-11-27T11:59:59Z' }
-    await page.getByRole('button', { name: 'Show more reports' }).click()
-    await expect(cards).toHaveCount(60)
-    await expect(cards.first().locator('[data-report-summary]')).toHaveText('Report 0')
-    await expect(cards.last().locator('[data-report-summary]')).toHaveText('Report 1')
-    const summaries = await cards.locator('[data-report-summary]').allTextContents()
-    expect(new Set(summaries).size).toBe(60)
-    await expect(page.getByRole('button', { name: 'Show more reports' })).toHaveCount(0)
-    const params = listReads(server).map((read) => new URLSearchParams(read.split('?')[1]))
-    expect(params.map((item) => [item.get('limit'), item.get('offset')])).toEqual([
-      ['50', '0'],
-      ['100', '0'],
-    ])
-  })
-
-  test('a list shows at most 200 reports and says how many there are', async ({ page }) => {
-    const reports = Array.from({ length: 205 }, (_, index) =>
-      report(`rpt-261127-h${String(index).padStart(5, '0')}`, {
-        summary: `Report ${index}`,
-        last_seen: new Date(Date.UTC(2026, 10, 27, 8, 0, index)).toISOString(),
-      }),
-    )
-    const server = await mockReportServer(page, { reports })
-    await page.goto('/w/demo/monitor')
-    for (const shown of [100, 150, 200]) {
-      await page.getByRole('button', { name: 'Show more reports' }).click()
-      await expect(page.locator('[data-report-card]')).toHaveCount(shown)
-    }
-    await expect(page.locator('[data-report-list-count]')).toHaveText(
-      'This list shows the newest 200 of 205 reports. It shows at most 200 at a time.',
-    )
-    await expect(page.getByRole('button', { name: 'Show more reports' })).toHaveCount(0)
-    expect(listReads(server).map((read) => new URLSearchParams(read.split('?')[1]).get('limit'))).toEqual([
-      '50',
-      '100',
-      '150',
-      '200',
-    ])
-  })
 })
 
 // The address (class 6). Each row: the address the person opens, what the
@@ -1695,10 +1637,23 @@ test.describe('review findings', () => {
     await page.goto('/w/demo/monitor')
     const item = card(page, actReport.id)
     await item.getByRole('button', { name: 'Link a task or crate' }).click()
+    const search = (status: number) =>
+      page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === '/v1/tasks' &&
+          new URL(response.url()).searchParams.get('q') === 'numbers' &&
+          response.status() === status,
+      )
+    // The search for "numbers" itself fails, not only the first empty search.
+    const failed = search(500)
     await item.getByRole('textbox', { name: 'Search merged tasks' }).fill('numbers')
+    await failed
     await expect(item).toContainText('The list did not load.')
     server.failTaskSearch = false
+    // The control repeats that same search, and it answers.
+    const answered = search(200)
     await item.getByRole('button', { name: 'Load the list again' }).click()
+    await answered
     await expect(item.getByRole('button', { name: 'Link Store invoice numbers' })).toBeVisible()
     await expect(item.getByRole('textbox', { name: 'Search merged tasks' })).toHaveValue('numbers')
   })
@@ -1787,6 +1742,11 @@ test.describe('review follow-ups', () => {
     }, id)
   const saved = (page: Page) =>
     page.evaluate(() => Object.keys(sessionStorage).filter((key) => key.startsWith('conveyor-fix-task')))
+  const savedEntry = (page: Page, id: string) =>
+    page.evaluate((key) => {
+      const raw = sessionStorage.getItem(key)
+      return raw ? (JSON.parse(raw) as Record<string, unknown>) : null
+    }, `conveyor-fix-task:demo:${id}`)
 
   for (const outcome of ['recorded', 'refused'] as const) {
     test(`a record request ${outcome} after the address moved to another report changes nothing there`, async ({
@@ -1803,10 +1763,18 @@ test.describe('review follow-ups', () => {
       )
       await moveTo(page, other.id)
       await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Second report')
+      const answered = page.waitForResponse(
+        (response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === fixPath,
+      )
       held.open()
       server.actGate = null
-      await expect.poll(() => fixPuts(server).length).toBe(1)
-      await page.waitForTimeout(500)
+      await answered
+      // The page has handled the answer once the first report's saved task
+      // shows its result: removed when recorded, `not_recorded` when refused.
+      await expect
+        .poll(() => savedEntry(page, fixReport.id))
+        .toEqual(outcome === 'recorded' ? null : expect.objectContaining({ status: 'not_recorded' }))
+      expect(fixPuts(server)).toHaveLength(1)
       // The second report's flow is untouched: no navigation, no created
       // task, no error, and its prefill and Create stay as they were.
       await expect(page).toHaveURL(`/w/demo/?create=true&report=${other.id}`)
@@ -1934,10 +1902,10 @@ test.describe('review follow-ups, third round', () => {
     const first = card(page, 'rpt-261127-j00059')
     const confirm = first.getByRole('button', { name: 'Confirm the link to Send invoices by email' })
     await expect(confirm).toBeEnabled()
-    // "Show more reports" starts a read that waits.
+    // "Next page" starts a read that waits. The first page stays shown.
     const before = gate()
     server.listGate = before.promise
-    await page.getByRole('button', { name: 'Show more reports' }).click()
+    await page.getByRole('button', { name: 'Next page' }).click()
     await expect.poll(() => listReads(server).length).toBe(2)
     // The act gets a 500 while that read still waits. The fresh read waits too.
     const after = gate()
@@ -1950,13 +1918,497 @@ test.describe('review follow-ups, third round', () => {
     await page.waitForTimeout(500)
     await expect(first.getByRole('status').filter({ hasText: 'Conveyor reads the report again' })).toBeVisible()
     await expect(confirm).toBeDisabled()
-    // The read that started after the act answers: now the person can act.
+    // The read that started after the act answers. The second page shows,
+    // and the report's state stays with the report: back on the first page,
+    // its card shows the note and can act again.
     after.open()
     server.listGate = null
+    await expect(page.locator('[data-report-list-count]')).toHaveText(
+      'This list shows reports 51 to 60 of 60, newest first.',
+    )
+    await page.getByRole('button', { name: 'Previous page' }).click()
     await expect(first.locator('[data-report-act-error]')).toHaveText(
       'Conveyor does not know whether it recorded this. Conveyor read the report again. Look at it before you try again.',
     )
     await expect(confirm).toBeEnabled()
     expect(server.acts).toHaveLength(1)
+  })
+})
+
+// Class: lists. Every list reaches every report the server holds, in the
+// server's order, each once, through the served offset and total.
+function many(count: number, prefix: string, overrides: (index: number) => Partial<FeedbackReport> = () => ({})) {
+  return Array.from({ length: count }, (_, index) =>
+    report(`rpt-261127-${prefix}${String(index).padStart(5, '0')}`, {
+      summary: `${prefix} ${index}`,
+      last_seen: new Date(Date.UTC(2026, 10, 27, 8, 0, 0) + index * 1000).toISOString(),
+      ...overrides(index),
+    }),
+  )
+}
+const memberLink = (index: number) => [
+  taskLink(`lnk-m${index}`, '261120-a01', 'Send invoices by email', {}, { id: 'crate-billing', name: 'Billing v2' }),
+]
+const summariesOn = (page: Page) => page.locator('[data-report-card] [data-report-summary]').allTextContents()
+const countText = (page: Page) => page.locator('[data-report-list-count]')
+
+interface ListSurface {
+  name: string
+  address: string
+  reports: FeedbackReport[]
+  // The summaries the list holds, newest first.
+  expected: string[]
+}
+function surfaces(): ListSurface[] {
+  const open = many(205, 'o')
+  const inStaging = many(105, 's', () => ({ environment: staging }))
+  const noCrate = many(105, 'n')
+  const inCrate = many(5, 'c', (index) => ({ links: memberLink(index) }))
+  const shut = many(105, 'x', () => ({
+    state: 'closed',
+    closed: { at: '2026-11-27T11:30:00Z', by: 'usr_operator', reason: 'Done.' },
+  }))
+  const task = many(105, 't', (index) => ({ links: memberLink(index) }))
+  const newestFirst = (items: FeedbackReport[]) => [...items].reverse().map((item) => item.summary)
+  return [
+    { name: 'Monitor, open reports', address: '/w/demo/monitor', reports: open, expected: newestFirst(open) },
+    {
+      name: 'Monitor, one environment',
+      address: '/w/demo/monitor?environment=env-staging',
+      reports: [...inStaging, ...many(3, 'p')],
+      expected: newestFirst(inStaging),
+    },
+    {
+      name: 'Monitor, reports in no crate',
+      address: '/w/demo/monitor?no_crate=true',
+      reports: [...noCrate, ...inCrate],
+      expected: newestFirst(noCrate),
+    },
+    {
+      name: 'Monitor, closed reports',
+      address: '/w/demo/monitor?show=closed',
+      reports: [...shut, ...many(3, 'q')],
+      expected: newestFirst(shut),
+    },
+    {
+      name: 'task detail',
+      address: '/w/demo/tasks/261120-a01/full',
+      reports: [...task, ...many(3, 'r')],
+      expected: newestFirst(task),
+    },
+    {
+      name: 'the crate page',
+      address: '/w/demo/crates/crate-billing',
+      reports: [...task, ...many(3, 'r')],
+      expected: newestFirst(task),
+    },
+  ]
+}
+
+test.describe('lists reach every report', () => {
+  for (const surface of surfaces()) {
+    test(`${surface.name}: every report in server order, each once, page by page`, async ({ page }) => {
+      test.setTimeout(90_000)
+      const server = await mockReportServer(page, { reports: surface.reports })
+      await page.goto(surface.address)
+      const seen: string[] = []
+      const total = surface.expected.length
+      for (let offset = 0; offset < total; offset += 50) {
+        const end = Math.min(offset + 50, total)
+        await expect(countText(page)).toHaveText(
+          `This list shows reports ${offset + 1} to ${end} of ${total}, newest first.`,
+        )
+        seen.push(...(await summariesOn(page)))
+        if (end < total) await page.getByRole('button', { name: 'Next page' }).click()
+      }
+      await expect(page.getByRole('button', { name: 'Next page' })).toBeDisabled()
+      expect(seen).toEqual(surface.expected)
+      const offsets = listReads(server).map((read) => new URLSearchParams(read.split('?')[1]))
+      expect(offsets.every((params) => params.get('limit') === '50')).toBe(true)
+      // Back to the first page.
+      while (await page.getByRole('button', { name: 'Previous page' }).isEnabled())
+        await page.getByRole('button', { name: 'Previous page' }).click()
+      await expect(countText(page)).toHaveText(`This list shows reports 1 to 50 of ${total}, newest first.`)
+    })
+  }
+
+  test('a refresh keeps the page, and a total that shrank moves to the last page it holds', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: many(105, 'o') })
+    await page.goto('/w/demo/monitor')
+    await page.getByRole('button', { name: 'Next page' }).click()
+    await expect(countText(page)).toHaveText('This list shows reports 51 to 100 of 105, newest first.')
+    const reads = listReads(server).length
+    await server.stream.ready()
+    await expect.poll(() => listReads(server).length).toBeGreaterThan(reads)
+    expect(new URLSearchParams(listReads(server).at(-1)?.split('?')[1]).get('offset')).toBe('50')
+    await expect(countText(page)).toHaveText('This list shows reports 51 to 100 of 105, newest first.')
+    // Third page, then the server holds only 95 open reports.
+    await page.getByRole('button', { name: 'Next page' }).click()
+    await expect(countText(page)).toHaveText('This list shows reports 101 to 105 of 105, newest first.')
+    server.reports = server.reports.slice(10)
+    await server.stream.activity()
+    await expect(countText(page)).toHaveText('This list shows reports 51 to 95 of 95, newest first.')
+    expect(await summariesOn(page)).toEqual(
+      [...server.reports]
+        .reverse()
+        .slice(50)
+        .map((item) => item.summary),
+    )
+  })
+
+  test('another filter starts at the first page and never shows the reports of the filter before it', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, {
+      reports: [...many(105, 'o'), ...many(3, 's', () => ({ environment: staging }))],
+    })
+    await page.goto('/w/demo/monitor')
+    await page.getByRole('button', { name: 'Next page' }).click()
+    await expect(countText(page)).toHaveText('This list shows reports 51 to 100 of 108, newest first.')
+    const held = gate()
+    server.listGate = held.promise
+    await page.getByRole('combobox', { name: 'Environment' }).selectOption('env-staging')
+    // While the staging read waits, no report of the filter before shows.
+    await expect(page.locator('[data-report-list-loading]')).toBeVisible()
+    await expect(page.locator('[data-report-card]')).toHaveCount(0)
+    held.open()
+    server.listGate = null
+    await expect(page.locator('[data-report-card]')).toHaveCount(3)
+    expect(await summariesOn(page)).toEqual(['s 2', 's 1', 's 0'])
+    const params = new URLSearchParams(listReads(server).at(-1)?.split('?')[1])
+    expect([params.get('environment_id'), params.get('offset')]).toEqual(['env-staging', '0'])
+  })
+
+  test('the next page of the same filters keeps the page before it while it loads, with paging blocked', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: many(105, 'o') })
+    await page.goto('/w/demo/monitor')
+    await expect(countText(page)).toHaveText('This list shows reports 1 to 50 of 105, newest first.')
+    const held = gate()
+    server.listGate = held.promise
+    await page.getByRole('button', { name: 'Next page' }).click()
+    await expect(countText(page)).toHaveText('Loading the next page…')
+    expect((await summariesOn(page))[0]).toBe('o 104')
+    await expect(page.getByRole('button', { name: 'Next page' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: 'Previous page' })).toBeDisabled()
+    held.open()
+    server.listGate = null
+    await expect(countText(page)).toHaveText('This list shows reports 51 to 100 of 105, newest first.')
+    expect((await summariesOn(page))[0]).toBe('o 54')
+  })
+})
+
+// Class: late answers. Each answer reaches only what asked for it.
+test.describe('late answers', () => {
+  const second = report('rpt-261127-d00021', {
+    summary: 'Second report',
+    links: [taskLink('lnk-s21', '261120-b02', 'Store invoice numbers')],
+  })
+  const moveTo = (page: Page, address: string) =>
+    page.evaluate((to) => {
+      history.pushState({}, '', to)
+      dispatchEvent(new PopStateEvent('popstate'))
+    }, address)
+  const savedEntry = (page: Page, id: string) =>
+    page.evaluate((key) => {
+      const raw = sessionStorage.getItem(key)
+      return raw ? (JSON.parse(raw) as Record<string, unknown>) : null
+    }, `conveyor-fix-task:demo:${id}`)
+
+  test('a prefill read of report A that answers after the address names report B never fills B', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [fixReport, second] })
+    const held = gate()
+    server.readGate = held.promise
+    await page.goto(fixAddress)
+    await expect.poll(() => reportReads(server, fixReport.id)).toBe(1)
+    server.readGate = null
+    await moveTo(page, `/w/demo/?create=true&report=${second.id}`)
+    await expect(description(page)).toHaveValue(expectedDescription(second, '```'))
+    held.open()
+    await page.waitForTimeout(500)
+    await expect(description(page)).toHaveValue(expectedDescription(second, '```'))
+    await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Second report')
+  })
+
+  test("task intake for report A that answers after the address names report B records only on A, with A's causes", async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport, second] })
+    await page.goto(fixAddress)
+    const held = gate()
+    server.createGate = held.promise
+    await createFixTask(page, ['Send invoices by email'])
+    await expect.poll(() => server.created.length).toBe(1)
+    await moveTo(page, `/w/demo/?create=true&report=${second.id}`)
+    await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Second report')
+    const recorded = page.waitForResponse(
+      (response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === fixPath,
+    )
+    held.open()
+    server.createGate = null
+    await recorded
+    await expect.poll(() => savedEntry(page, fixReport.id)).toBeNull()
+    expect(fixPuts(server)).toEqual([
+      { method: 'PUT', path: fixPath, body: { task_id: '261127-fix', cause_task_ids: ['261120-a01'] } },
+    ])
+    // Report B's sheet is untouched.
+    await expect(page).toHaveURL(`/w/demo/?create=true&report=${second.id}`)
+    await expect(sheet(page).locator('[data-fix-task-created], [data-fix-task-error]')).toHaveCount(0)
+    await expect(description(page)).toHaveValue(expectedDescription(second, '```'))
+    expect(await savedEntry(page, second.id)).toBeNull()
+    expect(server.reports.find((item) => item.id === second.id)?.fix_task).toBeNull()
+  })
+
+  test('task intake that answers after the sheet closed records on its report and opens nothing', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    const held = gate()
+    server.createGate = held.promise
+    await createFixTask(page, [])
+    await expect.poll(() => server.created.length).toBe(1)
+    await sheet(page).getByRole('button', { name: 'Close' }).first().click()
+    await expect(page).toHaveURL('/w/demo/')
+    held.open()
+    server.createGate = null
+    await expect.poll(() => fixPuts(server).length).toBe(1)
+    await expect.poll(() => savedEntry(page, fixReport.id)).toBeNull()
+    await expect(page).toHaveURL('/w/demo/')
+    expect(fixPuts(server)[0].body).toEqual({ task_id: '261127-fix' })
+  })
+
+  test('after an unknown record answer, a report read that started before it never sets the next step', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    const put = gate()
+    server.actGate = put.promise
+    await createFixTask(page, [])
+    await expect.poll(() => fixPuts(server).length).toBe(1)
+    // A stream frame starts a report read that holds the report as it was
+    // before the record.
+    const before = structuredClone(server.reports[0])
+    const old = gate()
+    server.readGate = old.promise
+    let staleOnce = true
+    server.readAnswer = () => {
+      if (!staleOnce) return undefined
+      staleOnce = false
+      return { status: 200, json: before }
+    }
+    const reads = reportReads(server, fixReport.id)
+    await server.stream.ready()
+    await expect.poll(() => reportReads(server, fixReport.id)).toBe(reads + 1)
+    // The record is stored, but its answer is lost.
+    const fresh = gate()
+    server.readGate = fresh.promise
+    server.actAnswers.push(() => {
+      server.reports[0] = { ...server.reports[0], fix_task: { id: '261127-fix', title: 'Fix the checkout timeout' } }
+      return { status: 500, json: { error: 'internal error' } }
+    })
+    put.open()
+    server.actGate = null
+    await expect.poll(() => reportReads(server, fixReport.id)).toBe(reads + 2)
+    // The old read answers with the report from before: it decides nothing.
+    old.open()
+    await page.waitForTimeout(500)
+    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText(
+      'Conveyor reads the report again to find out if it recorded the task…',
+    )
+    await expect(recordButton(page)).toHaveCount(0)
+    // The fresh read answers: the task is recorded, and it opens.
+    fresh.open()
+    server.readGate = null
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(fixPuts(server)).toHaveLength(1)
+  })
+
+  test('a list read of one workspace that answers after the address names another workspace shows nothing there', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: many(3, 'o') })
+    const held = gate()
+    server.listGate = held.promise
+    await page.goto('/w/demo/monitor')
+    await expect.poll(() => listReads(server).length).toBe(1)
+    server.listGate = null
+    await moveTo(page, '/w/other/monitor')
+    await expect(page.getByText('No open report. Reports appear here when a watcher sends one.')).toBeVisible()
+    held.open()
+    await page.waitForTimeout(500)
+    await expect(page.locator('[data-report-card]')).toHaveCount(0)
+  })
+
+  test('an act whose unknown answer arrives after the page was left leaves no old report to act on', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [actReport] })
+    await page.goto('/w/demo/monitor')
+    const confirm = card(page, actReport.id).getByRole('button', { name: 'Confirm the link to Send invoices by email' })
+    await expect(confirm).toBeEnabled()
+    const held = gate()
+    server.actGate = held.promise
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    await confirm.click()
+    await moveTo(page, '/w/demo/crates')
+    await expect(page.locator('[data-report-card]')).toHaveCount(0)
+    held.open()
+    server.actGate = null
+    await page.waitForTimeout(500)
+    // Back on Monitor, the page reads the report before it shows it.
+    const reads = listReads(server).length
+    await moveTo(page, '/w/demo/monitor')
+    await expect.poll(() => listReads(server).length).toBeGreaterThan(reads)
+    await expect(card(page, actReport.id).locator('[data-report-act-error]')).toContainText(
+      'Conveyor does not know whether it recorded this.',
+    )
+    await expect(confirm).toBeEnabled()
+    expect(server.acts).toHaveLength(1)
+  })
+})
+
+// Class: unknown outcomes. The page knows an unknown outcome for the workspace
+// and the report, wherever the report shows, until a fresh read answers.
+test.describe('unknown outcomes', () => {
+  test('a removal with an unknown answer and a failed read keeps the control at card level after the row goes', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [actReport] })
+    await page.goto('/w/demo/monitor')
+    const item = card(page, actReport.id)
+    await item.getByRole('button', { name: 'Remove the link to Send invoices by email…' }).click()
+    // The removal is stored, but its answer is lost, and the fresh read fails.
+    server.actAnswers.push(() => {
+      server.reports[0] = { ...server.reports[0], links: [] }
+      return { status: 500, json: { error: 'internal error' } }
+    })
+    server.listAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    await item.getByRole('button', { name: 'Remove the link to Send invoices by email', exact: true }).click()
+    await expect(item.locator('[data-report-act-stale]')).toBeVisible()
+    // A later refresh answers and removes the link row.
+    server.listAnswer = null
+    await server.stream.ready()
+    await expect(item.locator('[data-report-link]')).toHaveCount(0)
+    // The control to read again stays on the card, and every act waits.
+    await expect(item.locator('[data-report-act-stale]')).toContainText('Read the report again before you act.')
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeDisabled()
+    await expect(item.getByRole('button', { name: 'Link a task or crate' })).toBeDisabled()
+    await item.getByRole('button', { name: 'Read the report again' }).click()
+    await expect(item.locator('[data-report-act-error]')).toHaveText(
+      'Conveyor does not know whether it recorded this. Conveyor read the report again. Look at it before you try again.',
+    )
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeEnabled()
+    expect(server.acts).toHaveLength(1)
+  })
+
+  test('two copies of one report share the state: neither can act while the other waits or is blocked', async ({
+    page,
+  }) => {
+    const member = report('rpt-261127-k00001', {
+      summary: 'Shown twice',
+      links: [
+        taskLink('lnk-k1', '261120-a01', 'Send invoices by email', {}, { id: 'crate-billing', name: 'Billing v2' }),
+      ],
+    })
+    const server = await mockReportServer(page, { reports: [member] })
+    await page.goto('/w/demo/crates/crate-billing?task=261120-a01')
+    const copies = card(page, member.id)
+    await expect(copies).toHaveCount(2)
+    const inPage = copies.nth(0)
+    const inSheet = copies.nth(1)
+    const confirmIn = (copy: Locator) =>
+      copy.getByRole('button', { name: 'Confirm the link to Send invoices by email' })
+    // An act on its way in the sheet blocks the copy in the page.
+    const held = gate()
+    server.actGate = held.promise
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    server.listAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    await confirmIn(inSheet).click()
+    await expect(confirmIn(inPage)).toBeDisabled()
+    // The page copy lies under the sheet, so the click goes to the button
+    // itself. A disabled button sends nothing.
+    await confirmIn(inPage).evaluate((button: HTMLButtonElement) => button.click())
+    held.open()
+    server.actGate = null
+    // The answer is unknown and the fresh read fails: both copies block and
+    // both offer to read again.
+    for (const copy of [inPage, inSheet]) {
+      await expect(copy.locator('[data-report-act-stale]')).toBeVisible()
+      await expect(confirmIn(copy)).toBeDisabled()
+    }
+    expect(server.acts).toHaveLength(1)
+    // The sheet closes: the copy that sent the act is gone, and the copy in
+    // the page still blocks and offers the read.
+    await page.getByRole('button', { name: 'Close panel' }).click()
+    await expect(copies).toHaveCount(1)
+    await expect(inPage.locator('[data-report-act-stale]')).toBeVisible()
+    await expect(confirmIn(inPage)).toBeDisabled()
+    // A read from the copy in the page frees the report.
+    server.listAnswer = null
+    await inPage.getByRole('button', { name: 'Read the report again' }).click()
+    await expect(confirmIn(inPage)).toBeEnabled()
+    expect(server.acts).toHaveLength(1)
+  })
+
+  test('an unknown fix-task record whose fresh read fails blocks the report on every page until a read answers', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    server.readAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    await createFixTask(page, [])
+    await expect(sheet(page).locator('[data-fix-task-error]')).toContainText('the report did not load again')
+    server.readAnswer = null
+    await page.evaluate(() => {
+      history.pushState({}, '', '/w/demo/monitor')
+      dispatchEvent(new PopStateEvent('popstate'))
+    })
+    const item = card(page, fixReport.id)
+    await expect(item.locator('[data-report-act-stale]')).toBeVisible()
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeDisabled()
+    await item.getByRole('button', { name: 'Read the report again' }).click()
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeEnabled()
+    expect(fixPuts(server)).toHaveLength(1)
+  })
+})
+
+test.describe('unknown outcomes, replaced reads', () => {
+  test('a fresh read replaced by another refresh still frees the report when the replacement answers', async ({
+    page,
+  }) => {
+    const other = report('rpt-261127-k00002', {
+      summary: 'Another report',
+      last_seen: '2026-11-27T11:00:00Z',
+      links: [taskLink('lnk-k2', '261120-b02', 'Store invoice numbers')],
+    })
+    const server = await mockReportServer(page, { reports: [actReport, other] })
+    await page.goto('/w/demo/monitor')
+    const first = card(page, actReport.id)
+    const confirmFirst = first.getByRole('button', { name: 'Confirm the link to Send invoices by email' })
+    await expect(confirmFirst).toBeEnabled()
+    // The act on the first report gets a 500, and its fresh read waits.
+    const held = gate()
+    server.listGate = held.promise
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    const reads = listReads(server).length
+    await confirmFirst.click()
+    await expect.poll(() => listReads(server).length).toBe(reads + 1)
+    // An act on the other report succeeds. Its refresh cancels the waiting
+    // read and starts a new one, which waits too.
+    await card(page, other.id).getByRole('button', { name: 'Confirm the link to Store invoice numbers' }).click()
+    await expect.poll(() => listReads(server).length).toBe(reads + 2)
+    held.open()
+    server.listGate = null
+    // The new read started after the unknown answer and answered: the first
+    // report is free, with the note, and never blocked.
+    await expect(first.locator('[data-report-act-error]')).toHaveText(
+      'Conveyor does not know whether it recorded this. Conveyor read the report again. Look at it before you try again.',
+    )
+    await expect(first.locator('[data-report-act-stale]')).toHaveCount(0)
+    await expect(confirmFirst).toBeEnabled()
   })
 })

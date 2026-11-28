@@ -1,7 +1,7 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { hashKey, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { type ReactNode, useState } from 'react'
-import { feedbackReportPageMax, feedbackReportPageStep, fetchFeedbackReports } from '../../lib/api'
+import { type ReactNode, useEffect, useState } from 'react'
+import { feedbackReportPageSize, fetchFeedbackReports } from '../../lib/api'
 import type { FeedbackReport, FeedbackReportFilter } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
@@ -12,55 +12,75 @@ import { feedbackReportListQueryKey } from './query-keys'
 import { ReportCard, ReportTaskLinkContext, type ReportTaskLinkProps } from './report-card'
 
 /**
- * One report read and its refresh (component-feedback-reports invariant 27):
- * a frame of the workspace stream refreshes it through the
- * `['feedback-reports', workspace]` prefix; while it shows at least one open
- * report and the tab is visible it reads again every 60 seconds; while a
- * served report carries `links_pending` it reads again after 10 seconds, at
- * most six times in a row. A read that shows no report sets no timer. The
- * timer is `useLiveStatusRefresh`, so the visibility, online, in-flight, and
- * unmount rules of the live-status reads hold here too. No focus, reconnect,
- * or automatic retry read runs, so nothing skips that budget.
+ * One page of a report list and its refresh (component-feedback-reports
+ * invariants 26 and 27). The page is one read of 50 reports at the shown
+ * offset, so every report it shows comes from one answer, and the served
+ * offset and total reach every report the server holds, in the server's
+ * order.
  *
- * The list is one read of the newest `limit` reports, so every report it
- * shows comes from one answer.
+ * - A frame of the workspace stream refreshes it through the
+ *   `['feedback-reports', workspace]` prefix. While it shows at least one
+ *   open report and the tab is visible it reads again every 60 seconds.
+ *   While a served report carries `links_pending` it reads again after 10
+ *   seconds, at most six times in a row. A read that shows no report sets no
+ *   timer. The timer is `useLiveStatusRefresh`, so the visibility, online,
+ *   in-flight, and unmount rules of the live-status reads hold here too. No
+ *   focus, reconnect, or automatic retry read runs, so nothing skips that
+ *   budget.
+ * - A refresh keeps the position. When the served total no longer reaches the
+ *   position, the list moves to the last page that the total holds.
+ * - Another workspace or other filters start again at the first page.
+ * - While a page loads, the list keeps the page before it only when it has
+ *   the same workspace and filters. Otherwise it shows that it loads.
  */
 export function useReportList(filter: FeedbackReportFilter) {
   const { workspace } = useWorkspaceSelection()
-  const [limit, setLimit] = useState(feedbackReportPageStep)
-  const queryKey = [...feedbackReportListQueryKey(workspace, filter), limit] as const
+  const listKey = feedbackReportListQueryKey(workspace, filter)
+  const listHash = hashKey(listKey)
+  const [position, setPosition] = useState({ list: listHash, offset: 0 })
+  const offset = position.list === listHash ? position.offset : 0
+  const queryKey = [...listKey, offset] as const
   const reports = useQuery({
     queryKey,
-    queryFn: (context) => withQuerySignal(context, (signal) => fetchFeedbackReports(workspace, filter, limit, signal)),
+    queryFn: (context) => withQuerySignal(context, (signal) => fetchFeedbackReports(workspace, filter, offset, signal)),
     enabled: Boolean(workspace),
-    // A larger limit keeps the shown reports until its answer arrives.
-    placeholderData: keepPreviousData,
+    placeholderData: (previous, previousQuery) =>
+      previousQuery && hashKey(previousQuery.queryKey.slice(0, listKey.length)) === listHash ? previous : undefined,
     retry: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   })
-  const items = reports.data?.items ?? []
-  const total = reports.data?.total ?? 0
+  const page = reports.data
+  const items = page?.items ?? []
+  const total = page?.total ?? 0
+  const servedOffset = page?.offset ?? offset
   useLiveStatusRefresh({
     queryKey,
     shown: items.filter((report) => report.state === 'open').length,
     pending: items.some((report) => report.links_pending),
-    hasAnswer: reports.data !== undefined,
+    hasAnswer: page !== undefined,
     dataUpdatedAt: reports.dataUpdatedAt,
     errorUpdatedAt: reports.errorUpdatedAt,
     isFetching: reports.isFetching,
     isPaused: reports.isPaused,
     refetch: reports.refetch,
   })
-  const showMore =
-    total > items.length && limit < feedbackReportPageMax
-      ? () => setLimit((current) => Math.min(current + feedbackReportPageStep, feedbackReportPageMax))
-      : undefined
-  return { reports, items, total, limit, showMore }
+  // A refresh whose total no longer reaches this page moves to the last
+  // page that the total holds.
+  const beyond = !reports.isPlaceholderData && page !== undefined && items.length === 0 && servedOffset > 0
+  useEffect(() => {
+    if (!beyond) return
+    const last = total > 0 ? Math.floor((total - 1) / feedbackReportPageSize) * feedbackReportPageSize : 0
+    setPosition({ list: listHash, offset: last })
+  }, [beyond, total, listHash])
+  const move = (next: number) => setPosition({ list: listHash, offset: Math.max(0, next) })
+  const next = servedOffset + items.length < total ? () => move(servedOffset + items.length) : undefined
+  const previous = servedOffset > 0 ? () => move(servedOffset - feedbackReportPageSize) : undefined
+  return { reports, items, total, servedOffset, next, previous }
 }
 
 /**
- * A list of report cards with its load, failure, and size. `quiet` renders
+ * A list of report cards with its load, failure, and pages. `quiet` renders
  * nothing while the read loads or when it serves no report, so a page with no
  * report shows no new part (req-production-feedback AC-6.1).
  */
@@ -82,7 +102,7 @@ export function ReportList({
   heading?: ReactNode
   className?: string
 }) {
-  const { reports, items, total, limit, showMore } = useReportList(filter)
+  const { reports, items, total, servedOffset, next, previous } = useReportList(filter)
   // Reading the update time re-renders the cards after each timed read, so
   // their relative times stay current even when the answer is unchanged.
   void reports.dataUpdatedAt
@@ -91,10 +111,10 @@ export function ReportList({
       The last refresh of the reports failed. This list shows the reports from the read before it.
     </p>
   )
-  if (reports.isPending) {
+  if (reports.data === undefined && reports.isFetching) {
     if (quiet) return null
     return (
-      <p role="status" className="py-3 text-sm text-muted">
+      <p role="status" data-report-list-loading className="py-3 text-sm text-muted">
         Loading reports…
       </p>
     )
@@ -111,7 +131,7 @@ export function ReportList({
         </div>
       </div>
     )
-  if (items.length === 0) {
+  if (items.length === 0 && total === 0) {
     if (quiet) return refreshFailed ? <div className={className}>{refreshFailed}</div> : null
     return (
       <div className={cn('space-y-1 py-3', className)}>
@@ -120,10 +140,11 @@ export function ReportList({
       </div>
     )
   }
+  const loadingPage = reports.isPlaceholderData
   return (
     <section aria-label={label} data-report-list className={cn('min-w-0 space-y-2', className)}>
       {heading}
-      <ul className="min-w-0 space-y-2">
+      <ul className={cn('min-w-0 space-y-2', loadingPage && 'opacity-60')} aria-busy={loadingPage || undefined}>
         {items.map((report) => (
           <li key={report.id} className="min-w-0">
             <ReportCard report={report} extra={extra?.(report)} />
@@ -131,18 +152,23 @@ export function ReportList({
         ))}
       </ul>
       {refreshFailed}
-      {total > items.length && (
-        <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+      {(next || previous) && (
+        <nav
+          aria-label={`Pages of ${label.toLowerCase()}`}
+          className="flex flex-wrap items-center gap-2 text-xs text-muted"
+        >
           <span data-report-list-count>
-            This list shows the newest {items.length} of {total} reports.
-            {!showMore && limit >= feedbackReportPageMax && ` It shows at most ${feedbackReportPageMax} at a time.`}
+            {loadingPage
+              ? 'Loading the next page…'
+              : `This list shows reports ${servedOffset + 1} to ${servedOffset + items.length} of ${total}, newest first.`}
           </span>
-          {showMore && (
-            <Button size="sm" variant="secondary" disabled={reports.isFetching} onClick={showMore}>
-              {reports.isFetching && reports.isPlaceholderData ? 'Loading…' : 'Show more reports'}
-            </Button>
-          )}
-        </div>
+          <Button size="sm" variant="secondary" disabled={!previous || reports.isFetching} onClick={previous}>
+            Previous page
+          </Button>
+          <Button size="sm" variant="secondary" disabled={!next || reports.isFetching} onClick={next}>
+            Next page
+          </Button>
+        </nav>
       )}
     </section>
   )

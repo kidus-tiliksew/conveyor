@@ -103,10 +103,10 @@ export function TaskCreateSheet() {
   // invariant 18). Any other intake opens on the first one.
   const repoName = reportId ? repo : repo || repos[0]?.name || ''
   // The new task opens in the Board's sheet over the view intake came from.
-  const openTask = (taskId: string) =>
+  const openTask = (taskId: string, workspace = workspaceId) =>
     void navigate({
       to: '/w/$workspaceId/tasks/$taskId',
-      params: { workspaceId, taskId },
+      params: { workspaceId: workspace, taskId },
       search: ({ create: _create, crate: _crate, report: _report, ...prev }) => prev,
     })
   const fixTask = useFixTaskFlow({ workspace: workspaceId, reportId, setBody, onRecorded: openTask })
@@ -151,10 +151,12 @@ export function TaskCreateSheet() {
     void navigate({ to: '/w/$workspaceId/', params: { workspaceId }, search: ({ crate: _crate, ...prev }) => prev })
 
   const mutation = useMutation({
-    // A fix task passes the causes ticked at the moment of Create.
-    mutationFn: async (_causeTaskIds: string[] | undefined) => {
+    // Create captures the workspace, the crate, the report, and the ticked
+    // causes. The answer uses that snapshot, never the values of a later
+    // render, so a late answer reaches only what asked for it.
+    mutationFn: async (intake: IntakeSnapshot) => {
       const task = await createTask(
-        workspaceId,
+        intake.workspace,
         {
           body: body.trim(),
           repo: repoName,
@@ -167,23 +169,23 @@ export function TaskCreateSheet() {
           ...(dependsOn.length ? { depends_on: dependsOn } : {}),
           ...(requirementIds.length ? { requirement_ids: requirementIds } : {}),
           ...(systemDesignIds.length ? { system_design_ids: systemDesignIds } : {}),
-          ...(crateId ? { crate_id: crateId } : {}),
+          ...(intake.crateId ? { crate_id: intake.crateId } : {}),
         },
         files,
         intakeKey.current,
       )
       return task
     },
-    onSuccess: (task, causeTaskIds) => {
+    onSuccess: (task, intake) => {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
-      if (crateId) void queryClient.invalidateQueries({ queryKey: ['crates', workspaceId] })
+      if (intake.crateId) void queryClient.invalidateQueries({ queryKey: ['crates', intake.workspace] })
       // A fix task stays in the sheet until the report records it, and then
       // opens (component-feedback-reports invariant 18).
-      if (reportId) {
-        fixTask.onCreated(task, causeTaskIds ?? [])
+      if (intake.reportId) {
+        fixTask.onCreated(task, { workspace: intake.workspace, reportId: intake.reportId }, intake.causeTaskIds)
         return
       }
-      openTask(task.id)
+      openTask(task.id, intake.workspace)
     },
     onError: (error) => {
       if (error instanceof TaskIntakeError && error.code === 'invalid_dependencies') setAdvancedOpen(true)
@@ -538,7 +540,14 @@ export function TaskCreateSheet() {
               crateClosed ||
               (reportId !== undefined && !fixTask.ready)
             }
-            onClick={() => mutation.mutate(reportId ? [...fixTask.causes] : undefined)}
+            onClick={() =>
+              mutation.mutate({
+                workspace: workspaceId,
+                crateId,
+                reportId,
+                causeTaskIds: reportId ? [...fixTask.causes] : [],
+              })
+            }
           >
             {mutation.isPending ? 'Creating…' : fixTask.created ? 'Task created' : 'Create task'}
           </Button>
@@ -546,6 +555,14 @@ export function TaskCreateSheet() {
       </footer>
     </Sheet>
   )
+}
+
+// What Create captured for the intake request and its answer.
+interface IntakeSnapshot {
+  workspace: string
+  crateId: string | undefined
+  reportId: string | undefined
+  causeTaskIds: string[]
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {

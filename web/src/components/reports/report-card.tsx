@@ -93,7 +93,7 @@ function countText(count: number) {
 export function ReportCard({ report, extra }: { report: FeedbackReport; extra?: ReactNode }) {
   const { workspace } = useWorkspaceSelection()
   const canAct = useWorkspaceCapability('create_tasks')
-  const act = useReportAct(workspace)
+  const act = useReportAct(workspace, report.id)
   const summaryId = useId()
   const open = report.state === 'open'
   const deploysWithNoTask = report.notes.filter((note) => note.kind === 'no_task_deploy')
@@ -224,6 +224,7 @@ export function ReportCard({ report, extra }: { report: FeedbackReport; extra?: 
           </TaskLink>
         </p>
       )}
+      {canAct && <CardActStatus act={act} />}
       {canAct && <ReportActs report={report} act={act} />}
     </article>
   )
@@ -428,27 +429,48 @@ function LinkRow({
   )
 }
 
-/** The answer of the last act on `target`: a failure, or a fresh read after an unknown answer. */
+/**
+ * A refusal of the last act on `target`, shown beside the control that sent
+ * it. What follows an unknown answer is shown by `CardActStatus` instead.
+ */
 function ActStatus({ act, target }: { act: ReturnType<typeof useReportAct>; target: string }) {
   const state: ReportActState = act.state
-  if (state.phase === 'stale' && state.target === target)
+  if (state.phase === 'failed' && !state.afterUnknown && state.target === target)
     return (
-      <div role="alert" data-report-act-error className="mt-1.5 space-y-1.5 text-xs text-failure">
+      <p role="alert" data-report-act-error className="mt-1.5 text-xs text-failure">
+        {state.message}
+      </p>
+    )
+  return null
+}
+
+/**
+ * What follows an unknown answer, on every copy of the report and at card
+ * level, so a refresh that removes the link row or the card that sent the
+ * act never removes it: the fresh read on its way, a failed fresh read with
+ * the control to read the report again, and the note after a read that
+ * answered (component-feedback-reports invariant 17).
+ */
+function CardActStatus({ act }: { act: ReturnType<typeof useReportAct> }) {
+  const state: ReportActState = act.state
+  if (state.phase === 'checking')
+    return (
+      <p role="status" data-report-act-checking className="text-xs text-muted">
+        Conveyor does not know whether it recorded this. Conveyor reads the report again…
+      </p>
+    )
+  if (state.phase === 'stale')
+    return (
+      <div role="alert" data-report-act-error data-report-act-stale className="space-y-1.5 text-xs text-failure">
         <p>{state.message}</p>
         <Button size="sm" variant="secondary" disabled={state.reading} onClick={() => void act.reread()}>
           {state.reading ? 'Loading…' : 'Read the report again'}
         </Button>
       </div>
     )
-  if (state.phase === 'checking' && state.target === target)
+  if (state.phase === 'failed' && state.afterUnknown)
     return (
-      <p role="status" className="mt-1.5 text-xs text-muted">
-        Conveyor does not know whether it recorded this. Conveyor reads the report again…
-      </p>
-    )
-  if (state.phase === 'failed' && state.target === target)
-    return (
-      <p role="alert" data-report-act-error className="mt-1.5 text-xs text-failure">
+      <p role="alert" data-report-act-error className="text-xs text-failure">
         {state.message}
       </p>
     )

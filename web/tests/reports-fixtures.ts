@@ -274,6 +274,8 @@ export interface Server {
   readGate: Promise<void> | null
   // Fails the merged-task search of the link form.
   failTaskSearch: boolean
+  // Holds every task intake answer until the promise resolves.
+  createGate: Promise<void> | null
 }
 
 function servedOrder(a: FeedbackReport, b: FeedbackReport) {
@@ -403,6 +405,7 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
     listGate: null,
     readGate: null,
     failTaskSearch: false,
+    createGate: null,
   }
   const role = options.role ?? 'operator'
   const mergedTasks = options.mergedTasks ?? [
@@ -420,7 +423,13 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
     const path = url.pathname
     const method = request.method()
     if (method === 'GET') state.gets.push(`${path}${url.search}`)
-    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/workspaces')
+      return route.fulfill({
+        json: [
+          { id: 'demo', name: 'Demo' },
+          { id: 'other', name: 'Other' },
+        ],
+      })
     if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role }, request) })
     if (path === '/v1/workspace')
       return route.fulfill({
@@ -444,7 +453,8 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
       if (replaced) return fulfill(route, replaced)
       const params = url.searchParams
       const wanted = params.get('state') ?? 'open'
-      let items = state.reports.filter((item) => item.state === wanted)
+      // The second workspace holds no report.
+      let items = params.get('workspace_id') === 'other' ? [] : state.reports.filter((item) => item.state === wanted)
       const environmentId = params.get('environment_id')
       if (environmentId) items = items.filter((item) => item.environment.id === environmentId)
       const taskId = params.get('task_id')
@@ -493,6 +503,7 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
       const form = request.postData() ?? ''
       const match = form.match(/name="task"\r\n\r\n([\s\S]*?)\r\n--/)
       state.created.push(match ? (JSON.parse(match[1]) as Record<string, unknown>) : {})
+      if (state.createGate) await state.createGate
       return route.fulfill({ status: 201, json: { ...task('261127-fix', 'Fix the checkout timeout', 'queued') } })
     }
     if (path === '/v1/tasks' && method === 'GET') {

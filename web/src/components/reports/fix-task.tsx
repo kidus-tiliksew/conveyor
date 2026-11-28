@@ -3,12 +3,12 @@ import { Link } from '@tanstack/react-router'
 import { MessageSquareWarning } from 'lucide-react'
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
 import { FeedbackReportActError, fetchFeedbackReport, setFeedbackReportFixTask } from '../../lib/api'
-import type { FeedbackReport } from '../../lib/types'
 import { withQuerySignal } from '../task/use-task-detail'
 import { Button } from '../ui/button'
-import { feedbackReportQueryKey, feedbackReportsQueryKey } from './query-keys'
+import { feedbackReportQueryKey } from './query-keys'
 import { Untrusted } from './report-card'
 import { fixTaskDescription, MAX_CAUSE_TASKS } from './report-text'
+import { refreshAfterWrite, reportActKey, staleMessage, writeReportActState } from './use-report-act'
 
 /**
  * A fix task that intake created and the report has not recorded yet. It is
@@ -21,6 +21,19 @@ export interface CreatedFixTask {
   taskId: string
   taskTitle: string
   causeTaskIds: string[]
+  // How the last record request for the task stands: on its way, answered
+  // without a record, or answered with an unknown outcome.
+  status?: 'sending' | 'not_recorded' | 'unknown'
+}
+
+/** The workspace and report a fix task is for, captured when the person presses Create. */
+export interface FixTaskTarget {
+  workspace: string
+  reportId: string
+}
+
+function flowOf(target: FixTaskTarget) {
+  return `${target.workspace}\u0000${target.reportId}`
 }
 
 function storageKey(workspace: string, reportId: string) {
@@ -36,10 +49,15 @@ export function readCreatedFixTask(workspace: string, reportId: string): Created
     const causes = Array.isArray(value.causeTaskIds)
       ? value.causeTaskIds.filter((id): id is string => typeof id === 'string')
       : []
+    const status =
+      value.status === 'sending' || value.status === 'not_recorded' || value.status === 'unknown'
+        ? value.status
+        : undefined
     return {
       taskId: value.taskId,
       taskTitle: typeof value.taskTitle === 'string' ? value.taskTitle : '',
       causeTaskIds: causes,
+      ...(status ? { status } : {}),
     }
   } catch {
     return null
@@ -176,52 +194,88 @@ export function useFixTaskFlow({
     setBody((current) => (current.trim() === '' || current === previous ? text : `${text}\n${current}`))
   }, [data, reportId, prefilledFor, created, setBody])
 
+  // A fresh read of one report that started after the moment it is asked
+  // for. A read of the report already on its way started earlier, so it is
+  // cancelled and never answers this question; the answer of the new read is
+  // then stored for the page (docs/feedback-reports.md, Acts).
+  const freshRead = useCallback(
+    async (target: FixTaskTarget) => {
+      const key = feedbackReportQueryKey(target.workspace, target.reportId)
+      await queryClient.cancelQueries({ queryKey: key })
+      try {
+        const fresh = await fetchFeedbackReport(target.workspace, target.reportId)
+        queryClient.setQueryData(key, fresh)
+        return fresh
+      } catch {
+        return undefined
+      }
+    },
+    [queryClient],
+  )
+
+  // The task is recorded on its report. The saved task of that report is
+  // cleared, and only the flow that shows that report moves on.
   const finish = useCallback(
-    (entry: CreatedFixTask) => {
-      if (reportId) writeCreatedFixTask(workspace, reportId, null)
-      void queryClient.invalidateQueries({ queryKey: feedbackReportsQueryKey(workspace) })
-      void queryClient.invalidateQueries({ queryKey: ['crates', workspace] })
-      if (!live(identity)) return
+    (entry: CreatedFixTask, target: FixTaskTarget) => {
+      writeCreatedFixTask(target.workspace, target.reportId, null)
+      writeReportActState(reportActKey(target.workspace, target.reportId), { phase: 'idle' })
+      void refreshAfterWrite(queryClient, target.workspace)
+      if (!live(flowOf(target))) return
       setCreated(null)
       setRecord({ phase: 'idle' })
       onRecorded(entry.taskId)
     },
-    [queryClient, workspace, reportId, onRecorded, live, identity],
+    [queryClient, onRecorded, live],
   )
 
   // A report that already names the created task as its fix task recorded
   // it, for example when an earlier answer was lost.
   useEffect(() => {
-    if (created && data && data.id === reportId && data.fix_task?.id === created.taskId) finish(created)
-  }, [created, data, reportId, finish])
+    if (created && data && reportId && data.id === reportId && data.fix_task?.id === created.taskId)
+      finish(created, { workspace, reportId })
+  }, [created, data, reportId, workspace, finish])
 
+  // Sends the record request for one report. Every value comes from the
+  // target and the entry captured at Create, and the answer changes only the
+  // saved task of that report and, when it is shown, its flow.
   const sendRecord = useCallback(
-    async (entry: CreatedFixTask) => {
-      const flow = identity
-      if (!reportId || sending.current.has(flow)) return
+    async (entry: CreatedFixTask, target: FixTaskTarget) => {
+      const flow = flowOf(target)
+      if (sending.current.has(flow)) return
       sending.current.add(flow)
-      setRecord({ phase: 'sending' })
+      const save = (status: CreatedFixTask['status']) =>
+        writeCreatedFixTask(target.workspace, target.reportId, { ...entry, status })
+      const actKey = reportActKey(target.workspace, target.reportId)
+      save('sending')
+      if (live(flow)) setRecord({ phase: 'sending' })
       try {
-        await setFeedbackReportFixTask(workspace, reportId, entry.taskId, entry.causeTaskIds)
-        finish(entry)
+        await setFeedbackReportFixTask(target.workspace, target.reportId, entry.taskId, entry.causeTaskIds)
+        finish(entry, target)
       } catch (error) {
         if (error instanceof FeedbackReportActError && error.outcome === 'unknown') {
-          // The record may be stored. Read the report before the person can
-          // send it again.
+          // The record may be stored. Every copy of the report waits, and a
+          // read that starts now decides the next step.
+          save('unknown')
+          writeReportActState(actKey, { phase: 'checking', act: 'fix', target: `report:${target.reportId}` })
           if (live(flow)) setRecord({ phase: 'checking' })
-          let fresh: FeedbackReport | undefined
-          try {
-            fresh = await queryClient.fetchQuery({
-              queryKey,
-              queryFn: ({ signal }) => fetchFeedbackReport(workspace, reportId, signal),
-              staleTime: 0,
-            })
-          } catch {
-            fresh = undefined
-          }
+          const fresh = await freshRead(target)
           if (fresh?.fix_task?.id === entry.taskId) {
-            finish(entry)
-          } else if (live(flow)) {
+            finish(entry, target)
+            return
+          }
+          writeReportActState(
+            actKey,
+            fresh
+              ? { phase: 'idle' }
+              : {
+                  phase: 'stale',
+                  act: 'fix',
+                  target: `report:${target.reportId}`,
+                  message: staleMessage,
+                  reading: false,
+                },
+          )
+          if (live(flow))
             setRecord({
               phase: 'failed',
               canSend: fresh !== undefined,
@@ -230,60 +284,66 @@ export function useFixTaskFlow({
                   ? 'Conveyor does not know whether the report recorded the task, and the report did not load again. Read the report again before you record the task.'
                   : 'The report did not record the task. Record it again.',
             })
-          }
-        } else if (live(flow)) {
+        } else {
+          save('not_recorded')
+          if (!live(flow)) return
           if (error instanceof FeedbackReportActError && error.code === 'report_closed')
-            void queryClient.invalidateQueries({ queryKey })
+            void queryClient.invalidateQueries({
+              queryKey: feedbackReportQueryKey(target.workspace, target.reportId),
+            })
           setRecord({ phase: 'failed', canSend: true, message: recordFailureMessage(error) })
         }
       } finally {
         sending.current.delete(flow)
       }
     },
-    [workspace, reportId, queryClient, queryKey, finish, identity, live],
+    [queryClient, finish, live, freshRead],
   )
 
+  // Intake answered for the report captured at Create. The task is saved for
+  // that report and its record request is sent. Only when that report is
+  // still the one shown does the flow on the page change: a task created for
+  // another report never enters this report's flow.
   const onCreated = useCallback(
-    (task: { id: string; title: string }, causeTaskIds: string[]) => {
-      if (!reportId) return
-      const entry = { taskId: task.id, taskTitle: task.title, causeTaskIds }
-      writeCreatedFixTask(workspace, reportId, entry)
-      setCreated(entry)
-      void sendRecord(entry)
+    (task: { id: string; title: string }, target: FixTaskTarget, causeTaskIds: string[]) => {
+      const entry: CreatedFixTask = { taskId: task.id, taskTitle: task.title, causeTaskIds }
+      writeCreatedFixTask(target.workspace, target.reportId, { ...entry, status: 'sending' })
+      if (live(flowOf(target))) setCreated(entry)
+      void sendRecord(entry, target)
     },
-    [workspace, reportId, sendRecord],
+    [live, sendRecord],
   )
 
   const rereadReport = useCallback(
     async (restored = false) => {
-      const flow = identity
+      if (!created || !reportId) return
+      const target = { workspace, reportId }
+      const flow = flowOf(target)
       // While this flow's record request is on its way, its own answer
       // decides the next step.
-      if (!created || sending.current.has(flow)) return
+      if (sending.current.has(flow)) return
       setRecord({ phase: 'checking' })
-      try {
-        const fresh = await queryClient.fetchQuery({
-          queryKey,
-          queryFn: ({ signal }) => fetchFeedbackReport(workspace, reportId ?? '', signal),
-          staleTime: 0,
-        })
-        if (fresh.fix_task?.id === created.taskId) finish(created)
-        else if (live(flow))
-          setRecord(
-            restored
-              ? { phase: 'idle' }
-              : { phase: 'failed', canSend: true, message: 'The report did not record the task. Record it again.' },
-          )
-      } catch {
-        if (live(flow))
-          setRecord({
-            phase: 'failed',
-            canSend: false,
-            message: 'The report did not load. Read the report again before you record the task.',
-          })
+      const fresh = await freshRead(target)
+      if (fresh?.fix_task?.id === created.taskId) {
+        finish(created, target)
+        return
       }
+      if (fresh) writeReportActState(reportActKey(workspace, reportId), { phase: 'idle' })
+      if (!live(flow)) return
+      if (fresh)
+        setRecord(
+          restored
+            ? { phase: 'idle' }
+            : { phase: 'failed', canSend: true, message: 'The report did not record the task. Record it again.' },
+        )
+      else
+        setRecord({
+          phase: 'failed',
+          canSend: false,
+          message: 'The report did not load. Read the report again before you record the task.',
+        })
     },
-    [created, queryClient, queryKey, workspace, reportId, finish, identity, live],
+    [created, workspace, reportId, finish, live, freshRead],
   )
 
   // A restored task: read the report once before the page offers anything.
@@ -304,6 +364,10 @@ export function useFixTaskFlow({
     created,
     record,
     onCreated,
+    // The record request again for the report shown, with its saved task.
+    recordAgain: () => {
+      if (created && reportId) void sendRecord(created, { workspace, reportId })
+    },
     sendRecord,
     rereadReport,
   }
@@ -459,7 +523,7 @@ function CreatedPanel({ flow, created, workspace }: { flow: FixTaskFlow; created
       {!busy && (
         <div className="flex flex-wrap gap-2">
           {(record.phase !== 'failed' || record.canSend) && (
-            <Button size="sm" onClick={() => void flow.sendRecord(created)}>
+            <Button size="sm" onClick={flow.recordAgain}>
               Record it on the report
             </Button>
           )}
