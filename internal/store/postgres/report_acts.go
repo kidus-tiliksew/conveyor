@@ -71,11 +71,13 @@ func feedbackReportFilter(workspaceID string, query store.FeedbackReportQuery) (
 // its RefuseAbove stops there. The page is ORDER BY ... LIMIT, which the
 // server answers with a top-N sort that keeps Offset+Limit rows, and only the
 // page's rows, their links, notes, tasks, crates, and environments cross the
-// connection. The read clock is read right after the first statement sets
-// the snapshot, and feedbackSignalsHeld then checks that no signal of a read
-// environment committed since, or the whole read runs again, at most
-// feedbackReportViewAttempts times, and then answers store.ErrRetryable
-// (component-feedback-reports invariants 21 and 24).
+// connection. The read clock is read just before and just after the first
+// statement, which sets the snapshot. When every read signal gives the same
+// listening state at both, that is its state at the snapshot, and the later
+// clock read is the read clock. When a listening deadline falls between
+// them, the whole read runs again, at most feedbackReportViewAttempts times,
+// and then answers store.ErrRetryable (feedbackListeningSettled;
+// component-feedback-reports invariants 21 and 24).
 func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackReports")
 	query, err := store.NormalizeFeedbackReportQuery(query)
@@ -84,18 +86,11 @@ func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackRep
 	}
 	for range feedbackReportViewAttempts {
 		page, err := s.listFeedbackReportsOnce(ctx, query)
-		if err != nil {
-			return store.FeedbackReportPage{}, err
-		}
-		held, err := s.feedbackSignalsHeld(ctx, page.Details)
-		if err != nil {
-			return store.FeedbackReportPage{}, err
-		}
-		if held {
-			return page, nil
+		if !errors.Is(err, errFeedbackClockCrossed) {
+			return page, err
 		}
 	}
-	return store.FeedbackReportPage{}, fmt.Errorf("%w: %v", store.ErrRetryable, errFeedbackSignalMoved)
+	return store.FeedbackReportPage{}, fmt.Errorf("%w: %v", store.ErrRetryable, errFeedbackClockCrossed)
 }
 
 func (s *Store) listFeedbackReportsOnce(ctx context.Context, query store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
@@ -111,6 +106,7 @@ func (s *Store) listFeedbackReportsOnce(ctx context.Context, query store.Feedbac
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	page := store.FeedbackReportPage{Reports: []store.FeedbackReport{}, Details: store.NewFeedbackReportDetails()}
+	before := store.FeedbackReadClock(ctx)
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM feedback_reports r WHERE `+where, args...).Scan(&page.Total); err != nil {
 		return store.FeedbackReportPage{}, err
 	}
@@ -126,6 +122,9 @@ func (s *Store) listFeedbackReportsOnce(ctx context.Context, query store.Feedbac
 		return store.FeedbackReportPage{}, err
 	}
 	page.Details.ReadAt = readAt
+	if !feedbackListeningSettled(page.Details, before, readAt) {
+		return store.FeedbackReportPage{}, errFeedbackClockCrossed
+	}
 	return page, nil
 }
 
@@ -167,24 +166,17 @@ func (s *Store) GetFeedbackReport(ctx context.Context, reportID string) (store.F
 }
 
 // ReadFeedbackReports implements store.ReportReadStore: the records and
-// their details in one REPEATABLE READ snapshot, with the read clock and
-// the signal check of feedbackSignalsHeld.
+// their details in one REPEATABLE READ snapshot, with the read clock of
+// ListFeedbackReports.
 func (s *Store) ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]store.FeedbackReport, store.FeedbackReportDetails, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ReadFeedbackReports")
 	for range feedbackReportViewAttempts {
 		reports, details, err := s.readFeedbackReportsOnce(ctx, reportIDs)
-		if err != nil {
-			return nil, store.FeedbackReportDetails{}, err
-		}
-		held, err := s.feedbackSignalsHeld(ctx, details)
-		if err != nil {
-			return nil, store.FeedbackReportDetails{}, err
-		}
-		if held {
-			return reports, details, nil
+		if !errors.Is(err, errFeedbackClockCrossed) {
+			return reports, details, err
 		}
 	}
-	return nil, store.FeedbackReportDetails{}, fmt.Errorf("%w: %v", store.ErrRetryable, errFeedbackSignalMoved)
+	return nil, store.FeedbackReportDetails{}, fmt.Errorf("%w: %v", store.ErrRetryable, errFeedbackClockCrossed)
 }
 
 func (s *Store) readFeedbackReportsOnce(ctx context.Context, reportIDs []string) ([]store.FeedbackReport, store.FeedbackReportDetails, error) {
@@ -194,6 +186,7 @@ func (s *Store) readFeedbackReportsOnce(ctx context.Context, reportIDs []string)
 		return nil, store.FeedbackReportDetails{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	before := store.FeedbackReadClock(ctx)
 	stored, err := queryFeedbackReports(ctx, tx, `SELECT `+feedbackReportColumns+` FROM feedback_reports WHERE workspace_id=$1 AND id=ANY($2::text[])`, workspaceID, reportIDs)
 	if err != nil {
 		return nil, store.FeedbackReportDetails{}, err
@@ -215,59 +208,32 @@ func (s *Store) readFeedbackReportsOnce(ctx context.Context, reportIDs []string)
 		return nil, store.FeedbackReportDetails{}, err
 	}
 	details.ReadAt = readAt
+	if !feedbackListeningSettled(details, before, readAt) {
+		return nil, store.FeedbackReportDetails{}, errFeedbackClockCrossed
+	}
 	return reports, details, nil
 }
 
-// feedbackReportViewAttempts bounds the reads of one view when a signal
-// commits after its snapshot.
+// feedbackReportViewAttempts bounds the reads of one view when a listening
+// deadline falls inside the statement that sets the snapshot.
 const feedbackReportViewAttempts = 3
 
-// errFeedbackSignalMoved reports that a signal of a read environment
-// committed after the read's snapshot.
-var errFeedbackSignalMoved = errors.New("a signal changed during the report read")
+// errFeedbackClockCrossed reports that an environment's listening state
+// changed between the clock reads around the snapshot's first statement.
+var errFeedbackClockCrossed = errors.New("a listening deadline passed while the report snapshot was taken")
 
-// feedbackSignalsHeld reports whether the newest signal of each environment
-// the view read is still the committed one. The snapshot holds every other
-// value of the read, but the read clock is read after the snapshot is taken,
-// so a signal that commits in between would pair an older signal with a
-// later clock. This statement runs outside the snapshot, after the clock,
-// and reads only the view's environments. A signal's time only moves
-// forward, so an equal answer means no signal of these environments
-// committed between the snapshot and this statement.
-func (s *Store) feedbackSignalsHeld(ctx context.Context, details store.FeedbackReportDetails) (bool, error) {
-	if len(details.Environments) == 0 {
-		return true, nil
-	}
-	ids := make([]string, 0, len(details.Environments))
-	for id := range details.Environments {
-		ids = append(ids, id)
-	}
-	rows, err := s.boundary.Query(ctx, `SELECT environment_id, last_signal_at, next_signal_seconds FROM feedback_signals WHERE workspace_id=$1 AND environment_id=ANY($2::text[])`, workspace(ctx), ids)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	committed := map[string]store.FeedbackSignalState{}
-	for rows.Next() {
-		var state store.FeedbackSignalState
-		if err := rows.Scan(&state.EnvironmentID, &state.LastSignalAt, &state.NextSignalSeconds); err != nil {
-			return false, err
-		}
-		committed[state.EnvironmentID] = state
-	}
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	for id, environment := range details.Environments {
-		now, found := committed[id]
-		switch {
-		case environment.Signal == nil && found, environment.Signal != nil && !found:
-			return false, nil
-		case found && (!store.EnvironmentTime(now.LastSignalAt).Equal(environment.Signal.LastSignalAt) || now.NextSignalSeconds != environment.Signal.NextSignalSeconds):
-			return false, nil
+// feedbackListeningSettled reports whether every signal the view read gives
+// the same listening state at both clock reads. The snapshot is taken during
+// the first statement, between the two reads, and a signal's listening state
+// changes only at its deadline, so when the two answers agree they are the
+// answer at the snapshot itself.
+func feedbackListeningSettled(details store.FeedbackReportDetails, before, after time.Time) bool {
+	for _, environment := range details.Environments {
+		if environment.Signal != nil && environment.Signal.Listening(before) != environment.Signal.Listening(after) {
+			return false
 		}
 	}
-	return true, nil
+	return true
 }
 
 // readFeedbackReportDetailsTx reads the links, notes, tasks, and crates of

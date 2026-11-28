@@ -151,8 +151,12 @@ func (s *Store) readFeedbackReportViewOnce(ctx context.Context, ws, where string
 				` ORDER BY r.last_seen DESC, r.id LIMIT ? OFFSET ?`, append(append([]any{}, whereArgs...), limit, offset)...); err != nil {
 				return err
 			}
-			if page.Details, err = readFeedbackReportPageDetails(ctx, tx, ws, page.Reports); err != nil {
-				return err
+			// A task that leaves a crate after the count can leave the page
+			// empty; the last position read then reads the view again.
+			if len(page.Reports) > 0 {
+				if page.Details, err = readFeedbackReportPageDetails(ctx, tx, ws, page.Reports); err != nil {
+					return err
+				}
 			}
 		}
 		// The read clock is read after every value and before the last
@@ -214,6 +218,9 @@ func queryFeedbackReportPage(ctx context.Context, tx *sql.Tx, statement string, 
 // reports' environments with their newest signals, and nothing else.
 func readFeedbackReportPageDetails(ctx context.Context, tx *sql.Tx, ws string, reports []store.FeedbackReport) (store.FeedbackReportDetails, error) {
 	details := store.NewFeedbackReportDetails()
+	if len(reports) == 0 {
+		return details, nil
+	}
 	ids := []any{ws}
 	taskIDs, crateIDs := []string{}, []string{}
 	for _, report := range reports {
