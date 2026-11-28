@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -30,7 +31,10 @@ type inboxItem struct {
 	Blockers         []nextaction.BlockerRef `json:"blockers,omitempty"`
 	Deadline         *time.Time              `json:"deadline,omitempty"`
 	LastEventAt      time.Time               `json:"last_event_at,omitempty"`
-	SortID           string                  `json:"-"`
+	// Report is the served report of a feedback_report item, from the one
+	// served-report function (component-feedback-reports invariant 21).
+	Report *servedFeedbackReport `json:"report,omitempty"`
+	SortID string                `json:"-"`
 }
 
 // inboxPullRequest is a task item's recorded pull request: the latest
@@ -223,6 +227,15 @@ func (s *Server) readInboxUncached(ctx context.Context, opts store.NextActionOpt
 		return nil, err
 	}
 	items = append(items, documentProposalItems(proposals, opts.Now)...)
+	// Reports sit only in the decisions band, so a read of another band
+	// reads none (component-feedback-reports invariant 19).
+	if band == "" || band == "decisions" {
+		reports, err := s.readInboxFeedbackReports(ctx)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, reports...)
+	}
 	for _, item := range items {
 		if item.Deadline != nil {
 			memoHorizon(ctx, *item.Deadline)
@@ -415,4 +428,111 @@ func bandRank(band string) int {
 	default:
 		return 2
 	}
+}
+
+// The Inbox items of feedback reports (component-feedback-reports invariant
+// 19; component-next-action invariants 21, 22, 24; req-production-feedback
+// AC-6.5; req-operator-next-action AC-2.7, AC-2.12). One report is one
+// decision while its in_inbox is true. The Inbox and the attention count
+// take the reports from inboxFeedbackReports, so both use one predicate.
+
+// feedbackReportInboxKind is the kind of a report's Inbox item.
+const feedbackReportInboxKind = "feedback_report"
+
+// inboxFeedbackReportSortPrefix makes a report's sort key differ from every
+// task ID and document ID, so a tie at one entry time orders the same way on
+// every read.
+const inboxFeedbackReportSortPrefix = "feedback_report/"
+
+// inboxFeedbackReportsQuery selects every open report of the workspace in
+// one store answer. The store has no in_inbox filter, so the Inbox reads the
+// open reports, whose number each environment's open-report limit bounds,
+// and keeps those in the Inbox. A selection above one store page is refused
+// before any record is loaded (RefuseAbove), and the read then fails whole:
+// it never serves part of the Inbox.
+func inboxFeedbackReportsQuery() store.FeedbackReportQuery {
+	return store.FeedbackReportQuery{
+		State:       store.FeedbackReportOpen,
+		Limit:       store.MaxFeedbackReportQueryLimit,
+		RefuseAbove: store.MaxFeedbackReportQueryLimit,
+	}
+}
+
+// feedbackReportInInbox is the one membership predicate of the Inbox and
+// the attention count: an open report whose in_inbox is true. A closed
+// report is never in the Inbox (component-feedback-reports invariant 19).
+func feedbackReportInInbox(report store.FeedbackReport) bool {
+	return report.InInbox && report.State == store.FeedbackReportOpen
+}
+
+// inboxFeedbackReports reads the workspace's reports in the Inbox with the
+// details of the same store answer, in the store's order. A store without
+// the report capability holds no report.
+func (s *Server) inboxFeedbackReports(ctx context.Context) ([]store.FeedbackReport, store.FeedbackReportDetails, error) {
+	backend, ok := s.Store.(store.ReportStore)
+	if !ok {
+		return nil, store.FeedbackReportDetails{}, nil
+	}
+	query := inboxFeedbackReportsQuery()
+	page, err := backend.ListFeedbackReports(s.feedbackReadContext(ctx), query)
+	if err != nil {
+		return nil, store.FeedbackReportDetails{}, err
+	}
+	if page.Refused(query) {
+		return nil, store.FeedbackReportDetails{}, fmt.Errorf("inbox reports: the workspace holds %d open reports, more than the %d one read serves", page.Total, query.Limit)
+	}
+	if len(page.Reports) != page.Total {
+		return nil, store.FeedbackReportDetails{}, fmt.Errorf("inbox reports: the read answered %d of %d open reports", len(page.Reports), page.Total)
+	}
+	reports := make([]store.FeedbackReport, 0, len(page.Reports))
+	for _, report := range page.Reports {
+		if feedbackReportInInbox(report) {
+			reports = append(reports, report)
+		}
+	}
+	return reports, page.Details, nil
+}
+
+// inboxFeedbackReportCount is the number of reports in the Inbox, read on
+// every call and never cached (component-next-action invariant 24).
+func (s *Server) inboxFeedbackReportCount(ctx context.Context) (int, error) {
+	reports, _, err := s.inboxFeedbackReports(ctx)
+	return len(reports), err
+}
+
+// readInboxFeedbackReports builds one decision item for each report in the
+// Inbox, with the served report built from the same store answer, and asks
+// the linking job again for each pending report it serves
+// (component-feedback-reports invariants 15, 21).
+func (s *Server) readInboxFeedbackReports(ctx context.Context) ([]inboxItem, error) {
+	reports, details, err := s.inboxFeedbackReports(ctx)
+	if err != nil || len(reports) == 0 {
+		return nil, err
+	}
+	served, err := s.servedFeedbackReports(ctx, reports, details)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]inboxItem, 0, len(served))
+	for i := range served {
+		items = append(items, inboxItem{
+			Kind: feedbackReportInboxKind, Band: "decisions", Report: &served[i],
+			LastEventAt: feedbackReportInboxEntry(reports[i]), SortID: inboxFeedbackReportSortPrefix + reports[i].ID,
+		})
+	}
+	s.requestPendingFeedbackLinking(ctx, reports)
+	return items, nil
+}
+
+// feedbackReportInboxEntry is the time a report entered the Inbox: its
+// creation, or its latest reopening. in_inbox becomes true only when a
+// report is stored or reopened by a report, and a person's reopening sets it
+// false (component-feedback-reports invariants 17, 19), so a report in the
+// Inbox with a reopening time entered at that reopening. last_seen is not
+// used, because a later entry changes it.
+func feedbackReportInboxEntry(report store.FeedbackReport) time.Time {
+	if report.ReopenedAt != nil {
+		return report.ReopenedAt.UTC()
+	}
+	return report.CreatedAt.UTC()
 }

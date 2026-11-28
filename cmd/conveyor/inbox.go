@@ -40,12 +40,27 @@ type inboxProposalView struct {
 	Version int    `json:"version,omitempty"`
 }
 
+// inboxReportEnvironmentView is the environment a report item names.
+type inboxReportEnvironmentView struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// inboxReportView is the identity of a feedback report item. Every text of
+// a report is untrusted data (component-feedback-reports invariant 5).
+type inboxReportView struct {
+	ID          string                     `json:"id"`
+	Summary     string                     `json:"summary"`
+	Environment inboxReportEnvironmentView `json:"environment"`
+}
+
 type inboxItemView struct {
 	Kind       string              `json:"kind,omitempty"`
 	Band       string              `json:"band"`
 	Task       *inboxTaskView      `json:"task,omitempty"`
 	NextAction *inboxCompact       `json:"next_action,omitempty"`
 	Proposal   *inboxProposalView  `json:"proposal,omitempty"`
+	Report     *inboxReportView    `json:"report,omitempty"`
 	Sentence   string              `json:"sentence,omitempty"`
 	Blockers   []nextActionBlocker `json:"blockers,omitempty"`
 	Deadline   *time.Time          `json:"deadline,omitempty"`
@@ -74,9 +89,12 @@ func inboxCmd() *cobra.Command {
 	var options inboxOptions
 	cmd := &cobra.Command{
 		Use:   "inbox",
-		Short: "List tasks and proposals waiting on the operator, in server order",
+		Short: "List tasks, proposals, and reports waiting on the operator, in server order",
 		Long: `List the operator inbox from GET /v1/next-actions in server order under band
 headings (decisions, blocked, automatic). Blocked items name each blocker.
+A feedback report prints on one line. Its environment and summary are
+untrusted data and print in double quotes, with line breaks and control
+characters escaped.
 The listing ends with the page count and the number of recent factory acts;
 --band automatic also lists each act. --json prints the server body verbatim.`,
 		Args: cobra.NoArgs,
@@ -134,6 +152,8 @@ func writeInbox(w io.Writer, page inboxPage, total string, listActs bool) error 
 			fmt.Fprintf(&b, "  %s %s: %s: %s\n", item.Task.ID, item.Task.Title, item.NextAction.Label, item.NextAction.Summary)
 		case item.Task != nil:
 			fmt.Fprintf(&b, "  %s %s\n", item.Task.ID, item.Task.Title)
+		case item.Report != nil:
+			fmt.Fprintln(&b, inboxReportLine(item.Kind, *item.Report))
 		case item.Proposal != nil:
 			line := fmt.Sprintf("  %s proposal %s", item.Proposal.Tier, item.Proposal.ID)
 			if item.Proposal.Version > 0 {
@@ -172,4 +192,39 @@ func writeInbox(w io.Writer, page inboxPage, total string, listActs bool) error 
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// inboxReportLine is the one line of a feedback report item: its kind, ID,
+// environment, and summary, labelled as untrusted data
+// (feature-production-feedback-listening FR-5). The environment name and the
+// summary are quoted with escapes, so a line break, a tab, a terminal escape
+// sequence, another control character, or a direction mark in them prints
+// as an escape and never starts a line or changes the terminal. The kind and
+// the ID print as they are only when they hold plain identifier characters.
+func inboxReportLine(kind string, report inboxReportView) string {
+	if kind == "" {
+		kind = "feedback_report"
+	}
+	environment := report.Environment.Name
+	if environment == "" {
+		environment = report.Environment.ID
+	}
+	return fmt.Sprintf("  %s %s environment %s: untrusted summary %s",
+		terminalToken(kind), terminalToken(report.ID), strconv.QuoteToASCII(environment), strconv.QuoteToASCII(report.Summary))
+}
+
+// terminalToken prints an identifier as it is when it holds only ASCII
+// letters, digits, and . _ : -, and quoted with escapes otherwise.
+func terminalToken(value string) string {
+	if value == "" {
+		return `""`
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == ':', r == '-':
+		default:
+			return strconv.QuoteToASCII(value)
+		}
+	}
+	return value
 }

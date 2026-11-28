@@ -5,19 +5,21 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // workspaceActivity is the data of one workspace change frame. TaskID is
 // empty when the notice folded several tasks or came from the peer check:
-// some task of the workspace changed.
+// some task of the workspace changed. A `workspace` notice names no task, so
+// its frame is `{}`.
 type workspaceActivity struct {
 	TaskID string `json:"task_id,omitempty"`
 }
 
 // streamWorkspaceChanges serves GET /v1/workspaces/{workspace_id}/changes:
-// ready once subscribed, then one activity frame per task notice in the
-// workspace. It reads nothing from the store; the middleware's credential
+// ready once subscribed, then one activity frame per task notice and per
+// `workspace` notice in the workspace (component-http-api invariant 30). It reads nothing from the store; the middleware's credential
 // and workspace reads are its only statements (component-http-api,
 // "Workspace change stream"; feature-quiet-idle-runtime, "Pushed task
 // streams and `await_review`"; req-quiet-idle-runtime AC-1.2, AC-2.2).
@@ -42,7 +44,11 @@ func (s *Server) streamWorkspaceChanges(w http.ResponseWriter, r *http.Request) 
 		if !ok {
 			return
 		}
-		if err := writeWorkspaceActivityFrame(w, notice.TaskID); err != nil {
+		taskID := notice.TaskID
+		if notice.Kind == changes.Workspace {
+			taskID = ""
+		}
+		if err := writeWorkspaceActivityFrame(w, taskID); err != nil {
 			return
 		}
 		flusher.Flush()

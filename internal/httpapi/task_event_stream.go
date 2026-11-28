@@ -247,8 +247,12 @@ const keepaliveFrame = ": keepalive\n\n"
 // (component-http-api, "When a task stream reads"; DEC-99(1)).
 type streamWake struct {
 	subscription *changes.Subscription
-	ticks        <-chan time.Time
-	keepalive    <-chan time.Time
+	// workspaceNotices is the workspace stream's second subscription, to the
+	// workspace's `workspace` notices; nil, and so never ready, on a task
+	// stream (component-http-api invariant 30).
+	workspaceNotices <-chan changes.Notice
+	ticks            <-chan time.Time
+	keepalive        <-chan time.Time
 	// readiness signals a change or expiry of the task's merge readiness in
 	// this daemon's cache (mergeReadinessCache.watch).
 	readiness <-chan struct{}
@@ -279,9 +283,16 @@ func (s *Server) openTaskWake(workspace, taskID string, notify bool) *streamWake
 	return wake
 }
 
-// openWorkspaceWake subscribes to every task notice of the workspace.
+// openWorkspaceWake subscribes to every task notice and every `workspace`
+// notice of the workspace, such as a new feedback report or a document
+// proposal (component-http-api invariant 30; feature-production-feedback-
+// listening FR-5). close ends both subscriptions.
 func (s *Server) openWorkspaceWake(workspace string) *streamWake {
-	return s.openWake(s.Changes.Subscribe(workspace, changes.Task))
+	wake := s.openWake(s.Changes.Subscribe(workspace, changes.Task))
+	notices := s.Changes.Subscribe(workspace, changes.Workspace)
+	wake.workspaceNotices = notices.C()
+	wake.stops = append(wake.stops, notices.Close)
+	return wake
 }
 
 func (s *Server) openWake(subscription *changes.Subscription) *streamWake {
@@ -315,6 +326,8 @@ func (w *streamWake) wait(ctx context.Context, out io.Writer, flusher http.Flush
 		case <-ctx.Done():
 			return changes.Notice{}, false
 		case notice := <-w.subscription.C():
+			return notice, true
+		case notice := <-w.workspaceNotices:
 			return notice, true
 		case <-w.readiness:
 			return changes.Notice{Kind: readinessWake}, true
