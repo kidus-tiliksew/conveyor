@@ -648,13 +648,19 @@ export function useFixTaskFlow({
   // An intake request for this report was sent before, and its answer did not
   // reach this page.
   const [, setDiscarded] = useState(0)
-  const sentRequest = reportId && created === null ? sentFixTaskIntake({ workspace, reportId }) : null
+  // Read when the form renders, not when the flow does: the request is saved
+  // by the form's Create, which renders the form alone.
+  const readSentRequest = () => (reportId && created === null ? sentFixTaskIntake({ workspace, reportId }) : null)
   const ready = Boolean(reportId) && data?.state === 'open' && prefilledFor === reportId && created === null
   return {
     report,
     ready,
-    intakeSentBefore: sentRequest !== null,
-    sentRequest,
+    get intakeSentBefore() {
+      return readSentRequest() !== null
+    },
+    get sentRequest() {
+      return readSentRequest()
+    },
     // Forgets the request sent before, so Create sends the form as it is. The
     // person chooses this after looking for the task on the Board.
     discardSentRequest: () => {

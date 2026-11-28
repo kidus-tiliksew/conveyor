@@ -2987,6 +2987,28 @@ test.describe('fix-task intake keys', () => {
     expect(server.created[1]).toMatchObject({ body: 'A new description' })
   })
 
+  test('with a fixed clock, the notices of a lost answer show as soon as Create fails', async ({ page }) => {
+    // Session storage refuses the request, so the reload warning shows too.
+    await page.addInitScript(() => {
+      const original = Storage.prototype.setItem
+      Object.defineProperty(Storage.prototype, 'setItem', {
+        configurable: true,
+        value(this: Storage, name: string, value: string) {
+          if (this === window.sessionStorage && name.startsWith('conveyor-fix-task-intake:'))
+            throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+          return original.call(this, name, value)
+        },
+      })
+    })
+    await page.clock.setFixedTime(now)
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    server.loseCreateAnswers = 1
+    await createFixTask(page, [])
+    await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toBeVisible()
+    await expect(sheet(page).locator('[data-fix-task-no-storage]')).toBeVisible()
+  })
+
   test('each report has its own intake key in one sheet, so a second report gets its own task', async ({ page }) => {
     const server = await mockReportServer(page, { reports: [fixReport, second] })
     await page.goto(fixAddress)
