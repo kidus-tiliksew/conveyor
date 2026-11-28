@@ -23,6 +23,10 @@ export interface BoardSearch {
   // (component-crates invariant 17). It means nothing without `create`, and
   // the Board gains no crate filter from it.
   crate?: string
+  // The feedback report a fix task starts from (component-feedback-reports
+  // invariant 18). It means nothing without `create`, and it takes the place
+  // of `crate`: a fix task preselects no crate.
+  report?: string
   q?: string
   state?: string[]
   repository?: string[]
@@ -53,6 +57,8 @@ const UNATTACHED_SCOPE = '__none'
 // scope that can name a requirement (req-requirement-insights AC-1.2); the
 // map drops it once its read shows the scope names no requirement group.
 export function validateBoardSearch(search: Record<string, unknown>): BoardSearch {
+  const creating = search.create === true || search.create === 'true'
+  const report = creating ? text(search.report) : undefined
   const view = search.view === 'map' ? search.view : undefined
   const arrangement =
     search.arrangement === 'requirements' || search.arrangement === 'dependencies' ? search.arrangement : undefined
@@ -71,8 +77,9 @@ export function validateBoardSearch(search: Record<string, unknown>): BoardSearc
     focus: text(search.focus),
     scope,
     insight,
-    create: search.create === true || search.create === 'true' ? true : undefined,
-    crate: search.create === true || search.create === 'true' ? text(search.crate) : undefined,
+    create: creating ? true : undefined,
+    crate: creating && !report ? text(search.crate) : undefined,
+    report,
     q: text(search.q),
     state: list(search.state),
     repository: list(search.repository),

@@ -1,3 +1,4 @@
+import { onlineManager } from '@tanstack/react-query'
 import { describeStagePreferenceField, type StagePreferenceStages, type StagePreferences } from './stage-preferences'
 import type {
   ActivityItem,
@@ -2016,10 +2017,13 @@ export interface CreateTaskInput {
 
 export class TaskIntakeError extends Error {
   code: 'invalid_dependencies' | 'request_failed'
+  // The HTTP status of the refusal.
+  status: number
 
-  constructor(message: string, code: TaskIntakeError['code']) {
+  constructor(message: string, code: TaskIntakeError['code'], status: number) {
     super(message)
     this.code = code
+    this.status = status
   }
 }
 
@@ -2042,7 +2046,7 @@ export async function createTask(
     const raw = await response.text()
     const message = apiErrorMessage(raw, response.statusText)
     const code = membershipErrorCode(raw) === 'invalid_dependencies' ? 'invalid_dependencies' : 'request_failed'
-    throw new TaskIntakeError(message, code)
+    throw new TaskIntakeError(message, code, response.status)
   }
   return response.json() as Promise<Task>
 }
@@ -2616,4 +2620,164 @@ export async function fetchTaskLiveStatus(
     environments_pending?: boolean
   }>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}`, workspace), signal)
   return { environments: task.environments ?? [], environments_pending: task.environments_pending === true }
+}
+
+// Feedback reports (component-feedback-reports v4, Public surfaces). A read
+// needs view_workspace and an act needs create_tasks; the server checks both.
+
+// A report list shows one page of 50 reports at a time. The route serves at
+// most 200 in one answer (component-http-api invariant 19); that is a limit
+// of one request. The served offset and total reach every report of a list
+// that does not change between page reads; the route has no snapshot, so a
+// report seen again between two reads can move to an earlier page.
+export const feedbackReportPageSize = 50
+
+/**
+ * One page of `GET /v1/feedback-reports` at `offset`, newest `last_seen`
+ * first, with the served total from `X-Conveyor-Total` and the served offset
+ * from `X-Conveyor-Offset`. The page keeps the server's order.
+ */
+export async function fetchFeedbackReports(
+  workspace: string,
+  filter: import('./types').FeedbackReportFilter,
+  offset: number,
+  signal?: AbortSignal,
+): Promise<import('./types').FeedbackReportPage> {
+  const params = new URLSearchParams()
+  if (filter.state === 'closed') params.set('state', 'closed')
+  if (filter.environment_id) params.set('environment_id', filter.environment_id)
+  if (filter.task_id) params.set('task_id', filter.task_id)
+  if (filter.crate_id) params.set('crate_id', filter.crate_id)
+  if (filter.no_crate) params.set('no_crate', 'true')
+  params.set('limit', String(feedbackReportPageSize))
+  params.set('offset', String(Math.max(0, offset)))
+  const response = await fetch(workspaceURL(`/v1/feedback-reports?${params.toString()}`, workspace), { signal })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  const items = ((await response.json()) as import('./types').FeedbackReport[] | null) ?? []
+  const total = Number(response.headers.get('X-Conveyor-Total') ?? items.length)
+  const served = Number(response.headers.get('X-Conveyor-Offset') ?? offset)
+  return {
+    items,
+    total: Number.isFinite(total) ? total : items.length,
+    offset: Number.isFinite(served) ? served : offset,
+  }
+}
+
+export function fetchFeedbackReport(workspace: string, reportId: string, signal?: AbortSignal) {
+  return getJSON<import('./types').FeedbackReport>(
+    workspaceURL(`/v1/feedback-reports/${encodeURIComponent(reportId)}`, workspace),
+    signal,
+  )
+}
+
+/**
+ * What an act's answer means (docs/feedback-reports.md, Acts):
+ * - `refused`: the server refused the act and recorded nothing.
+ * - `retryable`: 503 `retryable`; nothing was recorded.
+ * - `unknown`: a 500 or no answer. The act may be recorded, so the page reads
+ *   the report again and never sends the act again by itself.
+ */
+export type FeedbackReportActOutcome = 'refused' | 'retryable' | 'unknown'
+
+export class FeedbackReportActError extends Error {
+  status: number
+  code: string
+  field: string
+  outcome: FeedbackReportActOutcome
+
+  constructor(status: number, code: string, field: string, message: string, outcome: FeedbackReportActOutcome) {
+    super(message)
+    this.status = status
+    this.code = code
+    this.field = field
+    this.outcome = outcome
+  }
+}
+
+/**
+ * True while the browser says it is offline. The report requests then fail at
+ * once and wait in no offline queue: nothing is sent, so nothing can arrive
+ * later on reconnect (component-feedback-reports invariant 18).
+ */
+export function browserOffline() {
+  return !onlineManager.isOnline()
+}
+
+async function feedbackReportAct(workspace: string, method: string, path: string, body?: unknown) {
+  // Offline, the act is not sent, so the server records nothing.
+  if (browserOffline())
+    throw new FeedbackReportActError(0, 'offline', '', 'This browser is offline, so nothing was sent.', 'retryable')
+  let response: Response
+  try {
+    response = await fetch(workspaceURL(path, workspace), {
+      method,
+      headers: mutationHeaders(),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  } catch {
+    // No answer arrived: the act may or may not be recorded.
+    throw new FeedbackReportActError(0, '', '', 'No answer arrived.', 'unknown')
+  }
+  if (response.ok) {
+    try {
+      return (await response.json()) as import('./types').FeedbackReport
+    } catch {
+      // The answer broke off: the act is recorded or not, and the page
+      // cannot tell which.
+      throw new FeedbackReportActError(response.status, '', '', 'The answer was cut off.', 'unknown')
+    }
+  }
+  const text = await response.text().catch(() => '')
+  let code = ''
+  let field = ''
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown; field?: unknown }
+    if (typeof parsed.error === 'string') code = parsed.error
+    if (typeof parsed.field === 'string') field = parsed.field
+  } catch {
+    // A body that is not JSON keeps no code and no field.
+  }
+  const outcome: FeedbackReportActOutcome =
+    response.status === 503 && code === 'retryable' ? 'retryable' : response.status >= 500 ? 'unknown' : 'refused'
+  throw new FeedbackReportActError(response.status, code, field, apiErrorMessage(text, response.statusText), outcome)
+}
+
+function feedbackReportPath(reportId: string, rest = '') {
+  return `/v1/feedback-reports/${encodeURIComponent(reportId)}${rest}`
+}
+
+/** Confirms a possible link, or adds a confirmed one, to one task or one crate. */
+export function linkFeedbackReport(
+  workspace: string,
+  reportId: string,
+  target: { task_id: string } | { crate_id: string },
+) {
+  return feedbackReportAct(workspace, 'POST', feedbackReportPath(reportId, '/links'), target)
+}
+
+export function removeFeedbackReportLink(workspace: string, reportId: string, linkId: string) {
+  return feedbackReportAct(workspace, 'DELETE', feedbackReportPath(reportId, `/links/${encodeURIComponent(linkId)}`))
+}
+
+export function closeFeedbackReport(workspace: string, reportId: string, reason: string) {
+  return feedbackReportAct(workspace, 'POST', feedbackReportPath(reportId, '/close'), { reason })
+}
+
+export function reopenFeedbackReport(workspace: string, reportId: string) {
+  return feedbackReportAct(workspace, 'POST', feedbackReportPath(reportId, '/reopen'))
+}
+
+/** Records the fix task and confirms a link to each cause (invariant 18). */
+export function setFeedbackReportFixTask(workspace: string, reportId: string, taskId: string, causeTaskIds: string[]) {
+  return feedbackReportAct(workspace, 'PUT', feedbackReportPath(reportId, '/fix-task'), {
+    task_id: taskId,
+    ...(causeTaskIds.length > 0 ? { cause_task_ids: causeTaskIds } : {}),
+  })
+}
+
+/** Up to 20 merged tasks of the workspace whose title or ID matches `query`. */
+export function fetchMergedTasks(workspace: string, query: string, signal?: AbortSignal) {
+  const params = new URLSearchParams({ state: 'merged', limit: '20' })
+  if (query.trim()) params.set('q', query.trim())
+  return getJSON<Task[]>(workspaceURL(`/v1/tasks?${params.toString()}`, workspace), signal)
 }

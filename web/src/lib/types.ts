@@ -2750,4 +2750,138 @@ export interface CrateEnvironmentLine {
   listening?: boolean
   last_signal_at: string | null
   as_of: string | null
+  // The open reports of this environment that belong to the crate
+  // (component-feedback-reports invariant 23). An absent count is 0.
+  open_report_count?: number
+}
+
+// Feedback reports (component-feedback-reports v4, Public surfaces). Every
+// text field is untrusted data that a page prints as plain text
+// (invariant 5). The page prints what the served report holds and derives
+// no state of its own (invariant 21).
+export type FeedbackReportKind = 'error' | 'alert' | 'message'
+export type FeedbackReportState = 'open' | 'closed'
+export type FeedbackReportLinkState = 'possible' | 'confirmed'
+
+export interface FeedbackReportEnvironment {
+  id: string
+  name: string
+  listening: boolean
+  last_signal_at: string | null
+}
+
+export interface FeedbackReportVersion {
+  repository: string | null
+  commit: string | null
+  version: string | null
+}
+
+export interface FeedbackReportClosed {
+  at: string
+  by: string
+  reason: string
+}
+
+export interface FeedbackReportCrateRef {
+  id: string
+  name: string
+}
+
+export interface FeedbackReportTaskRef {
+  id: string
+  title: string
+}
+
+export interface FeedbackReportLinkTask extends FeedbackReportTaskRef {
+  crate: FeedbackReportCrateRef | null
+}
+
+export interface FeedbackReportDeploy {
+  service: string
+  version: FeedbackReportVersion
+  deployed_at: string
+  source: string
+}
+
+// One piece of evidence: `line` with the file, the line, and the commit that
+// last changed it, or `timing` with the deploy (invariants 12 and 13).
+export interface FeedbackReportEvidence {
+  kind: 'line' | 'timing' | string
+  file?: string
+  line?: number
+  commit?: string
+  service?: string
+  version?: FeedbackReportVersion
+  deployed_at?: string
+  source?: string
+  elapsed_minutes?: number
+  prior_signal_at?: string
+}
+
+export interface FeedbackReportLink {
+  id: string
+  state: FeedbackReportLinkState | string
+  task?: FeedbackReportLinkTask
+  crate?: FeedbackReportCrateRef
+  evidence: FeedbackReportEvidence[]
+  confirmed_by?: string
+  confirmed_at?: string
+}
+
+export type FeedbackReportNoteKind =
+  | 'too_many_tasks'
+  | 'no_task_deploy'
+  | 'deploy_not_compared'
+  | 'file_not_found'
+  | 'commit_unresolved'
+  | 'not_checked'
+
+export interface FeedbackReportNote {
+  kind: FeedbackReportNoteKind | string
+  deploy?: FeedbackReportDeploy
+  task_count?: number
+  rule?: 'line' | 'timing' | string
+  reason?: string
+  file?: string
+  commit?: string
+}
+
+export interface FeedbackReport {
+  id: string
+  kind: FeedbackReportKind | string
+  key: string
+  summary: string
+  environment: FeedbackReportEnvironment
+  service: string | null
+  count: number
+  first_seen: string
+  last_seen: string
+  file: string | null
+  line: number | null
+  first: FeedbackReportVersion
+  latest: FeedbackReportVersion
+  state: FeedbackReportState | string
+  closed: FeedbackReportClosed | null
+  reopened_at: string | null
+  in_inbox: boolean
+  links: FeedbackReportLink[]
+  links_pending: boolean
+  notes: FeedbackReportNote[]
+  fix_task: FeedbackReportTaskRef | null
+  created_at: string
+}
+
+// The filters of `GET /v1/feedback-reports` (invariant 21).
+export interface FeedbackReportFilter {
+  state?: FeedbackReportState
+  environment_id?: string
+  task_id?: string
+  crate_id?: string
+  no_crate?: boolean
+}
+
+export interface FeedbackReportPage {
+  items: FeedbackReport[]
+  total: number
+  offset: number
 }

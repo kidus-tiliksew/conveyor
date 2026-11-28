@@ -194,6 +194,14 @@ export function CrateLiveLines({ lines }: { lines: CrateEnvironmentLine[] }) {
             {typeof line.listening === 'boolean' && (
               <WatcherState listening={line.listening} lastSignalAt={line.last_signal_at} className="text-xs" />
             )}
+            {/* The open reports of the environment that belong to the crate,
+                only when there is at least one (component-feedback-reports
+                invariant 23). */}
+            {(line.open_report_count ?? 0) > 0 && (
+              <span data-crate-live-reports className="text-attention">
+                {line.open_report_count} open {line.open_report_count === 1 ? 'report' : 'reports'}.
+              </span>
+            )}
             {line.as_of && (
               <span data-live-as-of className="text-xs text-faint">
                 As of <ServedTime value={line.as_of} />.

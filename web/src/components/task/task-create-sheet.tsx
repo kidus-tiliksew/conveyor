@@ -1,8 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Check, Package, Paperclip, Plus, X } from 'lucide-react'
-import { useRef, useState } from 'react'
 import {
+  type Dispatch,
+  type MutableRefObject,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
+import {
+  type CreateTaskInput,
+  browserOffline,
   createTask,
   fetchCrate,
   fetchOpenTasks,
@@ -16,6 +26,16 @@ import type { CrateDetail, PlanState } from '../../lib/types'
 import { cn, formatBytes } from '../../lib/utils'
 import { useWorkspace, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import type { BoardSearch } from '../board/board-search'
+import {
+  clearFixTaskIntake,
+  type FixTaskFlow,
+  FixTaskPanel,
+  fixTaskIntakeToSend,
+  beginFixTaskIntake,
+  endFixTaskIntake,
+  sentFilesPresent,
+  useFixTaskFlow,
+} from '../reports/fix-task'
 import { Button } from '../ui/button'
 import { Input, Select, Textarea } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
@@ -39,7 +59,57 @@ const fullCommitID = /^[0-9a-f]{40}$/
 // A sheet instead of a page so intake happens over the board, with room for
 // the rich triage context that saves bounce rounds downstream — structured
 // description, base branch, policy overrides, and artifact attachments.
+//
+// Each draft belongs to one workspace and one report, or to no report. When
+// the address names another workspace or another report, or drops or adds
+// the report, the form starts again: every field, message, and flag of the
+// draft before goes, and a fix task starts from its own saved request or
+// from nothing but its own report block (component-feedback-reports
+// invariant 18). A request already on its way keeps the snapshot it took at
+// Create, so its answer still reaches only its own report.
+//
+// The fix-task flow stays with the sheet: it starts again by itself for each
+// workspace and report, and it knows which record requests are still on
+// their way when the person comes back to a report. It fills the form that
+// shows now through `form`.
 export function TaskCreateSheet() {
+  const navigate = useNavigate()
+  const { workspace: workspaceId } = useWorkspaceSelection()
+  const { report: reportId } = useSearch({ strict: false }) as BoardSearch
+  const form = useRef<DraftHandle | null>(null)
+  const setBody = useCallback<Dispatch<SetStateAction<string>>>((next) => form.current?.setBody(next), [])
+  const restoreRequest = useCallback((request: CreateTaskInput) => form.current?.restoreRequest(request), [])
+  // The new task opens in the Board's sheet over the view intake came from.
+  const openTask = useCallback(
+    (taskId: string, workspace?: string) =>
+      void navigate({
+        to: '/w/$workspaceId/tasks/$taskId',
+        params: { workspaceId: workspace ?? workspaceId, taskId },
+        search: ({ create: _create, crate: _crate, report: _report, ...prev }) => prev,
+      }),
+    [navigate, workspaceId],
+  )
+  const fixTask = useFixTaskFlow({ workspace: workspaceId, reportId, setBody, restoreRequest, onRecorded: openTask })
+  return (
+    <TaskCreateForm key={`${workspaceId}\u0000${reportId ?? ''}`} fixTask={fixTask} form={form} openTask={openTask} />
+  )
+}
+
+// What the fix-task flow may change in the form that shows now.
+interface DraftHandle {
+  setBody: Dispatch<SetStateAction<string>>
+  restoreRequest: (request: CreateTaskInput) => void
+}
+
+function TaskCreateForm({
+  fixTask,
+  form,
+  openTask,
+}: {
+  fixTask: FixTaskFlow
+  form: MutableRefObject<DraftHandle | null>
+  openTask: (taskId: string, workspace?: string) => void
+}) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { data: workspace } = useWorkspace()
@@ -47,7 +117,9 @@ export function TaskCreateSheet() {
   const repos = workspace?.repos ?? []
   // Intake opened from a crate's page names that crate (component-crates
   // invariant 17; req-crates AC-3.2).
-  const { crate: crateId } = useSearch({ strict: false }) as BoardSearch
+  // Intake opened from a feedback report starts a fix task for it, and names
+  // no crate (component-feedback-reports invariant 18).
+  const { crate: crateId, report: reportId } = useSearch({ strict: false }) as BoardSearch
   const crate = useQuery({
     queryKey: crateQueryKey(workspaceId, crateId ?? ''),
     queryFn: () => fetchCrate(workspaceId, crateId ?? ''),
@@ -96,7 +168,40 @@ export function TaskCreateSheet() {
   const [files, setFiles] = useState<File[]>([])
   const fileInput = useRef<HTMLInputElement>(null)
   const intakeKey = useRef(crypto.randomUUID())
-  const repoName = repo || repos[0]?.name || ''
+  // False once this draft is gone: the sheet closed, or the address names
+  // another draft. An answer for this draft then opens nothing.
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  // A fix task preselects no repository (component-feedback-reports
+  // invariant 18). Any other intake opens on the first one.
+  const repoName = reportId ? repo : repo || repos[0]?.name || ''
+  // A fix-task request sent before, whose answer did not arrive, comes back
+  // into the form, because Create sends that request again.
+  const restoreRequest = useCallback((request: CreateTaskInput) => {
+    setRepo(request.repo)
+    setBaseBranch(request.base_branch ?? '')
+    setChosenPlanState(request.plan_state ?? '')
+    setPlan(request.plan ?? '')
+    setPlanBaseCommit(request.plan_base_commit ?? '')
+    setApprovePlan(request.plan_approved === true)
+    setMergeGate(request.merge_approval === undefined ? 'default' : request.merge_approval ? 'on' : 'off')
+    setDependsOn(request.depends_on ?? [])
+    setRequirementIds(request.requirement_ids ?? [])
+    setSystemDesignIds(request.system_design_ids ?? [])
+  }, [])
+  // This form is the one the fix-task flow fills while it shows.
+  useEffect(() => {
+    const mine: DraftHandle = { setBody, restoreRequest }
+    form.current = mine
+    return () => {
+      if (form.current === mine) form.current = null
+    }
+  }, [form, restoreRequest])
   const defaultPlanState = workspace?.default_plan_state
   const shownPlanState = chosenPlanState || defaultPlanState || ''
   // A plan sends no plan state (AC-2.6). The select sends one only when the
@@ -126,8 +231,11 @@ export function TaskCreateSheet() {
       : void navigate({
           to: '/w/$workspaceId/',
           params: { workspaceId },
-          search: ({ create: _create, crate: _crate, ...prev }) => prev,
+          search: ({ create: _create, crate: _crate, report: _report, ...prev }) => prev,
         })
+  // Leaves the fix-task flow and keeps the sheet open as ordinary intake.
+  const leaveReport = () =>
+    void navigate({ to: '/w/$workspaceId/', params: { workspaceId }, search: ({ report: _report, ...prev }) => prev })
   // A closed crate takes no new task (req-crates AC-2.1), so the form sends no
   // request that names it. "Not in a crate" creates the task without it.
   const crateClosed = Boolean(crateId) && crate.data?.state === 'closed'
@@ -135,40 +243,47 @@ export function TaskCreateSheet() {
     void navigate({ to: '/w/$workspaceId/', params: { workspaceId }, search: ({ crate: _crate, ...prev }) => prev })
 
   const mutation = useMutation({
-    mutationFn: async () => {
-      const task = await createTask(
-        workspaceId,
-        {
-          body: body.trim(),
-          repo: repoName,
-          ...(sentPlanState ? { plan_state: sentPlanState } : {}),
-          ...(hasPlan ? { plan } : {}),
-          ...(hasPlan && baseCommit ? { plan_base_commit: baseCommit } : {}),
-          ...(approving ? { plan_approved: true } : {}),
-          ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
-          ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
-          ...(dependsOn.length ? { depends_on: dependsOn } : {}),
-          ...(requirementIds.length ? { requirement_ids: requirementIds } : {}),
-          ...(systemDesignIds.length ? { system_design_ids: systemDesignIds } : {}),
-          ...(crateId ? { crate_id: crateId } : {}),
-        },
-        files,
-        intakeKey.current,
-      )
-      return task
+    // Create captures the workspace, the crate, the report, and the ticked
+    // causes. The answer uses that snapshot, never the values of a later
+    // render, so a late answer reaches only what asked for it.
+    // A fix task's create request is live for its report from the click that
+    // Create accepts until its result is handled, outside this form, so a
+    // closed, reopened, or second sheet sees it. It never waits in the
+    // library's offline queue ('always'): offline it fails at once, before
+    // anything is sent, and keeps its saved request and key as a lost answer
+    // does. Ordinary intake keeps the default network mode.
+    networkMode: reportId ? 'always' : 'online',
+    mutationFn: (intake: IntakeSnapshot) => {
+      if (intake.reportId && browserOffline())
+        return Promise.reject(new Error('This browser is offline, so the request was not sent.'))
+      return createTask(intake.workspace, intake.request, intake.files, intake.idempotencyKey)
     },
-    onSuccess: (task) => {
+    onSettled: (_task, _error, intake) => {
+      if (intake?.reportId) endFixTaskIntake({ workspace: intake.workspace, reportId: intake.reportId })
+    },
+    onSuccess: (task, intake) => {
+      if (intake.reportId) endFixTaskIntake({ workspace: intake.workspace, reportId: intake.reportId })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
-      if (crateId) void queryClient.invalidateQueries({ queryKey: ['crates', workspaceId] })
-      // The new task opens in the Board's sheet over the view intake came from.
-      void navigate({
-        to: '/w/$workspaceId/tasks/$taskId',
-        params: { workspaceId, taskId: task.id },
-        search: ({ create: _create, crate: _crate, ...prev }) => prev,
-      })
+      if (intake.crateId) void queryClient.invalidateQueries({ queryKey: ['crates', intake.workspace] })
+      // A fix task stays in the sheet until the report records it, and then
+      // opens (component-feedback-reports invariant 18).
+      if (intake.reportId) {
+        fixTask.onCreated(task, { workspace: intake.workspace, reportId: intake.reportId }, intake.causeTaskIds)
+        return
+      }
+      // The task exists either way; only the draft that asked for it opens it.
+      if (mounted.current) openTask(task.id, intake.workspace)
     },
-    onError: (error) => {
+    onError: (error, intake) => {
+      if (intake.reportId) endFixTaskIntake({ workspace: intake.workspace, reportId: intake.reportId })
       if (error instanceof TaskIntakeError && error.code === 'invalid_dependencies') setAdvancedOpen(true)
+      // A refusal of the request itself (400 or 422) stores nothing under the
+      // key, so the next Create of the report sends the form as it is then.
+      // Every other answer keeps the sent request: a 409 says that the key
+      // names a task, and a refusal such as a 403 for plan approval comes
+      // before the server looks the key up, so a task may exist under it.
+      if (intake.reportId && error instanceof TaskIntakeError && (error.status === 400 || error.status === 422))
+        clearFixTaskIntake({ workspace: intake.workspace, reportId: intake.reportId })
     },
   })
 
@@ -254,6 +369,7 @@ export function TaskCreateSheet() {
 
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
         <EmptyRepositoryNotice />
+        {reportId && <FixTaskPanel flow={fixTask} workspace={workspaceId} onLeaveReport={leaveReport} />}
         {crateId && (
           <CrateIntakeNotice
             crateId={crateId}
@@ -279,6 +395,7 @@ export function TaskCreateSheet() {
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Repository">
             <Select aria-label="Repository" value={repoName} onChange={(event) => setRepo(event.target.value)}>
+              {reportId && repos.length > 0 && <option value="">Choose a repository</option>}
               {repos.map((entry) => (
                 <option key={entry.name} value={entry.name}>
                   {entry.name}
@@ -510,21 +627,79 @@ export function TaskCreateSheet() {
           <p className="text-xs text-faint">Dispatches after every attachment is stored.</p>
           <Button
             disabled={
-              !body.trim() ||
-              !repoName ||
-              repos.length === 0 ||
+              // A fix-task request sent before goes again unchanged, so the
+              // form's own fields do not decide whether it can be sent.
+              (fixTask.sentRequest
+                ? !sentFilesPresent(fixTask.sentRequest, files)
+                : !body.trim() || !repoName || repos.length === 0 || baseCommitError !== '' || crateClosed) ||
               mutation.isPending ||
-              baseCommitError !== '' ||
-              crateClosed
+              fixTask.intakeLive ||
+              (reportId !== undefined && !fixTask.ready)
             }
-            onClick={() => mutation.mutate()}
+            onClick={() => {
+              const request: CreateTaskInput = {
+                body: body.trim(),
+                repo: repoName,
+                ...(sentPlanState ? { plan_state: sentPlanState } : {}),
+                ...(hasPlan ? { plan } : {}),
+                ...(hasPlan && baseCommit ? { plan_base_commit: baseCommit } : {}),
+                ...(approving ? { plan_approved: true } : {}),
+                ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
+                ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
+                ...(dependsOn.length ? { depends_on: dependsOn } : {}),
+                ...(requirementIds.length ? { requirement_ids: requirementIds } : {}),
+                ...(systemDesignIds.length ? { system_design_ids: systemDesignIds } : {}),
+                ...(crateId ? { crate_id: crateId } : {}),
+              }
+              if (!reportId) {
+                mutation.mutate({
+                  workspace: workspaceId,
+                  crateId,
+                  reportId,
+                  causeTaskIds: [],
+                  request,
+                  files,
+                  idempotencyKey: intakeKey.current,
+                })
+                return
+              }
+              // A fix task has its own intake request for its report, saved
+              // with its key and causes before it is sent. A request sent
+              // before for the report goes again unchanged
+              // (component-feedback-reports invariant 18). The request is
+              // live from this click on; a second click, or a second sheet of
+              // the report, finds it live and sends nothing.
+              const target = { workspace: workspaceId, reportId }
+              if (!beginFixTaskIntake(target)) return
+              const sent = fixTaskIntakeToSend(target, request, [...fixTask.causes], files)
+              mutation.mutate({
+                workspace: workspaceId,
+                crateId,
+                reportId,
+                causeTaskIds: sent.causeTaskIds,
+                request: sent.request,
+                files: sent.files ?? files,
+                idempotencyKey: sent.key,
+              })
+            }}
           >
-            {mutation.isPending ? 'Creating…' : 'Create task'}
+            {mutation.isPending || fixTask.intakeLive ? 'Creating…' : fixTask.created ? 'Task created' : 'Create task'}
           </Button>
         </div>
       </footer>
     </Sheet>
   )
+}
+
+// What Create captured for the intake request and its answer.
+interface IntakeSnapshot {
+  workspace: string
+  crateId: string | undefined
+  reportId: string | undefined
+  causeTaskIds: string[]
+  request: CreateTaskInput
+  files: File[]
+  idempotencyKey: string
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
