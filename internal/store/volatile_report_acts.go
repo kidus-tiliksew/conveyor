@@ -175,10 +175,11 @@ func (m *volatileMemory) forEachFeedbackReportMatchLocked(workspace string, quer
 	}
 }
 
-// ListFeedbackReports implements ReportReadStore under one read lock, so
-// every input of the read, the read clock included, is one state: every
-// write of a report, link, note, task, crate, environment, and signal takes
-// the memory write lock. While it runs it keeps a count, at
+// ListFeedbackReports implements ReportReadStore under one read lock, which
+// every write of a report, link, note, task, crate, environment, and signal
+// waits for: the records, links, notes, fix tasks, and crate membership are
+// one state, and each title, name, and signal is read once with them
+// (component-feedback-reports v4 invariant 21). While it runs it keeps a count, at
 // most Offset+Limit references (sort keys and where a report is kept), and
 // the page's records and details. A query with RefuseAbove counts first and
 // keeps nothing else, and a count over RefuseAbove answers the count alone

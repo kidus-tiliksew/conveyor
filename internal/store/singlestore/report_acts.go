@@ -88,38 +88,35 @@ func feedbackReportTaskPosition(ctx context.Context, tx *sql.Tx, ws string) (int
 	return position, err
 }
 
-// readFeedbackReportView reads one consistent view of a page of reports,
-// with the work bounded by the page. SingleStore's read committed isolation
-// keeps no view across statements, or even across the scans of one
-// statement, so each input is held still or watched:
+// readFeedbackReportView reads one answer for a page of reports, with the
+// work bounded by the page, as component-feedback-reports v4 invariant 21
+// states it. SingleStore's read committed isolation keeps no view across
+// statements, or even across the scans of one statement, so:
 //
-//   - The workspace environment claim is the lock every write of a report, a
-//     link, a note, a fix task, an environment, and a signal takes, and the
-//     claim waits until the last write under it is visible. So none of these
-//     change while the claim is held.
-//   - A task's crate, title, and existence change under the task's lock, not
-//     under the claim, in a transaction that advances the workspace's task
-//     event position. The view reads the position first and last, and a
-//     change in between reads the whole view again, at most
+//   - One state of the store gives each report's record, its served links
+//     with their evidence, its notes, its fix task, and the crate membership
+//     that decides the filters and the count. The workspace environment
+//     claim is the lock every write of a report, a link, a note, and a fix
+//     task takes, and it waits until the last write under it is visible, so
+//     none of these change while the claim is held. A task's crate changes
+//     under the task's lock, in a transaction that advances the workspace's
+//     task event position. The view reads the position first and last, and
+//     a change in between reads the whole view again, at most
 //     feedbackReportViewAttempts times, and then answers store.ErrRetryable.
-//   - A crate's name changes only under the crate's state claim
-//     (UpdateCrate), which raises neither of the signals above. The details
-//     take the state claims of the page's crates, in one order, and then
-//     read every crate name, of linked crates and of linked tasks' crates,
-//     in one statement, so no crate of the page changes from there to the
-//     end of the read. Crates are never removed, so the filters do not read
-//     a crate's name.
-//   - The read clock, at which the listening state is decided, is read
-//     after every value and before the last position read.
+//   - A task's title, a crate's name, an environment's name, and the
+//     listening state with the last signal time are read once for the
+//     answer and can be newer than that state. Each crate's name comes from
+//     one statement, so the answer holds one name for each crate. The read
+//     takes no claim, lock, or retry for them.
 //
 // Under the claim it runs: the position; the count, an aggregate that keeps
 // one number, which stops the read when it passes refuseAbove; the page,
 // ORDER BY ... LIMIT, a top-N sort that keeps Offset+Limit rows; the links,
-// notes, tasks, crates, environments, and signals of the page only; and the
-// position again. When validate is set, each page report is also checked
-// against the filters with the details read for it, and the page against
-// the total; a failed check reads the view again in the same way
-// (component-feedback-reports invariants 18, 21, and 24;
+// notes, tasks, crates, environments, and signals of the page only; the read
+// clock; and the position again. When validate is set, each page report is
+// also checked against the filters with the details read for it, and the
+// page against the total; a failed check reads the view again in the same
+// way (component-feedback-reports v4 invariants 18, 21, and 24;
 // component-persistence invariant 8).
 func (s *Store) readFeedbackReportView(ctx context.Context, ws, where string, whereArgs []any, limit, offset, refuseAbove int, validate *store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
 	for range feedbackReportViewAttempts {
@@ -159,10 +156,8 @@ func (s *Store) readFeedbackReportViewOnce(ctx context.Context, ws, where string
 				}
 			}
 		}
-		// The read clock is read after every value and before the last
-		// statement, while the claims are held and inside the task event
-		// bracket, so the listening state is decided at a moment when every
-		// value read was the stored one.
+		// The read clock is read once for the answer; the listening state is
+		// decided at it.
 		page.Details.ReadAt = store.FeedbackReadClock(ctx)
 		after, err := feedbackReportTaskPosition(ctx, tx, ws)
 		if err != nil {
@@ -272,8 +267,8 @@ FROM feedback_report_links WHERE workspace_id=? AND report_id IN (`+marks+`) ORD
 		return details, err
 	}
 	// The tasks are read without their crates: a task's crate ID is covered
-	// by the task event position, and every crate name is read below, under
-	// the crates' claims, in one statement.
+	// by the task event position, and every crate name is read below in one
+	// statement.
 	taskCrates := map[string]string{}
 	if len(taskIDs) > 0 {
 		args := []any{ws}
@@ -305,17 +300,12 @@ FROM feedback_report_links WHERE workspace_id=? AND report_id IN (`+marks+`) ORD
 		}
 	}
 	if len(crateIDs) > 0 {
-		// A crate's name changes only under the crate's state claim
-		// (UpdateCrate), which raises no task event and no environment claim.
-		// The read takes the same claims for the page's crates, in one order,
-		// so no crate of the page changes from here to the end of the read.
+		// Every crate name, of linked crates and of linked tasks' crates, is
+		// read once in this one statement, so the answer holds one name for
+		// each crate. A name can be newer than the state of the records
+		// (component-feedback-reports v4 invariant 21).
 		slices.Sort(crateIDs)
 		crateIDs = slices.Compact(crateIDs)
-		for _, id := range crateIDs {
-			if _, err := claimKey(ctx, tx, crateStateKey(ws, id)); err != nil {
-				return details, err
-			}
-		}
 		args := []any{ws}
 		for _, id := range crateIDs {
 			args = append(args, id)

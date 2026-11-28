@@ -295,7 +295,7 @@ func buildServedFeedbackReport(report store.FeedbackReport, details store.Feedba
 
 // loadServedFeedbackReports is the entry point of a surface that serves
 // reports it found by ID, such as the Inbox: it reads the reports of the IDs
-// with their details from one consistent view, builds their served form, and
+// with their details as one answer (ReportReadStore), builds their served form, and
 // asks the linking job again for each pending report it returns. The caller
 // passes exactly the IDs it serves, so the ask covers no report it does not
 // serve (component-feedback-reports invariants 15 and 21).
@@ -316,19 +316,17 @@ func (s *Server) loadServedFeedbackReports(ctx context.Context, backend store.Re
 }
 
 // feedbackReadContext gives a report read the server's clock, which the
-// store reads inside its view (store.FeedbackReadClock), so a served
-// environment's listening state is decided at a moment when the signal it
-// reads was the stored one.
+// store reads once for its answer (store.FeedbackReadClock).
 func (s *Server) feedbackReadContext(ctx context.Context) context.Context {
 	return store.WithFeedbackReadClock(ctx, s.feedbackNow)
 }
 
 // servedFeedbackReports builds the served form of stored reports from the
-// details read with them. The environment and its newest signal come from
-// the details, and the listening state is decided at the details' read
-// clock, so no served value comes from a second read or a later clock. A
-// report whose environment the details do not hold is a store failure, and
-// a failure serves no partial list.
+// details read with them. The environment, its newest signal, and the read
+// clock come from the details, each read once for the answer
+// (component-feedback-reports v4 invariant 21). A report whose environment
+// the details do not hold is a store failure, and a failure serves no
+// partial list.
 func (s *Server) servedFeedbackReports(ctx context.Context, reports []store.FeedbackReport, details store.FeedbackReportDetails) ([]servedFeedbackReport, error) {
 	served := make([]servedFeedbackReport, 0, len(reports))
 	now := details.ReadAt

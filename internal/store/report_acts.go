@@ -150,11 +150,10 @@ type FeedbackReportEnvironment struct {
 // the notes of each report in order, the tasks and crates the links and fix
 // tasks name that the workspace holds, and the environments of the reports
 // with their newest signals. A task, crate, or environment the workspace
-// does not hold has no entry. Every value is read in the same view as the
-// records, so a served report never mixes values from two moments
-// (component-feedback-reports invariant 21). ReadAt is the read clock
-// (FeedbackReadClock), read inside the view, at which a served environment's
-// listening state is decided.
+// does not hold has no entry. ReportReadStore states which values come from
+// one state of the store and which are read once for the answer. ReadAt is
+// the read clock (FeedbackReadClock), read once for the answer, at which a
+// served environment's listening state is decided.
 type FeedbackReportDetails struct {
 	Links        map[string][]FeedbackReportLink
 	Notes        map[string][]FeedbackReportNote
@@ -166,9 +165,9 @@ type FeedbackReportDetails struct {
 
 type feedbackReadClockKey struct{}
 
-// WithFeedbackReadClock sets the clock a report read reads inside its view,
-// so the served listening state is decided at a time when the signal it
-// reads was the stored one. The routes pass their own clock.
+// WithFeedbackReadClock sets the clock a report read reads once for its
+// answer; the served listening state is decided at it. The routes pass
+// their own clock.
 func WithFeedbackReadClock(ctx context.Context, clock func() time.Time) context.Context {
 	return context.WithValue(ctx, feedbackReadClockKey{}, clock)
 }
@@ -193,12 +192,27 @@ func NewFeedbackReportDetails() FeedbackReportDetails {
 // feature-production-feedback-listening FR-3). Every operation is scoped to
 // the context's workspace. No act changes a task, work order, gate, or next
 // action (invariant 1; DEC-149(1); req-production-feedback AC-11.1).
+//
+// One answer (component-feedback-reports v4 invariant 21) of
+// ListFeedbackReports, ReadFeedbackReport, and ReadFeedbackReports takes its
+// values in two groups:
+//
+//   - From one state of the store: each report's record, its served links
+//     with their evidence, its notes, its fix task (which task it is), and
+//     the crate membership that decides its filters and its count. The
+//     page, the total, and these details are a set that one state held. A
+//     backend that detects a change of these during the read reads again,
+//     and answers ErrRetryable after a bounded number of reads.
+//   - Read once for the answer, and allowed to be newer than that state: a
+//     task's title, a crate's name, an environment's name, and the listening
+//     state with the last signal time (decided at ReadAt). Each is read one
+//     time for one answer, so one answer holds one name for each crate. A
+//     backend takes no claim, lock, or retry for them.
 type ReportReadStore interface {
 	// ListFeedbackReports answers one page of the reports the query
 	// selects, newest last_seen first and then by ID, the number the filters
-	// select, and the details of the page's reports, all from one
-	// consistent view: the filters, the records, the links, crate
-	// membership, the fix task, and the count agree. Every filter applies
+	// select, and the details of the page's reports, as one answer (see the
+	// interface). Every filter applies
 	// before the page and the count, and a report that matches twice is
 	// counted once (FeedbackReportServed and FeedbackReportInCrate state
 	// what a filter matches). The work follows the page, not the history:
@@ -206,20 +220,15 @@ type ReportReadStore interface {
 	// and the records and details of the page, and nothing else that grows
 	// with the number of matches. A query over its RefuseAbove keeps the
 	// count alone. The lock or claim a backend holds for the view is held for
-	// that work (component-feedback-reports invariant 24). Every input of
-	// the read (the records, the links, the tasks and their crates, the
-	// crates, the fix task, and the environments with their signals) is read
-	// so that the page, the count, and the details are what one state of the
-	// store gives; a backend that detects a change during the read answers
-	// ErrRetryable after a bounded number of reads.
+	// that work (component-feedback-reports invariant 24).
 	ListFeedbackReports(ctx context.Context, query FeedbackReportQuery) (FeedbackReportPage, error)
 	// GetFeedbackReport answers one report, or ErrNotFound.
 	GetFeedbackReport(ctx context.Context, reportID string) (FeedbackReport, error)
-	// ReadFeedbackReport answers one report with its details from one
-	// consistent view, or ErrNotFound.
+	// ReadFeedbackReport answers one report with its details as one answer,
+	// or ErrNotFound.
 	ReadFeedbackReport(ctx context.Context, reportID string) (FeedbackReport, FeedbackReportDetails, error)
 	// ReadFeedbackReports answers the reports of the given IDs that the
-	// workspace holds, with their details, all from one consistent view.
+	// workspace holds, with their details, as one answer.
 	// It answers one report for each distinct ID, in the order of each ID's
 	// first occurrence. An ID the workspace does not hold has no report.
 	ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]FeedbackReport, FeedbackReportDetails, error)

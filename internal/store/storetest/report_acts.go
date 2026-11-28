@@ -54,11 +54,11 @@ func runFeedbackReportActs(t *testing.T, factory Factory) {
 		{"FixTaskAndCausesReadTogether", runFeedbackReadFixTaskConcurrent},
 		{"CratePageAgainstMembershipChanges", runFeedbackReadCrateConcurrent},
 		{"PageAndTotalAgainstCloses", runFeedbackReadTotalConcurrent},
-		{"EnvironmentAndSignalReadWithThePage", runFeedbackReadEnvironmentConcurrent},
-		{"CrateNamesAgainstRenames", runFeedbackReadCrateNamesConcurrent},
+		{"EnvironmentAndSignalReadOnceWithThePage", runFeedbackReadEnvironmentConcurrent},
+		{"CrateNamesReadOnceAgainstRenames", runFeedbackReadCrateNamesConcurrent},
 		{"TaskCrateInDetailsAgainstMoves", runFeedbackReadTaskCrateConcurrent},
 		{"FixTaskAgainstReplacement", runFeedbackReadFixTaskReplacedConcurrent},
-		{"ListeningAgainstSignals", runFeedbackReadListeningConcurrent},
+		{"ListeningReadOnceAgainstSignals", runFeedbackReadListeningConcurrent},
 		{"ListFiltersOrderAndPaging", runFeedbackReportListFilters},
 		{"CrateCountsAgreeWithTheList", runFeedbackReportCrateCounts},
 		{"Details", runFeedbackReportDetails},
@@ -1516,10 +1516,23 @@ func runFeedbackReadTotalConcurrent(t *testing.T, x Fixture) {
 	})
 }
 
+// newerIndex reads the step number a name or signal carries and requires it
+// between the step of the state the page came from and the last step: a
+// value read once for the answer can be newer than that state
+// (component-feedback-reports v4 invariant 21), never older.
+func newerIndex(what string, got, from, last int) error {
+	if got < from || got > last {
+		return fmt.Errorf("%s from step %d with a page from step %d, want a step from %d to %d", what, got, from, from, last)
+	}
+	return nil
+}
+
 // runFeedbackReadEnvironmentConcurrent renames the environment, records a
 // signal, closes a report, and archives and restores the environment, in
-// that order for each step, while open pages are read. The environment's name and newest signal in the details,
-// the page, and the total must be what one point of that sequence gives.
+// that order for each step, while open pages are read. The page and the
+// total must be what one number of closes gives. The environment's name and
+// newest signal are read once for the answer and can be newer than that
+// state, never older, and archiving never fails the read.
 func runFeedbackReadEnvironmentConcurrent(t *testing.T, x Fixture) {
 	e := newFeedbackEnvironment(t, x, "Region 00", "watcher")
 	api := feedbackService("api", "@9")
@@ -1533,15 +1546,39 @@ func runFeedbackReadEnvironmentConcurrent(t *testing.T, x Fixture) {
 	all, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 12})
 	requireOK(t, err)
 	sorted := feedbackPageIDs(all)
-	state := func(name, signal, closes int) feedbackReadState {
-		return feedbackReadState{ids: firstIDs(sorted[closes:], 4), total: len(sorted) - closes, detail: fmt.Sprintf("Region %02d at %d", name, signal)}
-	}
 	// Eight steps leave four reports open, so every page holds a report and
 	// its environment.
 	const steps = 8
-	states := []feedbackReadState{state(0, 0, 0)}
-	for k := 1; k <= steps; k++ {
-		states = append(states, state(k, k-1, k-1), state(k, k, k-1), state(k, k, k))
+	pages := []feedbackReadState{}
+	for closes := 0; closes <= steps; closes++ {
+		pages = append(pages, feedbackReadState{ids: firstIDs(sorted[closes:], 4), total: len(sorted) - closes})
+	}
+	read := func(name string, final bool) error {
+		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 4})
+		if err != nil {
+			return err
+		}
+		want := pages
+		if final {
+			want = pages[steps:]
+		}
+		if err := requireOneState(name, feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}, want); err != nil {
+			return err
+		}
+		closes := len(sorted) - page.Total
+		environment, ok := page.Details.Environments[e.id]
+		if !ok || environment.Signal == nil {
+			return fmt.Errorf("the page's details hold environment %+v, want its name and signal", environment)
+		}
+		var renamed int
+		if _, err := fmt.Sscanf(environment.Name, "Region %d", &renamed); err != nil {
+			return fmt.Errorf("environment name %q", environment.Name)
+		}
+		signal := int(environment.Signal.LastSignalAt.Sub(feedbackTime(0)) / time.Minute)
+		if err := newerIndex(name+": the environment name", renamed, closes, steps); err != nil {
+			return err
+		}
+		return newerIndex(name+": the signal", signal, closes, steps)
 	}
 	readUntilFinal(t, func() error {
 		for k := 1; k <= steps; k++ {
@@ -1555,8 +1592,6 @@ func runFeedbackReadEnvironmentConcurrent(t *testing.T, x Fixture) {
 			if _, err := x.Backend.RecordFeedbackReportAct(ctx, store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: sorted[k-1], Reason: "done", At: feedbackTime(time.Hour)}); err != nil {
 				return err
 			}
-			// Archiving changes no served value, and the read must still
-			// serve the environment it reads.
 			for _, archived := range []bool{true, false} {
 				if _, err := x.Backend.UpdateEnvironment(x.Context, e.id, store.EnvironmentPatch{Archived: &archived}); err != nil {
 					return err
@@ -1564,33 +1599,7 @@ func runFeedbackReadEnvironmentConcurrent(t *testing.T, x Fixture) {
 			}
 		}
 		return nil
-	}, func() error {
-		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 4})
-		if err != nil {
-			return err
-		}
-		environment, ok := page.Details.Environments[e.id]
-		if !ok || environment.Signal == nil {
-			return fmt.Errorf("the page's details hold environment %+v, want its name and signal", environment)
-		}
-		var name int
-		if _, err := fmt.Sscanf(environment.Name, "Region %d", &name); err != nil {
-			return fmt.Errorf("environment name %q", environment.Name)
-		}
-		signal := int(environment.Signal.LastSignalAt.Sub(feedbackTime(0)) / time.Minute)
-		got := feedbackReadState{ids: feedbackPageIDs(page), total: page.Total, detail: fmt.Sprintf("Region %02d at %d", name, signal)}
-		return requireOneState("the open page with its environment", got, states)
-	}, func() error {
-		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 4})
-		if err != nil {
-			return err
-		}
-		environment := page.Details.Environments[e.id]
-		if environment.Name != fmt.Sprintf("Region %02d", steps) || environment.Signal == nil || !environment.Signal.LastSignalAt.Equal(feedbackTime(steps*time.Minute)) {
-			return fmt.Errorf("final environment %+v", environment)
-		}
-		return requireOneState("the final page", feedbackReadState{ids: feedbackPageIDs(page), total: page.Total, detail: states[len(states)-1].detail}, states[len(states)-1:])
-	})
+	}, func() error { return read("the open page", false) }, func() error { return read("the final open page", true) })
 }
 
 // crateNameIndex reads the step number at the end of a crate name.
@@ -1604,9 +1613,13 @@ func crateNameIndex(name, prefix string) (int, error) {
 
 // runFeedbackReadCrateNamesConcurrent renames two crates, B and then A, in
 // each step while a report is read that is linked to a member task of B and
-// directly to A, as review round 4 describes. The two names read with the
-// report, and the name read with the task, must be a pair that one state
-// held.
+// directly to A, as review round 4 describes. Component-feedback-reports v4
+// invariant 21 reads a crate's name once for the answer and lets it be newer
+// than the state of the records, so the case requires what that states: the
+// read never waits on a rename (it never answers retryable for one), each
+// crate has one name in the answer, each name is one the crate held, and
+// the links, the membership, the page, and the total are what one state
+// gives. After the writer stops, the read gives the last names.
 func runFeedbackReadCrateNamesConcurrent(t *testing.T, x Fixture) {
 	e := newFeedbackEnvironment(t, x, "Production", "watcher")
 	ctx := actContext(x)
@@ -1626,23 +1639,60 @@ func runFeedbackReadCrateNamesConcurrent(t *testing.T, x Fixture) {
 		requireOK(t, err)
 	}
 	const steps = 15
-	states := []feedbackReadState{{ids: []string{}, detail: "B 0 A 0"}}
-	for k := 1; k <= steps; k++ {
-		states = append(states, feedbackReadState{ids: []string{}, detail: fmt.Sprintf("B %d A %d", k, k-1)}, feedbackReadState{ids: []string{}, detail: fmt.Sprintf("B %d A %d", k, k)})
-	}
-	check := func(name string, details store.FeedbackReportDetails) error {
+	page := []feedbackReadState{{ids: []string{report.ID}, total: 1, detail: "2 served links"}}
+	check := func(name string, details store.FeedbackReportDetails, final bool) error {
+		served := 0
+		for _, link := range details.Links[report.ID] {
+			if store.FeedbackReportServed(link, details.Tasks, details.Crates) {
+				served++
+			}
+		}
+		if served != 2 || details.Tasks[member.ID].CrateID != crateB.ID {
+			return fmt.Errorf("%s read %d served links and the member in crate %q, want 2 links and crate B", name, served, details.Tasks[member.ID].CrateID)
+		}
 		if details.Tasks[member.ID].CrateName != details.Crates[crateB.ID].Name {
-			return fmt.Errorf("%s read crate B as %q through the task and %q itself", name, details.Tasks[member.ID].CrateName, details.Crates[crateB.ID].Name)
+			return fmt.Errorf("%s holds two names for crate B: %q through the task and %q itself", name, details.Tasks[member.ID].CrateName, details.Crates[crateB.ID].Name)
 		}
-		b, err := crateNameIndex(details.Crates[crateB.ID].Name, "B")
+		for _, crate := range []struct {
+			id, prefix string
+		}{{crateB.ID, "B"}, {crateA.ID, "A"}} {
+			n, err := crateNameIndex(details.Crates[crate.id].Name, crate.prefix)
+			if err != nil {
+				return err
+			}
+			if n < 0 || n > steps || (final && n != steps) {
+				return fmt.Errorf("%s read crate %s as %q, which it never held at that point", name, crate.prefix, details.Crates[crate.id].Name)
+			}
+		}
+		return nil
+	}
+	strict := func(err error) error {
+		if errors.Is(err, store.ErrRetryable) {
+			return fmt.Errorf("the read waited on a rename: %v", err)
+		}
+		return err
+	}
+	read := func(final bool) error {
+		_, details, err := x.Backend.ReadFeedbackReport(x.Context, report.ID)
 		if err != nil {
+			return strict(err)
+		}
+		if err := check("the read of the report", details, final); err != nil {
 			return err
 		}
-		a, err := crateNameIndex(details.Crates[crateA.ID].Name, "A")
-		if err != nil {
-			return err
+		for _, crateID := range []string{crateA.ID, crateB.ID} {
+			listed, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, CrateID: crateID, Limit: 1})
+			if err != nil {
+				return strict(err)
+			}
+			if err := requireOneState("a crate page", feedbackReadState{ids: feedbackPageIDs(listed), total: listed.Total, detail: "2 served links"}, page); err != nil {
+				return err
+			}
+			if err := check("a crate page", listed.Details, final); err != nil {
+				return err
+			}
 		}
-		return requireOneState(name, feedbackReadState{ids: []string{}, detail: fmt.Sprintf("B %d A %d", b, a)}, states)
+		return nil
 	}
 	readUntilFinal(t, func() error {
 		for k := 1; k <= steps; k++ {
@@ -1656,32 +1706,7 @@ func runFeedbackReadCrateNamesConcurrent(t *testing.T, x Fixture) {
 			}
 		}
 		return nil
-	}, func() error {
-		_, details, err := x.Backend.ReadFeedbackReport(x.Context, report.ID)
-		if err != nil {
-			return err
-		}
-		if err := check("the read of the report", details); err != nil {
-			return err
-		}
-		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, CrateID: crateA.ID, Limit: 1})
-		if err != nil {
-			return err
-		}
-		if len(page.Reports) != 1 {
-			return fmt.Errorf("crate A page=%d reports", len(page.Reports))
-		}
-		return check("crate A's page", page.Details)
-	}, func() error {
-		_, details, err := x.Backend.ReadFeedbackReport(x.Context, report.ID)
-		if err != nil {
-			return err
-		}
-		if details.Crates[crateB.ID].Name != fmt.Sprintf("B %02d", steps) || details.Crates[crateA.ID].Name != fmt.Sprintf("A %02d", steps) {
-			return fmt.Errorf("final crate names %q and %q", details.Crates[crateB.ID].Name, details.Crates[crateA.ID].Name)
-		}
-		return nil
-	})
+	}, func() error { return read(false) }, func() error { return read(true) })
 }
 
 // runFeedbackReadTaskCrateConcurrent moves a linked task between two crates
@@ -1794,12 +1819,12 @@ func runFeedbackReadFixTaskReplacedConcurrent(t *testing.T, x Fixture) {
 // runFeedbackReadListeningConcurrent drives the read clock itself
 // (store.WithFeedbackReadClock) across listening deadlines. Each step sets
 // the clock, records a signal that starts the environment listening, closes
-// a report, and then moves the clock past the signal's deadline, so the
-// environment stops listening. Pages are read meanwhile. The signal, the
-// listening state at the read clock, the page, and the total must be what
-// one point of that sequence gives: a page from before a close read with a
-// clock from after the deadline that follows it is refused. No read clock
-// is earlier than the signal read with it.
+// a report, and then moves the clock past the signal's deadline. Pages are
+// read meanwhile. The page and the total must be what one number of closes
+// gives. The signal is read once for the answer and can be newer than that
+// state, never older, and the listening state is decided once, at the
+// answer's read clock, which is a value the route's clock gave
+// (component-feedback-reports v4 invariant 21).
 func runFeedbackReadListeningConcurrent(t *testing.T, x Fixture) {
 	e := newFeedbackEnvironment(t, x, "Production", "watcher")
 	api := feedbackService("api", "@9")
@@ -1820,30 +1845,42 @@ func runFeedbackReadListeningConcurrent(t *testing.T, x Fixture) {
 	clock.Store(base.UnixNano())
 	readCtx := store.WithFeedbackReadClock(x.Context, func() time.Time { return time.Unix(0, clock.Load()).UTC() })
 	const steps = 6
-	state := func(signal, closes int, listening bool) feedbackReadState {
-		return feedbackReadState{ids: firstIDs(sorted[closes:], 2), total: len(sorted) - closes, detail: fmt.Sprintf("signal %d listening %t", signal, listening)}
+	clocks := map[time.Time]bool{base: true}
+	pages := []feedbackReadState{}
+	for k := 0; k <= steps; k++ {
+		pages = append(pages, feedbackReadState{ids: firstIDs(sorted[k:], 2), total: len(sorted) - k})
+		if k > 0 {
+			arrived := base.Add(time.Duration(k) * time.Hour)
+			clocks[arrived], clocks[arrived.Add(121*time.Second)] = true, true
+		}
 	}
-	states := []feedbackReadState{state(0, 0, false)}
-	for k := 1; k <= steps; k++ {
-		states = append(states, state(k, k-1, true), state(k, k, true), state(k, k, false))
-	}
-	read := func() (feedbackReadState, error) {
+	read := func(name string, final bool) error {
 		page, err := x.Backend.ListFeedbackReports(readCtx, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 2})
 		if err != nil {
-			return feedbackReadState{}, err
+			return err
+		}
+		want := pages
+		if final {
+			want = pages[steps:]
+		}
+		if err := requireOneState(name, feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}, want); err != nil {
+			return err
 		}
 		environment, ok := page.Details.Environments[e.id]
-		if !ok || environment.Signal == nil || page.Details.ReadAt.IsZero() {
-			return feedbackReadState{}, fmt.Errorf("the page's details hold environment %+v and read clock %v, want a signal and a clock", environment, page.Details.ReadAt)
+		if !ok || environment.Signal == nil || !clocks[page.Details.ReadAt] {
+			return fmt.Errorf("%s holds environment %+v and read clock %v, want a signal and a clock the route's clock gave", name, environment, page.Details.ReadAt)
 		}
 		signal := 0
 		if at := environment.Signal.LastSignalAt; !at.Equal(feedbackTime(0)) {
 			signal = int(at.Sub(base) / time.Hour)
-			if page.Details.ReadAt.Before(at) {
-				return feedbackReadState{}, fmt.Errorf("read clock %v is earlier than the signal %v read with it", page.Details.ReadAt, at)
-			}
 		}
-		return feedbackReadState{ids: feedbackPageIDs(page), total: page.Total, detail: fmt.Sprintf("signal %d listening %t", signal, environment.Signal.Listening(page.Details.ReadAt))}, nil
+		if err := newerIndex(name+": the signal", signal, len(sorted)-page.Total, steps); err != nil {
+			return err
+		}
+		if final && environment.Signal.Listening(page.Details.ReadAt) {
+			return fmt.Errorf("%s is listening after the last deadline", name)
+		}
+		return nil
 	}
 	readUntilFinal(t, func() error {
 		for k := 1; k <= steps; k++ {
@@ -1859,17 +1896,5 @@ func runFeedbackReadListeningConcurrent(t *testing.T, x Fixture) {
 			clock.Store(arrived.Add(121 * time.Second).UnixNano())
 		}
 		return nil
-	}, func() error {
-		got, err := read()
-		if err != nil {
-			return err
-		}
-		return requireOneState("the page with its listening state", got, states)
-	}, func() error {
-		got, err := read()
-		if err != nil {
-			return err
-		}
-		return requireOneState("the final page", got, states[len(states)-1:])
-	})
+	}, func() error { return read("the page", false) }, func() error { return read("the final page", true) })
 }
