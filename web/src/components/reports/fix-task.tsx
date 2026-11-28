@@ -1,8 +1,9 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { hashKey, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { MessageSquareWarning } from 'lucide-react'
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
 import { FeedbackReportActError, fetchFeedbackReport, setFeedbackReportFixTask } from '../../lib/api'
+import type { FeedbackReport } from '../../lib/types'
 import { withQuerySignal } from '../task/use-task-detail'
 import { Button } from '../ui/button'
 import { feedbackReportQueryKey } from './query-keys'
@@ -97,6 +98,45 @@ function writeCreatedFixTask(workspace: string, reportId: string, value: Created
     else window.sessionStorage.removeItem(storageKey(workspace, reportId))
   } catch {
     // Without session storage the sheet still holds the task while it is open.
+  }
+}
+
+function intakeStorageKey(target: FixTaskTarget) {
+  return `conveyor-fix-task-intake:${target.workspace}:${target.reportId}`
+}
+
+/**
+ * The intake key of a fix task for one report. It is saved before the
+ * intake request is sent and kept until the report records the task, so a
+ * Create after a reload or a lost answer sends the same request again and
+ * the server answers with the same task instead of a second one. Each report
+ * has its own key.
+ */
+export function fixTaskIntakeKey(target: FixTaskTarget) {
+  try {
+    const saved = window.sessionStorage.getItem(intakeStorageKey(target))
+    if (saved) return saved
+    const key = crypto.randomUUID()
+    window.sessionStorage.setItem(intakeStorageKey(target), key)
+    return key
+  } catch {
+    return crypto.randomUUID()
+  }
+}
+
+function hasFixTaskIntakeKey(target: FixTaskTarget) {
+  try {
+    return window.sessionStorage.getItem(intakeStorageKey(target)) !== null
+  } catch {
+    return false
+  }
+}
+
+function clearFixTaskIntakeKey(target: FixTaskTarget) {
+  try {
+    window.sessionStorage.removeItem(intakeStorageKey(target))
+  } catch {
+    // Nothing was saved.
   }
 }
 
@@ -229,12 +269,26 @@ export function useFixTaskFlow({
     async (target: FixTaskTarget) => {
       const key = feedbackReportQueryKey(target.workspace, target.reportId)
       await queryClient.cancelQueries({ queryKey: key })
+      // A read of the report that starts after this one and answers first is
+      // newer: then that answer stands, and this one neither writes the cache
+      // nor decides.
+      let newer = false
+      let started = false
+      const keyHash = hashKey(key)
+      const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+        if (event.type !== 'updated' || event.query.queryHash !== keyHash) return
+        if (event.action.type === 'fetch') started = true
+        else if (event.action.type === 'success' && !event.action.manual && started) newer = true
+      })
       try {
         const fresh = await fetchFeedbackReport(target.workspace, target.reportId)
+        if (newer) return queryClient.getQueryData<FeedbackReport>(key)
         queryClient.setQueryData(key, fresh)
         return fresh
       } catch {
-        return undefined
+        return newer ? queryClient.getQueryData<FeedbackReport>(key) : undefined
+      } finally {
+        unsubscribe()
       }
     },
     [queryClient],
@@ -245,6 +299,7 @@ export function useFixTaskFlow({
   const finish = useCallback(
     (entry: CreatedFixTask, target: FixTaskTarget) => {
       writeCreatedFixTask(target.workspace, target.reportId, null)
+      clearFixTaskIntakeKey(target)
       setOwnFixState(target, { phase: 'idle' })
       void refreshAfterWrite(queryClient, target.workspace)
       if (!live(flowOf(target))) return
@@ -257,9 +312,13 @@ export function useFixTaskFlow({
 
   // A report that already names the created task as its fix task recorded
   // it, for example when an earlier answer was lost.
+  // While the record request of this report is on its way, its own answer
+  // finishes the flow, so the shared state stays until that answer arrives.
   useEffect(() => {
-    if (created && data && reportId && data.id === reportId && data.fix_task?.id === created.taskId)
-      finish(created, { workspace, reportId })
+    if (!created || !data || !reportId || data.id !== reportId || data.fix_task?.id !== created.taskId) return
+    const target = { workspace, reportId }
+    if (sending.current.has(flowOf(target))) return
+    finish(created, target)
   }, [created, data, reportId, workspace, finish])
 
   // Sends the record request for one report. Every value comes from the
@@ -355,6 +414,11 @@ export function useFixTaskFlow({
       // decides the next step.
       if (sending.current.has(flow)) return
       setRecord({ phase: 'checking' })
+      // Only a state that was already blocked by a failed read when this read
+      // started can be settled by it. A state that turns stale during the
+      // read waits for the next read.
+      const key = reportActKey(workspace, reportId)
+      const before = readReportActState(key)
       const fresh = await freshRead(target)
       if (fresh?.fix_task?.id === created.taskId) {
         finish(created, target)
@@ -364,9 +428,8 @@ export function useFixTaskFlow({
       // settles the report: its own state goes, and another act's failed read
       // becomes the note after a read.
       if (fresh) {
-        const key = reportActKey(workspace, reportId)
         const current = readReportActState(key)
-        if (current.phase === 'stale' && current.target !== fixActTarget(target))
+        if (current.phase === 'stale' && current === before && current.target !== fixActTarget(target))
           writeReportActState(key, {
             phase: 'failed',
             act: current.act,
@@ -402,10 +465,15 @@ export function useFixTaskFlow({
   }, [created, rereadReport])
 
   const linkedTasks = (data?.links ?? []).flatMap((link) => (link.task ? [link.task] : []))
+  // An intake request for this report was sent before, and its answer did not
+  // reach this page.
+  const intakeSentBefore =
+    Boolean(reportId) && created === null && hasFixTaskIntakeKey({ workspace, reportId: reportId ?? '' })
   const ready = Boolean(reportId) && data?.state === 'open' && prefilledFor === reportId && created === null
   return {
     report,
     ready,
+    intakeSentBefore,
     causes,
     setCauses,
     linkedTasks,
@@ -479,6 +547,12 @@ export function FixTaskPanel({
       ) : data ? (
         <CauseList flow={flow} />
       ) : null}
+      {flow.intakeSentBefore && (
+        <p role="status" data-fix-task-intake-sent className="text-xs text-attention">
+          A request to create this task was sent before, and its answer did not arrive. Create sends the same request
+          again, so it does not make a second task.
+        </p>
+      )}
       {!created && record.phase === 'idle' && data?.state === 'open' && (
         <p className="text-xs text-faint">
           The description holds the report as untrusted data. Choose a repository. When you create the task, Conveyor

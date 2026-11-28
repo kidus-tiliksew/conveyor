@@ -38,6 +38,9 @@ export function useReportList(filter: FeedbackReportFilter) {
   const listKey = feedbackReportListQueryKey(workspace, filter)
   const listHash = hashKey(listKey)
   const [position, setPosition] = useState({ list: listHash, offset: 0 })
+  // Other filters start at the first page, and the position of the filters
+  // before is dropped, so coming back to them starts at the first page too.
+  if (position.list !== listHash) setPosition({ list: listHash, offset: 0 })
   const offset = position.list === listHash ? position.offset : 0
   const queryKey = [...listKey, offset] as const
   const reports = useQuery({

@@ -16,7 +16,7 @@ import type { CrateDetail, PlanState } from '../../lib/types'
 import { cn, formatBytes } from '../../lib/utils'
 import { useWorkspace, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import type { BoardSearch } from '../board/board-search'
-import { FixTaskPanel, useFixTaskFlow } from '../reports/fix-task'
+import { FixTaskPanel, fixTaskIntakeKey, useFixTaskFlow } from '../reports/fix-task'
 import { Button } from '../ui/button'
 import { Input, Select, Textarea } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
@@ -172,7 +172,7 @@ export function TaskCreateSheet() {
           ...(intake.crateId ? { crate_id: intake.crateId } : {}),
         },
         files,
-        intakeKey.current,
+        intake.idempotencyKey,
       )
       return task
     },
@@ -546,6 +546,9 @@ export function TaskCreateSheet() {
                 crateId,
                 reportId,
                 causeTaskIds: reportId ? [...fixTask.causes] : [],
+                // A fix task has its own intake key for its report, saved
+                // before the request (component-feedback-reports invariant 18).
+                idempotencyKey: reportId ? fixTaskIntakeKey({ workspace: workspaceId, reportId }) : intakeKey.current,
               })
             }
           >
@@ -563,6 +566,7 @@ interface IntakeSnapshot {
   crateId: string | undefined
   reportId: string | undefined
   causeTaskIds: string[]
+  idempotencyKey: string
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {

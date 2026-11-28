@@ -169,6 +169,14 @@ export async function readReportsAgain(queryClient: QueryClient, workspace: stri
   } finally {
     unsubscribe()
   }
+  // A page left while the read was on its way keeps its data from before
+  // the act. Every report read that did not answer after the act and that no
+  // page shows now is dropped, so a page that shows it later reads it fresh.
+  queryClient.removeQueries({
+    queryKey: scope,
+    type: 'inactive',
+    predicate: (query) => !answered.has(query.queryHash),
+  })
   const reads = queryClient.getQueryCache().findAll({ queryKey: scope, type: 'active' })
   return reads.every((query) => answered.has(query.queryHash))
 }

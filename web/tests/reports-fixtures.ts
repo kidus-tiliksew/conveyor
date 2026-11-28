@@ -276,6 +276,8 @@ export interface Server {
   failTaskSearch: boolean
   // Holds every task intake answer until the promise resolves.
   createGate: Promise<void> | null
+  // The intake key of each task intake request, in order.
+  intakeKeys: string[]
 }
 
 function servedOrder(a: FeedbackReport, b: FeedbackReport) {
@@ -406,6 +408,7 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
     readGate: null,
     failTaskSearch: false,
     createGate: null,
+    intakeKeys: [],
   }
   const role = options.role ?? 'operator'
   const mergedTasks = options.mergedTasks ?? [
@@ -480,8 +483,10 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
     const single = path.match(/^\/v1\/feedback-reports\/([^/]+)$/)
     if (single && method === 'GET') {
       const id = decodeURIComponent(single[1])
-      if (state.readGate) await state.readGate
+      // The answer is chosen when the request arrives, before any gate, so a
+      // held request keeps the answer of its own moment.
       const replaced = state.readAnswer?.(id)
+      if (state.readGate) await state.readGate
       if (replaced) return fulfill(route, replaced)
       const found = state.reports.find((item) => item.id === id)
       if (!found)
@@ -503,8 +508,18 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
       const form = request.postData() ?? ''
       const match = form.match(/name="task"\r\n\r\n([\s\S]*?)\r\n--/)
       state.created.push(match ? (JSON.parse(match[1]) as Record<string, unknown>) : {})
+      // Intake with a key it saw before answers with the same task, as the
+      // server does; a new key makes a new task.
+      const intakeKey = form.match(/name="idempotency_key"\r\n\r\n([\s\S]*?)\r\n--/)?.[1] ?? ''
+      state.intakeKeys.push(intakeKey)
+      const distinct = [...new Set(state.intakeKeys)]
+      const index = distinct.indexOf(intakeKey)
+      const id = index === 0 ? '261127-fix' : `261127-fix${index + 1}`
       if (state.createGate) await state.createGate
-      return route.fulfill({ status: 201, json: { ...task('261127-fix', 'Fix the checkout timeout', 'queued') } })
+      // A page that reloaded meanwhile has no one to answer.
+      return route
+        .fulfill({ status: 201, json: { ...task(id, 'Fix the checkout timeout', 'queued') } })
+        .catch(() => undefined)
     }
     if (path === '/v1/tasks' && method === 'GET') {
       if (state.failTaskSearch) return route.fulfill({ status: 500, json: { error: 'internal error' } })
