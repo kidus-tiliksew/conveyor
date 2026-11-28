@@ -37,7 +37,12 @@ export function taskLink(
   return { id, state: 'possible', task: { id: taskId, title, crate }, evidence: [], ...overrides }
 }
 
-export const lineEvidence = { kind: 'line', file: 'internal/checkout/pay.go', line: 214, commit: '3f9c2ab1d4e5f60718293a4b5c6d7e8f90a1b2c3' }
+export const lineEvidence = {
+  kind: 'line',
+  file: 'internal/checkout/pay.go',
+  line: 214,
+  commit: '3f9c2ab1d4e5f60718293a4b5c6d7e8f90a1b2c3',
+}
 export const timingEvidence = {
   kind: 'timing',
   service: 'api',
@@ -325,7 +330,10 @@ function applyAct(
   } else if (kind === 'links' && method === 'DELETE') {
     const linkId = decodeURIComponent(match[3] ?? '')
     if (!current.links.some((link) => link.id === linkId))
-      return { status: 404, json: { error: 'link_not_found', field: 'link_id', message: 'must name a link of the report' } }
+      return {
+        status: 404,
+        json: { error: 'link_not_found', field: 'link_id', message: 'must name a link of the report' },
+      }
     current.links = current.links.filter((link) => link.id !== linkId)
   } else if (kind === 'close') {
     current.state = 'closed'
@@ -439,7 +447,8 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
       const replaced = state.readAnswer?.(id)
       if (replaced) return fulfill(route, replaced)
       const found = state.reports.find((item) => item.id === id)
-      if (!found) return route.fulfill({ status: 404, json: { error: 'report_not_found', message: 'The report was not found.' } })
+      if (!found)
+        return route.fulfill({ status: 404, json: { error: 'report_not_found', message: 'The report was not found.' } })
       return route.fulfill({ json: found })
     }
     if (path.startsWith('/v1/feedback-reports/') && method !== 'GET') {

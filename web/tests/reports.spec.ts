@@ -18,13 +18,11 @@ import {
   mockReportServer,
   now,
   priorSignalEvidence,
-  production,
   qa,
   report,
   reportReads,
   type Server,
   staging,
-  task,
   taskLink,
   timingEvidence,
 } from './reports-fixtures'
@@ -48,7 +46,12 @@ const timingLinked = report('rpt-261127-a00002', {
       'lnk-timing',
       '261120-b02',
       'Store invoice numbers',
-      { state: 'confirmed', confirmed_by: 'usr_operator', confirmed_at: '2026-11-27T11:59:00Z', evidence: [timingEvidence] },
+      {
+        state: 'confirmed',
+        confirmed_by: 'usr_operator',
+        confirmed_at: '2026-11-27T11:59:00Z',
+        evidence: [timingEvidence],
+      },
       { id: 'crate-billing', name: 'Billing v2' },
     ),
   ],
@@ -59,7 +62,14 @@ const bothEvidence = report('rpt-261127-a00003', {
   environment: qa,
   links: [
     taskLink('lnk-both', '261120-a01', 'Send invoices by email', { evidence: [lineEvidence, priorSignalEvidence] }),
-    { id: 'lnk-crate', state: 'confirmed', crate: { id: 'crate-search', name: 'Search' }, evidence: [], confirmed_by: 'usr_operator', confirmed_at: '2026-11-27T11:00:00Z' },
+    {
+      id: 'lnk-crate',
+      state: 'confirmed',
+      crate: { id: 'crate-search', name: 'Search' },
+      evidence: [],
+      confirmed_by: 'usr_operator',
+      confirmed_at: '2026-11-27T11:00:00Z',
+    },
   ],
 })
 const noLink = report('rpt-261127-a00004', {
@@ -127,7 +137,9 @@ test.describe('the report card', () => {
     await expect(lineLink.locator('[data-report-evidence="line"]')).toHaveText(
       'Line evidence: internal/checkout/pay.go, line 214, last changed in commit 3f9c2ab1d4e5.',
     )
-    await expect(line).toContainText('A possible link is evidence only. It does not say that the task caused the problem.')
+    await expect(line).toContainText(
+      'A possible link is evidence only. It does not say that the task caused the problem.',
+    )
     await expect(line.locator('[data-report-links-pending]')).toHaveCount(0)
     await expect(line.locator('[data-report-fix-task]')).toHaveCount(0)
 
@@ -184,9 +196,7 @@ test.describe('the report card', () => {
     // Each other note kind, the too-many-tasks note with its deploy and number.
     const many = card(page, tooMany.id)
     await expect(many).toContainText('Message')
-    await expect(many.locator('[data-report-note="too_many_tasks"]')).toContainText(
-      'The deploy of api v1.4.3',
-    )
+    await expect(many.locator('[data-report-note="too_many_tasks"]')).toContainText('The deploy of api v1.4.3')
     await expect(many.locator('[data-report-note="too_many_tasks"]')).toContainText(
       'brought in 14 tasks. That is more than 10, so no task of this deploy is linked.',
     )
@@ -226,9 +236,7 @@ test.describe('the report card', () => {
     await expect(shut.locator('[data-report-link="lnk-closed"]')).toBeVisible()
   })
 
-  test('offers each act to a person who may create tasks, and only reopening on a closed report', async ({
-    page,
-  }) => {
+  test('offers each act to a person who may create tasks, and only reopening on a closed report', async ({ page }) => {
     await mockReportServer(page, { reports: [lineLinked, timingLinked, closed] })
     await page.goto('/w/demo/monitor')
     const line = card(page, lineLinked.id)
@@ -308,7 +316,10 @@ async function expectNoOverflow(page: Page) {
     const wide = [...document.querySelectorAll<HTMLElement>('[data-report-card], [data-fix-task]')].filter(
       (element) => element.scrollWidth > element.clientWidth + 1,
     )
-    return { page: root.scrollWidth > window.innerWidth + 1, cards: wide.map((element) => element.outerHTML.slice(0, 80)) }
+    return {
+      page: root.scrollWidth > window.innerWidth + 1,
+      cards: wide.map((element) => element.outerHTML.slice(0, 80)),
+    }
   })
   expect(overflow).toEqual({ page: false, cards: [] })
 }
@@ -344,7 +355,6 @@ test.describe('untrusted text', () => {
     })
   }
 })
-
 
 // Every act against every answer (class 2). Each act walks the same answers in
 // one page: 503 retryable, a refusal, a 500 with a slow fresh read, no answer,
@@ -382,7 +392,8 @@ const actCases: ActCase[] = [
   {
     name: 'confirm a possible link',
     reports: [actReport],
-    button: (page) => card(page, actReport.id).getByRole('button', { name: 'Confirm the link to Send invoices by email' }),
+    button: (page) =>
+      card(page, actReport.id).getByRole('button', { name: 'Confirm the link to Send invoices by email' }),
     expected: { method: 'POST', path: `${actPath}/links`, body: { task_id: '261120-a01' } },
     done: async (page) =>
       expect(card(page, actReport.id).locator('[data-report-link="lnk-line"]')).toHaveAttribute(
@@ -396,7 +407,8 @@ const actCases: ActCase[] = [
     prepare: async (page) => {
       await card(page, actReport.id).getByRole('button', { name: 'Remove the link to Send invoices by email…' }).click()
     },
-    button: (page) => card(page, actReport.id).getByRole('button', { name: 'Remove the link to Send invoices by email', exact: true }),
+    button: (page) =>
+      card(page, actReport.id).getByRole('button', { name: 'Remove the link to Send invoices by email', exact: true }),
     expected: { method: 'DELETE', path: `${actPath}/links/lnk-line`, body: undefined },
     done: async (page) => expect(card(page, actReport.id).locator('[data-report-link]')).toHaveCount(0),
   },
@@ -429,17 +441,22 @@ const actCases: ActCase[] = [
     typed: (page) => card(page, actReport.id).getByRole('textbox', { name: 'Search crates' }),
     typedValue: 'sea',
     expected: { method: 'POST', path: `${actPath}/links`, body: { crate_id: 'crate-search' } },
-    done: async (page) => expect(card(page, actReport.id).locator('[data-report-link="lnk-crate-search"]')).toBeVisible(),
+    done: async (page) =>
+      expect(card(page, actReport.id).locator('[data-report-link="lnk-crate-search"]')).toBeVisible(),
   },
   {
     name: 'close with a reason',
     reports: [actReport],
     prepare: async (page) => {
       await card(page, actReport.id).getByRole('button', { name: 'Close report' }).click()
-      await card(page, actReport.id).getByRole('textbox', { name: 'Why are you closing this report?' }).fill('Fixed by the retry.')
+      await card(page, actReport.id)
+        .getByRole('textbox', { name: 'Why are you closing this report?' })
+        .fill('Fixed by the retry.')
     },
     button: (page) =>
-      card(page, actReport.id).getByRole('form', { name: 'Close the report' }).getByRole('button', { name: /^(Close report|Closing…)$/ }),
+      card(page, actReport.id)
+        .getByRole('form', { name: 'Close the report' })
+        .getByRole('button', { name: /^(Close report|Closing…)$/ }),
     typed: (page) => card(page, actReport.id).getByRole('textbox', { name: 'Why are you closing this report?' }),
     typedValue: 'Fixed by the retry.',
     expected: { method: 'POST', path: `${actPath}/close`, body: { reason: 'Fixed by the retry.' } },
@@ -468,7 +485,11 @@ test.describe('acts and their answers', () => {
       }
 
       // 503 retryable: nothing was recorded.
-      server.actAnswers.push({ status: 503, json: { error: 'retryable', message: 'Send it again.' }, headers: { 'Retry-After': '1' } })
+      server.actAnswers.push({
+        status: 503,
+        json: { error: 'retryable', message: 'Send it again.' },
+        headers: { 'Retry-After': '1' },
+      })
       await item.button(page).click()
       await expect(alert).toHaveText('Conveyor recorded nothing. Try again.')
       expect(server.acts).toHaveLength(1)
@@ -567,9 +588,14 @@ test.describe('acts and their answers', () => {
   test('an act on the crate page refreshes the reports and the crate counts', async ({ page }) => {
     const member = report('rpt-261127-c00003', {
       summary: 'Crate member report',
-      links: [taskLink('lnk-member', '261120-a01', 'Send invoices by email', {}, { id: 'crate-billing', name: 'Billing v2' })],
+      links: [
+        taskLink('lnk-member', '261120-a01', 'Send invoices by email', {}, { id: 'crate-billing', name: 'Billing v2' }),
+      ],
     })
-    const server = await mockReportServer(page, { reports: [member], crate: crate([crateLine({ open_report_count: 1 })]) })
+    const server = await mockReportServer(page, {
+      reports: [member],
+      crate: crate([crateLine({ open_report_count: 1 })]),
+    })
     await page.goto('/w/demo/crates/crate-billing')
     await expect(card(page, member.id)).toBeVisible()
     const crateBefore = crateReads(server)
@@ -621,7 +647,10 @@ const fixPuts = (server: Server) => server.acts.filter((act) => act.method === '
 async function createFixTask(page: Page, causes: string[] = ['Send invoices by email']) {
   await expect(description(page)).not.toHaveValue('')
   await sheet(page).getByRole('combobox', { name: 'Repository' }).selectOption('app')
-  for (const title of causes) await sheet(page).getByRole('checkbox', { name: new RegExp(title) }).check()
+  for (const title of causes)
+    await sheet(page)
+      .getByRole('checkbox', { name: new RegExp(title) })
+      .check()
   await createButton(page).click()
 }
 
@@ -663,7 +692,9 @@ test.describe('starting a fix task', () => {
     expect(fixPuts(server)).toEqual([
       { method: 'PUT', path: fixPath, body: { task_id: '261127-fix', cause_task_ids: ['261120-a01'] } },
     ])
-    expect(await page.evaluate(() => Object.keys(sessionStorage).filter((key) => key.startsWith('conveyor-fix-task')))).toEqual([])
+    expect(
+      await page.evaluate(() => Object.keys(sessionStorage).filter((key) => key.startsWith('conveyor-fix-task'))),
+    ).toEqual([])
   })
 
   test('no ticked cause sends the fix task alone', async ({ page }) => {
@@ -677,10 +708,16 @@ test.describe('starting a fix task', () => {
   test('a 503 record answer is told, and a new attempt sends only the record request', async ({ page }) => {
     const server = await mockReportServer(page, { reports: [fixReport] })
     await page.goto(fixAddress)
-    server.actAnswers.push({ status: 503, json: { error: 'retryable', message: 'Send it again.' }, headers: { 'Retry-After': '1' } })
+    server.actAnswers.push({
+      status: 503,
+      json: { error: 'retryable', message: 'Send it again.' },
+      headers: { 'Retry-After': '1' },
+    })
     await createFixTask(page)
     await expect(sheet(page).locator('[data-fix-task-error]')).toHaveText('The report recorded nothing. Try again.')
-    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('The task Fix the checkout timeout is created.')
+    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText(
+      'The task Fix the checkout timeout is created.',
+    )
     await expect(createButton(page)).toBeDisabled()
     await expect(createButton(page)).toHaveText('Task created')
     await recordButton(page).click()
@@ -697,7 +734,9 @@ test.describe('starting a fix task', () => {
     const reads = reportReads(server, fixReport.id)
     server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
     await createFixTask(page)
-    await expect(sheet(page).locator('[data-fix-task-error]')).toHaveText('The report did not record the task. Record it again.')
+    await expect(sheet(page).locator('[data-fix-task-error]')).toHaveText(
+      'The report did not record the task. Record it again.',
+    )
     expect(reportReads(server, fixReport.id)).toBeGreaterThan(reads)
     await page.waitForTimeout(300)
     expect(fixPuts(server)).toHaveLength(1)
@@ -712,7 +751,10 @@ test.describe('starting a fix task', () => {
     await page.goto(fixAddress)
     server.actAnswers.push(() => {
       const index = server.reports.findIndex((item) => item.id === fixReport.id)
-      server.reports[index] = { ...server.reports[index], fix_task: { id: '261127-fix', title: 'Fix the checkout timeout' } }
+      server.reports[index] = {
+        ...server.reports[index],
+        fix_task: { id: '261127-fix', title: 'Fix the checkout timeout' },
+      }
       return { status: 500, json: { error: 'internal error' } }
     })
     await createFixTask(page)
@@ -726,7 +768,9 @@ test.describe('starting a fix task', () => {
     await page.goto(fixAddress)
     server.actAnswers.push('abort')
     await createFixTask(page)
-    await expect(sheet(page).locator('[data-fix-task-error]')).toHaveText('The report did not record the task. Record it again.')
+    await expect(sheet(page).locator('[data-fix-task-error]')).toHaveText(
+      'The report did not record the task. Record it again.',
+    )
     await page.waitForTimeout(300)
     expect(fixPuts(server)).toHaveLength(1)
     await recordButton(page).click()
@@ -759,7 +803,11 @@ test.describe('starting a fix task', () => {
     await page.goto(fixAddress)
     await expect(description(page)).not.toHaveValue('')
     // Someone else closes the report between the prefill and the record.
-    server.reports[0] = { ...server.reports[0], state: 'closed', closed: { at: '2026-11-27T12:00:00Z', by: 'usr_other', reason: 'Gone.' } }
+    server.reports[0] = {
+      ...server.reports[0],
+      state: 'closed',
+      closed: { at: '2026-11-27T12:00:00Z', by: 'usr_other', reason: 'Gone.' },
+    }
     await createFixTask(page)
     await expect(sheet(page).locator('[data-fix-task-error]')).toHaveText(
       'The report is closed now, so it did not record the task. Reopen the report, then record the task again.',
@@ -820,7 +868,11 @@ test.describe('starting a fix task', () => {
     const many = report('rpt-261127-d00002', {
       summary: 'Many links',
       links: Array.from({ length: 51 }, (_, index) =>
-        taskLink(`lnk-${index}`, `261120-t${String(index).padStart(2, '0')}`, `Linked task ${String(index).padStart(2, '0')}`),
+        taskLink(
+          `lnk-${index}`,
+          `261120-t${String(index).padStart(2, '0')}`,
+          `Linked task ${String(index).padStart(2, '0')}`,
+        ),
       ),
     })
     const server = await mockReportServer(page, { reports: [many] })
@@ -1030,11 +1082,30 @@ interface AddressRow {
 }
 const addressRows: AddressRow[] = [
   { query: '', environment: '', noCrate: false, closed: false, kept: '' },
-  { query: 'environment=env-staging', environment: 'env-staging', noCrate: false, closed: false, kept: 'environment=env-staging' },
+  {
+    query: 'environment=env-staging',
+    environment: 'env-staging',
+    noCrate: false,
+    closed: false,
+    kept: 'environment=env-staging',
+  },
   { query: 'environment=', environment: '', noCrate: false, closed: false, kept: '' },
   { query: 'environment=%20%20', environment: '', noCrate: false, closed: false, kept: '' },
-  { query: 'environment=env-unknown', environment: 'env-unknown', noCrate: false, closed: false, kept: 'environment=env-unknown', unknown: true },
-  { query: 'environment=env-staging&environment=env-production', environment: '', noCrate: false, closed: false, kept: '' },
+  {
+    query: 'environment=env-unknown',
+    environment: 'env-unknown',
+    noCrate: false,
+    closed: false,
+    kept: 'environment=env-unknown',
+    unknown: true,
+  },
+  {
+    query: 'environment=env-staging&environment=env-production',
+    environment: '',
+    noCrate: false,
+    closed: false,
+    kept: '',
+  },
   { query: 'environment=123', environment: '', noCrate: false, closed: false, kept: '' },
   { query: 'environment=%7B%22a%22%3A1%7D', environment: '', noCrate: false, closed: false, kept: '' },
   { query: 'no_crate=true', environment: '', noCrate: true, closed: false, kept: 'no_crate=true' },
@@ -1064,7 +1135,9 @@ test.describe('the Monitor address', () => {
       const server = await mockReportServer(page, { reports: [lineLinked, closed] })
       await page.goto(`/w/demo/monitor${row.query ? `?${row.query}` : ''}`)
       await expect(page.getByRole('combobox', { name: 'Environment' })).toHaveValue(row.environment)
-      await expect(page.getByRole('checkbox', { name: 'Only reports in no crate' })).toBeChecked({ checked: row.noCrate })
+      await expect(page.getByRole('checkbox', { name: 'Only reports in no crate' })).toBeChecked({
+        checked: row.noCrate,
+      })
       await expect(page.getByRole('switch', { name: 'Show closed reports' })).toHaveAttribute(
         'aria-checked',
         String(row.closed),
@@ -1139,7 +1212,10 @@ async function settle(page: Page) {
 async function hideableTab(page: Page) {
   await page.addInitScript(() => {
     let hidden = false
-    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') })
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => (hidden ? 'hidden' : 'visible'),
+    })
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
     ;(window as unknown as { setTabHidden: (value: boolean) => void }).setTabHidden = (value: boolean) => {
       hidden = value
@@ -1149,7 +1225,10 @@ async function hideableTab(page: Page) {
 }
 
 async function setTabHidden(page: Page, hidden: boolean) {
-  await page.evaluate((value) => (window as unknown as { setTabHidden: (value: boolean) => void }).setTabHidden(value), hidden)
+  await page.evaluate(
+    (value) => (window as unknown as { setTabHidden: (value: boolean) => void }).setTabHidden(value),
+    hidden,
+  )
 }
 
 const taskListReads = (server: Server) => listReads(server).filter((read) => read.includes('task_id=261120-a01')).length
@@ -1302,7 +1381,9 @@ test.describe('close reason bounds', () => {
       const submit = item.getByRole('form', { name: 'Close the report' }).getByRole('button', { name: 'Close report' })
       if (reason.length > 0 && !sent) {
         await expect(submit).toBeDisabled()
-        await expect(item.getByRole('alert')).toContainText('The reason has 501 characters. Make it 500 characters or fewer.')
+        await expect(item.getByRole('alert')).toContainText(
+          'The reason has 501 characters. Make it 500 characters or fewer.',
+        )
       } else {
         await submit.click()
       }
@@ -1310,7 +1391,8 @@ test.describe('close reason bounds', () => {
         await expect(card(page, actReport.id)).toHaveCount(0)
         expect(server.acts).toEqual([{ method: 'POST', path: `${actPath}/close`, body: { reason } }])
       } else {
-        if (reason.length === 0) await expect(item.getByRole('alert')).toHaveText('Write a reason of 1 to 500 characters.')
+        if (reason.length === 0)
+          await expect(item.getByRole('alert')).toHaveText('Write a reason of 1 to 500 characters.')
         expect(server.acts).toHaveLength(0)
       }
     })
@@ -1330,9 +1412,7 @@ test.describe('keyboard and names', () => {
       const control = controls.nth(index)
       await control.focus()
       const outline = await control.evaluate((element) => getComputedStyle(element).outlineStyle)
-      names.push(
-        (await control.getAttribute('aria-label')) ?? ((await control.textContent()) ?? '').trim(),
-      )
+      names.push((await control.getAttribute('aria-label')) ?? ((await control.textContent()) ?? '').trim())
       expect(outline, `focus ring on ${names.at(-1)}`).not.toBe('none')
     }
     expect(names.every((name) => name.length > 0)).toBe(true)
@@ -1346,7 +1426,9 @@ test.describe('keyboard and names', () => {
     await page.keyboard.press('Tab')
     await page.keyboard.press('Enter')
     await expect(card(page, actReport.id)).toHaveCount(0)
-    expect(server.acts).toEqual([{ method: 'POST', path: `${actPath}/close`, body: { reason: 'Closed from the keyboard.' } }])
+    expect(server.acts).toEqual([
+      { method: 'POST', path: `${actPath}/close`, body: { reason: 'Closed from the keyboard.' } },
+    ])
   })
 
   test('no shortcut key records an act', async ({ page }) => {
@@ -1385,7 +1467,17 @@ const longest = report('rpt-261127-g00001', {
       { id: 'crate-billing', name: 'c'.repeat(120) },
     ),
   ),
-  notes: [{ kind: 'too_many_tasks', deploy: { ...deploy, service: 'q'.repeat(100), version: { repository: 'app', commit: null, version: 'v'.repeat(200) } }, task_count: 999 }],
+  notes: [
+    {
+      kind: 'too_many_tasks',
+      deploy: {
+        ...deploy,
+        service: 'q'.repeat(100),
+        version: { repository: 'app', commit: null, version: 'v'.repeat(200) },
+      },
+      task_count: 999,
+    },
+  ],
 })
 
 test.describe('layout', () => {
@@ -1424,8 +1516,17 @@ test.describe('screenshots', () => {
       await page.clock.setFixedTime(now)
       await page.setViewportSize({ width, height: 1000 })
       await mockReportServer(page, {
-        reports: [lineLinked, { ...timingLinked, links: [...timingLinked.links, ...lineLinked.links] }, noLink, pending, closed],
-        crate: crate([crateLine({ open_report_count: 1 }), crateLine({ environment: { id: 'env-staging', name: 'staging' }, listening: false, open_report_count: 0 })]),
+        reports: [
+          lineLinked,
+          { ...timingLinked, links: [...timingLinked.links, ...lineLinked.links] },
+          noLink,
+          pending,
+          closed,
+        ],
+        crate: crate([
+          crateLine({ open_report_count: 1 }),
+          crateLine({ environment: { id: 'env-staging', name: 'staging' }, listening: false, open_report_count: 0 }),
+        ]),
       })
       const shots: Array<[string, string, string]> = [
         ['task-detail', '/w/demo/tasks/261120-a01/full', `[data-report-card="${lineLinked.id}"]`],
