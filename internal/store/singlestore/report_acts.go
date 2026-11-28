@@ -66,10 +66,43 @@ func prefixFeedbackReportColumns(alias string) string {
 	return strings.Join(columns, ",")
 }
 
+// feedbackReportNullableColumns are the report columns that hold NULL in a
+// stored row. Every other column is NOT NULL.
+var feedbackReportNullableColumns = map[string]bool{
+	"line": true, "closed_at": true, "closed_by": true, "close_reason": true, "reopened_at": true, "reopen_source": true,
+	"reopen_source_label": true, "reopen_actor_id": true, "linking_ended_at": true, "fix_task_id": true,
+	"linking_last_attempt_at": true, "line_progress": true, "timing_result": true, "fix_task_set_by": true, "fix_task_set_at": true,
+}
+
+// feedbackReportPageColumns selects the report columns of the page
+// subquery p for a row that may have no report. A NOT NULL column gets a
+// placeholder of its type, so the one row of an empty page decodes and is
+// recognized by its empty ID.
+func feedbackReportPageColumns() string {
+	columns := strings.Split(strings.ReplaceAll(feedbackReportColumns, "\n", ""), ",")
+	for i, column := range columns {
+		column = strings.TrimSpace(column)
+		switch {
+		case feedbackReportNullableColumns[column]:
+			columns[i] = "p." + column
+		case column == "first_seen" || column == "last_seen" || column == "first_entry_seen" || column == "created_at":
+			columns[i] = "COALESCE(p." + column + ",CAST('1970-01-01 00:00:00' AS DATETIME(6)))"
+		case column == "occurrence_count" || column == "in_inbox":
+			columns[i] = "COALESCE(p." + column + ",0)"
+		case column == "summary_redactions":
+			columns[i] = "COALESCE(p." + column + ",'{}')"
+		default:
+			columns[i] = "COALESCE(p." + column + ",'')"
+		}
+	}
+	return strings.Join(columns, ",")
+}
+
 // ListFeedbackReports implements store.ReportReadStore. One statement
-// answers the IDs of the page and the count of every selected row, also when
-// the page is empty, so the page and the total agree. The records and their
-// details are then read by ID.
+// answers the page's records and the count of every selected row: the count
+// subquery is joined onto the page subquery, so a page past the end answers
+// one row with no report and the total. The page and the total are one
+// read. The details are read by report ID after it.
 func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackReports")
 	query, err := store.NormalizeFeedbackReportQuery(query)
@@ -81,57 +114,31 @@ func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackRep
 		return store.FeedbackReportPage{}, err
 	}
 	where, args := feedbackReportFilter(ws, query)
-	statement := `SELECT p.id, t.total FROM (SELECT COUNT(*) AS total FROM feedback_reports r WHERE ` + where + `) t
-LEFT JOIN (SELECT r.id, r.last_seen FROM feedback_reports r WHERE ` + where + ` ORDER BY r.last_seen DESC, r.id LIMIT ? OFFSET ?) p ON 1=1
+	statement := `SELECT ` + feedbackReportPageColumns() + `, t.total FROM (SELECT COUNT(*) AS total FROM feedback_reports r WHERE ` + where + `) t
+LEFT JOIN (SELECT ` + prefixFeedbackReportColumns("r") + ` FROM feedback_reports r WHERE ` + where + ` ORDER BY r.last_seen DESC, r.id LIMIT ? OFFSET ?) p ON 1=1
 ORDER BY p.last_seen DESC, p.id`
 	rows, err := documentRows(ctx, s.db, statement, append(append(append([]any{}, args...), args...), query.Limit, query.Offset)...)
 	if err != nil {
 		return store.FeedbackReportPage{}, err
 	}
 	page := store.FeedbackReportPage{Reports: []store.FeedbackReport{}}
-	ids := []string{}
 	err = func() error {
 		defer rows.Close()
 		for rows.Next() {
-			var id sql.NullString
 			var total int64
-			if err := rows.Scan(&id, &total); err != nil {
+			report, err := decodeFeedbackReportRow(rows, &total)
+			if err != nil {
 				return err
 			}
 			page.Total = int(total)
-			if id.Valid {
-				ids = append(ids, id.String)
+			if report.ID != "" {
+				page.Reports = append(page.Reports, report)
 			}
 		}
 		return rows.Err()
 	}()
 	if err != nil {
 		return store.FeedbackReportPage{}, err
-	}
-	if len(ids) > 0 {
-		recordArgs := []any{ws}
-		for _, id := range ids {
-			recordArgs = append(recordArgs, id)
-		}
-		recordRows, err := documentRows(ctx, s.db, `SELECT `+feedbackReportColumns+` FROM feedback_reports WHERE workspace_id=? AND id IN (`+inList(len(ids))+`)`, recordArgs...)
-		if err != nil {
-			return store.FeedbackReportPage{}, err
-		}
-		records, err := collectFeedbackReports(recordRows)
-		if err != nil {
-			return store.FeedbackReportPage{}, err
-		}
-		byID := make(map[string]store.FeedbackReport, len(records))
-		for _, record := range records {
-			byID[record.ID] = record
-		}
-		for _, id := range ids {
-			record, ok := byID[id]
-			if !ok {
-				return store.FeedbackReportPage{}, fmt.Errorf("feedback report %s of the page was not read back", id)
-			}
-			page.Reports = append(page.Reports, record)
-		}
 	}
 	if page.Details, err = s.ReadFeedbackReportDetails(ctx, page.Reports); err != nil {
 		return store.FeedbackReportPage{}, err
