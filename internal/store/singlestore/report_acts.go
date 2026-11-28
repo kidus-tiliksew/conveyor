@@ -141,6 +141,7 @@ ORDER BY p.last_seen DESC, p.id`
 
 // ReadFeedbackReport implements store.ReportReadStore.
 func (s *Store) ReadFeedbackReport(ctx context.Context, reportID string) (store.FeedbackReport, store.FeedbackReportDetails, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadFeedbackReport")
 	report, err := s.GetFeedbackReport(ctx, reportID)
 	if err != nil {
 		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
