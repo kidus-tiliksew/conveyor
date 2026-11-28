@@ -264,11 +264,12 @@ func (f *feedbackAttemptForge) ReadLineChange(ctx context.Context, slug, commit,
 	// it returns: a found file, a missing file, or a failure of any
 	// category. An answer is used, and either way the workspace holds its
 	// calls until that time.
+	// A stated time at or before now asks for no wait, and adds no hold.
 	retryAt := answer.RetryAt
 	if err != nil {
 		retryAt = github.StatedRetryAt(err)
 	}
-	if !retryAt.IsZero() {
+	if retryAt.After(f.env.clock()) {
 		f.observe(github.RateLimitedError(retryAt, errFeedbackForgeStatedRetry))
 	}
 	return answer, err

@@ -1510,7 +1510,8 @@ func TestFeedbackReportLineReadTransportHolds(t *testing.T) {
 		reset    bool
 		mode     string
 		category github.ForgeErrorCategory
-		// hold is "reset", "fallback", or "" for none.
+		// hold is "reset", "retry-after" (600 seconds after the read),
+		// "fallback", or "" for none.
 		hold string
 	}{
 		{name: "W1 HTTP 429 with a reset and a body cut short", status: http.StatusTooManyRequests, reset: true, mode: "truncated", category: github.ForgeRateLimited, hold: "reset"},
@@ -1522,9 +1523,19 @@ func TestFeedbackReportLineReadTransportHolds(t *testing.T) {
 		{name: "W7 HTTP 502 with no request left, a reset, and a body cut short", status: http.StatusBadGateway, headers: limited, reset: true, mode: "truncated", category: github.ForgeStatus, hold: "reset"},
 		{name: "W8 HTTP 200 with no request left, a reset, and a body cut short", status: http.StatusOK, headers: limited, reset: true, mode: "truncated", category: github.ForgeResponse, hold: "reset"},
 		{name: "W9 the connection closes before any header", mode: "hangup", category: github.ForgeRequest},
+		// Review round 10: one unusable retry header never changes what
+		// another one gives.
+		{name: "W10 HTTP 429, a reset JSON cannot carry, Retry-After 600, and a body cut short", status: http.StatusTooManyRequests, headers: map[string]string{"X-RateLimit-Reset": "999999999999", "Retry-After": "600"}, mode: "truncated", category: github.ForgeRateLimited, hold: "retry-after"},
+		{name: "W11 HTTP 403, an unusable Retry-After, no request left, and a valid reset", status: http.StatusForbidden, headers: map[string]string{"Retry-After": "soon", "X-RateLimit-Remaining": "0"}, reset: true, mode: "whole", category: github.ForgeRateLimited, hold: "reset"},
+		{name: "W12 HTTP 429 with an unusable Retry-After and an unusable reset", status: http.StatusTooManyRequests, headers: map[string]string{"Retry-After": "soon", "X-RateLimit-Reset": "999999999999"}, mode: "truncated", category: github.ForgeRateLimited, hold: "fallback"},
+		{name: "W13 HTTP 429 with a reset in the past", status: http.StatusTooManyRequests, headers: map[string]string{"X-RateLimit-Reset": "0"}, mode: "truncated", category: github.ForgeRateLimited, hold: "fallback"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newLinkingHarness(t)
+			// The harness clock starts at the real time, so that a
+			// Retry-After delay, which the transport counts from the real
+			// time, lines up with the worker's clock.
+			h.setNow(time.Now().UTC())
 			resetAt := h.clock().Add(10 * time.Minute).Truncate(time.Second)
 			var requests atomic.Int32
 			// recovered makes GitHub answer the line read in full, once the
@@ -1566,6 +1577,11 @@ func TestFeedbackReportLineReadTransportHolds(t *testing.T) {
 				for name, value := range all {
 					w.Header().Set(name, value)
 				}
+				if tc.mode == "whole" {
+					w.WriteHeader(tc.status)
+					fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+					return
+				}
 				w.Header().Set("Content-Length", "1000")
 				w.WriteHeader(tc.status)
 				fmt.Fprint(w, `{"data":{"repository":`)
@@ -1574,6 +1590,7 @@ func TestFeedbackReportLineReadTransportHolds(t *testing.T) {
 			redirectGitHubAPI(t, server.URL)
 			h.server.feedbackForge = realLineReadForge{linkingForge: h.forge, real: githubFeedbackForge{token: "workspace-token", identity: "workspace demo GitHub App"}}
 
+			sent := time.Now()
 			h.acceptReport(reportBody(lineEntry("crash")))
 			h.settle()
 			report := h.reportByKey("crash")
@@ -1597,6 +1614,13 @@ func TestFeedbackReportLineReadTransportHolds(t *testing.T) {
 				end = resetAt
 			case "fallback":
 				end = h.clock().Add(feedbackTokenRetry)
+			case "retry-after":
+				// Counted from when the headers arrived, in real time; never
+				// the one-minute fallback.
+				if until.Before(sent.Add(600*time.Second)) || until.After(time.Now().Add(600*time.Second)) {
+					t.Fatalf("hold=%v held=%v, want 600 seconds after the read was sent at %v", until, held, sent)
+				}
+				end = until
 			}
 			if held != (tc.hold != "") || (held && !until.Equal(end)) {
 				t.Fatalf("hold=%v held=%v, want %q until %v", until, held, tc.hold, end)

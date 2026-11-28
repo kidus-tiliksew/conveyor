@@ -374,14 +374,17 @@ func (b *feedbackTokenBackoff) forgeHold(workspace string, now time.Time) (time.
 }
 
 // recordRateLimit keeps the retry time of a rate-limited forge failure for
-// the workspace: GitHub's time when it named one, or a minute after now. A
-// later time already kept stays. Any other failure keeps nothing.
+// the workspace: GitHub's time when it named one that is still ahead, or a
+// minute after now. A stated time at or before now asks for no wait of its
+// own, so a rate limit with only such a time holds for the minute as one
+// with no time does. A later time already kept stays. Any other failure
+// keeps nothing.
 func (b *feedbackTokenBackoff) recordRateLimit(workspace string, err error, now time.Time) {
 	if b == nil || github.ErrorCategory(github.CategorizeError(err)) != github.ForgeRateLimited {
 		return
 	}
 	until := now.Add(feedbackTokenRetry)
-	if retryAt, ok := github.RateLimitRetryAt(err); ok && !retryAt.IsZero() {
+	if retryAt, ok := github.RateLimitRetryAt(err); ok && retryAt.After(now) {
 		until = retryAt
 	}
 	b.mu.Lock()

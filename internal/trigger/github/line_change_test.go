@@ -671,3 +671,226 @@ func TestRESTCallersKeepTheirUnreadableBodyFailure(t *testing.T) {
 		t.Fatalf("err %v retry %v, want the readable rate limit with its reset as before", err, retryAt)
 	}
 }
+
+// headerValueClass is one class of value of one retry header: the field
+// lines to send, nil for an absent header, and the usable time it gives,
+// the zero time for no time. For X-RateLimit-Remaining, noneLeft says
+// whether the value states that no request is left.
+type headerValueClass struct {
+	name     string
+	values   func(now time.Time) []string
+	want     func(now time.Time) time.Time
+	noneLeft bool
+}
+
+func fixedValues(values ...string) func(time.Time) []string {
+	return func(time.Time) []string { return values }
+}
+
+func noTime(time.Time) time.Time { return time.Time{} }
+
+func afterNow(d time.Duration) func(time.Time) time.Time {
+	return func(now time.Time) time.Time { return now.Add(d) }
+}
+
+func atTime(at time.Time) func(time.Time) time.Time {
+	return func(time.Time) time.Time { return at }
+}
+
+func unixValue(at func(time.Time) time.Time, format string) func(time.Time) []string {
+	return func(now time.Time) []string { return []string{fmt.Sprintf(format, at(now).Unix())} }
+}
+
+// retryAfterClasses, resetClasses, and remainingClasses are every class of
+// value review round 10 names for each retry header.
+var (
+	tenMinutes        = afterNow(10 * time.Minute)
+	retryAfterClasses = []headerValueClass{
+		{name: "RA01 absent", want: noTime},
+		{name: "RA02 empty", values: fixedValues(""), want: noTime},
+		{name: "RA03 valid 600 seconds", values: fixedValues("600"), want: tenMinutes},
+		{name: "RA04 zero, now, no wait", values: fixedValues("0"), want: afterNow(0)},
+		{name: "RA05 negative", values: fixedValues("-600"), want: noTime},
+		{name: "RA06 not a number", values: fixedValues("soon"), want: noTime},
+		{name: "RA07 a sign", values: fixedValues("+600"), want: noTime},
+		{name: "RA08 a space inside", values: fixedValues("6 00"), want: noTime},
+		{name: "RA09 spaces around, removed by HTTP", values: fixedValues("  600  "), want: tenMinutes},
+		{name: "RA10 a decimal", values: fixedValues("600.5"), want: noTime},
+		{name: "RA11 too large for 64 bits", values: fixedValues("99999999999999999999"), want: noTime},
+		{name: "RA12 too large for a duration", values: fixedValues("9223372037"), want: noTime},
+		{name: "RA13 the longest delay, far in the future", values: fixedValues("9223372036"), want: afterNow(9223372036 * time.Second)},
+		{name: "RA14 a hundred years", values: fixedValues("3153600000"), want: afterNow(3153600000 * time.Second)},
+		{name: "RA15 an HTTP date in the future", values: func(now time.Time) []string { return []string{now.Add(10 * time.Minute).UTC().Format(http.TimeFormat)} }, want: tenMinutes},
+		{name: "RA16 an HTTP date in the past, no wait", values: func(now time.Time) []string { return []string{now.Add(-time.Hour).UTC().Format(http.TimeFormat)} }, want: afterNow(-time.Hour)},
+		{name: "RA17 an RFC 850 date, in the past", values: fixedValues("Sunday, 06-Nov-94 08:49:37 GMT"), want: atTime(time.Date(1994, 11, 6, 8, 49, 37, 0, time.UTC))},
+		{name: "RA18 an asctime date, in the past", values: fixedValues("Sun Nov  6 08:49:37 1994"), want: atTime(time.Date(1994, 11, 6, 8, 49, 37, 0, time.UTC))},
+		{name: "RA19 a malformed date", values: fixedValues("Fri, 31 Foo 2026 10:00:00 GMT"), want: noTime},
+		{name: "RA20 sent twice, the later time kept", values: fixedValues("60", "600"), want: tenMinutes},
+		{name: "RA21 sent twice in one line", values: fixedValues("60, 600"), want: noTime},
+		{name: "RA22 sent twice, one value unusable", values: fixedValues("soon", "600"), want: tenMinutes},
+	}
+	resetClasses = []headerValueClass{
+		{name: "RS01 absent", want: noTime},
+		{name: "RS02 empty", values: fixedValues(""), want: noTime},
+		{name: "RS03 valid, in ten minutes", values: unixValue(tenMinutes, "%d"), want: tenMinutes},
+		{name: "RS04 zero, the Unix epoch, no wait", values: fixedValues("0"), want: atTime(time.Unix(0, 0))},
+		{name: "RS05 negative", values: fixedValues("-1"), want: noTime},
+		{name: "RS06 not a number", values: fixedValues("soon"), want: noTime},
+		{name: "RS07 a sign", values: unixValue(tenMinutes, "+%d"), want: noTime},
+		{name: "RS08 a space inside", values: func(now time.Time) []string {
+			v := strconv.FormatInt(now.Add(10*time.Minute).Unix(), 10)
+			return []string{v[:5] + " " + v[5:]}
+		}, want: noTime},
+		{name: "RS09 spaces around, removed by HTTP", values: unixValue(tenMinutes, "  %d  "), want: tenMinutes},
+		{name: "RS10 a decimal", values: unixValue(tenMinutes, "%d.5"), want: noTime},
+		{name: "RS11 too large for a time JSON carries", values: fixedValues("999999999999"), want: noTime},
+		{name: "RS12 too large for 64 bits", values: fixedValues("99999999999999999999"), want: noTime},
+		{name: "RS13 the last second JSON carries, far in the future", values: fixedValues("253402300799"), want: atTime(time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC))},
+		{name: "RS14 in the past, no wait", values: unixValue(afterNow(-time.Hour), "%d"), want: afterNow(-time.Hour)},
+		{name: "RS15 far in the future, the year 2100", values: fixedValues("4102444800"), want: atTime(time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC))},
+		{name: "RS16 sent twice, the later time kept", values: func(now time.Time) []string {
+			return []string{strconv.FormatInt(now.Add(-time.Hour).Unix(), 10), strconv.FormatInt(now.Add(10*time.Minute).Unix(), 10)}
+		}, want: tenMinutes},
+		{name: "RS17 sent twice in one line", values: func(now time.Time) []string {
+			return []string{fmt.Sprintf("%d, %d", now.Unix(), now.Add(10*time.Minute).Unix())}
+		}, want: noTime},
+		{name: "RS18 sent twice, one value unusable", values: func(now time.Time) []string {
+			return []string{"999999999999", strconv.FormatInt(now.Add(10*time.Minute).Unix(), 10)}
+		}, want: tenMinutes},
+	}
+	remainingClasses = []headerValueClass{
+		{name: "RM01 absent"},
+		{name: "RM02 empty", values: fixedValues("")},
+		{name: "RM03 zero", values: fixedValues("0"), noneLeft: true},
+		{name: "RM04 zero with a leading zero", values: fixedValues("00"), noneLeft: true},
+		{name: "RM05 requests left", values: fixedValues("4999")},
+		{name: "RM06 negative", values: fixedValues("-1")},
+		{name: "RM07 not a number", values: fixedValues("none")},
+		{name: "RM08 a sign", values: fixedValues("+0")},
+		{name: "RM09 spaces around, removed by HTTP", values: fixedValues(" 0 "), noneLeft: true},
+		{name: "RM10 a space inside", values: fixedValues("0 0")},
+		{name: "RM11 a decimal", values: fixedValues("0.0")},
+		{name: "RM12 too large for 64 bits", values: fixedValues("99999999999999999999")},
+		{name: "RM13 sent twice, one value zero", values: fixedValues("5", "0"), noneLeft: true},
+		{name: "RM14 sent twice in one line", values: fixedValues("5, 0")},
+	}
+)
+
+// headerValueCase is one line read in the value-class test: the status,
+// the body and how it is sent, the retry headers by class, and what the
+// read must return.
+type headerValueCase struct {
+	name    string
+	status  int
+	mode    string
+	headers map[string]headerValueClass
+	// found is true when the read must return the whole answer, and false
+	// when it must fail with forge_rate_limited.
+	found bool
+	want  func(now time.Time) time.Time
+}
+
+// TestReadLineChangeHeaderValueClasses proves review round 10 through the
+// real HTTP path: each of Retry-After, X-RateLimit-Reset, and
+// X-RateLimit-Remaining is read on its own into a usable time or no time,
+// for every class of value; one header that cannot be used never changes
+// what another one gives; and no header value turns into an error, a
+// panic, or an encoding failure. Each row runs alone and, where one header
+// is unusable, beside a valid other header. Rate-limit rows run with a
+// readable body and with a body cut short, since only a readable 429
+// carries the time the shared transport works out for other callers
+// (component-production-feedback invariant 28; component-feedback-reports
+// invariant 12).
+func TestReadLineChangeHeaderValueClasses(t *testing.T) {
+	answer := blameAnswer(blameRange(1, 9, lineChangeCommit))
+	validRetryAfter := retryAfterClasses[2]
+	validReset := resetClasses[2]
+	noneLeft := remainingClasses[2]
+	var cases []headerValueCase
+	limited := func(name string, headers map[string]headerValueClass, want func(time.Time) time.Time) {
+		for _, mode := range []string{"whole", "truncated"} {
+			cases = append(cases, headerValueCase{name: name + " (" + mode + " body)", status: http.StatusTooManyRequests, mode: mode, headers: headers, want: want})
+		}
+	}
+	for _, class := range retryAfterClasses {
+		limited("alone/HTTP 429/"+class.name, map[string]headerValueClass{"Retry-After": class}, class.want)
+		if class.want(time.Now()).IsZero() {
+			limited("pair/HTTP 429/"+class.name+" beside a valid reset", map[string]headerValueClass{"Retry-After": class, "X-RateLimit-Reset": validReset}, validReset.want)
+			cases = append(cases, headerValueCase{name: "pair/HTTP 200 answer/" + class.name + " beside no request left and a valid reset", status: http.StatusOK, mode: "whole",
+				headers: map[string]headerValueClass{"Retry-After": class, "X-RateLimit-Remaining": noneLeft, "X-RateLimit-Reset": validReset}, found: true, want: validReset.want})
+		}
+	}
+	for _, class := range resetClasses {
+		limited("alone/HTTP 429/"+class.name, map[string]headerValueClass{"X-RateLimit-Reset": class}, class.want)
+		if class.want(time.Now()).IsZero() {
+			limited("pair/HTTP 429/"+class.name+" beside Retry-After 600", map[string]headerValueClass{"X-RateLimit-Reset": class, "Retry-After": validRetryAfter}, validRetryAfter.want)
+			cases = append(cases, headerValueCase{name: "pair/HTTP 200 answer/" + class.name + " beside no request left", status: http.StatusOK, mode: "whole",
+				headers: map[string]headerValueClass{"X-RateLimit-Reset": class, "X-RateLimit-Remaining": noneLeft}, found: true, want: noTime})
+		}
+	}
+	for _, class := range remainingClasses {
+		want := noTime
+		if class.noneLeft {
+			want = validReset.want
+		}
+		cases = append(cases, headerValueCase{name: "alone/HTTP 200 answer/" + class.name + " beside a valid reset", status: http.StatusOK, mode: "whole",
+			headers: map[string]headerValueClass{"X-RateLimit-Remaining": class, "X-RateLimit-Reset": validReset}, found: true, want: want})
+		if !class.noneLeft {
+			cases = append(cases, headerValueCase{name: "pair/HTTP 200 answer/" + class.name + " beside Retry-After 600", status: http.StatusOK, mode: "whole",
+				headers: map[string]headerValueClass{"X-RateLimit-Remaining": class, "Retry-After": validRetryAfter}, found: true, want: validRetryAfter.want})
+		}
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				now := time.Now()
+				for name, class := range tc.headers {
+					if class.values != nil {
+						w.Header()[name] = class.values(now)
+					}
+				}
+				body := `{"message":"API rate limit exceeded"}`
+				if tc.found {
+					body = answer
+				}
+				if tc.mode == "truncated" {
+					w.Header().Set("Content-Length", strconv.Itoa(len(body)+1000))
+					body = body[:len(body)/2]
+				}
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, body)
+			}))
+			defer server.Close()
+			before := time.Now()
+			got, err := readLineChange(t.Context(), "acme/app", feedbackSHA, "cmd/main.go", 5, newRESTRunner(server.Client(), server.URL, "workspace-token", "workspace demo GitHub App"))
+			after := time.Now()
+			if requests.Load() != 1 {
+				t.Fatalf("requests=%d, want exactly one", requests.Load())
+			}
+			var carried time.Time
+			if tc.found {
+				if err != nil || !got.FileFound || got.Commit != lineChangeCommit {
+					t.Fatalf("got %+v err %v, want the whole answer", got, err)
+				}
+				carried = got.RetryAt
+			} else {
+				if ErrorCategory(err) != ForgeRateLimited || got.FileFound {
+					t.Fatalf("got %+v err %v category %q, want an unanswered forge_rate_limited", got, err, ErrorCategory(err))
+				}
+				carried = StatedRetryAt(err)
+				if limitedAt, _ := RateLimitRetryAt(err); !limitedAt.Equal(carried) {
+					t.Fatalf("RateLimitRetryAt %v, StatedRetryAt %v, want the same time", limitedAt, carried)
+				}
+			}
+			low, high := tc.want(before), tc.want(after)
+			switch {
+			case low.IsZero() && !carried.IsZero():
+				t.Fatalf("carried %v, want no time", carried)
+			case !low.IsZero() && (carried.Before(low.Add(-time.Second)) || carried.After(high.Add(time.Second))):
+				t.Fatalf("carried %v, want between %v and %v", carried, low, high)
+			}
+		})
+	}
+}

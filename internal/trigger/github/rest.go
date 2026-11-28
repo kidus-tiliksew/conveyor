@@ -105,40 +105,26 @@ func (c *restClient) request(ctx context.Context, method, endpoint, accept strin
 }
 
 // responseSignals is what a GitHub response states before its body is read:
-// its status, the forge category that status decides by itself, and its
-// retry headers. exchange takes them as soon as the headers arrive and
-// returns them on every path after that, so a body that cannot be read, is
-// cut short, or is not what the caller expects loses none of them. Received
-// is false when no response arrived: a connect failure, a timeout before
-// the headers, or a cancelled context.
+// its status, the forge category that status decides by itself, its
+// headers, and the time they arrived. exchange takes them as soon as the
+// headers arrive and returns them on every path after that, so a body that
+// cannot be read, is cut short, or is not what the caller expects loses
+// none of them. Received is false when no response arrived: a connect
+// failure, a timeout before the headers, or a cancelled context.
 type responseSignals struct {
 	Received bool `json:"received"`
 	Status   int  `json:"status"`
 	// Category is the category of a refused status (statusCategory), and
 	// empty for a 2xx status.
 	Category ForgeErrorCategory `json:"category"`
-	// RetryAfter is the time Retry-After states, in seconds or as an HTTP
-	// date, and Reset the time X-RateLimit-Reset states; each is zero when
-	// its header is absent or does not parse. RemainingZero is true when
-	// X-RateLimit-Remaining is 0.
-	RetryAfter    time.Time `json:"retry_after"`
-	Reset         time.Time `json:"reset"`
-	RemainingZero bool      `json:"remaining_zero"`
-	header        http.Header
+	header   http.Header
+	at       time.Time
 }
 
 // readResponseSignals takes the signals of a response from its status line
 // and headers alone.
 func readResponseSignals(status int, header http.Header, now time.Time) responseSignals {
-	return responseSignals{
-		Received:      true,
-		Status:        status,
-		Category:      statusCategory(status, header),
-		RetryAfter:    retryAfterAt(header, now),
-		Reset:         rateLimitResetAt(header),
-		RemainingZero: strings.TrimSpace(header.Get("X-RateLimit-Remaining")) == "0",
-		header:        header,
-	}
+	return responseSignals{Received: true, Status: status, Category: statusCategory(status, header), header: header, at: now}
 }
 
 // statusCategory is the forge category a refused status decides by itself:
@@ -207,7 +193,7 @@ func (c *restClient) exchange(ctx context.Context, method, endpoint, accept stri
 	}
 	failure := &Error{Category: signals.Category, status: signals.Status, Err: fmt.Errorf("GitHub REST status %d: %s", signals.Status, c.secretSafe(secretSafeMessage(raw)))}
 	if signals.Category == ForgeRateLimited {
-		failure.RetryAt = laterTime(signals.RetryAfter, signals.Reset)
+		failure.RetryAt = rateLimitRetryAt(signals.header, signals.at)
 	}
 	return nil, signals, failure
 }
@@ -374,11 +360,115 @@ const graphqlRetryEnvelope = "--retry-envelope"
 // graphqlRetryEnvelope: the body as GitHub sent it, and the signals of the
 // same HTTP response, taken before its body was read. GitHub answers a
 // GraphQL rate limit with HTTP 200, so these headers are the only place its
-// retry time appears. The caller decides from these and the body which
-// time and category apply.
+// retry time appears. Each of the three retry signals is read on its own
+// (retryAfterSignal, resetSignal, noRequestLeftSignal) into a usable time,
+// or no time, which is the zero time; one signal that cannot be used never
+// changes what another one gives. No usable time lies past the year 9999,
+// so the envelope always encodes. The caller
+// decides from these and the body which time and category apply.
 type graphqlEnvelope struct {
 	Body []byte `json:"body"`
 	responseSignals
+	RetryAfter    time.Time `json:"retry_after"`
+	Reset         time.Time `json:"reset"`
+	RemainingZero bool      `json:"remaining_zero"`
+}
+
+// lineEnvelope builds the envelope of one response from its signals. A 403
+// or 422 that states no request is left is a rate limit for the line read
+// even when statusCategory, which every caller shares, reads the header
+// more narrowly, such as "00": the line read never treats a stated limit as
+// something else.
+func lineEnvelope(raw []byte, signals responseSignals) graphqlEnvelope {
+	envelope := graphqlEnvelope{
+		Body:            raw,
+		responseSignals: signals,
+		RetryAfter:      retryAfterSignal(signals.header, signals.at),
+		Reset:           resetSignal(signals.header),
+		RemainingZero:   noRequestLeftSignal(signals.header),
+	}
+	if envelope.RemainingZero && (signals.Status == http.StatusForbidden || signals.Status == http.StatusUnprocessableEntity) {
+		envelope.Category = ForgeRateLimited
+	}
+	return envelope
+}
+
+// maxRetryAfterSeconds is the longest Retry-After delay that a Go duration
+// holds, about 292 years. A longer delay is no usable time.
+const maxRetryAfterSeconds = uint64(1<<63-1) / uint64(time.Second)
+
+// maxResetSeconds is the last second of the year 9999 in Unix seconds, the
+// latest time JSON carries. A later reset is no usable time.
+const maxResetSeconds = 253402300799
+
+// headerDigits reads a header value of decimal digits only, the form
+// GitHub and HTTP use for these headers, after HTTP has removed the
+// optional whitespace around it. A value with a sign, a decimal point, a
+// space inside, or any other character is not a number. ok is false for
+// such a value and when the number does not fit in 64 bits.
+func headerDigits(value string) (n uint64, ok bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseUint(value, 10, 64)
+	return n, err == nil
+}
+
+// retryAfterSignal is the usable time Retry-After states, or the zero time.
+// A value is either a delay in whole seconds after now, up to
+// maxRetryAfterSeconds, or an HTTP date in any of the three forms HTTP
+// allows (IMF-fixdate, RFC 850, asctime). Zero seconds or a past date is a
+// usable time that asks for no wait. When the header is sent more than
+// once, the latest usable time of its values is kept, so that no request is
+// sent before any time GitHub stated; an unusable value adds nothing.
+func retryAfterSignal(header http.Header, now time.Time) time.Time {
+	var at time.Time
+	for _, value := range header.Values("Retry-After") {
+		value = strings.TrimSpace(value)
+		var usable time.Time
+		if seconds, ok := headerDigits(value); ok {
+			if seconds <= maxRetryAfterSeconds {
+				usable = now.Add(time.Duration(seconds) * time.Second).UTC()
+			}
+		} else if date, err := http.ParseTime(value); err == nil && date.Year() <= 9999 {
+			usable = date.UTC()
+		}
+		at = laterTime(at, usable)
+	}
+	return at
+}
+
+// resetSignal is the usable time X-RateLimit-Reset states in Unix seconds,
+// up to maxResetSeconds, or the zero time. Zero is the Unix epoch, and it
+// and any past time are usable times that ask for no wait. When the header
+// is sent more than once, the latest usable time is kept.
+func resetSignal(header http.Header) time.Time {
+	var at time.Time
+	for _, value := range header.Values("X-RateLimit-Reset") {
+		if seconds, ok := headerDigits(value); ok && seconds <= maxResetSeconds {
+			at = laterTime(at, time.Unix(int64(seconds), 0).UTC())
+		}
+	}
+	return at
+}
+
+// noRequestLeftSignal reports whether X-RateLimit-Remaining states that no
+// request is left: a value of digits only whose number is 0. Any other
+// value, a positive count or one that is not a number, states nothing about
+// a wait. When the header is sent more than once, one value of 0 is enough.
+func noRequestLeftSignal(header http.Header) bool {
+	for _, value := range header.Values("X-RateLimit-Remaining") {
+		if n, ok := headerDigits(value); ok && n == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *restClient) graphql(ctx context.Context, args ...string) ([]byte, error) {
@@ -418,15 +508,7 @@ func (c *restClient) graphql(ctx context.Context, args ...string) ([]byte, error
 	if !signals.Received {
 		return nil, err
 	}
-	encoded, encodeErr := json.Marshal(graphqlEnvelope{Body: raw, responseSignals: signals})
-	if encodeErr != nil {
-		// JSON holds no time past the year 9999, which an absurd reset
-		// header can state. Such a time is no usable time: the envelope
-		// keeps the status and its category, so a rate limit stays a rate
-		// limit and the caller's fallback applies.
-		signals.RetryAfter, signals.Reset = time.Time{}, time.Time{}
-		encoded, encodeErr = json.Marshal(graphqlEnvelope{Body: raw, responseSignals: signals})
-	}
+	encoded, encodeErr := json.Marshal(lineEnvelope(raw, signals))
 	if encodeErr != nil {
 		return nil, &Error{Category: ForgeResponse, Err: fmt.Errorf("encode GitHub GraphQL answer: %w", encodeErr)}
 	}

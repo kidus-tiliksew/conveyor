@@ -1485,8 +1485,16 @@ func withLineChangeRetry(change LineChange, err error, signals graphqlEnvelope) 
 		if signals.Category != "" {
 			category, status = signals.Category, signals.Status
 		}
-		retryAt := laterTime(failure.RetryAt, lineChangeRetryAt(signals, category == ForgeRateLimited))
-		if category == failure.Category && (retryAt.IsZero() || retryAt.Equal(failure.RetryAt)) {
+		// When a response arrived, its retry time comes from the signals
+		// alone, each read on its own and bounded, and never from the time
+		// the shared transport worked out for other callers, which reads the
+		// headers more loosely. Only a failure with no response, such as a
+		// stub's, keeps the time it carries.
+		retryAt := failure.RetryAt
+		if signals.Received {
+			retryAt = lineChangeRetryAt(signals, category == ForgeRateLimited)
+		}
+		if category == failure.Category && retryAt.Equal(failure.RetryAt) {
 			return LineChange{}, err
 		}
 		return LineChange{}, &Error{Category: category, status: status, RetryAt: retryAt, Err: err}
