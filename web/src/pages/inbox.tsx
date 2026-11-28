@@ -1,13 +1,13 @@
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { Check } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useWorkspaceSelection } from '../components/app-shell'
 import { AutomaticBand } from '../components/inbox/automatic-band'
 import { BlockedRow } from '../components/inbox/blocked-row'
 import { InboxBandChips } from '../components/inbox/inbox-band-chips'
 import { useInboxKeyboard } from '../components/inbox/inbox-keyboard'
 import { isUrgent, useMinuteClock } from '../components/inbox/inbox-kind'
-import { InboxReviewDetail } from '../components/inbox/inbox-review-detail'
+import { InboxReviewDetail, ReportActWatcher } from '../components/inbox/inbox-review-detail'
 import { InboxReviewList } from '../components/inbox/inbox-review-list'
 import type { InboxSearch } from '../components/inbox/inbox-search'
 import { inboxItemKey, steppedKey, survivingNeighbour } from '../components/inbox/inbox-selection'
@@ -22,8 +22,11 @@ import { cn } from '../lib/utils'
 // band: `task` keeps that task's proposals (and its own decision), `document`
 // with `tier` keeps that document's proposals. A proposal of a tier this
 // client does not know stays listed read-only (component-next-action, State and
-// failure).
+// failure). A report from production belongs to no task, so the task
+// narrowing keeps it, as the server's task filter does; the document
+// narrowing lists only proposals (req-operator-next-action AC-2.12).
 function matchesSearch(item: InboxItem, search: InboxSearch) {
+  if (item.kind === 'feedback_report') return !search.document
   const proposal = item.proposal
   if (item.kind === 'document_proposal' && proposal) {
     if (search.task && (proposal.origin_type !== 'task' || proposal.origin_id !== search.task)) return false
@@ -65,9 +68,55 @@ export function InboxPage() {
   // md; the page never writes that fallback into the URL, so Back on a phone
   // stays on the list (AC-2.8).
   const keys = decisions.map(inboxItemKey)
-  const explicit = search.selected && keys.includes(search.selected) ? search.selected : undefined
-  const selectedKey = explicit ?? keys[0]
-  const selectedItem = selectedKey ? decisions[keys.indexOf(selectedKey)] : undefined
+  // The selection after an act on a report (AC-2.10; component-next-action
+  // invariant 37) follows the rule stated at `ReportHold`: the mark of the
+  // task and proposal path below, plus the order and the card kept from the
+  // click, because a report can leave the list before its act answers.
+  const [holds, setHolds] = useState<Record<string, ReportHold>>({})
+  const view = searchView(search)
+  const shownHold = Object.values(holds).find(
+    (hold) => hold.workspace === workspace && hold.address === search.selected && hold.view === view,
+  )
+  const explicit = search.selected && (keys.includes(search.selected) || shownHold) ? search.selected : undefined
+  const selectedKey = shownHold ? shownHold.key : (explicit ?? keys[0])
+  const selectedItem = shownHold
+    ? (decisions[keys.indexOf(shownHold.key)] ?? shownHold.item)
+    : selectedKey
+      ? decisions[keys.indexOf(selectedKey)]
+      : undefined
+
+  // Applies the rule to each hold whenever the list, the address, the band,
+  // the filter, or the workspace changes.
+  const keyList = keys.join('\n')
+  useEffect(() => {
+    const entries = Object.entries(holds)
+    if (entries.length === 0) return
+    const next = { ...holds }
+    let changed = false
+    let choose: { selected: string | undefined } | undefined
+    for (const [id, hold] of entries) {
+      // A selection the person made, or a change of band, filter, or
+      // workspace, ends the rule; the page's own behaviour applies.
+      if (hold.workspace !== workspace || hold.view !== view || hold.address !== search.selected) {
+        delete next[id]
+        changed = true
+        continue
+      }
+      // Until a 200, and while the list still lists the report, nothing moves.
+      if (!hold.recorded || !inbox.data || keys.includes(hold.key)) continue
+      // The list no longer lists the report: the nearest item after its place
+      // in the order at the click that the list still lists, else the nearest
+      // before it; none at all is the empty state.
+      delete next[id]
+      changed = true
+      choose = { selected: survivingNeighbour(hold.order, hold.key, keys) }
+    }
+    if (changed) setHolds(next)
+    if (choose) {
+      const selected = choose.selected
+      void navigate({ search: (current) => ({ ...current, selected }), replace: true, resetScroll: false })
+    }
+  }, [holds, inbox.data, keyList, workspace, view, search.selected, navigate])
 
   // Acts recorded from this page, by workspace and item. When the selected
   // item leaves after one of them, the selection moves to its surviving
@@ -75,7 +124,6 @@ export function InboxPage() {
   // act from here is a stale selection and falls back as above.
   const acted = useRef(new Set<string>())
   const previous = useRef<{ workspace: string; keys: string[]; selected?: string } | null>(null)
-  const keyList = keys.join('\n')
   useEffect(() => {
     if (!inbox.data) return
     const before = previous.current
@@ -105,6 +153,48 @@ export function InboxPage() {
   })
 
   const markActed = (key: string) => () => acted.current.add(`${workspace}\n${key}`)
+  // What the page shows now, for the report acts that start and settle
+  // between renders.
+  const shown = useRef({ workspace, keys, selectedKey, selectedItem, address: search.selected, view })
+  shown.current = { workspace, keys, selectedKey, selectedItem, address: search.selected, view }
+  const holdKey = (id: string) => `${workspace}\n${id}`
+  // An act starts on the report the detail shows, which is the selected
+  // one; the hold keeps the order the list showed, the card, and the address.
+  const reportActStarted = (id: string) => {
+    const now = shown.current
+    if (now.workspace !== workspace || now.selectedKey !== id || !now.selectedItem) return
+    const hold: ReportHold = {
+      workspace,
+      key: id,
+      item: now.selectedItem,
+      order: now.keys,
+      address: now.address,
+      view: now.view,
+      recorded: false,
+    }
+    setHolds((current) => ({ ...current, [holdKey(id)]: hold }))
+  }
+  // A 200 marks the hold as recorded; the choice waits for a list that no
+  // longer lists the report. A refusal, a retryable or unknown answer, or a
+  // failed request ends the rule, and an item that left falls back as any
+  // stale selection does.
+  const reportActSettled = (id: string, recorded: boolean) => {
+    setHolds((current) => {
+      const hold = current[holdKey(id)]
+      if (!hold) return current
+      const next = { ...current }
+      if (recorded) next[holdKey(id)] = { ...hold, recorded: true }
+      else delete next[holdKey(id)]
+      return next
+    })
+  }
+  const heldIds = Object.values(holds).flatMap((hold) => (hold.workspace === workspace ? [hold.key] : []))
+  const reportIds = [
+    ...new Set([
+      ...allDecisions.flatMap((item) => (item.kind === 'feedback_report' && item.report ? [item.report.id] : [])),
+      ...heldIds,
+    ]),
+  ]
   const showBlocked = show('blocked') && blocked.length > 0
   const showAutomatic = show('automatic') && (automatic.length > 0 || (inbox.data?.acts.length ?? 0) > 0)
 
@@ -130,6 +220,15 @@ export function InboxPage() {
       >
         {(inbox.data || inbox.isLoading) && <InboxBandChips search={search} counts={inbox.data && counts} />}
       </PageHeader>
+      {reportIds.map((id) => (
+        <ReportActWatcher
+          key={`${workspace}:${id}`}
+          workspace={workspace}
+          reportId={id}
+          onStarted={() => reportActStarted(id)}
+          onSettled={(recorded) => reportActSettled(id, recorded)}
+        />
+      ))}
       <div ref={root} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6">
           {(search.task || search.document) && (
@@ -161,7 +260,7 @@ export function InboxPage() {
 
           {inbox.data && show('decisions') && (
             <section aria-label="Decisions">
-              {decisions.length === 0 ? (
+              {decisions.length === 0 && !shownHold ? (
                 <EmptyDecisions />
               ) : (
                 <div className="grid min-w-0 items-start gap-4 md:grid-cols-[minmax(0,19rem)_minmax(0,1fr)] lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)]">
@@ -291,4 +390,47 @@ function EmptyDecisions() {
       <p className="mt-1 text-sm text-muted">No decisions are waiting. Conveyor will put the next one here.</p>
     </div>
   )
+}
+
+// The rule for the selection after an act on a report (AC-2.10;
+// component-next-action invariant 37). It is the task and proposal rule (a
+// mark set by a local act that stays until the item leaves, then the
+// surviving neighbour in the earlier order), with two additions: the order
+// and the card are kept from the click, because the report can leave the
+// list before its act answers, and the choice is made from a list in which
+// the report is gone.
+// 1. When the person sends an act on the selected report, the page keeps the
+//    order of the list as it showed it then and the report's place in it,
+//    and keeps the report's card in view.
+// 2. Nothing is chosen when the act answers. After a 200, the first list the
+//    page shows that no longer lists the report decides: it is the answer of
+//    an existing refresh (the read the 200 starts, a workspace stream frame,
+//    or window focus), or the list already shown at the 200 when a refresh
+//    dropped the report before the answer. Until then the report stays
+//    selected and in view, through any number of reads that still list it.
+// 3. From that list: the nearest item after the report's place in the order
+//    at the click that the list still lists; if none, the nearest item before
+//    it; if the list holds no decision, the empty state.
+// 4. A selection the person makes before that list stays, and ends the rule.
+// 5. A change of band, filter, or workspace before that list ends the rule;
+//    the page's behaviour for that change applies.
+// 6. A read that fails changes no list: the page shows the failure as it
+//    does for any read, and the next list decides.
+// 7. A refused, retryable, unknown (500), or failed act, and an item that
+//    leaves through someone else's act, end or never start the rule: the
+//    stale-selection fallback applies.
+interface ReportHold {
+  workspace: string
+  key: string
+  item: InboxItem
+  order: string[]
+  address: string | undefined
+  view: string
+  // Set by a 200.
+  recorded: boolean
+}
+
+// The band and filters of the address: a change of them ends the rule.
+function searchView(search: InboxSearch) {
+  return JSON.stringify([search.band ?? '', search.task ?? '', search.document ?? '', search.tier ?? ''])
 }

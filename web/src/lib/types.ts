@@ -1882,9 +1882,11 @@ export type InboxBand = 'decisions' | 'blocked' | 'automatic'
 
 // One GET /v1/next-actions item: a task item carries `task` and its compact
 // next action; a document proposal carries `kind: 'document_proposal'` and
-// `proposal`. The server orders the list.
+// `proposal`; a report from production carries `kind: 'feedback_report'` and
+// the served `report` (component-feedback-reports invariant 19). The server
+// orders the list.
 export interface InboxItem {
-  kind?: 'document_proposal'
+  kind?: 'document_proposal' | 'feedback_report'
   band: InboxBand
   task?: Task
   next_action?: NextActionCompact
@@ -1893,6 +1895,8 @@ export interface InboxItem {
   recommendation?: string
   no_judgment_needed?: boolean
   proposal?: PendingProposal
+  /** The served report of a `feedback_report` item. Its text is untrusted data. */
+  report?: FeedbackReport
   /** Server copy for a document proposal (component-next-action invariant 17). */
   label?: string
   question?: string

@@ -243,6 +243,16 @@ type ReportReadStore interface {
 	// It answers one report for each distinct ID, in the order of each ID's
 	// first occurrence. An ID the workspace does not hold has no report.
 	ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]FeedbackReport, FeedbackReportDetails, error)
+	// ListInboxFeedbackReports answers every report of the workspace that is
+	// open and whose in_inbox is true, ordered by ID, with their number, as
+	// one view of the store: the Inbox membership
+	// (component-feedback-reports v5 invariant 19). It has no row ceiling and
+	// no RefuseAbove: each member is one Inbox decision, and the Inbox lists
+	// every decision. With countOnly it answers Total alone through the same
+	// predicate and loads no record and no details. Otherwise Total equals
+	// len(Reports), and Details holds what a served report needs, read in
+	// the same view (invariant 21).
+	ListInboxFeedbackReports(ctx context.Context, countOnly bool) (FeedbackReportPage, error)
 	// CountCrateOpenFeedbackReports answers, by environment ID, the number
 	// of open reports that belong to the crate (invariant 23), with the
 	// list's crate filter as one aggregate that loads no report. An

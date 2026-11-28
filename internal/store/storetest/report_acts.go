@@ -64,6 +64,8 @@ func runFeedbackReportActs(t *testing.T, factory Factory) {
 		{"Details", runFeedbackReportDetails},
 		{"ReadWorkBoundedByThePage", runFeedbackReportReadWork},
 		{"ActAnswersTheReportAfterTheAct", runFeedbackActAnswer},
+		{"InboxMembership", runFeedbackInboxMembership},
+		{"InboxMembershipHasNoRowCeiling", runFeedbackInboxNoCeiling},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			x := factory.fresh(t, nil)
@@ -2005,4 +2007,133 @@ func runFeedbackActAnswer(t *testing.T, x Fixture) {
 	result, err = f.act(store.FeedbackReportAct{Kind: store.FeedbackReportActReopen})
 	requireOK(t, err)
 	check("a reopen of an open report", result, false)
+}
+
+// inboxRead reads the Inbox membership in both forms and checks that they
+// agree: the count-only form answers the number of the full form, loads no
+// report, and every listed report is open and in the Inbox, ordered by ID,
+// with its environment in the details of the same view.
+func inboxRead(t *testing.T, x Fixture, ctx context.Context) store.FeedbackReportPage {
+	t.Helper()
+	page, err := x.Backend.ListInboxFeedbackReports(ctx, false)
+	requireOK(t, err)
+	count, err := x.Backend.ListInboxFeedbackReports(ctx, true)
+	requireOK(t, err)
+	if page.Total != len(page.Reports) || count.Total != page.Total || len(count.Reports) != 0 {
+		t.Fatalf("inbox read total=%d reports=%d, count-only total=%d reports=%d", page.Total, len(page.Reports), count.Total, len(count.Reports))
+	}
+	for i, report := range page.Reports {
+		if report.State != store.FeedbackReportOpen || !report.InInbox {
+			t.Fatalf("inbox read lists %s in state %s with in_inbox %v", report.ID, report.State, report.InInbox)
+		}
+		if i > 0 && page.Reports[i-1].ID >= report.ID {
+			t.Fatalf("inbox read order %s before %s", page.Reports[i-1].ID, report.ID)
+		}
+		if _, ok := page.Details.Environments[report.EnvironmentID]; !ok {
+			t.Fatalf("inbox read details hold no environment %s for %s", report.EnvironmentID, report.ID)
+		}
+	}
+	if page.Details.ReadAt.IsZero() {
+		t.Fatal("inbox read has no read clock")
+	}
+	return page
+}
+
+// runFeedbackInboxMembership holds the Inbox read to the membership rule of
+// component-feedback-reports v5 invariant 19: a report is listed while it is
+// open and no person has acted on it since it was stored or reopened by a
+// report, in its workspace only.
+func runFeedbackInboxMembership(t *testing.T, x Fixture) {
+	production := newFeedbackEnvironment(t, x, "Production", "watcher")
+	staging := newFeedbackEnvironment(t, x, "Staging", "watcher")
+	if page := inboxRead(t, x, x.Context); page.Total != 0 {
+		t.Fatalf("an empty workspace lists %d reports", page.Total)
+	}
+	keys := []string{"never", "possible", "linked", "closed", "fixed", "unchanged", "user-reopened", "report-reopened"}
+	for i, key := range keys {
+		production.sendReports(t, time.Duration(i+1)*time.Minute, reportEntry(key))
+	}
+	staging.sendReports(t, time.Minute, reportEntry("staging"))
+	report := func(key string) store.FeedbackReport { return production.reportByKey(t, key) }
+	ctx := actContext(x)
+	act := func(a store.FeedbackReportAct, at time.Duration) {
+		t.Helper()
+		a.At = feedbackTime(at)
+		_, err := x.Backend.RecordFeedbackReportAct(ctx, a)
+		requireOK(t, err)
+	}
+	task := mergedActTask(t, x, "")
+	fix := openActTask(t, x)
+	// A possible link that the linking work wrote is not a person's act.
+	possible := report("possible")
+	x.SeedFeedbackReportLink(t, x.Context, store.FeedbackReportLink{ID: store.FeedbackReportLinkID(possible.ID, 1), ReportID: possible.ID, TaskID: task.ID,
+		State: store.FeedbackReportLinkPossible, Evidence: []store.FeedbackReportEvidence{}, CreatedAt: feedbackTime(time.Hour), CreatedBy: store.SystemActor().ID})
+	act(store.FeedbackReportAct{Kind: store.FeedbackReportActLink, ReportID: report("linked").ID, TaskID: task.ID}, time.Hour)
+	act(store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: report("closed").ID, Reason: "done"}, time.Hour)
+	act(store.FeedbackReportAct{Kind: store.FeedbackReportActFixTask, ReportID: report("fixed").ID, TaskID: fix.ID}, time.Hour)
+	act(store.FeedbackReportAct{Kind: store.FeedbackReportActReopen, ReportID: report("unchanged").ID}, time.Hour)
+	act(store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: report("user-reopened").ID, Reason: "done"}, time.Hour)
+	act(store.FeedbackReportAct{Kind: store.FeedbackReportActReopen, ReportID: report("user-reopened").ID}, 2*time.Hour)
+	act(store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: report("report-reopened").ID, Reason: "done"}, time.Hour)
+	later := reportEntry("report-reopened")
+	later.FirstSeen, later.LastSeen = feedbackReportTimePtr(0), feedbackReportTimePtr(3*time.Hour)
+	production.sendReports(t, 4*time.Hour, later)
+	// Another workspace's report is never listed here.
+	foreign := x
+	foreign.Context = foreignContext(t, x)
+	other := newFeedbackEnvironment(t, foreign, "Elsewhere", "watcher")
+	other.sendReports(t, time.Minute, reportEntry("foreign"))
+
+	want := []string{report("never").ID, possible.ID, report("unchanged").ID, report("report-reopened").ID, staging.reportByKey(t, "staging").ID}
+	slices.Sort(want)
+	page := inboxRead(t, x, x.Context)
+	if got := feedbackPageIDs(page); !slices.Equal(got, want) {
+		t.Fatalf("inbox membership = %v, want %v", got, want)
+	}
+	// The details of the same view hold what a served report needs: the
+	// possible link with its task.
+	if links := page.Details.Links[possible.ID]; len(links) != 1 || links[0].TaskID != task.ID {
+		t.Fatalf("inbox details links of %s = %+v", possible.ID, links)
+	}
+	if _, ok := page.Details.Tasks[task.ID]; !ok {
+		t.Fatalf("inbox details hold no task %s", task.ID)
+	}
+	if foreignPage := inboxRead(t, x, foreign.Context); len(foreignPage.Reports) != 1 || foreignPage.Reports[0].ID != other.reportByKey(t, "foreign").ID {
+		t.Fatalf("the other workspace's inbox = %v", feedbackPageIDs(foreignPage))
+	}
+}
+
+// runFeedbackInboxNoCeiling stores more than 1,000 reports in the Inbox
+// across six environments, each under the open-report limit, and reads them
+// all in one view with no row ceiling. Acts on two of them leave the rest.
+func runFeedbackInboxNoCeiling(t *testing.T, x Fixture) {
+	const environments, perEnvironment = 6, 168
+	keys := map[string]feedbackEnvironment{}
+	for e := range environments {
+		env := newFeedbackEnvironment(t, x, fmt.Sprintf("Region %d", e), "watcher")
+		for batch := 0; batch*store.MaxFeedbackReportEntries < perEnvironment; batch++ {
+			entries := []store.FeedbackReportEntry{}
+			for i := batch * store.MaxFeedbackReportEntries; i < min((batch+1)*store.MaxFeedbackReportEntries, perEnvironment); i++ {
+				key := fmt.Sprintf("region-%d-%03d", e, i)
+				entries = append(entries, reportEntry(key))
+				keys[key] = env
+			}
+			env.sendReports(t, time.Duration(batch+1)*time.Minute, entries...)
+		}
+	}
+	total := environments * perEnvironment
+	if total <= store.MaxFeedbackReportQueryLimit {
+		t.Fatalf("the case must pass the list's page limit: %d reports", total)
+	}
+	if page := inboxRead(t, x, x.Context); page.Total != total {
+		t.Fatalf("inbox read lists %d reports, want %d", page.Total, total)
+	}
+	ctx := actContext(x)
+	for _, key := range []string{"region-0-000", "region-5-167"} {
+		_, err := x.Backend.RecordFeedbackReportAct(ctx, store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: keys[key].reportByKey(t, key).ID, Reason: "done", At: feedbackTime(time.Hour)})
+		requireOK(t, err)
+	}
+	if page := inboxRead(t, x, x.Context); page.Total != total-2 {
+		t.Fatalf("inbox read after two closes lists %d reports, want %d", page.Total, total-2)
+	}
 }

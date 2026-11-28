@@ -10,6 +10,7 @@ import {
   PauseCircle,
   RefreshCw,
   RotateCcw,
+  Siren,
 } from 'lucide-react'
 import { useSyncExternalStore } from 'react'
 import type { InboxItem } from '../../lib/types'
@@ -36,6 +37,9 @@ const kinds: Record<string, { tone: InboxTone; icon: LucideIcon }> = {
   dispatch_exhausted: { tone: 'broken', icon: AlertTriangle },
   verification_disposition: { tone: 'broken', icon: AlertTriangle },
   document_proposal: { tone: 'document', icon: FileText },
+  // A problem a watcher reported from production (component-feedback-reports
+  // invariant 19). It is not urgent by itself, so it takes no attention tone.
+  feedback_report: { tone: 'broken', icon: Siren },
   parked: { tone: 'neutral', icon: PauseCircle },
   stalled: { tone: 'neutral', icon: PauseCircle },
   blocked: { tone: 'neutral', icon: PauseCircle },
@@ -46,10 +50,11 @@ export function inboxKind(kind: string | undefined) {
   return kinds[kind ?? ''] ?? { tone: 'neutral' as const, icon: CircleDot }
 }
 
-// The kind an inbox item presents: `document_proposal` for a proposal, else
-// its next action's kind.
+// The kind an inbox item presents: `document_proposal` for a proposal,
+// `feedback_report` for a report from production, else its next action's kind.
 export function itemKind(item: InboxItem) {
-  return item.kind === 'document_proposal' ? 'document_proposal' : (item.next_action?.kind ?? '')
+  if (item.kind === 'document_proposal' || item.kind === 'feedback_report') return item.kind
+  return item.next_action?.kind ?? ''
 }
 
 export const toneText: Record<InboxTone, string> = {

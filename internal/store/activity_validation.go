@@ -92,6 +92,12 @@ var ActivityValidationTables = []ActivityValidationTable{
 	{Name: "monitor_observations", Scope: ActivityScopeWorkspace},
 	{Name: "workspace_role_bindings", Scope: ActivityScopeWorkspace},
 	{Name: "users", Scope: ActivityScopeMember, Exclude: []string{"password_hash"}},
+	// The Inbox serves each report in the Inbox, and a later entry under a
+	// report's key changes its count and times with no event and no notice
+	// (component-feedback-reports invariants 6, 20; feature-production-
+	// feedback-listening FR-5). The linking job's progress columns change
+	// while links stay pending and no read serves them.
+	{Name: "feedback_reports", Scope: ActivityScopeWorkspace, Exclude: []string{"linking_last_attempt_at", "line_progress", "timing_result"}},
 }
 
 // ActivityTableSignature is one table's transferred row: its scoped row count
@@ -228,6 +234,38 @@ func (m *memory) workOrdersAt(now time.Time) []core.WorkOrder {
 func (m *memory) ReadActivityValidation(ctx context.Context, now time.Time) (ActivityValidation, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.readActivityValidationLocked(ctx, now, nil)
+}
+
+// ReadActivityValidation adds the volatile backend's feedback reports to the
+// memory validation state under the same read lock, as the durable backends
+// hash the feedback_reports table (feature-production-feedback-listening
+// FR-5). The linking job's progress members are cleared, as the durable
+// backends exclude their columns.
+func (m *volatileMemory) ReadActivityValidation(ctx context.Context, now time.Time) (ActivityValidation, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.memory.readActivityValidationLocked(ctx, now, func(inWorkspace func(string) bool, section func(string, any)) {
+		reports := make([]FeedbackReport, 0)
+		for key, stored := range m.feedbackReportState.reports {
+			if !inWorkspace(key.workspace) {
+				continue
+			}
+			for _, report := range stored {
+				report = cloneFeedbackReport(report)
+				report.LinkingLastAttemptAt, report.LineProgress, report.TimingResult = nil, nil, nil
+				reports = append(reports, report)
+			}
+		}
+		sort.Slice(reports, func(i, j int) bool { return reports[i].ID < reports[j].ID })
+		section("feedback_reports", reports)
+	})
+}
+
+// readActivityValidationLocked computes the validation state under the
+// caller's read lock. extra, when set, adds the sections of tables the memory
+// struct does not hold.
+func (m *memory) readActivityValidationLocked(ctx context.Context, now time.Time, extra func(inWorkspace func(string) bool, section func(string, any))) (ActivityValidation, error) {
 	workspace, scoped := WorkspaceFromContext(ctx)
 	scoped = scoped && workspace != ""
 	inWorkspace := func(ws string) bool { return !scoped || ws == workspace }
@@ -343,6 +381,9 @@ func (m *memory) ReadActivityValidation(ctx context.Context, now time.Time) (Act
 	section("monitor_observations", observations)
 	section("workspace_members", scopedValues(m.workspaceMembers, inWorkspace, func(value bool) bool { return value }))
 	section("workspace_role_bindings", scopedValues(m.workspaceMemberRoles, inWorkspace, func(value core.WorkspaceRole) core.WorkspaceRole { return value }))
+	if extra != nil {
+		extra(inWorkspace, section)
+	}
 	copy(out.Signature[:], hash.Sum(nil))
 	return out, nil
 }

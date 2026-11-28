@@ -5,8 +5,11 @@ import type { InboxItem } from '../../lib/types'
 // its task ID. A decision proposal is `decision:<DEC-n>`. Any other proposal,
 // including one of a tier this client does not know, is its literal
 // `<tier>:<document-id>:<version>`, or `<tier>:<document-id>` when it carries
-// no version.
+// no version. A report from production is its report ID.
 export function inboxItemKey(item: InboxItem): string {
+  // A report from production is its report ID, `rpt-<yymmdd>-<6 hex>`, which
+  // no task ID, decision, or proposal key takes.
+  if (item.kind === 'feedback_report') return item.report?.id ?? ''
   const proposal = item.proposal
   if (proposal) {
     if (proposal.tier === 'decision') return `decision:${proposal.id}`

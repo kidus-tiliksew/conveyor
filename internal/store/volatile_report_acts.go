@@ -227,6 +227,41 @@ func (m *volatileMemory) ListFeedbackReports(ctx context.Context, query Feedback
 	return page, nil
 }
 
+// ListInboxFeedbackReports implements ReportReadStore under one read lock:
+// every open report of the workspace with in_inbox true, ordered by ID, with
+// no row ceiling. The count-only form copies no report.
+func (m *volatileMemory) ListInboxFeedbackReports(ctx context.Context, countOnly bool) (FeedbackReportPage, error) {
+	workspace := workspaceOrDefault(ctx, "")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	page := FeedbackReportPage{Reports: []FeedbackReport{}, Details: NewFeedbackReportDetails()}
+	readAt := FeedbackReadClock(ctx)
+	for scope, stored := range m.feedbackReportState.reports {
+		if scope.workspace != workspace {
+			continue
+		}
+		for _, report := range stored {
+			if report.State != FeedbackReportOpen || !report.InInbox {
+				continue
+			}
+			page.Total++
+			if !countOnly {
+				page.Reports = append(page.Reports, cloneFeedbackReport(report))
+			}
+		}
+	}
+	if !countOnly {
+		slices.SortFunc(page.Reports, func(a, b FeedbackReport) int { return strings.Compare(a.ID, b.ID) })
+		details, err := m.feedbackReportDetailsLocked(workspace, page.Reports)
+		if err != nil {
+			return FeedbackReportPage{}, err
+		}
+		page.Details = details
+	}
+	page.Details.ReadAt = readAt
+	return page, nil
+}
+
 // ReadFeedbackReport implements ReportReadStore under one read lock.
 func (m *volatileMemory) ReadFeedbackReport(ctx context.Context, reportID string) (FeedbackReport, FeedbackReportDetails, error) {
 	workspace := workspaceOrDefault(ctx, "")

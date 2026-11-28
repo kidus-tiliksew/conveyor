@@ -2,6 +2,8 @@ import { expect, type Locator, type Page, type Request, type Route } from '@play
 import { test } from './helpers/bounded-detail'
 import { callerIdentity, capabilitiesForRole } from './helpers/caller-identity'
 import { expectNoNextActionOmissions } from './helpers/next-action-omissions'
+import { controlWorkspaceChanges } from './helpers/workspace-changes'
+import { report as reportFixture } from './reports-fixtures'
 
 // The operator inbox (feature-operator-next-action NA-6; REQ-2) over stubbed
 // GET /v1/next-actions, GET /v1/tasks/{id}/next-action and the retired
@@ -43,6 +45,9 @@ interface Fixture {
   // Document reads by path; a number answers with that status.
   documents?: Record<string, Record<string, unknown> | number>
   workspaces?: { id: string; name: string }[]
+  // Served reports by ID, for GET /v1/feedback-reports/{id}; a number
+  // answers with that status.
+  reports?: Record<string, Record<string, unknown> | number>
 }
 
 interface Harness {
@@ -50,6 +55,13 @@ interface Harness {
   posts: Request[]
   inboxRequests: string[]
   documentRequests: Request[]
+  reportReads: string[]
+  badgeReads: number
+  // While set, Inbox reads wait for it. Each read answers from the fixture
+  // as it is when the read is let through.
+  holdInbox?: Promise<void>
+  // The number of next Inbox reads that answer 500.
+  failInbox?: number
   onPost?: (request: Request, path: string) => Record<string, unknown> | undefined
   // While set, acts and document reads wait for it before they answer.
   holdPosts?: Promise<void>
@@ -57,7 +69,15 @@ interface Harness {
 }
 
 async function serve(page: Page, fixture: Fixture, onPost?: Harness['onPost']): Promise<Harness> {
-  const harness: Harness = { fixture, posts: [], inboxRequests: [], documentRequests: [], onPost }
+  const harness: Harness = {
+    fixture,
+    posts: [],
+    inboxRequests: [],
+    documentRequests: [],
+    reportReads: [],
+    badgeReads: 0,
+    onPost,
+  }
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
@@ -75,6 +95,11 @@ async function serve(page: Page, fixture: Fixture, onPost?: Harness['onPost']): 
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/next-actions') {
       harness.inboxRequests.push(url.search)
+      if (harness.holdInbox) await harness.holdInbox
+      if (harness.failInbox) {
+        harness.failInbox--
+        return route.fulfill({ status: 500, json: { error: 'internal' } }).catch(() => {})
+      }
       const band = url.searchParams.get('band')
       const items = band ? f.items.filter((item) => item.band === band) : f.items
       const offset = Number(url.searchParams.get('offset') ?? 0)
@@ -85,6 +110,7 @@ async function serve(page: Page, fixture: Fixture, onPost?: Harness['onPost']): 
       })
     }
     if (path === '/v1/pending-proposals') {
+      harness.badgeReads++
       const items = f.proposals ?? []
       const decisions = f.operatorDecisions ?? 0
       return route.fulfill({
@@ -102,6 +128,16 @@ async function serve(page: Page, fixture: Fixture, onPost?: Harness['onPost']): 
       return detail ? route.fulfill({ json: detail }) : route.fulfill({ status: 404, json: { error: 'not found' } })
     }
     if (path.endsWith('/events/stream')) return route.fulfill({ status: 204, body: '' })
+    const reportRead = path.match(/^\/v1\/feedback-reports\/([^/]+)$/)
+    if (reportRead && request.method() === 'GET') {
+      const id = decodeURIComponent(reportRead[1])
+      harness.reportReads.push(id)
+      const served = f.reports?.[id]
+      if (typeof served === 'number') return route.fulfill({ status: served, json: { error: 'unavailable' } })
+      return served
+        ? route.fulfill({ json: served })
+        : route.fulfill({ status: 404, json: { error: 'report_not_found', message: 'The report was not found.' } })
+    }
     if (request.method() === 'GET' && f.documents && path in f.documents) {
       harness.documentRequests.push(request)
       if (harness.holdDocuments) await harness.holdDocuments
@@ -115,6 +151,8 @@ async function serve(page: Page, fixture: Fixture, onPost?: Harness['onPost']): 
       harness.posts.push(request)
       if (harness.holdPosts) await harness.holdPosts
       const body = harness.onPost?.(request, path)
+      // `abort` drops the connection: no answer arrives.
+      if (body?.abort === true) return route.abort('failed').catch(() => {})
       // A numeric `status` refuses the act with the body's error.
       const status = typeof body?.status === 'number' ? body.status : 200
       return route.fulfill({ status, json: body ?? {} }).catch(() => {})
@@ -1659,4 +1697,834 @@ test('the compact checklist on task detail shows the justification as Markdown b
   await expectNoMarkdownSource(justification)
   await row.getByRole('button', { name: 'Hide why' }).click()
   await expect(row.locator('[data-context-justification]')).toHaveCount(0)
+})
+
+// Reports from production in the Inbox (component-feedback-reports v5
+// invariants 19, 25, 26; component-next-action invariants 21, 22, 34, 37, 38;
+// req-operator-next-action AC-2.8, AC-2.10, AC-2.12;
+// feature-production-feedback-listening FR-5). A report item carries the
+// served report; the detail renders the shared report card with its acts.
+const REPORT_A = 'rpt-261127-a0a0a1'
+const REPORT_B = 'rpt-261127-b0b0b2'
+const reportRow = (page: Page, id: string) => page.locator(`[data-inbox-row="${id}"]`)
+const reportDetail = (page: Page) => page.locator('[data-inbox-detail] [data-inbox-item="feedback_report"]')
+
+function servedReport(id: string, overrides: Record<string, unknown> = {}) {
+  return reportFixture(id, overrides) as unknown as Record<string, unknown>
+}
+
+function reportItem(served: Record<string, unknown>, at: string) {
+  return { kind: 'feedback_report', band: 'decisions', report: served, last_event_at: at }
+}
+
+// Server order: T-zeta, T-alpha, report A, T-mid, report B, then the other
+// bands.
+function reportsFixture(): Fixture {
+  const fixture = decisionsFixture()
+  const a = servedReport(REPORT_A, {
+    summary: 'Checkout request timed out after 30 seconds\nStack: pay.go:214',
+    created_at: '2026-11-27T11:00:00Z',
+  })
+  const b = servedReport(REPORT_B, { kind: 'alert', summary: 'Payment queue depth is above 10,000' })
+  const decisions = fixture.items.filter((item) => item.band === 'decisions')
+  const rest = fixture.items.filter((item) => item.band !== 'decisions')
+  fixture.items = [
+    decisions[0],
+    decisions[1],
+    reportItem(a, '2026-11-27T11:00:00Z'),
+    decisions[2],
+    reportItem(b, '2026-11-27T11:30:00Z'),
+    ...rest,
+  ]
+  fixture.operatorDecisions = 5
+  fixture.reports = { [REPORT_A]: a, [REPORT_B]: b }
+  return fixture
+}
+
+// Serves a report in place of the fixture's, in the Inbox item and on its
+// own read.
+function replaceReport(fixture: Fixture, served: Record<string, unknown>) {
+  const id = served.id as string
+  fixture.items = fixture.items.map((item) =>
+    (item.report as { id?: string } | undefined)?.id === id ? { ...item, report: served } : item,
+  )
+  fixture.reports = { ...fixture.reports, [id]: served }
+}
+
+// Removes a report from the Inbox the server serves, as an act or another
+// person's act would, and answers its served report.
+function leaveInbox(fixture: Fixture, id: string, change: Record<string, unknown>) {
+  fixture.items = fixture.items.filter((item) => (item.report as { id?: string } | undefined)?.id !== id)
+  fixture.operatorDecisions = (fixture.operatorDecisions ?? 1) - 1
+  const served = { ...(fixture.reports?.[id] as Record<string, unknown>), in_inbox: false, ...change }
+  fixture.reports = { ...fixture.reports, [id]: served }
+  return served
+}
+
+function closedChange(reason: string) {
+  return { state: 'closed', closed: { at: '2026-11-27T12:00:00Z', by: 'usr_operator', reason } }
+}
+
+async function closeSelectedReport(page: Page, reason = 'Fixed by the last deploy.') {
+  const detail = reportDetail(page)
+  await detail.getByRole('button', { name: 'Close report' }).click()
+  await detail.getByLabel('Reason to close the report').fill(reason)
+  await detail.locator('form').getByRole('button', { name: 'Close report' }).click()
+}
+
+const actsSent = (harness: Harness) =>
+  harness.posts.filter((request) => new URL(request.url()).pathname.startsWith('/v1/feedback-reports/'))
+
+test.describe('reports from production in the Inbox', () => {
+  test('a report is one decision row with its kind, plain first line, and age, and its card in the detail', async ({
+    page,
+  }) => {
+    await serve(page, reportsFixture())
+    await page.goto('/w/demo/inbox')
+    await expect(decisionRows(page)).toHaveCount(5)
+    const keys = await decisionRows(page).evaluateAll((rows) => rows.map((row) => row.getAttribute('data-inbox-row')))
+    expect(keys).toEqual(['T-zeta', 'T-alpha', REPORT_A, 'T-mid', REPORT_B])
+    const row = reportRow(page, REPORT_A)
+    await expect(row.locator('[data-row-kind]')).toHaveText('Production error')
+    await expect(reportRow(page, REPORT_B).locator('[data-row-kind]')).toHaveText('Production alert')
+    // The title is the first line of the summary, as plain text.
+    await expect(row.locator('[data-row-title]')).toHaveText('Checkout request timed out after 30 seconds')
+    await expect(row.locator('[data-row-age]')).toHaveAttribute('datetime', '2026-11-27T11:00:00Z')
+    await expect(row.locator('[data-row-age]')).not.toHaveText('')
+    // A report is not urgent by itself and has no pull request.
+    await expect(page.locator(`[data-inbox-row-item="${REPORT_A}"] [data-row-urgent]`)).toHaveCount(0)
+    await expect(page.locator(`[data-inbox-row-item="${REPORT_A}"] [data-row-pull-request]`)).toHaveCount(0)
+
+    await row.click()
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+    const detail = reportDetail(page)
+    await expect(detail.locator('[data-decision-label]')).toHaveText('Production error')
+    await expect(detail.locator('[data-detail-title]')).toHaveText('Checkout request timed out after 30 seconds')
+    const card = detail.locator(`[data-report-card="${REPORT_A}"]`)
+    await expect(card.locator('[data-report-summary]')).toHaveText(
+      'Checkout request timed out after 30 seconds\nStack: pay.go:214',
+    )
+    await expect(card.locator('[data-report-environment]')).toHaveText('production')
+    for (const name of ['Link a task or crate', 'Close report']) {
+      await expect(card.getByRole('button', { name })).toBeEnabled()
+    }
+    await expect(card.locator('[data-report-start-fix-task]')).toBeVisible()
+  })
+
+  test('the address selects a report by its ID, also after a reload', async ({ page }) => {
+    await serve(page, reportsFixture())
+    await page.goto(`/w/demo/inbox?selected=${REPORT_B}`)
+    await expect(reportDetail(page).locator(`[data-report-card="${REPORT_B}"]`)).toBeVisible()
+    await expect(reportRow(page, REPORT_B)).toHaveAttribute('aria-current', /.+/)
+    await page.reload()
+    await expect(reportDetail(page).locator(`[data-report-card="${REPORT_B}"]`)).toBeVisible()
+  })
+
+  test('closing the selected report records one act, reads the Inbox and the badge again, and selects the next item', async ({
+    page,
+  }) => {
+    const fixture = reportsFixture()
+    const harness = await serve(page, fixture, (_request, path) =>
+      path === `/v1/feedback-reports/${REPORT_A}/close`
+        ? leaveInbox(fixture, REPORT_A, closedChange('Fixed by the last deploy.'))
+        : undefined,
+    )
+    await page.goto(`/w/demo/inbox?selected=${REPORT_A}`)
+    const badge = page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: /Inbox/ })
+    await expect(badge.getByText('5', { exact: true })).toBeVisible()
+    const inboxBefore = harness.inboxRequests.length
+    const badgeBefore = harness.badgeReads
+    await closeSelectedReport(page)
+    // The next item in the server's order (AC-2.10).
+    await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Mid item without a deadline')
+    await expect(page).toHaveURL(/selected=T-mid/)
+    await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+    expect(actsSent(harness).map((request) => `${request.method()} ${new URL(request.url()).pathname}`)).toEqual([
+      `POST /v1/feedback-reports/${REPORT_A}/close`,
+    ])
+    expect(actsSent(harness)[0].postDataJSON()).toEqual({ reason: 'Fixed by the last deploy.' })
+    await expect.poll(() => harness.inboxRequests.length).toBeGreaterThan(inboxBefore)
+    await expect.poll(() => harness.badgeReads).toBeGreaterThan(badgeBefore)
+    await expect(badge.getByText('4', { exact: true })).toBeVisible()
+  })
+
+  test('an act on the last item selects the one before it', async ({ page }) => {
+    const fixture = reportsFixture()
+    await serve(page, fixture, (_request, path) =>
+      path === `/v1/feedback-reports/${REPORT_B}/close`
+        ? leaveInbox(fixture, REPORT_B, closedChange('Done.'))
+        : undefined,
+    )
+    await page.goto(`/w/demo/inbox?selected=${REPORT_B}`)
+    await closeSelectedReport(page, 'Done.')
+    await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Mid item without a deadline')
+    await expect(page).toHaveURL(/selected=T-mid/)
+  })
+
+  test('when the last decision goes, the Inbox shows the empty state', async ({ page }) => {
+    const fixture = reportsFixture()
+    fixture.items = fixture.items.filter(
+      (item) => item.kind === 'feedback_report' && (item.report as { id: string }).id === REPORT_A,
+    )
+    fixture.operatorDecisions = 1
+    await serve(page, fixture, (_request, path) =>
+      path === `/v1/feedback-reports/${REPORT_A}/close`
+        ? leaveInbox(fixture, REPORT_A, closedChange('Done.'))
+        : undefined,
+    )
+    await page.goto('/w/demo/inbox')
+    await closeSelectedReport(page, 'Done.')
+    await expect(page.locator('[data-no-decisions]')).toContainText("You're clear")
+    await expect(page.locator('[data-inbox-summary]')).toHaveText('Nothing needs you right now.')
+  })
+
+  test('a refused act resolves nothing: a report someone else closed falls back to the first item', async ({
+    page,
+  }) => {
+    const fixture = reportsFixture()
+    const harness = await serve(page, fixture, (_request, path) => {
+      if (path !== `/v1/feedback-reports/${REPORT_A}/close`) return undefined
+      leaveInbox(fixture, REPORT_A, closedChange('Someone else closed it.'))
+      return { status: 409, error: 'report_closed', message: 'The report is closed.' }
+    })
+    await page.goto(`/w/demo/inbox?selected=${REPORT_A}`)
+    const inboxBefore = harness.inboxRequests.length
+    await closeSelectedReport(page)
+    await expect.poll(() => harness.inboxRequests.length).toBeGreaterThan(inboxBefore)
+    await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+    // Not the neighbour: an item that left without this page's recorded act
+    // is a stale selection, and the wide layout shows the first item.
+    await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Zeta plan everyone waits on')
+    expect(actsSent(harness)).toHaveLength(1)
+  })
+
+  test('an unknown answer reads the report again, never sends the act again, and resolves nothing', async ({
+    page,
+  }) => {
+    const fixture = reportsFixture()
+    const harness = await serve(page, fixture, (_request, path) =>
+      path === `/v1/feedback-reports/${REPORT_A}/close` ? { status: 500, error: 'internal' } : undefined,
+    )
+    await page.goto(`/w/demo/inbox?selected=${REPORT_A}`)
+    const readsBefore = harness.reportReads.length
+    await closeSelectedReport(page)
+    const detail = reportDetail(page)
+    await expect(detail.locator('[data-report-act-error]')).toContainText(
+      'Conveyor does not know whether it recorded this. Conveyor read the report again.',
+    )
+    expect(harness.reportReads.length).toBeGreaterThan(readsBefore)
+    expect(harness.reportReads.slice(readsBefore).every((id) => id === REPORT_A)).toBe(true)
+    await expect(detail.locator(`[data-report-card="${REPORT_A}"]`)).toBeVisible()
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+    expect(actsSent(harness)).toHaveLength(1)
+  })
+
+  test('a report acted on in another tab leaves on a stream frame and the selection falls back to the first item', async ({
+    page,
+  }) => {
+    const stream = await controlWorkspaceChanges(page)
+    const fixture = reportsFixture()
+    const harness = await serve(page, fixture)
+    await page.goto(`/w/demo/inbox?selected=${REPORT_A}`)
+    await expect(reportDetail(page)).toBeVisible()
+    await stream.ready()
+    const before = harness.inboxRequests.length
+    leaveInbox(fixture, REPORT_A, { links: [] })
+    // A `workspace` notice is a frame that names no task.
+    await stream.activity()
+    await expect.poll(() => harness.inboxRequests.length).toBeGreaterThan(before)
+    await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+    await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Zeta plan everyone waits on')
+  })
+
+  test('an act answer that arrives after the selection moved changes only its own report', async ({ page }) => {
+    const fixture = reportsFixture()
+    const harness = await serve(page, fixture, (_request, path) =>
+      path === `/v1/feedback-reports/${REPORT_A}/close`
+        ? leaveInbox(fixture, REPORT_A, closedChange('Late.'))
+        : undefined,
+    )
+    let release = () => {}
+    harness.holdPosts = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    await page.goto(`/w/demo/inbox?selected=${REPORT_A}`)
+    await closeSelectedReport(page, 'Late.')
+    await expect.poll(() => actsSent(harness).length).toBe(1)
+    await select(page, 'Alpha agent question')
+    release()
+    await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+    await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
+    await expect(page).toHaveURL(/selected=T-alpha/)
+  })
+
+  test('the band and the narrowings treat a report as a decision of no task', async ({ page }) => {
+    await serve(page, reportsFixture())
+    await page.goto('/w/demo/inbox?band=blocked')
+    await expect(page.getByRole('region', { name: 'Decisions' })).toHaveCount(0)
+    await page.goto('/w/demo/inbox?task=T-zeta')
+    await expect(reportRow(page, REPORT_A)).toBeVisible()
+    await expect(reportRow(page, REPORT_B)).toBeVisible()
+    await page.goto('/w/demo/inbox?document=component-x&tier=system_design')
+    await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+  })
+
+  test('no Inbox key records an act on a selected report', async ({ page }) => {
+    const fixture = reportsFixture()
+    for (const id of [REPORT_A, REPORT_B]) {
+      // A report with a possible link shows every control of an open report.
+      replaceReport(
+        fixture,
+        servedReport(id, {
+          links: [
+            { id: `lnk-${id}`, state: 'possible', task: { id: 'T-cause', title: 'Cause', crate: null }, evidence: [] },
+          ],
+        }),
+      )
+    }
+    const harness = await serve(page, fixture)
+    await page.goto(`/w/demo/inbox?selected=${REPORT_A}`)
+    const detail = reportDetail(page)
+    await expect(detail.getByRole('button', { name: /Confirm the link/ })).toBeVisible()
+    for (const key of ['c', 'r', 'd', 'Enter', 'Space', 'Delete', 'Backspace', 'x', 'a', 'm']) {
+      await page.keyboard.press(key)
+    }
+    await expect(detail.locator('[data-shortcut]')).toHaveCount(0)
+    // j and k still move the selection.
+    await page.keyboard.press('j')
+    await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Mid item without a deadline')
+    await page.keyboard.press('k')
+    await expect(reportDetail(page)).toBeVisible()
+    expect(harness.posts).toHaveLength(0)
+  })
+
+  test('every report text prints as plain text in the row and the detail', async ({ page }) => {
+    const fixture = reportsFixture()
+    const hostile = servedReport(REPORT_A, {
+      summary:
+        '**bold** <img src=x onerror="window.__xss=1"> `code` ``````‮evil\tTab\nsecond <script>window.__xss=2</script>',
+      key: '<b>key</b>‮',
+      service: '<script>window.__xss=3</script>',
+      environment: {
+        id: 'env-x',
+        name: '_env_ <i>name</i> [link](javascript:alert(1))',
+        listening: true,
+        last_signal_at: null,
+      },
+      file: '<u>file</u>.go',
+      line: 3,
+    })
+    fixture.items = fixture.items.map((item) =>
+      (item.report as { id?: string } | undefined)?.id === REPORT_A
+        ? reportItem(hostile, '2026-11-27T11:00:00Z')
+        : item,
+    )
+    fixture.reports = { ...fixture.reports, [REPORT_A]: hostile }
+    await serve(page, fixture)
+    await page.goto(`/w/demo/inbox?selected=${REPORT_A}`)
+    const row = reportRow(page, REPORT_A)
+    await expect(row.locator('[data-row-title]')).toHaveText(
+      '**bold** <img src=x onerror="window.__xss=1"> `code` ``````‮evil\tTab',
+    )
+    const detail = reportDetail(page)
+    await expect(detail.locator('[data-report-summary]')).toHaveText(hostile.summary as string)
+    await expect(detail.locator('[data-report-key]')).toHaveText('<b>key</b>‮')
+    await expect(detail.locator('[data-report-service]')).toHaveText('<script>window.__xss=3</script>')
+    await expect(detail.locator('[data-report-environment]')).toHaveText(
+      '_env_ <i>name</i> [link](javascript:alert(1))',
+    )
+    for (const root of [page.locator(`[data-inbox-row-item="${REPORT_A}"]`), detail]) {
+      await expect(root.locator('img, script, strong, em, b, i, u, code, pre, a[href^="javascript"]')).toHaveCount(0)
+    }
+    expect(await page.evaluate(() => (window as unknown as { __xss?: number }).__xss)).toBeUndefined()
+  })
+})
+
+// A typical report and the longest values the design allows, at 375 px and
+// at a desktop width: nothing overflows the page, and the clamped row title
+// and heading are read in full in the card. CONVEYOR_SCREENSHOT_DIR keeps a
+// local copy, and the Playwright report carries each attachment.
+const screenshotReports: Record<string, Record<string, unknown>> = {
+  typical: servedReport(REPORT_A, {
+    summary: 'Checkout request timed out after 30 seconds\nThe payment provider did not answer.',
+    key: 'checkout.timeout',
+    file: 'internal/checkout/pay.go',
+    line: 214,
+    links: [
+      {
+        id: 'lnk-1',
+        state: 'possible',
+        task: { id: '261120-abc123', title: 'Retry payment calls once', crate: { id: 'crate-1', name: 'Payments' } },
+        evidence: [
+          {
+            kind: 'line',
+            file: 'internal/checkout/pay.go',
+            line: 214,
+            commit: '3f9c2ab1d4e5f60718293a4b5c6d7e8f90a1b2c3',
+          },
+        ],
+      },
+    ],
+  }),
+  longest: servedReport(REPORT_A, {
+    summary: `${'Checkout '.repeat(20)}${'W'.repeat(400)}\n${'Second line. '.repeat(30)}`.slice(0, 1000),
+    key: `checkout.${'k'.repeat(191)}`,
+    service: 's'.repeat(100),
+    environment: {
+      id: 'env-long',
+      name: `production-${'e'.repeat(60)}`,
+      listening: false,
+      last_signal_at: '2026-11-26T18:00:00Z',
+    },
+    file: `internal/${'d'.repeat(480)}/pay.go`.slice(0, 500),
+    line: 1000000,
+    count: 1000000000,
+    links_pending: true,
+  }),
+}
+
+for (const [variant, served] of Object.entries(screenshotReports)) {
+  for (const width of [375, 1280]) {
+    test(`a selected ${variant} report in the Inbox screenshot at ${width} px`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 })
+      const fixture = reportsFixture()
+      replaceReport(fixture, served)
+      await serve(page, fixture)
+      await page.goto(`/w/demo/inbox?selected=${REPORT_A}`)
+      const detail = reportDetail(page)
+      await expect(detail.locator('[data-report-summary]')).toHaveText(served.summary as string)
+      await page.evaluate(() => document.fonts.ready)
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      )
+      expect(overflow).toBeLessThanOrEqual(0)
+      for (const locator of [detail, detail.locator('[data-report-card]'), detail.locator('[data-detail-title]')]) {
+        const box = await locator.boundingBox()
+        expect(box && box.x + box.width).toBeLessThanOrEqual(width)
+      }
+      if (width >= 768) {
+        const box = await page.locator(`[data-inbox-row-item="${REPORT_A}"]`).boundingBox()
+        expect(box && box.x + box.width).toBeLessThanOrEqual(width)
+      }
+      const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+      const file = `inbox-report-${variant}-${width}.png`
+      const image = await page.screenshot({ path: shots ? `${shots}/${file}` : undefined })
+      await testInfo.attach(file, { body: image, contentType: 'image/png' })
+    })
+  }
+}
+
+// The order of events on the Inbox page for a selected report (review
+// finding 2; component-next-action invariant 37; req-operator-next-action
+// AC-2.10). The report is the middle decision: T-zeta, T-alpha, report A,
+// T-mid, report B. Its next surviving neighbour in the order the person saw
+// is T-mid; the stale-selection fallback is the first item, T-zeta; the
+// selection a person makes meanwhile is T-alpha. Every act request waits
+// until the `answer` step.
+type OrderStep =
+  | 'send'
+  | 'notice'
+  | 'reenter'
+  | 'select'
+  | 'band'
+  | 'filter'
+  | 'answer 200'
+  | 'answer 409'
+  | 'answer 503'
+  | 'answer 500'
+  | 'answer 500, read fails'
+  | 'no answer'
+type OrderEnd = 'neighbour' | 'fallback' | 'person' | 'stays' | 'empty' | 'cleared'
+
+const orderRows: { steps: OrderStep[]; end: OrderEnd; note?: string; only?: boolean }[] = [
+  { steps: ['send', 'answer 200'], end: 'neighbour' },
+  { steps: ['send', 'answer 409'], end: 'fallback', note: 'someone else closed it first' },
+  { steps: ['send', 'answer 503'], end: 'stays', note: 'Conveyor recorded nothing. Try again.' },
+  { steps: ['send', 'answer 500'], end: 'stays', note: 'Conveyor does not know whether it recorded this' },
+  { steps: ['send', 'no answer'], end: 'stays', note: 'Conveyor does not know whether it recorded this' },
+  { steps: ['send', 'answer 500, read fails'], end: 'stays', note: 'Read the report again' },
+  { steps: ['send', 'notice', 'answer 200'], end: 'neighbour' },
+  { steps: ['send', 'notice', 'answer 409'], end: 'fallback' },
+  { steps: ['send', 'notice', 'answer 503'], end: 'fallback' },
+  { steps: ['send', 'notice', 'answer 500'], end: 'fallback' },
+  { steps: ['send', 'notice', 'no answer'], end: 'fallback' },
+  {
+    steps: ['send', 'notice', 'answer 500, read fails'],
+    end: 'fallback',
+    note: 'an unknown answer whose read again fails',
+  },
+  { steps: ['send', 'select', 'answer 200'], end: 'person' },
+  { steps: ['send', 'select', 'answer 409'], end: 'person' },
+  { steps: ['send', 'select', 'notice', 'answer 200'], end: 'person' },
+  { steps: ['send', 'notice', 'select', 'answer 200'], end: 'person' },
+  { steps: ['send', 'band', 'answer 200'], end: 'fallback', note: 'line 5: a band change ends the rule' },
+  { steps: ['send', 'notice', 'band', 'answer 200'], end: 'fallback', note: 'line 5: a band change ends the rule' },
+  { steps: ['send', 'notice', 'reenter', 'answer 200'], end: 'neighbour' },
+  { steps: ['send', 'filter', 'answer 200'], end: 'cleared', note: 'the narrowing starts from task T-zeta' },
+  { steps: ['send', 'notice', 'filter', 'answer 200'], end: 'cleared', note: 'the narrowing starts from task T-zeta' },
+  { steps: ['send', 'answer 200', 'notice'], end: 'neighbour' },
+  { steps: ['send', 'answer 200'], end: 'empty', only: true },
+  { steps: ['send', 'notice', 'answer 200'], end: 'empty', only: true },
+]
+
+test.describe('the order of events for a selected report', () => {
+  for (const row of orderRows) {
+    const name = `${row.only ? 'the only decision: ' : ''}${row.steps.join(', ')} → ${row.end}`
+    test(name, async ({ page }) => {
+      const stream = await controlWorkspaceChanges(page)
+      const fixture = reportsFixture()
+      if (row.only) {
+        fixture.items = fixture.items.filter(
+          (item) => item.band !== 'decisions' || (item.report as { id?: string } | undefined)?.id === REPORT_A,
+        )
+        fixture.operatorDecisions = 1
+      }
+      let answer: Record<string, unknown> | undefined
+      const harness = await serve(page, fixture, () => answer)
+      let release = () => {}
+      harness.holdPosts = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const narrowed = row.steps.includes('filter')
+      await page.goto(`/w/demo/inbox?selected=${REPORT_A}${narrowed ? '&task=T-zeta' : ''}`)
+      await expect(reportDetail(page).locator(`[data-report-card="${REPORT_A}"]`)).toBeVisible()
+      await stream.ready()
+      const left = () => !fixture.items.some((item) => (item.report as { id?: string } | undefined)?.id === REPORT_A)
+      const removeA = () => {
+        if (!left()) leaveInbox(fixture, REPORT_A, closedChange('Fixed.'))
+      }
+      const frame = async () => {
+        const before = harness.inboxRequests.length
+        await stream.activity()
+        await expect.poll(() => harness.inboxRequests.length).toBeGreaterThan(before)
+      }
+      let answered = false
+      let moved = false
+      const settle = async (body: Record<string, unknown>) => {
+        answered = true
+        answer = body
+        release()
+        await expect.poll(() => actsSent(harness).length).toBe(1)
+      }
+      for (const step of row.steps) {
+        switch (step) {
+          case 'send':
+            await closeSelectedReport(page, 'Fixed.')
+            await expect.poll(() => actsSent(harness).length).toBe(1)
+            break
+          case 'notice':
+            removeA()
+            await frame()
+            await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+            if (!answered && !moved) {
+              // The act is still on its way: the card stays, with every act
+              // waiting.
+              const card = reportDetail(page).locator(`[data-report-card="${REPORT_A}"]`)
+              await expect(card).toBeVisible()
+              await expect(card.locator('button:enabled')).toHaveCount(0)
+              await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+            }
+            break
+          case 'reenter':
+            fixture.items = [
+              ...fixture.items,
+              reportItem(fixture.reports?.[REPORT_A] as Record<string, unknown>, '2026-11-27T12:30:00Z'),
+            ]
+            await frame()
+            await expect(reportRow(page, REPORT_A)).toHaveCount(1)
+            break
+          case 'select':
+            await select(page, 'Alpha agent question')
+            moved = true
+            break
+          case 'filter':
+            // "Show all" clears the narrowing and the selection: the person
+            // changed the address.
+            await page.getByRole('link', { name: 'Show all' }).click()
+            await expect(page).not.toHaveURL(/task=/)
+            moved = true
+            break
+          case 'band':
+            await page.locator('[data-band-chip="blocked"]').click()
+            await expect(page).toHaveURL(/band=blocked/)
+            break
+          case 'answer 200':
+            removeA()
+            await settle({ ...(fixture.reports?.[REPORT_A] as Record<string, unknown>) })
+            break
+          case 'answer 409':
+            removeA()
+            await settle({ status: 409, error: 'report_closed', message: 'The report is closed.' })
+            break
+          case 'answer 503':
+            await settle({ status: 503, error: 'retryable' })
+            break
+          case 'answer 500':
+            await settle({ status: 500, error: 'internal' })
+            break
+          case 'answer 500, read fails':
+            fixture.reports = { ...fixture.reports, [REPORT_A]: 500 }
+            await settle({ status: 500, error: 'internal' })
+            break
+          case 'no answer':
+            await settle({ abort: true })
+            break
+        }
+      }
+      if (row.steps.includes('band')) {
+        await page.locator('[data-band-chip="all"]').click()
+        await expect(page).not.toHaveURL(/band=/)
+      }
+      const title = decisionDetail(page).locator('[data-detail-title]')
+      switch (row.end) {
+        case 'neighbour':
+          await expect(page).toHaveURL(/selected=T-mid/)
+          await expect(title).toHaveText('Mid item without a deadline')
+          break
+        case 'fallback':
+          await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+          await expect(title).toHaveText('Zeta plan everyone waits on')
+          await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+          break
+        case 'person':
+          await expect(page).toHaveURL(/selected=T-alpha/)
+          await expect(title).toHaveText('Alpha agent question')
+          break
+        case 'stays': {
+          const detail = reportDetail(page)
+          await expect(detail.locator(`[data-report-card="${REPORT_A}"]`)).toBeVisible()
+          await expect(detail).toContainText(row.note ?? '')
+          await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+          if (row.steps.includes('answer 500, read fails')) {
+            // The shared unresolved state blocks every act until a read answers.
+            await expect(detail.getByRole('button', { name: 'Close report' }).first()).toBeDisabled()
+          }
+          break
+        }
+        case 'empty':
+          await expect(page.locator('[data-no-decisions]')).toContainText("You're clear")
+          break
+        case 'cleared':
+          // The address names no item, so the wide layout shows the first.
+          await expect(page).not.toHaveURL(/selected=/)
+          await expect(title).toHaveText('Zeta plan everyone waits on')
+          break
+      }
+      // The page never sends an act again by itself.
+      expect(actsSent(harness)).toHaveLength(1)
+    })
+  }
+})
+
+// The rule for the selection after an act on a report, line by line (see
+// `ReportHold` in web/src/pages/inbox.tsx). The list is T-zeta, T-alpha,
+// report A, T-mid, report B unless a case says otherwise; report A is
+// selected and closed.
+test.describe('the selection rule after an act on a report', () => {
+  type Setup = { stream: Awaited<ReturnType<typeof controlWorkspaceChanges>>; fixture: Fixture; harness: Harness }
+  const without = (fixture: Fixture, keys: string[]) => {
+    fixture.items = fixture.items.filter((item) => {
+      const key = (item.report as { id?: string } | undefined)?.id ?? item.task?.id ?? ''
+      return item.band !== 'decisions' || !keys.includes(key)
+    })
+  }
+  async function start(page: Page, arrange?: (fixture: Fixture) => void): Promise<Setup> {
+    const stream = await controlWorkspaceChanges(page)
+    const fixture = reportsFixture()
+    arrange?.(fixture)
+    const harness = await serve(page, fixture, (_request, path) =>
+      path === `/v1/feedback-reports/${REPORT_A}/close`
+        ? { ...(fixture.reports?.[REPORT_A] as Record<string, unknown>), ...closedChange('Fixed.') }
+        : undefined,
+    )
+    await page.goto(`/w/demo/inbox?selected=${REPORT_A}`)
+    await expect(reportDetail(page).locator(`[data-report-card="${REPORT_A}"]`)).toBeVisible()
+    // The stream's ready frame reads the Inbox once; wait for that read so it
+    // answers before the case changes the fixture.
+    const reads = harness.inboxRequests.length
+    await stream.ready()
+    await expect.poll(() => harness.inboxRequests.length).toBeGreaterThan(reads)
+    await expect(reportRow(page, REPORT_A)).toHaveCount(1)
+    return { stream, fixture, harness }
+  }
+  // Sends the close and waits for its 200; the Inbox read the answer starts
+  // answers from the fixture as `beforeRead` leaves it.
+  async function close(page: Page, setup: Setup, beforeRead: (fixture: Fixture) => void) {
+    const reads = setup.harness.inboxRequests.length
+    beforeRead(setup.fixture)
+    await closeSelectedReport(page, 'Fixed.')
+    await expect.poll(() => actsSent(setup.harness).length).toBe(1)
+    await expect.poll(() => setup.harness.inboxRequests.length).toBeGreaterThan(reads)
+  }
+  const title = (page: Page) => decisionDetail(page).locator('[data-detail-title]')
+  const frame = async (setup: Setup) => {
+    const before = setup.harness.inboxRequests.length
+    await setup.stream.activity()
+    await expect.poll(() => setup.harness.inboxRequests.length).toBeGreaterThan(before)
+  }
+
+  // Line 3, the reviewer's case: the answer comes before the refresh, and
+  // the refresh lists neither the report nor the next item.
+  test('line 3: the deciding read drops the report and the next item, so the next surviving item is selected', async ({
+    page,
+  }) => {
+    const setup = await start(page)
+    await close(page, setup, (fixture) => without(fixture, [REPORT_A, 'T-mid']))
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_B}`))
+    await expect(reportDetail(page).locator(`[data-report-card="${REPORT_B}"]`)).toBeVisible()
+  })
+
+  test('line 3: the deciding read drops the previous item, so the next item is selected', async ({ page }) => {
+    const setup = await start(page)
+    await close(page, setup, (fixture) => without(fixture, [REPORT_A, 'T-alpha']))
+    await expect(page).toHaveURL(/selected=T-mid/)
+    await expect(title(page)).toHaveText('Mid item without a deadline')
+  })
+
+  test('line 3: the deciding read drops both neighbours, so the next surviving item is selected', async ({ page }) => {
+    const setup = await start(page)
+    await close(page, setup, (fixture) => without(fixture, [REPORT_A, 'T-alpha', 'T-mid']))
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_B}`))
+  })
+
+  test('line 3: the deciding read drops every item after the report, so the nearest one before is selected', async ({
+    page,
+  }) => {
+    const setup = await start(page)
+    await close(page, setup, (fixture) => without(fixture, [REPORT_A, 'T-mid', REPORT_B]))
+    await expect(page).toHaveURL(/selected=T-alpha/)
+    await expect(title(page)).toHaveText('Alpha agent question')
+  })
+
+  test('line 3: the deciding read drops every other decision, so the empty state shows', async ({ page }) => {
+    const setup = await start(page)
+    await close(page, setup, (fixture) => without(fixture, [REPORT_A, 'T-zeta', 'T-alpha', 'T-mid', REPORT_B]))
+    await expect(page.locator('[data-no-decisions]')).toContainText("You're clear")
+  })
+
+  test('line 3: the report first in the list selects the next item', async ({ page }) => {
+    const setup = await start(page, (fixture) => {
+      const a = fixture.items.find((item) => (item.report as { id?: string } | undefined)?.id === REPORT_A)
+      fixture.items = [a as Fixture['items'][number], ...fixture.items.filter((item) => item !== a)]
+    })
+    await close(page, setup, (fixture) => without(fixture, [REPORT_A]))
+    await expect(page).toHaveURL(/selected=T-zeta/)
+  })
+
+  test('line 3: the report last in the list selects the item before it', async ({ page }) => {
+    const setup = await start(page, (fixture) => without(fixture, [REPORT_B]))
+    await close(page, setup, (fixture) => without(fixture, [REPORT_A]))
+    await expect(page).toHaveURL(/selected=T-mid/)
+  })
+
+  // Lines 2 and 4: while the deciding read is on its way the report stays
+  // selected and in view; a selection made then stays.
+  test('lines 2 and 4: nothing moves until the deciding read, and a selection made meanwhile stays', async ({
+    page,
+  }) => {
+    const setup = await start(page)
+    let release = () => {}
+    setup.harness.holdInbox = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const reads = setup.harness.inboxRequests.length
+    without(setup.fixture, [REPORT_A, 'T-mid'])
+    await closeSelectedReport(page, 'Fixed.')
+    await expect.poll(() => actsSent(setup.harness).length).toBe(1)
+    await expect.poll(() => setup.harness.inboxRequests.length).toBeGreaterThan(reads)
+    // The act has answered 200 and the read is on its way: the report stays.
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+    await expect(reportDetail(page).locator(`[data-report-card="${REPORT_A}"]`)).toBeVisible()
+    await select(page, 'Alpha agent question')
+    setup.harness.holdInbox = undefined
+    release()
+    await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+    await expect(page).toHaveURL(/selected=T-alpha/)
+    await expect(title(page)).toHaveText('Alpha agent question')
+  })
+
+  // Line 5: a band change while the deciding read is on its way ends the
+  // rule; the address keeps the report, which has left, so the first item
+  // shows (the stale-selection fallback).
+  test('line 5: a band change before the deciding read ends the rule', async ({ page }) => {
+    const setup = await start(page)
+    let release = () => {}
+    setup.harness.holdInbox = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    without(setup.fixture, [REPORT_A])
+    await closeSelectedReport(page, 'Fixed.')
+    await expect.poll(() => actsSent(setup.harness).length).toBe(1)
+    await page.locator('[data-band-chip="blocked"]').click()
+    setup.harness.holdInbox = undefined
+    release()
+    await page.locator('[data-band-chip="all"]').click()
+    await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+    await expect(title(page)).toHaveText('Zeta plan everyone waits on')
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+  })
+
+  // Line 2: reads after the answer that still list the report keep it
+  // selected, however many there are (the response memo can serve the same
+  // list for a while); the first list that drops it decides. Each listed
+  // read shows a new title for report B, so the case waits until the page
+  // has applied that read.
+  const listedRead = async (page: Page, setup: Setup, n: number) => {
+    setup.fixture.items = setup.fixture.items.map((item) =>
+      (item.report as { id?: string } | undefined)?.id === REPORT_B
+        ? { ...item, report: { ...(item.report as Record<string, unknown>), summary: `Payment queue read ${n}` } }
+        : item,
+    )
+    await frame(setup)
+    await expect(reportRow(page, REPORT_B).locator('[data-row-title]')).toHaveText(`Payment queue read ${n}`)
+    await expect(reportRow(page, REPORT_A)).toHaveCount(1)
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+    await expect(reportDetail(page).locator(`[data-report-card="${REPORT_A}"]`)).toBeVisible()
+  }
+
+  test('line 2: a read that still lists the report keeps it selected, and the next read decides', async ({ page }) => {
+    const setup = await start(page)
+    await close(page, setup, () => {})
+    await expect(reportRow(page, REPORT_A)).toHaveCount(1)
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+    without(setup.fixture, [REPORT_A, 'T-mid'])
+    await frame(setup)
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_B}`))
+  })
+
+  test('line 2: many reads that still list the report keep it selected, and the first that drops it selects T-mid', async ({
+    page,
+  }) => {
+    const setup = await start(page)
+    await close(page, setup, () => {})
+    for (const n of [1, 2, 3, 4, 5]) await listedRead(page, setup, n)
+    without(setup.fixture, [REPORT_A])
+    await frame(setup)
+    await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+    await expect(page).toHaveURL(/selected=T-mid/)
+    await expect(title(page)).toHaveText('Mid item without a deadline')
+  })
+
+  // Line 6: a failed read decides nothing. The Inbox query retries a failed
+  // read (its existing behaviour); when the read fails in the end the page
+  // shows the failure, the report stays selected, and the next read decides.
+  test('line 6: a failed read decides nothing, and the next read decides', async ({ page }) => {
+    const setup = await start(page)
+    setup.harness.failInbox = 4
+    await close(page, setup, (fixture) => without(fixture, [REPORT_A, 'T-mid']))
+    await expect(page.getByText('Could not load the inbox')).toBeVisible({ timeout: 20_000 })
+    setup.harness.failInbox = 0
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+    await frame(setup)
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_B}`))
+  })
+
+  test('line 6: a failed try that its retry answers decides from the retry', async ({ page }) => {
+    const setup = await start(page)
+    setup.harness.failInbox = 1
+    const reads = setup.harness.inboxRequests.length
+    await close(page, setup, (fixture) => without(fixture, [REPORT_A, 'T-mid']))
+    await expect(page).toHaveURL(new RegExp(`selected=${REPORT_B}`))
+    expect(setup.harness.inboxRequests.length).toBeGreaterThanOrEqual(reads + 2)
+  })
 })

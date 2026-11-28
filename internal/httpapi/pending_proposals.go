@@ -50,11 +50,21 @@ func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	// Each report in the Inbox is one operator decision too. Its number is
+	// read on every request and never cached, through the predicate the Inbox
+	// lists them by (component-feedback-reports invariant 19;
+	// req-operator-next-action AC-2.7; req-production-feedback AC-6.5).
+	reports, err := s.inboxFeedbackReportCount(r.Context())
+	if err != nil {
+		log.Printf("list pending proposals: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	// Each pending document proposal is one operator decision alongside the
 	// tasks the inbox lists among its decisions: it holds no task's work, so
 	// no task row counts it. The sum equals the inbox's decisions total
 	// (req-260810-23b69f AC-1.1, AC-4.2; req-operator-next-action AC-2.7;
 	// component-next-action, One attention definition).
-	decisions := tasks + len(items)
+	decisions := tasks + len(items) + reports
 	writeJSON(w, http.StatusOK, pendingProposalsResponse{Items: items, Attention: attentionSummary{TaskCount: tasks, PendingProposalCount: len(items), OperatorDecisions: decisions, Total: decisions}})
 }

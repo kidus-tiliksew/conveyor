@@ -372,3 +372,23 @@ func TestPendingProposalStaysAnInboxDecisionWithoutHoldingItsTask(t *testing.T) 
 		t.Fatalf("attention before=%+v after=%+v", before, after)
 	}
 }
+
+// The count is read on every request: a report the store records with no
+// notice the cache hears is counted at once, while the Inbox may serve its
+// memo (component-next-action invariant 24).
+func TestFeedbackInboxCountIsNeverCached(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	h.server.UseReadMemoClock(h.clock)
+	h.server.Changes = nil
+	if attention := h.attention(); attention.OperatorDecisions != 0 {
+		t.Fatalf("attention = %+v", attention)
+	}
+	h.storeReport("first", nil)
+	if attention := h.attention(); attention.OperatorDecisions != 1 {
+		t.Fatalf("attention after a report = %+v, want 1", attention)
+	}
+	h.storeReport("second", nil)
+	if attention := h.attention(); attention.OperatorDecisions != 2 {
+		t.Fatalf("attention after two reports = %+v, want 2", attention)
+	}
+}

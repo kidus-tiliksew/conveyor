@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -530,5 +531,60 @@ func TestMemoPublicSlowInboxWithPendingProposalReadsOnce(t *testing.T) {
 	}
 	if reads := f.counted.calls["ReadActivityInputs"]; reads != 1 {
 		t.Fatalf("one request read its inputs %d times, want 1", reads)
+	}
+}
+
+// A later entry changes a report's count and times with no event and no
+// notice. A conditional Inbox read with the earlier tag answers 304 until
+// the memo's lifetime ends, and then 200 with the new values
+// (feature-production-feedback-listening FR-5; component-next-action
+// invariant 58).
+func TestFeedbackInboxConditionalReadSeesALaterEntry(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	h.server.UseReadMemoClock(h.clock)
+	report := h.storeReport("conditional", nil)
+	// Linking has ended, so no read asks the linking job, whose end would
+	// raise a notice.
+	h.endLinking(report, nil, nil)
+	first := h.inbox("")
+	if first.etag == "" || !slices.Equal(first.reportIDs(t), []string{report.ID}) {
+		t.Fatalf("first read etag=%q items=%v", first.etag, first.items)
+	}
+	conditional := func() *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/v1/next-actions", nil)
+		request.Header.Set("Authorization", "Bearer "+h.manager())
+		request.Header.Set("X-Workspace-ID", "alpha")
+		request.Header.Set("If-None-Match", first.etag)
+		return h.serve(request)
+	}
+	if response := conditional(); response.Code != http.StatusNotModified {
+		t.Fatalf("unchanged conditional read status=%d", response.Code)
+	}
+	// The later entry raises no notice: the memo still answers 304 inside
+	// its lifetime.
+	h.server.Changes = nil
+	h.advance(time.Millisecond)
+	if err := h.st.RecordFeedbackReports(h.ctx, store.FeedbackReportBatch{EnvironmentID: h.environment.ID, KeyID: h.key.ID, ArrivedAt: h.clock(), Entries: []store.FeedbackReportEntry{{Kind: store.FeedbackReportError, Key: "conditional", Summary: "Again", Count: 41}}}); err != nil {
+		t.Fatal(err)
+	}
+	if response := conditional(); response.Code != http.StatusNotModified {
+		t.Fatalf("conditional read inside the memo lifetime status=%d", response.Code)
+	}
+	h.advance(readMemoLifetime)
+	response := conditional()
+	if response.Code != http.StatusOK || response.Header().Get("ETag") == first.etag {
+		t.Fatalf("conditional read after the lifetime status=%d etag=%q (was %q)", response.Code, response.Header().Get("ETag"), first.etag)
+	}
+	var body struct {
+		Items []struct {
+			Report servedFeedbackReport `json:"report"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || len(body.Items) != 1 {
+		t.Fatalf("decode %s: %v", response.Body, err)
+	}
+	if got := body.Items[0].Report; got.Count != 42 || !got.LastSeen.After(report.LastSeen) {
+		t.Fatalf("served after the later entry count=%d last_seen=%s, want 42 and later than %s", got.Count, got.LastSeen, report.LastSeen)
 	}
 }

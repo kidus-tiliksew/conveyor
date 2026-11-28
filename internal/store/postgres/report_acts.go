@@ -111,6 +111,45 @@ func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackRep
 	return page, nil
 }
 
+// ListInboxFeedbackReports implements store.ReportReadStore. The count, the
+// records, and their details are read in one read-only REPEATABLE READ
+// snapshot, as ListFeedbackReports reads a page, with no LIMIT: every open
+// report with in_inbox true. The count-only form is one aggregate statement
+// with the same predicate and loads no report.
+func (s *Store) ListInboxFeedbackReports(ctx context.Context, countOnly bool) (store.FeedbackReportPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListInboxFeedbackReports")
+	workspaceID := workspace(ctx)
+	const where = `r.workspace_id=$1 AND r.state=$2 AND r.in_inbox`
+	args := []any{workspaceID, store.FeedbackReportOpen}
+	page := store.FeedbackReportPage{Reports: []store.FeedbackReport{}, Details: store.NewFeedbackReportDetails()}
+	if countOnly {
+		if err := s.boundary.QueryRow(ctx, `SELECT count(*) FROM feedback_reports r WHERE `+where, args...).Scan(&page.Total); err != nil {
+			return store.FeedbackReportPage{}, err
+		}
+		page.Details.ReadAt = store.FeedbackReadClock(ctx)
+		return page, nil
+	}
+	tx, err := s.beginWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return store.FeedbackReportPage{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM feedback_reports r WHERE `+where, args...).Scan(&page.Total); err != nil {
+		return store.FeedbackReportPage{}, err
+	}
+	readAt := store.FeedbackReadClock(ctx)
+	if page.Total > 0 {
+		if page.Reports, err = queryFeedbackReports(ctx, tx, `SELECT `+prefixFeedbackReportColumns("r")+` FROM feedback_reports r WHERE `+where+` ORDER BY r.id`, args...); err != nil {
+			return store.FeedbackReportPage{}, err
+		}
+		if page.Details, err = readFeedbackReportDetailsTx(ctx, tx, workspaceID, page.Reports); err != nil {
+			return store.FeedbackReportPage{}, err
+		}
+	}
+	page.Details.ReadAt = readAt
+	return page, nil
+}
+
 // ReadFeedbackReport implements store.ReportReadStore with the view of
 // ReadFeedbackReports.
 func (s *Store) ReadFeedbackReport(ctx context.Context, reportID string) (store.FeedbackReport, store.FeedbackReportDetails, error) {

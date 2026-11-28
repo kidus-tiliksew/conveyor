@@ -178,6 +178,21 @@ func RunActivityValidationConformance(t *testing.T, x Fixture) {
 		}
 	})
 
+	// A report and a later entry under its key change the validation. The
+	// later entry adds to the count and moves last_seen with no event and no
+	// notice, so only the feedback_reports table can show it to a
+	// conditional Inbox read (feature-production-feedback-listening FR-5;
+	// component-feedback-reports invariants 6, 20).
+	reportEnvironment := newFeedbackEnvironment(t, x, "Activity reports", "activity watcher")
+	current = read(now)
+	entry := store.FeedbackReportEntry{Kind: store.FeedbackReportError, Key: "activity.timeout", Summary: "Activity request timed out"}
+	expectChange("new feedback report", func() { reportEnvironment.sendReports(t, time.Hour, entry) })
+	eventsBefore := current.EventCount
+	expectChange("later feedback report entry with no event", func() { reportEnvironment.sendReports(t, 2*time.Hour, entry) })
+	if current.EventCount != eventsBefore {
+		t.Fatalf("a later report entry appended events: %d then %d", eventsBefore, current.EventCount)
+	}
+
 	// A work-order deadline passing changes only the deadline count.
 	deadlineTask := newTask(core.TaskQueued)
 	newOrder(deadlineTask, core.StageImplement, now.Add(30*time.Second))
