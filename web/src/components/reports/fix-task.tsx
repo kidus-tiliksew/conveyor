@@ -2,7 +2,12 @@ import { hashKey, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { MessageSquareWarning } from 'lucide-react'
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
-import { FeedbackReportActError, fetchFeedbackReport, setFeedbackReportFixTask } from '../../lib/api'
+import {
+  type CreateTaskInput,
+  FeedbackReportActError,
+  fetchFeedbackReport,
+  setFeedbackReportFixTask,
+} from '../../lib/api'
 import type { FeedbackReport } from '../../lib/types'
 import { withQuerySignal } from '../task/use-task-detail'
 import { Button } from '../ui/button'
@@ -106,47 +111,78 @@ function intakeStorageKey(target: FixTaskTarget) {
 }
 
 /**
- * The intake key of a fix task for one report. It is saved before the
- * intake request is sent and kept until the report records the task, so a
- * Create after a reload or a lost answer sends the same request again and
- * the server answers with the same task instead of a second one. Each report
- * has its own key.
+ * A fix-task intake request as Create sent it: its intake key, the request,
+ * and the causes ticked for it. It is saved before the request is sent and
+ * kept until the report records the task, so a Create after a reload or a
+ * lost answer sends this same request again, with its own description and
+ * causes, and the server answers with the same task instead of a second one
+ * or a refusal of a changed request. Each report has its own.
  */
-// The intake key of each report target while this page is open. It keeps a
-// retry on the same key when session storage refuses to hold it.
-const memoryIntakeKeys = new Map<string, string>()
-
-export function fixTaskIntakeKey(target: FixTaskTarget) {
-  const name = intakeStorageKey(target)
-  let key = memoryIntakeKeys.get(name)
-  try {
-    key = key ?? window.sessionStorage.getItem(name) ?? undefined
-  } catch {
-    // Session storage refused: the key stays in memory only.
-  }
-  key = key ?? crypto.randomUUID()
-  memoryIntakeKeys.set(name, key)
-  try {
-    window.sessionStorage.setItem(name, key)
-  } catch {
-    // Session storage refused: the key stays in memory only.
-  }
-  return key
+export interface SentFixTaskIntake {
+  key: string
+  request: CreateTaskInput
+  causeTaskIds: string[]
 }
 
-function hasFixTaskIntakeKey(target: FixTaskTarget) {
-  const name = intakeStorageKey(target)
-  if (memoryIntakeKeys.has(name)) return true
+// The sent request of each report target while this page is open. It keeps a
+// retry on the same request when session storage refuses to hold it.
+const memoryIntakes = new Map<string, SentFixTaskIntake>()
+
+function parseSentIntake(raw: string | null): SentFixTaskIntake | null {
+  if (!raw) return null
   try {
-    return window.sessionStorage.getItem(name) !== null
+    const value = JSON.parse(raw) as Partial<SentFixTaskIntake>
+    const request = value.request as Partial<CreateTaskInput> | undefined
+    if (typeof value.key !== 'string' || !value.key) return null
+    if (!request || typeof request.body !== 'string' || typeof request.repo !== 'string') return null
+    const causes = Array.isArray(value.causeTaskIds)
+      ? value.causeTaskIds.filter((id): id is string => typeof id === 'string')
+      : []
+    return { key: value.key, request: request as CreateTaskInput, causeTaskIds: causes }
   } catch {
-    return false
+    return null
   }
 }
 
-function clearFixTaskIntakeKey(target: FixTaskTarget) {
+/** The request sent before for this report whose answer did not arrive, if any. */
+export function sentFixTaskIntake(target: FixTaskTarget): SentFixTaskIntake | null {
   const name = intakeStorageKey(target)
-  memoryIntakeKeys.delete(name)
+  const remembered = memoryIntakes.get(name)
+  if (remembered) return remembered
+  try {
+    return parseSentIntake(window.sessionStorage.getItem(name))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The intake request to send for this report: the one sent before when there
+ * is one, else this new one, which is saved before it is sent.
+ */
+export function fixTaskIntakeToSend(
+  target: FixTaskTarget,
+  request: CreateTaskInput,
+  causeTaskIds: string[],
+): SentFixTaskIntake {
+  const sent = sentFixTaskIntake(target) ?? { key: crypto.randomUUID(), request, causeTaskIds }
+  const name = intakeStorageKey(target)
+  memoryIntakes.set(name, sent)
+  try {
+    window.sessionStorage.setItem(name, JSON.stringify(sent))
+  } catch {
+    // Session storage refused: the request stays in memory only.
+  }
+  return sent
+}
+
+/**
+ * Forgets the sent request of this report: when the report records the task,
+ * or when the server refused the request and so stored nothing under its key.
+ */
+export function clearFixTaskIntake(target: FixTaskTarget) {
+  const name = intakeStorageKey(target)
+  memoryIntakes.delete(name)
   try {
     window.sessionStorage.removeItem(name)
   } catch {
@@ -215,11 +251,14 @@ export function useFixTaskFlow({
   workspace,
   reportId,
   setBody,
+  restoreRequest,
   onRecorded,
 }: {
   workspace: string
   reportId: string | undefined
   setBody: Dispatch<SetStateAction<string>>
+  // Puts the fields of a request sent before back into the form.
+  restoreRequest?: (request: CreateTaskInput) => void
   onRecorded: (taskId: string) => void
 }) {
   const queryClient = useQueryClient()
@@ -275,17 +314,28 @@ export function useFixTaskFlow({
 
   // Prefill once per report, and only while it is open: a closed report
   // takes no fix task. Text that the person typed while the report loaded
-  // stays, after the report block.
+  // stays, after the report block. A request sent before for this report,
+  // whose answer did not arrive, fills the form instead, with its own
+  // description and causes, because Create sends that request again.
   const data = report.data
   useEffect(() => {
     if (!data || data.id !== reportId || prefilledFor === data.id || created) return
     if (data.state !== 'open') return
+    const sent = sentFixTaskIntake({ workspace, reportId })
+    if (sent) {
+      lastPrefill.current = sent.request.body
+      setPrefilledFor(data.id)
+      setBody(sent.request.body)
+      setCauses(sent.causeTaskIds)
+      restoreRequest?.(sent.request)
+      return
+    }
     const text = fixTaskDescription(data)
     const previous = lastPrefill.current
     lastPrefill.current = text
     setPrefilledFor(data.id)
     setBody((current) => (current.trim() === '' || current === previous ? text : `${text}\n${current}`))
-  }, [data, reportId, prefilledFor, created, setBody])
+  }, [data, workspace, reportId, prefilledFor, created, setBody, restoreRequest])
 
   // A fresh read of one report that started after the moment it is asked
   // for. A read of the report already on its way started earlier, so it is
@@ -325,7 +375,7 @@ export function useFixTaskFlow({
   const finish = useCallback(
     (entry: CreatedFixTask, target: FixTaskTarget) => {
       writeCreatedFixTask(target.workspace, target.reportId, null)
-      clearFixTaskIntakeKey(target)
+      clearFixTaskIntake(target)
       setOwnFixState(target, { phase: 'idle' })
       void refreshAfterWrite(queryClient, target.workspace)
       if (!live(flowOf(target))) return
@@ -494,7 +544,7 @@ export function useFixTaskFlow({
   // An intake request for this report was sent before, and its answer did not
   // reach this page.
   const intakeSentBefore =
-    Boolean(reportId) && created === null && hasFixTaskIntakeKey({ workspace, reportId: reportId ?? '' })
+    Boolean(reportId) && created === null && sentFixTaskIntake({ workspace, reportId: reportId ?? '' }) !== null
   const ready = Boolean(reportId) && data?.state === 'open' && prefilledFor === reportId && created === null
   return {
     report,
@@ -581,8 +631,8 @@ export function FixTaskPanel({
       )}
       {flow.intakeSentBefore && (
         <p role="status" data-fix-task-intake-sent className="text-xs text-attention">
-          A request to create this task was sent before, and its answer did not arrive. Create sends the same request
-          again, so it does not make a second task.
+          A request to create this task was sent before, and its answer did not arrive. The form shows that request.
+          Create sends it again unchanged, so it does not make a second task. Changes that you make now are not sent.
         </p>
       )}
       {!created && record.phase === 'idle' && data?.state === 'open' && (

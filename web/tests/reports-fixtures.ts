@@ -280,6 +280,10 @@ export interface Server {
   intakeKeys: string[]
   // The number of next task intake requests whose answer is lost.
   loseCreateAnswers: number
+  // The number of next task intake requests refused with 400, which store nothing.
+  refuseCreates: number
+  // The request and task stored under each intake key.
+  intakeRequests: Map<string, { id: string; request: string }>
 }
 
 function servedOrder(a: FeedbackReport, b: FeedbackReport) {
@@ -412,6 +416,8 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
     createGate: null,
     intakeKeys: [],
     loseCreateAnswers: 0,
+    refuseCreates: 0,
+    intakeRequests: new Map(),
   }
   const role = options.role ?? 'operator'
   const mergedTasks = options.mergedTasks ?? [
@@ -511,13 +517,22 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
       const form = request.postData() ?? ''
       const match = form.match(/name="task"\r\n\r\n([\s\S]*?)\r\n--/)
       state.created.push(match ? (JSON.parse(match[1]) as Record<string, unknown>) : {})
-      // Intake with a key it saw before answers with the same task, as the
-      // server does; a new key makes a new task.
       const intakeKey = form.match(/name="idempotency_key"\r\n\r\n([\s\S]*?)\r\n--/)?.[1] ?? ''
       state.intakeKeys.push(intakeKey)
-      const distinct = [...new Set(state.intakeKeys)]
-      const index = distinct.indexOf(intakeKey)
-      const id = index === 0 ? '261127-fix' : `261127-fix${index + 1}`
+      if (state.refuseCreates > 0) {
+        state.refuseCreates--
+        return route.fulfill({ status: 400, json: { error: 'repo is not registered in this workspace' } })
+      }
+      // Intake with a key it saw before answers with the same task when the
+      // request is the same, and refuses a changed request with 409, as the
+      // server does; a new key makes a new task.
+      const sent = match?.[1] ?? ''
+      const stored = state.intakeRequests.get(intakeKey)
+      if (stored && stored.request !== sent)
+        return route.fulfill({ status: 409, json: { error: 'idempotency_key is already used by a different task' } })
+      const count = state.intakeRequests.size
+      const id = stored?.id ?? (count === 0 ? '261127-fix' : `261127-fix${count + 1}`)
+      state.intakeRequests.set(intakeKey, { id, request: sent })
       if (state.createGate) await state.createGate
       if (state.loseCreateAnswers > 0) {
         state.loseCreateAnswers--

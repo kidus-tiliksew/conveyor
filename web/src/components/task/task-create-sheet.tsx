@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Check, Package, Paperclip, Plus, X } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import {
+  type CreateTaskInput,
   createTask,
   fetchCrate,
   fetchOpenTasks,
@@ -16,7 +17,7 @@ import type { CrateDetail, PlanState } from '../../lib/types'
 import { cn, formatBytes } from '../../lib/utils'
 import { useWorkspace, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import type { BoardSearch } from '../board/board-search'
-import { FixTaskPanel, fixTaskIntakeKey, useFixTaskFlow } from '../reports/fix-task'
+import { clearFixTaskIntake, FixTaskPanel, fixTaskIntakeToSend, useFixTaskFlow } from '../reports/fix-task'
 import { Button } from '../ui/button'
 import { Input, Select, Textarea } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
@@ -109,7 +110,21 @@ export function TaskCreateSheet() {
       params: { workspaceId: workspace, taskId },
       search: ({ create: _create, crate: _crate, report: _report, ...prev }) => prev,
     })
-  const fixTask = useFixTaskFlow({ workspace: workspaceId, reportId, setBody, onRecorded: openTask })
+  // A fix-task request sent before, whose answer did not arrive, comes back
+  // into the form, because Create sends that request again.
+  const restoreRequest = useCallback((request: CreateTaskInput) => {
+    setRepo(request.repo)
+    setBaseBranch(request.base_branch ?? '')
+    setChosenPlanState(request.plan_state ?? '')
+    setPlan(request.plan ?? '')
+    setPlanBaseCommit(request.plan_base_commit ?? '')
+    setApprovePlan(request.plan_approved === true)
+    setMergeGate(request.merge_approval === undefined ? 'default' : request.merge_approval ? 'on' : 'off')
+    setDependsOn(request.depends_on ?? [])
+    setRequirementIds(request.requirement_ids ?? [])
+    setSystemDesignIds(request.system_design_ids ?? [])
+  }, [])
+  const fixTask = useFixTaskFlow({ workspace: workspaceId, reportId, setBody, restoreRequest, onRecorded: openTask })
   const defaultPlanState = workspace?.default_plan_state
   const shownPlanState = chosenPlanState || defaultPlanState || ''
   // A plan sends no plan state (AC-2.6). The select sends one only when the
@@ -154,28 +169,7 @@ export function TaskCreateSheet() {
     // Create captures the workspace, the crate, the report, and the ticked
     // causes. The answer uses that snapshot, never the values of a later
     // render, so a late answer reaches only what asked for it.
-    mutationFn: async (intake: IntakeSnapshot) => {
-      const task = await createTask(
-        intake.workspace,
-        {
-          body: body.trim(),
-          repo: repoName,
-          ...(sentPlanState ? { plan_state: sentPlanState } : {}),
-          ...(hasPlan ? { plan } : {}),
-          ...(hasPlan && baseCommit ? { plan_base_commit: baseCommit } : {}),
-          ...(approving ? { plan_approved: true } : {}),
-          ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
-          ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
-          ...(dependsOn.length ? { depends_on: dependsOn } : {}),
-          ...(requirementIds.length ? { requirement_ids: requirementIds } : {}),
-          ...(systemDesignIds.length ? { system_design_ids: systemDesignIds } : {}),
-          ...(intake.crateId ? { crate_id: intake.crateId } : {}),
-        },
-        files,
-        intake.idempotencyKey,
-      )
-      return task
-    },
+    mutationFn: (intake: IntakeSnapshot) => createTask(intake.workspace, intake.request, files, intake.idempotencyKey),
     onSuccess: (task, intake) => {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       if (intake.crateId) void queryClient.invalidateQueries({ queryKey: ['crates', intake.workspace] })
@@ -187,8 +181,13 @@ export function TaskCreateSheet() {
       }
       openTask(task.id, intake.workspace)
     },
-    onError: (error) => {
+    onError: (error, intake) => {
       if (error instanceof TaskIntakeError && error.code === 'invalid_dependencies') setAdvancedOpen(true)
+      // A refusal stores nothing under the key, so the next Create of the
+      // report sends the form as it is then. A 409 says that the key already
+      // names a task, so the sent request stays.
+      if (intake.reportId && error instanceof TaskIntakeError && error.status < 500 && error.status !== 409)
+        clearFixTaskIntake({ workspace: intake.workspace, reportId: intake.reportId })
     },
   })
 
@@ -540,17 +539,46 @@ export function TaskCreateSheet() {
               crateClosed ||
               (reportId !== undefined && !fixTask.ready)
             }
-            onClick={() =>
+            onClick={() => {
+              const request: CreateTaskInput = {
+                body: body.trim(),
+                repo: repoName,
+                ...(sentPlanState ? { plan_state: sentPlanState } : {}),
+                ...(hasPlan ? { plan } : {}),
+                ...(hasPlan && baseCommit ? { plan_base_commit: baseCommit } : {}),
+                ...(approving ? { plan_approved: true } : {}),
+                ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
+                ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
+                ...(dependsOn.length ? { depends_on: dependsOn } : {}),
+                ...(requirementIds.length ? { requirement_ids: requirementIds } : {}),
+                ...(systemDesignIds.length ? { system_design_ids: systemDesignIds } : {}),
+                ...(crateId ? { crate_id: crateId } : {}),
+              }
+              if (!reportId) {
+                mutation.mutate({
+                  workspace: workspaceId,
+                  crateId,
+                  reportId,
+                  causeTaskIds: [],
+                  request,
+                  idempotencyKey: intakeKey.current,
+                })
+                return
+              }
+              // A fix task has its own intake request for its report, saved
+              // with its key and causes before it is sent. A request sent
+              // before for the report goes again unchanged
+              // (component-feedback-reports invariant 18).
+              const sent = fixTaskIntakeToSend({ workspace: workspaceId, reportId }, request, [...fixTask.causes])
               mutation.mutate({
                 workspace: workspaceId,
                 crateId,
                 reportId,
-                causeTaskIds: reportId ? [...fixTask.causes] : [],
-                // A fix task has its own intake key for its report, saved
-                // before the request (component-feedback-reports invariant 18).
-                idempotencyKey: reportId ? fixTaskIntakeKey({ workspace: workspaceId, reportId }) : intakeKey.current,
+                causeTaskIds: sent.causeTaskIds,
+                request: sent.request,
+                idempotencyKey: sent.key,
               })
-            }
+            }}
           >
             {mutation.isPending ? 'Creating…' : fixTask.created ? 'Task created' : 'Create task'}
           </Button>
@@ -566,6 +594,7 @@ interface IntakeSnapshot {
   crateId: string | undefined
   reportId: string | undefined
   causeTaskIds: string[]
+  request: CreateTaskInput
   idempotencyKey: string
 }
 

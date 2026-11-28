@@ -2016,10 +2016,13 @@ export interface CreateTaskInput {
 
 export class TaskIntakeError extends Error {
   code: 'invalid_dependencies' | 'request_failed'
+  // The HTTP status of the refusal.
+  status: number
 
-  constructor(message: string, code: TaskIntakeError['code']) {
+  constructor(message: string, code: TaskIntakeError['code'], status: number) {
     super(message)
     this.code = code
+    this.status = status
   }
 }
 
@@ -2042,7 +2045,7 @@ export async function createTask(
     const raw = await response.text()
     const message = apiErrorMessage(raw, response.statusText)
     const code = membershipErrorCode(raw) === 'invalid_dependencies' ? 'invalid_dependencies' : 'request_failed'
-    throw new TaskIntakeError(message, code)
+    throw new TaskIntakeError(message, code, response.status)
   }
   return response.json() as Promise<Task>
 }

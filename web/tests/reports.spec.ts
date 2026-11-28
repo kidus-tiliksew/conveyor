@@ -2589,6 +2589,76 @@ test.describe('fix-task intake keys', () => {
     expect(fixPuts(server)).toEqual([{ method: 'PUT', path: fixPath, body: { task_id: '261127-fix' } }])
   })
 
+  test('after a lost answer, Create sends the request sent before with its causes, whatever the form holds now', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    // Intake commits with one cause ticked, but its answer is lost.
+    server.loseCreateAnswers = 1
+    await createFixTask(page, ['Send invoices by email'])
+    await expect.poll(() => server.intakeKeys.length).toBe(1)
+    await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toContainText(
+      'Changes that you make now are not sent.',
+    )
+    // The person changes the description and the causes before trying again.
+    await description(page).fill('Another description')
+    await sheet(page)
+      .getByRole('checkbox', { name: /Send invoices by email/ })
+      .uncheck()
+    await createButton(page).click()
+    // The same request goes again, so the server answers with the same task
+    // and refuses nothing, and the record carries the causes it was sent with.
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.intakeKeys).toHaveLength(2)
+    expect(server.intakeKeys[1]).toBe(server.intakeKeys[0])
+    expect(server.created[1]).toEqual(server.created[0])
+    expect(fixPuts(server)).toEqual([
+      { method: 'PUT', path: fixPath, body: { task_id: '261127-fix', cause_task_ids: ['261120-a01'] } },
+    ])
+  })
+
+  test('a reload after a lost answer shows the request sent before and sends it unchanged', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    await description(page).fill('My own description of the fix')
+    server.loseCreateAnswers = 1
+    await sheet(page).getByRole('combobox', { name: 'Repository' }).selectOption('app')
+    await sheet(page)
+      .getByRole('checkbox', { name: /Send invoices by email/ })
+      .check()
+    await createButton(page).click()
+    await expect.poll(() => server.intakeKeys.length).toBe(1)
+    await page.reload()
+    // The form shows the request that was sent, with its cause ticked.
+    await expect(description(page)).toHaveValue('My own description of the fix')
+    await expect(sheet(page).getByRole('combobox', { name: 'Repository' })).toHaveValue('app')
+    await expect(sheet(page).getByRole('checkbox', { name: /Send invoices by email/ })).toBeChecked()
+    await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toBeVisible()
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.intakeKeys[1]).toBe(server.intakeKeys[0])
+    expect(server.created[1]).toEqual(server.created[0])
+    expect(fixPuts(server)).toEqual([
+      { method: 'PUT', path: fixPath, body: { task_id: '261127-fix', cause_task_ids: ['261120-a01'] } },
+    ])
+  })
+
+  test('a refused intake request is forgotten, so the next Create sends the form as it is then', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    server.refuseCreates = 1
+    await createFixTask(page, [])
+    await expect(sheet(page).getByText('repo is not registered in this workspace')).toBeVisible()
+    await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toHaveCount(0)
+    await description(page).fill('A corrected description')
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.created[1]).toMatchObject({ body: 'A corrected description' })
+    expect(server.intakeKeys[1]).not.toBe(server.intakeKeys[0])
+  })
+
   test('each report has its own intake key in one sheet, so a second report gets its own task', async ({ page }) => {
     const server = await mockReportServer(page, { reports: [fixReport, second] })
     await page.goto(fixAddress)
