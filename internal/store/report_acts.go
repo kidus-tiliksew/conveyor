@@ -158,9 +158,9 @@ type ReportReadStore interface {
 	// consistent view, or ErrNotFound.
 	ReadFeedbackReport(ctx context.Context, reportID string) (FeedbackReport, FeedbackReportDetails, error)
 	// ReadFeedbackReports answers the reports of the given IDs that the
-	// workspace holds, in the order of the IDs, with their details, all
-	// from one consistent view. An ID the workspace does not hold has no
-	// report.
+	// workspace holds, with their details, all from one consistent view.
+	// It answers one report for each distinct ID, in the order of each ID's
+	// first occurrence. An ID the workspace does not hold has no report.
 	ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]FeedbackReport, FeedbackReportDetails, error)
 	// CountCrateOpenFeedbackReports answers, by environment ID, the number
 	// of open reports that belong to the crate (invariant 23). An

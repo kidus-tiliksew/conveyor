@@ -138,7 +138,12 @@ func (m *volatileMemory) ReadFeedbackReports(ctx context.Context, reportIDs []st
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	reports := []FeedbackReport{}
+	seen := map[string]bool{}
 	for _, id := range reportIDs {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
 		if _, _, report, found := m.feedbackReportLocked(workspace, id); found {
 			reports = append(reports, cloneFeedbackReport(report))
 		}

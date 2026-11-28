@@ -961,10 +961,17 @@ func runFeedbackReportDetails(t *testing.T, x Fixture) {
 	f.seed(3, removedTask.ID, store.FeedbackReportLinkRemoved)
 	f.changed(store.FeedbackReportAct{Kind: store.FeedbackReportActFixTask, TaskID: fix.ID})
 	report := f.stored()
-	reports, details, err := x.Backend.ReadFeedbackReports(x.Context, []string{"rpt-261125-000000", report.ID})
+	reports, details, err := x.Backend.ReadFeedbackReports(x.Context, []string{"rpt-261125-000000", report.ID, report.ID})
 	requireOK(t, err)
 	if len(reports) != 1 || !reflect.DeepEqual(reports[0], report) {
-		t.Fatalf("ReadFeedbackReports=%+v, want only %+v", reports, report)
+		t.Fatalf("ReadFeedbackReports with a missing and a repeated ID=%+v, want only %+v once", reports, report)
+	}
+	// One report for each distinct ID, in the order of first occurrence.
+	other := newActFixture(t, x, "other")
+	ordered, _, err := x.Backend.ReadFeedbackReports(x.Context, []string{other.report.ID, report.ID, other.report.ID})
+	requireOK(t, err)
+	if len(ordered) != 2 || ordered[0].ID != other.report.ID || ordered[1].ID != report.ID {
+		t.Fatalf("ReadFeedbackReports order=%+v", ordered)
 	}
 	// The links read with the record decode exactly as the link rows do.
 	rows, err := x.Backend.ListFeedbackReportLinks(x.Context, report.ID)
