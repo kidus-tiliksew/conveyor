@@ -7,7 +7,7 @@ import { BlockedRow } from '../components/inbox/blocked-row'
 import { InboxBandChips } from '../components/inbox/inbox-band-chips'
 import { useInboxKeyboard } from '../components/inbox/inbox-keyboard'
 import { isUrgent, useMinuteClock } from '../components/inbox/inbox-kind'
-import { InboxReviewDetail } from '../components/inbox/inbox-review-detail'
+import { InboxReviewDetail, ReportActWatcher } from '../components/inbox/inbox-review-detail'
 import { InboxReviewList } from '../components/inbox/inbox-review-list'
 import type { InboxSearch } from '../components/inbox/inbox-search'
 import { inboxItemKey, steppedKey, survivingNeighbour } from '../components/inbox/inbox-selection'
@@ -22,8 +22,11 @@ import { cn } from '../lib/utils'
 // band: `task` keeps that task's proposals (and its own decision), `document`
 // with `tier` keeps that document's proposals. A proposal of a tier this
 // client does not know stays listed read-only (component-next-action, State and
-// failure).
+// failure). A report from production belongs to no task, so the task
+// narrowing keeps it, as the server's task filter does; the document
+// narrowing lists only proposals (req-operator-next-action AC-2.12).
 function matchesSearch(item: InboxItem, search: InboxSearch) {
+  if (item.kind === 'feedback_report') return !search.document
   const proposal = item.proposal
   if (item.kind === 'document_proposal' && proposal) {
     if (search.task && (proposal.origin_type !== 'task' || proposal.origin_id !== search.task)) return false
@@ -105,6 +108,13 @@ export function InboxPage() {
   })
 
   const markActed = (key: string) => () => acted.current.add(`${workspace}\n${key}`)
+  // The selected key when a report's act ends: only an act on the item still
+  // selected moves the selection (component-next-action invariant 37).
+  const selectedNow = useRef(selectedKey)
+  selectedNow.current = selectedKey
+  const reportIds = allDecisions.flatMap((item) =>
+    item.kind === 'feedback_report' && item.report ? [item.report.id] : [],
+  )
   const showBlocked = show('blocked') && blocked.length > 0
   const showAutomatic = show('automatic') && (automatic.length > 0 || (inbox.data?.acts.length ?? 0) > 0)
 
@@ -130,6 +140,16 @@ export function InboxPage() {
       >
         {(inbox.data || inbox.isLoading) && <InboxBandChips search={search} counts={inbox.data && counts} />}
       </PageHeader>
+      {reportIds.map((id) => (
+        <ReportActWatcher
+          key={`${workspace}:${id}`}
+          workspace={workspace}
+          reportId={id}
+          onSettled={(recorded) => {
+            if (recorded && selectedNow.current === id) acted.current.add(`${workspace}\n${id}`)
+          }}
+        />
+      ))}
       <div ref={root} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6">
           {(search.task || search.document) && (

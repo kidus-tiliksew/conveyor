@@ -3,6 +3,7 @@ import { Flame } from 'lucide-react'
 import type { InboxItem } from '../../lib/types'
 import { cn, fullTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
+import { Untrusted } from '../reports/report-card'
 import { InlineMarkdown } from '../ui/markdown-prose'
 import { pullRequestLabel } from './decision-card'
 import { Kbd } from './inbox-keyboard'
@@ -82,7 +83,8 @@ function InboxRow({
   const row = describeRow(item, now)
   const kind = itemKind(item)
   const { tone } = inboxKind(kind)
-  const pullRequest = item.kind === 'document_proposal' ? undefined : item.pull_request
+  const pullRequest =
+    item.kind === 'document_proposal' || item.kind === 'feedback_report' ? undefined : item.pull_request
   return (
     <div
       data-inbox-row-item={rowKey}
@@ -130,7 +132,9 @@ function InboxRow({
             selected ? 'font-semibold' : 'font-medium',
           )}
         >
-          <InlineMarkdown>{row.title}</InlineMarkdown>
+          {/* A report's text is untrusted data: a plain text node, never
+              Markdown (component-feedback-reports invariant 5). */}
+          {row.plain ? <Untrusted>{row.title}</Untrusted> : <InlineMarkdown>{row.title}</InlineMarkdown>}
         </span>
       </Link>
       {(urgent || row.blocks > 0 || row.deadline || pullRequest) && (
@@ -173,7 +177,36 @@ function UrgentMark() {
   )
 }
 
+const reportRowKinds: Record<string, string> = {
+  error: 'Production error',
+  alert: 'Production alert',
+  message: 'Production message',
+}
+
+// The first line of a report's summary that holds more than white space,
+// which a row shows as its title. The detail shows the whole summary.
+export function reportRowTitle(summary: string) {
+  const lines = summary.split(/\r\n|[\n\r\u0085\u2028\u2029]/)
+  return (lines.find((line) => line.trim() !== '') ?? '').trim()
+}
+
 function describeRow(item: InboxItem, now: number) {
+  const report = item.report
+  if (item.kind === 'feedback_report' && report) {
+    const compact = compactAge(item.last_event_at, now)
+    return {
+      kind: reportRowKinds[report.kind] ?? 'Production report',
+      title: reportRowTitle(report.summary),
+      plain: true,
+      version: '',
+      blocks: 0,
+      deadline: undefined,
+      age:
+        item.last_event_at && compact
+          ? { compact, dateTime: item.last_event_at, absolute: fullTime(item.last_event_at) }
+          : null,
+    }
+  }
   const proposal = item.proposal
   if (item.kind === 'document_proposal' && proposal) {
     const known = knownTier(proposal.tier)
@@ -182,6 +215,7 @@ function describeRow(item: InboxItem, now: number) {
     return {
       kind,
       title: proposal.title,
+      plain: false,
       version: proposal.version == null ? '' : `v${proposal.version}`,
       blocks: 0,
       deadline: item.deadline,
@@ -192,6 +226,7 @@ function describeRow(item: InboxItem, now: number) {
   return {
     kind: item.next_action?.label ?? 'Decision',
     title: item.task?.title ?? '',
+    plain: false,
     version: '',
     blocks: item.next_action?.blocks?.length ?? 0,
     deadline: item.deadline ?? item.next_action?.deadline,
