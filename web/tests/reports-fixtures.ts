@@ -455,14 +455,17 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
       items.sort(servedOrder)
       const limit = Number(params.get('limit') ?? 100)
       const offset = Number(params.get('offset') ?? 0)
-      return route.fulfill({
-        json: items.slice(offset, offset + limit),
-        headers: {
-          'X-Conveyor-Total': String(items.length),
-          'X-Conveyor-Limit': String(limit),
-          'X-Conveyor-Offset': String(offset),
-        },
-      })
+      // A read the page cancelled while it waited has no one to answer.
+      return route
+        .fulfill({
+          json: items.slice(offset, offset + limit),
+          headers: {
+            'X-Conveyor-Total': String(items.length),
+            'X-Conveyor-Limit': String(limit),
+            'X-Conveyor-Offset': String(offset),
+          },
+        })
+        .catch(() => undefined)
     }
     const single = path.match(/^\/v1\/feedback-reports\/([^/]+)$/)
     if (single && method === 'GET') {

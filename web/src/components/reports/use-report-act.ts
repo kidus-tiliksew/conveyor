@@ -87,20 +87,22 @@ export function useReportAct(workspace: string) {
   }, [queryClient, workspace])
 
   // Reads every shown report read again and says whether each one answered
-  // with a report. Only a success that the query cache reports during this
-  // read counts: a read that failed, or that waits offline in TanStack
-  // Query's paused queue, did not answer, so the card stays blocked.
+  // with a report. A read already on its way can hold a report from before
+  // the act, and TanStack Query reuses such a read for a query that has no
+  // data yet, so every report read is cancelled first. Then only a success
+  // of a read that started after that point counts: a read that failed, or
+  // that waits offline in TanStack Query's paused queue, did not answer, and
+  // the card stays blocked.
   const readAgain = useCallback(async () => {
+    const scope = feedbackReportsQueryKey(workspace)
+    await queryClient.cancelQueries({ queryKey: scope })
+    const started = new Set<string>()
     const answered = new Set<string>()
     const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
-      const [scope, scopeWorkspace] = event.query.queryKey
-      if (
-        event.type === 'updated' &&
-        event.action.type === 'success' &&
-        !event.action.manual &&
-        scope === 'feedback-reports' &&
-        scopeWorkspace === workspace
-      )
+      const [name, eventWorkspace] = event.query.queryKey
+      if (event.type !== 'updated' || name !== scope[0] || eventWorkspace !== workspace) return
+      if (event.action.type === 'fetch') started.add(event.query.queryHash)
+      else if (event.action.type === 'success' && !event.action.manual && started.has(event.query.queryHash))
         answered.add(event.query.queryHash)
     })
     try {
@@ -108,7 +110,7 @@ export function useReportAct(workspace: string) {
     } finally {
       unsubscribe()
     }
-    const reads = queryClient.getQueryCache().findAll({ queryKey: feedbackReportsQueryKey(workspace), type: 'active' })
+    const reads = queryClient.getQueryCache().findAll({ queryKey: scope, type: 'active' })
     return reads.every((query) => answered.has(query.queryHash))
   }, [queryClient, refresh, workspace])
 

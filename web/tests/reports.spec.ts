@@ -1915,3 +1915,48 @@ test.describe('review follow-ups, second round', () => {
     expect(server.acts).toHaveLength(1)
   })
 })
+
+// The third follow-up review.
+test.describe('review follow-ups, third round', () => {
+  test('a list read already on its way when an act gets no answer never counts as the fresh read', async ({ page }) => {
+    const reports = Array.from({ length: 60 }, (_, index) =>
+      report(`rpt-261127-j${String(index).padStart(5, '0')}`, {
+        summary: `Report ${index}`,
+        last_seen: new Date(Date.UTC(2026, 10, 27, 11, 0, index)).toISOString(),
+        links:
+          index === 59
+            ? [taskLink('lnk-first', '261120-a01', 'Send invoices by email', { evidence: [lineEvidence] })]
+            : [],
+      }),
+    )
+    const server = await mockReportServer(page, { reports })
+    await page.goto('/w/demo/monitor')
+    const first = card(page, 'rpt-261127-j00059')
+    const confirm = first.getByRole('button', { name: 'Confirm the link to Send invoices by email' })
+    await expect(confirm).toBeEnabled()
+    // "Show more reports" starts a read that waits.
+    const before = gate()
+    server.listGate = before.promise
+    await page.getByRole('button', { name: 'Show more reports' }).click()
+    await expect.poll(() => listReads(server).length).toBe(2)
+    // The act gets a 500 while that read still waits. The fresh read waits too.
+    const after = gate()
+    server.listGate = after.promise
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    await confirm.click()
+    await expect.poll(() => listReads(server).length).toBe(3)
+    // The read from before the act answers: it counts for nothing.
+    before.open()
+    await page.waitForTimeout(500)
+    await expect(first.getByRole('status').filter({ hasText: 'Conveyor reads the report again' })).toBeVisible()
+    await expect(confirm).toBeDisabled()
+    // The read that started after the act answers: now the person can act.
+    after.open()
+    server.listGate = null
+    await expect(first.locator('[data-report-act-error]')).toHaveText(
+      'Conveyor does not know whether it recorded this. Conveyor read the report again. Look at it before you try again.',
+    )
+    await expect(confirm).toBeEnabled()
+    expect(server.acts).toHaveLength(1)
+  })
+})
