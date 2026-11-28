@@ -2698,14 +2698,13 @@ test.describe('unknown outcomes and the fix-task record', () => {
     server.actGate = held.promise
     await createFixTask(page, [])
     await expect.poll(() => fixPuts(server).length).toBe(1)
-    // The sheet closes and opens again. Its restored task reads the report,
-    // which does not name the task yet, while the record request waits.
-    const reads = reportReads(server, linked.id)
+    // The sheet closes and opens again. Its restored task waits for the
+    // record request on its way, and offers no second record request.
     await moveTo(page, '/w/demo/')
     await expect(page.locator('[data-fix-task]')).toHaveCount(0)
     await moveTo(page, address)
-    await expect.poll(() => reportReads(server, linked.id)).toBeGreaterThan(reads)
-    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('The report does not record it yet.')
+    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('Conveyor records it on the report now…')
+    await expect(recordButton(page)).toHaveCount(0)
     await moveTo(page, '/w/demo/monitor')
     const item = card(page, linked.id)
     await expect(item).toBeVisible()
@@ -3590,6 +3589,259 @@ test.describe('each draft belongs to its workspace and report', () => {
           await expectFreshPayload(page, server, transition.to)
         })
       }
+    })
+  }
+})
+
+// Class: the saved intake request of a report. Every state it can be in,
+// against every event that can reach it. The live state belongs to the
+// workspace and the report, not to a sheet: a closed, reopened, or second
+// sheet sees it.
+test.describe('the saved intake request of a report', () => {
+  const otherReport = report('rpt-261127-f00051', {
+    summary: 'Other report',
+    links: [taskLink('lnk-f51', '261120-b02', 'Store invoice numbers')],
+  })
+  const reportB = `/w/demo/?create=true&report=${otherReport.id}`
+  const otherWorkspace = `/w/other/?create=true&report=${fixReport.id}`
+  const causes = ['Send invoices by email']
+  const moveTo = (page: Page, to: string) =>
+    page.evaluate((target) => {
+      history.pushState({}, '', target)
+      dispatchEvent(new PopStateEvent('popstate'))
+    }, to)
+  const savedKey = (page: Page) =>
+    page.evaluate((id) => {
+      const raw = sessionStorage.getItem(`conveyor-fix-task-intake:demo:${id}`)
+      return raw ? (JSON.parse(raw) as { key: string }).key : null
+    }, fixReport.id)
+  type Ctx = { server: Server; release?: () => void }
+  type State = 'none' | 'live' | 'answered' | 'refused 400' | 'failed' | 'lost' | 'restored'
+  type View = 'none' | 'live' | 'answered' | 'refused' | 'sent' | 'restored'
+
+  async function reach(page: Page, state: State): Promise<Ctx> {
+    const server = await mockReportServer(page, { reports: [fixReport, otherReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    const ctx: Ctx = { server }
+    if (state === 'live') {
+      const held = gate()
+      server.createGate = held.promise
+      ctx.release = () => {
+        server.createGate = null
+        held.open()
+      }
+    }
+    if (state === 'answered') {
+      const held = gate()
+      server.actGate = held.promise
+      ctx.release = () => {
+        server.actGate = null
+        held.open()
+      }
+    }
+    if (state === 'refused 400') server.refuseCreates = 1
+    if (state === 'failed') {
+      server.refuseCreates = 1
+      server.refuseCreateStatus = 503
+    }
+    if (state === 'lost' || state === 'restored') server.loseCreateAnswers = 1
+    if (state !== 'none') {
+      await createFixTask(page, causes)
+      await expect.poll(() => server.intakeKeys.length).toBe(1)
+    }
+    if (state === 'restored') await page.reload()
+    await expectView(page, viewOf(state))
+    return ctx
+  }
+
+  const viewOf = (state: State): View =>
+    state === 'refused 400' ? 'refused' : state === 'failed' || state === 'lost' ? 'sent' : (state as View)
+
+  // What the sheet shows and which controls it enables.
+  async function expectView(page: Page, view: View) {
+    const form = sheet(page)
+    await expect(form.locator('[data-fix-task-intake-live]')).toHaveCount(view === 'live' ? 1 : 0)
+    await expect(form.locator('[data-fix-task-intake-sent]')).toHaveCount(
+      view === 'sent' || view === 'restored' ? 1 : 0,
+    )
+    await expect(form.locator('[data-fix-task-created]')).toHaveCount(view === 'answered' ? 1 : 0)
+    const discard = form.locator('[data-fix-task-discard]')
+    if (view === 'sent' || view === 'restored') await expect(discard).toBeEnabled()
+    else await expect(discard).toHaveCount(0)
+    if (view === 'restored')
+      await expect(form.locator('[data-fix-task-intake-sent]')).toContainText(
+        'the first request may still create a task',
+      )
+    if (view === 'sent')
+      await expect(form.locator('[data-fix-task-intake-sent]')).toContainText('if the request reached Conveyor')
+    if (view === 'live') {
+      await expect(createButton(page)).toHaveText('Creating…')
+      await expect(createButton(page)).toBeDisabled()
+    }
+    if (view === 'answered') await expect(createButton(page)).toBeDisabled()
+    if (view === 'refused') await expect(form.getByText('repo is not registered in this workspace')).toBeVisible()
+  }
+
+  // Create sends the saved request with its key, and the report records the
+  // task with the causes it was sent with.
+  async function expectReplay(page: Page, ctx: Ctx, key: string) {
+    await expect(createButton(page)).toBeEnabled()
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(ctx.server.intakeKeys.at(-1)).toBe(key)
+    expect(fixPuts(ctx.server).at(-1)).toEqual({
+      method: 'PUT',
+      path: fixPath,
+      body: { task_id: '261127-fix', cause_task_ids: ['261120-a01'] },
+    })
+  }
+
+  // A live request that answers late records on its own report with its own
+  // causes, and opens nothing on the page that shows now.
+  async function expectLateAnswerOnA(page: Page, ctx: Ctx, url: string) {
+    const answered = page.waitForResponse(
+      (response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/v1/tasks',
+    )
+    ctx.release?.()
+    await answered
+    await expect.poll(() => fixPuts(ctx.server).filter((act) => act.path === fixPath).length).toBe(1)
+    expect(fixPuts(ctx.server)[0].body).toEqual({ task_id: '261127-fix', cause_task_ids: ['261120-a01'] })
+    await page.waitForTimeout(300)
+    await expect(page).toHaveURL(url)
+    expect(await savedKey(page)).toBeNull()
+  }
+
+  const states: State[] = ['none', 'live', 'answered', 'refused 400', 'failed', 'lost', 'restored']
+  const keyed = (state: State) => state === 'live' || state === 'failed' || state === 'lost' || state === 'restored'
+
+  for (const state of states) {
+    test.describe(`state: ${state}`, () => {
+      test('event: Create', async ({ page }) => {
+        const ctx = await reach(page, state)
+        const before = await savedKey(page)
+        if (state === 'live' || state === 'answered') {
+          // Nothing can send while the request or its record is on its way.
+          await expect(createButton(page)).toBeDisabled()
+          expect(await savedKey(page)).toBe(before)
+          return
+        }
+        if (keyed(state)) {
+          expect(before).toBe(ctx.server.intakeKeys[0])
+          await expectReplay(page, ctx, before ?? '')
+          return
+        }
+        // No saved request: Create sends the form with a new key.
+        expect(before).toBeNull()
+        await sheet(page).getByRole('combobox', { name: 'Repository' }).selectOption('app')
+        await createButton(page).click()
+        await expect.poll(() => ctx.server.intakeKeys.length).toBe(state === 'none' ? 1 : 2)
+        if (state === 'refused 400') expect(ctx.server.intakeKeys[1]).not.toBe(ctx.server.intakeKeys[0])
+      })
+
+      test('event: discard', async ({ page }) => {
+        const ctx = await reach(page, state)
+        const before = await savedKey(page)
+        const discard = sheet(page).locator('[data-fix-task-discard]')
+        if (state === 'failed' || state === 'lost' || state === 'restored') {
+          await discard.click()
+          await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toHaveCount(0)
+          expect(await savedKey(page)).toBeNull()
+          // The next Create is a new request with a new key.
+          await description(page).fill('A new description')
+          await createButton(page).click()
+          await expect.poll(() => ctx.server.intakeKeys.length).toBe(2)
+          expect(ctx.server.intakeKeys[1]).not.toBe(ctx.server.intakeKeys[0])
+          return
+        }
+        // No discard control, and the key stays as it is.
+        await expect(discard).toHaveCount(0)
+        expect(await savedKey(page)).toBe(before)
+        if (state === 'live') {
+          // The sheet that asked still shows the report, so its answer records
+          // the task with its causes and opens it.
+          ctx.release?.()
+          await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+          expect(fixPuts(ctx.server)).toEqual([
+            { method: 'PUT', path: fixPath, body: { task_id: '261127-fix', cause_task_ids: ['261120-a01'] } },
+          ])
+          expect(ctx.server.intakeKeys).toHaveLength(1)
+        }
+      })
+
+      test('event: close the sheet', async ({ page }) => {
+        const ctx = await reach(page, state)
+        const before = await savedKey(page)
+        await sheet(page).getByRole('button', { name: 'Close' }).first().click()
+        await expect(page).toHaveURL('/w/demo/')
+        expect(await savedKey(page)).toBe(before)
+        if (state === 'live') await expectLateAnswerOnA(page, ctx, '/w/demo/')
+      })
+
+      test('event: open the sheet again for the same report', async ({ page }) => {
+        const ctx = await reach(page, state)
+        const before = await savedKey(page)
+        await sheet(page).getByRole('button', { name: 'Close' }).first().click()
+        await expect(page).toHaveURL('/w/demo/')
+        await moveTo(page, fixAddress)
+        await expectView(page, state === 'refused 400' ? 'none' : viewOf(state))
+        expect(await savedKey(page)).toBe(before)
+        if (state === 'live') {
+          // The request is held on the server, its answer is lost, and the
+          // reopened sheet then sends the same request with the same key.
+          ctx.server.loseCreateAnswers = 1
+          const lost = page.waitForEvent('requestfailed', (request) => new URL(request.url()).pathname === '/v1/tasks')
+          ctx.release?.()
+          await lost
+          await expectView(page, 'sent')
+          expect(await savedKey(page)).toBe(before)
+          await expectReplay(page, ctx, before ?? '')
+        }
+        if (state === 'answered') {
+          ctx.release?.()
+          await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+          expect(fixPuts(ctx.server)).toHaveLength(1)
+        }
+        if (keyed(state) && state !== 'live') await expectReplay(page, ctx, before ?? '')
+      })
+
+      test('event: change to another report', async ({ page }) => {
+        const ctx = await reach(page, state)
+        const before = await savedKey(page)
+        await moveTo(page, reportB)
+        await expect(description(page)).toHaveValue(expectedDescription(otherReport, '```'))
+        await expectView(page, 'none')
+        expect(await savedKey(page)).toBe(before)
+        if (state === 'live') await expectLateAnswerOnA(page, ctx, reportB)
+      })
+
+      test('event: change workspace', async ({ page }) => {
+        const ctx = await reach(page, state)
+        const before = await savedKey(page)
+        await moveTo(page, otherWorkspace)
+        await expect(page).toHaveURL(otherWorkspace)
+        await expectView(page, 'none')
+        expect(await savedKey(page)).toBe(before)
+        if (state === 'live') await expectLateAnswerOnA(page, ctx, otherWorkspace)
+      })
+
+      test('event: reload', async ({ page }) => {
+        const ctx = await reach(page, state)
+        const before = await savedKey(page)
+        await page.reload()
+        await expect(sheet(page).locator('[data-fix-task-summary]')).not.toHaveText('')
+        // After a reload the page cannot know whether a first request is still
+        // on its way, so a saved request is shown as found after a reload.
+        const after: View = keyed(state) ? 'restored' : state === 'answered' ? 'answered' : 'none'
+        await expectView(page, after)
+        expect(await savedKey(page)).toBe(before)
+        if (keyed(state)) {
+          // The held request was stored on arrival, so the replay returns
+          // that task.
+          ctx.release?.()
+          await expectReplay(page, ctx, before ?? '')
+        }
+      })
     })
   }
 })

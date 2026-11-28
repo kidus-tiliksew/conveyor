@@ -30,6 +30,7 @@ import {
   type FixTaskFlow,
   FixTaskPanel,
   fixTaskIntakeToSend,
+  sendFixTaskIntake,
   sentFilesPresent,
   useFixTaskFlow,
 } from '../reports/fix-task'
@@ -243,8 +244,14 @@ function TaskCreateForm({
     // Create captures the workspace, the crate, the report, and the ticked
     // causes. The answer uses that snapshot, never the values of a later
     // render, so a late answer reaches only what asked for it.
-    mutationFn: (intake: IntakeSnapshot) =>
-      createTask(intake.workspace, intake.request, intake.files, intake.idempotencyKey),
+    // A fix task's create request is live for its report until it settles,
+    // outside this form, so a closed, reopened, or second sheet sees it.
+    mutationFn: (intake: IntakeSnapshot) => {
+      const send = () => createTask(intake.workspace, intake.request, intake.files, intake.idempotencyKey)
+      return intake.reportId
+        ? sendFixTaskIntake({ workspace: intake.workspace, reportId: intake.reportId }, send)
+        : send()
+    },
     onSuccess: (task, intake) => {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       if (intake.crateId) void queryClient.invalidateQueries({ queryKey: ['crates', intake.workspace] })
@@ -615,6 +622,7 @@ function TaskCreateForm({
                 ? !sentFilesPresent(fixTask.sentRequest, files)
                 : !body.trim() || !repoName || repos.length === 0 || baseCommitError !== '' || crateClosed) ||
               mutation.isPending ||
+              fixTask.intakeLive ||
               (reportId !== undefined && !fixTask.ready)
             }
             onClick={() => {
@@ -665,7 +673,7 @@ function TaskCreateForm({
               })
             }}
           >
-            {mutation.isPending ? 'Creating…' : fixTask.created ? 'Task created' : 'Create task'}
+            {mutation.isPending || fixTask.intakeLive ? 'Creating…' : fixTask.created ? 'Task created' : 'Create task'}
           </Button>
         </div>
       </footer>

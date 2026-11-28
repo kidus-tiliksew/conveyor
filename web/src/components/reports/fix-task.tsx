@@ -1,7 +1,15 @@
 import { hashKey, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { MessageSquareWarning } from 'lucide-react'
-import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
+import {
+  type Dispatch,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import {
   type CreateTaskInput,
   FeedbackReportActError,
@@ -122,6 +130,64 @@ function writeCreatedFixTask(workspace: string, reportId: string, value: Created
   } catch {
     // Without session storage the sheet still holds the task while it is open.
   }
+  intakeChanged()
+}
+
+// The saved intake request of each report is a small state machine
+// (component-feedback-reports invariant 18):
+//
+// - none: no request saved.
+// - live: saved, and its create request is on its way on this page. Nothing
+//   drops or replaces the key, and no sheet sends it again or discards it.
+// - answered with a task: the key is dropped and the created task goes to the
+//   record step, which the saved task of the report carries.
+// - refused with 400 or 422: the server stored nothing, so the key is dropped.
+// - refused or failed another way, or the answer is lost: the request and
+//   its key stay; Create sends them again unchanged, and the person may
+//   discard them.
+// - found after a reload: the page cannot know whether the first request is
+//   still on its way on the server, so it is treated as a lost answer, and the
+//   discard says that the first request may still create a task.
+//
+// The live state is kept here, by workspace and report, outside any sheet
+// and any request observer, so a closed, reopened, or second sheet sees it.
+const liveIntakes = new Set<string>()
+const intakeListeners = new Set<() => void>()
+let intakeVersion = 0
+
+function intakeChanged() {
+  intakeVersion += 1
+  for (const listener of intakeListeners) listener()
+}
+
+function subscribeIntakes(listener: () => void) {
+  intakeListeners.add(listener)
+  return () => {
+    intakeListeners.delete(listener)
+  }
+}
+
+/** Renders again whenever a saved request, its live state, or a saved task changes. */
+export function useFixTaskIntakeVersion() {
+  return useSyncExternalStore(subscribeIntakes, () => intakeVersion)
+}
+
+/** True while the create request of this report is on its way on this page. */
+export function fixTaskIntakeLive(target: FixTaskTarget) {
+  return liveIntakes.has(intakeStorageKey(target))
+}
+
+/** Runs the create request of a report, which is live until it settles. */
+export async function sendFixTaskIntake<T>(target: FixTaskTarget, send: () => Promise<T>): Promise<T> {
+  const name = intakeStorageKey(target)
+  liveIntakes.add(name)
+  intakeChanged()
+  try {
+    return await send()
+  } finally {
+    liveIntakes.delete(name)
+    intakeChanged()
+  }
 }
 
 function intakeStorageKey(target: FixTaskTarget) {
@@ -148,6 +214,9 @@ export interface SentFixTaskIntake {
   // False when session storage refused to keep this request, so it does not
   // survive a reload.
   saved?: boolean
+  // True when it was found in session storage after a reload: the page cannot
+  // know whether the first request is still on its way on the server.
+  restored?: boolean
 }
 
 // The sent request of each report target while this page is open. It keeps a
@@ -170,7 +239,14 @@ function parseSentIntake(raw: string | null): SentFixTaskIntake | null {
             typeof file?.name === 'string' && typeof file?.size === 'number',
         )
       : []
-    return { key: value.key, request: request as CreateTaskInput, causeTaskIds: causes, fileNames, saved: true }
+    return {
+      key: value.key,
+      request: request as CreateTaskInput,
+      causeTaskIds: causes,
+      fileNames,
+      saved: true,
+      restored: true,
+    }
   } catch {
     return null
   }
@@ -211,7 +287,7 @@ export function fixTaskIntakeToSend(
 ): SentFixTaskIntake {
   const before = sentFixTaskIntake(target)
   const sent: SentFixTaskIntake = before
-    ? { ...before, files: before.files ?? files }
+    ? { ...before, files: before.files ?? files, restored: false }
     : {
         key: crypto.randomUUID(),
         request,
@@ -238,21 +314,27 @@ export function fixTaskIntakeToSend(
     sent.saved = false
   }
   memoryIntakes.set(name, sent)
+  intakeChanged()
   return sent
 }
 
 /**
- * Forgets the sent request of this report: when the report records the task,
- * or when the server refused the request and so stored nothing under its key.
+ * Forgets the sent request of this report: when the server answered with a
+ * task, when it refused the request with 400 or 422 and so stored nothing
+ * under its key, or when the person discards it. While its create request is
+ * live, nothing forgets it, and this returns false.
  */
 export function clearFixTaskIntake(target: FixTaskTarget) {
   const name = intakeStorageKey(target)
+  if (liveIntakes.has(name)) return false
   memoryIntakes.delete(name)
   try {
     window.sessionStorage.removeItem(name)
   } catch {
     // Nothing was saved.
   }
+  intakeChanged()
+  return true
 }
 
 /** False when session storage refuses to keep a value, so nothing survives a reload. */
@@ -342,8 +424,17 @@ export function useFixTaskFlow({
   const [created, setCreated] = useState<CreatedFixTask | null>(restoredEntry)
   // A task restored from an earlier visit waits for a fresh read of the
   // report before the page offers to record it.
-  const [record, setRecord] = useState<RecordState>(() => (created ? { phase: 'checking' } : { phase: 'idle' }))
-  const restorePending = useRef(created !== null)
+  // A saved task whose record request is on its way on this page, from a
+  // sheet that closed, waits for that request; any other saved task reads the
+  // report first.
+  const recordOnItsWay = (entry: CreatedFixTask | null) =>
+    entry?.status === 'sending' &&
+    Boolean(reportId) &&
+    readReportActState(reportActKey(workspace, reportId ?? '')).phase === 'sending'
+  const startRecord = (entry: CreatedFixTask | null): RecordState =>
+    entry ? (recordOnItsWay(entry) ? { phase: 'sending' } : { phase: 'checking' }) : { phase: 'idle' }
+  const [record, setRecord] = useState<RecordState>(() => startRecord(created))
+  const restorePending = useRef(created !== null && !recordOnItsWay(created))
   // Another report, or another workspace, starts the flow again with that
   // report's own saved task, so no state of one report reaches another.
   const identity = `${workspace}\u0000${reportId ?? ''}`
@@ -354,8 +445,8 @@ export function useFixTaskFlow({
     setPrefilledFor(null)
     setCauses([])
     setCreated(restored)
-    setRecord(restored ? { phase: 'checking' } : { phase: 'idle' })
-    restorePending.current = restored !== null
+    setRecord(startRecord(restored))
+    restorePending.current = restored !== null && !recordOnItsWay(restored)
   }
   // The last prefilled text: a description that still equals it was not
   // edited, so the prefill of another report replaces it.
@@ -576,6 +667,9 @@ export function useFixTaskFlow({
     (task: { id: string; title: string }, target: FixTaskTarget, causeTaskIds: string[]) => {
       const entry: CreatedFixTask = { taskId: task.id, taskTitle: task.title, causeTaskIds }
       writeCreatedFixTask(target.workspace, target.reportId, { ...entry, status: 'sending' })
+      // The server answered with a task, which goes to the record step now,
+      // so the intake key is no longer needed.
+      clearFixTaskIntake(target)
       if (live(flowOf(target))) setCreated(entry)
       void sendRecord(entry, target)
     },
@@ -644,6 +738,32 @@ export function useFixTaskFlow({
     void rereadReport(true)
   }, [created, rereadReport])
 
+  // Saved requests, their live state, and saved tasks change outside this
+  // sheet: a sheet that closed while its create request was on its way still
+  // gets the answer and records the task. This sheet follows the saved task of
+  // its report: it takes one that appears, waits while its record request is
+  // on its way elsewhere, and reads the report again when that request ends.
+  useFixTaskIntakeVersion()
+  const savedNow = reportId ? readCreatedFixTask(workspace, reportId) : null
+  const savedNowKey = savedNow ? `${savedNow.taskId}\u0000${savedNow.status ?? ''}` : ''
+  const seenSaved = useRef(savedNowKey)
+  useEffect(() => {
+    if (seenSaved.current === savedNowKey) return
+    seenSaved.current = savedNowKey
+    if (!reportId || sending.current.has(flowOf({ workspace, reportId }))) return
+    const entry = readCreatedFixTask(workspace, reportId)
+    if (!created && entry) {
+      setCreated(entry)
+      if (entry.status === 'sending') setRecord({ phase: 'sending' })
+      else {
+        setRecord({ phase: 'checking' })
+        restorePending.current = true
+      }
+      return
+    }
+    if (created && record.phase === 'sending' && entry?.status !== 'sending') void rereadReport()
+  }, [savedNowKey, workspace, reportId, created, record.phase, rereadReport])
+
   const linkedTasks = (data?.links ?? []).flatMap((link) => (link.task ? [link.task] : []))
   // An intake request for this report was sent before, and its answer did not
   // reach this page.
@@ -651,12 +771,20 @@ export function useFixTaskFlow({
   // Read when the form renders, not when the flow does: the request is saved
   // by the form's Create, which renders the form alone.
   const readSentRequest = () => (reportId && created === null ? sentFixTaskIntake({ workspace, reportId }) : null)
+  const readLive = () => Boolean(reportId) && fixTaskIntakeLive({ workspace, reportId: reportId ?? '' })
   const ready = Boolean(reportId) && data?.state === 'open' && prefilledFor === reportId && created === null
   return {
     report,
     ready,
+    // A request sent before whose answer did not settle it on this page:
+    // refused another way, failed, lost, or found after a reload.
     get intakeSentBefore() {
-      return readSentRequest() !== null
+      return readSentRequest() !== null && !readLive()
+    },
+    // The create request of this report is on its way on this page, from this
+    // sheet or from one that closed.
+    get intakeLive() {
+      return readLive()
     },
     get sentRequest() {
       return readSentRequest()
@@ -665,8 +793,8 @@ export function useFixTaskFlow({
     // person chooses this after looking for the task on the Board.
     discardSentRequest: () => {
       if (!reportId) return
-      clearFixTaskIntake({ workspace, reportId })
-      setDiscarded((count) => count + 1)
+      // While the request is live, its key stays.
+      if (clearFixTaskIntake({ workspace, reportId })) setDiscarded((count) => count + 1)
     },
     causes,
     setCauses,
@@ -747,22 +875,46 @@ export function FixTaskPanel({
           for the task on the Board before you create it again.
         </p>
       )}
-      {flow.intakeSentBefore && (
-        <p role="status" data-fix-task-intake-sent className="text-xs text-attention">
-          A request to create this task was sent before, and its answer did not arrive. The form shows that request.
-          Create sends it again unchanged, so it does not make a second task. Changes that you make now are not sent.{' '}
-          <button
-            type="button"
-            data-fix-task-discard
-            className="rounded-sm text-primary underline focus-visible:outline-2 focus-visible:outline-primary"
-            onClick={flow.discardSentRequest}
-          >
-            Discard that request
-          </button>{' '}
-          only after you look for the task on the Board: if the request reached Conveyor, a new request makes a second
-          task.
+      {flow.intakeLive && (
+        <p role="status" data-fix-task-intake-live className="text-xs text-attention">
+          A request to create this task is on its way. Wait for its answer: until then, this request cannot be sent
+          again or discarded.
         </p>
       )}
+      {flow.intakeSentBefore &&
+        (flow.sentRequest?.restored ? (
+          <p role="status" data-fix-task-intake-sent className="text-xs text-attention">
+            A request to create this task was sent before this page loaded, and this page cannot know if that request
+            still creates a task. The form shows that request. Create sends it again unchanged, so it does not make a
+            second task. Changes that you make now are not sent.{' '}
+            <button
+              type="button"
+              data-fix-task-discard
+              className="rounded-sm text-primary underline focus-visible:outline-2 focus-visible:outline-primary"
+              onClick={flow.discardSentRequest}
+            >
+              Discard that request
+            </button>{' '}
+            only after you look for the task on the Board: the first request may still create a task, and a new request
+            then makes a second task.
+          </p>
+        ) : (
+          <p role="status" data-fix-task-intake-sent className="text-xs text-attention">
+            A request to create this task was sent before, and this page did not get a task from it. The form shows that
+            request. Create sends it again unchanged, so it does not make a second task. Changes that you make now are
+            not sent.{' '}
+            <button
+              type="button"
+              data-fix-task-discard
+              className="rounded-sm text-primary underline focus-visible:outline-2 focus-visible:outline-primary"
+              onClick={flow.discardSentRequest}
+            >
+              Discard that request
+            </button>{' '}
+            only after you look for the task on the Board: if the request reached Conveyor, a new request makes a second
+            task.
+          </p>
+        ))}
       {flow.sentRequest && !flow.sentRequest.files && flow.sentRequest.fileNames.length > 0 && (
         <p role="status" data-fix-task-attach-again className="text-xs text-attention">
           That request had these files, and this page does not hold them after the reload. Attach the same files again
