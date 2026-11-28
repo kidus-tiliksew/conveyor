@@ -112,31 +112,57 @@ function intakeStorageKey(target: FixTaskTarget) {
  * the server answers with the same task instead of a second one. Each report
  * has its own key.
  */
+// The intake key of each report target while this page is open. It keeps a
+// retry on the same key when session storage refuses to hold it.
+const memoryIntakeKeys = new Map<string, string>()
+
 export function fixTaskIntakeKey(target: FixTaskTarget) {
+  const name = intakeStorageKey(target)
+  let key = memoryIntakeKeys.get(name)
   try {
-    const saved = window.sessionStorage.getItem(intakeStorageKey(target))
-    if (saved) return saved
-    const key = crypto.randomUUID()
-    window.sessionStorage.setItem(intakeStorageKey(target), key)
-    return key
+    key = key ?? window.sessionStorage.getItem(name) ?? undefined
   } catch {
-    return crypto.randomUUID()
+    // Session storage refused: the key stays in memory only.
   }
+  key = key ?? crypto.randomUUID()
+  memoryIntakeKeys.set(name, key)
+  try {
+    window.sessionStorage.setItem(name, key)
+  } catch {
+    // Session storage refused: the key stays in memory only.
+  }
+  return key
 }
 
 function hasFixTaskIntakeKey(target: FixTaskTarget) {
+  const name = intakeStorageKey(target)
+  if (memoryIntakeKeys.has(name)) return true
   try {
-    return window.sessionStorage.getItem(intakeStorageKey(target)) !== null
+    return window.sessionStorage.getItem(name) !== null
   } catch {
     return false
   }
 }
 
 function clearFixTaskIntakeKey(target: FixTaskTarget) {
+  const name = intakeStorageKey(target)
+  memoryIntakeKeys.delete(name)
   try {
-    window.sessionStorage.removeItem(intakeStorageKey(target))
+    window.sessionStorage.removeItem(name)
   } catch {
     // Nothing was saved.
+  }
+}
+
+/** False when session storage refuses to keep a value, so nothing survives a reload. */
+export function fixTaskStorageWorks() {
+  try {
+    const probe = 'conveyor-fix-task-probe'
+    window.sessionStorage.setItem(probe, '1')
+    window.sessionStorage.removeItem(probe)
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -547,6 +573,12 @@ export function FixTaskPanel({
       ) : data ? (
         <CauseList flow={flow} />
       ) : null}
+      {!fixTaskStorageWorks() && (
+        <p role="status" data-fix-task-no-storage className="text-xs text-attention">
+          This browser does not keep this request across a reload. If you reload the page before the task opens, look
+          for the task on the Board before you create it again.
+        </p>
+      )}
       {flow.intakeSentBefore && (
         <p role="status" data-fix-task-intake-sent className="text-xs text-attention">
           A request to create this task was sent before, and its answer did not arrive. Create sends the same request

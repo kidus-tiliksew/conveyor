@@ -2623,7 +2623,9 @@ export async function fetchTaskLiveStatus(
 
 // A report list shows one page of 50 reports at a time. The route serves at
 // most 200 in one answer (component-http-api invariant 19); that is a limit
-// of one request, and the served offset and total reach every report.
+// of one request. The served offset and total reach every report of a list
+// that does not change between page reads; the route has no snapshot, so a
+// report seen again between two reads can move to an earlier page.
 export const feedbackReportPageSize = 50
 
 /**

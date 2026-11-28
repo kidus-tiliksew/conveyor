@@ -16,7 +16,9 @@ import { ReportCard, ReportTaskLinkContext, type ReportTaskLinkProps } from './r
  * invariants 26 and 27). The page is one read of 50 reports at the shown
  * offset, so every report it shows comes from one answer, and the served
  * offset and total reach every report the server holds, in the server's
- * order.
+ * order, while the list does not change between page reads. This is live
+ * offset paging: the route has no snapshot, so a report whose `last_seen`
+ * changes between two page reads can move to an earlier page.
  *
  * - A frame of the workspace stream refreshes it through the
  *   `['feedback-reports', workspace]` prefix. While it shows at least one

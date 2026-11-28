@@ -2705,3 +2705,39 @@ test.describe('fix-task reads that overlap', () => {
     await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
   })
 })
+
+test.describe('fix-task intake keys without session storage', () => {
+  test('when session storage refuses, a retry after a lost answer reuses the key and makes no second task', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      const proto = Storage.prototype
+      for (const name of ['getItem', 'setItem', 'removeItem'] as const) {
+        const original = proto[name] as (...args: string[]) => unknown
+        Object.defineProperty(proto, name, {
+          configurable: true,
+          value(this: Storage, ...args: string[]) {
+            if (this === window.sessionStorage) throw new Error('session storage is blocked')
+            return original.apply(this, args)
+          },
+        })
+      }
+    })
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(sheet(page).locator('[data-fix-task-no-storage]')).toContainText(
+      'This browser does not keep this request across a reload.',
+    )
+    // Intake commits, but its answer is lost.
+    server.loseCreateAnswers = 1
+    await createFixTask(page, [])
+    await expect.poll(() => server.intakeKeys.length).toBe(1)
+    await expect(createButton(page)).toBeEnabled()
+    // Create again: the same key, so the server answers with the same task.
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.intakeKeys).toHaveLength(2)
+    expect(server.intakeKeys[1]).toBe(server.intakeKeys[0])
+    expect(fixPuts(server)).toEqual([{ method: 'PUT', path: fixPath, body: { task_id: '261127-fix' } }])
+  })
+})

@@ -278,6 +278,8 @@ export interface Server {
   createGate: Promise<void> | null
   // The intake key of each task intake request, in order.
   intakeKeys: string[]
+  // The number of next task intake requests whose answer is lost.
+  loseCreateAnswers: number
 }
 
 function servedOrder(a: FeedbackReport, b: FeedbackReport) {
@@ -409,6 +411,7 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
     failTaskSearch: false,
     createGate: null,
     intakeKeys: [],
+    loseCreateAnswers: 0,
   }
   const role = options.role ?? 'operator'
   const mergedTasks = options.mergedTasks ?? [
@@ -516,6 +519,10 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
       const index = distinct.indexOf(intakeKey)
       const id = index === 0 ? '261127-fix' : `261127-fix${index + 1}`
       if (state.createGate) await state.createGate
+      if (state.loseCreateAnswers > 0) {
+        state.loseCreateAnswers--
+        return route.abort('connectionreset')
+      }
       // A page that reloaded meanwhile has no one to answer.
       return route
         .fulfill({ status: 201, json: { ...task(id, 'Fix the checkout timeout', 'queued') } })
