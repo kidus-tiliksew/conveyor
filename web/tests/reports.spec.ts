@@ -4098,6 +4098,9 @@ test.describe('requests from the click on, offline and on reconnect', () => {
       await page.goto(item.closedList ? '/w/demo/monitor?show=closed' : '/w/demo/monitor')
       await expect(page.locator('[data-report-card]')).toHaveCount(1)
       await item.prepare?.(page)
+      // The act's control is ready before the browser goes offline, so the
+      // test exercises the act, not a page read that waits for the network.
+      await expect(item.button(page)).toBeEnabled()
       await context.setOffline(true)
       await item.button(page).click()
       await expect(page.locator('[data-report-card] [data-report-act-error]')).toHaveText(
