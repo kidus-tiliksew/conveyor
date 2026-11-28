@@ -284,6 +284,7 @@ func RunAll(t *testing.T, factory Factory) {
 	run("FeedbackStatus", func(t *testing.T) { runFeedbackStatus(t, factory) })
 	run("FeedbackReports", func(t *testing.T) { runFeedbackReports(t, factory) })
 	run("FeedbackReportLinking", func(t *testing.T) { runFeedbackReportLinking(t, factory) })
+	run("FeedbackReportActs", func(t *testing.T) { runFeedbackReportActs(t, factory) })
 	run("OAuth", func(t *testing.T) { runOAuth(t, factory) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
