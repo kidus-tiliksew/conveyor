@@ -492,3 +492,182 @@ func TestReadLineChangeRetryGrid(t *testing.T) {
 		}
 	}
 }
+
+// lineTransportServer answers every request with status and headers and
+// then a body in one of these ways: "whole" sends body; "truncated"
+// declares a longer Content-Length than it sends, so the body is cut short;
+// "broken" sends the headers and then an invalid chunk; "hangup" closes the
+// connection before any header; "stall" sends nothing until the client
+// gives up. resetIn sets X-RateLimit-Reset that long after the request.
+func lineTransportServer(t *testing.T, status int, headers map[string]string, resetIn time.Duration, body, mode string, requests *atomic.Int32) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		all := map[string]string{"Content-Type": "application/json"}
+		for name, value := range headers {
+			all[name] = value
+		}
+		if resetIn != 0 {
+			all["X-RateLimit-Reset"] = strconv.FormatInt(time.Now().Add(resetIn).Unix(), 10)
+		}
+		switch mode {
+		case "stall":
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+			return
+		case "hangup", "broken":
+			conn, buffered, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer conn.Close()
+			if mode == "hangup" {
+				return
+			}
+			fmt.Fprintf(buffered, "HTTP/1.1 %d %s\r\n", status, http.StatusText(status))
+			for name, value := range all {
+				fmt.Fprintf(buffered, "%s: %s\r\n", name, value)
+			}
+			fmt.Fprint(buffered, "Transfer-Encoding: chunked\r\n\r\nzz\r\n")
+			buffered.Flush()
+			return
+		}
+		for name, value := range all {
+			w.Header().Set(name, value)
+		}
+		if mode == "truncated" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)+1000))
+		}
+		w.WriteHeader(status)
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestReadLineChangeTransportPoints proves review round 9 through the real
+// HTTP path of the line read, a local server and the REST runner, at every
+// point where that path can fail after the request is sent. The status and
+// the retry headers are taken as soon as the headers arrive, before the
+// body is read, and kept on whatever happens next: a refused status decides
+// the category even when its body cannot be read or is cut short, and a
+// rate limit keeps its reset, or carries no time so that the worker's
+// one-minute fallback applies (component-production-feedback invariant 28;
+// component-feedback-reports invariant 12).
+func TestReadLineChangeTransportPoints(t *testing.T) {
+	const partial = `{"data":{"repository":`
+	limited := map[string]string{"X-RateLimit-Remaining": "0"}
+	for _, tc := range []struct {
+		name     string
+		status   int
+		headers  map[string]string
+		resetIn  time.Duration
+		body     string
+		mode     string
+		category ForgeErrorCategory
+		retry    time.Duration
+		// cancelled cancels the context before the call; noRequest means
+		// the server sees no request.
+		cancelled bool
+		timeout   bool
+		noRequest bool
+	}{
+		// No response at all: no status and no signal.
+		{name: "T01 the connection closes before any header", mode: "hangup", category: ForgeRequest},
+		{name: "T02 a timeout before the headers", mode: "stall", timeout: true, category: ForgeRequest},
+		{name: "T03 a context cancelled before the call", mode: "whole", status: http.StatusOK, cancelled: true, noRequest: true, category: ForgeRequest},
+		// The headers arrive and the body cannot be read or is cut short.
+		{name: "T04 HTTP 429 with a reset and a body cut short", status: http.StatusTooManyRequests, resetIn: 10 * time.Minute, body: partial, mode: "truncated", category: ForgeRateLimited, retry: 10 * time.Minute},
+		{name: "T05 HTTP 429 with no stated time and a body cut short", status: http.StatusTooManyRequests, body: partial, mode: "truncated", category: ForgeRateLimited},
+		{name: "T06 HTTP 429 with a reset and a broken body", status: http.StatusTooManyRequests, resetIn: 10 * time.Minute, mode: "broken", category: ForgeRateLimited, retry: 10 * time.Minute},
+		{name: "T07 HTTP 429 with no stated time and a broken body", status: http.StatusTooManyRequests, mode: "broken", category: ForgeRateLimited},
+		{name: "T08 HTTP 403 with no request left, a reset, and a body cut short", status: http.StatusForbidden, headers: limited, resetIn: 10 * time.Minute, body: partial, mode: "truncated", category: ForgeRateLimited, retry: 10 * time.Minute},
+		{name: "T09 HTTP 403 with no request left, no stated time, and a body cut short", status: http.StatusForbidden, headers: limited, body: partial, mode: "truncated", category: ForgeRateLimited},
+		{name: "T10 HTTP 403 with no request left, a reset, and a broken body", status: http.StatusForbidden, headers: limited, resetIn: 10 * time.Minute, mode: "broken", category: ForgeRateLimited, retry: 10 * time.Minute},
+		{name: "T11 HTTP 403 with no request left, no stated time, and a broken body", status: http.StatusForbidden, headers: limited, mode: "broken", category: ForgeRateLimited},
+		{name: "T12 HTTP 403 secondary limit with Retry-After and a body cut short", status: http.StatusForbidden, headers: map[string]string{"Retry-After": "120"}, body: partial, mode: "truncated", category: ForgeRateLimited, retry: 2 * time.Minute},
+		{name: "T13 HTTP 403 without rate-limit headers and a body cut short", status: http.StatusForbidden, body: partial, mode: "truncated", category: ForgePermission},
+		{name: "T14 HTTP 401 and a body cut short", status: http.StatusUnauthorized, body: partial, mode: "truncated", category: ForgePermission},
+		{name: "T15 HTTP 404 and a body cut short", status: http.StatusNotFound, body: partial, mode: "truncated", category: ForgeStatus},
+		{name: "T16 HTTP 502 with Retry-After and a body cut short", status: http.StatusBadGateway, headers: map[string]string{"Retry-After": "120"}, body: partial, mode: "truncated", category: ForgeStatus, retry: 2 * time.Minute},
+		{name: "T17 HTTP 502 and a broken body", status: http.StatusBadGateway, mode: "broken", category: ForgeStatus},
+		{name: "T18 HTTP 200 with no request left, a reset, and a body cut short", status: http.StatusOK, headers: limited, resetIn: 10 * time.Minute, body: partial, mode: "truncated", category: ForgeResponse, retry: 10 * time.Minute},
+		{name: "T19 HTTP 200 with a reset, requests left, and a broken body", status: http.StatusOK, headers: map[string]string{"X-RateLimit-Remaining": "4999"}, resetIn: 10 * time.Minute, mode: "broken", category: ForgeResponse},
+		// The body is read and is not JSON.
+		{name: "T20 HTTP 200 with no request left, a reset, and a body that is not JSON", status: http.StatusOK, headers: limited, resetIn: 10 * time.Minute, body: `not json`, mode: "whole", category: ForgeResponse, retry: 10 * time.Minute},
+		// Each status class with a readable body.
+		{name: "T21 HTTP 429 with a reset and a readable body", status: http.StatusTooManyRequests, resetIn: 10 * time.Minute, body: `{"message":"rate limit"}`, mode: "whole", category: ForgeRateLimited, retry: 10 * time.Minute},
+		{name: "T22 HTTP 403 with no request left and a readable body", status: http.StatusForbidden, headers: limited, resetIn: 10 * time.Minute, body: `{"message":"API rate limit exceeded"}`, mode: "whole", category: ForgeRateLimited, retry: 10 * time.Minute},
+		{name: "T23 HTTP 403 without rate-limit headers and a readable body", status: http.StatusForbidden, body: `{"message":"Resource not accessible"}`, mode: "whole", category: ForgePermission},
+		{name: "T24 HTTP 422 without rate-limit headers and a readable body", status: http.StatusUnprocessableEntity, body: `{"message":"x"}`, mode: "whole", category: ForgeStatus},
+		{name: "T25 HTTP 500 with no request left, a reset, and a readable body", status: http.StatusInternalServerError, headers: limited, resetIn: 10 * time.Minute, body: `{"message":"x"}`, mode: "whole", category: ForgeStatus, retry: 10 * time.Minute},
+		{name: "T26 HTTP 429 with a reset past the year 9999 and a body cut short", status: http.StatusTooManyRequests, headers: map[string]string{"X-RateLimit-Reset": "999999999999"}, body: partial, mode: "truncated", category: ForgeRateLimited},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := lineTransportServer(t, tc.status, tc.headers, tc.resetIn, tc.body, tc.mode, &requests)
+			ctx := t.Context()
+			if tc.cancelled {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelled
+			}
+			if tc.timeout {
+				timed, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+				defer cancel()
+				ctx = timed
+			}
+			before := time.Now()
+			got, err := readLineChange(ctx, "acme/app", feedbackSHA, "cmd/main.go", 5, newRESTRunner(server.Client(), server.URL, "workspace-token", "workspace demo GitHub App"))
+			after := time.Now()
+			want := int32(1)
+			if tc.noRequest {
+				want = 0
+			}
+			if requests.Load() != want {
+				t.Fatalf("requests=%d, want %d", requests.Load(), want)
+			}
+			if err == nil || ErrorCategory(err) != tc.category || got.FileFound || !got.RetryAt.IsZero() {
+				t.Fatalf("got %+v err %v category %q, want an unanswered %s", got, err, ErrorCategory(err), tc.category)
+			}
+			carried := StatedRetryAt(err)
+			if limitedAt, isLimited := RateLimitRetryAt(err); isLimited != (tc.category == ForgeRateLimited) || (isLimited && !limitedAt.Equal(carried)) {
+				t.Fatalf("rate limited=%v at %v, want %v at %v", isLimited, limitedAt, tc.category == ForgeRateLimited, carried)
+			}
+			switch {
+			case tc.retry == 0 && !carried.IsZero():
+				t.Fatalf("carried retry time %v, want none", carried)
+			case tc.retry > 0 && (carried.Before(before.Add(tc.retry-time.Second)) || carried.After(after.Add(tc.retry+time.Second))):
+				t.Fatalf("carried retry time %v, want about %v after the request", carried, tc.retry)
+			}
+		})
+	}
+}
+
+// TestRESTCallersKeepTheirUnreadableBodyFailure proves that the change of
+// round 9 stays inside the line read: through the same transport, a REST
+// call and a GraphQL call without the line read's flag still answer an HTTP
+// 429 whose body is cut short with the forge_response failure they answered
+// before, with no retry time, and a readable 429 still keeps its reset.
+func TestRESTCallersKeepTheirUnreadableBodyFailure(t *testing.T) {
+	var requests atomic.Int32
+	cut := lineTransportServer(t, http.StatusTooManyRequests, nil, 10*time.Minute, `{"message":`, "truncated", &requests)
+	run := newRESTRunner(cut.Client(), cut.URL, "workspace-token", "workspace demo GitHub App")
+	for name, args := range map[string][]string{
+		"REST":    {"api", "repos/acme/app/commits/main"},
+		"GraphQL": {"api", "graphql", "-f", "query={viewer{login}}"},
+	} {
+		raw, err := run(t.Context(), args...)
+		if raw != nil || ErrorCategory(err) != ForgeResponse || !StatedRetryAt(err).IsZero() {
+			t.Fatalf("%s: raw %q err %v category %q, want the forge_response failure as before", name, raw, err, ErrorCategory(err))
+		}
+	}
+	whole := lineTransportServer(t, http.StatusTooManyRequests, nil, 10*time.Minute, `{"message":"rate limit"}`, "whole", &requests)
+	_, err := newRESTRunner(whole.Client(), whole.URL, "workspace-token", "workspace demo GitHub App")(t.Context(), "api", "repos/acme/app/commits/main")
+	if retryAt, limited := RateLimitRetryAt(err); !limited || retryAt.Before(time.Now().Add(9*time.Minute)) {
+		t.Fatalf("err %v retry %v, want the readable rate limit with its reset as before", err, retryAt)
+	}
+}

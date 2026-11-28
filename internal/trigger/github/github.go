@@ -1455,7 +1455,8 @@ func readLineChange(ctx context.Context, repo, commit, path string, line int, ru
 // lineChangeRetryAt is the one retry time of a line-read response, worked
 // out from its signals before the outcome is used: the latest time that
 // Retry-After states, and that X-RateLimit-Reset states when the response
-// is a rate limit (a refused status or a RATE_LIMITED error) or states that
+// is a rate limit (a rate-limited status, whether or not its body could be
+// read, or a RATE_LIMITED error) or states that
 // no request is left (X-RateLimit-Remaining 0). A reset beside requests left
 // is not a wait. It is zero when the response stated no time, and then a
 // rate-limited caller applies its own fallback.
@@ -1475,11 +1476,20 @@ func withLineChangeRetry(change LineChange, err error, signals graphqlEnvelope) 
 		err = forgeCallError(err)
 		var failure *Error
 		errors.As(err, &failure)
-		retryAt := laterTime(failure.RetryAt, lineChangeRetryAt(signals, failure.Category == ForgeRateLimited))
-		if retryAt.IsZero() || retryAt.Equal(failure.RetryAt) {
+		// A refused status decides the category by itself, from the status
+		// line and headers taken before the body was read. So a body that
+		// cannot be read or is cut short does not turn a rate limit, a
+		// permission refusal, or a status failure into a malformed answer,
+		// and a rate limit keeps its reset or the caller's fallback.
+		category, status := failure.Category, failure.status
+		if signals.Category != "" {
+			category, status = signals.Category, signals.Status
+		}
+		retryAt := laterTime(failure.RetryAt, lineChangeRetryAt(signals, category == ForgeRateLimited))
+		if category == failure.Category && (retryAt.IsZero() || retryAt.Equal(failure.RetryAt)) {
 			return LineChange{}, err
 		}
-		return LineChange{}, &Error{Category: failure.Category, status: failure.status, RetryAt: retryAt, Err: err}
+		return LineChange{}, &Error{Category: category, status: status, RetryAt: retryAt, Err: err}
 	}
 	change.RetryAt = lineChangeRetryAt(signals, false)
 	return change, nil

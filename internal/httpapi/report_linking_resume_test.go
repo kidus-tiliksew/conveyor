@@ -6,9 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1438,6 +1442,206 @@ func TestFeedbackReportCompleteLineReadWithNoRequestLeft(t *testing.T) {
 			h.attempt(next.ID)
 			if after := h.forge.calls(); after[0] != before[0]+1 {
 				t.Fatalf("calls after the retry time %v, want the next commit read", after)
+			}
+		})
+	}
+}
+
+// githubRoundTrip is an http.RoundTripper from a function.
+type githubRoundTrip func(*http.Request) (*http.Response, error)
+
+func (f githubRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// redirectGitHubAPI sends every request for api.github.com that the default
+// HTTP client makes to target, for the rest of the test, and every other
+// request out unchanged. The production feedback forge reads GitHub through
+// the default client, so a worker test can follow one line read through the
+// real REST boundary. A test that calls it must not run in parallel.
+func redirectGitHubAPI(t *testing.T, target string) {
+	t.Helper()
+	to, err := url.Parse(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := http.DefaultClient.Transport
+	base := previous
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	http.DefaultClient.Transport = githubRoundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "api.github.com" {
+			r = r.Clone(r.Context())
+			r.URL.Scheme, r.URL.Host, r.Host = to.Scheme, to.Host, to.Host
+		}
+		return base.RoundTrip(r)
+	})
+	t.Cleanup(func() { http.DefaultClient.Transport = previous })
+}
+
+// realLineReadForge resolves commits with the linking stub and sends every
+// line read through the production forge, the REST boundary and the default
+// HTTP client.
+type realLineReadForge struct {
+	*linkingForge
+	real githubFeedbackForge
+}
+
+func (f realLineReadForge) ReadLineChange(ctx context.Context, slug, commit, path string, line int) (github.LineChange, error) {
+	return f.real.ReadLineChange(ctx, slug, commit, path, line)
+}
+
+// TestFeedbackReportLineReadTransportHolds proves review round 9 from the
+// HTTP response to the worker's hold, through the real REST boundary. GitHub
+// answers each line read with a status and its headers, and then a body cut
+// short or broken, or closes the connection with no answer. A rate-limited
+// status keeps its reset, or the one-minute fallback when it states no
+// time; another refused status keeps a reset it states with no request
+// left. In every case the rule stays unanswered with the status's category
+// and nothing is stored. No request of the workspace, the line read again or
+// another report's commit read, is sent before the hold ends; once it ends,
+// the line read is sent and answered (component-production-feedback
+// invariant 28; component-feedback-reports invariant 12).
+func TestFeedbackReportLineReadTransportHolds(t *testing.T) {
+	limited := map[string]string{"X-RateLimit-Remaining": "0"}
+	for _, tc := range []struct {
+		name     string
+		status   int
+		headers  map[string]string
+		reset    bool
+		mode     string
+		category github.ForgeErrorCategory
+		// hold is "reset", "fallback", or "" for none.
+		hold string
+	}{
+		{name: "W1 HTTP 429 with a reset and a body cut short", status: http.StatusTooManyRequests, reset: true, mode: "truncated", category: github.ForgeRateLimited, hold: "reset"},
+		{name: "W2 HTTP 429 with no stated time and a body cut short", status: http.StatusTooManyRequests, mode: "truncated", category: github.ForgeRateLimited, hold: "fallback"},
+		{name: "W3 HTTP 403 with no request left, a reset, and a body cut short", status: http.StatusForbidden, headers: limited, reset: true, mode: "truncated", category: github.ForgeRateLimited, hold: "reset"},
+		{name: "W4 HTTP 403 with no request left, no stated time, and a body cut short", status: http.StatusForbidden, headers: limited, mode: "truncated", category: github.ForgeRateLimited, hold: "fallback"},
+		{name: "W5 HTTP 429 with a reset and a broken body", status: http.StatusTooManyRequests, reset: true, mode: "broken", category: github.ForgeRateLimited, hold: "reset"},
+		{name: "W6 HTTP 403 with no request left, no stated time, and a broken body", status: http.StatusForbidden, headers: limited, mode: "broken", category: github.ForgeRateLimited, hold: "fallback"},
+		{name: "W7 HTTP 502 with no request left, a reset, and a body cut short", status: http.StatusBadGateway, headers: limited, reset: true, mode: "truncated", category: github.ForgeStatus, hold: "reset"},
+		{name: "W8 HTTP 200 with no request left, a reset, and a body cut short", status: http.StatusOK, headers: limited, reset: true, mode: "truncated", category: github.ForgeResponse, hold: "reset"},
+		{name: "W9 the connection closes before any header", mode: "hangup", category: github.ForgeRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLinkingHarness(t)
+			resetAt := h.clock().Add(10 * time.Minute).Truncate(time.Second)
+			var requests atomic.Int32
+			// recovered makes GitHub answer the line read in full, once the
+			// hold has ended.
+			var recovered atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.Method != http.MethodPost || r.URL.Path != "/graphql" {
+					t.Errorf("request %s %s, want the line read", r.Method, r.URL.Path)
+				}
+				if recovered.Load() {
+					fmt.Fprintf(w, `{"data":{"repository":{"commit":{"__typename":"Commit","file":{"path":"cmd/main.go"}},"blamed":{"blame":{"ranges":[{"startingLine":1,"endingLine":20,"commit":{"oid":%q,"associatedPullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}]}}}}}`, linkingChange)
+					return
+				}
+				all := map[string]string{"Content-Type": "application/json"}
+				for name, value := range tc.headers {
+					all[name] = value
+				}
+				if tc.reset {
+					all["X-RateLimit-Reset"] = strconv.FormatInt(resetAt.Unix(), 10)
+				}
+				if tc.mode == "hangup" || tc.mode == "broken" {
+					conn, buffered, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					defer conn.Close()
+					if tc.mode == "broken" {
+						fmt.Fprintf(buffered, "HTTP/1.1 %d %s\r\n", tc.status, http.StatusText(tc.status))
+						for name, value := range all {
+							fmt.Fprintf(buffered, "%s: %s\r\n", name, value)
+						}
+						fmt.Fprint(buffered, "Transfer-Encoding: chunked\r\n\r\nzz\r\n")
+						buffered.Flush()
+					}
+					return
+				}
+				for name, value := range all {
+					w.Header().Set(name, value)
+				}
+				w.Header().Set("Content-Length", "1000")
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, `{"data":{"repository":`)
+			}))
+			defer server.Close()
+			redirectGitHubAPI(t, server.URL)
+			h.server.feedbackForge = realLineReadForge{linkingForge: h.forge, real: githubFeedbackForge{token: "workspace-token", identity: "workspace demo GitHub App"}}
+
+			h.acceptReport(reportBody(lineEntry("crash")))
+			h.settle()
+			report := h.reportByKey("crash")
+			if requests.Load() != 1 || h.forge.calls()[0] != 1 {
+				t.Fatalf("line reads=%d commit reads=%d, want one of each", requests.Load(), h.forge.calls()[0])
+			}
+			unanswered := func(when string) {
+				t.Helper()
+				if reason := h.server.feedbackWorker().backoff.lineReason("alpha/" + report.ID); when == "first" && reason != string(tc.category) {
+					t.Fatalf("reason=%q, want the rule unanswered with %s", reason, tc.category)
+				}
+				if _, stored, _ := h.st.ReadFeedbackReportLineRead(h.ctx, report.ID); stored || h.reportByID(report.ID).LinkingEndedAt != nil {
+					t.Fatalf("%s: the rule was answered", when)
+				}
+			}
+			unanswered("first")
+			until, held := h.server.feedbackJobEnv().backoff.forgeHold("alpha", h.clock())
+			var end time.Time
+			switch tc.hold {
+			case "reset":
+				end = resetAt
+			case "fallback":
+				end = h.clock().Add(feedbackTokenRetry)
+			}
+			if held != (tc.hold != "") || (held && !until.Equal(end)) {
+				t.Fatalf("hold=%v held=%v, want %q until %v", until, held, tc.hold, end)
+			}
+			// Another report's commit read is a request of the same workspace
+			// with no admission lease of its own, so it shows the hold: it is
+			// not sent before the hold ends, and is sent after it.
+			first := h.clock()
+			var next store.FeedbackReport
+			if held {
+				h.setNow(first.Add(30 * time.Second))
+				h.acceptReport(reportBody(lineEntry("next")))
+				h.settle()
+				next = h.reportByKey("next")
+				for _, at := range []time.Time{first.Add(30 * time.Second), end.Add(-time.Nanosecond)} {
+					h.setNow(at)
+					h.attempt(report.ID)
+					h.attempt(next.ID)
+					if requests.Load() != 1 || h.forge.calls()[0] != 1 {
+						t.Fatalf("at %v line reads=%d commit reads=%d, want none before the hold ends at %v", at, requests.Load(), h.forge.calls()[0], end)
+					}
+					unanswered(at.String())
+				}
+			}
+			// The next line read waits for the hold, the failed read's
+			// admission lease, and the once-a-minute attempt.
+			after := end
+			if lease := first.Add(feedbackJobTimeout); after.Before(lease) {
+				after = lease
+			}
+			h.setNow(after.Add(time.Minute + time.Second))
+			recovered.Store(true)
+			h.attempt(report.ID)
+			read, stored, err := h.st.ReadFeedbackReportLineRead(h.ctx, report.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if requests.Load() != 2 || !stored || read.Answer.Commit != linkingChange || h.reportByID(report.ID).LinkingEndedAt == nil {
+				t.Fatalf("line reads=%d stored=%v answer=%+v after the hold, want the next line read sent and answered", requests.Load(), stored, read.Answer)
+			}
+			if held {
+				h.attempt(next.ID)
+				if h.forge.calls()[0] != 2 || requests.Load() != 3 {
+					t.Fatalf("commit reads=%d line reads=%d after the hold, want the next report read", h.forge.calls()[0], requests.Load())
+				}
 			}
 		})
 	}

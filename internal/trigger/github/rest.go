@@ -100,11 +100,78 @@ func (c *restClient) identityLabel() string {
 }
 
 func (c *restClient) request(ctx context.Context, method, endpoint, accept string, body any) ([]byte, http.Header, int, error) {
+	raw, signals, err := c.exchange(ctx, method, endpoint, accept, body)
+	return raw, signals.header, signals.Status, err
+}
+
+// responseSignals is what a GitHub response states before its body is read:
+// its status, the forge category that status decides by itself, and its
+// retry headers. exchange takes them as soon as the headers arrive and
+// returns them on every path after that, so a body that cannot be read, is
+// cut short, or is not what the caller expects loses none of them. Received
+// is false when no response arrived: a connect failure, a timeout before
+// the headers, or a cancelled context.
+type responseSignals struct {
+	Received bool `json:"received"`
+	Status   int  `json:"status"`
+	// Category is the category of a refused status (statusCategory), and
+	// empty for a 2xx status.
+	Category ForgeErrorCategory `json:"category"`
+	// RetryAfter is the time Retry-After states, in seconds or as an HTTP
+	// date, and Reset the time X-RateLimit-Reset states; each is zero when
+	// its header is absent or does not parse. RemainingZero is true when
+	// X-RateLimit-Remaining is 0.
+	RetryAfter    time.Time `json:"retry_after"`
+	Reset         time.Time `json:"reset"`
+	RemainingZero bool      `json:"remaining_zero"`
+	header        http.Header
+}
+
+// readResponseSignals takes the signals of a response from its status line
+// and headers alone.
+func readResponseSignals(status int, header http.Header, now time.Time) responseSignals {
+	return responseSignals{
+		Received:      true,
+		Status:        status,
+		Category:      statusCategory(status, header),
+		RetryAfter:    retryAfterAt(header, now),
+		Reset:         rateLimitResetAt(header),
+		RemainingZero: strings.TrimSpace(header.Get("X-RateLimit-Remaining")) == "0",
+		header:        header,
+	}
+}
+
+// statusCategory is the forge category a refused status decides by itself:
+// a rate limit for 429, and for 403 or 422 with no request left or a
+// Retry-After header, since GitHub can answer abuse protection with either;
+// a permission failure for any other 401 or 403; and a status failure for
+// every other status outside 2xx. It is empty for a 2xx status.
+func statusCategory(status int, header http.Header) ForgeErrorCategory {
+	if status >= 200 && status < 300 {
+		return ""
+	}
+	limited := header.Get("X-RateLimit-Remaining") == "0" || header.Get("Retry-After") != ""
+	switch {
+	case status == http.StatusTooManyRequests || (status == http.StatusForbidden || status == http.StatusUnprocessableEntity) && limited:
+		return ForgeRateLimited
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return ForgePermission
+	}
+	return ForgeStatus
+}
+
+// exchange sends one request and reads its answer. The signals of the
+// response are taken before its body is read and come back on every path
+// after the response arrived. What a caller of request gets is unchanged: a
+// body that cannot be read is a forge_response failure whatever the status,
+// and a refused status with a readable body is a failure of the category the
+// status decides.
+func (c *restClient) exchange(ctx context.Context, method, endpoint, accept string, body any) ([]byte, responseSignals, error) {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return nil, nil, 0, &Error{Category: ForgeRequest, Err: fmt.Errorf("encode GitHub REST request: %w", err)}
+			return nil, responseSignals{}, &Error{Category: ForgeRequest, Err: fmt.Errorf("encode GitHub REST request: %w", err)}
 		}
 		payload = bytes.NewReader(encoded)
 	}
@@ -114,7 +181,7 @@ func (c *restClient) request(ctx context.Context, method, endpoint, accept strin
 	}
 	req, err := http.NewRequestWithContext(ctx, method, requestURL, payload)
 	if err != nil {
-		return nil, nil, 0, &Error{Category: ForgeRequest, Err: fmt.Errorf("build GitHub REST request: %w", err)}
+		return nil, responseSignals{}, &Error{Category: ForgeRequest, Err: fmt.Errorf("build GitHub REST request: %w", err)}
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", accept)
@@ -124,33 +191,25 @@ func (c *restClient) request(ctx context.Context, method, endpoint, accept strin
 	}
 	response, err := c.http.Do(req)
 	if err != nil {
-		return nil, nil, 0, &Error{Category: ForgeRequest, Err: fmt.Errorf("GitHub REST transport: %w", c.safeError(err))}
+		return nil, responseSignals{}, &Error{Category: ForgeRequest, Err: fmt.Errorf("GitHub REST transport: %w", c.safeError(err))}
 	}
 	defer response.Body.Close()
+	signals := readResponseSignals(response.StatusCode, response.Header, time.Now())
 	raw, readErr := io.ReadAll(response.Body)
 	if readErr != nil {
-		return nil, response.Header, response.StatusCode, &Error{Category: ForgeResponse, Err: fmt.Errorf("read GitHub REST response: %w", c.safeError(readErr))}
+		return nil, signals, &Error{Category: ForgeResponse, Err: fmt.Errorf("read GitHub REST response: %w", c.safeError(readErr))}
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		category := ForgeStatus
-		limited := response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != ""
-		// GitHub can answer abuse protection with 403 or 422 and a retry
-		// header. Either is a rate limit that keeps GitHub's retry time.
-		if response.StatusCode == http.StatusTooManyRequests || (response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusUnprocessableEntity) && limited {
-			category = ForgeRateLimited
-		} else if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-			category = ForgePermission
-		}
-		if category == ForgePermission {
-			return nil, response.Header, response.StatusCode, &Error{Category: category, status: response.StatusCode, Err: fmt.Errorf("%s is expired, revoked, or lacks permission; replace it in settings (GitHub HTTP %d)", c.identityLabel(), response.StatusCode)}
-		}
-		failure := &Error{Category: category, status: response.StatusCode, Err: fmt.Errorf("GitHub REST status %d: %s", response.StatusCode, c.secretSafe(secretSafeMessage(raw)))}
-		if category == ForgeRateLimited {
-			failure.RetryAt = rateLimitRetryAt(response.Header, time.Now())
-		}
-		return nil, response.Header, response.StatusCode, failure
+	if signals.Category == "" {
+		return raw, signals, nil
 	}
-	return raw, response.Header, response.StatusCode, nil
+	if signals.Category == ForgePermission {
+		return nil, signals, &Error{Category: ForgePermission, status: signals.Status, Err: fmt.Errorf("%s is expired, revoked, or lacks permission; replace it in settings (GitHub HTTP %d)", c.identityLabel(), signals.Status)}
+	}
+	failure := &Error{Category: signals.Category, status: signals.Status, Err: fmt.Errorf("GitHub REST status %d: %s", signals.Status, c.secretSafe(secretSafeMessage(raw)))}
+	if signals.Category == ForgeRateLimited {
+		failure.RetryAt = laterTime(signals.RetryAfter, signals.Reset)
+	}
+	return nil, signals, failure
 }
 
 func (c *restClient) secretSafe(value string) string {
@@ -312,18 +371,14 @@ func nextLink(header string) string {
 const graphqlRetryEnvelope = "--retry-envelope"
 
 // graphqlEnvelope is the answer of a GraphQL call made with
-// graphqlRetryEnvelope: the body as GitHub sent it, and the retry signals of
-// the same HTTP response. GitHub answers a GraphQL rate limit with HTTP 200,
-// so these headers are the only place its retry time appears. RetryAfter is
-// the time Retry-After states, in seconds or as an HTTP date, and Reset the
-// time X-RateLimit-Reset states; each is zero when its header is absent or
-// does not parse. RemainingZero is true when X-RateLimit-Remaining is 0.
-// The caller decides from these and the body which time applies.
+// graphqlRetryEnvelope: the body as GitHub sent it, and the signals of the
+// same HTTP response, taken before its body was read. GitHub answers a
+// GraphQL rate limit with HTTP 200, so these headers are the only place its
+// retry time appears. The caller decides from these and the body which
+// time and category apply.
 type graphqlEnvelope struct {
-	Body          []byte    `json:"body"`
-	RetryAfter    time.Time `json:"retry_after"`
-	Reset         time.Time `json:"reset"`
-	RemainingZero bool      `json:"remaining_zero"`
+	Body []byte `json:"body"`
+	responseSignals
 }
 
 func (c *restClient) graphql(ctx context.Context, args ...string) ([]byte, error) {
@@ -349,19 +404,29 @@ func (c *restClient) graphql(ctx context.Context, args ...string) ([]byte, error
 			}
 		}
 	}
-	raw, header, _, err := c.request(ctx, http.MethodPost, "graphql", "application/vnd.github+json", map[string]any{"query": query, "variables": variables})
+	request := map[string]any{"query": query, "variables": variables}
 	if !envelope {
+		raw, _, _, err := c.request(ctx, http.MethodPost, "graphql", "application/vnd.github+json", request)
 		return raw, err
 	}
 	// With the flag, the envelope comes back whenever GitHub answered, also
-	// beside the error of a refused status, so the line read reads the retry
-	// signals of every response. No answer, such as a transport failure or a
-	// timeout, has no signals.
-	if header == nil {
+	// beside the error of a refused status or of a body that could not be
+	// read, so the line read reads the status and retry signals of every
+	// response. No answer, such as a transport failure or a timeout, has no
+	// signals.
+	raw, signals, err := c.exchange(ctx, http.MethodPost, "graphql", "application/vnd.github+json", request)
+	if !signals.Received {
 		return nil, err
 	}
-	now := time.Now()
-	encoded, encodeErr := json.Marshal(graphqlEnvelope{Body: raw, RetryAfter: retryAfterAt(header, now), Reset: rateLimitResetAt(header), RemainingZero: strings.TrimSpace(header.Get("X-RateLimit-Remaining")) == "0"})
+	encoded, encodeErr := json.Marshal(graphqlEnvelope{Body: raw, responseSignals: signals})
+	if encodeErr != nil {
+		// JSON holds no time past the year 9999, which an absurd reset
+		// header can state. Such a time is no usable time: the envelope
+		// keeps the status and its category, so a rate limit stays a rate
+		// limit and the caller's fallback applies.
+		signals.RetryAfter, signals.Reset = time.Time{}, time.Time{}
+		encoded, encodeErr = json.Marshal(graphqlEnvelope{Body: raw, responseSignals: signals})
+	}
 	if encodeErr != nil {
 		return nil, &Error{Category: ForgeResponse, Err: fmt.Errorf("encode GitHub GraphQL answer: %w", encodeErr)}
 	}
