@@ -380,12 +380,21 @@ export function useFixTaskFlow({
   )
 
   // The task is recorded on its report. The saved task of that report is
-  // cleared, and only the flow that shows that report moves on.
+  // cleared, and only the flow that shows that report moves on. The report's
+  // act state goes only while it is still `expected`, the state that the
+  // request or read that found the record wrote or read first. Without one,
+  // it goes unless a record request of the report is on its way or checking,
+  // because that request's own answer settles it.
   const finish = useCallback(
-    (entry: CreatedFixTask, target: FixTaskTarget) => {
+    (entry: CreatedFixTask, target: FixTaskTarget, expected?: ReportActState) => {
       writeCreatedFixTask(target.workspace, target.reportId, null)
       clearFixTaskIntake(target)
-      setOwnFixState(target, { phase: 'idle' })
+      const current = readReportActState(reportActKey(target.workspace, target.reportId))
+      const inFlight =
+        'target' in current &&
+        current.target === fixActTarget(target) &&
+        (current.phase === 'sending' || current.phase === 'checking')
+      if (expected ? current === expected : !inFlight) setOwnFixState(target, { phase: 'idle' })
       void refreshAfterWrite(queryClient, target.workspace)
       if (!live(flowOf(target))) return
       setCreated(null)
@@ -432,7 +441,7 @@ export function useFixTaskFlow({
       if (live(flow)) setRecord({ phase: 'sending' })
       try {
         await setFeedbackReportFixTask(target.workspace, target.reportId, entry.taskId, entry.causeTaskIds)
-        finish(entry, target)
+        finish(entry, target, sendingState)
       } catch (error) {
         if (error instanceof FeedbackReportActError && error.outcome === 'unknown') {
           // The record may be stored. Every copy of the report waits, and a
@@ -443,7 +452,7 @@ export function useFixTaskFlow({
           if (live(flow)) setRecord({ phase: 'checking' })
           const fresh = await freshRead(target)
           if (fresh?.fix_task?.id === entry.taskId) {
-            finish(entry, target)
+            finish(entry, target, checkingState)
             return
           }
           replaceFixState(
@@ -509,7 +518,7 @@ export function useFixTaskFlow({
       const before = readReportActState(key)
       const fresh = await freshRead(target)
       if (fresh?.fix_task?.id === created.taskId) {
-        finish(created, target)
+        finish(created, target, before)
         return
       }
       // A fresh read of the report answered after any unknown outcome, so it
