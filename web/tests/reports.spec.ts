@@ -2531,6 +2531,20 @@ test.describe('screenshots of a fix-task request sent before', () => {
       await page.screenshot({ path: `${screenshotDir}/fix-task-sent-before-${width}.png` })
     })
 
+    test(`renders the sheet while the create request is on its way at ${width} px`, async ({ page }) => {
+      await page.clock.setFixedTime(now)
+      await page.setViewportSize({ width, height: 1000 })
+      const server = await mockReportServer(page, { reports: [fixReport] })
+      await page.goto(fixAddress)
+      const held = gate()
+      server.createGate = held.promise
+      await createFixTask(page, [])
+      await expect(sheet(page).locator('[data-fix-task-intake-live]')).toBeVisible()
+      await sheet(page).locator('[data-fix-task]').scrollIntoViewIfNeeded()
+      await page.screenshot({ path: `${screenshotDir}/fix-task-live-${width}.png` })
+      held.open()
+    })
+
     test(`renders the sheet that asks for the files again after a reload at ${width} px`, async ({ page }) => {
       await page.clock.setFixedTime(now)
       await page.setViewportSize({ width, height: 1000 })
