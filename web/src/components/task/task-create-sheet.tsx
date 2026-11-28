@@ -12,6 +12,7 @@ import {
 } from 'react'
 import {
   type CreateTaskInput,
+  browserOffline,
   createTask,
   fetchCrate,
   fetchOpenTasks,
@@ -30,7 +31,8 @@ import {
   type FixTaskFlow,
   FixTaskPanel,
   fixTaskIntakeToSend,
-  sendFixTaskIntake,
+  beginFixTaskIntake,
+  endFixTaskIntake,
   sentFilesPresent,
   useFixTaskFlow,
 } from '../reports/fix-task'
@@ -244,15 +246,23 @@ function TaskCreateForm({
     // Create captures the workspace, the crate, the report, and the ticked
     // causes. The answer uses that snapshot, never the values of a later
     // render, so a late answer reaches only what asked for it.
-    // A fix task's create request is live for its report until it settles,
-    // outside this form, so a closed, reopened, or second sheet sees it.
+    // A fix task's create request is live for its report from the click that
+    // Create accepts until its result is handled, outside this form, so a
+    // closed, reopened, or second sheet sees it. It never waits in the
+    // library's offline queue ('always'): offline it fails at once, before
+    // anything is sent, and keeps its saved request and key as a lost answer
+    // does. Ordinary intake keeps the default network mode.
+    networkMode: reportId ? 'always' : 'online',
     mutationFn: (intake: IntakeSnapshot) => {
-      const send = () => createTask(intake.workspace, intake.request, intake.files, intake.idempotencyKey)
-      return intake.reportId
-        ? sendFixTaskIntake({ workspace: intake.workspace, reportId: intake.reportId }, send)
-        : send()
+      if (intake.reportId && browserOffline())
+        return Promise.reject(new Error('This browser is offline, so the request was not sent.'))
+      return createTask(intake.workspace, intake.request, intake.files, intake.idempotencyKey)
+    },
+    onSettled: (_task, _error, intake) => {
+      if (intake?.reportId) endFixTaskIntake({ workspace: intake.workspace, reportId: intake.reportId })
     },
     onSuccess: (task, intake) => {
+      if (intake.reportId) endFixTaskIntake({ workspace: intake.workspace, reportId: intake.reportId })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       if (intake.crateId) void queryClient.invalidateQueries({ queryKey: ['crates', intake.workspace] })
       // A fix task stays in the sheet until the report records it, and then
@@ -265,6 +275,7 @@ function TaskCreateForm({
       if (mounted.current) openTask(task.id, intake.workspace)
     },
     onError: (error, intake) => {
+      if (intake.reportId) endFixTaskIntake({ workspace: intake.workspace, reportId: intake.reportId })
       if (error instanceof TaskIntakeError && error.code === 'invalid_dependencies') setAdvancedOpen(true)
       // A refusal of the request itself (400 or 422) stores nothing under the
       // key, so the next Create of the report sends the form as it is then.
@@ -655,13 +666,12 @@ function TaskCreateForm({
               // A fix task has its own intake request for its report, saved
               // with its key and causes before it is sent. A request sent
               // before for the report goes again unchanged
-              // (component-feedback-reports invariant 18).
-              const sent = fixTaskIntakeToSend(
-                { workspace: workspaceId, reportId },
-                request,
-                [...fixTask.causes],
-                files,
-              )
+              // (component-feedback-reports invariant 18). The request is
+              // live from this click on; a second click, or a second sheet of
+              // the report, finds it live and sends nothing.
+              const target = { workspace: workspaceId, reportId }
+              if (!beginFixTaskIntake(target)) return
+              const sent = fixTaskIntakeToSend(target, request, [...fixTask.causes], files)
               mutation.mutate({
                 workspace: workspaceId,
                 crateId,

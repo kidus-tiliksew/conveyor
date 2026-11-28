@@ -1798,11 +1798,16 @@ test.describe('review follow-ups', () => {
     const item = card(page, actReport.id)
     const confirm = item.getByRole('button', { name: 'Confirm the link to Send invoices by email' })
     await expect(confirm).toBeEnabled()
-    // Offline, the act gets no answer and the fresh read waits paused. A
-    // paused read is not an answer, so every act stays blocked.
+    // The act is sent, the browser goes offline, and the act gets no answer.
+    // The fresh read then fails at once offline, so every act stays blocked.
+    const held = gate()
+    server.actGate = held.promise
     server.actAnswers.push('abort')
-    await context.setOffline(true)
     await confirm.click()
+    await expect.poll(() => server.acts.length).toBe(1)
+    await context.setOffline(true)
+    held.open()
+    server.actGate = null
     await expect(item.locator('[data-report-act-error]')).toContainText(
       'Conveyor does not know whether it recorded this, and the report did not load again.',
     )
@@ -2529,6 +2534,19 @@ test.describe('screenshots of a fix-task request sent before', () => {
       await expect(sheet(page).locator('[data-fix-task-no-storage]')).toBeVisible()
       await sheet(page).locator('[data-fix-task]').scrollIntoViewIfNeeded()
       await page.screenshot({ path: `${screenshotDir}/fix-task-sent-before-${width}.png` })
+    })
+
+    test(`renders the sheet after Create while the browser is offline at ${width} px`, async ({ page, context }) => {
+      await page.clock.setFixedTime(now)
+      await page.setViewportSize({ width, height: 1000 })
+      await mockReportServer(page, { reports: [fixReport] })
+      await page.goto(fixAddress)
+      await expect(description(page)).not.toHaveValue('')
+      await context.setOffline(true)
+      await createFixTask(page, [])
+      await expect(sheet(page).getByText('This browser is offline, so the request was not sent.')).toBeVisible()
+      await sheet(page).getByText('This browser is offline, so the request was not sent.').scrollIntoViewIfNeeded()
+      await page.screenshot({ path: `${screenshotDir}/fix-task-offline-${width}.png` })
     })
 
     test(`renders the sheet while the create request is on its way at ${width} px`, async ({ page }) => {
@@ -3839,6 +3857,45 @@ test.describe('the saved intake request of a report', () => {
         if (state === 'live') await expectLateAnswerOnA(page, ctx, otherWorkspace)
       })
 
+      test('event: the browser goes offline, then Create', async ({ page, context }) => {
+        const ctx = await reach(page, state)
+        const before = await savedKey(page)
+        const keys = ctx.server.intakeKeys.length
+        await context.setOffline(true)
+        if (state === 'live' || state === 'answered') {
+          // The request already left; its own result is handled, and Create
+          // stays off meanwhile.
+          await expect(createButton(page)).toBeDisabled()
+          ctx.release?.()
+          if (state === 'live') {
+            // The answer arrives, and the record request then fails at once
+            // offline, so the report records nothing yet.
+            await expect(sheet(page).locator('[data-fix-task-error]')).toContainText(
+              'The report recorded nothing. Try again.',
+            )
+            expect(fixPuts(ctx.server)).toHaveLength(0)
+          } else await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+          expect(ctx.server.intakeKeys).toHaveLength(keys)
+          return
+        }
+        if (state === 'refused 400' || state === 'none')
+          await sheet(page).getByRole('combobox', { name: 'Repository' }).selectOption('app')
+        await createButton(page).click()
+        // Offline, Create fails at once: nothing is sent, and the saved
+        // request keeps its key as after a lost answer.
+        await expect(sheet(page).getByText('This browser is offline, so the request was not sent.')).toBeVisible()
+        await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toBeVisible()
+        await expect(createButton(page)).toBeEnabled()
+        const saved = await savedKey(page)
+        if (keyed(state)) expect(saved).toBe(before)
+        else expect(saved).not.toBeNull()
+        expect(ctx.server.intakeKeys).toHaveLength(keys)
+        // Reconnecting sends nothing by itself.
+        await context.setOffline(false)
+        await page.waitForTimeout(500)
+        expect(ctx.server.intakeKeys).toHaveLength(keys)
+      })
+
       test('event: reload', async ({ page }) => {
         const ctx = await reach(page, state)
         const before = await savedKey(page)
@@ -3856,6 +3913,202 @@ test.describe('the saved intake request of a report', () => {
           await expectReplay(page, ctx, before ?? '')
         }
       })
+    })
+  }
+})
+
+// Class: every request this task sends, offline and from the click on. Each
+// request is guarded from the click that the page accepts, fails at once
+// offline, and waits in no queue, so reconnecting sends nothing by itself.
+test.describe('requests from the click on, offline and on reconnect', () => {
+  const moveTo = (page: Page, to: string) =>
+    page.evaluate((target) => {
+      history.pushState({}, '', target)
+      dispatchEvent(new PopStateEvent('popstate'))
+    }, to)
+  const savedKey = (page: Page) =>
+    page.evaluate((id) => {
+      const raw = sessionStorage.getItem(`conveyor-fix-task-intake:demo:${id}`)
+      return raw ? (JSON.parse(raw) as { key: string }).key : null
+    }, fixReport.id)
+
+  test('fix-task creation: offline before Create, close and reopen, reconnect, then one key, one task, the original causes', async ({
+    page,
+    context,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    await context.setOffline(true)
+    await createFixTask(page, ['Send invoices by email'])
+    await expect(sheet(page).getByText('This browser is offline, so the request was not sent.')).toBeVisible()
+    const key = await savedKey(page)
+    expect(key).not.toBeNull()
+    await sheet(page).getByRole('button', { name: 'Close' }).first().click()
+    await expect(page).toHaveURL('/w/demo/')
+    await moveTo(page, fixAddress)
+    await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toBeVisible()
+    await context.setOffline(false)
+    await page.waitForTimeout(500)
+    // Nothing waited in a queue, so reconnecting sent nothing.
+    expect(server.intakeKeys).toHaveLength(0)
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.intakeKeys).toEqual([key])
+    expect(server.created).toHaveLength(1)
+    expect(fixPuts(server)).toEqual([
+      { method: 'PUT', path: fixPath, body: { task_id: '261127-fix', cause_task_ids: ['261120-a01'] } },
+    ])
+  })
+
+  test('fix-task creation: a discard offline in a reopened sheet leaves nothing queued, so one task is made', async ({
+    page,
+    context,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    await context.setOffline(true)
+    await createFixTask(page, ['Send invoices by email'])
+    await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toBeVisible()
+    await sheet(page).getByRole('button', { name: 'Close' }).first().click()
+    await moveTo(page, fixAddress)
+    await sheet(page).locator('[data-fix-task-discard]').click()
+    await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toHaveCount(0)
+    await createFixTask(page, [])
+    await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toBeVisible()
+    const key = await savedKey(page)
+    await context.setOffline(false)
+    await page.waitForTimeout(500)
+    expect(server.intakeKeys).toHaveLength(0)
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.intakeKeys).toEqual([key])
+    expect(server.created).toHaveLength(1)
+  })
+
+  test('fix-task creation: two clicks in the same turn send one request', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    await sheet(page).getByRole('combobox', { name: 'Repository' }).selectOption('app')
+    const held = gate()
+    server.createGate = held.promise
+    await createButton(page).evaluate((button: HTMLButtonElement) => {
+      button.click()
+      button.click()
+    })
+    await expect.poll(() => server.intakeKeys.length).toBe(1)
+    await page.waitForTimeout(300)
+    expect(server.intakeKeys).toHaveLength(1)
+    held.open()
+    server.createGate = null
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.created).toHaveLength(1)
+  })
+
+  test('fix-task record: offline when the task is created, nothing is sent until the person records it', async ({
+    page,
+    context,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    const held = gate()
+    server.createGate = held.promise
+    await createFixTask(page, ['Send invoices by email'])
+    await expect.poll(() => server.intakeKeys.length).toBe(1)
+    await context.setOffline(true)
+    held.open()
+    server.createGate = null
+    await expect(sheet(page).locator('[data-fix-task-error]')).toContainText('The report recorded nothing. Try again.')
+    expect(fixPuts(server)).toHaveLength(0)
+    await context.setOffline(false)
+    await page.waitForTimeout(500)
+    expect(fixPuts(server)).toHaveLength(0)
+    await recordButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(fixPuts(server)).toEqual([
+      { method: 'PUT', path: fixPath, body: { task_id: '261127-fix', cause_task_ids: ['261120-a01'] } },
+    ])
+    expect(server.created).toHaveLength(1)
+  })
+
+  test('fix-task fresh read: offline after an unknown record answer, it fails at once and nothing reads on reconnect', async ({
+    page,
+    context,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    const held = gate()
+    server.actGate = held.promise
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    await createFixTask(page, [])
+    await expect.poll(() => fixPuts(server).length).toBe(1)
+    await context.setOffline(true)
+    const reads = reportReads(server, fixReport.id)
+    held.open()
+    server.actGate = null
+    await expect(sheet(page).locator('[data-fix-task-error]')).toContainText('the report did not load again')
+    expect(reportReads(server, fixReport.id)).toBe(reads)
+    await context.setOffline(false)
+    await page.waitForTimeout(500)
+    await expect(sheet(page).locator('[data-fix-task-error]')).toContainText('the report did not load again')
+    // The person reads the report again; it does not name the task, so the
+    // record can be sent again.
+    await sheet(page).getByRole('button', { name: 'Read the report again' }).click()
+    await expect(recordButton(page)).toBeVisible()
+    expect(fixPuts(server)).toHaveLength(1)
+  })
+
+  test('reconciliation read: "Read the report again" offline fails at once and keeps every act blocked', async ({
+    page,
+    context,
+  }) => {
+    const server = await mockReportServer(page, { reports: [actReport] })
+    await page.goto('/w/demo/monitor')
+    const item = card(page, actReport.id)
+    const confirm = item.getByRole('button', { name: 'Confirm the link to Send invoices by email' })
+    await expect(confirm).toBeEnabled()
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    server.listAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    await confirm.click()
+    await expect(item.locator('[data-report-act-stale]')).toBeVisible()
+    server.listAnswer = null
+    await context.setOffline(true)
+    const reads = listReads(server).length
+    await item.getByRole('button', { name: 'Read the report again' }).click()
+    await page.waitForTimeout(300)
+    await expect(item.locator('[data-report-act-stale]')).toBeVisible()
+    await expect(confirm).toBeDisabled()
+    expect(listReads(server).length).toBe(reads)
+    await context.setOffline(false)
+    await page.waitForTimeout(500)
+    await expect(confirm).toBeDisabled()
+    await item.getByRole('button', { name: 'Read the report again' }).click()
+    await expect(confirm).toBeEnabled()
+    expect(server.acts).toHaveLength(1)
+  })
+
+  for (const item of actCases) {
+    test(`${item.name}: offline, nothing is sent, and reconnecting sends nothing`, async ({ page, context }) => {
+      const server = await mockReportServer(page, { reports: item.reports })
+      await page.goto(item.closedList ? '/w/demo/monitor?show=closed' : '/w/demo/monitor')
+      await expect(page.locator('[data-report-card]')).toHaveCount(1)
+      await item.prepare?.(page)
+      await context.setOffline(true)
+      await item.button(page).click()
+      await expect(page.locator('[data-report-card] [data-report-act-error]')).toHaveText(
+        'Conveyor recorded nothing. Try again.',
+      )
+      expect(server.acts).toHaveLength(0)
+      await context.setOffline(false)
+      await page.waitForTimeout(500)
+      expect(server.acts).toHaveLength(0)
+      await item.button(page).click()
+      await expect.poll(() => server.acts.length).toBe(1)
+      expect(server.acts[0]).toEqual(item.expected)
     })
   }
 })

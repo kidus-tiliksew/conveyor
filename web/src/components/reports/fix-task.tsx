@@ -11,6 +11,7 @@ import {
   useSyncExternalStore,
 } from 'react'
 import {
+  browserOffline,
   type CreateTaskInput,
   FeedbackReportActError,
   fetchFeedbackReport,
@@ -177,17 +178,22 @@ export function fixTaskIntakeLive(target: FixTaskTarget) {
   return liveIntakes.has(intakeStorageKey(target))
 }
 
-/** Runs the create request of a report, which is live until it settles. */
-export async function sendFixTaskIntake<T>(target: FixTaskTarget, send: () => Promise<T>): Promise<T> {
+/**
+ * Marks the create request of a report live, in the same turn as the click
+ * that Create accepts and before any request library sees it. Returns false,
+ * and marks nothing, when a request of the report is live already.
+ */
+export function beginFixTaskIntake(target: FixTaskTarget) {
   const name = intakeStorageKey(target)
+  if (liveIntakes.has(name)) return false
   liveIntakes.add(name)
   intakeChanged()
-  try {
-    return await send()
-  } finally {
-    liveIntakes.delete(name)
-    intakeChanged()
-  }
+  return true
+}
+
+/** Ends the live state when the result of the create request is handled. */
+export function endFixTaskIntake(target: FixTaskTarget) {
+  if (liveIntakes.delete(intakeStorageKey(target))) intakeChanged()
 }
 
 function intakeStorageKey(target: FixTaskTarget) {
@@ -499,6 +505,8 @@ export function useFixTaskFlow({
   // then stored for the page (docs/feedback-reports.md, Acts).
   const readOnce = useCallback(
     async (target: FixTaskTarget): Promise<{ report: FeedbackReport | undefined; stored: boolean }> => {
+      // Offline, the read fails at once and waits in no queue.
+      if (browserOffline()) return { report: undefined, stored: false }
       const key = feedbackReportQueryKey(target.workspace, target.reportId)
       await queryClient.cancelQueries({ queryKey: key })
       // A read of the report that starts after this one and answers first is

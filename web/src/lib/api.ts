@@ -1,3 +1,4 @@
+import { onlineManager } from '@tanstack/react-query'
 import { describeStagePreferenceField, type StagePreferenceStages, type StagePreferences } from './stage-preferences'
 import type {
   ActivityItem,
@@ -2693,7 +2694,19 @@ export class FeedbackReportActError extends Error {
   }
 }
 
+/**
+ * True while the browser says it is offline. The report requests then fail at
+ * once and wait in no offline queue: nothing is sent, so nothing can arrive
+ * later on reconnect (component-feedback-reports invariant 18).
+ */
+export function browserOffline() {
+  return !onlineManager.isOnline()
+}
+
 async function feedbackReportAct(workspace: string, method: string, path: string, body?: unknown) {
+  // Offline, the act is not sent, so the server records nothing.
+  if (browserOffline())
+    throw new FeedbackReportActError(0, 'offline', '', 'This browser is offline, so nothing was sent.', 'retryable')
   let response: Response
   try {
     response = await fetch(workspaceURL(path, workspace), {

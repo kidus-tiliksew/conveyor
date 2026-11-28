@@ -1,6 +1,6 @@
 import { type QueryClient, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useSyncExternalStore } from 'react'
-import { FeedbackReportActError } from '../../lib/api'
+import { browserOffline, FeedbackReportActError } from '../../lib/api'
 import type { FeedbackReport } from '../../lib/types'
 import { feedbackReportsQueryKey } from './query-keys'
 
@@ -148,6 +148,8 @@ export async function refreshAfterWrite(queryClient: QueryClient, workspace: str
  * next page that shows one reads it fresh.
  */
 export async function readReportsAgain(queryClient: QueryClient, workspace: string) {
+  // Offline, the read fails at once: no read waits in a queue to answer later.
+  if (browserOffline()) return false
   const scope = feedbackReportsQueryKey(workspace)
   await queryClient.cancelQueries({ queryKey: scope })
   // A report read that no page shows now holds data from before the act. It
