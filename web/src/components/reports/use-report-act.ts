@@ -12,6 +12,9 @@ export type ReportActState =
   | { phase: 'sending'; act: ReportActName; target: string }
   | { phase: 'checking'; act: ReportActName; target: string }
   | { phase: 'failed'; act: ReportActName; target: string; message: string; field: string }
+  // An unknown answer whose fresh read failed: the card shows a report that
+  // can be out of date, so every act waits for a read that succeeds.
+  | { phase: 'stale'; act: ReportActName; target: string; message: string; reading: boolean }
 
 const fieldNames: Record<string, string> = {
   reason: 'the reason',
@@ -32,7 +35,7 @@ export function reportActMessage(error: unknown) {
   if (!(error instanceof FeedbackReportActError)) return 'Something went wrong. Nothing changed on this page.'
   if (error.outcome === 'retryable') return 'Conveyor recorded nothing. Try again.'
   if (error.outcome === 'unknown')
-    return 'Conveyor does not know whether it recorded this. Look at the report again before you try again.'
+    return 'Conveyor does not know whether it recorded this. Conveyor read the report again. Look at it before you try again.'
   switch (error.code) {
     case 'report_closed':
       return 'This report is closed now. Reopen it first.'
@@ -54,6 +57,10 @@ export function reportActMessage(error: unknown) {
   if (error.status === 413) return 'The request is too large. Make it shorter.'
   return error.message || 'Conveyor refused the request.'
 }
+
+const staleMessage =
+  'Conveyor does not know whether it recorded this, and the report did not load again. Read the report again before you act.'
+const unknownAnswer = new FeedbackReportActError(0, '', '', '', 'unknown')
 
 /**
  * One act runner for a report card. It sends at most one act at a time: a
@@ -79,6 +86,14 @@ export function useReportAct(workspace: string) {
     await queryClient.invalidateQueries({ queryKey: feedbackReportsQueryKey(workspace) })
   }, [queryClient, workspace])
 
+  // Reads every shown report read again and says whether each one answered.
+  const readAgain = useCallback(async () => {
+    const started = Date.now()
+    await refresh().catch(() => undefined)
+    const reads = queryClient.getQueryCache().findAll({ queryKey: feedbackReportsQueryKey(workspace), type: 'active' })
+    return reads.every((query) => !(query.state.errorUpdatedAt >= started && query.state.status === 'error'))
+  }, [queryClient, refresh, workspace])
+
   const run = useCallback(
     async (act: ReportActName, target: string, send: () => Promise<FeedbackReport>) => {
       if (busy.current) return false
@@ -94,7 +109,10 @@ export function useReportAct(workspace: string) {
         const field = error instanceof FeedbackReportActError ? error.field : ''
         if (error instanceof FeedbackReportActError && error.outcome === 'unknown') {
           setState({ phase: 'checking', act, target })
-          await refresh().catch(() => undefined)
+          if (!(await readAgain())) {
+            setState({ phase: 'stale', act, target, message: staleMessage, reading: false })
+            return false
+          }
         } else if (
           error instanceof FeedbackReportActError &&
           ['report_closed', 'report_not_found', 'link_not_found'].includes(error.code)
@@ -110,7 +128,23 @@ export function useReportAct(workspace: string) {
     [refresh],
   )
 
-  const clear = useCallback(() => setState({ phase: 'idle' }), [])
-  const pending = state.phase === 'sending' || state.phase === 'checking'
-  return { state, run, clear, pending }
+  // After a failed fresh read, the person reads the report again before any
+  // act. Only a read that succeeds lets the card act again.
+  const reread = useCallback(async () => {
+    if (busy.current || state.phase !== 'stale') return
+    busy.current = true
+    const { act, target } = state
+    setState({ ...state, reading: true })
+    try {
+      if (await readAgain())
+        setState({ phase: 'failed', act, target, field: '', message: reportActMessage(unknownAnswer) })
+      else setState({ phase: 'stale', act, target, message: staleMessage, reading: false })
+    } finally {
+      busy.current = false
+    }
+  }, [readAgain, state])
+
+  const clear = useCallback(() => setState((current) => (current.phase === 'stale' ? current : { phase: 'idle' })), [])
+  const pending = state.phase === 'sending' || state.phase === 'checking' || state.phase === 'stale'
+  return { state, run, clear, reread, pending }
 }

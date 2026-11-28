@@ -270,6 +270,10 @@ export interface Server {
   readAnswer: ((id: string) => Answer) | null
   // Holds every report list answer until the promise resolves.
   listGate: Promise<void> | null
+  // Holds every single report answer until the promise resolves.
+  readGate: Promise<void> | null
+  // Fails the merged-task search of the link form.
+  failTaskSearch: boolean
 }
 
 function servedOrder(a: FeedbackReport, b: FeedbackReport) {
@@ -345,6 +349,23 @@ function applyAct(
     current.reopened_at = at
   } else if (kind === 'fix-task') {
     current.fix_task = { id: String(body.task_id), title: `Task ${String(body.task_id)}` }
+    // Each cause is confirmed as a link act confirms it, keeping its evidence.
+    for (const cause of Array.isArray(body.cause_task_ids) ? body.cause_task_ids : []) {
+      const existing = current.links.find((link) => link.task?.id === cause)
+      if (existing) {
+        existing.state = 'confirmed'
+        existing.confirmed_by = 'usr_operator'
+        existing.confirmed_at = at
+      } else {
+        current.links.push(
+          taskLink(`lnk-${String(cause)}`, String(cause), `Task ${String(cause)}`, {
+            state: 'confirmed',
+            confirmed_by: 'usr_operator',
+            confirmed_at: at,
+          }),
+        )
+      }
+    }
   }
   current.in_inbox = false
   state.reports[index] = current
@@ -380,6 +401,8 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
     listAnswer: null,
     readAnswer: null,
     listGate: null,
+    readGate: null,
+    failTaskSearch: false,
   }
   const role = options.role ?? 'operator'
   const mergedTasks = options.mergedTasks ?? [
@@ -444,6 +467,7 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
     const single = path.match(/^\/v1\/feedback-reports\/([^/]+)$/)
     if (single && method === 'GET') {
       const id = decodeURIComponent(single[1])
+      if (state.readGate) await state.readGate
       const replaced = state.readAnswer?.(id)
       if (replaced) return fulfill(route, replaced)
       const found = state.reports.find((item) => item.id === id)
@@ -469,6 +493,7 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
       return route.fulfill({ status: 201, json: { ...task('261127-fix', 'Fix the checkout timeout', 'queued') } })
     }
     if (path === '/v1/tasks' && method === 'GET') {
+      if (state.failTaskSearch) return route.fulfill({ status: 500, json: { error: 'internal error' } })
       const query = (url.searchParams.get('q') ?? '').toLowerCase()
       return route.fulfill({
         json: mergedTasks.filter(

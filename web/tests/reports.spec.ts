@@ -694,6 +694,14 @@ test.describe('starting a fix task', () => {
     expect(fixPuts(server)).toEqual([
       { method: 'PUT', path: fixPath, body: { task_id: '261127-fix', cause_task_ids: ['261120-a01'] } },
     ])
+    // The ticked cause is confirmed with its evidence; the other links stay.
+    const stored = server.reports.find((item) => item.id === fixReport.id)
+    expect(stored?.links.find((link) => link.id === 'lnk-a')).toMatchObject({
+      state: 'confirmed',
+      evidence: [lineEvidence],
+    })
+    expect(stored?.links.find((link) => link.id === 'lnk-b')).toEqual(fixReport.links[1])
+    expect(stored?.links.find((link) => link.id === 'lnk-c')).toEqual(fixReport.links[2])
     expect(
       await page.evaluate(() => Object.keys(sessionStorage).filter((key) => key.startsWith('conveyor-fix-task'))),
     ).toEqual([])
@@ -1051,7 +1059,9 @@ test.describe('the three pages', () => {
     await expect(page.getByRole('heading', { name: 'Open reports' })).toHaveCount(0)
   })
 
-  test('Monitor lists the workspace’s reports newest first, pages them, and states the total', async ({ page }) => {
+  test('Monitor lists the workspace’s reports newest first, shows more in one read, and states the total', async ({
+    page,
+  }) => {
     const reports = Array.from({ length: 60 }, (_, index) =>
       report(`rpt-261127-f${String(index).padStart(5, '0')}`, {
         summary: `Report ${index}`,
@@ -1064,13 +1074,47 @@ test.describe('the three pages', () => {
     await expect(cards).toHaveCount(50)
     await expect(cards.first().locator('[data-report-summary]')).toHaveText('Report 59')
     await expect(cards.nth(49).locator('[data-report-summary]')).toHaveText('Report 10')
-    await expect(page.locator('[data-report-list-count]')).toHaveText('This list shows 50 of 60 reports.')
+    await expect(page.locator('[data-report-list-count]')).toHaveText('This list shows the newest 50 of 60 reports.')
+    // A report moves to the top between the two reads. One read of 100
+    // shows every report once.
+    server.reports[0] = { ...server.reports[0], last_seen: '2026-11-27T11:59:59Z' }
     await page.getByRole('button', { name: 'Show more reports' }).click()
     await expect(cards).toHaveCount(60)
-    await expect(cards.last().locator('[data-report-summary]')).toHaveText('Report 0')
+    await expect(cards.first().locator('[data-report-summary]')).toHaveText('Report 0')
+    await expect(cards.last().locator('[data-report-summary]')).toHaveText('Report 1')
+    const summaries = await cards.locator('[data-report-summary]').allTextContents()
+    expect(new Set(summaries).size).toBe(60)
     await expect(page.getByRole('button', { name: 'Show more reports' })).toHaveCount(0)
-    const offsets = listReads(server).map((read) => new URLSearchParams(read.split('?')[1]).get('offset'))
-    expect(offsets).toContain('50')
+    const params = listReads(server).map((read) => new URLSearchParams(read.split('?')[1]))
+    expect(params.map((item) => [item.get('limit'), item.get('offset')])).toEqual([
+      ['50', '0'],
+      ['100', '0'],
+    ])
+  })
+
+  test('a list shows at most 200 reports and says how many there are', async ({ page }) => {
+    const reports = Array.from({ length: 205 }, (_, index) =>
+      report(`rpt-261127-h${String(index).padStart(5, '0')}`, {
+        summary: `Report ${index}`,
+        last_seen: new Date(Date.UTC(2026, 10, 27, 8, 0, index)).toISOString(),
+      }),
+    )
+    const server = await mockReportServer(page, { reports })
+    await page.goto('/w/demo/monitor')
+    for (const shown of [100, 150, 200]) {
+      await page.getByRole('button', { name: 'Show more reports' }).click()
+      await expect(page.locator('[data-report-card]')).toHaveCount(shown)
+    }
+    await expect(page.locator('[data-report-list-count]')).toHaveText(
+      'This list shows the newest 200 of 205 reports. It shows at most 200 at a time.',
+    )
+    await expect(page.getByRole('button', { name: 'Show more reports' })).toHaveCount(0)
+    expect(listReads(server).map((read) => new URLSearchParams(read.split('?')[1]).get('limit'))).toEqual([
+      '50',
+      '100',
+      '150',
+      '200',
+    ])
   })
 })
 
@@ -1495,7 +1539,10 @@ test.describe('layout', () => {
         await expectNoOverflow(page)
         // The close and link forms open in place and stay inside the card.
         await card(page, longest.id).getByRole('button', { name: 'Close report' }).click()
+        await expect(card(page, longest.id).getByRole('form', { name: 'Close the report' })).toBeVisible()
+        await expectNoOverflow(page)
         await card(page, longest.id).getByRole('button', { name: 'Link a task or crate' }).click()
+        await expect(card(page, longest.id).getByRole('region', { name: 'Link a task or crate' })).toBeVisible()
         await expectNoOverflow(page)
       }
       await page.goto(`/w/demo/?create=true&report=${longest.id}`)
@@ -1541,9 +1588,188 @@ test.describe('screenshots', () => {
       for (const [name, address, ready] of shots) {
         await page.goto(address)
         await expect(page.locator(ready).first()).toBeVisible()
+        if (name === 'fix-task-sheet') {
+          // The sheet is ready once the report filled it in.
+          await expect(description(page)).not.toHaveValue('')
+          await expect(sheet(page).getByRole('group', { name: 'Possible causes' })).toBeVisible()
+          await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished)))
+        }
         await page.locator(ready).first().scrollIntoViewIfNeeded()
         await page.screenshot({ path: `${screenshotDir}/${name}-${width}.png`, fullPage: name !== 'fix-task-sheet' })
       }
     })
   }
+})
+
+// The findings of the first automated review, each with its test.
+test.describe('review findings', () => {
+  test('another report in the address starts the flow again, and each report keeps its own saved task', async ({
+    page,
+  }) => {
+    const other = report('rpt-261127-d00009', {
+      summary: 'Another report',
+      links: [taskLink('lnk-o', '261120-b02', 'Store invoice numbers')],
+    })
+    const server = await mockReportServer(page, { reports: [fixReport, other] })
+    await page.goto(fixAddress)
+    server.actAnswers.push({ status: 503, json: { error: 'retryable' } })
+    await createFixTask(page)
+    await expect(sheet(page).locator('[data-fix-task-error]')).toBeVisible()
+    // The address moves to the other report while the sheet stays open.
+    await page.evaluate((id) => {
+      history.pushState({}, '', `/w/demo/?create=true&report=${id}`)
+      dispatchEvent(new PopStateEvent('popstate'))
+    }, other.id)
+    await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Another report')
+    await expect(sheet(page).locator('[data-fix-task-created]')).toHaveCount(0)
+    await expect(recordButton(page)).toHaveCount(0)
+    await expect(description(page)).toHaveValue(expectedDescription(other, '```'))
+    const causes = sheet(page).getByRole('group', { name: 'Possible causes' }).getByRole('checkbox')
+    await expect(causes).toHaveCount(1)
+    await expect(causes.first()).not.toBeChecked()
+    // Back to the first report: its saved task returns, checked by a fresh read.
+    await page.goBack()
+    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('The report does not record it yet.')
+    await recordButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(fixPuts(server).map((act) => act.path)).toEqual([fixPath, fixPath])
+    expect(server.created).toHaveLength(1)
+  })
+
+  test('a restored task waits for a fresh read, and a failed read offers only another read', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    server.actAnswers.push({ status: 503, json: { error: 'retryable' } })
+    await createFixTask(page)
+    await expect(sheet(page).locator('[data-fix-task-error]')).toBeVisible()
+    server.readAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    await page.reload()
+    await expect(sheet(page).locator('[data-fix-task-error]')).toHaveText(
+      'The report did not load. Read the report again before you record the task.',
+    )
+    await expect(recordButton(page)).toHaveCount(0)
+    server.readAnswer = null
+    await sheet(page).getByRole('button', { name: 'Read the report again' }).click()
+    await expect(recordButton(page)).toBeVisible()
+    expect(fixPuts(server)).toHaveLength(1)
+  })
+
+  test('text typed while the report loads stays after the report block', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    const held = gate()
+    server.readGate = held.promise
+    await page.goto(fixAddress)
+    await description(page).fill('Typed first.')
+    await expect(createButton(page)).toBeDisabled()
+    held.open()
+    server.readGate = null
+    await expect(description(page)).toHaveValue(`${expectedDescription(fixReport, '````````')}\nTyped first.`)
+  })
+
+  test('the form controls of a card wait while an act is on its way', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [actReport] })
+    await page.goto('/w/demo/monitor')
+    const item = card(page, actReport.id)
+    await item.getByRole('button', { name: 'Close report' }).click()
+    await item.getByRole('textbox', { name: 'Reason to close the report' }).fill('Kept reason')
+    const slow = gate()
+    server.actGate = slow.promise
+    server.actAnswers.push({ status: 503, json: { error: 'retryable' } })
+    await item
+      .getByRole('form', { name: 'Close the report' })
+      .getByRole('button', { name: 'Closing…' })
+      .or(item.getByRole('form', { name: 'Close the report' }).getByRole('button', { name: 'Close report' }))
+      .click()
+    await expect(item.getByRole('button', { name: 'Link a task or crate' })).toBeDisabled()
+    await expect(item.getByRole('button', { name: 'Close report', exact: true }).first()).toBeDisabled()
+    slow.open()
+    server.actGate = null
+    await expect(item.locator('[data-report-act-error]')).toHaveText('Conveyor recorded nothing. Try again.')
+    await expect(item.getByRole('textbox', { name: 'Reason to close the report' })).toHaveValue('Kept reason')
+    await expect(item.getByRole('button', { name: 'Link a task or crate' })).toBeEnabled()
+  })
+
+  test('a failed task search offers to load the list again and keeps the search text', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [actReport] })
+    server.failTaskSearch = true
+    await page.goto('/w/demo/monitor')
+    const item = card(page, actReport.id)
+    await item.getByRole('button', { name: 'Link a task or crate' }).click()
+    await item.getByRole('textbox', { name: 'Search merged tasks' }).fill('numbers')
+    await expect(item).toContainText('The list did not load.')
+    server.failTaskSearch = false
+    await item.getByRole('button', { name: 'Load the list again' }).click()
+    await expect(item.getByRole('button', { name: 'Link Store invoice numbers' })).toBeVisible()
+    await expect(item.getByRole('textbox', { name: 'Search merged tasks' })).toHaveValue('numbers')
+  })
+
+  test('a failed refresh of an empty list is told', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [] })
+    await page.goto('/w/demo/monitor')
+    await expect(page.getByText('No open report. Reports appear here when a watcher sends one.')).toBeVisible()
+    server.listAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    await server.stream.ready()
+    await expect(page.locator('[data-report-refresh-error]')).toHaveText(
+      'The last refresh of the reports failed. This list shows the reports from the read before it.',
+    )
+    await expect(page.getByText('No open report. Reports appear here when a watcher sends one.')).toBeVisible()
+  })
+
+  test('after an unknown answer, a failed read keeps every act blocked until a read succeeds', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [actReport] })
+    await page.goto('/w/demo/monitor')
+    const item = card(page, actReport.id)
+    const confirm = item.getByRole('button', { name: 'Confirm the link to Send invoices by email' })
+    await expect(confirm).toBeEnabled()
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    server.listAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    await confirm.click()
+    await expect(item.locator('[data-report-act-error]')).toContainText(
+      'Conveyor does not know whether it recorded this, and the report did not load again.',
+    )
+    await expect(confirm).toBeDisabled()
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeDisabled()
+    await expect(item.getByRole('button', { name: 'Link a task or crate' })).toBeDisabled()
+    // A read that fails again keeps the block.
+    await item.getByRole('button', { name: 'Read the report again' }).click()
+    await expect(item.getByRole('button', { name: 'Read the report again' })).toBeEnabled()
+    await expect(confirm).toBeDisabled()
+    server.listAnswer = null
+    await item.getByRole('button', { name: 'Read the report again' }).click()
+    await expect(item.locator('[data-report-act-error]')).toHaveText(
+      'Conveyor does not know whether it recorded this. Conveyor read the report again. Look at it before you try again.',
+    )
+    await expect(confirm).toBeEnabled()
+    expect(server.acts).toHaveLength(1)
+  })
+
+  test('a task a report names on the crate page opens in the crate page’s task sheet', async ({ page }) => {
+    const member = report('rpt-261127-c00009', {
+      summary: 'Crate member report',
+      links: [
+        taskLink('lnk-member', '261120-a01', 'Send invoices by email', {}, { id: 'crate-billing', name: 'Billing v2' }),
+      ],
+      fix_task: { id: '261120-b02', title: 'Store invoice numbers' },
+    })
+    await mockReportServer(page, { reports: [member] })
+    await page.goto('/w/demo/crates/crate-billing')
+    await card(page, member.id)
+      .locator('[data-report-link="lnk-member"]')
+      .getByRole('link', { name: 'Send invoices by email' })
+      .click()
+    await expect(page).toHaveURL('/w/demo/crates/crate-billing?task=261120-a01')
+    await expect(page.getByRole('dialog')).toBeVisible()
+    // The crate page stays mounted under the sheet, and the sheet's task
+    // detail lists the same report.
+    await expect(card(page, member.id)).toHaveCount(2)
+    await page.goto('/w/demo/crates/crate-billing')
+    await card(page, member.id).locator('[data-report-fix-task]').getByRole('link').click()
+    await expect(page).toHaveURL('/w/demo/crates/crate-billing?task=261120-b02')
+    // Monitor keeps the full-page link.
+    await page.goto('/w/demo/monitor')
+    await expect(card(page, member.id).locator('[data-report-fix-task] a')).toHaveAttribute(
+      'href',
+      '/w/demo/tasks/261120-b02',
+    )
+  })
 })

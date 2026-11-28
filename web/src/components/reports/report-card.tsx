@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Link2, Package, RotateCcw, Unlink, Wrench, X } from 'lucide-react'
-import { type ReactNode, useDeferredValue, useId, useState } from 'react'
+import { createContext, type ReactNode, useContext, useDeferredValue, useId, useState } from 'react'
 import {
   closeFeedbackReport,
   fetchCrates,
@@ -38,6 +38,35 @@ import { type ReportActState, useReportAct } from './use-report-act'
 export function Untrusted({ children, className }: { children: string; className?: string }) {
   return <bdi className={cn('[overflow-wrap:anywhere]', className)}>{children}</bdi>
 }
+
+export interface ReportTaskLinkProps {
+  taskId: string
+  className?: string
+  children: ReactNode
+}
+
+/** A link to a task's full page, the default destination of a task a card names. */
+function TaskPageLink({ taskId, className, children }: ReportTaskLinkProps) {
+  const { workspace } = useWorkspaceSelection()
+  return (
+    <Link to="/w/$workspaceId/tasks/$taskId" params={{ workspaceId: workspace, taskId }} className={className}>
+      {children}
+    </Link>
+  )
+}
+
+/**
+ * Where a task that a card names opens. A page that opens tasks in its own
+ * sheet, such as the crate page, provides its own link.
+ */
+export const ReportTaskLinkContext = createContext<(props: ReportTaskLinkProps) => ReactNode>(TaskPageLink)
+
+function TaskLink(props: ReportTaskLinkProps) {
+  const Component = useContext(ReportTaskLinkContext)
+  return <Component {...props} />
+}
+
+const linkClass = 'rounded-sm text-primary hover:underline focus-visible:outline-2 focus-visible:outline-primary'
 
 function ServedTime({ value }: { value: string }) {
   return (
@@ -190,13 +219,9 @@ export function ReportCard({ report, extra }: { report: FeedbackReport; extra?: 
       {report.fix_task && (
         <p data-report-fix-task className="min-w-0 text-xs">
           <span className="text-faint">Fix task: </span>
-          <Link
-            to="/w/$workspaceId/tasks/$taskId"
-            params={{ workspaceId: workspace, taskId: report.fix_task.id }}
-            className="rounded-sm text-primary hover:underline focus-visible:outline-2 focus-visible:outline-primary"
-          >
+          <TaskLink taskId={report.fix_task.id} className={linkClass}>
             <Untrusted>{report.fix_task.title}</Untrusted>
-          </Link>
+          </TaskLink>
         </p>
       )}
       {canAct && <ReportActs report={report} act={act} />}
@@ -297,13 +322,9 @@ function LinkRow({
         {link.task ? (
           <span className="min-w-0 text-xs">
             <span className="text-faint">Task </span>
-            <Link
-              to="/w/$workspaceId/tasks/$taskId"
-              params={{ workspaceId: workspace, taskId: link.task.id }}
-              className="rounded-sm text-primary hover:underline focus-visible:outline-2 focus-visible:outline-primary"
-            >
+            <TaskLink taskId={link.task.id} className={linkClass}>
               <Untrusted>{link.task.title}</Untrusted>
-            </Link>
+            </TaskLink>
             {link.task.crate && (
               <>
                 <span className="text-faint"> in the crate </span>
@@ -402,13 +423,23 @@ function LinkRow({
           )}
         </div>
       )}
-      <ActStatus state={act.state} target={link.id} />
+      <ActStatus act={act} target={link.id} />
     </li>
   )
 }
 
 /** The answer of the last act on `target`: a failure, or a fresh read after an unknown answer. */
-function ActStatus({ state, target }: { state: ReportActState; target: string }) {
+function ActStatus({ act, target }: { act: ReturnType<typeof useReportAct>; target: string }) {
+  const state: ReportActState = act.state
+  if (state.phase === 'stale' && state.target === target)
+    return (
+      <div role="alert" data-report-act-error className="mt-1.5 space-y-1.5 text-xs text-failure">
+        <p>{state.message}</p>
+        <Button size="sm" variant="secondary" disabled={state.reading} onClick={() => void act.reread()}>
+          {state.reading ? 'Loading…' : 'Read the report again'}
+        </Button>
+      </div>
+    )
   if (state.phase === 'checking' && state.target === target)
     return (
       <p role="status" className="mt-1.5 text-xs text-muted">
@@ -450,7 +481,7 @@ function ReportActs({ report, act }: { report: FeedbackReport; act: ReturnType<t
           <RotateCcw aria-hidden />
           {act.state.phase === 'sending' && act.state.act === 'reopen' ? 'Reopening…' : 'Reopen report'}
         </Button>
-        <ActStatus state={act.state} target={target} />
+        <ActStatus act={act} target={target} />
       </div>
     )
   }
@@ -461,6 +492,7 @@ function ReportActs({ report, act }: { report: FeedbackReport; act: ReturnType<t
           size="sm"
           variant={form === 'link' ? 'outline' : 'secondary'}
           aria-expanded={form === 'link'}
+          disabled={act.pending}
           onClick={() => {
             act.clear()
             setForm(form === 'link' ? null : 'link')
@@ -473,6 +505,7 @@ function ReportActs({ report, act }: { report: FeedbackReport; act: ReturnType<t
           size="sm"
           variant={form === 'close' ? 'outline' : 'secondary'}
           aria-expanded={form === 'close'}
+          disabled={act.pending}
           onClick={() => {
             act.clear()
             setForm(form === 'close' ? null : 'close')
@@ -494,7 +527,7 @@ function ReportActs({ report, act }: { report: FeedbackReport; act: ReturnType<t
       </div>
       {form === 'link' && <LinkForm report={report} act={act} target={target} onDone={() => setForm(null)} />}
       {form === 'close' && <CloseForm report={report} act={act} target={target} onDone={() => setForm(null)} />}
-      {form === null && <ActStatus state={act.state} target={target} />}
+      {form === null && <ActStatus act={act} target={target} />}
     </div>
   )
 }
@@ -561,7 +594,7 @@ function CloseForm({
           Cancel
         </Button>
       </div>
-      <ActStatus state={act.state} target={target} />
+      <ActStatus act={act} target={target} />
     </form>
   )
 }
@@ -628,7 +661,7 @@ function LinkForm({
         {read.isPending
           ? 'Loading…'
           : read.error != null
-            ? 'The list did not load. Try again.'
+            ? 'The list did not load.'
             : options.length === 0
               ? kind === 'task'
                 ? 'No merged task matches.'
@@ -637,6 +670,11 @@ function LinkForm({
                 ? `${options.length === 20 ? 'The first 20' : options.length} merged ${options.length === 1 ? 'task matches' : 'tasks match'}. You can link only a merged task.`
                 : `${options.length} ${options.length === 1 ? 'crate matches' : 'crates match'}.`}
       </p>
+      {read.error != null && (
+        <Button size="sm" variant="secondary" disabled={read.isFetching} onClick={() => void read.refetch()}>
+          {read.isFetching ? 'Loading…' : 'Load the list again'}
+        </Button>
+      )}
       <ul className="max-h-48 space-y-1 overflow-y-auto">
         {options.map((option) => {
           const sending = act.state.phase === 'sending' && act.state.target === target && act.state.act === 'link'
@@ -685,7 +723,7 @@ function LinkForm({
           Cancel
         </Button>
       </div>
-      <ActStatus state={act.state} target={target} />
+      <ActStatus act={act} target={target} />
     </section>
   )
 }

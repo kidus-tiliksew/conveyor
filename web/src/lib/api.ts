@@ -2621,26 +2621,33 @@ export async function fetchTaskLiveStatus(
 // Feedback reports (component-feedback-reports v4, Public surfaces). A read
 // needs view_workspace and an act needs create_tasks; the server checks both.
 
-// The page size of a report list read. The route serves at most 200.
-export const feedbackReportPageLimit = 50
+// A report list shows 50 reports at first and 50 more on each request, up to
+// the 200 that the route serves in one answer (component-http-api
+// invariant 19).
+export const feedbackReportPageStep = 50
+export const feedbackReportPageMax = 200
 
 /**
- * One page of `GET /v1/feedback-reports`, newest `last_seen` first, with the
- * served total from `X-Conveyor-Total`. The page keeps the server's order.
+ * The newest `limit` reports of `GET /v1/feedback-reports` from offset 0,
+ * newest `last_seen` first, with the served total from `X-Conveyor-Total`.
+ * One answer is one view of the store, so a report whose `last_seen` changes
+ * between two reads can never show twice or drop out of a list that two
+ * offset pages would make. The page keeps the server's order.
  */
 export async function fetchFeedbackReports(
   workspace: string,
   filter: import('./types').FeedbackReportFilter,
-  offset: number,
+  limit: number,
   signal?: AbortSignal,
 ): Promise<import('./types').FeedbackReportPage> {
+  const offset = 0
   const params = new URLSearchParams()
   if (filter.state === 'closed') params.set('state', 'closed')
   if (filter.environment_id) params.set('environment_id', filter.environment_id)
   if (filter.task_id) params.set('task_id', filter.task_id)
   if (filter.crate_id) params.set('crate_id', filter.crate_id)
   if (filter.no_crate) params.set('no_crate', 'true')
-  params.set('limit', String(feedbackReportPageLimit))
+  params.set('limit', String(Math.min(Math.max(limit, 1), feedbackReportPageMax)))
   params.set('offset', String(offset))
   const response = await fetch(workspaceURL(`/v1/feedback-reports?${params.toString()}`, workspace), { signal })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))

@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { MessageSquareWarning } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
 import { FeedbackReportActError, fetchFeedbackReport, setFeedbackReportFixTask } from '../../lib/api'
 import type { FeedbackReport } from '../../lib/types'
 import { withQuerySignal } from '../task/use-task-detail'
@@ -108,7 +108,7 @@ export function useFixTaskFlow({
 }: {
   workspace: string
   reportId: string | undefined
-  setBody: (body: string) => void
+  setBody: Dispatch<SetStateAction<string>>
   onRecorded: (taskId: string) => void
 }) {
   const queryClient = useQueryClient()
@@ -121,12 +121,30 @@ export function useFixTaskFlow({
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   })
+  const restoredEntry = () => (workspace && reportId ? readCreatedFixTask(workspace, reportId) : null)
   const [prefilledFor, setPrefilledFor] = useState<string | null>(null)
   const [causes, setCauses] = useState<string[]>([])
-  const [created, setCreated] = useState<CreatedFixTask | null>(() =>
-    workspace && reportId ? readCreatedFixTask(workspace, reportId) : null,
-  )
-  const [record, setRecord] = useState<RecordState>({ phase: 'idle' })
+  const [created, setCreated] = useState<CreatedFixTask | null>(restoredEntry)
+  // A task restored from an earlier visit waits for a fresh read of the
+  // report before the page offers to record it.
+  const [record, setRecord] = useState<RecordState>(() => (created ? { phase: 'checking' } : { phase: 'idle' }))
+  const restorePending = useRef(created !== null)
+  // Another report, or another workspace, starts the flow again with that
+  // report's own saved task, so no state of one report reaches another.
+  const identity = `${workspace}\u0000${reportId ?? ''}`
+  const [seen, setSeen] = useState(identity)
+  if (seen !== identity) {
+    const restored = restoredEntry()
+    setSeen(identity)
+    setPrefilledFor(null)
+    setCauses([])
+    setCreated(restored)
+    setRecord(restored ? { phase: 'checking' } : { phase: 'idle' })
+    restorePending.current = restored !== null
+  }
+  // The last prefilled text: a description that still equals it was not
+  // edited, so the prefill of another report replaces it.
+  const lastPrefill = useRef('')
   const sending = useRef(false)
   const mounted = useRef(true)
   useEffect(() => {
@@ -137,13 +155,17 @@ export function useFixTaskFlow({
   }, [])
 
   // Prefill once per report, and only while it is open: a closed report
-  // takes no fix task.
+  // takes no fix task. Text that the person typed while the report loaded
+  // stays, after the report block.
   const data = report.data
   useEffect(() => {
     if (!data || data.id !== reportId || prefilledFor === data.id || created) return
     if (data.state !== 'open') return
+    const text = fixTaskDescription(data)
+    const previous = lastPrefill.current
+    lastPrefill.current = text
     setPrefilledFor(data.id)
-    setBody(fixTaskDescription(data))
+    setBody((current) => (current.trim() === '' || current === previous ? text : `${text}\n${current}`))
   }, [data, reportId, prefilledFor, created, setBody])
 
   const finish = useCallback(
@@ -223,27 +245,41 @@ export function useFixTaskFlow({
     [workspace, reportId, sendRecord],
   )
 
-  const rereadReport = useCallback(async () => {
-    if (!created || sending.current) return
-    setRecord({ phase: 'checking' })
-    try {
-      const fresh = await queryClient.fetchQuery({
-        queryKey,
-        queryFn: ({ signal }) => fetchFeedbackReport(workspace, reportId ?? '', signal),
-        staleTime: 0,
-      })
-      if (fresh.fix_task?.id === created.taskId) finish(created)
-      else if (mounted.current)
-        setRecord({ phase: 'failed', canSend: true, message: 'The report did not record the task. Record it again.' })
-    } catch {
-      if (mounted.current)
-        setRecord({
-          phase: 'failed',
-          canSend: false,
-          message: 'The report did not load. Read the report again before you record the task.',
+  const rereadReport = useCallback(
+    async (restored = false) => {
+      if (!created || sending.current) return
+      setRecord({ phase: 'checking' })
+      try {
+        const fresh = await queryClient.fetchQuery({
+          queryKey,
+          queryFn: ({ signal }) => fetchFeedbackReport(workspace, reportId ?? '', signal),
+          staleTime: 0,
         })
-    }
-  }, [created, queryClient, queryKey, workspace, reportId, finish])
+        if (fresh.fix_task?.id === created.taskId) finish(created)
+        else if (mounted.current)
+          setRecord(
+            restored
+              ? { phase: 'idle' }
+              : { phase: 'failed', canSend: true, message: 'The report did not record the task. Record it again.' },
+          )
+      } catch {
+        if (mounted.current)
+          setRecord({
+            phase: 'failed',
+            canSend: false,
+            message: 'The report did not load. Read the report again before you record the task.',
+          })
+      }
+    },
+    [created, queryClient, queryKey, workspace, reportId, finish],
+  )
+
+  // A restored task: read the report once before the page offers anything.
+  useEffect(() => {
+    if (!restorePending.current || !created) return
+    restorePending.current = false
+    void rereadReport(true)
+  }, [created, rereadReport])
 
   const linkedTasks = (data?.links ?? []).flatMap((link) => (link.task ? [link.task] : []))
   const ready = Boolean(reportId) && data?.state === 'open' && prefilledFor === reportId && created === null
