@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -22,10 +23,13 @@ type stubForge struct {
 	parent  map[string]string
 	reads   []string
 	compare []string
+	// lines answers line reads, and lineReads records each one.
+	lines     map[string]github.LineChange
+	lineReads []string
 }
 
 func newStubForge() *stubForge {
-	return &stubForge{refs: map[string]string{}, fail: map[string]error{}, parent: map[string]string{}}
+	return &stubForge{refs: map[string]string{}, fail: map[string]error{}, parent: map[string]string{}, lines: map[string]github.LineChange{}}
 }
 
 // chain records commits as a line of history in the repository, oldest
@@ -109,4 +113,21 @@ func (f *stubForge) calls() (reads, compares int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.reads), len(f.compare)
+}
+
+// ReadLineChange answers a line read from lines, keyed slug|commit|path|line,
+// or the failure in fail under line|slug|commit|path|line. It counts each
+// call. A line it holds no answer for has no file.
+func (f *stubForge) ReadLineChange(_ context.Context, slug, commit, path string, line int) (github.LineChange, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := slug + "|" + commit + "|" + path + "|" + strconv.Itoa(line)
+	f.lineReads = append(f.lineReads, key)
+	if err := f.fail["line|"+key]; err != nil {
+		return github.LineChange{}, err
+	}
+	if answer, ok := f.lines[key]; ok {
+		return answer, nil
+	}
+	return github.LineChange{}, nil
 }

@@ -458,3 +458,46 @@ func TestNewestUnresolved(t *testing.T) {
 		t.Fatal("an environment without versions has an unresolved one")
 	}
 }
+
+// TestStatusIgnoresResolvedGitHubRepository proves that live status reads the
+// stored GitHub repository of a resolution nowhere: the same inputs with the
+// field empty, with the matching repository, and with an unrelated one give
+// the same task statuses, crate lines, and required comparisons (approved
+// plan version 4).
+func TestStatusIgnoresResolvedGitHubRepository(t *testing.T) {
+	merge, old, current := sha("aa"), sha("b1"), sha("b2")
+	build := func(github string) Inputs {
+		f := newStatusFixture()
+		f.environment("env-prod", "Production", nil)
+		f.signal("env-prod", 90, 60)
+		f.deploy("env-prod", "api", old, "conveyor", 5, 10)
+		f.deploy("env-prod", "api", current, "conveyor", 10, -1)
+		f.compare("conveyor", merge, current, store.FeedbackCompareAhead)
+		for i := range f.in.State.Resolutions {
+			if f.in.State.Resolutions[i].Resolved() {
+				f.in.State.Resolutions[i].ResolvedGitHubRepository = github
+			}
+		}
+		return f.in
+	}
+	type answer struct {
+		Statuses []TaskStatus
+		Pending  bool
+		Missing  Missing
+		Lines    []CrateLine
+		LiveIn   map[string][]string
+		Required []store.FeedbackComparisonKey
+	}
+	run := func(in Inputs) answer {
+		tasks := []store.FeedbackMergedTask{task("t1", "conveyor", merge), task("t2", "conveyor", sha("cc"))}
+		statuses, pending, missing := TaskStatuses(in, tasks[0])
+		lines, liveIn, _, _ := CrateStatus(in, tasks)
+		return answer{statuses, pending, missing, lines, liveIn, RequiredComparisons(in, tasks)}
+	}
+	want := run(build(""))
+	for _, github := range []string{"acme/conveyor", "someone/else"} {
+		if got := run(build(github)); !reflect.DeepEqual(got, want) {
+			t.Fatalf("with %q: %+v\nwant %+v", github, got, want)
+		}
+	}
+}

@@ -256,6 +256,11 @@ func (s *Store) migrateFiles(ctx context.Context, files []migration) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == feedbackReportLinkingAttemptMigrationVersion {
+			if err := s.addNullableColumns(ctx, feedbackReportLinkingAttemptColumns...); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		if file.version == crateMigrationVersion {
 			if err := s.addNullableColumns(ctx, crateTaskColumn); err != nil {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)

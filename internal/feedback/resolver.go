@@ -51,6 +51,13 @@ type Forge interface {
 	// Compare compares base with head and lists up to arrived commits that
 	// head holds and base lacks.
 	Compare(ctx context.Context, slug, base, head string, arrived int) (CompareResult, error)
+	// ReadLineChange asks which commit last changed a line of a file as of
+	// a full commit ID, and which merged pull requests of the repository
+	// GitHub lists for that commit, in one request
+	// (component-feedback-reports invariant 12). A file the commit does not
+	// hold answers FileFound false. Every other incomplete answer is a
+	// categorized forge failure.
+	ReadLineChange(ctx context.Context, slug, commit, path string, line int) (github.LineChange, error)
 }
 
 // ResolveRequest is one version to resolve.
@@ -67,9 +74,13 @@ type ResolveRequest struct {
 // next request, when it set one.
 type Resolution struct {
 	Repository string
-	Commit     string
-	Reason     string
-	RetryAt    time.Time
+	// Slug is the canonical GitHub slug of the matched candidate, the
+	// repository the commit was read from. It is empty for every unresolved
+	// outcome (approved plan version 4).
+	Slug    string
+	Commit  string
+	Reason  string
+	RetryAt time.Time
 }
 
 // Resolve resolves one reported version (component-production-feedback
@@ -117,7 +128,7 @@ func Resolve(ctx context.Context, forge Forge, request ResolveRequest) Resolutio
 		commit, err := forge.ReadCommit(ctx, candidate.Slug, ref)
 		switch {
 		case err == nil && store.FeedbackCommitID(commit) && strings.HasPrefix(commit, prefix):
-			matched = append(matched, Resolution{Repository: candidate.Name, Commit: commit})
+			matched = append(matched, Resolution{Repository: candidate.Name, Slug: store.FeedbackRepository(candidate.Slug), Commit: commit})
 		case err == nil, errors.Is(err, github.ErrCommitNotFound):
 			// The repository holds no such commit or tag.
 		default:

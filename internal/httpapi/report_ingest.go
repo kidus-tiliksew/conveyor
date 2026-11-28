@@ -113,6 +113,15 @@ func (s *Server) receiveFeedbackReports(w http.ResponseWriter, r *http.Request) 
 	// The answer states the arrival at the stored precision, as the signal
 	// route does. The store decided on the exact arrival.
 	writeJSON(w, http.StatusAccepted, map[string]time.Time{"accepted_at": store.EnvironmentTime(batch.ArrivedAt)})
+	// The answer is written and flushed before the linking work is asked
+	// for, so the route answers before any link is worked out and before any
+	// forge call. A job the queue cannot hold is dropped and logged, and a
+	// later signal or entry asks again; the answer stays 202
+	// (component-feedback-reports invariant 15; State and failure).
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	s.enqueueFeedbackReports(scope.key.Workspace, batch)
 }
 
 // checkFeedbackReportsBeforeReservation runs every check that can refuse a

@@ -23,6 +23,25 @@ func closeFeedbackReport(t *testing.T, ctx context.Context, st *Store, reportID 
 	}
 }
 
+// seedFeedbackReportLink writes one stored link as given. Confirming and
+// removing belong to a sibling task, so the conformance entry point supplies
+// this as Fixture.SeedFeedbackReportLink.
+func seedFeedbackReportLink(t *testing.T, ctx context.Context, st *Store, link store.FeedbackReportLink) {
+	t.Helper()
+	var confirmedBy, removedBy *string
+	if link.ConfirmedAt != nil {
+		confirmedBy = &link.ConfirmedBy
+	}
+	if link.RemovedAt != nil {
+		removedBy = &link.RemovedBy
+	}
+	if _, err := st.pool.Exec(ctx, `INSERT INTO feedback_report_links (workspace_id, id, report_id, task_id, state, evidence, created_at, created_by, confirmed_by, confirmed_at, removed_by, removed_at)
+VALUES ($1, $2, $3, $4, $5, $6::text::jsonb, $7, $8, $9, $10, $11, $12)`, workspace(ctx), link.ID, link.ReportID, link.TaskID, link.State, store.FeedbackReportEvidenceJSON(link.Evidence),
+		link.CreatedAt, link.CreatedBy, confirmedBy, link.ConfirmedAt, removedBy, link.RemovedAt); err != nil {
+		t.Fatalf("seed feedback report link: %v", err)
+	}
+}
+
 // TestFeedbackReportMigrationIntegration proves migration 182: the taskless
 // event CHECK admits the seven report kinds and every kind migration 177
 // admits, refuses an unknown one, and each of the four new tables is keyed to

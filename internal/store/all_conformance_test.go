@@ -118,6 +118,8 @@ func TestMemoryConformance(t *testing.T) {
 				return storetest.EnvironmentStoredKey{Digest: digest, Text: text}
 			}, CloseFeedbackReport: func(t *testing.T, ctx context.Context, reportID string, at time.Time) {
 				store.CloseFeedbackReportForTest(t, st, ctx, reportID, at)
+			}, SeedFeedbackReportLink: func(t *testing.T, ctx context.Context, link store.FeedbackReportLink) {
+				store.SeedFeedbackReportLinkForTest(t, st, ctx, link)
 			}, LineageHTTP: func(*testing.T) http.Handler {
 				// The shared-token operator fixture (component-lineage).
 				server := httpapi.NewServer(st)

@@ -82,9 +82,13 @@ func (h *feedbackHarness) reportByKey(key string) store.FeedbackReport {
 }
 
 // reportStored renders everything a refused report request must leave
-// unchanged: the signal-side records, every event, and the reports.
+// unchanged: the signal-side records, every event, and the reports. It first
+// waits until the background work that accepted requests asked for, such as
+// the linking of their reports, has finished, so the rendering holds what
+// the requests themselves wrote.
 func (h *feedbackHarness) reportStored() string {
 	h.t.Helper()
+	h.server.feedbackWorker().wait()
 	return feedbackJSON(h.t, []any{h.stored(), h.reports()})
 }
 

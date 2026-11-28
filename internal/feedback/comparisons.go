@@ -131,7 +131,11 @@ func (w Work) ProcessSignal(ctx context.Context, request SignalRequest) error {
 		if outcome.Reason != "" && outcome.Reason != store.FeedbackReasonNoMatch && outcome.Reason != store.FeedbackReasonAmbiguous {
 			w.logf("feedback_resolve environment_id=%s service_digest=%s outcome=unresolved reason=%s", ref.EnvironmentID, store.FeedbackServiceDigest(ref.Service), outcome.Reason)
 		}
-		resolution := store.FeedbackResolution{FeedbackVersionRef: ref, ResolvedRepository: outcome.Repository, ResolvedCommit: outcome.Commit, Reason: outcome.Reason, AttemptedAt: now, NextAttemptAt: outcome.RetryAt}
+		// The GitHub repository the commit was read from is stored with the
+		// resolution, so the timing rule of report linking can prove a
+		// deploy's repository after a workspace name is pointed elsewhere
+		// (approved plan version 4). Live status does not read it.
+		resolution := store.FeedbackResolution{FeedbackVersionRef: ref, ResolvedRepository: outcome.Repository, ResolvedGitHubRepository: outcome.Slug, ResolvedCommit: outcome.Commit, Reason: outcome.Reason, AttemptedAt: now, NextAttemptAt: outcome.RetryAt}
 		if err := recordOutcome(ctx, func(writeCtx context.Context) error { return w.Store.RecordFeedbackResolution(writeCtx, resolution) }); err != nil {
 			return err
 		}
@@ -207,10 +211,26 @@ func PreviousVersion(deploys []store.FeedbackDeploy, ref store.FeedbackVersionRe
 	if current == nil {
 		return store.FeedbackVersionRef{}, false
 	}
+	previous, found := PreviousDeployVersion(deploys, *current)
+	if !found {
+		return store.FeedbackVersionRef{}, false
+	}
+	previous.EnvironmentID = ref.EnvironmentID
+	return previous, true
+}
+
+// PreviousDeployVersion returns the version the service deployed last before
+// one deploy, from an environment's deploy history, with the ordering and the
+// version exclusion of PreviousVersion: the deploy of the same service with
+// the latest place before the deploy's place whose version differs. The
+// lookup is anchored to the deploy itself, so a version that returns after a
+// stop finds the predecessor of that return (component-feedback-reports
+// invariant 13).
+func PreviousDeployVersion(deploys []store.FeedbackDeploy, current store.FeedbackDeploy) (store.FeedbackVersionRef, bool) {
 	var previous *store.FeedbackDeploy
 	for i := range deploys {
 		deploy := &deploys[i]
-		if deploy.Service != ref.Service || deploy.FeedbackVersion == ref.FeedbackVersion || deploy.Start().Compare(current.Start()) >= 0 {
+		if deploy.Service != current.Service || deploy.FeedbackVersion == current.FeedbackVersion || deploy.Start().Compare(current.Start()) >= 0 {
 			continue
 		}
 		if previous == nil || deploy.Start().Compare(previous.Start()) > 0 {
@@ -220,7 +240,7 @@ func PreviousVersion(deploys []store.FeedbackDeploy, ref store.FeedbackVersionRe
 	if previous == nil {
 		return store.FeedbackVersionRef{}, false
 	}
-	return store.FeedbackVersionRef{EnvironmentID: ref.EnvironmentID, Service: ref.Service, FeedbackVersion: previous.FeedbackVersion}, true
+	return store.FeedbackVersionRef{EnvironmentID: current.EnvironmentID, Service: current.Service, FeedbackVersion: previous.FeedbackVersion}, true
 }
 
 // CompareVersion stores, for each merged task of the repository, whether the

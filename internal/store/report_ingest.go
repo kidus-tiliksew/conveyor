@@ -132,8 +132,8 @@ type FeedbackReportOrigin struct {
 // counts its removals by pattern class (invariant 5). ClosedAt, ClosedBy,
 // and CloseReason are set while the report is closed. Reopened and
 // ReopenOrigin record the latest reopening by a report (invariant 7).
-// LinkingEndedAt and the fix task belong to the sibling linking and act
-// tasks, and ingest never sets them.
+// LinkingEndedAt, LinkingLastAttemptAt, and the fix task belong to the
+// linking work and the sibling act task, and ingest never sets them.
 type FeedbackReport struct {
 	ID                string                `json:"id"`
 	EnvironmentID     string                `json:"environment_id"`
@@ -160,7 +160,16 @@ type FeedbackReport struct {
 	ReopenedAt        *time.Time            `json:"reopened_at"`
 	ReopenOrigin      *FeedbackReportOrigin `json:"reopen_origin"`
 	LinkingEndedAt    *time.Time            `json:"linking_ended_at"`
-	FixTaskID         string                `json:"fix_task_id"`
+	// LinkingLastAttemptAt is the time of the last claimed linking attempt,
+	// stored at the backend's precision, and nil before the first one
+	// (component-feedback-reports invariant 15).
+	LinkingLastAttemptAt *time.Time `json:"linking_last_attempt_at"`
+	// LineProgress and TimingResult are the stored progress of linking
+	// (approved plan version 3). No route or served read exposes them, so
+	// neither has a JSON member.
+	LineProgress *FeedbackLineProgress `json:"-"`
+	TimingResult *FeedbackTimingResult `json:"-"`
+	FixTaskID    string                `json:"fix_task_id"`
 }
 
 // ReportStore keeps feedback reports (component-feedback-reports;
@@ -185,6 +194,9 @@ type ReportStore interface {
 	// ListEnvironmentFeedbackReports returns every report of one environment,
 	// open and closed, ordered by ID.
 	ListEnvironmentFeedbackReports(ctx context.Context, environmentID string) ([]FeedbackReport, error)
+	// ReportLinkingStore keeps the line reads, links, notes, and linking
+	// attempts of reports (feature-production-feedback-listening FR-2).
+	ReportLinkingStore
 }
 
 // FeedbackReportField is the path that a refusal of an entry's member names.

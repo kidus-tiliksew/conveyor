@@ -100,11 +100,64 @@ func (c *restClient) identityLabel() string {
 }
 
 func (c *restClient) request(ctx context.Context, method, endpoint, accept string, body any) ([]byte, http.Header, int, error) {
+	raw, signals, err := c.exchange(ctx, method, endpoint, accept, body)
+	return raw, signals.header, signals.Status, err
+}
+
+// responseSignals is what a GitHub response states before its body is read:
+// its status, the forge category that status decides by itself, its
+// headers, and the time they arrived. exchange takes them as soon as the
+// headers arrive and returns them on every path after that, so a body that
+// cannot be read, is cut short, or is not what the caller expects loses
+// none of them. Received is false when no response arrived: a connect
+// failure, a timeout before the headers, or a cancelled context.
+type responseSignals struct {
+	Received bool `json:"received"`
+	Status   int  `json:"status"`
+	// Category is the category of a refused status (statusCategory), and
+	// empty for a 2xx status.
+	Category ForgeErrorCategory `json:"category"`
+	header   http.Header
+	at       time.Time
+}
+
+// readResponseSignals takes the signals of a response from its status line
+// and headers alone.
+func readResponseSignals(status int, header http.Header, now time.Time) responseSignals {
+	return responseSignals{Received: true, Status: status, Category: statusCategory(status, header), header: header, at: now}
+}
+
+// statusCategory is the forge category a refused status decides by itself:
+// a rate limit for 429, and for 403 or 422 with no request left or a
+// Retry-After header, since GitHub can answer abuse protection with either;
+// a permission failure for any other 401 or 403; and a status failure for
+// every other status outside 2xx. It is empty for a 2xx status.
+func statusCategory(status int, header http.Header) ForgeErrorCategory {
+	if status >= 200 && status < 300 {
+		return ""
+	}
+	limited := header.Get("X-RateLimit-Remaining") == "0" || header.Get("Retry-After") != ""
+	switch {
+	case status == http.StatusTooManyRequests || (status == http.StatusForbidden || status == http.StatusUnprocessableEntity) && limited:
+		return ForgeRateLimited
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return ForgePermission
+	}
+	return ForgeStatus
+}
+
+// exchange sends one request and reads its answer. The signals of the
+// response are taken before its body is read and come back on every path
+// after the response arrived. What a caller of request gets is unchanged: a
+// body that cannot be read is a forge_response failure whatever the status,
+// and a refused status with a readable body is a failure of the category the
+// status decides.
+func (c *restClient) exchange(ctx context.Context, method, endpoint, accept string, body any) ([]byte, responseSignals, error) {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return nil, nil, 0, &Error{Category: ForgeRequest, Err: fmt.Errorf("encode GitHub REST request: %w", err)}
+			return nil, responseSignals{}, &Error{Category: ForgeRequest, Err: fmt.Errorf("encode GitHub REST request: %w", err)}
 		}
 		payload = bytes.NewReader(encoded)
 	}
@@ -114,7 +167,7 @@ func (c *restClient) request(ctx context.Context, method, endpoint, accept strin
 	}
 	req, err := http.NewRequestWithContext(ctx, method, requestURL, payload)
 	if err != nil {
-		return nil, nil, 0, &Error{Category: ForgeRequest, Err: fmt.Errorf("build GitHub REST request: %w", err)}
+		return nil, responseSignals{}, &Error{Category: ForgeRequest, Err: fmt.Errorf("build GitHub REST request: %w", err)}
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", accept)
@@ -124,33 +177,25 @@ func (c *restClient) request(ctx context.Context, method, endpoint, accept strin
 	}
 	response, err := c.http.Do(req)
 	if err != nil {
-		return nil, nil, 0, &Error{Category: ForgeRequest, Err: fmt.Errorf("GitHub REST transport: %w", c.safeError(err))}
+		return nil, responseSignals{}, &Error{Category: ForgeRequest, Err: fmt.Errorf("GitHub REST transport: %w", c.safeError(err))}
 	}
 	defer response.Body.Close()
+	signals := readResponseSignals(response.StatusCode, response.Header, time.Now())
 	raw, readErr := io.ReadAll(response.Body)
 	if readErr != nil {
-		return nil, response.Header, response.StatusCode, &Error{Category: ForgeResponse, Err: fmt.Errorf("read GitHub REST response: %w", c.safeError(readErr))}
+		return nil, signals, &Error{Category: ForgeResponse, Err: fmt.Errorf("read GitHub REST response: %w", c.safeError(readErr))}
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		category := ForgeStatus
-		limited := response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != ""
-		// GitHub can answer abuse protection with 403 or 422 and a retry
-		// header. Either is a rate limit that keeps GitHub's retry time.
-		if response.StatusCode == http.StatusTooManyRequests || (response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusUnprocessableEntity) && limited {
-			category = ForgeRateLimited
-		} else if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-			category = ForgePermission
-		}
-		if category == ForgePermission {
-			return nil, response.Header, response.StatusCode, &Error{Category: category, status: response.StatusCode, Err: fmt.Errorf("%s is expired, revoked, or lacks permission; replace it in settings (GitHub HTTP %d)", c.identityLabel(), response.StatusCode)}
-		}
-		failure := &Error{Category: category, status: response.StatusCode, Err: fmt.Errorf("GitHub REST status %d: %s", response.StatusCode, c.secretSafe(secretSafeMessage(raw)))}
-		if category == ForgeRateLimited {
-			failure.RetryAt = rateLimitRetryAt(response.Header, time.Now())
-		}
-		return nil, response.Header, response.StatusCode, failure
+	if signals.Category == "" {
+		return raw, signals, nil
 	}
-	return raw, response.Header, response.StatusCode, nil
+	if signals.Category == ForgePermission {
+		return nil, signals, &Error{Category: ForgePermission, status: signals.Status, Err: fmt.Errorf("%s is expired, revoked, or lacks permission; replace it in settings (GitHub HTTP %d)", c.identityLabel(), signals.Status)}
+	}
+	failure := &Error{Category: signals.Category, status: signals.Status, Err: fmt.Errorf("GitHub REST status %d: %s", signals.Status, c.secretSafe(secretSafeMessage(raw)))}
+	if signals.Category == ForgeRateLimited {
+		failure.RetryAt = rateLimitRetryAt(signals.header, signals.at)
+	}
+	return nil, signals, failure
 }
 
 func (c *restClient) secretSafe(value string) string {
@@ -306,10 +351,135 @@ func nextLink(header string) string {
 	return ""
 }
 
+// graphqlRetryEnvelope is the flag with which a caller asks the GraphQL
+// call for GitHub's retry signals beside the body. Only the line read
+// passes it. Every other caller gets the body alone, as before.
+const graphqlRetryEnvelope = "--retry-envelope"
+
+// graphqlEnvelope is the answer of a GraphQL call made with
+// graphqlRetryEnvelope: the body as GitHub sent it, and the signals of the
+// same HTTP response, taken before its body was read. GitHub answers a
+// GraphQL rate limit with HTTP 200, so these headers are the only place its
+// retry time appears. Each of the three retry signals is read on its own
+// (retryAfterSignal, resetSignal, noRequestLeftSignal) into a usable time,
+// or no time, which is the zero time; one signal that cannot be used never
+// changes what another one gives. No usable time lies past the year 9999,
+// so the envelope always encodes. The caller
+// decides from these and the body which time and category apply.
+type graphqlEnvelope struct {
+	Body []byte `json:"body"`
+	responseSignals
+	RetryAfter    time.Time `json:"retry_after"`
+	Reset         time.Time `json:"reset"`
+	RemainingZero bool      `json:"remaining_zero"`
+}
+
+// lineEnvelope builds the envelope of one response from its signals. A 403
+// or 422 that states no request is left is a rate limit for the line read
+// even when statusCategory, which every caller shares, reads the header
+// more narrowly, such as "00": the line read never treats a stated limit as
+// something else.
+func lineEnvelope(raw []byte, signals responseSignals) graphqlEnvelope {
+	envelope := graphqlEnvelope{
+		Body:            raw,
+		responseSignals: signals,
+		RetryAfter:      retryAfterSignal(signals.header, signals.at),
+		Reset:           resetSignal(signals.header),
+		RemainingZero:   noRequestLeftSignal(signals.header),
+	}
+	if envelope.RemainingZero && (signals.Status == http.StatusForbidden || signals.Status == http.StatusUnprocessableEntity) {
+		envelope.Category = ForgeRateLimited
+	}
+	return envelope
+}
+
+// maxRetryAfterSeconds is the longest Retry-After delay that a Go duration
+// holds, about 292 years. A longer delay is no usable time.
+const maxRetryAfterSeconds = uint64(1<<63-1) / uint64(time.Second)
+
+// maxResetSeconds is the last second of the year 9999 in Unix seconds, the
+// latest time JSON carries. A later reset is no usable time.
+const maxResetSeconds = 253402300799
+
+// headerDigits reads a header value of decimal digits only, the form
+// GitHub and HTTP use for these headers, after HTTP has removed the
+// optional whitespace around it. A value with a sign, a decimal point, a
+// space inside, or any other character is not a number. ok is false for
+// such a value and when the number does not fit in 64 bits.
+func headerDigits(value string) (n uint64, ok bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseUint(value, 10, 64)
+	return n, err == nil
+}
+
+// retryAfterSignal is the usable time Retry-After states, or the zero time.
+// A value is either a delay in whole seconds after now, up to
+// maxRetryAfterSeconds, or an HTTP date in any of the three forms HTTP
+// allows (IMF-fixdate, RFC 850, asctime). Zero seconds or a past date is a
+// usable time that asks for no wait. When the header is sent more than
+// once, the latest usable time of its values is kept, so that no request is
+// sent before any time GitHub stated; an unusable value adds nothing.
+func retryAfterSignal(header http.Header, now time.Time) time.Time {
+	var at time.Time
+	for _, value := range header.Values("Retry-After") {
+		value = strings.TrimSpace(value)
+		var usable time.Time
+		if seconds, ok := headerDigits(value); ok {
+			if seconds <= maxRetryAfterSeconds {
+				usable = now.Add(time.Duration(seconds) * time.Second).UTC()
+			}
+		} else if date, err := http.ParseTime(value); err == nil && date.Year() <= 9999 {
+			usable = date.UTC()
+		}
+		at = laterTime(at, usable)
+	}
+	return at
+}
+
+// resetSignal is the usable time X-RateLimit-Reset states in Unix seconds,
+// up to maxResetSeconds, or the zero time. Zero is the Unix epoch, and it
+// and any past time are usable times that ask for no wait. When the header
+// is sent more than once, the latest usable time is kept.
+func resetSignal(header http.Header) time.Time {
+	var at time.Time
+	for _, value := range header.Values("X-RateLimit-Reset") {
+		if seconds, ok := headerDigits(value); ok && seconds <= maxResetSeconds {
+			at = laterTime(at, time.Unix(int64(seconds), 0).UTC())
+		}
+	}
+	return at
+}
+
+// noRequestLeftSignal reports whether X-RateLimit-Remaining states that no
+// request is left: a value of digits only whose number is 0. Any other
+// value, a positive count or one that is not a number, states nothing about
+// a wait. When the header is sent more than once, one value of 0 is enough.
+func noRequestLeftSignal(header http.Header) bool {
+	for _, value := range header.Values("X-RateLimit-Remaining") {
+		if n, ok := headerDigits(value); ok && n == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *restClient) graphql(ctx context.Context, args ...string) ([]byte, error) {
 	query := ""
 	variables := map[string]any{}
+	envelope := false
 	for i := 0; i < len(args); i++ {
+		if args[i] == graphqlRetryEnvelope {
+			envelope = true
+			continue
+		}
 		if (args[i] == "-f" || args[i] == "-F") && i+1 < len(args) {
 			typed := args[i] == "-F"
 			i++
@@ -324,8 +494,25 @@ func (c *restClient) graphql(ctx context.Context, args ...string) ([]byte, error
 			}
 		}
 	}
-	raw, _, _, err := c.request(ctx, http.MethodPost, "graphql", "application/vnd.github+json", map[string]any{"query": query, "variables": variables})
-	return raw, err
+	request := map[string]any{"query": query, "variables": variables}
+	if !envelope {
+		raw, _, _, err := c.request(ctx, http.MethodPost, "graphql", "application/vnd.github+json", request)
+		return raw, err
+	}
+	// With the flag, the envelope comes back whenever GitHub answered, also
+	// beside the error of a refused status or of a body that could not be
+	// read, so the line read reads the status and retry signals of every
+	// response. No answer, such as a transport failure or a timeout, has no
+	// signals.
+	raw, signals, err := c.exchange(ctx, http.MethodPost, "graphql", "application/vnd.github+json", request)
+	if !signals.Received {
+		return nil, err
+	}
+	encoded, encodeErr := json.Marshal(lineEnvelope(raw, signals))
+	if encodeErr != nil {
+		return nil, &Error{Category: ForgeResponse, Err: fmt.Errorf("encode GitHub GraphQL answer: %w", encodeErr)}
+	}
+	return encoded, err
 }
 
 func option(args []string, name string) string {

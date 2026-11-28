@@ -136,6 +136,10 @@ func (f *readsForge) Compare(_ context.Context, slug, base, head string, _ int) 
 	return feedback.CompareResult{Status: "behind"}, nil
 }
 
+func (f *readsForge) ReadLineChange(context.Context, string, string, string, int) (github.LineChange, error) {
+	return github.LineChange{}, errors.New("this forge stub answers no line read")
+}
+
 // readsHarness is the signal harness with a GitHub slug for the workspace's
 // repository and a stubbed forge.
 type readsHarness struct {

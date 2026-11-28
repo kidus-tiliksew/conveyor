@@ -81,12 +81,12 @@ func (s *Store) withFeedbackStatusClaim(ctx context.Context, fn func(*sql.Tx, st
 	})
 }
 
-const feedbackResolutionColumns = `environment_id,service,reported_repository,reported_commit,reported_version,resolved_repository,resolved_commit,reason,attempted_at,next_attempt_at`
+const feedbackResolutionColumns = `environment_id,service,reported_repository,reported_commit,reported_version,resolved_repository,resolved_commit,reason,attempted_at,next_attempt_at,COALESCE(resolved_github_repository,'')`
 
 func scanFeedbackResolution(row interface{ Scan(...any) error }) (store.FeedbackResolution, error) {
 	var resolution store.FeedbackResolution
 	var next sql.NullTime
-	if err := row.Scan(&resolution.EnvironmentID, &resolution.Service, &resolution.Repository, &resolution.Commit, &resolution.Version, &resolution.ResolvedRepository, &resolution.ResolvedCommit, &resolution.Reason, &resolution.AttemptedAt, &next); err != nil {
+	if err := row.Scan(&resolution.EnvironmentID, &resolution.Service, &resolution.Repository, &resolution.Commit, &resolution.Version, &resolution.ResolvedRepository, &resolution.ResolvedCommit, &resolution.Reason, &resolution.AttemptedAt, &next, &resolution.ResolvedGitHubRepository); err != nil {
 		return store.FeedbackResolution{}, err
 	}
 	resolution.AttemptedAt = store.EnvironmentTime(resolution.AttemptedAt)
@@ -110,10 +110,15 @@ func writeFeedbackResolution(ctx context.Context, tx *sql.Tx, ws string, resolut
 	if !resolution.Resolved() {
 		next = resolution.NextAttemptAt
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO feedback_resolutions (workspace_id,environment_id,service_digest,version_digest,service,reported_repository,reported_commit,reported_version,resolved_repository,resolved_commit,reason,attempted_at,next_attempt_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON DUPLICATE KEY UPDATE resolved_repository=VALUES(resolved_repository),resolved_commit=VALUES(resolved_commit),reason=VALUES(reason),attempted_at=VALUES(attempted_at),next_attempt_at=VALUES(next_attempt_at)`,
+	// A resolution with no recorded GitHub repository stores NULL.
+	var github any
+	if resolution.ResolvedGitHubRepository != "" {
+		github = resolution.ResolvedGitHubRepository
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO feedback_resolutions (workspace_id,environment_id,service_digest,version_digest,service,reported_repository,reported_commit,reported_version,resolved_repository,resolved_commit,reason,attempted_at,next_attempt_at,resolved_github_repository) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON DUPLICATE KEY UPDATE resolved_repository=VALUES(resolved_repository),resolved_commit=VALUES(resolved_commit),reason=VALUES(reason),attempted_at=VALUES(attempted_at),next_attempt_at=VALUES(next_attempt_at),resolved_github_repository=VALUES(resolved_github_repository)`,
 		ws, resolution.EnvironmentID, store.FeedbackServiceDigest(resolution.Service), resolution.Digest(), resolution.Service, resolution.Repository, resolution.Commit, resolution.Version,
-		resolution.ResolvedRepository, resolution.ResolvedCommit, resolution.Reason, resolution.AttemptedAt, next)
+		resolution.ResolvedRepository, resolution.ResolvedCommit, resolution.Reason, resolution.AttemptedAt, next, github)
 	return err
 }
 
@@ -459,33 +464,32 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 	for i, task := range tasks {
 		ids[i] = task.TaskID
 	}
-	latest := map[string]struct {
-		sha string
-		at  time.Time
-		id  int64
-	}{}
+	type mergeEvent struct {
+		sha         string
+		at          time.Time
+		id          int64
+		pullRequest string
+		repository  string
+	}
+	latest := map[string]mergeEvent{}
 	err = eachFeedbackChunk(ids, func(part []string) error {
 		list, values := feedbackList(part)
-		rows, err := documentRows(ctx, s.db, `SELECT task_id,COALESCE(JSON_EXTRACT_STRING(payload_json,'merge_commit_sha'),''),at,id FROM events_columnstore WHERE workspace_id=? AND kind IN ('merge.confirmed','merge.reconciled') AND task_id IN (`+list+`)`, append([]any{ws}, values...)...)
+		rows, err := documentRows(ctx, s.db, `SELECT task_id,COALESCE(JSON_EXTRACT_JSON(payload_json,'merge_commit_sha'),''),at,id,COALESCE(JSON_EXTRACT_JSON(payload_json,'pull_request'),''),COALESCE(JSON_EXTRACT_JSON(payload_json,'repository'),'') FROM events_columnstore WHERE workspace_id=? AND kind IN ('merge.confirmed','merge.reconciled') AND task_id IN (`+list+`)`, append([]any{ws}, values...)...)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var taskID, sha string
+			var taskID, sha, pullRequest, repository string
 			var at time.Time
 			var id int64
-			if err := rows.Scan(&taskID, &sha, &at, &id); err != nil {
+			if err := rows.Scan(&taskID, &sha, &at, &id, &pullRequest, &repository); err != nil {
 				return err
 			}
 			// The latest merge event wins before its commit is checked.
 			current, seen := latest[taskID]
 			if !seen || at.After(current.at) || (at.Equal(current.at) && id > current.id) {
-				latest[taskID] = struct {
-					sha string
-					at  time.Time
-					id  int64
-				}{sha, at, id}
+				latest[taskID] = mergeEvent{sha, at, id, pullRequest, repository}
 			}
 		}
 		return rows.Err()
@@ -495,7 +499,13 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 	}
 	for taskID, event := range latest {
 		task := &tasks[index[taskID]]
-		task.MergeCommit, task.MergedAt, task.EventID = store.FeedbackMergeCommit(event.sha), event.at.UTC(), event.id
+		// Each member arrives as its raw JSON and is decoded once by the
+		// shared merge-event decoders.
+		task.MergeCommit, task.MergedAt, task.EventID = store.FeedbackMergeCommitJSON(event.sha), event.at.UTC(), event.id
+		// The pull request number comes from the same latest event
+		// (component-feedback-reports invariant 12).
+		task.PullRequest = store.FeedbackMergePullRequestJSON(event.pullRequest)
+		task.GitHubRepository = store.FeedbackMergeRepositoryJSON(event.repository)
 	}
 	store.SortFeedbackMergedTasks(tasks)
 	return tasks, nil

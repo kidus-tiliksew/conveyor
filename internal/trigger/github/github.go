@@ -72,9 +72,11 @@ const (
 type Error struct {
 	Category ForgeErrorCategory
 	status   int // REST status, used only to distinguish definitive PATCH refusal.
-	// RetryAt is when GitHub allows the next request after a rate-limited
-	// answer, from its Retry-After or X-RateLimit-Reset header. It is zero
-	// when the category is not ForgeRateLimited or GitHub named no time.
+	// RetryAt is when GitHub allows the next request, from the
+	// Retry-After or X-RateLimit-Reset header of the failed response. It is
+	// zero when GitHub named no time. REST calls set it only on
+	// ForgeRateLimited; the line read sets it on every failure whose
+	// response stated a time (StatedRetryAt).
 	RetryAt time.Time
 	Err     error
 }
@@ -100,27 +102,61 @@ func RateLimitRetryAt(err error) (time.Time, bool) {
 	return categorized.RetryAt, true
 }
 
+// StatedRetryAt returns the retry time a GitHub failure carries, whatever
+// its category, and zero when it carries none. A caller that honors it sends
+// no request of the same token before that time.
+func StatedRetryAt(err error) time.Time {
+	var categorized *Error
+	if !errors.As(err, &categorized) {
+		return time.Time{}
+	}
+	return categorized.RetryAt
+}
+
 // rateLimitRetryAt reads when GitHub allows the next request from a
 // rate-limited response: the later of Retry-After, in seconds or as an HTTP
 // date, and X-RateLimit-Reset, in Unix seconds. It is zero when neither
 // header parses.
 func rateLimitRetryAt(header http.Header, now time.Time) time.Time {
-	var at time.Time
-	if value := strings.TrimSpace(header.Get("Retry-After")); value != "" {
-		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
-			at = now.Add(time.Duration(seconds) * time.Second)
-		} else if date, err := http.ParseTime(value); err == nil {
-			at = date
-		}
+	return laterTime(retryAfterAt(header, now), rateLimitResetAt(header))
+}
+
+// retryAfterAt is the time a Retry-After header states, in seconds after now
+// or as an HTTP date, and zero when the header is absent or does not parse.
+func retryAfterAt(header http.Header, now time.Time) time.Time {
+	value := strings.TrimSpace(header.Get("Retry-After"))
+	if value == "" {
+		return time.Time{}
 	}
-	if value := strings.TrimSpace(header.Get("X-RateLimit-Reset")); value != "" {
-		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
-			if reset := time.Unix(seconds, 0); reset.After(at) {
-				at = reset
-			}
-		}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+		return now.Add(time.Duration(seconds) * time.Second).UTC()
 	}
-	return at.UTC()
+	if date, err := http.ParseTime(value); err == nil {
+		return date.UTC()
+	}
+	return time.Time{}
+}
+
+// rateLimitResetAt is the time an X-RateLimit-Reset header states in Unix
+// seconds, and zero when the header is absent or does not parse.
+func rateLimitResetAt(header http.Header) time.Time {
+	value := strings.TrimSpace(header.Get("X-RateLimit-Reset"))
+	if value == "" {
+		return time.Time{}
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+		return time.Unix(seconds, 0).UTC()
+	}
+	return time.Time{}
+}
+
+// laterTime returns the later of two times; a zero time is earlier than any
+// other.
+func laterTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b.UTC()
+	}
+	return a.UTC()
 }
 
 // ErrorCategory returns the stable category carried by a GitHub boundary
@@ -1252,6 +1288,408 @@ func readCommit(ctx context.Context, repo, ref string, run ghRunner) (string, er
 		return "", fmt.Errorf("read commit: %w", forgeResponseError("missing or malformed commit ID"))
 	}
 	return sha, nil
+}
+
+// LineChange is GitHub's answer to one line read (component-feedback-reports
+// invariant 12; DEC-149(4)). FileFound is false when the commit holds no file
+// at the path, and then Commit and PullRequests are empty. Otherwise Commit
+// is the full ID of the commit that last changed the line, and PullRequests
+// holds the numbers of the merged pull requests of the same repository that
+// GitHub lists for that commit, in ascending order.
+type LineChange struct {
+	FileFound    bool
+	Commit       string
+	PullRequests []int
+	// RetryAt is the time GitHub allows the next request when the response
+	// that answered stated one (lineChangeRetryAt): a found file and a
+	// missing file alike. The answer is complete and is kept; the caller
+	// sends nothing more before that time. It is zero when the response
+	// stated no time.
+	RetryAt time.Time
+}
+
+// LineChangePullRequests is the most pull requests the line read asks GitHub
+// to list for the changing commit. A commit that GitHub lists with more is a
+// partial answer, and the read fails rather than answer from part of the list.
+const LineChangePullRequests = 100
+
+// lineChangeQuery asks, at one commit, whether the file exists and which
+// commit last changed each range of its lines, with the pull requests GitHub
+// lists for each such commit. It asks for no file content. The commit is
+// selected twice under two aliases in the one request: Commit.blame is
+// non-null, so a blame error, such as the one for a path the commit does not
+// hold, nulls only the blamed alias, and the file member of the commit alias
+// still states whether the file exists.
+const lineChangeQuery = `query($owner:String!,$name:String!,$oid:GitObjectID!,$path:String!){repository(owner:$owner,name:$name){commit:object(oid:$oid){__typename ... on Commit{file(path:$path){path}}} blamed:object(oid:$oid){... on Commit{blame(path:$path){ranges{startingLine endingLine commit{oid associatedPullRequests(first:100){pageInfo{hasNextPage} nodes{number merged baseRepository{nameWithOwner}}}}}}}}}}`
+
+// ReadLineChange asks GitHub, in one GraphQL request, which commit last
+// changed one line of one file as of a full commit ID, and which merged pull
+// requests of the repository GitHub lists for that commit
+// (component-feedback-reports invariant 12; component-git-delivery;
+// DEC-149(4); DEC-59(3)). conveyord runs no git command for it. A file the
+// commit does not hold answers FileFound false. Every other outcome that is
+// not a complete answer is a failure of the existing categories: a GraphQL
+// errors member, an unreadable repository, a commit GitHub does not find
+// (ErrCommitNotFound), no blame range that holds the line, a pull request
+// list without its page information or with more than one page, and a
+// malformed answer. A RATE_LIMITED error decides the outcome before any
+// other check. Whatever the read returns carries the retry time its
+// response stated: LineChange.RetryAt on an answer, StatedRetryAt on a
+// failure.
+func ReadLineChange(ctx context.Context, repo, commit, path string, line int) (LineChange, error) {
+	return readLineChange(ctx, repo, commit, path, line, gh)
+}
+
+type lineChangeError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Path    []any  `json:"path"`
+}
+
+// missingFileError reports whether a GraphQL error identifies a path that
+// the commit does not hold: a NOT_FOUND error at the file member of the
+// commit alias, or a NOT_FOUND error at the blame of the blamed alias. Any
+// other error, such as RATE_LIMITED, FORBIDDEN, or SERVICE_UNAVAILABLE at
+// either alias, proves nothing about the file and keeps its forge category
+// (component-feedback-reports invariant 12).
+func (e lineChangeError) missingFileError() bool {
+	if !strings.EqualFold(e.Type, "NOT_FOUND") || len(e.Path) != 3 || e.Path[0] != "repository" {
+		return false
+	}
+	return (e.Path[1] == "commit" && e.Path[2] == "file") || (e.Path[1] == "blamed" && e.Path[2] == "blame")
+}
+
+// lineChangeFailure maps GraphQL errors other than a rate limit to the
+// existing categories; lineChangeRateLimited decides a rate limit first. No
+// message text is kept, so no answer text reaches a caller or a log.
+func lineChangeFailure(errs []lineChangeError) error {
+	category := ForgeResponse
+	for _, e := range errs {
+		switch strings.ToUpper(e.Type) {
+		case "FORBIDDEN", "NOT_FOUND":
+			category = ForgePermission
+		}
+	}
+	return &Error{Category: category, Err: fmt.Errorf("read line change: GitHub answered %d GraphQL errors", len(errs))}
+}
+
+// lineChangeRateLimited reports whether a GraphQL answer holds a
+// RATE_LIMITED error. It reads only the errors member, each error on its
+// own, so that no shape of the data member, and no malformed sibling error,
+// hides a rate limit GitHub stated.
+func lineChangeRateLimited(raw []byte) bool {
+	var answer struct {
+		Errors []json.RawMessage `json:"errors"`
+	}
+	if json.Unmarshal(raw, &answer) != nil {
+		return false
+	}
+	for _, item := range answer.Errors {
+		var e struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(item, &e) == nil && strings.EqualFold(strings.TrimSpace(e.Type), "RATE_LIMITED") {
+			return true
+		}
+	}
+	return false
+}
+
+// lineChangeRange is one blame range as GitHub answers it. Every member is a
+// pointer so that a missing or null member differs from a zero value.
+type lineChangeRange struct {
+	StartingLine *int `json:"startingLine"`
+	EndingLine   *int `json:"endingLine"`
+	Commit       *struct {
+		OID                    *string `json:"oid"`
+		AssociatedPullRequests *struct {
+			PageInfo *struct {
+				HasNextPage *bool `json:"hasNextPage"`
+			} `json:"pageInfo"`
+			Nodes *[]*struct {
+				Number         *int  `json:"number"`
+				Merged         *bool `json:"merged"`
+				BaseRepository *struct {
+					NameWithOwner *string `json:"nameWithOwner"`
+				} `json:"baseRepository"`
+			} `json:"nodes"`
+		} `json:"associatedPullRequests"`
+	} `json:"commit"`
+}
+
+// lineChangeSlug reports whether text is exactly one owner/name slug of the
+// characters GitHub allows, with no space, quote, or further slash.
+func lineChangeSlug(text string) bool {
+	owner, name, found := strings.Cut(text, "/")
+	part := func(p string) bool {
+		if p == "" {
+			return false
+		}
+		for _, r := range p {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+				return false
+			}
+		}
+		return true
+	}
+	return found && part(owner) && part(name)
+}
+
+// rawPresent reports whether a JSON member was present, and whether it was
+// JSON null.
+func rawPresent(raw json.RawMessage) (present, null bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "", trimmed == "null"
+}
+
+// rawObject reports whether a JSON member is an object.
+func rawObject(raw json.RawMessage) bool {
+	return strings.HasPrefix(strings.TrimSpace(string(raw)), "{")
+}
+
+func readLineChange(ctx context.Context, repo, commit, path string, line int, run ghRunner) (LineChange, error) {
+	change, signals, err := askLineChange(ctx, repo, commit, path, line, run)
+	return withLineChangeRetry(change, err, signals)
+}
+
+// lineChangeRetryAt is the one retry time of a line-read response, worked
+// out from its signals before the outcome is used: the latest time that
+// Retry-After states, and that X-RateLimit-Reset states when the response
+// is a rate limit (a rate-limited status, whether or not its body could be
+// read, or a RATE_LIMITED error) or states that
+// no request is left (X-RateLimit-Remaining 0). A reset beside requests left
+// is not a wait. It is zero when the response stated no time, and then a
+// rate-limited caller applies its own fallback.
+func lineChangeRetryAt(signals graphqlEnvelope, rateLimited bool) time.Time {
+	at := signals.RetryAfter
+	if rateLimited || signals.RemainingZero {
+		at = laterTime(at, signals.Reset)
+	}
+	return at
+}
+
+// withLineChangeRetry is the one place that attaches the retry time to what
+// the line read returns: a found file, a missing file, and every failure.
+// Every return of readLineChange goes through it.
+func withLineChangeRetry(change LineChange, err error, signals graphqlEnvelope) (LineChange, error) {
+	if err != nil {
+		err = forgeCallError(err)
+		var failure *Error
+		errors.As(err, &failure)
+		// A refused status decides the category by itself, from the status
+		// line and headers taken before the body was read. So a body that
+		// cannot be read or is cut short does not turn a rate limit, a
+		// permission refusal, or a status failure into a malformed answer,
+		// and a rate limit keeps its reset or the caller's fallback.
+		category, status := failure.Category, failure.status
+		if signals.Category != "" {
+			category, status = signals.Category, signals.Status
+		}
+		// When a response arrived, its retry time comes from the signals
+		// alone, each read on its own and bounded, and never from the time
+		// the shared transport worked out for other callers, which reads the
+		// headers more loosely. Only a failure with no response, such as a
+		// stub's, keeps the time it carries.
+		retryAt := failure.RetryAt
+		if signals.Received {
+			retryAt = lineChangeRetryAt(signals, category == ForgeRateLimited)
+		}
+		if category == failure.Category && retryAt.Equal(failure.RetryAt) {
+			return LineChange{}, err
+		}
+		return LineChange{}, &Error{Category: category, status: status, RetryAt: retryAt, Err: err}
+	}
+	change.RetryAt = lineChangeRetryAt(signals, false)
+	return change, nil
+}
+
+// askLineChange sends the one query and interprets its answer. It returns
+// the retry signals of the response that answered, empty when there was
+// none, and leaves the retry time to withLineChangeRetry.
+func askLineChange(ctx context.Context, repo, commit, path string, line int, run ghRunner) (LineChange, graphqlEnvelope, error) {
+	owner, name, ok := strings.Cut(strings.TrimSpace(repo), "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || !fullCommitID(commit) || path == "" || line < 1 {
+		return LineChange{}, graphqlEnvelope{}, &Error{Category: ForgeRequest, Err: errors.New("a line read needs a repository slug, a full commit ID, a path, and a line")}
+	}
+	// The one query asks for GitHub's retry signals beside the body: an HTTP
+	// 200 answer can still be a rate limit or state that no request is left,
+	// and only its headers state when GitHub allows the next request. The
+	// envelope also comes back beside the error of a refused status.
+	enveloped, err := run(ctx, "api", "graphql", graphqlRetryEnvelope, "-f", "query="+lineChangeQuery, "-f", "owner="+owner, "-f", "name="+name, "-f", "oid="+commit, "-f", "path="+path)
+	var signals graphqlEnvelope
+	if len(enveloped) > 0 && json.Unmarshal(enveloped, &signals) != nil {
+		signals = graphqlEnvelope{}
+		if err == nil {
+			return LineChange{}, signals, forgeResponseError("read line change: malformed GraphQL answer")
+		}
+	}
+	if err != nil {
+		return LineChange{}, signals, fmt.Errorf("read line change: %w", forgeCallError(err))
+	}
+	change, err := decodeLineChange(signals.Body, commit, path, line, owner, name)
+	return change, signals, err
+}
+
+// decodeLineChange decodes one line-read answer into its outcome. A
+// RATE_LIMITED error decides the outcome before any other check, so data
+// beside it, partial or malformed, is never read as an answer or as a
+// malformed answer.
+func decodeLineChange(raw []byte, commit, path string, line int, owner, name string) (LineChange, error) {
+	if lineChangeRateLimited(raw) {
+		return LineChange{}, &Error{Category: ForgeRateLimited, Err: errors.New("read line change: GitHub rate-limited the GraphQL request")}
+	}
+	// Every member the query selects is checked for presence, type, and
+	// consistency with its siblings. A member that is missing, null where
+	// the schema allows no null, of another type, empty, or inconsistent is
+	// an incomplete answer in the forge_response category, and nothing is
+	// stored for it. Only a null file with errors that each name the missing
+	// path is the missing-file answer (component-feedback-reports invariant
+	// 12).
+	var answer struct {
+		Data *struct {
+			Repository *struct {
+				Commit json.RawMessage `json:"commit"`
+				Blamed json.RawMessage `json:"blamed"`
+			} `json:"repository"`
+		} `json:"data"`
+		Errors []lineChangeError `json:"errors"`
+	}
+	if json.Unmarshal(raw, &answer) != nil {
+		return LineChange{}, forgeResponseError("read line change: malformed GraphQL answer")
+	}
+	data := answer.Data
+	if data == nil || data.Repository == nil {
+		if len(answer.Errors) > 0 {
+			return LineChange{}, lineChangeFailure(answer.Errors)
+		}
+		return LineChange{}, forgeResponseError("read line change: the answer holds no repository")
+	}
+	present, null := rawPresent(data.Repository.Commit)
+	switch {
+	case !present:
+		return LineChange{}, forgeResponseError("read line change: the answer holds no commit member")
+	case null && len(answer.Errors) > 0:
+		return LineChange{}, lineChangeFailure(answer.Errors)
+	case null:
+		return LineChange{}, CommitNotFoundError(commit)
+	case !rawObject(data.Repository.Commit):
+		return LineChange{}, forgeResponseError("read line change: the commit member is not an object")
+	}
+	var object struct {
+		Typename *string         `json:"__typename"`
+		File     json.RawMessage `json:"file"`
+	}
+	if json.Unmarshal(data.Repository.Commit, &object) != nil {
+		return LineChange{}, forgeResponseError("read line change: malformed commit member")
+	}
+	if object.Typename == nil || *object.Typename != "Commit" {
+		return LineChange{}, forgeResponseError("read line change: the object is not a commit")
+	}
+	// The file member must be present: null states that the commit holds no
+	// file at the path, and a missing member proves nothing.
+	present, null = rawPresent(object.File)
+	if !present {
+		return LineChange{}, forgeResponseError("read line change: the answer holds no file member")
+	}
+	if null {
+		// A missing file is stored for good, so it needs definitive
+		// evidence: at least one error that identifies the missing path, and
+		// no other error. Commit.blame is non-null, so GitHub cannot answer
+		// the blame of a missing path without such an error.
+		if len(answer.Errors) == 0 {
+			return LineChange{}, forgeResponseError("read line change: a null file with no error that names the missing path")
+		}
+		for _, e := range answer.Errors {
+			if !e.missingFileError() {
+				return LineChange{}, lineChangeFailure(answer.Errors)
+			}
+		}
+		return LineChange{FileFound: false}, nil
+	}
+	if len(answer.Errors) > 0 {
+		return LineChange{}, lineChangeFailure(answer.Errors)
+	}
+	// A file object proves the file only with its path, and only with the
+	// path the read asked for.
+	var file struct {
+		Path *string `json:"path"`
+	}
+	if !rawObject(object.File) || json.Unmarshal(object.File, &file) != nil || file.Path == nil || *file.Path != path {
+		return LineChange{}, forgeResponseError("read line change: the file member holds no usable path")
+	}
+	present, null = rawPresent(data.Repository.Blamed)
+	if !present || null || !rawObject(data.Repository.Blamed) {
+		return LineChange{}, forgeResponseError("read line change: the answer holds no blame")
+	}
+	var blamed struct {
+		Blame *struct {
+			Ranges *[]*lineChangeRange `json:"ranges"`
+		} `json:"blame"`
+	}
+	if json.Unmarshal(data.Repository.Blamed, &blamed) != nil || blamed.Blame == nil {
+		return LineChange{}, forgeResponseError("read line change: the answer holds no blame")
+	}
+	if blamed.Blame.Ranges == nil {
+		return LineChange{}, forgeResponseError("read line change: the blame holds no ranges member")
+	}
+	// Every range must be whole: its lines and its commit ID. Exactly one
+	// range must hold the line.
+	var selected *lineChangeRange
+	for _, r := range *blamed.Blame.Ranges {
+		if r == nil || r.StartingLine == nil || r.EndingLine == nil || *r.StartingLine < 1 || *r.EndingLine < *r.StartingLine {
+			return LineChange{}, forgeResponseError("read line change: malformed blame range")
+		}
+		if r.Commit == nil || r.Commit.OID == nil || !fullCommitID(strings.ToLower(*r.Commit.OID)) {
+			return LineChange{}, forgeResponseError("read line change: malformed commit ID")
+		}
+		if line < *r.StartingLine || line > *r.EndingLine {
+			continue
+		}
+		if selected != nil {
+			return LineChange{}, forgeResponseError("read line change: two blame ranges hold the line")
+		}
+		selected = r
+	}
+	if selected == nil {
+		return LineChange{}, forgeResponseError("read line change: no blame range holds the line")
+	}
+	oid := strings.ToLower(*selected.Commit.OID)
+	pulls := selected.Commit.AssociatedPullRequests
+	if pulls == nil {
+		return LineChange{}, forgeResponseError("read line change: the answer holds no pull request list")
+	}
+	// The list is complete only when GitHub states that it has no next page.
+	// Missing page information proves nothing.
+	if pulls.PageInfo == nil || pulls.PageInfo.HasNextPage == nil {
+		return LineChange{}, forgeResponseError("read line change: the pull request list holds no page information")
+	}
+	// A connection without its nodes member, or with null nodes, is not an
+	// empty list: it proves nothing about the pull requests.
+	if pulls.Nodes == nil {
+		return LineChange{}, forgeResponseError("read line change: the pull request list holds no nodes member")
+	}
+	if *pulls.PageInfo.HasNextPage || len(*pulls.Nodes) > LineChangePullRequests {
+		return LineChange{}, forgeResponseError("read line change: GitHub lists more pull requests than one page holds")
+	}
+	numbers := []int{}
+	seen := map[int]bool{}
+	for _, node := range *pulls.Nodes {
+		// Every pull request must be whole, merged or not: its number, its
+		// merged state, and its base repository with an owner/name slug. An
+		// empty or missing base repository is an incomplete answer, never a
+		// different repository.
+		if node == nil || node.Number == nil || *node.Number < 1 || node.Merged == nil || node.BaseRepository == nil ||
+			node.BaseRepository.NameWithOwner == nil || !lineChangeSlug(*node.BaseRepository.NameWithOwner) {
+			return LineChange{}, forgeResponseError("read line change: malformed pull request")
+		}
+		if !*node.Merged || !strings.EqualFold(*node.BaseRepository.NameWithOwner, owner+"/"+name) || seen[*node.Number] {
+			continue
+		}
+		seen[*node.Number] = true
+		numbers = append(numbers, *node.Number)
+	}
+	sort.Ints(numbers)
+	return LineChange{FileFound: true, Commit: oid, PullRequests: numbers}, nil
 }
 
 // SubmissionPullRequest is the existing open PR observed for a submission.

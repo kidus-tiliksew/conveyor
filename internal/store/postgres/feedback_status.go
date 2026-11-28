@@ -51,14 +51,19 @@ func (s *Store) RecordFeedbackResolution(ctx context.Context, resolution store.F
 	if !resolution.Resolved() {
 		next = &resolution.NextAttemptAt
 	}
+	// A resolution with no recorded GitHub repository stores NULL.
+	var github *string
+	if resolution.ResolvedGitHubRepository != "" {
+		github = &resolution.ResolvedGitHubRepository
+	}
 	return s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
-		tag, err := tx.Exec(ctx, `INSERT INTO feedback_resolutions (workspace_id, environment_id, service_digest, version_digest, service, reported_repository, reported_commit, reported_version, resolved_repository, resolved_commit, reason, attempted_at, next_attempt_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		tag, err := tx.Exec(ctx, `INSERT INTO feedback_resolutions (workspace_id, environment_id, service_digest, version_digest, service, reported_repository, reported_commit, reported_version, resolved_repository, resolved_commit, reason, attempted_at, next_attempt_at, resolved_github_repository)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 ON CONFLICT (workspace_id, environment_id, service_digest, version_digest) DO UPDATE
-SET resolved_repository=EXCLUDED.resolved_repository, resolved_commit=EXCLUDED.resolved_commit, reason=EXCLUDED.reason, attempted_at=EXCLUDED.attempted_at, next_attempt_at=EXCLUDED.next_attempt_at
+SET resolved_repository=EXCLUDED.resolved_repository, resolved_commit=EXCLUDED.resolved_commit, reason=EXCLUDED.reason, attempted_at=EXCLUDED.attempted_at, next_attempt_at=EXCLUDED.next_attempt_at, resolved_github_repository=EXCLUDED.resolved_github_repository
 WHERE feedback_resolutions.resolved_commit = ''`,
 			workspaceID, resolution.EnvironmentID, store.FeedbackServiceDigest(resolution.Service), resolution.Digest(), resolution.Service, resolution.Repository, resolution.Commit, resolution.Version,
-			resolution.ResolvedRepository, resolution.ResolvedCommit, resolution.Reason, resolution.AttemptedAt, next)
+			resolution.ResolvedRepository, resolution.ResolvedCommit, resolution.Reason, resolution.AttemptedAt, next, github)
 		if err != nil || tag.RowsAffected() == 0 || !resolution.Resolved() {
 			return err
 		}
@@ -106,7 +111,7 @@ func (s *Store) ReadFeedbackInputs(ctx context.Context, environmentIDs []string)
 	for id := range inputs.Deploys {
 		store.SortFeedbackDeploys(inputs.Deploys[id])
 	}
-	rows, err := s.boundary.Query(ctx, `SELECT environment_id, service, reported_repository, reported_commit, reported_version, resolved_repository, resolved_commit, reason, attempted_at, next_attempt_at FROM feedback_resolutions WHERE workspace_id=$1 AND environment_id=ANY($2::text[])`, workspaceID, environmentIDs)
+	rows, err := s.boundary.Query(ctx, `SELECT environment_id, service, reported_repository, reported_commit, reported_version, resolved_repository, resolved_commit, reason, attempted_at, next_attempt_at, COALESCE(resolved_github_repository, '') FROM feedback_resolutions WHERE workspace_id=$1 AND environment_id=ANY($2::text[])`, workspaceID, environmentIDs)
 	if err != nil {
 		return store.FeedbackInputs{}, err
 	}
@@ -114,7 +119,7 @@ func (s *Store) ReadFeedbackInputs(ctx context.Context, environmentIDs []string)
 	for rows.Next() {
 		var resolution store.FeedbackResolution
 		var next pgtype.Timestamptz
-		if err := rows.Scan(&resolution.EnvironmentID, &resolution.Service, &resolution.Repository, &resolution.Commit, &resolution.Version, &resolution.ResolvedRepository, &resolution.ResolvedCommit, &resolution.Reason, &resolution.AttemptedAt, &next); err != nil {
+		if err := rows.Scan(&resolution.EnvironmentID, &resolution.Service, &resolution.Repository, &resolution.Commit, &resolution.Version, &resolution.ResolvedRepository, &resolution.ResolvedCommit, &resolution.Reason, &resolution.AttemptedAt, &next, &resolution.ResolvedGitHubRepository); err != nil {
 			return store.FeedbackInputs{}, err
 		}
 		resolution.AttemptedAt = store.EnvironmentTime(resolution.AttemptedAt)
@@ -319,10 +324,10 @@ func (s *Store) ListFeedbackMergedTasks(ctx context.Context, query store.Feedbac
 	if ids == nil {
 		ids = []string{}
 	}
-	rows, err := s.boundary.Query(ctx, `SELECT t.id, t.repo_name, COALESCE(m.sha, ''), m.at, COALESCE(m.id, 0)
+	rows, err := s.boundary.Query(ctx, `SELECT t.id, t.repo_name, COALESCE(m.sha, ''), m.at, COALESCE(m.id, 0), COALESCE(m.pull_request, ''), COALESCE(m.repository, '')
 FROM tasks t
 LEFT JOIN LATERAL (
-  SELECT e.payload_json->>'merge_commit_sha' AS sha, e.at, e.id FROM events e
+  SELECT (e.payload_json->'merge_commit_sha')::text AS sha, e.at, e.id, (e.payload_json->'pull_request')::text AS pull_request, (e.payload_json->'repository')::text AS repository FROM events e
   WHERE e.workspace_id=t.workspace_id AND e.task_id=t.id AND e.kind IN ('merge.confirmed', 'merge.reconciled')
   ORDER BY e.at DESC, e.id DESC LIMIT 1
 ) m ON true
@@ -337,16 +342,22 @@ WHERE t.workspace_id=$1 AND t.state='merged'
 	out := []store.FeedbackMergedTask{}
 	for rows.Next() {
 		var task store.FeedbackMergedTask
-		var sha string
+		var sha, pullRequest, repository string
 		var at pgtype.Timestamptz
 		var id int64
-		if err := rows.Scan(&task.TaskID, &task.Repository, &sha, &at, &id); err != nil {
+		if err := rows.Scan(&task.TaskID, &task.Repository, &sha, &at, &id, &pullRequest, &repository); err != nil {
 			return nil, err
 		}
 		// The latest merge event wins before its commit is checked, so an
 		// unusable commit leaves MergeCommit empty with that event's time.
+		// Its pull request number comes from the same event
+		// (component-feedback-reports invariant 12).
 		if at.Valid {
-			task.MergeCommit, task.MergedAt, task.EventID = store.FeedbackMergeCommit(sha), at.Time.UTC(), id
+			// Each member arrives as its raw JSON text and is decoded once by
+			// the shared merge-event decoders.
+			task.MergeCommit, task.MergedAt, task.EventID = store.FeedbackMergeCommitJSON(sha), at.Time.UTC(), id
+			task.PullRequest = store.FeedbackMergePullRequestJSON(pullRequest)
+			task.GitHubRepository = store.FeedbackMergeRepositoryJSON(repository)
 		}
 		out = append(out, task)
 	}

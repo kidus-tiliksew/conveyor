@@ -12,8 +12,8 @@ import (
 // backends. reports holds each environment's reports by problem key. links,
 // notes, and lineReads hold the rows of feedback_report_links,
 // feedback_report_notes, and feedback_report_line_reads with the same keys
-// and fields. Ingest writes reports only, and the links, notes, and
-// line-read answers stay empty until their writers exist. Every mutation runs
+// and fields. Ingest writes reports only. The linking work writes the line
+// reads, the links, the notes, and each report's linking attempt and end. Every mutation runs
 // under the memory write mutex, the volatile backend's critical section,
 // which signals take too (component-feedback-reports invariant 6, Storage).
 type feedbackReportState struct {
@@ -192,6 +192,20 @@ func cloneFeedbackReport(report FeedbackReport) FeedbackReport {
 	if report.LinkingEndedAt != nil {
 		at := *report.LinkingEndedAt
 		report.LinkingEndedAt = &at
+	}
+	if report.LinkingLastAttemptAt != nil {
+		at := *report.LinkingLastAttemptAt
+		report.LinkingLastAttemptAt = &at
+	}
+	if report.LineProgress != nil {
+		progress := CheckStoredFeedbackLineProgress(cloneFeedbackLineProgress(*report.LineProgress))
+		report.LineProgress = &progress
+	}
+	if report.TimingResult != nil {
+		// A JSON round trip copies every slice and time pointer, as the
+		// durable backends' columns do.
+		copied, _ := ParseFeedbackTimingResult([]byte(FeedbackTimingResultJSON(*report.TimingResult)))
+		report.TimingResult = copied
 	}
 	return report
 }

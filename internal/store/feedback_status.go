@@ -73,10 +73,19 @@ type FeedbackVersionRef struct {
 type FeedbackResolution struct {
 	FeedbackVersionRef
 	ResolvedRepository string
-	ResolvedCommit     string
-	Reason             string
-	AttemptedAt        time.Time
-	NextAttemptAt      time.Time
+	// ResolvedGitHubRepository is the canonical GitHub slug the resolved
+	// commit was read from, or empty when the resolution recorded none: every
+	// unresolved outcome and every resolution stored before the field
+	// existed. ResolvedRepository is a workspace name that can later point
+	// at another repository; this field is the repository that answered.
+	// Only the timing rule of report linking reads it, and live status
+	// never does (approved plan version 4; component-feedback-reports
+	// invariant 13).
+	ResolvedGitHubRepository string
+	ResolvedCommit           string
+	Reason                   string
+	AttemptedAt              time.Time
+	NextAttemptAt            time.Time
 }
 
 // Resolved reports whether the version holds a repository and a commit.
@@ -140,6 +149,19 @@ type FeedbackMergedTask struct {
 	MergeCommit string
 	MergedAt    time.Time
 	EventID     int64
+	// PullRequest is the pull_request number that the same latest merge
+	// event records, or 0 when it records none. It is read from that event
+	// even when the event records no usable merge commit
+	// (component-feedback-reports invariant 12).
+	PullRequest int
+	// GitHubRepository is the canonical GitHub slug that the same latest
+	// merge event records as its repository, or empty when it records no
+	// usable one. Repository is a workspace name that an operator can point
+	// at another GitHub repository later; GitHubRepository is the repository
+	// the merge commit and the pull request number belong to. The linking
+	// rules compare it, never the name, and an empty value proves no
+	// repository (component-feedback-reports invariants 12 and 14).
+	GitHubRepository string
 }
 
 // FeedbackMergedTaskQuery narrows the merged-task read. Every set member
@@ -220,13 +242,20 @@ func NormalizeFeedbackResolution(resolution FeedbackResolution) (FeedbackResolut
 		if !FeedbackCommitID(resolution.ResolvedCommit) || resolution.ResolvedRepository == "" {
 			return FeedbackResolution{}, fmt.Errorf("a resolved version needs a repository and a full commit ID")
 		}
+		if resolution.ResolvedGitHubRepository != "" {
+			slug := FeedbackRepositorySlug(resolution.ResolvedGitHubRepository)
+			if slug == "" {
+				return FeedbackResolution{}, fmt.Errorf("a resolved version's GitHub repository is an owner/name slug")
+			}
+			resolution.ResolvedGitHubRepository = slug
+		}
 		resolution.Reason, resolution.NextAttemptAt = "", time.Time{}
 		return resolution, nil
 	}
 	if resolution.Reason == "" {
 		return FeedbackResolution{}, fmt.Errorf("an unresolved version needs its reason")
 	}
-	resolution.ResolvedRepository = ""
+	resolution.ResolvedRepository, resolution.ResolvedGitHubRepository = "", ""
 	least := resolution.AttemptedAt.Add(FeedbackResolutionRetry)
 	if resolution.NextAttemptAt.Before(least) {
 		resolution.NextAttemptAt = least

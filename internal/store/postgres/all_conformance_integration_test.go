@@ -413,6 +413,8 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				return storedEnvironmentKey(t, ctx, st, keyID)
 			}, CloseFeedbackReport: func(t *testing.T, ctx context.Context, reportID string, at time.Time) {
 				closeFeedbackReport(t, ctx, st, reportID, at)
+			}, SeedFeedbackReportLink: func(t *testing.T, ctx context.Context, link store.FeedbackReportLink) {
+				seedFeedbackReportLink(t, ctx, st, link)
 			}, LineageHTTP: func(*testing.T) http.Handler {
 				// The shared-token operator fixture (component-lineage).
 				server := httpapi.NewServer(st)

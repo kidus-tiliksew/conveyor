@@ -177,7 +177,9 @@ func TestProcessSignalResolvesAfterTheRule(t *testing.T) {
 	}
 	f.advance(time.Minute)
 	f.signal(commitVersion(commit))
-	if got := f.resolution(commit); !got.Resolved() || got.ResolvedCommit != commit || got.ResolvedRepository != "conveyor" {
+	// The GitHub repository the commit was read from is stored with the
+	// resolution (approved plan version 4); a failed attempt stored none.
+	if got := f.resolution(commit); !got.Resolved() || got.ResolvedCommit != commit || got.ResolvedRepository != "conveyor" || got.ResolvedGitHubRepository != "acme/conveyor" {
 		t.Fatalf("resolution=%+v", got)
 	}
 	f.advance(time.Hour)
@@ -600,6 +602,10 @@ func (s *slowForge) Compare(ctx context.Context, slug, base, head string, arrive
 	return s.stubForge.Compare(ctx, slug, base, head, arrived)
 }
 
+func (s *slowForge) ReadLineChange(context.Context, string, string, string, int) (github.LineChange, error) {
+	return github.LineChange{}, errors.New("this forge stub answers no line read")
+}
+
 // mostInAMinute returns the largest number of starts in any minute.
 func mostInAMinute(starts []time.Time) int {
 	most := 0
@@ -771,6 +777,10 @@ func (f expiringForge) Compare(ctx context.Context, _, _, _ string, _ int) (Comp
 		return CompareResult{Status: f.answer}, nil
 	}
 	return CompareResult{}, &github.Error{Category: github.ForgeRequest, Err: fmt.Errorf("GitHub REST transport: %w", ctx.Err())}
+}
+
+func (f expiringForge) ReadLineChange(context.Context, string, string, string, int) (github.LineChange, error) {
+	return github.LineChange{}, errors.New("this forge stub answers no line read")
 }
 
 // TestForgeTimeoutKeepsTheOutcome covers component-production-feedback

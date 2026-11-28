@@ -657,6 +657,10 @@ func (f *deployBranchForge) Compare(_ context.Context, _, base, head string, _ i
 	return feedback.CompareResult{Status: "diverged"}, nil
 }
 
+func (f *deployBranchForge) ReadLineChange(context.Context, string, string, string, int) (githubtrigger.LineChange, error) {
+	return githubtrigger.LineChange{}, errors.New("this forge stub answers no line read")
+}
+
 // TestGitHubWebhookDeploymentStatusRetriesAndRedelivery sends a signed
 // deployment_status delivery through the real receiver and applier. A forge
 // failure during the tracked-branch check is retried within the delivery. A

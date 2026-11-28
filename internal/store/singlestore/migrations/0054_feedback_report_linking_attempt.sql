@@ -1,0 +1,19 @@
+-- component-feedback-reports invariant 15, feature-production-feedback-listening
+-- FR-2, and approved plan version 2 of task 261127-6d47db. migrate.go adds the
+-- nullable feedback_reports.linking_last_attempt_at DATETIME(6) column, the
+-- time of a report's last linking attempt, before this file runs. SingleStore
+-- DDL commits implicitly and has no ADD COLUMN IF NOT EXISTS, so the add lives
+-- in Go behind an information_schema check, and an interrupted startup can run
+-- it again. NULL means that no attempt was claimed yet. Under approved plan
+-- version 3 the same step adds the nullable JSON columns line_progress and
+-- timing_result: the stored progress of a report's linking, so that a fresh
+-- worker continues from the store alone (component-feedback-reports
+-- invariants 12 and 15). Each holds no report text and is never served. No
+-- backfill. Under approved plan version 4 the same step also adds the nullable
+-- LONGTEXT column feedback_resolutions.resolved_github_repository: the
+-- canonical GitHub slug a version's commit was read from, written when the
+-- version resolves (component-feedback-reports invariant 13). Only the timing
+-- rule of report linking reads it. Live status reads it nowhere. A row
+-- without it, which includes every row stored before this step, proves no
+-- repository, and no backfill derives it from the current configuration.
+SELECT 1;

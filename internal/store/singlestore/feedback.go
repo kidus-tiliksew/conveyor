@@ -451,6 +451,42 @@ func (s *Store) RecordFeedbackGitHubDeploy(ctx context.Context, deploy store.Fee
 	return recorded, nil
 }
 
+// FindFeedbackServiceSignal implements store.FeedbackStore. The kept service
+// digests are a JSON array of quoted lower-case hexadecimal digests, so a
+// match of the quoted digest is exact. A GitHub deployment report is kept
+// with an empty label and is never found.
+func (s *Store) FindFeedbackServiceSignal(ctx context.Context, query store.FeedbackServiceSignalQuery) (store.FeedbackBoundary, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "FindFeedbackServiceSignal")
+	if err := store.CheckFeedbackServiceSignalQuery(query); err != nil {
+		return store.FeedbackBoundary{}, false, err
+	}
+	ws, err := workspace(ctx)
+	if err != nil {
+		return store.FeedbackBoundary{}, false, err
+	}
+	named := `%"` + store.FeedbackServiceDigest(query.Service) + `"%`
+	var row documentScanner
+	if query.Before != nil {
+		row = backendRow(ctx, s.db, `SELECT arrived_at,report FROM feedback_accepted_signals
+WHERE workspace_id=? AND environment_id=? AND source_label<>'' AND service_digests LIKE ? AND (arrived_at<? OR (arrived_at=? AND report<?))
+ORDER BY arrived_at DESC,report DESC LIMIT 1`, ws, query.EnvironmentID, named, query.Before.At, query.Before.At, query.Before.Report)
+	} else {
+		row = backendRow(ctx, s.db, `SELECT arrived_at,report FROM feedback_accepted_signals
+WHERE workspace_id=? AND environment_id=? AND source_label<>'' AND service_digests LIKE ? AND arrived_at>?
+ORDER BY arrived_at,report LIMIT 1`, ws, query.EnvironmentID, named, *query.After)
+	}
+	var found store.FeedbackBoundary
+	err = row.Scan(&found.At, &found.Report)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.FeedbackBoundary{}, false, nil
+	}
+	if err != nil {
+		return store.FeedbackBoundary{}, false, err
+	}
+	found.At = store.EnvironmentTime(found.At)
+	return found, true, nil
+}
+
 // ListFeedbackSignals implements store.FeedbackStore.
 func (s *Store) ListFeedbackSignals(ctx context.Context, environmentIDs []string) (map[string]store.FeedbackSignalState, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackSignals")

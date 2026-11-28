@@ -36,7 +36,15 @@ type feedbackJob struct {
 	workspace string
 	signal    *store.FeedbackSignal
 	missing   feedback.Missing
-	env       feedbackJobEnv
+	// reports asks for the linking of an environment's pending reports, and
+	// report runs one linking attempt of one report
+	// (component-feedback-reports invariant 15).
+	reports *feedbackReportsRequest
+	report  string
+	// linking marks a read job that the linking work queued. Its forge calls
+	// honor the workspace's retry hold.
+	linking bool
+	env     feedbackJobEnv
 }
 
 // feedbackJobEnv is what a job uses, taken from the server when the job is
@@ -49,10 +57,14 @@ type feedbackJobEnv struct {
 	client    *github.AppClient
 	clock     func() time.Time
 	backoff   *feedbackTokenBackoff
+	// worker is the queue a job hands further jobs to. A further job takes
+	// this environment, so a running job reads no server field.
+	worker *feedbackWorker
 }
 
 func (s *Server) feedbackJobEnv() feedbackJobEnv {
-	env := feedbackJobEnv{store: s.Store, forge: s.feedbackForge, makeForge: s.feedbackForgeFor, client: s.appClient(), clock: time.Now, backoff: s.feedbackWorker().backoff}
+	worker := s.feedbackWorker()
+	env := feedbackJobEnv{store: s.Store, forge: s.feedbackForge, makeForge: s.feedbackForgeFor, client: s.appClient(), clock: time.Now, backoff: worker.backoff, worker: worker}
 	if env.makeForge == nil {
 		env.makeForge = func(token, identity string) feedback.Forge {
 			return githubFeedbackForge{token: token, identity: identity}
@@ -134,6 +146,13 @@ func (s *Server) enqueueFeedbackSignal(workspace string, signal store.FeedbackSi
 	services := sha256.Sum256(core.JSONPayload(copied.Services))
 	key := "signal:" + workspace + ":" + signal.EnvironmentID + ":" + signal.ArrivedAt.Format(time.RFC3339Nano) + ":" + hex.EncodeToString(services[:])
 	s.feedbackWorker().enqueue(feedbackJob{key: key, workspace: workspace, signal: &copied, env: s.feedbackJobEnv()})
+	// An accepted signal also asks for the linking of the environment's
+	// pending reports. The background job reads them, so the route makes no
+	// scan (component-feedback-reports invariant 15). A GitHub deployment
+	// report is not a watcher signal and asks for none.
+	if signal.KeyID != "" {
+		s.enqueueFeedbackPendingReports(workspace, signal.EnvironmentID, nil)
+	}
 }
 
 // FeedbackDeploymentReports returns the handler that applies GitHub
@@ -167,6 +186,12 @@ func (s *Server) FeedbackDeploymentReports() func(ctx context.Context, repositor
 // and in-flight pairs and admits at most the workspace allowance, so a pair
 // that keeps failing never holds back the pairs after it.
 func (s *Server) requestFeedbackAnswers(workspace string, missing feedback.Missing) {
+	s.feedbackJobEnv().requestAnswers(workspace, missing)
+}
+
+// requestAnswers queues the read job for missing answers with this
+// environment, so a running job can ask without reading a server field.
+func (env feedbackJobEnv) requestAnswers(workspace string, missing feedback.Missing) {
 	comparisons := store.NormalizeFeedbackComparisonKeys(missing.Comparisons)
 	branches := []feedback.BranchRef{}
 	seen := map[feedback.BranchRef]bool{}
@@ -189,7 +214,7 @@ func (s *Server) requestFeedbackAnswers(workspace string, missing feedback.Missi
 	sort.Strings(parts)
 	digest := sha256.Sum256([]byte(strings.Join(parts, ",")))
 	key := "read:" + workspace + ":" + hex.EncodeToString(digest[:])
-	s.feedbackWorker().enqueue(feedbackJob{key: key, workspace: workspace, missing: feedback.Missing{Comparisons: comparisons, Branches: branches}, env: s.feedbackJobEnv()})
+	env.worker.enqueue(feedbackJob{key: key, workspace: workspace, missing: feedback.Missing{Comparisons: comparisons, Branches: branches}, env: env})
 }
 
 // runFeedbackJob runs one job under a fresh, bounded context that carries the
@@ -201,23 +226,34 @@ func runFeedbackJob(job feedbackJob) {
 	if !ok {
 		return
 	}
+	switch {
+	case job.reports != nil:
+		runFeedbackPendingReports(ctx, job)
+		return
+	case job.report != "":
+		runFeedbackReportLinking(ctx, job)
+		return
+	}
 	// The forge gets the installation token at its first request. For a
 	// signal that request comes after a version's claim, so a token failure
 	// is recorded as that version's attempt, with its reason and any later
 	// retry time GitHub named (component-production-feedback invariants 7
 	// to 9; req-production-feedback AC-1.4).
 	forge := job.env.lazyForge(job.workspace)
+	if job.linking {
+		forge = &feedbackAttemptForge{inner: forge, env: job.env, workspace: job.workspace}
+	}
 	work := feedback.Work{Store: backend, Forge: forge, Now: job.env.clock, Logf: log.Printf}
 	if job.signal == nil {
 		// A rate limit on a branch read stops the job before any comparison
 		// starts. The branches not read and every comparison stay eligible
 		// for a later read.
 		if err := work.RefreshBranches(ctx, job.missing.Branches); err != nil {
-			logFeedbackJobStop(job.workspace, "branches", err)
+			recordFeedbackJobStop(job.env, job.workspace, "branches", err)
 			return
 		}
 		if err := work.CompareDirect(ctx, job.missing.Comparisons); err != nil {
-			logFeedbackJobStop(job.workspace, "compare", err)
+			recordFeedbackJobStop(job.env, job.workspace, "compare", err)
 		}
 		return
 	}
@@ -227,13 +263,27 @@ func runFeedbackJob(job feedbackJob) {
 		return
 	}
 	if err := work.ProcessSignal(ctx, request); err != nil {
-		logFeedbackJobStop(job.workspace, "signal", err)
+		recordFeedbackJobStop(job.env, job.workspace, "signal", err)
 	}
 }
 
 // logFeedbackJobStop logs why a job stopped early. A GitHub rate limit
 // defers the rest of the job, and it is not a failure.
 func logFeedbackJobStop(workspace, step string, err error) {
+	logFeedbackJobStopAt(workspace, step, err)
+}
+
+// recordFeedbackJobStop keeps the retry time of a job that GitHub
+// rate-limited, so the linking work of the workspace sends no request and
+// asks for no comparison before it, and then logs the stop.
+func recordFeedbackJobStop(env feedbackJobEnv, workspace, step string, err error) {
+	if errors.Is(err, feedback.ErrRateLimited) {
+		env.backoff.recordRateLimit(workspace, err, env.clock())
+	}
+	logFeedbackJobStopAt(workspace, step, err)
+}
+
+func logFeedbackJobStopAt(workspace, step string, err error) {
 	if errors.Is(err, feedback.ErrRateLimited) {
 		log.Printf("feedback_work workspace=%s outcome=deferred step=%s category=%s", workspace, step, github.ForgeRateLimited)
 		return
@@ -297,6 +347,80 @@ type feedbackTokenFailure struct {
 type feedbackTokenBackoff struct {
 	mu    sync.Mutex
 	until map[string]feedbackTokenFailure
+	// hold is, by workspace, the time before which the linking work sends
+	// GitHub no request: the latest retry time a rate-limited forge call of
+	// the workspace returned (component-production-feedback invariant 28).
+	hold map[string]time.Time
+	// lineReasons is, by workspace and report, the reason the last linking
+	// attempt of the report left its line rule unanswered. It names the
+	// not_checked note of an attempt at or after 24 hours, which sends GitHub
+	// nothing (component-feedback-reports invariant 15).
+	lineReasons map[string]string
+}
+
+// forgeHold reports whether a retry time GitHub returned has not passed at
+// now, and that time. The comparison is exact.
+func (b *feedbackTokenBackoff) forgeHold(workspace string, now time.Time) (time.Time, bool) {
+	if b == nil {
+		return time.Time{}, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	until, held := b.hold[workspace]
+	if !held || !now.Before(until) {
+		return time.Time{}, false
+	}
+	return until, true
+}
+
+// recordRateLimit keeps the retry time of a rate-limited forge failure for
+// the workspace: GitHub's time when it named one that is still ahead, or a
+// minute after now. A stated time at or before now asks for no wait of its
+// own, so a rate limit with only such a time holds for the minute as one
+// with no time does. A later time already kept stays. Any other failure
+// keeps nothing.
+func (b *feedbackTokenBackoff) recordRateLimit(workspace string, err error, now time.Time) {
+	if b == nil || github.ErrorCategory(github.CategorizeError(err)) != github.ForgeRateLimited {
+		return
+	}
+	until := now.Add(feedbackTokenRetry)
+	if retryAt, ok := github.RateLimitRetryAt(err); ok && retryAt.After(now) {
+		until = retryAt
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.hold == nil {
+		b.hold = map[string]time.Time{}
+	}
+	if existing, ok := b.hold[workspace]; ok && !existing.Before(until) {
+		return
+	}
+	b.hold[workspace] = until
+}
+
+func (b *feedbackTokenBackoff) rememberLineReason(key, reason string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.lineReasons == nil {
+		b.lineReasons = map[string]string{}
+	}
+	if reason == "" {
+		delete(b.lineReasons, key)
+		return
+	}
+	b.lineReasons[key] = reason
+}
+
+func (b *feedbackTokenBackoff) lineReason(key string) string {
+	if b == nil {
+		return ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lineReasons[key]
 }
 
 // feedbackTokenRetry is the wait after a failed token request when GitHub
@@ -398,6 +522,14 @@ func (f *lazyFeedbackForge) Compare(ctx context.Context, slug, base, head string
 	return forge.Compare(ctx, slug, base, head, arrived)
 }
 
+func (f *lazyFeedbackForge) ReadLineChange(ctx context.Context, slug, commit, path string, line int) (github.LineChange, error) {
+	forge, err := f.acquire(ctx)
+	if err != nil {
+		return github.LineChange{}, err
+	}
+	return forge.ReadLineChange(ctx, slug, commit, path, line)
+}
+
 // githubFeedbackForge reads GitHub through the REST boundary with one
 // workspace's installation token.
 type githubFeedbackForge struct {
@@ -417,4 +549,8 @@ func (f githubFeedbackForge) Compare(ctx context.Context, slug, base, head strin
 	}
 	result, err := github.CompareArrived(ctx, slug, base, head, arrived)
 	return feedback.CompareResult{Status: result.Status, Commits: result.Commits, Complete: result.Complete}, err
+}
+
+func (f githubFeedbackForge) ReadLineChange(ctx context.Context, slug, commit, path string, line int) (github.LineChange, error) {
+	return github.ReadLineChange(github.WithCredential(ctx, f.token, f.identity), slug, commit, path, line)
 }

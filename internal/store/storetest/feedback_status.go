@@ -27,6 +27,7 @@ func runFeedbackStatus(t *testing.T, factory Factory) {
 	}{
 		{"ResolutionClaims", runFeedbackResolutionClaims},
 		{"ResolvedAnswerIsKept", runFeedbackResolvedKept},
+		{"ResolvedGitHubRepository", runFeedbackResolvedGitHubRepository},
 		{"Inputs", runFeedbackInputs},
 		{"Comparisons", runFeedbackComparisons},
 		{"Admission", runFeedbackAdmission},
@@ -104,6 +105,44 @@ func runFeedbackResolutionClaims(t *testing.T, x Fixture) {
 		if err := x.Backend.RecordFeedbackResolution(x.Context, bad); err == nil {
 			t.Fatalf("%s: recorded", name)
 		}
+	}
+}
+
+// runFeedbackResolvedGitHubRepository proves that a stored version
+// resolution keeps the GitHub repository its commit was read from, in
+// canonical form, or none: a resolution recorded without it reads back
+// empty, an unresolved outcome never keeps one, a value that is not an
+// owner/name slug is refused, and a later resolution never replaces a stored
+// one (approved plan version 4).
+func runFeedbackResolvedGitHubRepository(t *testing.T, x Fixture) {
+	environment := newFeedbackEnvironment(t, x, "Production", "watcher")
+	environment.send(t, 0, feedbackService("api", "abc1234", "@v1"), feedbackService("web", "abc1234", "@v2"), feedbackService("db", "abc1234", "@v3"))
+	with := feedbackRef(environment.id, "api", "abc1234")
+	without := feedbackRef(environment.id, "web", "abc1234")
+	unresolved := feedbackRef(environment.id, "db", "abc1234")
+	commit := feedbackCommit("abc1234")
+	requireOK(t, x.Backend.RecordFeedbackResolution(x.Context, store.FeedbackResolution{FeedbackVersionRef: with, ResolvedRepository: "app", ResolvedGitHubRepository: "Acme/Old", ResolvedCommit: commit, AttemptedAt: feedbackTime(time.Second)}))
+	requireOK(t, x.Backend.RecordFeedbackResolution(x.Context, store.FeedbackResolution{FeedbackVersionRef: without, ResolvedRepository: "app", ResolvedCommit: commit, AttemptedAt: feedbackTime(time.Second)}))
+	requireOK(t, x.Backend.RecordFeedbackResolution(x.Context, store.FeedbackResolution{FeedbackVersionRef: unresolved, ResolvedGitHubRepository: "acme/old", Reason: "no_match", AttemptedAt: feedbackTime(time.Second)}))
+	// A later resolution of the resolved version changes nothing.
+	requireOK(t, x.Backend.RecordFeedbackResolution(x.Context, store.FeedbackResolution{FeedbackVersionRef: with, ResolvedRepository: "app", ResolvedGitHubRepository: "acme/new", ResolvedCommit: commit, AttemptedAt: feedbackTime(time.Hour)}))
+	// Only exactly one owner/name slug is a recorded repository: a quoted
+	// slug, padding, a space, a third part, and a missing half are refused.
+	for _, bad := range []string{"not a slug", `"acme/app"`, " acme/app", "acme/ app", "acme/app/x", "/app", "acme/"} {
+		if err := x.Backend.RecordFeedbackResolution(x.Context, store.FeedbackResolution{FeedbackVersionRef: feedbackRef(environment.id, "web", "@v2"), ResolvedRepository: "app", ResolvedGitHubRepository: bad, ResolvedCommit: commit, AttemptedAt: feedbackTime(0)}); err == nil {
+			t.Fatalf("the GitHub repository %q was recorded", bad)
+		}
+	}
+	inputs, err := x.Backend.ReadFeedbackInputs(x.Context, []string{environment.id})
+	requireOK(t, err)
+	got := map[string]store.FeedbackResolution{}
+	for _, resolution := range inputs.Resolutions {
+		got[resolution.Service] = resolution
+	}
+	if len(got) != 3 || got["api"].ResolvedGitHubRepository != "acme/old" || got["api"].ResolvedRepository != "app" ||
+		got["web"].ResolvedGitHubRepository != "" || !got["web"].Resolved() ||
+		got["db"].ResolvedGitHubRepository != "" || got["db"].Resolved() {
+		t.Fatalf("resolutions=%+v, want acme/old, none, and none for the unresolved outcome", inputs.Resolutions)
 	}
 }
 
