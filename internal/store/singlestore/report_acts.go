@@ -102,7 +102,10 @@ func feedbackReportPageColumns() string {
 // answers the page's records and the count of every selected row: the count
 // subquery is joined onto the page subquery, so a page past the end answers
 // one row with no report and the total. The page and the total are one
-// read. The details are read by report ID after it.
+// read. The details are read by report ID after it. SingleStore offers only
+// read committed isolation, and a read does not take the workspace
+// environment claim, so the details come from later statements: each
+// served value is committed, and none is older than the page's records.
 func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackReports")
 	query, err := store.NormalizeFeedbackReportQuery(query)
@@ -146,7 +149,9 @@ ORDER BY p.last_seen DESC, p.id`
 	return page, nil
 }
 
-// ReadFeedbackReport implements store.ReportReadStore.
+// ReadFeedbackReport implements store.ReportReadStore. The record and its
+// details are read in separate read committed statements, as the list
+// reads its details.
 func (s *Store) ReadFeedbackReport(ctx context.Context, reportID string) (store.FeedbackReport, store.FeedbackReportDetails, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ReadFeedbackReport")
 	report, err := s.GetFeedbackReport(ctx, reportID)
