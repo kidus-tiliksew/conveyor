@@ -2500,6 +2500,36 @@ test.describe('screenshots of pages and blocked cards', () => {
   }
 })
 
+test.describe('screenshots of a fix-task request sent before', () => {
+  test.skip(!screenshotDir, 'CONVEYOR_REPORT_SCREENSHOTS is not set')
+  for (const width of [375, 1280]) {
+    test(`renders the sheet after a lost intake answer at ${width} px`, async ({ page }) => {
+      // Session storage refuses the request, so the reload warning shows too.
+      await page.addInitScript(() => {
+        const original = Storage.prototype.setItem
+        Object.defineProperty(Storage.prototype, 'setItem', {
+          configurable: true,
+          value(this: Storage, name: string, value: string) {
+            if (this === window.sessionStorage && name.startsWith('conveyor-fix-task-intake:'))
+              throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+            return original.call(this, name, value)
+          },
+        })
+      })
+      await page.clock.setFixedTime(now)
+      await page.setViewportSize({ width, height: 1000 })
+      const server = await mockReportServer(page, { reports: [fixReport] })
+      await page.goto(fixAddress)
+      server.loseCreateAnswers = 1
+      await createFixTask(page, [])
+      await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toBeVisible()
+      await expect(sheet(page).locator('[data-fix-task-no-storage]')).toBeVisible()
+      await sheet(page).locator('[data-fix-task]').scrollIntoViewIfNeeded()
+      await page.screenshot({ path: `${screenshotDir}/fix-task-sent-before-${width}.png` })
+    })
+  }
+})
+
 // The fix-task record takes part in the shared act state of its report.
 test.describe('unknown outcomes and the fix-task record', () => {
   const linked = report('rpt-261127-m00001', {
