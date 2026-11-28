@@ -23,6 +23,7 @@ import {
   reportReads,
   type Server,
   staging,
+  task,
   taskLink,
   timingEvidence,
 } from './reports-fixtures'
@@ -928,7 +929,9 @@ test.describe('starting a fix task', () => {
     await sheet(page).getByRole('button', { name: 'Create a task without the report' }).click()
     await expect(page).toHaveURL('/w/demo/?create=true')
     await expect(sheet(page).locator('[data-fix-task]')).toHaveCount(0)
-    await expect(description(page)).toHaveValue('Fix it anyway')
+    // Ordinary intake is a draft of its own, so it starts empty.
+    await expect(description(page)).toHaveValue('')
+    await description(page).fill('Fix it anyway')
     await createButton(page).click()
     await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
     expect(fixPuts(server)).toHaveLength(0)
@@ -3187,4 +3190,384 @@ test.describe('fix-task intake keys without session storage', () => {
     expect(server.intakeKeys[1]).toBe(server.intakeKeys[0])
     expect(fixPuts(server)).toEqual([{ method: 'PUT', path: fixPath, body: { task_id: '261127-fix' } }])
   })
+})
+
+// Class: drafts. Each draft of the create sheet belongs to one workspace and
+// one report, or to no report. After the address changes, nothing of the
+// draft before shows or is sent: the new draft starts from its own saved
+// request or from nothing but its own report block. A request already on its
+// way keeps the snapshot it took at Create.
+test.describe('each draft belongs to its workspace and report', () => {
+  const otherReport = report('rpt-261127-e00041', {
+    summary: 'Other report',
+    links: [taskLink('lnk-e41', '261120-b02', 'Store invoice numbers')],
+  })
+  const reportA = `/w/demo/?create=true&report=${fixReport.id}`
+  const plain = '/w/demo/?create=true'
+  type Target = { address: string; report: FeedbackReport | null }
+  const transitions: { name: string; from: string; fromReport: boolean; to: Target }[] = [
+    {
+      name: 'report A to report B',
+      from: reportA,
+      fromReport: true,
+      to: { address: `/w/demo/?create=true&report=${otherReport.id}`, report: otherReport },
+    },
+    { name: 'report A to no report', from: reportA, fromReport: true, to: { address: plain, report: null } },
+    { name: 'no report to report A', from: plain, fromReport: false, to: { address: reportA, report: fixReport } },
+    {
+      name: 'report A to another workspace',
+      from: reportA,
+      fromReport: true,
+      to: { address: `/w/other/?create=true&report=${fixReport.id}`, report: fixReport },
+    },
+  ]
+  const fence = (item: FeedbackReport) => (item.id === fixReport.id ? '````````' : '```')
+  const prefill = (item: FeedbackReport) => expectedDescription(item, fence(item))
+  const trace = { name: 'trace.txt', mimeType: 'text/plain', buffer: Buffer.from('stack trace') }
+  const moveTo = (page: Page, to: string) =>
+    page.evaluate((target) => {
+      history.pushState({}, '', target)
+      dispatchEvent(new PopStateEvent('popstate'))
+    }, to)
+  const blockIntakeStorage = (page: Page) =>
+    page.addInitScript(() => {
+      const original = Storage.prototype.setItem
+      Object.defineProperty(Storage.prototype, 'setItem', {
+        configurable: true,
+        value(this: Storage, name: string, value: string) {
+          if (this === window.sessionStorage && name.startsWith('conveyor-fix-task-intake:'))
+            throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+          return original.call(this, name, value)
+        },
+      })
+    })
+  const savedEntry = (page: Page, id: string) =>
+    page.evaluate((key) => sessionStorage.getItem(key), `conveyor-fix-task:demo:${id}`)
+  const intakeAnswer = (page: Page) =>
+    page.waitForResponse(
+      (response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/v1/tasks',
+    )
+
+  // Every field, message, and flag of a fresh draft for the target.
+  async function expectFresh(page: Page, target: Target) {
+    const form = sheet(page)
+    await expect(description(page)).toHaveValue(target.report ? prefill(target.report) : '')
+    await expect(form.getByRole('combobox', { name: 'Repository' })).toHaveValue(target.report ? '' : 'conveyor')
+    await expect(form.getByPlaceholder(/^(main|trunk)$/)).toHaveValue('')
+    await expect(form.getByRole('textbox', { name: 'Plan', exact: true })).toHaveValue('')
+    await expect(form.getByRole('combobox', { name: 'Plan state' })).toHaveValue('')
+    await expect(form.getByRole('textbox', { name: 'Base commit' })).toHaveValue('')
+    await expect(form.getByRole('checkbox', { name: 'Approve this plan' })).toHaveCount(0)
+    await expect(form.locator('select:has(option[value="off"])')).toHaveValue('default')
+    await expect(form.locator('details')).not.toHaveAttribute('open')
+    // The dependency controls sit in the closed Advanced options, so they are
+    // found by their labels even while hidden.
+    await expect(form.locator('input[aria-label="Search dependency tasks"]')).toHaveValue('')
+    await expect(form.locator('[aria-label^="Remove dependency"]')).toHaveCount(0)
+    await expect(form.getByRole('button', { name: 'Remove trace.txt' })).toHaveCount(0)
+    for (const marker of [
+      '[data-fix-task-created]',
+      '[data-fix-task-error]',
+      '[data-fix-task-intake-sent]',
+      '[data-fix-task-attach-again]',
+      '[data-fix-task-no-storage]',
+    ])
+      await expect(form.locator(marker)).toHaveCount(0)
+    if (target.report)
+      await expect(form.locator('[data-fix-task]').getByRole('checkbox', { checked: true })).toHaveCount(0)
+    else await expect(form.locator('[data-fix-task]')).toHaveCount(0)
+    await expect(form.getByText(/repo is not registered|approving a plan/)).toHaveCount(0)
+    await expect(createButton(page)).toHaveText('Create task')
+  }
+
+  // Create on the new draft sends only what the new draft holds.
+  async function expectFreshPayload(page: Page, server: Server, target: Target) {
+    const sent = server.created.length
+    const keys = [...server.intakeKeys]
+    const puts = fixPuts(server).length
+    if (target.report) await sheet(page).getByRole('combobox', { name: 'Repository' }).selectOption('app')
+    else await description(page).fill('A task of the new draft')
+    await expect(createButton(page)).toBeEnabled()
+    await createButton(page).click()
+    await expect.poll(() => server.created.length).toBe(sent + 1)
+    expect(server.created.at(-1)).toEqual(
+      target.report
+        ? { body: prefill(target.report).trim(), repo: 'app', source: 'dashboard' }
+        : { body: 'A task of the new draft', repo: 'conveyor', source: 'dashboard' },
+    )
+    expect(server.attachments.at(-1)).toEqual([])
+    expect(keys).not.toContain(server.intakeKeys.at(-1))
+    if (target.report) {
+      const path = `/v1/feedback-reports/${target.report.id}/fix-task`
+      await expect.poll(() => fixPuts(server).length).toBe(puts + 1)
+      expect(fixPuts(server).at(-1)?.path).toBe(path)
+      expect(fixPuts(server).at(-1)?.body).not.toHaveProperty('cause_task_ids')
+    }
+  }
+
+  type Row = {
+    name: string
+    // Only rows a report holds skip the change from no report.
+    reportOnly?: boolean
+    init?: (page: Page) => Promise<void>
+    set: (page: Page, server: Server, fromReport: boolean) => Promise<void>
+    // Runs after the address changed, before the checks of the new draft.
+    after?: (page: Page, server: Server, to: Target) => Promise<void>
+  }
+  const rows: Row[] = [
+    {
+      name: 'description',
+      set: async (page) => {
+        await description(page).fill('Draft text of A')
+      },
+    },
+    {
+      name: 'the prefill and whether the person edited it',
+      reportOnly: true,
+      set: async (page) => {
+        await description(page).fill(`${prefill(fixReport)}Note of A`)
+      },
+    },
+    {
+      name: 'repository',
+      set: async (page) => {
+        await sheet(page).getByRole('combobox', { name: 'Repository' }).selectOption('app')
+      },
+    },
+    {
+      name: 'base branch',
+      set: async (page) => {
+        await sheet(page)
+          .getByPlaceholder(/^(main|trunk)$/)
+          .fill('release-a')
+      },
+    },
+    {
+      name: 'plan',
+      set: async (page) => {
+        await sheet(page).getByRole('textbox', { name: 'Plan', exact: true }).fill('## Approach\nThe plan of A')
+      },
+    },
+    {
+      name: 'plan state',
+      set: async (page) => {
+        await sheet(page).getByRole('combobox', { name: 'Plan state' }).selectOption('needed')
+      },
+    },
+    {
+      name: 'base commit',
+      set: async (page) => {
+        await sheet(page).getByRole('textbox', { name: 'Plan', exact: true }).fill('## Approach\nThe plan of A')
+        await sheet(page).getByRole('textbox', { name: 'Base commit' }).fill('a'.repeat(40))
+      },
+    },
+    {
+      name: 'plan approval',
+      set: async (page) => {
+        await sheet(page).getByRole('textbox', { name: 'Plan', exact: true }).fill('## Approach\nThe plan of A')
+        await sheet(page).getByRole('checkbox', { name: 'Approve this plan' }).check()
+      },
+    },
+    {
+      name: 'merge approval gate',
+      set: async (page) => {
+        await sheet(page).locator('select:has(option[value="off"])').selectOption('off')
+      },
+    },
+    {
+      name: 'advanced options open',
+      set: async (page) => {
+        await sheet(page).getByText('Advanced options').click()
+        await expect(sheet(page).locator('details')).toHaveAttribute('open')
+      },
+    },
+    {
+      name: 'dependency search',
+      set: async (page) => {
+        await sheet(page).getByText('Advanced options').click()
+        await sheet(page).getByRole('textbox', { name: 'Search dependency tasks' }).fill('invoice')
+      },
+    },
+    {
+      name: 'dependencies',
+      set: async (page) => {
+        await sheet(page).getByText('Advanced options').click()
+        await sheet(page)
+          .locator('#dependency-results')
+          .getByRole('checkbox', { name: /Queued dependency/ })
+          .check()
+        await expect(sheet(page).getByRole('button', { name: /^Remove dependency/ })).toHaveCount(1)
+      },
+    },
+    {
+      name: 'context: requirements and System Design documents',
+      set: async (page) => {
+        await sheet(page).getByRole('combobox', { name: 'Search context' }).click()
+        const list = page.getByRole('listbox', { name: 'Context' })
+        await list.getByRole('option', { name: /Confirmed product outcome/ }).click()
+        await list.getByRole('option', { name: /Confirmed technical guidance/ }).click()
+        await expect(list.getByRole('option', { name: /Confirmed product outcome/ })).toHaveAttribute(
+          'aria-selected',
+          'true',
+        )
+        await page.keyboard.press('Escape')
+      },
+    },
+    {
+      name: 'attachments',
+      set: async (page) => {
+        await sheet(page).locator('input[type="file"]').setInputFiles(trace)
+        await expect(sheet(page).getByRole('button', { name: 'Remove trace.txt' })).toBeVisible()
+      },
+    },
+    {
+      name: 'possible causes ticked',
+      reportOnly: true,
+      set: async (page) => {
+        await expect(description(page)).not.toHaveValue('')
+        await sheet(page)
+          .locator('[data-fix-task]')
+          .getByRole('checkbox', { name: /Send invoices by email/ })
+          .check()
+      },
+    },
+    {
+      name: 'a refused intake request and its message',
+      set: async (page, server, fromReport) => {
+        server.refuseCreates = 1
+        if (fromReport) await createFixTask(page, [])
+        else {
+          await description(page).fill('Draft text of A')
+          await createButton(page).click()
+        }
+        await expect(sheet(page).getByText('repo is not registered in this workspace')).toBeVisible()
+      },
+    },
+    {
+      name: 'an intake request sent before and its key',
+      set: async (page, server, fromReport) => {
+        server.loseCreateAnswers = 1
+        if (fromReport) {
+          await createFixTask(page, [])
+          await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toBeVisible()
+        } else {
+          await description(page).fill('Draft text of A')
+          await createButton(page).click()
+        }
+        await expect.poll(() => server.intakeKeys.length).toBe(1)
+      },
+    },
+    {
+      name: 'files to attach again after a reload',
+      reportOnly: true,
+      set: async (page, server) => {
+        await expect(description(page)).not.toHaveValue('')
+        await sheet(page).locator('input[type="file"]').setInputFiles(trace)
+        server.refuseCreates = 1
+        server.refuseCreateStatus = 503
+        await createFixTask(page, [])
+        await expect.poll(() => server.intakeKeys.length).toBe(1)
+        await page.reload()
+        await expect(sheet(page).locator('[data-fix-task-attach-again]')).toBeVisible()
+        await expect(createButton(page)).toBeDisabled()
+      },
+    },
+    {
+      name: 'the reload warning when session storage refuses the request',
+      reportOnly: true,
+      init: blockIntakeStorage,
+      set: async (page, server) => {
+        server.loseCreateAnswers = 1
+        await createFixTask(page, [])
+        await expect(sheet(page).locator('[data-fix-task-no-storage]')).toBeVisible()
+      },
+    },
+    {
+      name: 'a created task whose record request was refused, and its message',
+      reportOnly: true,
+      set: async (page, server) => {
+        server.actAnswers.push({ status: 503, json: { error: 'retryable' } })
+        await createFixTask(page, [])
+        await expect(sheet(page).locator('[data-fix-task-error]')).toBeVisible()
+      },
+    },
+    {
+      name: 'a record request on its way',
+      reportOnly: true,
+      set: async (page, server) => {
+        const held = gate()
+        server.actGate = held.promise
+        ;(server as Server & { release?: () => void }).release = held.open
+        await createFixTask(page, [])
+        await expect(sheet(page).locator('[data-fix-task-created]')).toContainText(
+          'Conveyor records it on the report now…',
+        )
+      },
+      after: async (page, server) => {
+        const puts = fixPuts(server).length
+        ;(server as Server & { release?: () => void }).release?.()
+        server.actGate = null
+        await expect.poll(() => savedEntry(page, fixReport.id)).toBeNull()
+        expect(fixPuts(server)).toHaveLength(puts)
+      },
+    },
+    {
+      name: 'an intake request on its way and the Create button',
+      set: async (page, server, fromReport) => {
+        const held = gate()
+        server.createGate = held.promise
+        ;(server as Server & { release?: () => void }).release = held.open
+        if (fromReport) await createFixTask(page, ['Send invoices by email'])
+        else {
+          await description(page).fill('Draft text of A')
+          await createButton(page).click()
+        }
+        await expect(createButton(page)).toHaveText('Creating…')
+        await expect(createButton(page)).toBeDisabled()
+      },
+      // The request keeps its snapshot: it records on its own report with its
+      // own causes, and it opens nothing on the new draft.
+      after: async (page, server, to) => {
+        const answered = intakeAnswer(page)
+        ;(server as Server & { release?: () => void }).release?.()
+        server.createGate = null
+        await answered
+        if (server.created[0].body !== 'Draft text of A') {
+          await expect.poll(() => fixPuts(server).filter((act) => act.path === fixPath).length).toBe(1)
+          expect(fixPuts(server)[0].body).toEqual({ task_id: '261127-fix', cause_task_ids: ['261120-a01'] })
+          await expect.poll(() => savedEntry(page, fixReport.id)).toBeNull()
+        }
+        await page.waitForTimeout(300)
+        await expect(page).toHaveURL(to.address)
+      },
+    },
+  ]
+
+  for (const row of rows) {
+    test.describe(row.name, () => {
+      for (const transition of transitions) {
+        if (row.reportOnly && !transition.fromReport) continue
+        test(`starts fresh after ${transition.name}`, async ({ page }) => {
+          if (row.init) await row.init(page)
+          const server = await mockReportServer(page, {
+            reports: [fixReport, otherReport],
+            mergedTasks: [
+              task('261120-a01', 'Send invoices by email'),
+              task('261120-b02', 'Store invoice numbers'),
+              task('261127-q01', 'Queued dependency', 'queued'),
+            ],
+          })
+          await page.goto(transition.from)
+          if (transition.fromReport) await expect(description(page)).not.toHaveValue('')
+          else await expect(sheet(page)).toBeVisible()
+          await row.set(page, server, transition.fromReport)
+          await moveTo(page, transition.to.address)
+          await expect(page).toHaveURL(transition.to.address)
+          if (row.after) await row.after(page, server, transition.to)
+          await expectFresh(page, transition.to)
+          await expectFreshPayload(page, server, transition.to)
+        })
+      }
+    })
+  }
 })

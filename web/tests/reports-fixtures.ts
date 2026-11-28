@@ -461,6 +461,33 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
           ],
         },
       })
+    // One confirmed requirement and one confirmed System Design document for
+    // the Context picker of the create sheet.
+    if (path === '/v1/requirements')
+      return route.fulfill({
+        json: [
+          {
+            requirement: { id: 'req-context', title: 'Confirmed product outcome', current_version: 1 },
+            current_version: { requirement_id: 'req-context', version: 1, confirmed: true },
+            pending_versions: [],
+            serving_blueprints: [],
+            planning_sessions: [],
+            artifacts: [],
+          },
+        ],
+      })
+    if (path === '/v1/system-designs')
+      return route.fulfill({
+        json: [
+          {
+            document: { id: 'design-context', title: 'Confirmed technical guidance', current_version: 2 },
+            current_version: { document_id: 'design-context', version: 2, confirmed: true },
+            pending_versions: [],
+            versions: [],
+            drift: [],
+          },
+        ],
+      })
     if (path === '/v1/environments')
       return route.fulfill({
         json: [environmentRow('env-production', 'production'), environmentRow('env-staging', 'staging')],

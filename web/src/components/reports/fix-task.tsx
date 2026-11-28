@@ -485,12 +485,15 @@ export function useFixTaskFlow({
   // it, for example when an earlier answer was lost.
   // While the record request of this report is on its way, its own answer
   // finishes the flow, so the shared state stays until that answer arrives.
+  // The check runs again when the record state changes, so a record request
+  // that ends after the report already named the task finishes the flow.
+  const recordPhase = record.phase
   useEffect(() => {
     if (!created || !data || !reportId || data.id !== reportId || data.fix_task?.id !== created.taskId) return
     const target = { workspace, reportId }
-    if (sending.current.has(flowOf(target))) return
+    if (recordPhase === 'sending' || sending.current.has(flowOf(target))) return
     finish(created, target)
-  }, [created, data, reportId, workspace, finish])
+  }, [created, data, reportId, workspace, finish, recordPhase])
 
   // Sends the record request for one report. Every value comes from the
   // target and the entry captured at Create, and the answer changes only the

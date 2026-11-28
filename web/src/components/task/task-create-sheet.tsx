@@ -1,7 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Check, Package, Paperclip, Plus, X } from 'lucide-react'
-import { useCallback, useRef, useState } from 'react'
+import {
+  type Dispatch,
+  type MutableRefObject,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import {
   type CreateTaskInput,
   createTask,
@@ -19,6 +27,7 @@ import { useWorkspace, useWorkspaceCapability, useWorkspaceSelection } from '../
 import type { BoardSearch } from '../board/board-search'
 import {
   clearFixTaskIntake,
+  type FixTaskFlow,
   FixTaskPanel,
   fixTaskIntakeToSend,
   sentFilesPresent,
@@ -47,7 +56,57 @@ const fullCommitID = /^[0-9a-f]{40}$/
 // A sheet instead of a page so intake happens over the board, with room for
 // the rich triage context that saves bounce rounds downstream — structured
 // description, base branch, policy overrides, and artifact attachments.
+//
+// Each draft belongs to one workspace and one report, or to no report. When
+// the address names another workspace or another report, or drops or adds
+// the report, the form starts again: every field, message, and flag of the
+// draft before goes, and a fix task starts from its own saved request or
+// from nothing but its own report block (component-feedback-reports
+// invariant 18). A request already on its way keeps the snapshot it took at
+// Create, so its answer still reaches only its own report.
+//
+// The fix-task flow stays with the sheet: it starts again by itself for each
+// workspace and report, and it knows which record requests are still on
+// their way when the person comes back to a report. It fills the form that
+// shows now through `form`.
 export function TaskCreateSheet() {
+  const navigate = useNavigate()
+  const { workspace: workspaceId } = useWorkspaceSelection()
+  const { report: reportId } = useSearch({ strict: false }) as BoardSearch
+  const form = useRef<DraftHandle | null>(null)
+  const setBody = useCallback<Dispatch<SetStateAction<string>>>((next) => form.current?.setBody(next), [])
+  const restoreRequest = useCallback((request: CreateTaskInput) => form.current?.restoreRequest(request), [])
+  // The new task opens in the Board's sheet over the view intake came from.
+  const openTask = useCallback(
+    (taskId: string, workspace?: string) =>
+      void navigate({
+        to: '/w/$workspaceId/tasks/$taskId',
+        params: { workspaceId: workspace ?? workspaceId, taskId },
+        search: ({ create: _create, crate: _crate, report: _report, ...prev }) => prev,
+      }),
+    [navigate, workspaceId],
+  )
+  const fixTask = useFixTaskFlow({ workspace: workspaceId, reportId, setBody, restoreRequest, onRecorded: openTask })
+  return (
+    <TaskCreateForm key={`${workspaceId}\u0000${reportId ?? ''}`} fixTask={fixTask} form={form} openTask={openTask} />
+  )
+}
+
+// What the fix-task flow may change in the form that shows now.
+interface DraftHandle {
+  setBody: Dispatch<SetStateAction<string>>
+  restoreRequest: (request: CreateTaskInput) => void
+}
+
+function TaskCreateForm({
+  fixTask,
+  form,
+  openTask,
+}: {
+  fixTask: FixTaskFlow
+  form: MutableRefObject<DraftHandle | null>
+  openTask: (taskId: string, workspace?: string) => void
+}) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { data: workspace } = useWorkspace()
@@ -106,16 +165,18 @@ export function TaskCreateSheet() {
   const [files, setFiles] = useState<File[]>([])
   const fileInput = useRef<HTMLInputElement>(null)
   const intakeKey = useRef(crypto.randomUUID())
+  // False once this draft is gone: the sheet closed, or the address names
+  // another draft. An answer for this draft then opens nothing.
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   // A fix task preselects no repository (component-feedback-reports
   // invariant 18). Any other intake opens on the first one.
   const repoName = reportId ? repo : repo || repos[0]?.name || ''
-  // The new task opens in the Board's sheet over the view intake came from.
-  const openTask = (taskId: string, workspace = workspaceId) =>
-    void navigate({
-      to: '/w/$workspaceId/tasks/$taskId',
-      params: { workspaceId: workspace, taskId },
-      search: ({ create: _create, crate: _crate, report: _report, ...prev }) => prev,
-    })
   // A fix-task request sent before, whose answer did not arrive, comes back
   // into the form, because Create sends that request again.
   const restoreRequest = useCallback((request: CreateTaskInput) => {
@@ -130,7 +191,14 @@ export function TaskCreateSheet() {
     setRequirementIds(request.requirement_ids ?? [])
     setSystemDesignIds(request.system_design_ids ?? [])
   }, [])
-  const fixTask = useFixTaskFlow({ workspace: workspaceId, reportId, setBody, restoreRequest, onRecorded: openTask })
+  // This form is the one the fix-task flow fills while it shows.
+  useEffect(() => {
+    const mine: DraftHandle = { setBody, restoreRequest }
+    form.current = mine
+    return () => {
+      if (form.current === mine) form.current = null
+    }
+  }, [form, restoreRequest])
   const defaultPlanState = workspace?.default_plan_state
   const shownPlanState = chosenPlanState || defaultPlanState || ''
   // A plan sends no plan state (AC-2.6). The select sends one only when the
@@ -186,7 +254,8 @@ export function TaskCreateSheet() {
         fixTask.onCreated(task, { workspace: intake.workspace, reportId: intake.reportId }, intake.causeTaskIds)
         return
       }
-      openTask(task.id, intake.workspace)
+      // The task exists either way; only the draft that asked for it opens it.
+      if (mounted.current) openTask(task.id, intake.workspace)
     },
     onError: (error, intake) => {
       if (error instanceof TaskIntakeError && error.code === 'invalid_dependencies') setAdvancedOpen(true)
