@@ -84,7 +84,11 @@ type Server struct {
 	// feedbackLinkingAsked, when set by a test, observes each report a read
 	// asks the linking job for (component-feedback-reports invariant 15).
 	feedbackLinkingAsked func(workspace, reportID string)
-	feedbackKeyTimeout   time.Duration
+	// feedbackReportsListed, when set by a test, observes each store list
+	// list_feedback_reports makes, with the page the store answered
+	// (component-feedback-reports invariant 24).
+	feedbackReportsListed func(query store.FeedbackReportQuery, page store.FeedbackReportPage)
+	feedbackKeyTimeout    time.Duration
 	// feedbackWork runs resolving and comparing in the background, after the
 	// signal route answers and when a read finds an answer missing.
 	// feedbackForge replaces the workspace App's GitHub reads in tests.

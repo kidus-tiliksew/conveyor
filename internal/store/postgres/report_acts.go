@@ -65,6 +65,9 @@ func feedbackReportFilter(workspaceID string, query store.FeedbackReportQuery) (
 // count, and the details are read in one REPEATABLE READ snapshot, so they
 // agree: the count is a window over every selected row before the page is
 // cut, and a page past the end reads the count alone in the same snapshot.
+// The filters run in the database as semi-joins over the report, link, task,
+// and crate keys; only the page's rows, their links, notes, tasks, and
+// crates cross the connection.
 func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackReports")
 	query, err := store.NormalizeFeedbackReportQuery(query)
@@ -81,6 +84,17 @@ func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackRep
 		return store.FeedbackReportPage{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// An over-limit selection answers its count, an indexed aggregate that
+	// transfers one row, and loads no record or details.
+	if query.RefuseAbove > 0 {
+		var total int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM feedback_reports r WHERE `+where, args...).Scan(&total); err != nil {
+			return store.FeedbackReportPage{}, err
+		}
+		if total > query.RefuseAbove {
+			return store.FeedbackReportPage{Reports: []store.FeedbackReport{}, Total: total, Details: emptyPostgresFeedbackReportDetails()}, nil
+		}
+	}
 	rows, err := tx.Query(ctx, sql, append(append([]any{}, args...), query.Limit, query.Offset)...)
 	if err != nil {
 		return store.FeedbackReportPage{}, err
@@ -476,4 +490,9 @@ func feedbackOptionalText(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func emptyPostgresFeedbackReportDetails() store.FeedbackReportDetails {
+	return store.FeedbackReportDetails{Links: map[string][]store.FeedbackReportLink{}, Notes: map[string][]store.FeedbackReportNote{},
+		Tasks: map[string]store.FeedbackReportTaskRef{}, Crates: map[string]store.FeedbackReportCrateRef{}}
 }

@@ -32,11 +32,10 @@ import (
 // A success answers 200 with the served report as it stands after the act.
 // An act that changes nothing records nothing and answers the same way.
 
-// feedbackReportActBodyLimit bounds the body of every act route. It is
-// provisional: the operator's recovery direction of 2026-11-28 set 16 KiB
-// until a confirmed version of component-feedback-reports (version 3,
-// drafted) states it. A larger body answers 413 and records nothing
-// (component-http-api invariant 17).
+// feedbackReportActBodyLimit bounds the body of every act route: an act
+// reads a body of at most 16 KiB, and a larger body answers 413 and records
+// nothing (component-feedback-reports v3, Public surfaces, routes for people;
+// component-http-api invariant 17).
 const feedbackReportActBodyLimit = 16 << 10
 
 // writeFeedbackReportActRefusal answers a refused body with 400

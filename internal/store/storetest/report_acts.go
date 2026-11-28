@@ -56,6 +56,7 @@ func runFeedbackReportActs(t *testing.T, factory Factory) {
 		{"ListFiltersOrderAndPaging", runFeedbackReportListFilters},
 		{"CrateCountsAgreeWithTheList", runFeedbackReportCrateCounts},
 		{"Details", runFeedbackReportDetails},
+		{"ReadWorkBoundedByThePage", runFeedbackReportReadWork},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			x := factory.fresh(t, nil)
@@ -1246,5 +1247,143 @@ func runFeedbackReadTotalConcurrent(t *testing.T, x Fixture) {
 			return fmt.Errorf("page past the end=%d reports, total %d", len(past.Reports), past.Total)
 		}
 		return nil
+	})
+}
+
+// feedbackReadWorkRows bounds the rows one read or act of this case may
+// read: on a database every row of every statement, the claim and the lock
+// included, and in memory every record, link, and note copied out. The
+// case's history holds more than eight times as many rows.
+const feedbackReadWorkRows = 30
+
+// runFeedbackReportReadWork holds every read and act of reports to work the
+// page bounds, not the workspace's history (component-feedback-reports
+// invariants 21, 23, and 24; req-production-feedback AC-10.2): in a
+// workspace of 120 reports, 120 links, 30 tasks, and 21 crates, a page of
+// two under each filter, the read of one report, a crate's counts, and an
+// act each read at most feedbackReadWorkRows rows, and a list over its
+// RefuseAbove reads its count and no report. A database backend counts with
+// its read ledger, and the volatile backend counts the records, links, and
+// notes it copies out.
+func runFeedbackReportReadWork(t *testing.T, x Fixture) {
+	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Spring"})
+	requireOK(t, err)
+	for i := range 20 {
+		_, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: fmt.Sprintf("Other %02d", i)})
+		requireOK(t, err)
+	}
+	tasks := []core.Task{}
+	for i := range 30 {
+		crateID := ""
+		if i%2 == 0 {
+			crateID = crate.ID
+		}
+		tasks = append(tasks, mergedActTask(t, x, crateID))
+	}
+	environments := []feedbackEnvironment{}
+	reports := []store.FeedbackReport{}
+	for i := range 3 {
+		e := newFeedbackEnvironment(t, x, fmt.Sprintf("Production %d", i), "watcher")
+		e.fillReports(t, time.Hour, "crash", 40)
+		environments = append(environments, e)
+		reports = append(reports, e.reports(t)...)
+	}
+	at := feedbackTime(2 * time.Hour)
+	for i, report := range reports {
+		x.SeedFeedbackReportLink(t, x.Context, store.FeedbackReportLink{ID: store.FeedbackReportLinkID(report.ID, 1), ReportID: report.ID,
+			TaskID: tasks[i%len(tasks)].ID, State: store.FeedbackReportLinkPossible, Evidence: []store.FeedbackReportEvidence{}, CreatedAt: at, CreatedBy: store.SystemActor().ID})
+	}
+	drain := func() (uint64, bool) {
+		switch {
+		case x.DrainReadRows != nil:
+			var rows uint64
+			for _, count := range x.DrainReadRows() {
+				rows += count
+			}
+			return rows, true
+		case x.DrainFeedbackReportReadCopies != nil:
+			return x.DrainFeedbackReportReadCopies(), true
+		}
+		return 0, false
+	}
+	measureWithin := func(name string, bound uint64, work func()) {
+		t.Helper()
+		drain()
+		work()
+		if rows, counted := drain(); counted && rows > bound {
+			t.Fatalf("%s read %d rows, want at most %d whatever the history", name, rows, bound)
+		}
+	}
+	measure := func(name string, work func()) {
+		t.Helper()
+		measureWithin(name, feedbackReadWorkRows, work)
+	}
+	page := func(name string, query store.FeedbackReportQuery, total int) {
+		t.Helper()
+		measure(name, func() {
+			query.State, query.Limit = store.FeedbackReportOpen, 2
+			listed, err := x.Backend.ListFeedbackReports(x.Context, query)
+			requireOK(t, err)
+			if listed.Total != total || len(listed.Reports) != 2 || len(listed.Details.Links) != 2 {
+				t.Fatalf("%s page=%d reports, %d with links, total %d, want 2 of %d", name, len(listed.Reports), len(listed.Details.Links), listed.Total, total)
+			}
+			for _, report := range listed.Reports {
+				if !store.FeedbackReportMatches(query, listed.Details.Links[report.ID], listed.Details.Tasks, listed.Details.Crates) {
+					t.Fatalf("%s page holds report %s outside its filters", name, report.ID)
+				}
+			}
+		})
+	}
+	page("the open list", store.FeedbackReportQuery{}, 120)
+	page("an environment's list", store.FeedbackReportQuery{EnvironmentID: environments[1].id}, 40)
+	page("a task's list", store.FeedbackReportQuery{TaskID: tasks[0].ID}, 4)
+	page("a crate's list", store.FeedbackReportQuery{CrateID: crate.ID}, 60)
+	page("the list of no crate", store.FeedbackReportQuery{NoCrate: true}, 60)
+	// A refused list reads its count and the claim: a few rows on a
+	// database, and no record, link, or note copied in memory.
+	refusedRows := uint64(8)
+	if x.DrainReadRows == nil {
+		refusedRows = 0
+	}
+	measureWithin("a refused list", refusedRows, func() {
+		query := store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: store.MaxFeedbackReportQueryLimit, RefuseAbove: 10}
+		listed, err := x.Backend.ListFeedbackReports(x.Context, query)
+		requireOK(t, err)
+		if !listed.Refused(query) || listed.Total != 120 || len(listed.Reports) != 0 || len(listed.Details.Links) != 0 {
+			t.Fatalf("refused list=%d reports, %d with links, total %d", len(listed.Reports), len(listed.Details.Links), listed.Total)
+		}
+	})
+	measure("a list under its RefuseAbove", func() {
+		query := store.FeedbackReportQuery{State: store.FeedbackReportOpen, TaskID: tasks[1].ID, Limit: 2, RefuseAbove: 10}
+		listed, err := x.Backend.ListFeedbackReports(x.Context, query)
+		requireOK(t, err)
+		if listed.Refused(query) || listed.Total != 4 || len(listed.Reports) != 2 {
+			t.Fatalf("list under its RefuseAbove=%d reports, total %d", len(listed.Reports), listed.Total)
+		}
+	})
+	measure("the read of one report", func() {
+		read, details, err := x.Backend.ReadFeedbackReport(x.Context, reports[7].ID)
+		requireOK(t, err)
+		if read.ID != reports[7].ID || len(details.Links) != 1 || len(details.Links[read.ID]) != 1 {
+			t.Fatalf("read=%s with links %+v", read.ID, details.Links)
+		}
+	})
+	measure("a crate's counts", func() {
+		counts, err := x.Backend.CountCrateOpenFeedbackReports(x.Context, crate.ID)
+		requireOK(t, err)
+		want := map[string]int{}
+		for _, e := range environments {
+			want[e.id] = 20
+		}
+		if !reflect.DeepEqual(counts, want) {
+			t.Fatalf("counts=%v, want %v", counts, want)
+		}
+	})
+	measure("an act", func() {
+		result, err := x.Backend.RecordFeedbackReportAct(actContext(x), store.FeedbackReportAct{Kind: store.FeedbackReportActLink, ReportID: reports[3].ID, TaskID: tasks[5].ID, At: feedbackTime(3 * time.Hour)})
+		requireOK(t, err)
+		if !result.Changed {
+			t.Fatal("the act changed nothing")
+		}
 	})
 }

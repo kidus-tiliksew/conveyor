@@ -12,19 +12,17 @@ import (
 var _ ReportLinkingStore = (*volatileMemory)(nil)
 
 // feedbackReportLocked finds a report of the workspace by ID under the held
-// mutex, with the key of its environment's map.
+// mutex, through the ID index, with the key of its environment's map.
 func (m *volatileMemory) feedbackReportLocked(workspace, reportID string) (memoryScopedKey, string, FeedbackReport, bool) {
-	for scope, reports := range m.feedbackReportState.reports {
-		if scope.workspace != workspace {
-			continue
-		}
-		for key, report := range reports {
-			if report.ID == reportID {
-				return scope, key, report, true
-			}
-		}
+	location, ok := m.feedbackReportState.byID[memoryScopedKey{workspace: workspace, id: reportID}]
+	if !ok {
+		return memoryScopedKey{}, "", FeedbackReport{}, false
 	}
-	return memoryScopedKey{}, "", FeedbackReport{}, false
+	report, ok := m.feedbackReportState.reports[location.scope][location.key]
+	if !ok || report.ID != reportID {
+		return memoryScopedKey{}, "", FeedbackReport{}, false
+	}
+	return location.scope, location.key, report, true
 }
 
 // ClaimFeedbackReportLinking implements ReportLinkingStore. The memory write
@@ -122,11 +120,11 @@ func (m *volatileMemory) FinishFeedbackReportLinking(ctx context.Context, linkin
 	}
 	write := PlanFeedbackReportLinking(report, stored, linking)
 	for _, link := range append(slices.Clone(write.New), write.Extended...) {
-		m.feedbackReportState.links[memoryScopedKey{workspace: workspace, id: link.ID}] = feedbackReportLinkRowOf(link)
+		m.putFeedbackReportLinkLocked(workspace, feedbackReportLinkRowOf(link))
 	}
 	for _, note := range write.Notes {
-		m.feedbackReportState.notes[memoryScopedKey{workspace: workspace, id: note.ID}] = feedbackReportNoteRow{ID: note.ID, ReportID: report.ID, Kind: note.Note.Kind,
-			Detail: json.RawMessage(FeedbackReportNoteJSON(note.Note)), CreatedAt: write.Event.At}
+		m.putFeedbackReportNoteLocked(workspace, feedbackReportNoteRow{ID: note.ID, ReportID: report.ID, Kind: note.Note.Kind,
+			Detail: json.RawMessage(FeedbackReportNoteJSON(note.Note)), CreatedAt: write.Event.At})
 	}
 	ended := write.Event.At
 	report.LinkingEndedAt = &ended
@@ -162,8 +160,9 @@ func feedbackReportLinkRowOf(link FeedbackReportLink) feedbackReportLinkRow {
 // ID, under the held mutex.
 func (m *volatileMemory) feedbackReportLinksLocked(workspace, reportID string) ([]FeedbackReportLink, error) {
 	links := []FeedbackReportLink{}
-	for scope, row := range m.feedbackReportState.links {
-		if scope.workspace != workspace || row.ReportID != reportID {
+	for linkID := range m.feedbackReportState.linksByReport[memoryScopedKey{workspace: workspace, id: reportID}] {
+		row, ok := m.feedbackReportState.links[memoryScopedKey{workspace: workspace, id: linkID}]
+		if !ok || row.ReportID != reportID {
 			continue
 		}
 		evidence, err := ParseFeedbackReportEvidence(row.Evidence)
@@ -203,23 +202,7 @@ func (m *volatileMemory) ListFeedbackReportLinks(ctx context.Context, reportID s
 func (m *volatileMemory) ListFeedbackReportNotes(ctx context.Context, reportID string) ([]FeedbackReportNote, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	workspace := workspaceOrDefault(ctx, "")
-	rows := []feedbackReportNoteRow{}
-	for scope, row := range m.feedbackReportState.notes {
-		if scope.workspace == workspace && row.ReportID == reportID {
-			rows = append(rows, row)
-		}
-	}
-	slices.SortFunc(rows, func(a, b feedbackReportNoteRow) int { return strings.Compare(a.ID, b.ID) })
-	notes := make([]FeedbackReportNote, 0, len(rows))
-	for _, row := range rows {
-		note, err := ParseFeedbackReportNote(row.Detail)
-		if err != nil {
-			return nil, err
-		}
-		notes = append(notes, note)
-	}
-	return notes, nil
+	return m.feedbackReportNotesLocked(workspaceOrDefault(ctx, ""), reportID)
 }
 
 // ListPendingFeedbackReports implements ReportLinkingStore.

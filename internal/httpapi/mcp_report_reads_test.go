@@ -207,7 +207,11 @@ func TestMCPFeedbackReportReadChangesNothing(t *testing.T) {
 }
 
 // TestMCPFeedbackReportReadOverTheItemLimit proves that a selection over the
-// framework's 1,000 items is refused, and a narrower filter is read.
+// framework's 1,000 items is refused before the store loads any report or
+// details: the store list carries the bound and answers the count alone. A
+// narrower filter is read. The store conformance case
+// ReadWorkBoundedByThePage counts the store's work for such a list on every
+// backend.
 func TestMCPFeedbackReportReadOverTheItemLimit(t *testing.T) {
 	h := newReportRoutesHarness(t)
 	environments := []store.EnvironmentRecord{h.environment}
@@ -233,9 +237,25 @@ func TestMCPFeedbackReportReadOverTheItemLimit(t *testing.T) {
 	if stored != mcpReadMaxItems+1 {
 		t.Fatalf("stored %d reports", stored)
 	}
+	type listed struct {
+		query store.FeedbackReportQuery
+		page  store.FeedbackReportPage
+	}
+	lists := []listed{}
+	h.server.feedbackReportsListed = func(query store.FeedbackReportQuery, page store.FeedbackReportPage) {
+		lists = append(lists, listed{query, page})
+	}
 	if text := refusalAs(t, h.handler, h.manager(), "list_feedback_reports", map[string]any{"workspace_id": "alpha"}); !strings.Contains(text, "exceeds 1000 items") {
 		t.Fatalf("refusal=%q", text)
 	}
+	if len(lists) != 1 {
+		t.Fatalf("the refused read made %d store lists, want 1", len(lists))
+	}
+	if got := lists[0]; got.query.RefuseAbove != mcpReadMaxItems || got.page.Total != mcpReadMaxItems+1 || len(got.page.Reports) != 0 ||
+		len(got.page.Details.Links) != 0 || len(got.page.Details.Notes) != 0 || len(got.page.Details.Tasks) != 0 || len(got.page.Details.Crates) != 0 {
+		t.Fatalf("the refused read's store list=%+v with %d reports and details %+v, want the count alone", got.query, len(got.page.Reports), got.page.Details)
+	}
+	h.server.feedbackReportsListed = nil
 	page := readAs(t, h.handler, h.manager(), "list_feedback_reports", map[string]any{"workspace_id": "alpha", "environment_id": environments[0].ID})
 	if page.Total != 200 {
 		t.Fatalf("narrowed read total=%d, want 200", page.Total)

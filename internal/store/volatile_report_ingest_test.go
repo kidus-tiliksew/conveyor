@@ -37,6 +37,14 @@ func CloseFeedbackReportForTest(t *testing.T, st Backend, ctx context.Context, r
 	t.Fatalf("feedback report %q is missing", reportID)
 }
 
+// DrainFeedbackReportReadCopiesForTest answers the report records, links,
+// and notes the volatile report reads copied out since the previous drain.
+// The memory conformance entry point supplies it as
+// Fixture.DrainFeedbackReportReadCopies.
+func DrainFeedbackReportReadCopiesForTest(st Backend) uint64 {
+	return uint64(st.(*volatileMemory).feedbackReportState.readCopies.Swap(0))
+}
+
 // SeedFeedbackReportLinkForTest writes one volatile link row as given.
 // Confirming and removing belong to a sibling task, so the memory
 // conformance entry point supplies this as Fixture.SeedFeedbackReportLink.
@@ -58,7 +66,7 @@ func SeedFeedbackReportLinkForTest(t *testing.T, st Backend, ctx context.Context
 		at := EnvironmentTime(*link.RemovedAt)
 		link.RemovedAt = &at
 	}
-	m.feedbackReportState.links[memoryScopedKey{workspace: workspace, id: link.ID}] = feedbackReportLinkRowOf(link)
+	m.putFeedbackReportLinkLocked(workspace, feedbackReportLinkRowOf(link))
 }
 
 // TestVolatileFeedbackReportStorage proves that the memory backend allocates

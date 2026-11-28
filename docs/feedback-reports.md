@@ -283,11 +283,12 @@ answers the same report.
 
 A closed report refuses every act but reopening with 409 `report_closed`.
 
-Two limits are provisional. The operator set them on 2026-11-28 until version
-3 of `component-feedback-reports` states them:
+`component-feedback-reports` version 3 states two limits:
 
-- An act's body is at most 16 KiB. A larger body gets 413.
-- `cause_task_ids` names at most 50 tasks.
+- An act's body is at most 16 KiB. A larger body gets 413 (Public surfaces,
+  routes for people).
+- `cause_task_ids` names at most 50 tasks, each once. A request that breaks
+  this is refused whole and records nothing (invariant 18).
 
 | Status | Cause |
 | --- | --- |

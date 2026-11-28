@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -44,28 +45,72 @@ func (m *volatileMemory) feedbackReportRefsLocked(workspace string, taskIDs, cra
 	return tasks, crates
 }
 
-// feedbackReportLinkRefsLocked answers the stored links of a report with the
-// tasks and crates they name.
-func (m *volatileMemory) feedbackReportLinkRefsLocked(workspace, reportID string) ([]FeedbackReportLink, map[string]FeedbackReportTaskRef, map[string]FeedbackReportCrateRef, error) {
-	links, err := m.feedbackReportLinksLocked(workspace, reportID)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	taskIDs, crateIDs := []string{}, []string{}
-	for _, link := range links {
-		if link.TaskID != "" {
-			taskIDs = append(taskIDs, link.TaskID)
-		}
-		if link.CrateID != "" {
-			crateIDs = append(crateIDs, link.CrateID)
-		}
-	}
-	tasks, crates := m.feedbackReportRefsLocked(workspace, taskIDs, crateIDs)
-	return links, tasks, crates, nil
+// feedbackReportRef is a report the filters selected, held by reference: its
+// order keys and where it is kept. Selecting copies no record.
+type feedbackReportRef struct {
+	lastSeen time.Time
+	id       string
+	location feedbackReportLocation
 }
 
-// ListFeedbackReports implements ReportReadStore. Every filter applies
-// before the page and the count.
+// feedbackReportLinkMatchesLocked decides the task, crate, and no_crate
+// filters for one report from its link rows, through the report's link
+// index and the task and crate maps, by reference and without decoding
+// evidence (store.FeedbackReportServed and store.FeedbackReportInCrate).
+func (m *volatileMemory) feedbackReportLinkMatchesLocked(workspace, reportID string, query FeedbackReportQuery) bool {
+	if query.TaskID == "" && query.CrateID == "" && !query.NoCrate {
+		return true
+	}
+	taskMatched, crateMatched, inAnyCrate := false, false, false
+	crateOf := func(row feedbackReportLinkRow) (string, bool) {
+		if row.State != FeedbackReportLinkPossible && row.State != FeedbackReportLinkConfirmed {
+			return "", false
+		}
+		switch {
+		case row.TaskID != nil && row.CrateID == nil:
+			task, ok := m.tasks[*row.TaskID]
+			if !ok || task.Workspace != workspace {
+				return "", false
+			}
+			if _, ok := m.crates[memoryScopedKey{workspace: workspace, id: task.TaskCrateID()}]; ok {
+				return task.TaskCrateID(), true
+			}
+			return "", true
+		case row.CrateID != nil && row.TaskID == nil:
+			if _, ok := m.crates[memoryScopedKey{workspace: workspace, id: *row.CrateID}]; ok {
+				return *row.CrateID, true
+			}
+		}
+		return "", false
+	}
+	for linkID := range m.feedbackReportState.linksByReport[memoryScopedKey{workspace: workspace, id: reportID}] {
+		row, ok := m.feedbackReportState.links[memoryScopedKey{workspace: workspace, id: linkID}]
+		if !ok || row.ReportID != reportID {
+			continue
+		}
+		crate, served := crateOf(row)
+		if !served {
+			continue
+		}
+		if row.TaskID != nil && *row.TaskID == query.TaskID {
+			taskMatched = true
+		}
+		if crate != "" {
+			inAnyCrate = true
+			if crate == query.CrateID {
+				crateMatched = true
+			}
+		}
+	}
+	return (query.TaskID == "" || taskMatched) && (query.CrateID == "" || crateMatched) && (!query.NoCrate || !inAnyCrate)
+}
+
+// ListFeedbackReports implements ReportReadStore under one read lock. The
+// filters select reports by reference over the in-process maps and copy
+// nothing. The count is the number selected. A selection over RefuseAbove
+// answers the count alone. Only the page's records are copied, and only
+// their links and notes are read (component-feedback-reports invariants 21
+// and 24).
 func (m *volatileMemory) ListFeedbackReports(ctx context.Context, query FeedbackReportQuery) (FeedbackReportPage, error) {
 	query, err := NormalizeFeedbackReportQuery(query)
 	if err != nil {
@@ -74,28 +119,33 @@ func (m *volatileMemory) ListFeedbackReports(ctx context.Context, query Feedback
 	workspace := workspaceOrDefault(ctx, "")
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	matched := []FeedbackReport{}
+	selected := []feedbackReportRef{}
 	for scope, reports := range m.feedbackReportState.reports {
 		if scope.workspace != workspace || (query.EnvironmentID != "" && scope.id != query.EnvironmentID) {
 			continue
 		}
-		for _, report := range reports {
-			if report.State != query.State {
+		for key, report := range reports {
+			if report.State != query.State || !m.feedbackReportLinkMatchesLocked(workspace, report.ID, query) {
 				continue
 			}
-			links, tasks, crates, err := m.feedbackReportLinkRefsLocked(workspace, report.ID)
-			if err != nil {
-				return FeedbackReportPage{}, err
-			}
-			if FeedbackReportMatches(query, links, tasks, crates) {
-				matched = append(matched, cloneFeedbackReport(report))
-			}
+			selected = append(selected, feedbackReportRef{lastSeen: report.LastSeen, id: report.ID, location: feedbackReportLocation{scope: scope, key: key}})
 		}
 	}
-	SortFeedbackReports(matched)
-	page := FeedbackReportPage{Reports: []FeedbackReport{}, Total: len(matched)}
-	if query.Offset < len(matched) {
-		page.Reports = matched[query.Offset:min(len(matched), query.Offset+query.Limit)]
+	page := FeedbackReportPage{Reports: []FeedbackReport{}, Total: len(selected), Details: FeedbackReportDetails{Links: map[string][]FeedbackReportLink{},
+		Notes: map[string][]FeedbackReportNote{}, Tasks: map[string]FeedbackReportTaskRef{}, Crates: map[string]FeedbackReportCrateRef{}}}
+	if page.Refused(query) {
+		return page, nil
+	}
+	slices.SortFunc(selected, func(a, b feedbackReportRef) int {
+		if n := b.lastSeen.Compare(a.lastSeen); n != 0 {
+			return n
+		}
+		return strings.Compare(a.id, b.id)
+	})
+	if query.Offset < len(selected) {
+		for _, ref := range selected[query.Offset:min(len(selected), query.Offset+query.Limit)] {
+			page.Reports = append(page.Reports, cloneFeedbackReport(m.feedbackReportState.reports[ref.location.scope][ref.location.key]))
+		}
 	}
 	// The details are read under the same read lock as the page.
 	if page.Details, err = m.feedbackReportDetailsLocked(workspace, page.Reports); err != nil {
@@ -184,6 +234,10 @@ func (m *volatileMemory) feedbackReportDetailsLocked(workspace string, reports [
 		details.Notes[report.ID] = notes
 	}
 	details.Tasks, details.Crates = m.feedbackReportRefsLocked(workspace, taskIDs, crateIDs)
+	m.feedbackReportState.readCopies.Add(int64(len(reports)))
+	for _, links := range details.Links {
+		m.feedbackReportState.readCopies.Add(int64(len(links)))
+	}
 	return details, nil
 }
 
@@ -191,8 +245,8 @@ func (m *volatileMemory) feedbackReportDetailsLocked(workspace string, reports [
 // the held mutex.
 func (m *volatileMemory) feedbackReportNotesLocked(workspace, reportID string) ([]FeedbackReportNote, error) {
 	rows := []feedbackReportNoteRow{}
-	for scope, row := range m.feedbackReportState.notes {
-		if scope.workspace == workspace && row.ReportID == reportID {
+	for noteID := range m.feedbackReportState.notesByReport[memoryScopedKey{workspace: workspace, id: reportID}] {
+		if row, ok := m.feedbackReportState.notes[memoryScopedKey{workspace: workspace, id: noteID}]; ok && row.ReportID == reportID {
 			rows = append(rows, row)
 		}
 	}
@@ -205,10 +259,12 @@ func (m *volatileMemory) feedbackReportNotesLocked(workspace, reportID string) (
 		}
 		notes = append(notes, note)
 	}
+	m.feedbackReportState.readCopies.Add(int64(len(notes)))
 	return notes, nil
 }
 
-// CountCrateOpenFeedbackReports implements ReportReadStore.
+// CountCrateOpenFeedbackReports implements ReportReadStore under one read
+// lock. It selects by reference and copies no record.
 func (m *volatileMemory) CountCrateOpenFeedbackReports(ctx context.Context, crateID string) (map[string]int, error) {
 	workspace := workspaceOrDefault(ctx, "")
 	m.mu.RLock()
@@ -226,11 +282,9 @@ func (m *volatileMemory) CountCrateOpenFeedbackReports(ctx context.Context, crat
 			if report.State != FeedbackReportOpen {
 				continue
 			}
-			links, tasks, crates, err := m.feedbackReportLinkRefsLocked(workspace, report.ID)
-			if err != nil {
-				return nil, err
-			}
-			if FeedbackReportMatches(query, links, tasks, crates) {
+			// Selected by reference, with the list's crate rule; nothing is
+			// copied or decoded.
+			if m.feedbackReportLinkMatchesLocked(workspace, report.ID, query) {
 				counts[report.EnvironmentID]++
 			}
 		}
@@ -277,7 +331,7 @@ func (m *volatileMemory) RecordFeedbackReportAct(ctx context.Context, act Feedba
 		return FeedbackReportActResult{}, err
 	}
 	for _, link := range append(slices.Clone(write.NewLinks), write.UpdatedLinks...) {
-		m.feedbackReportState.links[memoryScopedKey{workspace: workspace, id: link.ID}] = feedbackReportLinkRowOf(link)
+		m.putFeedbackReportLinkLocked(workspace, feedbackReportLinkRowOf(link))
 	}
 	m.feedbackReportState.reports[scope][key] = cloneFeedbackReport(write.Report)
 	m.appendEventLocked(ctx, write.Event)

@@ -26,11 +26,9 @@ const (
 // Act bounds. The close reason is 1 to 500 characters
 // (component-feedback-reports invariant 17).
 //
-// MaxFeedbackReportCauseTasks is provisional. The operator's recovery
-// direction of 2026-11-28 set it until a confirmed version of
-// component-feedback-reports (version 3, drafted) states it:
-// cause_task_ids names at most 50 tasks, each of them once, and a request
-// that breaks this is refused whole and records nothing.
+// MaxFeedbackReportCauseTasks: cause_task_ids names at most 50 tasks, each
+// of them once, and a request that breaks this is refused whole and records
+// nothing (component-feedback-reports v3 invariant 18).
 const (
 	FeedbackReportCloseReasonMax = 500
 	MaxFeedbackReportCauseTasks  = 50
@@ -95,6 +93,18 @@ type FeedbackReportQuery struct {
 	NoCrate       bool
 	Limit         int
 	Offset        int
+	// RefuseAbove, when positive, bounds the selection: when the filters
+	// select more reports than RefuseAbove, the read answers the count alone
+	// and loads no record and no details, so a caller can refuse an
+	// over-limit request before any record is loaded
+	// (component-feedback-reports invariant 24).
+	RefuseAbove int
+}
+
+// Refused reports whether a page answered only the count because the
+// selection passed the query's RefuseAbove.
+func (p FeedbackReportPage) Refused(query FeedbackReportQuery) bool {
+	return query.RefuseAbove > 0 && p.Total > query.RefuseAbove
 }
 
 // MaxFeedbackReportQueryLimit bounds one store page: the HTTP list takes at
@@ -148,9 +158,14 @@ type ReportReadStore interface {
 	// selects, newest last_seen first and then by ID, the number the filters
 	// select, and the details of the page's reports, all from one
 	// consistent view: the filters, the records, the links, crate
-	// membership, the fix task, and the count agree. Every filter applies before the page and the count,
-	// and a report that matches twice is counted once (FeedbackReportServed
-	// and FeedbackReportInCrate state what a filter matches).
+	// membership, the fix task, and the count agree. Every filter applies
+	// before the page and the count, and a report that matches twice is
+	// counted once (FeedbackReportServed and FeedbackReportInCrate state
+	// what a filter matches). The work follows the page, not the history:
+	// the filters and the count run over keys and indexes, and only the
+	// page's records, their links and notes, and the tasks and crates those
+	// name are loaded, so the lock or claim a backend holds for the view is
+	// held for the page alone (component-feedback-reports invariant 24).
 	ListFeedbackReports(ctx context.Context, query FeedbackReportQuery) (FeedbackReportPage, error)
 	// GetFeedbackReport answers one report, or ErrNotFound.
 	GetFeedbackReport(ctx context.Context, reportID string) (FeedbackReport, error)
@@ -163,7 +178,8 @@ type ReportReadStore interface {
 	// first occurrence. An ID the workspace does not hold has no report.
 	ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]FeedbackReport, FeedbackReportDetails, error)
 	// CountCrateOpenFeedbackReports answers, by environment ID, the number
-	// of open reports that belong to the crate (invariant 23). An
+	// of open reports that belong to the crate (invariant 23), with the
+	// list's crate filter as one aggregate that loads no report. An
 	// environment with none has no entry.
 	CountCrateOpenFeedbackReports(ctx context.Context, crateID string) (map[string]int, error)
 	// RecordFeedbackReportAct records one act in one transaction, as
@@ -178,6 +194,9 @@ type ReportReadStore interface {
 func NormalizeFeedbackReportQuery(query FeedbackReportQuery) (FeedbackReportQuery, error) {
 	if query.State != FeedbackReportOpen && query.State != FeedbackReportClosed {
 		return FeedbackReportQuery{}, fmt.Errorf("a report query needs the state open or closed")
+	}
+	if query.RefuseAbove < 0 {
+		return FeedbackReportQuery{}, fmt.Errorf("a report query needs a RefuseAbove of 0 or more")
 	}
 	if query.Limit < 1 || query.Limit > MaxFeedbackReportQueryLimit || query.Offset < 0 || query.Offset > MaxTaskOperationsOffset {
 		return FeedbackReportQuery{}, fmt.Errorf("a report query needs a limit from 1 to %d and an offset from 0 to %d", MaxFeedbackReportQueryLimit, MaxTaskOperationsOffset)
@@ -355,7 +374,7 @@ func CheckFeedbackReportCloseReason(reason string) error {
 
 // CheckFeedbackReportCauseTasks bounds cause_task_ids: at most
 // MaxFeedbackReportCauseTasks entries, each a task ID that is not empty and
-// appears once. The bound is provisional (MaxFeedbackReportCauseTasks).
+// appears once (component-feedback-reports v3 invariant 18).
 func CheckFeedbackReportCauseTasks(ids []string) error {
 	if len(ids) > MaxFeedbackReportCauseTasks {
 		return feedbackFieldError("cause_task_ids", "must name at most %d tasks", MaxFeedbackReportCauseTasks)
