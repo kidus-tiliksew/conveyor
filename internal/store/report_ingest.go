@@ -170,6 +170,10 @@ type FeedbackReport struct {
 	LineProgress *FeedbackLineProgress `json:"-"`
 	TimingResult *FeedbackTimingResult `json:"-"`
 	FixTaskID    string                `json:"fix_task_id"`
+	// FixTaskSetBy and FixTaskSetAt are the actor and time of the act that
+	// recorded the fix task (component-feedback-reports invariant 18).
+	FixTaskSetBy string     `json:"fix_task_set_by"`
+	FixTaskSetAt *time.Time `json:"fix_task_set_at"`
 }
 
 // ReportStore keeps feedback reports (component-feedback-reports;
@@ -197,6 +201,9 @@ type ReportStore interface {
 	// ReportLinkingStore keeps the line reads, links, notes, and linking
 	// attempts of reports (feature-production-feedback-listening FR-2).
 	ReportLinkingStore
+	// ReportReadStore keeps the reads and acts of reports for people
+	// (feature-production-feedback-listening FR-3).
+	ReportReadStore
 }
 
 // FeedbackReportField is the path that a refusal of an entry's member names.

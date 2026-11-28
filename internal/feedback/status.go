@@ -54,6 +54,10 @@ type CrateLine struct {
 	Listening       bool           `json:"listening"`
 	LastSignalAt    *time.Time     `json:"last_signal_at"`
 	AsOf            *time.Time     `json:"as_of"`
+	// OpenReportCount is the number of open reports of the environment that
+	// belong to the crate (component-feedback-reports invariant 23;
+	// req-production-feedback AC-6.2).
+	OpenReportCount int `json:"open_report_count"`
 }
 
 // Missing names the stored answers that a status needs and storage lacks.
@@ -329,13 +333,16 @@ func TaskStatuses(in Inputs, task store.FeedbackMergedTask) (statuses []TaskStat
 // yet, and what storage still lacks (invariants 18 and 20;
 // req-production-feedback AC-3.4). members are every merged member of the
 // crate, whatever their merge commit. A pending member changes no line,
-// count, or live_in entry.
-func CrateStatus(in Inputs, members []store.FeedbackMergedTask) (lines []CrateLine, liveIn map[string][]string, pending bool, missing Missing) {
+// count, or live_in entry. openReports holds the number of open reports that
+// belong to the crate by environment ID, and each line carries its
+// environment's number, 0 when it has none; it decides no line
+// (component-feedback-reports invariant 23).
+func CrateStatus(in Inputs, members []store.FeedbackMergedTask, openReports map[string]int) (lines []CrateLine, liveIn map[string][]string, pending bool, missing Missing) {
 	v := newView(in)
 	lines = []CrateLine{}
 	liveIn = map[string][]string{}
 	for _, environment := range v.environments() {
-		line := CrateLine{Environment: EnvironmentRef{ID: environment.ID, Name: environment.Name}, MergedTaskCount: len(members), AsOf: v.asOf(environment.ID)}
+		line := CrateLine{Environment: EnvironmentRef{ID: environment.ID, Name: environment.Name}, MergedTaskCount: len(members), AsOf: v.asOf(environment.ID), OpenReportCount: openReports[environment.ID]}
 		relevant := false
 		for _, member := range members {
 			if !v.relevant(environment, member.Repository) {

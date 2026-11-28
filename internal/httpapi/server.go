@@ -496,6 +496,16 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Patch("/crates/{id}", s.patchCrate)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Put("/tasks/{id}/crate", s.setTaskCrate)
 			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Delete("/tasks/{id}/crate", s.clearTaskCrate)
+			// Feedback reports: reads need view_workspace, which this group
+			// requires, and every act needs create_tasks
+			// (component-feedback-reports, Public surfaces; DEC-149(2)).
+			r.Get("/feedback-reports", s.listFeedbackReports)
+			r.Get("/feedback-reports/{id}", s.getFeedbackReport)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/feedback-reports/{id}/links", s.linkFeedbackReport)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Delete("/feedback-reports/{id}/links/{link_id}", s.removeFeedbackReportLink)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/feedback-reports/{id}/close", s.closeFeedbackReport)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/feedback-reports/{id}/reopen", s.reopenFeedbackReport)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Put("/feedback-reports/{id}/fix-task", s.setFeedbackReportFixTask)
 			// Environments: reads need view_workspace, which this group
 			// requires, and every mutation needs manage_workspace
 			// (component-environments invariant 2).

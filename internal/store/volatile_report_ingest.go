@@ -197,6 +197,10 @@ func cloneFeedbackReport(report FeedbackReport) FeedbackReport {
 		at := *report.LinkingLastAttemptAt
 		report.LinkingLastAttemptAt = &at
 	}
+	if report.FixTaskSetAt != nil {
+		at := *report.FixTaskSetAt
+		report.FixTaskSetAt = &at
+	}
 	if report.LineProgress != nil {
 		progress := CheckStoredFeedbackLineProgress(cloneFeedbackLineProgress(*report.LineProgress))
 		report.LineProgress = &progress
