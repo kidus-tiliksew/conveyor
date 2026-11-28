@@ -399,7 +399,7 @@ func (s *Store) ListInboxFeedbackReports(ctx context.Context, countOnly bool) (s
 	args := []any{ws, store.FeedbackReportOpen}
 	if countOnly {
 		page := store.FeedbackReportPage{Reports: []store.FeedbackReport{}, Details: store.NewFeedbackReportDetails()}
-		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_reports r WHERE `+where, args...).Scan(&page.Total); err != nil {
+		if err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM feedback_reports r WHERE `+where, args...).Scan(&page.Total); err != nil {
 			return store.FeedbackReportPage{}, err
 		}
 		page.Details.ReadAt = store.FeedbackReadClock(ctx)
@@ -407,8 +407,14 @@ func (s *Store) ListInboxFeedbackReports(ctx context.Context, countOnly bool) (s
 	}
 	// The view reads the count and then the rows under the environment
 	// claim, which serializes report writes, so the limit only has to hold
-	// every row the count saw.
-	return s.readFeedbackReportView(ctx, ws, where, args, math.MaxInt32, 0, 0, nil)
+	// every row the count saw. The view orders a page by last_seen; the
+	// membership is ordered by ID.
+	page, err := s.readFeedbackReportView(ctx, ws, where, args, math.MaxInt32, 0, 0, nil)
+	if err != nil {
+		return store.FeedbackReportPage{}, err
+	}
+	slices.SortFunc(page.Reports, func(a, b store.FeedbackReport) int { return strings.Compare(a.ID, b.ID) })
+	return page, nil
 }
 
 // ReadFeedbackReports implements store.ReportReadStore with one consistent
