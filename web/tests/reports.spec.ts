@@ -1852,3 +1852,66 @@ test.describe('review follow-ups', () => {
     expect(server.acts).toHaveLength(1)
   })
 })
+
+// The second follow-up review.
+test.describe('review follow-ups, second round', () => {
+  const second = report('rpt-261127-d00011', {
+    summary: 'Second report',
+    links: [taskLink('lnk-s2', '261120-b02', 'Store invoice numbers')],
+  })
+
+  test('A, then B, then A with both record requests on their way sends no second request for A', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [fixReport, second] })
+    await page.goto(fixAddress)
+    const held = gate()
+    server.actGate = held.promise
+    await createFixTask(page)
+    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('Conveyor records it on the report now…')
+    // B starts its own fix task while A's request waits.
+    await page.evaluate((id) => {
+      history.pushState({}, '', `/w/demo/?create=true&report=${id}`)
+      dispatchEvent(new PopStateEvent('popstate'))
+    }, second.id)
+    await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Second report')
+    await createFixTask(page, [])
+    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('Conveyor records it on the report now…')
+    // Back to A: its request is still on its way, so nothing can send another.
+    await page.goBack()
+    await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText(fixReport.summary)
+    await expect(sheet(page).locator('[data-fix-task-created]')).toBeVisible()
+    await page.waitForTimeout(300)
+    await expect(recordButton(page)).toHaveCount(0)
+    await expect(createButton(page)).toBeDisabled()
+    expect(fixPuts(server).map((act) => act.path)).toEqual([fixPath, `/v1/feedback-reports/${second.id}/fix-task`])
+    held.open()
+    server.actGate = null
+    // A's own answer finishes A's flow; B's answer clears B's saved task.
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    await page.waitForTimeout(300)
+    expect(fixPuts(server)).toHaveLength(2)
+    expect(server.created).toHaveLength(2)
+    expect(
+      await page.evaluate(() => Object.keys(sessionStorage).filter((key) => key.startsWith('conveyor-fix-task'))),
+    ).toEqual([])
+  })
+
+  test('with a fixed clock, a failed read after an unknown answer still keeps every act blocked', async ({ page }) => {
+    await page.clock.setFixedTime(now)
+    const server = await mockReportServer(page, { reports: [actReport] })
+    await page.goto('/w/demo/monitor')
+    const item = card(page, actReport.id)
+    const confirm = item.getByRole('button', { name: 'Confirm the link to Send invoices by email' })
+    await expect(confirm).toBeEnabled()
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    server.listAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    await confirm.click()
+    await expect(item.locator('[data-report-act-error]')).toContainText(
+      'Conveyor does not know whether it recorded this, and the report did not load again.',
+    )
+    await expect(confirm).toBeDisabled()
+    server.listAnswer = null
+    await item.getByRole('button', { name: 'Read the report again' }).click()
+    await expect(confirm).toBeEnabled()
+    expect(server.acts).toHaveLength(1)
+  })
+})

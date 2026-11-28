@@ -150,8 +150,9 @@ export function useFixTaskFlow({
   // only clears its own report's saved task when the record succeeds.
   const shown = useRef(identity)
   shown.current = identity
-  // The flow whose record request is on its way, so it is never sent twice.
-  const sending = useRef<string | null>(null)
+  // The flows whose record request is on its way, each tracked on its own,
+  // so no flow's request is ever sent twice, whatever flows come between.
+  const sending = useRef(new Set<string>())
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -197,8 +198,8 @@ export function useFixTaskFlow({
   const sendRecord = useCallback(
     async (entry: CreatedFixTask) => {
       const flow = identity
-      if (!reportId || sending.current === flow) return
-      sending.current = flow
+      if (!reportId || sending.current.has(flow)) return
+      sending.current.add(flow)
       setRecord({ phase: 'sending' })
       try {
         await setFeedbackReportFixTask(workspace, reportId, entry.taskId, entry.causeTaskIds)
@@ -236,7 +237,7 @@ export function useFixTaskFlow({
           setRecord({ phase: 'failed', canSend: true, message: recordFailureMessage(error) })
         }
       } finally {
-        if (sending.current === flow) sending.current = null
+        sending.current.delete(flow)
       }
     },
     [workspace, reportId, queryClient, queryKey, finish, identity, live],
@@ -256,7 +257,9 @@ export function useFixTaskFlow({
   const rereadReport = useCallback(
     async (restored = false) => {
       const flow = identity
-      if (!created || sending.current === flow) return
+      // While this flow's record request is on its way, its own answer
+      // decides the next step.
+      if (!created || sending.current.has(flow)) return
       setRecord({ phase: 'checking' })
       try {
         const fresh = await queryClient.fetchQuery({
