@@ -1341,72 +1341,104 @@ func TestFeedbackReportTimingReadsMergesAfterDeploys(t *testing.T) {
 	}
 }
 
-// TestFeedbackReportLineReadHoldsUntilAResetPastTheFallback proves review
-// round 7 through the worker: a rate-limited line read whose error carries
-// GitHub's reset ten minutes away holds the workspace until that time, well
-// past the worker's one-minute fallback. The result stays unanswered, and no
-// request is sent before the reset (component-production-feedback invariant
-// 28; component-feedback-reports invariant 12).
+// TestFeedbackReportLineReadHoldsUntilAResetPastTheFallback proves reviews
+// rounds 7 and 8 through the worker for every failure the line read can
+// carry a retry time on: a rate limit, and a status, permission, or
+// malformed answer whose response stated a time. Each holds the workspace
+// until GitHub's time ten minutes away, well past the worker's one-minute
+// fallback. The result stays unanswered with the failure's category and
+// nothing is stored, and no request is sent before that time
+// (component-production-feedback invariant 28; component-feedback-reports
+// invariant 12).
 func TestFeedbackReportLineReadHoldsUntilAResetPastTheFallback(t *testing.T) {
-	h := newLinkingHarness(t)
-	retryAt := h.clock().Add(10 * time.Minute)
-	h.forge.set(func(f *linkingForge) { f.failure = github.RateLimitedError(retryAt, errors.New("rate limit")) })
-	h.acceptReport(reportBody(lineEntry("crash")))
-	h.settle()
-	report := h.reportByKey("crash")
-	first := h.forge.calls()
-	if first != [3]int{1, 1, 0} {
-		t.Fatalf("calls=%v, want a commit read and a line read", first)
-	}
-	if until, held := h.server.feedbackJobEnv().backoff.forgeHold("alpha", h.clock()); !held || !until.Equal(retryAt) {
-		t.Fatalf("hold=%v held=%v, want the workspace held until GitHub's reset %v", until, held, retryAt)
-	}
-	h.forge.set(func(f *linkingForge) { f.failure = nil })
-	for _, at := range []time.Time{h.clock().Add(feedbackTokenRetry + time.Minute), h.clock().Add(5 * time.Minute), retryAt.Add(-time.Nanosecond)} {
-		h.settle()
-		h.setNow(at)
-		h.attempt(report.ID)
-		if after := h.forge.calls(); after != first {
-			t.Fatalf("calls at %v %v, want none before the reset", at, after)
-		}
-		if _, stored, _ := h.st.ReadFeedbackReportLineRead(h.ctx, report.ID); stored || h.reportByID(report.ID).LinkingEndedAt != nil {
-			t.Fatalf("at %v the rule was answered while held", at)
-		}
-	}
-	h.setNow(retryAt.Add(time.Minute))
-	h.attempt(report.ID)
-	if after := h.forge.calls(); after[1] != 2 || h.reportByID(report.ID).LinkingEndedAt == nil {
-		t.Fatalf("calls after the reset %v, want the line read sent and linking ended", after)
+	for _, category := range []github.ForgeErrorCategory{github.ForgeRateLimited, github.ForgeStatus, github.ForgePermission, github.ForgeResponse} {
+		t.Run(string(category), func(t *testing.T) {
+			h := newLinkingHarness(t)
+			retryAt := h.clock().Add(10 * time.Minute)
+			h.forge.set(func(f *linkingForge) {
+				f.failure = &github.Error{Category: category, RetryAt: retryAt, Err: errors.New("GitHub stated a retry time")}
+			})
+			h.acceptReport(reportBody(lineEntry("crash")))
+			h.settle()
+			report := h.reportByKey("crash")
+			first := h.forge.calls()
+			if first != [3]int{1, 1, 0} {
+				t.Fatalf("calls=%v, want a commit read and a line read", first)
+			}
+			if reason := h.server.feedbackWorker().backoff.lineReason("alpha/" + report.ID); reason != string(category) {
+				t.Fatalf("reason=%q, want the rule unanswered with %s", reason, category)
+			}
+			if until, held := h.server.feedbackJobEnv().backoff.forgeHold("alpha", h.clock()); !held || !until.Equal(retryAt) {
+				t.Fatalf("hold=%v held=%v, want the workspace held until GitHub's time %v", until, held, retryAt)
+			}
+			h.forge.set(func(f *linkingForge) { f.failure = nil })
+			for _, at := range []time.Time{h.clock().Add(feedbackTokenRetry + time.Minute), h.clock().Add(5 * time.Minute), retryAt.Add(-time.Nanosecond)} {
+				h.settle()
+				h.setNow(at)
+				h.attempt(report.ID)
+				if after := h.forge.calls(); after != first {
+					t.Fatalf("calls at %v %v, want none before GitHub's time", at, after)
+				}
+				if _, stored, _ := h.st.ReadFeedbackReportLineRead(h.ctx, report.ID); stored || h.reportByID(report.ID).LinkingEndedAt != nil {
+					t.Fatalf("at %v the rule was answered while held", at)
+				}
+			}
+			h.setNow(retryAt.Add(time.Minute))
+			h.attempt(report.ID)
+			if after := h.forge.calls(); after[1] != 2 || h.reportByID(report.ID).LinkingEndedAt == nil {
+				t.Fatalf("calls after GitHub's time %v, want the line read sent and linking ended", after)
+			}
+		})
 	}
 }
 
-// TestFeedbackReportCompleteLineReadWithNoRequestLeft proves that a complete
-// line read whose response stated that no request is left keeps its answer
-// and holds the workspace until GitHub's reset: the next report's commit read
-// is not sent before it.
+// TestFeedbackReportCompleteLineReadWithNoRequestLeft proves reviews rounds
+// 7 and 8 through the worker for every outcome that stores an answer: a
+// found file and a missing file whose response stated a retry time are each
+// stored as their answer, and the workspace holds until that time. The next
+// report's commit read is not sent before it, and is sent after it.
 func TestFeedbackReportCompleteLineReadWithNoRequestLeft(t *testing.T) {
-	h := newLinkingHarness(t)
-	retryAt := h.clock().Add(10 * time.Minute)
-	h.forge.set(func(f *linkingForge) { f.answer.RetryAt = retryAt })
-	h.acceptReport(reportBody(lineEntry("crash")))
-	h.settle()
-	report := h.reportByKey("crash")
-	if _, stored, _ := h.st.ReadFeedbackReportLineRead(h.ctx, report.ID); !stored || h.reportByID(report.ID).LinkingEndedAt == nil {
-		t.Fatal("the complete answer was not kept")
-	}
-	if until, held := h.server.feedbackJobEnv().backoff.forgeHold("alpha", h.clock()); !held || !until.Equal(retryAt) {
-		t.Fatalf("hold=%v held=%v, want the workspace held until %v", until, held, retryAt)
-	}
-	before := h.forge.calls()
-	h.setNow(h.clock().Add(5 * time.Minute))
-	h.acceptReport(reportBody(lineEntry("next")))
-	h.settle()
-	if after := h.forge.calls(); after != before {
-		t.Fatalf("calls during the hold %v, want %v", after, before)
-	}
-	h.setNow(retryAt.Add(time.Minute))
-	h.attempt(h.reportByKey("next").ID)
-	if after := h.forge.calls(); after[0] != before[0]+1 {
-		t.Fatalf("calls after the reset %v, want the next commit read", after)
+	for _, tc := range []struct {
+		name   string
+		answer github.LineChange
+	}{
+		{name: "found", answer: github.LineChange{FileFound: true, Commit: linkingChange, PullRequests: []int{}}},
+		{name: "file_not_found", answer: github.LineChange{FileFound: false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLinkingHarness(t)
+			retryAt := h.clock().Add(10 * time.Minute)
+			answer := tc.answer
+			answer.RetryAt = retryAt
+			h.forge.set(func(f *linkingForge) { f.answer = answer })
+			h.acceptReport(reportBody(lineEntry("crash")))
+			h.settle()
+			report := h.reportByKey("crash")
+			read, stored, err := h.st.ReadFeedbackReportLineRead(h.ctx, report.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !stored || read.Answer.FileFound != tc.answer.FileFound || read.Answer.Commit != tc.answer.Commit || h.reportByID(report.ID).LinkingEndedAt == nil {
+				t.Fatalf("stored=%v read=%+v, want the %s answer kept and linking ended", stored, read.Answer, tc.name)
+			}
+			if until, held := h.server.feedbackJobEnv().backoff.forgeHold("alpha", h.clock()); !held || !until.Equal(retryAt) {
+				t.Fatalf("hold=%v held=%v, want the workspace held until %v", until, held, retryAt)
+			}
+			before := h.forge.calls()
+			h.setNow(h.clock().Add(5 * time.Minute))
+			h.acceptReport(reportBody(lineEntry("next")))
+			h.settle()
+			next := h.reportByKey("next")
+			h.setNow(retryAt.Add(-time.Nanosecond))
+			h.attempt(next.ID)
+			if after := h.forge.calls(); after != before {
+				t.Fatalf("calls during the hold %v, want %v", after, before)
+			}
+			h.setNow(retryAt.Add(time.Minute))
+			h.attempt(next.ID)
+			if after := h.forge.calls(); after[0] != before[0]+1 {
+				t.Fatalf("calls after the retry time %v, want the next commit read", after)
+			}
+		})
 	}
 }

@@ -72,9 +72,11 @@ const (
 type Error struct {
 	Category ForgeErrorCategory
 	status   int // REST status, used only to distinguish definitive PATCH refusal.
-	// RetryAt is when GitHub allows the next request after a rate-limited
-	// answer, from its Retry-After or X-RateLimit-Reset header. It is zero
-	// when the category is not ForgeRateLimited or GitHub named no time.
+	// RetryAt is when GitHub allows the next request, from the
+	// Retry-After or X-RateLimit-Reset header of the failed response. It is
+	// zero when GitHub named no time. REST calls set it only on
+	// ForgeRateLimited; the line read sets it on every failure whose
+	// response stated a time (StatedRetryAt).
 	RetryAt time.Time
 	Err     error
 }
@@ -100,27 +102,61 @@ func RateLimitRetryAt(err error) (time.Time, bool) {
 	return categorized.RetryAt, true
 }
 
+// StatedRetryAt returns the retry time a GitHub failure carries, whatever
+// its category, and zero when it carries none. A caller that honors it sends
+// no request of the same token before that time.
+func StatedRetryAt(err error) time.Time {
+	var categorized *Error
+	if !errors.As(err, &categorized) {
+		return time.Time{}
+	}
+	return categorized.RetryAt
+}
+
 // rateLimitRetryAt reads when GitHub allows the next request from a
 // rate-limited response: the later of Retry-After, in seconds or as an HTTP
 // date, and X-RateLimit-Reset, in Unix seconds. It is zero when neither
 // header parses.
 func rateLimitRetryAt(header http.Header, now time.Time) time.Time {
-	var at time.Time
-	if value := strings.TrimSpace(header.Get("Retry-After")); value != "" {
-		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
-			at = now.Add(time.Duration(seconds) * time.Second)
-		} else if date, err := http.ParseTime(value); err == nil {
-			at = date
-		}
+	return laterTime(retryAfterAt(header, now), rateLimitResetAt(header))
+}
+
+// retryAfterAt is the time a Retry-After header states, in seconds after now
+// or as an HTTP date, and zero when the header is absent or does not parse.
+func retryAfterAt(header http.Header, now time.Time) time.Time {
+	value := strings.TrimSpace(header.Get("Retry-After"))
+	if value == "" {
+		return time.Time{}
 	}
-	if value := strings.TrimSpace(header.Get("X-RateLimit-Reset")); value != "" {
-		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
-			if reset := time.Unix(seconds, 0); reset.After(at) {
-				at = reset
-			}
-		}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+		return now.Add(time.Duration(seconds) * time.Second).UTC()
 	}
-	return at.UTC()
+	if date, err := http.ParseTime(value); err == nil {
+		return date.UTC()
+	}
+	return time.Time{}
+}
+
+// rateLimitResetAt is the time an X-RateLimit-Reset header states in Unix
+// seconds, and zero when the header is absent or does not parse.
+func rateLimitResetAt(header http.Header) time.Time {
+	value := strings.TrimSpace(header.Get("X-RateLimit-Reset"))
+	if value == "" {
+		return time.Time{}
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+		return time.Unix(seconds, 0).UTC()
+	}
+	return time.Time{}
+}
+
+// laterTime returns the later of two times; a zero time is earlier than any
+// other.
+func laterTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b.UTC()
+	}
+	return a.UTC()
 }
 
 // ErrorCategory returns the stable category carried by a GitHub boundary
@@ -1264,10 +1300,11 @@ type LineChange struct {
 	FileFound    bool
 	Commit       string
 	PullRequests []int
-	// RetryAt is set on a complete answer whose response stated that no
-	// request is left (X-RateLimit-Remaining 0): the time GitHub allows the
-	// next request. The answer is complete; the caller sends nothing more
-	// before that time.
+	// RetryAt is the time GitHub allows the next request when the response
+	// that answered stated one (lineChangeRetryAt): a found file and a
+	// missing file alike. The answer is complete and is kept; the caller
+	// sends nothing more before that time. It is zero when the response
+	// stated no time.
 	RetryAt time.Time
 }
 
@@ -1295,7 +1332,10 @@ const lineChangeQuery = `query($owner:String!,$name:String!,$oid:GitObjectID!,$p
 // errors member, an unreadable repository, a commit GitHub does not find
 // (ErrCommitNotFound), no blame range that holds the line, a pull request
 // list without its page information or with more than one page, and a
-// malformed answer.
+// malformed answer. A RATE_LIMITED error decides the outcome before any
+// other check. Whatever the read returns carries the retry time its
+// response stated: LineChange.RetryAt on an answer, StatedRetryAt on a
+// failure.
 func ReadLineChange(ctx context.Context, repo, commit, path string, line int) (LineChange, error) {
 	return readLineChange(ctx, repo, commit, path, line, gh)
 }
@@ -1319,21 +1359,40 @@ func (e lineChangeError) missingFileError() bool {
 	return (e.Path[1] == "commit" && e.Path[2] == "file") || (e.Path[1] == "blamed" && e.Path[2] == "blame")
 }
 
-// lineChangeFailure maps GraphQL errors to the existing categories. A
-// RATE_LIMITED error keeps retryAt, the retry time the same HTTP response
-// stated, so the caller sends nothing before it. No message text is kept, so
-// no answer text reaches a caller or a log.
-func lineChangeFailure(errs []lineChangeError, retryAt time.Time) error {
+// lineChangeFailure maps GraphQL errors other than a rate limit to the
+// existing categories; lineChangeRateLimited decides a rate limit first. No
+// message text is kept, so no answer text reaches a caller or a log.
+func lineChangeFailure(errs []lineChangeError) error {
 	category := ForgeResponse
 	for _, e := range errs {
 		switch strings.ToUpper(e.Type) {
-		case "RATE_LIMITED":
-			return &Error{Category: ForgeRateLimited, RetryAt: retryAt, Err: errors.New("read line change: GitHub rate-limited the GraphQL request")}
 		case "FORBIDDEN", "NOT_FOUND":
 			category = ForgePermission
 		}
 	}
 	return &Error{Category: category, Err: fmt.Errorf("read line change: GitHub answered %d GraphQL errors", len(errs))}
+}
+
+// lineChangeRateLimited reports whether a GraphQL answer holds a
+// RATE_LIMITED error. It reads only the errors member, each error on its
+// own, so that no shape of the data member, and no malformed sibling error,
+// hides a rate limit GitHub stated.
+func lineChangeRateLimited(raw []byte) bool {
+	var answer struct {
+		Errors []json.RawMessage `json:"errors"`
+	}
+	if json.Unmarshal(raw, &answer) != nil {
+		return false
+	}
+	for _, item := range answer.Errors {
+		var e struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(item, &e) == nil && strings.EqualFold(strings.TrimSpace(e.Type), "RATE_LIMITED") {
+			return true
+		}
+	}
+	return false
 }
 
 // lineChangeRange is one blame range as GitHub answers it. Every member is a
@@ -1389,36 +1448,78 @@ func rawObject(raw json.RawMessage) bool {
 }
 
 func readLineChange(ctx context.Context, repo, commit, path string, line int, run ghRunner) (LineChange, error) {
-	owner, name, ok := strings.Cut(strings.TrimSpace(repo), "/")
-	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || !fullCommitID(commit) || path == "" || line < 1 {
-		return LineChange{}, &Error{Category: ForgeRequest, Err: errors.New("a line read needs a repository slug, a full commit ID, a path, and a line")}
+	change, signals, err := askLineChange(ctx, repo, commit, path, line, run)
+	return withLineChangeRetry(change, err, signals)
+}
+
+// lineChangeRetryAt is the one retry time of a line-read response, worked
+// out from its signals before the outcome is used: the latest time that
+// Retry-After states, and that X-RateLimit-Reset states when the response
+// is a rate limit (a refused status or a RATE_LIMITED error) or states that
+// no request is left (X-RateLimit-Remaining 0). A reset beside requests left
+// is not a wait. It is zero when the response stated no time, and then a
+// rate-limited caller applies its own fallback.
+func lineChangeRetryAt(signals graphqlEnvelope, rateLimited bool) time.Time {
+	at := signals.RetryAfter
+	if rateLimited || signals.RemainingZero {
+		at = laterTime(at, signals.Reset)
 	}
-	// The one query asks for GitHub's retry signals beside the body: an HTTP
-	// 200 answer can still be a rate limit, and only its headers state when
-	// GitHub allows the next request. A refused HTTP status already carries
-	// its retry time in the error.
-	enveloped, err := run(ctx, "api", "graphql", graphqlRetryEnvelope, "-f", "query="+lineChangeQuery, "-f", "owner="+owner, "-f", "name="+name, "-f", "oid="+commit, "-f", "path="+path)
+	return at
+}
+
+// withLineChangeRetry is the one place that attaches the retry time to what
+// the line read returns: a found file, a missing file, and every failure.
+// Every return of readLineChange goes through it.
+func withLineChangeRetry(change LineChange, err error, signals graphqlEnvelope) (LineChange, error) {
 	if err != nil {
-		return LineChange{}, fmt.Errorf("read line change: %w", forgeCallError(err))
+		err = forgeCallError(err)
+		var failure *Error
+		errors.As(err, &failure)
+		retryAt := laterTime(failure.RetryAt, lineChangeRetryAt(signals, failure.Category == ForgeRateLimited))
+		if retryAt.IsZero() || retryAt.Equal(failure.RetryAt) {
+			return LineChange{}, err
+		}
+		return LineChange{}, &Error{Category: failure.Category, status: failure.status, RetryAt: retryAt, Err: err}
 	}
-	var envelope graphqlEnvelope
-	if json.Unmarshal(enveloped, &envelope) != nil {
-		return LineChange{}, forgeResponseError("read line change: malformed GraphQL answer")
-	}
-	raw, retryAt := envelope.Body, envelope.RetryAt
-	change, err := decodeLineChange(raw, commit, path, line, owner, name, retryAt)
-	if err != nil {
-		return LineChange{}, err
-	}
-	if change.FileFound && envelope.RemainingZero && !retryAt.IsZero() {
-		change.RetryAt = retryAt
-	}
+	change.RetryAt = lineChangeRetryAt(signals, false)
 	return change, nil
 }
 
-// decodeLineChange decodes one line-read answer. retryAt is the retry time
-// the same HTTP response stated, kept on a rate-limited failure.
-func decodeLineChange(raw []byte, commit, path string, line int, owner, name string, retryAt time.Time) (LineChange, error) {
+// askLineChange sends the one query and interprets its answer. It returns
+// the retry signals of the response that answered, empty when there was
+// none, and leaves the retry time to withLineChangeRetry.
+func askLineChange(ctx context.Context, repo, commit, path string, line int, run ghRunner) (LineChange, graphqlEnvelope, error) {
+	owner, name, ok := strings.Cut(strings.TrimSpace(repo), "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || !fullCommitID(commit) || path == "" || line < 1 {
+		return LineChange{}, graphqlEnvelope{}, &Error{Category: ForgeRequest, Err: errors.New("a line read needs a repository slug, a full commit ID, a path, and a line")}
+	}
+	// The one query asks for GitHub's retry signals beside the body: an HTTP
+	// 200 answer can still be a rate limit or state that no request is left,
+	// and only its headers state when GitHub allows the next request. The
+	// envelope also comes back beside the error of a refused status.
+	enveloped, err := run(ctx, "api", "graphql", graphqlRetryEnvelope, "-f", "query="+lineChangeQuery, "-f", "owner="+owner, "-f", "name="+name, "-f", "oid="+commit, "-f", "path="+path)
+	var signals graphqlEnvelope
+	if len(enveloped) > 0 && json.Unmarshal(enveloped, &signals) != nil {
+		signals = graphqlEnvelope{}
+		if err == nil {
+			return LineChange{}, signals, forgeResponseError("read line change: malformed GraphQL answer")
+		}
+	}
+	if err != nil {
+		return LineChange{}, signals, fmt.Errorf("read line change: %w", forgeCallError(err))
+	}
+	change, err := decodeLineChange(signals.Body, commit, path, line, owner, name)
+	return change, signals, err
+}
+
+// decodeLineChange decodes one line-read answer into its outcome. A
+// RATE_LIMITED error decides the outcome before any other check, so data
+// beside it, partial or malformed, is never read as an answer or as a
+// malformed answer.
+func decodeLineChange(raw []byte, commit, path string, line int, owner, name string) (LineChange, error) {
+	if lineChangeRateLimited(raw) {
+		return LineChange{}, &Error{Category: ForgeRateLimited, Err: errors.New("read line change: GitHub rate-limited the GraphQL request")}
+	}
 	// Every member the query selects is checked for presence, type, and
 	// consistency with its siblings. A member that is missing, null where
 	// the schema allows no null, of another type, empty, or inconsistent is
@@ -1441,7 +1542,7 @@ func decodeLineChange(raw []byte, commit, path string, line int, owner, name str
 	data := answer.Data
 	if data == nil || data.Repository == nil {
 		if len(answer.Errors) > 0 {
-			return LineChange{}, lineChangeFailure(answer.Errors, retryAt)
+			return LineChange{}, lineChangeFailure(answer.Errors)
 		}
 		return LineChange{}, forgeResponseError("read line change: the answer holds no repository")
 	}
@@ -1450,7 +1551,7 @@ func decodeLineChange(raw []byte, commit, path string, line int, owner, name str
 	case !present:
 		return LineChange{}, forgeResponseError("read line change: the answer holds no commit member")
 	case null && len(answer.Errors) > 0:
-		return LineChange{}, lineChangeFailure(answer.Errors, retryAt)
+		return LineChange{}, lineChangeFailure(answer.Errors)
 	case null:
 		return LineChange{}, CommitNotFoundError(commit)
 	case !rawObject(data.Repository.Commit):
@@ -1482,13 +1583,13 @@ func decodeLineChange(raw []byte, commit, path string, line int, owner, name str
 		}
 		for _, e := range answer.Errors {
 			if !e.missingFileError() {
-				return LineChange{}, lineChangeFailure(answer.Errors, retryAt)
+				return LineChange{}, lineChangeFailure(answer.Errors)
 			}
 		}
 		return LineChange{FileFound: false}, nil
 	}
 	if len(answer.Errors) > 0 {
-		return LineChange{}, lineChangeFailure(answer.Errors, retryAt)
+		return LineChange{}, lineChangeFailure(answer.Errors)
 	}
 	// A file object proves the file only with its path, and only with the
 	// path the read asked for.

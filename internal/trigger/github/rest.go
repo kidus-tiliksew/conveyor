@@ -314,12 +314,15 @@ const graphqlRetryEnvelope = "--retry-envelope"
 // graphqlEnvelope is the answer of a GraphQL call made with
 // graphqlRetryEnvelope: the body as GitHub sent it, and the retry signals of
 // the same HTTP response. GitHub answers a GraphQL rate limit with HTTP 200,
-// so these headers are the only place its retry time appears. RetryAt is the
-// later of Retry-After and X-RateLimit-Reset, and zero when neither parses.
-// RemainingZero is true when X-RateLimit-Remaining is 0.
+// so these headers are the only place its retry time appears. RetryAfter is
+// the time Retry-After states, in seconds or as an HTTP date, and Reset the
+// time X-RateLimit-Reset states; each is zero when its header is absent or
+// does not parse. RemainingZero is true when X-RateLimit-Remaining is 0.
+// The caller decides from these and the body which time applies.
 type graphqlEnvelope struct {
 	Body          []byte    `json:"body"`
-	RetryAt       time.Time `json:"retry_at"`
+	RetryAfter    time.Time `json:"retry_after"`
+	Reset         time.Time `json:"reset"`
 	RemainingZero bool      `json:"remaining_zero"`
 }
 
@@ -347,14 +350,22 @@ func (c *restClient) graphql(ctx context.Context, args ...string) ([]byte, error
 		}
 	}
 	raw, header, _, err := c.request(ctx, http.MethodPost, "graphql", "application/vnd.github+json", map[string]any{"query": query, "variables": variables})
-	if err != nil || !envelope {
+	if !envelope {
 		return raw, err
 	}
-	encoded, encodeErr := json.Marshal(graphqlEnvelope{Body: raw, RetryAt: rateLimitRetryAt(header, time.Now()), RemainingZero: strings.TrimSpace(header.Get("X-RateLimit-Remaining")) == "0"})
+	// With the flag, the envelope comes back whenever GitHub answered, also
+	// beside the error of a refused status, so the line read reads the retry
+	// signals of every response. No answer, such as a transport failure or a
+	// timeout, has no signals.
+	if header == nil {
+		return nil, err
+	}
+	now := time.Now()
+	encoded, encodeErr := json.Marshal(graphqlEnvelope{Body: raw, RetryAfter: retryAfterAt(header, now), Reset: rateLimitResetAt(header), RemainingZero: strings.TrimSpace(header.Get("X-RateLimit-Remaining")) == "0"})
 	if encodeErr != nil {
 		return nil, &Error{Category: ForgeResponse, Err: fmt.Errorf("encode GitHub GraphQL answer: %w", encodeErr)}
 	}
-	return encoded, nil
+	return encoded, err
 }
 
 func option(args []string, name string) string {

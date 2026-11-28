@@ -116,7 +116,7 @@ func TestReadLineChange(t *testing.T) {
 		{name: "L86 HTTP 429 keeps the later reset", line: 5, status: 429, body: `{"message":"rate limit"}`, headers: map[string]string{"Retry-After": "60"}, resetIn: 10 * time.Minute, category: ForgeRateLimited, retry: 10 * time.Minute},
 		{name: "L87 HTTP 403 with no request left keeps the reset", line: 5, status: 403, body: `{"message":"API rate limit exceeded"}`, headers: map[string]string{"X-RateLimit-Remaining": "0"}, resetIn: 10 * time.Minute, category: ForgeRateLimited, retry: 10 * time.Minute},
 		{name: "L88 HTTP 403 secondary limit keeps Retry-After", line: 5, status: 403, body: `{"message":"You have exceeded a secondary rate limit"}`, headers: map[string]string{"Retry-After": "300"}, category: ForgeRateLimited, retry: 5 * time.Minute},
-		{name: "L89 HTTP 502 holds no retry time", line: 5, status: 502, body: `{"message":"bad gateway"}`, headers: map[string]string{"Retry-After": "300"}, category: ForgeStatus},
+		{name: "L89 HTTP 502 keeps the Retry-After it states", line: 5, status: 502, body: `{"message":"bad gateway"}`, headers: map[string]string{"Retry-After": "300"}, category: ForgeStatus, retry: 5 * time.Minute},
 		{name: "L90 a complete answer with no request left carries the reset", line: 5, body: blameAnswer(blameRange(1, 9, lineChangeCommit)), headers: map[string]string{"X-RateLimit-Remaining": "0"}, resetIn: 10 * time.Minute,
 			want: LineChange{FileFound: true, Commit: lineChangeCommit, PullRequests: []int{}}, answerRetry: 10 * time.Minute},
 		{name: "L91 a complete answer with requests left carries no retry time", line: 5, body: blameAnswer(blameRange(1, 9, lineChangeCommit)), headers: map[string]string{"X-RateLimit-Remaining": "4999"}, resetIn: 10 * time.Minute,
@@ -220,10 +220,10 @@ func TestReadLineChange(t *testing.T) {
 				if strings.Contains(err.Error(), "cmd/main.go") {
 					t.Fatalf("failure %q holds the file path", err)
 				}
-				retryAt, limited := RateLimitRetryAt(err)
-				if limited != (tc.category == ForgeRateLimited) {
+				if _, limited := RateLimitRetryAt(err); limited != (tc.category == ForgeRateLimited) {
 					t.Fatalf("rate limited=%v, want %v", limited, tc.category == ForgeRateLimited)
 				}
+				retryAt := StatedRetryAt(err)
 				switch {
 				case tc.retry > 0 && (retryAt.Before(before.Add(tc.retry-time.Second)) || retryAt.After(time.Now().Add(tc.retry+time.Second))):
 					t.Fatalf("retry time %v, want about %v from now", retryAt, tc.retry)
@@ -310,7 +310,185 @@ func TestGraphQLWithoutTheRetryEnvelope(t *testing.T) {
 	}
 	enveloped, err := run(t.Context(), "api", "graphql", graphqlRetryEnvelope, "-f", "query={viewer{login}}")
 	var envelope graphqlEnvelope
-	if err != nil || json.Unmarshal(enveloped, &envelope) != nil || string(envelope.Body) != body || !envelope.RemainingZero || envelope.RetryAt.Before(time.Now().Add(59*time.Minute)) {
+	if err != nil || json.Unmarshal(enveloped, &envelope) != nil || string(envelope.Body) != body || !envelope.RemainingZero || envelope.Reset.Before(time.Now().Add(59*time.Minute)) {
 		t.Fatalf("enveloped %s err %v, want the body with the reset", enveloped, err)
+	}
+}
+
+// TestGraphQLWithoutTheRetryEnvelopeOnARefusedStatus proves that a refused
+// status answers every other GraphQL caller as before, an error and no
+// bytes, and answers the line read's flag with the error and the envelope of
+// the same response.
+func TestGraphQLWithoutTheRetryEnvelopeOnARefusedStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "300")
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, `{"message":"bad gateway"}`)
+	}))
+	defer server.Close()
+	run := newRESTRunner(server.Client(), server.URL, "workspace-token", "workspace demo GitHub App")
+	raw, err := run(t.Context(), "api", "graphql", "-f", "query={viewer{login}}")
+	if raw != nil || ErrorCategory(err) != ForgeStatus || !StatedRetryAt(err).IsZero() {
+		t.Fatalf("raw %q err %v, want no bytes and the status failure as before", raw, err)
+	}
+	enveloped, err := run(t.Context(), "api", "graphql", graphqlRetryEnvelope, "-f", "query={viewer{login}}")
+	var envelope graphqlEnvelope
+	if ErrorCategory(err) != ForgeStatus || json.Unmarshal(enveloped, &envelope) != nil || envelope.RetryAfter.Before(time.Now().Add(4*time.Minute)) {
+		t.Fatalf("enveloped %s err %v, want the status failure with the envelope", enveloped, err)
+	}
+}
+
+// lineRetryCell is the expected result of one line read in the retry grid:
+// kind is "found", "missing", or the failure category, and retry is how long
+// after the request the carried retry time is, zero for none.
+type lineRetryCell struct {
+	kind  string
+	retry time.Duration
+}
+
+// lineRetrySignal is one column of the retry grid: the headers of the
+// response, and whether its body holds a parsed RATE_LIMITED error.
+type lineRetrySignal struct {
+	name        string
+	headers     map[string]string
+	resetIn     time.Duration
+	rateLimited bool
+}
+
+// TestReadLineChangeRetryGrid proves review round 8 over the whole grid of
+// outcome by retry signal. The line read works out one retry time for each
+// response before it uses the body: the latest of Retry-After, of
+// X-RateLimit-Reset when no request is left or the response is a rate
+// limit, and it attaches that time in one place to whatever it returns. So
+// a found file, a missing file, and every failure carry it; a RATE_LIMITED
+// error decides the outcome before any shape check; a reset beside requests
+// left is not a wait; and a stored answer is still the whole answer
+// (component-feedback-reports invariant 12; component-production-feedback
+// invariant 28). Exactly one request is sent in every cell.
+func TestReadLineChangeRetryGrid(t *testing.T) {
+	const rl = `{"type":"RATE_LIMITED","message":"API rate limit exceeded"}`
+	signals := []lineRetrySignal{
+		{name: "S1 no signal"},
+		{name: "S2 Retry-After two minutes", headers: map[string]string{"Retry-After": "120"}},
+		{name: "S3 no request left, reset in ten minutes", headers: map[string]string{"X-RateLimit-Remaining": "0"}, resetIn: 10 * time.Minute},
+		{name: "S4 reset in ten minutes with requests left", headers: map[string]string{"X-RateLimit-Remaining": "4999"}, resetIn: 10 * time.Minute},
+		{name: "S5 RATE_LIMITED error, reset in ten minutes", resetIn: 10 * time.Minute, rateLimited: true},
+		{name: "S6 RATE_LIMITED error with no time", rateLimited: true},
+		{name: "S7 Retry-After fifteen minutes is later than no request left", headers: map[string]string{"Retry-After": "900", "X-RateLimit-Remaining": "0"}, resetIn: 10 * time.Minute},
+		{name: "S8 no request left is later than Retry-After two minutes", headers: map[string]string{"Retry-After": "120", "X-RateLimit-Remaining": "0"}, resetIn: 10 * time.Minute},
+		{name: "S9 RATE_LIMITED error, Retry-After fifteen minutes later than the reset", headers: map[string]string{"Retry-After": "900"}, resetIn: 10 * time.Minute, rateLimited: true},
+	}
+	found := LineChange{FileFound: true, Commit: lineChangeCommit, PullRequests: []int{7}}
+	r := string(ForgeRateLimited)
+	// graphqlRow is the expected row of a GraphQL answer that fails with
+	// category c: every signal keeps c except a RATE_LIMITED error, which
+	// decides the outcome before any shape check.
+	graphqlRow := func(c string) [9]lineRetryCell {
+		return [9]lineRetryCell{{c, 0}, {c, 2 * time.Minute}, {c, 10 * time.Minute}, {c, 0}, {r, 10 * time.Minute}, {r, 0}, {c, 15 * time.Minute}, {c, 10 * time.Minute}, {r, 15 * time.Minute}}
+	}
+	// refusedRow is the row of a refused HTTP status that is not a rate
+	// limit: its body is not a GraphQL answer, so a RATE_LIMITED error in
+	// it decides nothing, and a reset counts only when no request is left.
+	refusedRow := func(c string) [9]lineRetryCell {
+		return [9]lineRetryCell{{c, 0}, {c, 2 * time.Minute}, {c, 10 * time.Minute}, {c, 0}, {c, 0}, {c, 0}, {c, 15 * time.Minute}, {c, 10 * time.Minute}, {c, 15 * time.Minute}}
+	}
+	for _, outcome := range []struct {
+		name string
+		// status is the HTTP status, 200 when zero. body is the answer with
+		// no rate-limit error, and limited the same answer with one.
+		status        int
+		body, limited string
+		// hangUp closes the connection with no answer, as a transport
+		// failure does, so no signal arrives.
+		hangUp   bool
+		notFound bool
+		want     [9]lineRetryCell
+	}{
+		{name: "O1 a complete answer with the file found", body: blameAnswer(blameRange(1, 9, lineChangeCommit, pullNode(7, true, "acme/app"))),
+			limited: strings.TrimSuffix(blameAnswer(blameRange(1, 9, lineChangeCommit, pullNode(7, true, "acme/app"))), "}") + `,"errors":[` + rl + `]}`,
+			want:    [9]lineRetryCell{{"found", 0}, {"found", 2 * time.Minute}, {"found", 10 * time.Minute}, {"found", 0}, {r, 10 * time.Minute}, {r, 0}, {"found", 15 * time.Minute}, {"found", 10 * time.Minute}, {r, 15 * time.Minute}}},
+		{name: "O2 the missing-file answer", body: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"NOT_FOUND","path":["repository","blamed","blame"],"message":"x"}]}`,
+			limited: `{"data":{"repository":{"commit":{"__typename":"Commit","file":null},"blamed":null}},"errors":[{"type":"NOT_FOUND","path":["repository","blamed","blame"],"message":"x"},` + rl + `]}`,
+			want:    [9]lineRetryCell{{"missing", 0}, {"missing", 2 * time.Minute}, {"missing", 10 * time.Minute}, {"missing", 0}, {r, 10 * time.Minute}, {r, 0}, {"missing", 15 * time.Minute}, {"missing", 10 * time.Minute}, {r, 15 * time.Minute}}},
+		{name: "O3 forge_status: the commit is absent", body: `{"data":{"repository":{"commit":null,"blamed":null}}}`, limited: `{"data":{"repository":{"commit":null,"blamed":null}},"errors":[` + rl + `]}`, notFound: true, want: graphqlRow(string(ForgeStatus))},
+		{name: "O4 forge_permission: a FORBIDDEN error", body: `{"data":null,"errors":[{"type":"FORBIDDEN","message":"x"}]}`, limited: `{"data":null,"errors":[{"type":"FORBIDDEN","message":"x"},` + rl + `]}`, want: graphqlRow(string(ForgePermission))},
+		{name: "O5 forge_response: partial data, a repository without its members", body: `{"data":{"repository":{}}}`, limited: `{"data":{"repository":{}},"errors":[` + rl + `]}`, want: graphqlRow(string(ForgeResponse))},
+		{name: "O6 forge_response: a malformed body", body: `not json`, limited: `{"data":"x","errors":[{"type":7},` + rl + `]}`, want: graphqlRow(string(ForgeResponse))},
+		{name: "O7 forge_status: HTTP 502", status: http.StatusBadGateway, body: `{"message":"bad gateway"}`, limited: `{"errors":[` + rl + `]}`, want: refusedRow(string(ForgeStatus))},
+		{name: "O8 forge_permission: HTTP 401", status: http.StatusUnauthorized, body: `{"message":"Bad credentials"}`, limited: `{"errors":[` + rl + `]}`, want: refusedRow(string(ForgePermission))},
+		{name: "O9 forge_rate_limited: HTTP 429", status: http.StatusTooManyRequests, body: `{"message":"rate limit"}`, limited: `{"errors":[` + rl + `]}`,
+			want: [9]lineRetryCell{{r, 0}, {r, 2 * time.Minute}, {r, 10 * time.Minute}, {r, 10 * time.Minute}, {r, 10 * time.Minute}, {r, 0}, {r, 15 * time.Minute}, {r, 10 * time.Minute}, {r, 15 * time.Minute}}},
+		{name: "O10 forge_request: the connection closes with no answer", hangUp: true,
+			want: [9]lineRetryCell{{"forge_request", 0}, {"forge_request", 0}, {"forge_request", 0}, {"forge_request", 0}, {"forge_request", 0}, {"forge_request", 0}, {"forge_request", 0}, {"forge_request", 0}, {"forge_request", 0}}},
+	} {
+		for i, signal := range signals {
+			want := outcome.want[i]
+			t.Run(outcome.name+"/"+signal.name, func(t *testing.T) {
+				var requests atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					if outcome.hangUp {
+						conn, _, err := w.(http.Hijacker).Hijack()
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						conn.Close()
+						return
+					}
+					for name, value := range signal.headers {
+						w.Header().Set(name, value)
+					}
+					if signal.resetIn != 0 {
+						w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(signal.resetIn).Unix(), 10))
+					}
+					if outcome.status != 0 {
+						w.WriteHeader(outcome.status)
+					}
+					if signal.rateLimited {
+						fmt.Fprint(w, outcome.limited)
+					} else {
+						fmt.Fprint(w, outcome.body)
+					}
+				}))
+				defer server.Close()
+				before := time.Now()
+				got, err := readLineChange(t.Context(), "acme/app", feedbackSHA, "cmd/main.go", 5, newRESTRunner(server.Client(), server.URL, "workspace-token", "workspace demo GitHub App"))
+				after := time.Now()
+				if requests.Load() != 1 {
+					t.Fatalf("requests=%d, want exactly one", requests.Load())
+				}
+				var carried time.Time
+				switch want.kind {
+				case "found":
+					if err != nil || got.FileFound != found.FileFound || got.Commit != found.Commit || !slices.Equal(got.PullRequests, found.PullRequests) {
+						t.Fatalf("got %+v err %v, want the whole answer %+v", got, err, found)
+					}
+					carried = got.RetryAt
+				case "missing":
+					if err != nil || got.FileFound || got.Commit != "" || len(got.PullRequests) != 0 {
+						t.Fatalf("got %+v err %v, want the missing-file answer", got, err)
+					}
+					carried = got.RetryAt
+				default:
+					if err == nil || string(ErrorCategory(err)) != want.kind || !got.RetryAt.IsZero() || got.FileFound {
+						t.Fatalf("got %+v err %v category %q, want an unanswered %s", got, err, ErrorCategory(err), want.kind)
+					}
+					if commitAbsent := errors.Is(err, ErrCommitNotFound); commitAbsent != (outcome.notFound && want.kind == string(ForgeStatus)) {
+						t.Fatalf("commit not found=%v for %s", commitAbsent, want.kind)
+					}
+					carried = StatedRetryAt(err)
+					if limitedAt, limited := RateLimitRetryAt(err); limited != (want.kind == r) || (limited && !limitedAt.Equal(carried)) {
+						t.Fatalf("rate limited=%v at %v, want %v at %v", limited, limitedAt, want.kind == r, carried)
+					}
+				}
+				switch {
+				case want.retry == 0 && !carried.IsZero():
+					t.Fatalf("carried retry time %v, want none", carried)
+				case want.retry > 0 && (carried.Before(before.Add(want.retry-time.Second)) || carried.After(after.Add(want.retry+time.Second))):
+					t.Fatalf("carried retry time %v, want about %v after the request", carried, want.retry)
+				}
+			})
+		}
 	}
 }

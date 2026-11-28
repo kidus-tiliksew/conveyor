@@ -196,7 +196,8 @@ var errFeedbackForgeHeld = errors.New("the linking work sent no request: GitHub'
 // feedbackAttemptForge is the forge of one linking attempt. Before each
 // call it checks that no retry time a rate-limited call of the workspace
 // returned is still ahead, and answers a rate-limited failure with that time
-// without calling GitHub. After a rate-limited call it keeps the retry time,
+// without calling GitHub. After a rate-limited call, or a line read whose
+// answer or failure carries a retry time GitHub stated, it keeps that time,
 // so the later calls of this attempt, and of every later attempt of the
 // workspace until that time, send nothing (component-production-feedback
 // invariant 28).
@@ -259,13 +260,23 @@ func (f *feedbackAttemptForge) ReadLineChange(ctx context.Context, slug, commit,
 	}
 	answer, err := f.inner.ReadLineChange(ctx, slug, commit, path, line)
 	f.observe(err)
-	// A complete answer can state that no request is left until a reset.
-	// The answer is used, and the workspace holds its calls until then.
-	if err == nil && !answer.RetryAt.IsZero() {
-		f.observe(github.RateLimitedError(answer.RetryAt, errors.New("GitHub stated that no request is left until its reset")))
+	// The line read carries the retry time its response stated on whatever
+	// it returns: a found file, a missing file, or a failure of any
+	// category. An answer is used, and either way the workspace holds its
+	// calls until that time.
+	retryAt := answer.RetryAt
+	if err != nil {
+		retryAt = github.StatedRetryAt(err)
+	}
+	if !retryAt.IsZero() {
+		f.observe(github.RateLimitedError(retryAt, errFeedbackForgeStatedRetry))
 	}
 	return answer, err
 }
+
+// errFeedbackForgeStatedRetry is the failure the attempt forge records when
+// a line read states a retry time, so the workspace holds until it.
+var errFeedbackForgeStatedRetry = errors.New("GitHub stated when it allows the next request")
 
 // feedbackReportAttempt is one claimed linking attempt.
 type feedbackReportAttempt struct {
