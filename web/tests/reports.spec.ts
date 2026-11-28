@@ -2295,11 +2295,18 @@ test.describe('unknown outcomes', () => {
     await expect(item.locator('[data-report-act-stale]')).toContainText('Read the report again before you act.')
     await expect(item.getByRole('button', { name: 'Close report' })).toBeDisabled()
     await expect(item.getByRole('button', { name: 'Link a task or crate' })).toBeDisabled()
+    // Starting a fix task records an act on the report, so it waits too.
+    await expect(item.getByRole('button', { name: 'Start a fix task' })).toBeDisabled()
+    await expect(item.locator('a[data-report-start-fix-task]')).toHaveCount(0)
     await item.getByRole('button', { name: 'Read the report again' }).click()
     await expect(item.locator('[data-report-act-error]')).toHaveText(
       'Conveyor does not know whether it recorded this. Conveyor read the report again. Look at it before you try again.',
     )
     await expect(item.getByRole('button', { name: 'Close report' })).toBeEnabled()
+    await expect(item.getByRole('link', { name: 'Start a fix task' })).toHaveAttribute(
+      'href',
+      `/w/demo/?create=true&report=${actReport.id}`,
+    )
     expect(server.acts).toHaveLength(1)
   })
 
@@ -2411,4 +2418,33 @@ test.describe('unknown outcomes, replaced reads', () => {
     await expect(first.locator('[data-report-act-stale]')).toHaveCount(0)
     await expect(confirmFirst).toBeEnabled()
   })
+})
+
+test.describe('screenshots of pages and blocked cards', () => {
+  test.skip(!screenshotDir, 'CONVEYOR_REPORT_SCREENSHOTS is not set')
+  for (const width of [375, 1280]) {
+    test(`renders the page controls and a blocked card at ${width} px`, async ({ page }) => {
+      await page.clock.setFixedTime(now)
+      await page.setViewportSize({ width, height: 1000 })
+      const server = await mockReportServer(page, {
+        reports: [
+          ...many(58, 'o', (index) => ({ summary: `Checkout timeout on node ${index}` })),
+          { ...actReport, last_seen: '2026-11-27T11:59:59Z' },
+        ],
+      })
+      await page.goto('/w/demo/monitor')
+      await page.getByRole('button', { name: 'Next page' }).click()
+      await expect(countText(page)).toHaveText('This list shows reports 51 to 59 of 59, newest first.')
+      await countText(page).scrollIntoViewIfNeeded()
+      await page.screenshot({ path: `${screenshotDir}/monitor-pages-${width}.png` })
+      await page.getByRole('button', { name: 'Previous page' }).click()
+      const item = card(page, actReport.id)
+      server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+      server.listAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+      await item.getByRole('button', { name: 'Confirm the link to Send invoices by email' }).click()
+      await expect(item.locator('[data-report-act-stale]')).toBeVisible()
+      await item.scrollIntoViewIfNeeded()
+      await item.screenshot({ path: `${screenshotDir}/card-blocked-${width}.png` })
+    })
+  }
 })

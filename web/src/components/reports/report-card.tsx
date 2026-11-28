@@ -536,16 +536,25 @@ function ReportActs({ report, act }: { report: FeedbackReport; act: ReturnType<t
           <X aria-hidden />
           Close report
         </Button>
-        <Link
-          to="/w/$workspaceId/"
-          params={{ workspaceId: workspace }}
-          search={{ create: true, report: report.id }}
-          data-report-start-fix-task
-          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium shadow-xs hover:border-edge hover:bg-raised/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&_svg]:size-3.5"
-        >
-          <Wrench aria-hidden />
-          Start a fix task
-        </Link>
+        {/* Recording a fix task is an act on the report, so it waits too
+            while an act is on its way or its outcome is unknown. */}
+        {act.pending ? (
+          <Button size="sm" variant="secondary" disabled data-report-start-fix-task>
+            <Wrench aria-hidden />
+            Start a fix task
+          </Button>
+        ) : (
+          <Link
+            to="/w/$workspaceId/"
+            params={{ workspaceId: workspace }}
+            search={{ create: true, report: report.id }}
+            data-report-start-fix-task
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium shadow-xs hover:border-edge hover:bg-raised/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&_svg]:size-3.5"
+          >
+            <Wrench aria-hidden />
+            Start a fix task
+          </Link>
+        )}
       </div>
       {form === 'link' && <LinkForm report={report} act={act} target={target} onDone={() => setForm(null)} />}
       {form === 'close' && <CloseForm report={report} act={act} target={target} onDone={() => setForm(null)} />}
