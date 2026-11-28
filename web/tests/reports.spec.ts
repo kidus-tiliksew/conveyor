@@ -2306,7 +2306,13 @@ test.describe('late answers', () => {
     const reads = listReads(server).length
     await moveTo(page, '/w/demo/monitor')
     await expect.poll(() => listReads(server).length).toBeGreaterThan(reads)
-    await expect(card(page, actReport.id).locator('[data-report-act-error]')).toContainText(
+    // No page read the report after the unknown answer, so the act stays
+    // unresolved until a read that the person asks for answers.
+    const item = card(page, actReport.id)
+    await expect(item.locator('[data-report-act-stale]')).toBeVisible()
+    await expect(confirm).toBeDisabled()
+    await item.getByRole('button', { name: 'Read the report again' }).click()
+    await expect(item.locator('[data-report-act-error]')).toContainText(
       'Conveyor does not know whether it recorded this.',
     )
     await expect(confirm).toBeEnabled()
@@ -2631,6 +2637,65 @@ test.describe('unknown outcomes and the fix-task record', () => {
     await expect(item.locator('[data-report-fix-task]')).toContainText('Fix task:')
   })
 
+  test('a restored reread while the record request is on its way leaves the report blocked until that request answers', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [linked] })
+    await page.goto(address)
+    const held = gate()
+    server.actGate = held.promise
+    await createFixTask(page, [])
+    await expect.poll(() => fixPuts(server).length).toBe(1)
+    // The sheet closes and opens again. Its restored task reads the report,
+    // which does not name the task yet, while the record request waits.
+    const reads = reportReads(server, linked.id)
+    await moveTo(page, '/w/demo/')
+    await expect(page.locator('[data-fix-task]')).toHaveCount(0)
+    await moveTo(page, address)
+    await expect.poll(() => reportReads(server, linked.id)).toBeGreaterThan(reads)
+    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('The report does not record it yet.')
+    await moveTo(page, '/w/demo/monitor')
+    const item = card(page, linked.id)
+    await expect(item).toBeVisible()
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeDisabled()
+    held.open()
+    server.actGate = null
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeEnabled()
+    await expect(item.locator('[data-report-fix-task]')).toContainText('Fix task:')
+  })
+
+  test('a cached report that names the task opens the task but does not settle an unknown record outcome', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [linked] })
+    await page.goto(address)
+    const held = gate()
+    server.actGate = held.promise
+    await createFixTask(page, [])
+    await expect.poll(() => fixPuts(server).length).toBe(1)
+    // While the record request waits, a refresh caches the report that names the task.
+    server.reports[0] = { ...server.reports[0], fix_task: { id: '261127-fix', title: 'Fix the checkout timeout' } }
+    const reads = reportReads(server, linked.id)
+    await server.stream.ready()
+    await expect.poll(() => reportReads(server, linked.id)).toBeGreaterThan(reads)
+    await page.waitForTimeout(300)
+    // The record answer is lost, and the read after it fails.
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    server.readAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    held.open()
+    server.actGate = null
+    // The cached report names the task, so the flow opens it, but the report
+    // stays blocked until a read that starts after the unknown answer answers.
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    await moveTo(page, '/w/demo/monitor')
+    const item = card(page, linked.id)
+    await expect(item.locator('[data-report-act-stale]')).toBeVisible()
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeDisabled()
+    server.readAnswer = null
+    await item.getByRole('button', { name: 'Read the report again' }).click()
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeEnabled()
+  })
+
   test('a record request on its way blocks every card of the report until it answers', async ({ page }) => {
     const server = await mockReportServer(page, { reports: [linked] })
     await page.goto(address)
@@ -2753,6 +2818,97 @@ test.describe('fix-task intake keys', () => {
     await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
     expect(server.created[1]).toMatchObject({ body: 'A corrected description' })
     expect(server.intakeKeys[1]).not.toBe(server.intakeKeys[0])
+  })
+
+  test('when session storage takes the probe but refuses the request, the sheet says it does not survive a reload', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      const original = Storage.prototype.setItem
+      Object.defineProperty(Storage.prototype, 'setItem', {
+        configurable: true,
+        value(this: Storage, name: string, value: string) {
+          if (this === window.sessionStorage && name.startsWith('conveyor-fix-task-intake:'))
+            throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+          return original.call(this, name, value)
+        },
+      })
+    })
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(sheet(page).locator('[data-fix-task-no-storage]')).toHaveCount(0)
+    server.loseCreateAnswers = 1
+    await createFixTask(page, [])
+    await expect.poll(() => server.intakeKeys.length).toBe(1)
+    await expect(sheet(page).locator('[data-fix-task-no-storage]')).toContainText(
+      'This browser does not keep this request across a reload.',
+    )
+    // The same page still sends the same request again.
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.intakeKeys[1]).toBe(server.intakeKeys[0])
+  })
+
+  test('a 403 refusal keeps the request sent before, because the server refuses it before it looks the key up', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    server.refuseCreates = 1
+    server.refuseCreateStatus = 403
+    await createFixTask(page, [])
+    await expect(sheet(page).getByText('approving a plan at intake needs operate_gates')).toBeVisible()
+    await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toBeVisible()
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.intakeKeys[1]).toBe(server.intakeKeys[0])
+    expect(server.created[1]).toEqual(server.created[0])
+  })
+
+  test('after a lost answer, Create stays available with an empty form and sends the request sent before', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    server.loseCreateAnswers = 1
+    await createFixTask(page, [])
+    await expect.poll(() => server.intakeKeys.length).toBe(1)
+    await description(page).fill('')
+    await expect(createButton(page)).toBeEnabled()
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.created[1]).toEqual(server.created[0])
+  })
+
+  test('after a lost answer, Create sends the files of the request sent before', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    await sheet(page)
+      .locator('input[type="file"]')
+      .setInputFiles({ name: 'trace.txt', mimeType: 'text/plain', buffer: Buffer.from('stack trace') })
+    server.loseCreateAnswers = 1
+    await createFixTask(page, [])
+    await expect.poll(() => server.intakeKeys.length).toBe(1)
+    await sheet(page).getByRole('button', { name: 'Remove trace.txt' }).click()
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.attachments).toEqual([['trace.txt'], ['trace.txt']])
+  })
+
+  test('the request sent before can be discarded, and Create then sends the form as it is', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    server.loseCreateAnswers = 1
+    await createFixTask(page, [])
+    await expect.poll(() => server.intakeKeys.length).toBe(1)
+    await sheet(page).locator('[data-fix-task-discard]').click()
+    await expect(sheet(page).locator('[data-fix-task-intake-sent]')).toHaveCount(0)
+    await description(page).fill('A new description')
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix2')
+    expect(server.intakeKeys[1]).not.toBe(server.intakeKeys[0])
+    expect(server.created[1]).toMatchObject({ body: 'A new description' })
   })
 
   test('each report has its own intake key in one sheet, so a second report gets its own task', async ({ page }) => {

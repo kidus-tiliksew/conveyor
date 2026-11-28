@@ -59,6 +59,9 @@ function fixActTarget(target: FixTaskTarget) {
   return `fix:${flowOf(target)}`
 }
 
+// The fresh read of each report that started last, by its query key.
+const latestFreshReads = new Map<string, Promise<FeedbackReport | undefined>>()
+
 // Changes the report's act state only while it is still `expected`: the state
 // that this request wrote, or the state read before this read started. A
 // newer state, such as the record request of the same report sent again after
@@ -66,6 +69,11 @@ function fixActTarget(target: FixTaskTarget) {
 function replaceFixState(target: FixTaskTarget, expected: ReportActState, next: ReportActState) {
   const key = reportActKey(target.workspace, target.reportId)
   if (readReportActState(key) === expected) writeReportActState(key, next)
+}
+
+// A state that the record request of this report wrote.
+function ownFixState(current: ReportActState, target: FixTaskTarget) {
+  return 'target' in current && current.target === fixActTarget(target)
 }
 
 function setOwnFixState(target: FixTaskTarget, next: ReportActState) {
@@ -131,6 +139,13 @@ export interface SentFixTaskIntake {
   key: string
   request: CreateTaskInput
   causeTaskIds: string[]
+  // The files sent with the request. Only this page holds them: session
+  // storage keeps no file, so after a reload Create sends the files the form
+  // holds then.
+  files?: File[]
+  // False when session storage refused to keep this request, so it does not
+  // survive a reload.
+  saved?: boolean
 }
 
 // The sent request of each report target while this page is open. It keeps a
@@ -147,7 +162,7 @@ function parseSentIntake(raw: string | null): SentFixTaskIntake | null {
     const causes = Array.isArray(value.causeTaskIds)
       ? value.causeTaskIds.filter((id): id is string => typeof id === 'string')
       : []
-    return { key: value.key, request: request as CreateTaskInput, causeTaskIds: causes }
+    return { key: value.key, request: request as CreateTaskInput, causeTaskIds: causes, saved: true }
   } catch {
     return null
   }
@@ -173,15 +188,26 @@ export function fixTaskIntakeToSend(
   target: FixTaskTarget,
   request: CreateTaskInput,
   causeTaskIds: string[],
+  files: File[],
 ): SentFixTaskIntake {
-  const sent = sentFixTaskIntake(target) ?? { key: crypto.randomUUID(), request, causeTaskIds }
+  const before = sentFixTaskIntake(target)
+  const sent: SentFixTaskIntake = before
+    ? { ...before, files: before.files ?? files }
+    : { key: crypto.randomUUID(), request, causeTaskIds, files }
   const name = intakeStorageKey(target)
-  memoryIntakes.set(name, sent)
   try {
-    window.sessionStorage.setItem(name, JSON.stringify(sent))
+    window.sessionStorage.setItem(
+      name,
+      JSON.stringify({ key: sent.key, request: sent.request, causeTaskIds: sent.causeTaskIds }),
+    )
+    sent.saved = true
   } catch {
-    // Session storage refused: the request stays in memory only.
+    // Session storage refused, for example when it is full: the request
+    // stays in memory only, and the sheet says that it does not survive a
+    // reload.
+    sent.saved = false
   }
+  memoryIntakes.set(name, sent)
   return sent
 }
 
@@ -350,8 +376,8 @@ export function useFixTaskFlow({
   // for. A read of the report already on its way started earlier, so it is
   // cancelled and never answers this question; the answer of the new read is
   // then stored for the page (docs/feedback-reports.md, Acts).
-  const freshRead = useCallback(
-    async (target: FixTaskTarget) => {
+  const readOnce = useCallback(
+    async (target: FixTaskTarget): Promise<{ report: FeedbackReport | undefined; stored: boolean }> => {
       const key = feedbackReportQueryKey(target.workspace, target.reportId)
       await queryClient.cancelQueries({ queryKey: key })
       // A read of the report that starts after this one and answers first is
@@ -367,11 +393,10 @@ export function useFixTaskFlow({
       })
       try {
         const fresh = await fetchFeedbackReport(target.workspace, target.reportId)
-        if (newer) return queryClient.getQueryData<FeedbackReport>(key)
-        queryClient.setQueryData(key, fresh)
-        return fresh
+        if (newer) return { report: queryClient.getQueryData<FeedbackReport>(key), stored: false }
+        return { report: fresh, stored: true }
       } catch {
-        return newer ? queryClient.getQueryData<FeedbackReport>(key) : undefined
+        return { report: newer ? queryClient.getQueryData<FeedbackReport>(key) : undefined, stored: false }
       } finally {
         unsubscribe()
       }
@@ -379,22 +404,43 @@ export function useFixTaskFlow({
     [queryClient],
   )
 
+  const freshRead = useCallback(
+    (target: FixTaskTarget): Promise<FeedbackReport | undefined> => {
+      const keyHash = hashKey(feedbackReportQueryKey(target.workspace, target.reportId))
+      // Of two fresh reads of one report, from this sheet or from a sheet
+      // opened again, only the one that started last stores and decides. An
+      // earlier one hands over to it.
+      const mine: Promise<FeedbackReport | undefined> = readOnce(target).then((answer) => {
+        const latest = latestFreshReads.get(keyHash)
+        if (latest !== undefined && latest !== mine) return latest
+        latestFreshReads.delete(keyHash)
+        if (answer.stored)
+          queryClient.setQueryData(feedbackReportQueryKey(target.workspace, target.reportId), answer.report)
+        return answer.report
+      })
+      latestFreshReads.set(keyHash, mine)
+      return mine
+    },
+    [queryClient, readOnce],
+  )
+
   // The task is recorded on its report. The saved task of that report is
   // cleared, and only the flow that shows that report moves on. The report's
-  // act state goes only while it is still `expected`, the state that the
-  // request or read that found the record wrote or read first. Without one,
-  // it goes unless a record request of the report is on its way or checking,
-  // because that request's own answer settles it.
+  // act state goes only when `mayClear` accepts it: the request or read that
+  // found the record names the state it wrote or read first. A refresh that
+  // finds the record may hold data from before an unknown outcome, so it
+  // leaves every state of a record request to that request and to a read
+  // that starts later.
   const finish = useCallback(
-    (entry: CreatedFixTask, target: FixTaskTarget, expected?: ReportActState) => {
+    (
+      entry: CreatedFixTask,
+      target: FixTaskTarget,
+      mayClear: (current: ReportActState) => boolean = (current) => !ownFixState(current, target),
+    ) => {
       writeCreatedFixTask(target.workspace, target.reportId, null)
       clearFixTaskIntake(target)
-      const current = readReportActState(reportActKey(target.workspace, target.reportId))
-      const inFlight =
-        'target' in current &&
-        current.target === fixActTarget(target) &&
-        (current.phase === 'sending' || current.phase === 'checking')
-      if (expected ? current === expected : !inFlight) setOwnFixState(target, { phase: 'idle' })
+      if (mayClear(readReportActState(reportActKey(target.workspace, target.reportId))))
+        setOwnFixState(target, { phase: 'idle' })
       void refreshAfterWrite(queryClient, target.workspace)
       if (!live(flowOf(target))) return
       setCreated(null)
@@ -441,7 +487,7 @@ export function useFixTaskFlow({
       if (live(flow)) setRecord({ phase: 'sending' })
       try {
         await setFeedbackReportFixTask(target.workspace, target.reportId, entry.taskId, entry.causeTaskIds)
-        finish(entry, target, sendingState)
+        finish(entry, target, (current) => current === sendingState)
       } catch (error) {
         if (error instanceof FeedbackReportActError && error.outcome === 'unknown') {
           // The record may be stored. Every copy of the report waits, and a
@@ -452,7 +498,7 @@ export function useFixTaskFlow({
           if (live(flow)) setRecord({ phase: 'checking' })
           const fresh = await freshRead(target)
           if (fresh?.fix_task?.id === entry.taskId) {
-            finish(entry, target, checkingState)
+            finish(entry, target, (current) => current === checkingState)
             return
           }
           replaceFixState(
@@ -517,8 +563,11 @@ export function useFixTaskFlow({
       const key = reportActKey(workspace, reportId)
       const before = readReportActState(key)
       const fresh = await freshRead(target)
+      // A record request on its way, perhaps from this sheet before it closed
+      // and opened again, is settled only by its own answer.
+      const settles = (current: ReportActState) => current === before && current.phase !== 'sending'
       if (fresh?.fix_task?.id === created.taskId) {
-        finish(created, target, before)
+        finish(created, target, settles)
         return
       }
       // A fresh read of the report answered after any unknown outcome, so it
@@ -535,7 +584,7 @@ export function useFixTaskFlow({
             message: reportActMessage(new FeedbackReportActError(0, '', '', '', 'unknown')),
             afterUnknown: true,
           })
-        else if (current === before) setOwnFixState(target, { phase: 'idle' })
+        else if (settles(current)) setOwnFixState(target, { phase: 'idle' })
       }
       if (!live(flow)) return
       if (fresh)
@@ -564,13 +613,21 @@ export function useFixTaskFlow({
   const linkedTasks = (data?.links ?? []).flatMap((link) => (link.task ? [link.task] : []))
   // An intake request for this report was sent before, and its answer did not
   // reach this page.
-  const intakeSentBefore =
-    Boolean(reportId) && created === null && sentFixTaskIntake({ workspace, reportId: reportId ?? '' }) !== null
+  const [, setDiscarded] = useState(0)
+  const sentRequest = reportId && created === null ? sentFixTaskIntake({ workspace, reportId }) : null
   const ready = Boolean(reportId) && data?.state === 'open' && prefilledFor === reportId && created === null
   return {
     report,
     ready,
-    intakeSentBefore,
+    intakeSentBefore: sentRequest !== null,
+    sentRequest,
+    // Forgets the request sent before, so Create sends the form as it is. The
+    // person chooses this after looking for the task on the Board.
+    discardSentRequest: () => {
+      if (!reportId) return
+      clearFixTaskIntake({ workspace, reportId })
+      setDiscarded((count) => count + 1)
+    },
     causes,
     setCauses,
     linkedTasks,
@@ -644,7 +701,7 @@ export function FixTaskPanel({
       ) : data ? (
         <CauseList flow={flow} />
       ) : null}
-      {!fixTaskStorageWorks() && (
+      {(!fixTaskStorageWorks() || flow.sentRequest?.saved === false) && (
         <p role="status" data-fix-task-no-storage className="text-xs text-attention">
           This browser does not keep this request across a reload. If you reload the page before the task opens, look
           for the task on the Board before you create it again.
@@ -653,7 +710,17 @@ export function FixTaskPanel({
       {flow.intakeSentBefore && (
         <p role="status" data-fix-task-intake-sent className="text-xs text-attention">
           A request to create this task was sent before, and its answer did not arrive. The form shows that request.
-          Create sends it again unchanged, so it does not make a second task. Changes that you make now are not sent.
+          Create sends it again unchanged, so it does not make a second task. Changes that you make now are not sent.{' '}
+          <button
+            type="button"
+            data-fix-task-discard
+            className="rounded-sm text-primary underline focus-visible:outline-2 focus-visible:outline-primary"
+            onClick={flow.discardSentRequest}
+          >
+            Discard that request
+          </button>{' '}
+          only after you look for the task on the Board: if the request reached Conveyor, a new request makes a second
+          task.
         </p>
       )}
       {!created && record.phase === 'idle' && data?.state === 'open' && (

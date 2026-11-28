@@ -169,7 +169,8 @@ export function TaskCreateSheet() {
     // Create captures the workspace, the crate, the report, and the ticked
     // causes. The answer uses that snapshot, never the values of a later
     // render, so a late answer reaches only what asked for it.
-    mutationFn: (intake: IntakeSnapshot) => createTask(intake.workspace, intake.request, files, intake.idempotencyKey),
+    mutationFn: (intake: IntakeSnapshot) =>
+      createTask(intake.workspace, intake.request, intake.files, intake.idempotencyKey),
     onSuccess: (task, intake) => {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       if (intake.crateId) void queryClient.invalidateQueries({ queryKey: ['crates', intake.workspace] })
@@ -183,10 +184,12 @@ export function TaskCreateSheet() {
     },
     onError: (error, intake) => {
       if (error instanceof TaskIntakeError && error.code === 'invalid_dependencies') setAdvancedOpen(true)
-      // A refusal stores nothing under the key, so the next Create of the
-      // report sends the form as it is then. A 409 says that the key already
-      // names a task, so the sent request stays.
-      if (intake.reportId && error instanceof TaskIntakeError && error.status < 500 && error.status !== 409)
+      // A refusal of the request itself (400 or 422) stores nothing under the
+      // key, so the next Create of the report sends the form as it is then.
+      // Every other answer keeps the sent request: a 409 says that the key
+      // names a task, and a refusal such as a 403 for plan approval comes
+      // before the server looks the key up, so a task may exist under it.
+      if (intake.reportId && error instanceof TaskIntakeError && (error.status === 400 || error.status === 422))
         clearFixTaskIntake({ workspace: intake.workspace, reportId: intake.reportId })
     },
   })
@@ -531,12 +534,12 @@ export function TaskCreateSheet() {
           <p className="text-xs text-faint">Dispatches after every attachment is stored.</p>
           <Button
             disabled={
-              !body.trim() ||
-              !repoName ||
-              repos.length === 0 ||
+              // A fix-task request sent before goes again unchanged, so the
+              // form's own fields do not decide whether it can be sent.
+              (fixTask.sentRequest
+                ? false
+                : !body.trim() || !repoName || repos.length === 0 || baseCommitError !== '' || crateClosed) ||
               mutation.isPending ||
-              baseCommitError !== '' ||
-              crateClosed ||
               (reportId !== undefined && !fixTask.ready)
             }
             onClick={() => {
@@ -561,6 +564,7 @@ export function TaskCreateSheet() {
                   reportId,
                   causeTaskIds: [],
                   request,
+                  files,
                   idempotencyKey: intakeKey.current,
                 })
                 return
@@ -569,13 +573,19 @@ export function TaskCreateSheet() {
               // with its key and causes before it is sent. A request sent
               // before for the report goes again unchanged
               // (component-feedback-reports invariant 18).
-              const sent = fixTaskIntakeToSend({ workspace: workspaceId, reportId }, request, [...fixTask.causes])
+              const sent = fixTaskIntakeToSend(
+                { workspace: workspaceId, reportId },
+                request,
+                [...fixTask.causes],
+                files,
+              )
               mutation.mutate({
                 workspace: workspaceId,
                 crateId,
                 reportId,
                 causeTaskIds: sent.causeTaskIds,
                 request: sent.request,
+                files: sent.files ?? files,
                 idempotencyKey: sent.key,
               })
             }}
@@ -595,6 +605,7 @@ interface IntakeSnapshot {
   reportId: string | undefined
   causeTaskIds: string[]
   request: CreateTaskInput
+  files: File[]
   idempotencyKey: string
 }
 

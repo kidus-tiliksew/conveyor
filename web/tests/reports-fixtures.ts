@@ -280,8 +280,12 @@ export interface Server {
   intakeKeys: string[]
   // The number of next task intake requests whose answer is lost.
   loseCreateAnswers: number
-  // The number of next task intake requests refused with 400, which store nothing.
+  // The number of next task intake requests refused, which store nothing.
   refuseCreates: number
+  // The status of those refusals.
+  refuseCreateStatus: number
+  // The attachment names of each task intake request, in order.
+  attachments: string[][]
   // The request and task stored under each intake key.
   intakeRequests: Map<string, { id: string; request: string }>
 }
@@ -417,6 +421,8 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
     intakeKeys: [],
     loseCreateAnswers: 0,
     refuseCreates: 0,
+    refuseCreateStatus: 400,
+    attachments: [],
     intakeRequests: new Map(),
   }
   const role = options.role ?? 'operator'
@@ -519,9 +525,14 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
       state.created.push(match ? (JSON.parse(match[1]) as Record<string, unknown>) : {})
       const intakeKey = form.match(/name="idempotency_key"\r\n\r\n([\s\S]*?)\r\n--/)?.[1] ?? ''
       state.intakeKeys.push(intakeKey)
+      state.attachments.push([...form.matchAll(/name="attachments"; filename="([^"]*)"/g)].map((found) => found[1]))
       if (state.refuseCreates > 0) {
         state.refuseCreates--
-        return route.fulfill({ status: 400, json: { error: 'repo is not registered in this workspace' } })
+        const refusal =
+          state.refuseCreateStatus === 403
+            ? 'approving a plan at intake needs operate_gates'
+            : 'repo is not registered in this workspace'
+        return route.fulfill({ status: state.refuseCreateStatus, json: { error: refusal } })
       }
       // Intake with a key it saw before answers with the same task when the
       // request is the same, and refuses a changed request with 409, as the
@@ -555,9 +566,13 @@ export async function mockReportServer(page: Page, options: ServerOptions = {}):
     const taskRead = path.match(/^\/v1\/tasks\/([^/]+)(?:\/(activity|next-action))?$/)
     if (taskRead) {
       const id = decodeURIComponent(taskRead[1])
+      // A task that intake created is the queued fix task; the seeded tasks
+      // keep their own titles and states.
+      const created = [...state.intakeRequests.values()].some((stored) => stored.id === id)
       const known = mergedTasks.find((item) => item.id === id)
-      const title = known?.title ?? (id === '261127-fix' ? 'Fix the checkout timeout' : 'Send invoices by email')
-      const taskState = id === '261127-fix' || id.startsWith('running') ? 'queued' : 'merged'
+      const title =
+        known?.title ?? (created || id === '261127-fix' ? 'Fix the checkout timeout' : 'Send invoices by email')
+      const taskState = created || id === '261127-fix' || id.startsWith('running') ? 'queued' : 'merged'
       if (taskRead[2] === 'next-action') return route.fulfill({ json: { ...nextAction, choices: [], details: {} } })
       if (taskRead[2] === 'activity') return route.fulfill({ json: activity(id, title, taskState) })
       return route.fulfill({ json: { ...task(id, title, taskState), environments: [] } })

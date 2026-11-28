@@ -177,8 +177,10 @@ export async function readReportsAgain(queryClient: QueryClient, workspace: stri
     type: 'inactive',
     predicate: (query) => !answered.has(query.queryHash),
   })
+  // With no report read on a page, no read answered after the act, so the
+  // act stays unresolved until a page reads the report again.
   const reads = queryClient.getQueryCache().findAll({ queryKey: scope, type: 'active' })
-  return reads.every((query) => answered.has(query.queryHash))
+  return reads.length > 0 && reads.every((query) => answered.has(query.queryHash))
 }
 
 /**
