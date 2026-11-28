@@ -2131,6 +2131,24 @@ test.describe('late answers', () => {
     await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Second report')
   })
 
+  test('a prefill read that answers after the sheet closed fills the reopened sheet once', async ({ page }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    const held = gate()
+    server.readGate = held.promise
+    await page.goto(fixAddress)
+    await expect.poll(() => reportReads(server, fixReport.id)).toBe(1)
+    await sheet(page).getByRole('button', { name: 'Close' }).first().click()
+    await expect(sheet(page)).toHaveCount(0)
+    server.readGate = null
+    held.open()
+    await page.waitForTimeout(300)
+    await moveTo(page, fixAddress)
+    await expect(description(page)).toHaveValue(expectedDescription(fixReport, '````````'))
+    await server.stream.ready()
+    await page.waitForTimeout(300)
+    await expect(description(page)).toHaveValue(expectedDescription(fixReport, '````````'))
+  })
+
   test("task intake for report A that answers after the address names report B records only on A, with A's causes", async ({
     page,
   }) => {
@@ -2140,6 +2158,9 @@ test.describe('late answers', () => {
     server.createGate = held.promise
     await createFixTask(page, ['Send invoices by email'])
     await expect.poll(() => server.created.length).toBe(1)
+    // A second Create cannot start while intake is on its way.
+    await expect(createButton(page)).toHaveText('Creating…')
+    await expect(createButton(page)).toBeDisabled()
     await moveTo(page, `/w/demo/?create=true&report=${second.id}`)
     await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Second report')
     const recorded = page.waitForResponse(
