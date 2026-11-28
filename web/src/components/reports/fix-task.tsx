@@ -59,6 +59,15 @@ function fixActTarget(target: FixTaskTarget) {
   return `fix:${flowOf(target)}`
 }
 
+// Changes the report's act state only while it is still `expected`: the state
+// that this request wrote, or the state read before this read started. A
+// newer state, such as the record request of the same report sent again after
+// the sheet closed and opened, stays.
+function replaceFixState(target: FixTaskTarget, expected: ReportActState, next: ReportActState) {
+  const key = reportActKey(target.workspace, target.reportId)
+  if (readReportActState(key) === expected) writeReportActState(key, next)
+}
+
 function setOwnFixState(target: FixTaskTarget, next: ReportActState) {
   const key = reportActKey(target.workspace, target.reportId)
   const current = readReportActState(key)
@@ -417,7 +426,8 @@ export function useFixTaskFlow({
         if (live(flow)) setRecord({ phase: 'failed', canSend: false, message: blockedRecordMessage })
         return
       }
-      writeReportActState(actKey, { phase: 'sending', act: 'fix', target: fixTarget })
+      const sendingState: ReportActState = { phase: 'sending', act: 'fix', target: fixTarget }
+      writeReportActState(actKey, sendingState)
       save('sending')
       if (live(flow)) setRecord({ phase: 'sending' })
       try {
@@ -428,15 +438,17 @@ export function useFixTaskFlow({
           // The record may be stored. Every copy of the report waits, and a
           // read that starts now decides the next step.
           save('unknown')
-          setOwnFixState(target, { phase: 'checking', act: 'fix', target: fixTarget })
+          const checkingState: ReportActState = { phase: 'checking', act: 'fix', target: fixTarget }
+          replaceFixState(target, sendingState, checkingState)
           if (live(flow)) setRecord({ phase: 'checking' })
           const fresh = await freshRead(target)
           if (fresh?.fix_task?.id === entry.taskId) {
             finish(entry, target)
             return
           }
-          setOwnFixState(
+          replaceFixState(
             target,
+            checkingState,
             fresh
               ? { phase: 'idle' }
               : { phase: 'stale', act: 'fix', target: fixTarget, message: staleMessage, reading: false },
@@ -452,7 +464,7 @@ export function useFixTaskFlow({
             })
         } else {
           save('not_recorded')
-          setOwnFixState(target, { phase: 'idle' })
+          replaceFixState(target, sendingState, { phase: 'idle' })
           if (!live(flow)) return
           if (error instanceof FeedbackReportActError && error.code === 'report_closed')
             void queryClient.invalidateQueries({
@@ -514,7 +526,7 @@ export function useFixTaskFlow({
             message: reportActMessage(new FeedbackReportActError(0, '', '', '', 'unknown')),
             afterUnknown: true,
           })
-        else setOwnFixState(target, { phase: 'idle' })
+        else if (current === before) setOwnFixState(target, { phase: 'idle' })
       }
       if (!live(flow)) return
       if (fresh)

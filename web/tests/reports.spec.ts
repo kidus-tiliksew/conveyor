@@ -2535,6 +2535,55 @@ test.describe('unknown outcomes and the fix-task record', () => {
     expect(server.created).toHaveLength(1)
   })
 
+  test('a fix-task read from before the sheet closed and opened leaves a newer record request blocking the report', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [linked] })
+    await page.goto(address)
+    await expect(description(page)).not.toHaveValue('')
+    // The record gets no answer and the fresh read fails, so the sheet offers a read.
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    server.readAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    await createFixTask(page, [])
+    await expect(sheet(page).locator('[data-fix-task-error]')).toContainText('the report did not load again')
+    server.readAnswer = null
+    // "Read the report again" starts a read that waits.
+    const held = gate()
+    server.readGate = held.promise
+    const reads = reportReads(server, linked.id)
+    await sheet(page).getByRole('button', { name: 'Read the report again' }).click()
+    await expect.poll(() => reportReads(server, linked.id)).toBe(reads + 1)
+    server.readGate = null
+    // The sheet closes and opens again. Its own read answers, and the record
+    // request is sent again and waits.
+    await moveTo(page, '/w/demo/')
+    await expect(page.locator('[data-fix-task]')).toHaveCount(0)
+    await moveTo(page, address)
+    await expect(recordButton(page)).toBeVisible()
+    const recordHeld = gate()
+    server.actGate = recordHeld.promise
+    await recordButton(page).click()
+    await expect.poll(() => fixPuts(server).length).toBe(2)
+    // The first read answers now. It started before this record request, so
+    // it changes nothing, and every card of the report still waits.
+    const firstAnswer = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === `/v1/feedback-reports/${linked.id}` &&
+        response.request().method() === 'GET',
+    )
+    held.open()
+    await firstAnswer
+    await page.waitForTimeout(300)
+    await moveTo(page, '/w/demo/monitor')
+    const item = card(page, linked.id)
+    await expect(item).toBeVisible()
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeDisabled()
+    recordHeld.open()
+    server.actGate = null
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeEnabled()
+    await expect(item.locator('[data-report-fix-task]')).toContainText('Fix task:')
+  })
+
   test('a record request on its way blocks every card of the report until it answers', async ({ page }) => {
     const server = await mockReportServer(page, { reports: [linked] })
     await page.goto(address)
