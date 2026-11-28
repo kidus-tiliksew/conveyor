@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -585,5 +586,107 @@ func TestFeedbackReportCrateOpenCounts(t *testing.T) {
 	sort.Strings(keys)
 	if slices.Contains(keys, "open_report_count") {
 		t.Fatalf("get_crate carries the count outside its lines: %v", keys)
+	}
+}
+
+// linkingAsks records each report a read asks the linking job for.
+type linkingAsks struct {
+	mu  sync.Mutex
+	ids []string
+}
+
+func (a *linkingAsks) observe(h *reportRoutesHarness) {
+	h.server.feedbackLinkingAsked = func(_ string, reportID string) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		a.ids = append(a.ids, reportID)
+	}
+}
+
+// take returns the asks since the last take and clears them.
+func (a *linkingAsks) take() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ids := a.ids
+	a.ids = nil
+	if ids == nil {
+		ids = []string{}
+	}
+	return ids
+}
+
+// pendingReadFixture stores three reports, newest first p2, p1, and ended,
+// where linking ended only for ended. p1 and p2 name a service while a
+// watcher is listening and no signal names that service, so the timing rule
+// keeps waiting and they stay pending however often the job runs.
+func pendingReadFixture(h *reportRoutesHarness) (p2, p1, ended store.FeedbackReport) {
+	h.accept(feedbackMinimalSignal)
+	ended = h.storeReport("ended", nil)
+	h.endLinking(ended, nil, nil)
+	waiting := func(entry *store.FeedbackReportEntry) { entry.Service = "web" }
+	p1 = h.storeReport("pending-1", waiting)
+	p2 = h.storeReport("pending-2", waiting)
+	return p2, p1, ended
+}
+
+// TestFeedbackReportReadsAskForServedPendingReports proves that every HTTP
+// path that serves a report asks the linking job for exactly the pending
+// reports it serves: each list page, a page of one, a page with no pending
+// report, a repeat after the one-minute window, the read of one report, an
+// act's answer, and the entry point other surfaces reuse
+// (component-feedback-reports invariant 15).
+func TestFeedbackReportReadsAskForServedPendingReports(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	asks := &linkingAsks{}
+	asks.observe(h)
+	p2, p1, ended := pendingReadFixture(h)
+	for _, c := range []struct {
+		name, method, path string
+		want               []string
+	}{
+		{"whole list", http.MethodGet, "/v1/feedback-reports", []string{p2.ID, p1.ID}},
+		{"first page of one", http.MethodGet, "/v1/feedback-reports?limit=1", []string{p2.ID}},
+		{"second page of one", http.MethodGet, "/v1/feedback-reports?limit=1&offset=1", []string{p1.ID}},
+		{"page with no pending report", http.MethodGet, "/v1/feedback-reports?limit=1&offset=2", []string{}},
+		{"page past the end", http.MethodGet, "/v1/feedback-reports?limit=1&offset=9", []string{}},
+		{"read of a pending report", http.MethodGet, "/v1/feedback-reports/" + p1.ID, []string{p1.ID}},
+		{"read of an ended report", http.MethodGet, "/v1/feedback-reports/" + ended.ID, []string{}},
+		{"act answer of a pending report", http.MethodPost, "/v1/feedback-reports/" + p2.ID + "/reopen", []string{p2.ID}},
+		{"act answer of an ended report", http.MethodPost, "/v1/feedback-reports/" + ended.ID + "/reopen", []string{}},
+	} {
+		asks.take()
+		h.want(http.StatusOK, c.method, c.path, "")
+		if got := asks.take(); !slices.Equal(got, c.want) {
+			t.Fatalf("%s asked for %v, want %v", c.name, got, c.want)
+		}
+	}
+	// A refused read serves nothing and asks for nothing.
+	asks.take()
+	if response := h.do(h.manager(), http.MethodGet, "/v1/feedback-reports?state=bogus", ""); response.Code != http.StatusBadRequest {
+		t.Fatalf("refused read=%d", response.Code)
+	}
+	if got := asks.take(); len(got) != 0 {
+		t.Fatalf("a refused read asked for %v", got)
+	}
+	// After the one-minute window the same page asks again; the job decides
+	// whether to claim.
+	h.advance(61 * time.Second)
+	h.want(http.StatusOK, http.MethodGet, "/v1/feedback-reports?limit=1", "")
+	if got := asks.take(); !slices.Equal(got, []string{p2.ID}) {
+		t.Fatalf("a repeat after the window asked for %v", got)
+	}
+	// The entry point other surfaces reuse asks for the pending reports it
+	// returns and none it does not.
+	loaded, err := h.server.loadServedFeedbackReports(h.ctx, h.st, []string{ended.ID, p1.ID, "rpt-261125-000000"})
+	if err != nil || len(loaded) != 2 {
+		t.Fatalf("loaded=%v err=%v", loaded, err)
+	}
+	if got := asks.take(); !slices.Equal(got, []string{p1.ID}) {
+		t.Fatalf("loadServedFeedbackReports asked for %v", got)
+	}
+	// The ask reaches the linking job: it claims an attempt of the report.
+	h.settle()
+	if after := h.reportByKey("pending-1"); after.LinkingLastAttemptAt == nil {
+		t.Fatal("the linking job claimed no attempt of an asked report")
 	}
 }

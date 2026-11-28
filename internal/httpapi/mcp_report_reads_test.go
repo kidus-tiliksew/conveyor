@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -276,5 +277,45 @@ func TestMCPFeedbackReportRefusedReadAsksNothing(t *testing.T) {
 	h.settle()
 	if n := claimed(); n == 0 {
 		t.Fatal("an admitted read asked for no linking")
+	}
+}
+
+// TestMCPFeedbackReportReadAsksForItsPage proves that list_feedback_reports
+// asks the linking job for exactly the pending reports of the page it
+// serves: a fresh first page of one, a snapshot follow-up page, a snapshot
+// page with no pending report, the same snapshot page again after the
+// one-minute window, and a fresh read of every report
+// (component-feedback-reports invariants 15 and 24).
+func TestMCPFeedbackReportReadAsksForItsPage(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	asks := &linkingAsks{}
+	asks.observe(h)
+	p2, p1, _ := pendingReadFixture(h)
+	args := map[string]any{"workspace_id": "alpha"}
+	first := readAs(t, h.handler, h.manager(), "list_feedback_reports", withArgs(args, "limit", 1))
+	if got := asks.take(); !slices.Equal(got, []string{p2.ID}) || first.Snapshot == "" {
+		t.Fatalf("fresh first page asked for %v, want only %s", got, p2.ID)
+	}
+	readAs(t, h.handler, h.manager(), "list_feedback_reports", withArgs(args, "limit", 1, "offset", 1, "snapshot", first.Snapshot))
+	if got := asks.take(); !slices.Equal(got, []string{p1.ID}) {
+		t.Fatalf("snapshot second page asked for %v, want only %s", got, p1.ID)
+	}
+	readAs(t, h.handler, h.manager(), "list_feedback_reports", withArgs(args, "limit", 1, "offset", 2, "snapshot", first.Snapshot))
+	if got := asks.take(); len(got) != 0 {
+		t.Fatalf("snapshot page with no pending report asked for %v", got)
+	}
+	h.advance(61 * time.Second)
+	readAs(t, h.handler, h.manager(), "list_feedback_reports", withArgs(args, "limit", 1, "offset", 1, "snapshot", first.Snapshot))
+	if got := asks.take(); !slices.Equal(got, []string{p1.ID}) {
+		t.Fatalf("snapshot page after the window asked for %v, want only %s", got, p1.ID)
+	}
+	readAs(t, h.handler, h.manager(), "list_feedback_reports", args)
+	if got := asks.take(); !slices.Equal(got, []string{p2.ID, p1.ID}) {
+		t.Fatalf("fresh read of every report asked for %v", got)
+	}
+	// A read the framework refuses asks for nothing.
+	refusalAs(t, h.handler, h.manager(), "list_feedback_reports", withArgs(args, "offset", 1))
+	if got := asks.take(); len(got) != 0 {
+		t.Fatalf("a refused read asked for %v", got)
 	}
 }

@@ -308,6 +308,49 @@ func TestCrateStatus(t *testing.T) {
 	}
 }
 
+// TestCrateStatusOpenReportCounts proves the count on each environment line
+// at the crate projection boundary: a line carries its environment's count
+// and 0 when it has none; a count with no environment, and a count of an
+// environment that has no line, make no line and reach no line
+// (component-feedback-reports invariant 23; feature-production-feedback-listening
+// approved plan: environment-less reports stay out of the counts).
+func TestCrateStatusOpenReportCounts(t *testing.T) {
+	merge, version := sha("a1"), sha("b1")
+	f := newStatusFixture()
+	f.environment("env-prod", "Production", nil)
+	f.environment("env-stage", "Staging", nil)
+	f.environment("env-app", "App", nil)
+	f.deploy("env-prod", "api", version, "conveyor", 20, -1)
+	f.deploy("env-stage", "api", version, "conveyor", 30, -1)
+	f.deploy("env-app", "web", sha("c1"), "app", 30, -1)
+	f.compare("conveyor", merge, version, store.FeedbackCompareAhead)
+	members := []store.FeedbackMergedTask{task("ta", "conveyor", merge)}
+	counts := map[string]int{"env-prod": 3, "": 7, "env-app": 5, "env-unknown": 9}
+	lines, _, _, _ := CrateStatus(f.in, members, counts)
+	if len(lines) != 2 {
+		t.Fatalf("lines=%+v, want only the two relevant environments", lines)
+	}
+	got := map[string]int{}
+	for _, line := range lines {
+		got[line.Environment.ID] = line.OpenReportCount
+	}
+	if want := map[string]int{"env-prod": 3, "env-stage": 0}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("counts on the lines=%v, want %v", got, want)
+	}
+	total := 0
+	for _, line := range lines {
+		total += line.OpenReportCount
+	}
+	if total != 3 {
+		t.Fatalf("the lines count %d reports, want 3: no environment-less count reaches a line", total)
+	}
+	// Without counts every line shows 0, and the lines are the same.
+	plain, _, _, _ := CrateStatus(f.in, members, nil)
+	if len(plain) != len(lines) || plain[0].OpenReportCount != 0 || plain[1].OpenReportCount != 0 {
+		t.Fatalf("lines without counts=%+v", plain)
+	}
+}
+
 // TestStatusPending covers environments_pending (component-production-feedback
 // invariant 20; req-production-feedback AC-3.2): it is true only when a
 // relevant status is left out because a comparison or a tracked branch head is

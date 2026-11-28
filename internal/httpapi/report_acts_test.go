@@ -57,12 +57,22 @@ func TestFeedbackReportActRoutes(t *testing.T) {
 	base := "/v1/feedback-reports/" + report.ID
 	_, deliveryBefore := h.reportActState(report.ID)
 
+	// Each act is bracketed by its own read of the task, work-order, and
+	// next-action lists, so no act can hide a delivery change behind a later
+	// one (component-feedback-reports invariant 1; req-production-feedback
+	// AC-11.1).
+	acts := 0
 	act := func(method, path, body string) map[string]any {
 		t.Helper()
+		_, deliveryBeforeAct := h.reportActState(report.ID)
 		response := h.do(h.manager(), method, base+path, body)
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s %s status=%d body=%s", method, path, response.Code, response.Body)
 		}
+		if _, deliveryAfterAct := h.reportActState(report.ID); deliveryAfterAct != deliveryBeforeAct {
+			t.Fatalf("%s %s changed delivery:\nbefore %s\nafter  %s", method, path, deliveryBeforeAct, deliveryAfterAct)
+		}
+		acts++
 		var served map[string]any
 		if err := json.Unmarshal(response.Body.Bytes(), &served); err != nil {
 			t.Fatal(err)
@@ -112,10 +122,14 @@ func TestFeedbackReportActRoutes(t *testing.T) {
 		{http.MethodPost, "/close", `{"reason":"again"}`},
 		{http.MethodPut, "/fix-task", fmt.Sprintf(`{"task_id":%q}`, open.ID)},
 	} {
-		before, _ := h.reportActState(report.ID)
+		before, deliveryBeforeAct := h.reportActState(report.ID)
 		requireJSONError(t, h.do(h.manager(), refused.method, base+refused.path, refused.body), http.StatusConflict, "report_closed")
-		if after, _ := h.reportActState(report.ID); after != before {
+		after, deliveryAfterAct := h.reportActState(report.ID)
+		if after != before {
 			t.Fatalf("a refused %s %s recorded something", refused.method, refused.path)
+		}
+		if deliveryAfterAct != deliveryBeforeAct {
+			t.Fatalf("a refused %s %s changed delivery", refused.method, refused.path)
 		}
 	}
 	served = act(http.MethodPost, "/reopen", "")
@@ -125,7 +139,11 @@ func TestFeedbackReportActRoutes(t *testing.T) {
 	unchanged(http.MethodPost, "/reopen", "{}")
 	// No act changed a task, a work order, or a next action.
 	if _, deliveryAfter := h.reportActState(report.ID); deliveryAfter != deliveryBefore {
-		t.Fatalf("an act changed delivery:\nbefore %s\nafter  %s", deliveryBefore, deliveryAfter)
+		t.Fatalf("the acts changed delivery:\nbefore %s\nafter  %s", deliveryBefore, deliveryAfter)
+	}
+	// Six acts that change the report and four that change nothing.
+	if acts != 10 {
+		t.Fatalf("bracketed %d acts, want 10", acts)
 	}
 }
 
