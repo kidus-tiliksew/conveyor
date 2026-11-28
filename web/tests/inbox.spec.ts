@@ -141,6 +141,8 @@ async function serve(page: Page, fixture: Fixture, onPost?: Harness['onPost']): 
       harness.posts.push(request)
       if (harness.holdPosts) await harness.holdPosts
       const body = harness.onPost?.(request, path)
+      // `abort` drops the connection: no answer arrives.
+      if (body?.abort === true) return route.abort('failed').catch(() => {})
       // A numeric `status` refuses the act with the body's error.
       const status = typeof body?.status === 'number' ? body.status : 200
       return route.fulfill({ status, json: body ?? {} }).catch(() => {})
@@ -2101,3 +2103,184 @@ for (const [variant, served] of Object.entries(screenshotReports)) {
     })
   }
 }
+
+// The order of events on the Inbox page for a selected report (review
+// finding 2; component-next-action invariant 37; req-operator-next-action
+// AC-2.10). The report is the middle decision: T-zeta, T-alpha, report A,
+// T-mid, report B. Its next surviving neighbour in the order the person saw
+// is T-mid; the stale-selection fallback is the first item, T-zeta; the
+// selection a person makes meanwhile is T-alpha. Every act request waits
+// until the `answer` step.
+type OrderStep =
+  | 'send'
+  | 'notice'
+  | 'reenter'
+  | 'select'
+  | 'band'
+  | 'answer 200'
+  | 'answer 409'
+  | 'answer 503'
+  | 'answer 500'
+  | 'answer 500, read fails'
+  | 'no answer'
+type OrderEnd = 'neighbour' | 'fallback' | 'person' | 'stays' | 'empty'
+
+const orderRows: { steps: OrderStep[]; end: OrderEnd; note?: string; only?: boolean }[] = [
+  { steps: ['send', 'answer 200'], end: 'neighbour' },
+  { steps: ['send', 'answer 409'], end: 'fallback', note: 'someone else closed it first' },
+  { steps: ['send', 'answer 503'], end: 'stays', note: 'Conveyor recorded nothing. Try again.' },
+  { steps: ['send', 'answer 500'], end: 'stays', note: 'Conveyor does not know whether it recorded this' },
+  { steps: ['send', 'no answer'], end: 'stays', note: 'Conveyor does not know whether it recorded this' },
+  { steps: ['send', 'answer 500, read fails'], end: 'stays', note: 'Read the report again' },
+  { steps: ['send', 'notice', 'answer 200'], end: 'neighbour' },
+  { steps: ['send', 'notice', 'answer 409'], end: 'fallback' },
+  { steps: ['send', 'notice', 'answer 503'], end: 'fallback' },
+  { steps: ['send', 'notice', 'answer 500'], end: 'fallback' },
+  { steps: ['send', 'notice', 'no answer'], end: 'fallback' },
+  { steps: ['send', 'select', 'answer 200'], end: 'person' },
+  { steps: ['send', 'select', 'answer 409'], end: 'person' },
+  { steps: ['send', 'select', 'notice', 'answer 200'], end: 'person' },
+  { steps: ['send', 'notice', 'select', 'answer 200'], end: 'person' },
+  { steps: ['send', 'band', 'answer 200'], end: 'neighbour' },
+  { steps: ['send', 'notice', 'band', 'answer 200'], end: 'neighbour' },
+  { steps: ['send', 'notice', 'reenter', 'answer 200'], end: 'neighbour' },
+  { steps: ['send', 'answer 200', 'notice'], end: 'neighbour' },
+  { steps: ['send', 'answer 200'], end: 'empty', only: true },
+  { steps: ['send', 'notice', 'answer 200'], end: 'empty', only: true },
+]
+
+test.describe('the order of events for a selected report', () => {
+  for (const row of orderRows) {
+    const name = `${row.only ? 'the only decision: ' : ''}${row.steps.join(', ')} → ${row.end}`
+    test(name, async ({ page }) => {
+      const stream = await controlWorkspaceChanges(page)
+      const fixture = reportsFixture()
+      if (row.only) {
+        fixture.items = fixture.items.filter(
+          (item) => item.band !== 'decisions' || (item.report as { id?: string } | undefined)?.id === REPORT_A,
+        )
+        fixture.operatorDecisions = 1
+      }
+      let answer: Record<string, unknown> | undefined
+      const harness = await serve(page, fixture, () => answer)
+      let release = () => {}
+      harness.holdPosts = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      await page.goto(`/w/demo/inbox?selected=${REPORT_A}`)
+      await expect(reportDetail(page).locator(`[data-report-card="${REPORT_A}"]`)).toBeVisible()
+      await stream.ready()
+      const left = () => !fixture.items.some((item) => (item.report as { id?: string } | undefined)?.id === REPORT_A)
+      const removeA = () => {
+        if (!left()) leaveInbox(fixture, REPORT_A, closedChange('Fixed.'))
+      }
+      const frame = async () => {
+        const before = harness.inboxRequests.length
+        await stream.activity()
+        await expect.poll(() => harness.inboxRequests.length).toBeGreaterThan(before)
+      }
+      let answered = false
+      let moved = false
+      const settle = async (body: Record<string, unknown>) => {
+        answered = true
+        answer = body
+        release()
+        await expect.poll(() => actsSent(harness).length).toBe(1)
+      }
+      for (const step of row.steps) {
+        switch (step) {
+          case 'send':
+            await closeSelectedReport(page, 'Fixed.')
+            await expect.poll(() => actsSent(harness).length).toBe(1)
+            break
+          case 'notice':
+            removeA()
+            await frame()
+            await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+            if (!answered && !moved) {
+              // The act is still on its way: the card stays, with every act
+              // waiting.
+              const card = reportDetail(page).locator(`[data-report-card="${REPORT_A}"]`)
+              await expect(card).toBeVisible()
+              await expect(card.locator('button:enabled')).toHaveCount(0)
+              await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+            }
+            break
+          case 'reenter':
+            fixture.items = [
+              ...fixture.items,
+              reportItem(fixture.reports?.[REPORT_A] as Record<string, unknown>, '2026-11-27T12:30:00Z'),
+            ]
+            await frame()
+            await expect(reportRow(page, REPORT_A)).toHaveCount(1)
+            break
+          case 'select':
+            await select(page, 'Alpha agent question')
+            moved = true
+            break
+          case 'band':
+            await page.locator('[data-band-chip="blocked"]').click()
+            await expect(page).toHaveURL(/band=blocked/)
+            break
+          case 'answer 200':
+            removeA()
+            await settle({ ...(fixture.reports?.[REPORT_A] as Record<string, unknown>) })
+            break
+          case 'answer 409':
+            removeA()
+            await settle({ status: 409, error: 'report_closed', message: 'The report is closed.' })
+            break
+          case 'answer 503':
+            await settle({ status: 503, error: 'retryable' })
+            break
+          case 'answer 500':
+            await settle({ status: 500, error: 'internal' })
+            break
+          case 'answer 500, read fails':
+            fixture.reports = { ...fixture.reports, [REPORT_A]: 500 }
+            await settle({ status: 500, error: 'internal' })
+            break
+          case 'no answer':
+            await settle({ abort: true })
+            break
+        }
+      }
+      if (row.steps.includes('band')) {
+        await page.locator('[data-band-chip="all"]').click()
+        await expect(page).not.toHaveURL(/band=/)
+      }
+      const title = decisionDetail(page).locator('[data-detail-title]')
+      switch (row.end) {
+        case 'neighbour':
+          await expect(page).toHaveURL(/selected=T-mid/)
+          await expect(title).toHaveText('Mid item without a deadline')
+          break
+        case 'fallback':
+          await expect(reportRow(page, REPORT_A)).toHaveCount(0)
+          await expect(title).toHaveText('Zeta plan everyone waits on')
+          await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+          break
+        case 'person':
+          await expect(page).toHaveURL(/selected=T-alpha/)
+          await expect(title).toHaveText('Alpha agent question')
+          break
+        case 'stays': {
+          const detail = reportDetail(page)
+          await expect(detail.locator(`[data-report-card="${REPORT_A}"]`)).toBeVisible()
+          await expect(detail).toContainText(row.note ?? '')
+          await expect(page).toHaveURL(new RegExp(`selected=${REPORT_A}`))
+          if (row.steps.includes('answer 500, read fails')) {
+            // The shared unresolved state blocks every act until a read answers.
+            await expect(detail.getByRole('button', { name: 'Close report' }).first()).toBeDisabled()
+          }
+          break
+        }
+        case 'empty':
+          await expect(page.locator('[data-no-decisions]')).toContainText("You're clear")
+          break
+      }
+      // The page never sends an act again by itself.
+      expect(actsSent(harness)).toHaveLength(1)
+    })
+  }
+})

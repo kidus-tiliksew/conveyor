@@ -170,9 +170,11 @@ function ReportDetail({ item, report, workspace }: { item: InboxItem; report: Fe
 }
 
 /**
- * Follows the acts of one report the Inbox lists. The card's act state is
- * shared by workspace and report outside any component, so this sees an act
- * sent from the detail even after the selection moved on. When an act that
+ * Follows the acts of one report the Inbox lists or holds. The card's act
+ * state is shared by workspace and report outside any component, so this
+ * sees an act sent from the detail even after the selection moved on or a
+ * list refresh dropped the report: the page keeps it mounted while the act
+ * holds its report. `onStarted` runs when an act is sent. When an act that
  * was on its way or unresolved ends, the Inbox and the attention count of the
  * captured workspace read again. `recorded` is true only for an act this page
  * sent that the server recorded (200). A refusal, a retryable answer, and an
@@ -181,21 +183,30 @@ function ReportDetail({ item, report, workspace }: { item: InboxItem; report: Fe
 export function ReportActWatcher({
   workspace,
   reportId,
+  onStarted,
   onSettled,
 }: {
   workspace: string
   reportId: string
+  onStarted: () => void
   onSettled: (recorded: boolean) => void
 }) {
   const queryClient = useQueryClient()
   const { state } = useReportAct(workspace, reportId)
+  const started = useRef(onStarted)
+  started.current = onStarted
   const settled = useRef(onSettled)
   settled.current = onSettled
   const previous = useRef(state)
   useEffect(() => {
     const before = previous.current
     previous.current = state
-    if (before === state || !reportActBlocked(before) || reportActBlocked(state)) return
+    if (before === state) return
+    if (!reportActBlocked(before) && state.phase === 'sending') {
+      started.current()
+      return
+    }
+    if (!reportActBlocked(before) || reportActBlocked(state)) return
     // A 200 ends `sending` with `idle`; every other answer ends it another way.
     settled.current(before.phase === 'sending' && state.phase === 'idle')
     void queryClient.invalidateQueries({ queryKey: nextActionsQueryKey(workspace) })

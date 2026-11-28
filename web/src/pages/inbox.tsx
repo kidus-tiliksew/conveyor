@@ -1,6 +1,6 @@
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { Check } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useWorkspaceSelection } from '../components/app-shell'
 import { AutomaticBand } from '../components/inbox/automatic-band'
 import { BlockedRow } from '../components/inbox/blocked-row'
@@ -68,9 +68,18 @@ export function InboxPage() {
   // md; the page never writes that fallback into the URL, so Back on a phone
   // stays on the list (AC-2.8).
   const keys = decisions.map(inboxItemKey)
-  const explicit = search.selected && keys.includes(search.selected) ? search.selected : undefined
-  const selectedKey = explicit ?? keys[0]
-  const selectedItem = selectedKey ? decisions[keys.indexOf(selectedKey)] : undefined
+  // A report act sent from the detail holds its report from the click until
+  // the act settles: a list refresh that drops the report meanwhile, such as
+  // a stream frame for the act itself, keeps the card shown and keeps the
+  // order the person saw (AC-2.10). The hold shows only while the address
+  // still names what it named at the click.
+  const [holds, setHolds] = useState<Record<string, ReportHold>>({})
+  const shownHold = Object.values(holds).find(
+    (hold) => hold.workspace === workspace && hold.address === search.selected && !keys.includes(hold.key),
+  )
+  const explicit = search.selected && (keys.includes(search.selected) || shownHold) ? search.selected : undefined
+  const selectedKey = shownHold ? shownHold.key : (explicit ?? keys[0])
+  const selectedItem = shownHold ? shownHold.item : selectedKey ? decisions[keys.indexOf(selectedKey)] : undefined
 
   // Acts recorded from this page, by workspace and item. When the selected
   // item leaves after one of them, the selection moves to its surviving
@@ -108,13 +117,48 @@ export function InboxPage() {
   })
 
   const markActed = (key: string) => () => acted.current.add(`${workspace}\n${key}`)
-  // The selected key when a report's act ends: only an act on the item still
-  // selected moves the selection (component-next-action invariant 37).
-  const selectedNow = useRef(selectedKey)
-  selectedNow.current = selectedKey
-  const reportIds = allDecisions.flatMap((item) =>
-    item.kind === 'feedback_report' && item.report ? [item.report.id] : [],
-  )
+  // What the page shows now, for the report acts that start and settle
+  // between renders.
+  const shown = useRef({ workspace, keys, selectedKey, selectedItem, address: search.selected })
+  shown.current = { workspace, keys, selectedKey, selectedItem, address: search.selected }
+  const holdsNow = useRef(holds)
+  holdsNow.current = holds
+  const holdKey = (id: string) => `${workspace}\n${id}`
+  // An act starts on the report the detail shows, which is the selected one.
+  const reportActStarted = (id: string) => {
+    const now = shown.current
+    if (now.workspace !== workspace || now.selectedKey !== id || !now.selectedItem) return
+    const hold: ReportHold = { workspace, key: id, item: now.selectedItem, order: now.keys, address: now.address }
+    setHolds((current) => ({ ...current, [holdKey(id)]: hold }))
+  }
+  // A recorded act (200) selects the next surviving neighbour in the order
+  // the person saw at the click, unless the person changed the selection
+  // meanwhile. A refusal, a retryable answer, an unknown answer, and an act
+  // from elsewhere resolve nothing: the hold ends, and an item that left
+  // falls back as any stale selection does (component-next-action
+  // invariant 37).
+  const reportActSettled = (id: string, recorded: boolean) => {
+    const hold = holdsNow.current[holdKey(id)]
+    setHolds((current) => {
+      const next = { ...current }
+      delete next[holdKey(id)]
+      return next
+    })
+    const now = shown.current
+    if (!recorded || !hold || now.workspace !== hold.workspace || now.address !== hold.address) return
+    void navigate({
+      search: (current) => ({ ...current, selected: survivingNeighbour(hold.order, id, now.keys) }),
+      replace: true,
+      resetScroll: false,
+    })
+  }
+  const heldIds = Object.values(holds).flatMap((hold) => (hold.workspace === workspace ? [hold.key] : []))
+  const reportIds = [
+    ...new Set([
+      ...allDecisions.flatMap((item) => (item.kind === 'feedback_report' && item.report ? [item.report.id] : [])),
+      ...heldIds,
+    ]),
+  ]
   const showBlocked = show('blocked') && blocked.length > 0
   const showAutomatic = show('automatic') && (automatic.length > 0 || (inbox.data?.acts.length ?? 0) > 0)
 
@@ -145,9 +189,8 @@ export function InboxPage() {
           key={`${workspace}:${id}`}
           workspace={workspace}
           reportId={id}
-          onSettled={(recorded) => {
-            if (recorded && selectedNow.current === id) acted.current.add(`${workspace}\n${id}`)
-          }}
+          onStarted={() => reportActStarted(id)}
+          onSettled={(recorded) => reportActSettled(id, recorded)}
         />
       ))}
       <div ref={root} className="min-h-0 flex-1 overflow-y-auto">
@@ -181,7 +224,7 @@ export function InboxPage() {
 
           {inbox.data && show('decisions') && (
             <section aria-label="Decisions">
-              {decisions.length === 0 ? (
+              {decisions.length === 0 && !shownHold ? (
                 <EmptyDecisions />
               ) : (
                 <div className="grid min-w-0 items-start gap-4 md:grid-cols-[minmax(0,19rem)_minmax(0,1fr)] lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)]">
@@ -311,4 +354,14 @@ function EmptyDecisions() {
       <p className="mt-1 text-sm text-muted">No decisions are waiting. Conveyor will put the next one here.</p>
     </div>
   )
+}
+
+// A report act on its way from this page: the report, the decision order the
+// person saw at the click, and the address at the click.
+interface ReportHold {
+  workspace: string
+  key: string
+  item: InboxItem
+  order: string[]
+  address: string | undefined
 }

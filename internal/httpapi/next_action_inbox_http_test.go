@@ -861,3 +861,178 @@ func inboxWithoutReports(t *testing.T, body string) string {
 	}
 	return string(out)
 }
+
+// More than 1,000 open reports that people already acted on, across six
+// environments each under the open-report limit, no longer fail the Inbox:
+// REST and MCP list the task and proposal decisions, the count holds them,
+// and a valid new report is listed and counted once (review finding 1;
+// req-production-feedback AC-6.5; req-operator-next-action AC-2.7, AC-2.12).
+func TestFeedbackInboxAboveOneThousandOpenReportsActedOn(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	h.server.UseReadMemoClock(h.clock)
+	crate := h.crate("Acted on")
+	const environments, perEnvironment = 6, 170
+	for e := range environments {
+		environment := h.create(fmt.Sprintf(`{"name":"Region %d"}`, e))
+		key := h.issue(environment.ID)
+		for batch := 0; batch*store.MaxFeedbackReportEntries < perEnvironment; batch++ {
+			entries := []store.FeedbackReportEntry{}
+			for i := batch * store.MaxFeedbackReportEntries; i < min((batch+1)*store.MaxFeedbackReportEntries, perEnvironment); i++ {
+				entries = append(entries, store.FeedbackReportEntry{Kind: store.FeedbackReportError, Key: fmt.Sprintf("region-%d-%03d", e, i), Summary: "Acted on"})
+			}
+			h.advance(time.Second)
+			if err := h.st.RecordFeedbackReports(h.ctx, store.FeedbackReportBatch{EnvironmentID: environment.ID, KeyID: key.ID, ArrivedAt: h.clock(), Entries: entries}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		reports, err := h.st.ListEnvironmentFeedbackReports(h.ctx, environment.ID)
+		if err != nil || len(reports) != perEnvironment {
+			t.Fatalf("environment %d holds %d reports, %v", e, len(reports), err)
+		}
+		for _, report := range reports {
+			// Linking a crate is a person's act that keeps the report open.
+			h.storeAct(store.FeedbackReportAct{Kind: store.FeedbackReportActLink, ReportID: report.ID, CrateID: crate.ID})
+		}
+	}
+	open, err := h.st.ListFeedbackReports(h.ctx, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 1, RefuseAbove: store.MaxFeedbackReportQueryLimit})
+	if err != nil || open.Total != environments*perEnvironment || open.Total <= store.MaxFeedbackReportQueryLimit {
+		t.Fatalf("open reports = %d, %v; the case needs more than %d", open.Total, err, store.MaxFeedbackReportQueryLimit)
+	}
+	// One task decision and one document proposal.
+	if err := h.st.CreateTask(h.ctx, core.Task{ID: "261128-decide", Workspace: "alpha", Repo: "app", Branch: "decide", Title: "Approve the plan", State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.st.ProposeDecision(h.userCtx, core.Decision{Statement: "Keep the Inbox whole.", Context: "Test.", AlternativesRejected: "None.", Origin: core.DecisionOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := func(read feedbackInboxRead) (tasks, proposals int) {
+		for _, item := range read.items {
+			switch {
+			case item["task"] != nil:
+				var band string
+				_ = json.Unmarshal(item["band"], &band)
+				if band == "decisions" {
+					tasks++
+				}
+			case item["proposal"] != nil:
+				proposals++
+			}
+		}
+		return tasks, proposals
+	}
+	read := h.requireFeedbackInbox([]string{})
+	if tasks, proposals := kinds(read); tasks != 1 || proposals != 1 {
+		t.Fatalf("inbox lists %d task and %d proposal decisions, want 1 and 1", tasks, proposals)
+	}
+	if attention := h.attention(); attention.OperatorDecisions != 2 || attention.TaskCount != 1 || attention.PendingProposalCount != 1 {
+		t.Fatalf("attention = %+v, want 2 decisions", attention)
+	}
+	page := readAs(t, h.handler, h.manager(), "list_operator_inbox", map[string]any{"workspace_id": "alpha"})
+	if len(page.Items) != 2 {
+		t.Fatalf("MCP inbox lists %d items, want the task and the proposal", len(page.Items))
+	}
+	// A valid new report is listed and counted once.
+	fresh := h.storeReport("fresh", nil)
+	read = h.requireFeedbackInbox([]string{fresh.ID})
+	if tasks, proposals := kinds(read); tasks != 1 || proposals != 1 {
+		t.Fatalf("after a new report the inbox lists %d task and %d proposal decisions", tasks, proposals)
+	}
+	if attention := h.attention(); attention.OperatorDecisions != 3 {
+		t.Fatalf("attention after a new report = %+v, want 3", attention)
+	}
+	page = readAs(t, h.handler, h.manager(), "list_operator_inbox", map[string]any{"workspace_id": "alpha"})
+	if len(page.Items) != 3 {
+		t.Fatalf("MCP inbox lists %d items after a new report, want 3", len(page.Items))
+	}
+}
+
+// storeInboxReports stores perEnvironment new reports in each of
+// environments new environments, under the open-report limit of each, with
+// a summary of the given length.
+func (h *reportRoutesHarness) storeInboxReports(environments, perEnvironment, summaryLength int) {
+	h.t.Helper()
+	for e := range environments {
+		environment := h.create(fmt.Sprintf(`{"name":"Inbox region %d"}`, e))
+		key := h.issue(environment.ID)
+		for batch := 0; batch*store.MaxFeedbackReportEntries < perEnvironment; batch++ {
+			entries := []store.FeedbackReportEntry{}
+			for i := batch * store.MaxFeedbackReportEntries; i < min((batch+1)*store.MaxFeedbackReportEntries, perEnvironment); i++ {
+				entries = append(entries, store.FeedbackReportEntry{Kind: store.FeedbackReportError, Key: fmt.Sprintf("inbox-%d-%03d", e, i), Summary: strings.Repeat("s", summaryLength)})
+			}
+			h.advance(time.Second)
+			if err := h.st.RecordFeedbackReports(h.ctx, store.FeedbackReportBatch{EnvironmentID: environment.ID, KeyID: key.ID, ArrivedAt: h.clock(), Entries: entries}); err != nil {
+				h.t.Fatal(err)
+			}
+		}
+	}
+}
+
+// The limits of the reads at their largest valid state: more than 1,000
+// reports in the Inbox, across six environments under the open-report
+// limit. REST lists every one through its pages with one total, and the
+// count equals the membership. The MCP read framework's limits of 1,000
+// items and 1 MiB for one read are the framework's own: above them
+// list_operator_inbox answers its in-band refusal and asks for a narrower
+// read, and a band other than decisions still answers.
+func TestFeedbackInboxLimitsAboveOneThousandReportsInTheInbox(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	h.server.UseReadMemoClock(h.clock)
+	const environments, perEnvironment = 6, 168
+	h.storeInboxReports(environments, perEnvironment, 20)
+	total := environments * perEnvironment
+	if err := h.st.CreateTask(h.ctx, core.Task{ID: "261128-decide", Workspace: "alpha", Repo: "app", Branch: "decide", Title: "Approve the plan", State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if attention := h.attention(); attention.OperatorDecisions != total+1 {
+		t.Fatalf("attention = %+v, want %d", attention, total+1)
+	}
+	// REST pages through every decision: 200 at a time, one total, each
+	// report once, and the task decision listed.
+	seen := map[string]bool{}
+	task := false
+	for offset := 0; offset < total+1; offset += 200 {
+		read := h.inbox(fmt.Sprintf("?limit=200&offset=%d", offset))
+		if read.total != strconv.Itoa(total+1) {
+			t.Fatalf("page at %d total=%s, want %d", offset, read.total, total+1)
+		}
+		for _, id := range read.reportIDs(t) {
+			if seen[id] {
+				t.Fatalf("report %s listed twice", id)
+			}
+			seen[id] = true
+		}
+		for _, item := range read.items {
+			if item["task"] != nil {
+				task = true
+			}
+		}
+	}
+	if len(seen) != total || !task {
+		t.Fatalf("REST listed %d reports and task=%v, want %d and the task", len(seen), task, total)
+	}
+	// MCP: above 1,000 items the framework refuses the read in band.
+	if refusal := refusalAs(t, h.handler, h.manager(), "list_operator_inbox", map[string]any{"workspace_id": "alpha"}); !strings.Contains(refusal, "read exceeds 1000 items") {
+		t.Fatalf("MCP refusal = %q", refusal)
+	}
+	if page := readAs(t, h.handler, h.manager(), "list_operator_inbox", map[string]any{"workspace_id": "alpha", "band": "automatic"}); len(page.Items) != 0 {
+		t.Fatalf("MCP automatic band lists %d items", len(page.Items))
+	}
+}
+
+// Under 1,000 items, the reports' size can pass the MCP read's 1 MiB
+// snapshot budget: the framework refuses in band, and REST still lists them.
+func TestFeedbackInboxLimitsMCPSnapshotBytes(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	h.server.UseReadMemoClock(h.clock)
+	h.storeInboxReports(4, 175, 1000) // the longest summary, 1,000 characters
+	if refusal := refusalAs(t, h.handler, h.manager(), "list_operator_inbox", map[string]any{"workspace_id": "alpha"}); !strings.Contains(refusal, "snapshot byte budget") {
+		t.Fatalf("MCP refusal = %q", refusal)
+	}
+	if read := h.inbox("?limit=200"); read.total != "700" || len(read.reportIDs(t)) != 200 {
+		t.Fatalf("REST total=%s first page=%d", read.total, len(read.reportIDs(t)))
+	}
+	if attention := h.attention(); attention.OperatorDecisions != 700 {
+		t.Fatalf("attention = %+v, want 700", attention)
+	}
+}

@@ -433,8 +433,9 @@ func bandRank(band string) int {
 // The Inbox items of feedback reports (component-feedback-reports invariant
 // 19; component-next-action invariants 21, 22, 24; req-production-feedback
 // AC-6.5; req-operator-next-action AC-2.7, AC-2.12). One report is one
-// decision while its in_inbox is true. The Inbox and the attention count
-// take the reports from inboxFeedbackReports, so both use one predicate.
+// decision while its in_inbox is true. The Inbox items and the attention
+// count both come from the store's ListInboxFeedbackReports, the one read of
+// that membership, so the count equals the membership.
 
 // feedbackReportInboxKind is the kind of a report's Inbox item.
 const feedbackReportInboxKind = "feedback_report"
@@ -444,60 +445,48 @@ const feedbackReportInboxKind = "feedback_report"
 // every read.
 const inboxFeedbackReportSortPrefix = "feedback_report/"
 
-// inboxFeedbackReportsQuery selects every open report of the workspace in
-// one store answer. The store has no in_inbox filter, so the Inbox reads the
-// open reports, whose number each environment's open-report limit bounds,
-// and keeps those in the Inbox. A selection above one store page is refused
-// before any record is loaded (RefuseAbove), and the read then fails whole:
-// it never serves part of the Inbox.
-func inboxFeedbackReportsQuery() store.FeedbackReportQuery {
-	return store.FeedbackReportQuery{
-		State:       store.FeedbackReportOpen,
-		Limit:       store.MaxFeedbackReportQueryLimit,
-		RefuseAbove: store.MaxFeedbackReportQueryLimit,
-	}
-}
-
-// feedbackReportInInbox is the one membership predicate of the Inbox and
-// the attention count: an open report whose in_inbox is true. A closed
-// report is never in the Inbox (component-feedback-reports invariant 19).
-func feedbackReportInInbox(report store.FeedbackReport) bool {
-	return report.InInbox && report.State == store.FeedbackReportOpen
-}
-
-// inboxFeedbackReports reads the workspace's reports in the Inbox with the
-// details of the same store answer, in the store's order. A store without
-// the report capability holds no report.
+// inboxFeedbackReports reads the workspace's Inbox membership: every open
+// report whose in_inbox is true, with the details of the same store view
+// (store.ReportReadStore.ListInboxFeedbackReports). The read has no row
+// ceiling, so no valid state of the workspace makes it fail. A store
+// without the report capability holds no report.
 func (s *Server) inboxFeedbackReports(ctx context.Context) ([]store.FeedbackReport, store.FeedbackReportDetails, error) {
 	backend, ok := s.Store.(store.ReportStore)
 	if !ok {
 		return nil, store.FeedbackReportDetails{}, nil
 	}
-	query := inboxFeedbackReportsQuery()
-	page, err := backend.ListFeedbackReports(s.feedbackReadContext(ctx), query)
+	page, err := backend.ListInboxFeedbackReports(s.feedbackReadContext(ctx), false)
 	if err != nil {
 		return nil, store.FeedbackReportDetails{}, err
 	}
-	if page.Refused(query) {
-		return nil, store.FeedbackReportDetails{}, fmt.Errorf("inbox reports: the workspace holds %d open reports, more than the %d one read serves", page.Total, query.Limit)
-	}
 	if len(page.Reports) != page.Total {
-		return nil, store.FeedbackReportDetails{}, fmt.Errorf("inbox reports: the read answered %d of %d open reports", len(page.Reports), page.Total)
+		return nil, store.FeedbackReportDetails{}, fmt.Errorf("inbox reports: the read answered %d of %d reports", len(page.Reports), page.Total)
 	}
-	reports := make([]store.FeedbackReport, 0, len(page.Reports))
 	for _, report := range page.Reports {
-		if feedbackReportInInbox(report) {
-			reports = append(reports, report)
+		if !feedbackReportInInbox(report) {
+			return nil, store.FeedbackReportDetails{}, fmt.Errorf("inbox reports: report %s is not in the Inbox", report.ID)
 		}
 	}
-	return reports, page.Details, nil
+	return page.Reports, page.Details, nil
+}
+
+// feedbackReportInInbox is the membership predicate the store read applies:
+// an open report whose in_inbox is true. A closed report is never in the
+// Inbox (component-feedback-reports invariant 19).
+func feedbackReportInInbox(report store.FeedbackReport) bool {
+	return report.InInbox && report.State == store.FeedbackReportOpen
 }
 
 // inboxFeedbackReportCount is the number of reports in the Inbox, read on
-// every call and never cached (component-next-action invariant 24).
+// every call and never cached (component-next-action invariant 24), through
+// the predicate of the Inbox read and without loading any report.
 func (s *Server) inboxFeedbackReportCount(ctx context.Context) (int, error) {
-	reports, _, err := s.inboxFeedbackReports(ctx)
-	return len(reports), err
+	backend, ok := s.Store.(store.ReportStore)
+	if !ok {
+		return 0, nil
+	}
+	page, err := backend.ListInboxFeedbackReports(s.feedbackReadContext(ctx), true)
+	return page.Total, err
 }
 
 // readInboxFeedbackReports builds one decision item for each report in the

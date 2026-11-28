@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -382,6 +383,32 @@ func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackRep
 	}
 	where, args := feedbackReportFilter(ws, query)
 	return s.readFeedbackReportView(ctx, ws, where, args, query.Limit, query.Offset, query.RefuseAbove, &query)
+}
+
+// ListInboxFeedbackReports implements store.ReportReadStore with one
+// consistent view (readFeedbackReportView) of every open report with
+// in_inbox true, with no row ceiling. The count-only form is one aggregate
+// statement with the same predicate and loads no report.
+func (s *Store) ListInboxFeedbackReports(ctx context.Context, countOnly bool) (store.FeedbackReportPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListInboxFeedbackReports")
+	ws, err := workspace(ctx)
+	if err != nil {
+		return store.FeedbackReportPage{}, err
+	}
+	const where = "r.workspace_id=? AND r.state=? AND r.in_inbox=1"
+	args := []any{ws, store.FeedbackReportOpen}
+	if countOnly {
+		page := store.FeedbackReportPage{Reports: []store.FeedbackReport{}, Details: store.NewFeedbackReportDetails()}
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_reports r WHERE `+where, args...).Scan(&page.Total); err != nil {
+			return store.FeedbackReportPage{}, err
+		}
+		page.Details.ReadAt = store.FeedbackReadClock(ctx)
+		return page, nil
+	}
+	// The view reads the count and then the rows under the environment
+	// claim, which serializes report writes, so the limit only has to hold
+	// every row the count saw.
+	return s.readFeedbackReportView(ctx, ws, where, args, math.MaxInt32, 0, 0, nil)
 }
 
 // ReadFeedbackReports implements store.ReportReadStore with one consistent
