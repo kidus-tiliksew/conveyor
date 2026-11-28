@@ -113,7 +113,14 @@ func (s *Server) listFeedbackReports(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	query, field, message := parseFeedbackReportQuery(r.URL.Query())
+	// A query whose encoding is malformed is refused, so a dropped pair never
+	// reads as an omitted filter.
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeFeedbackReportReadRefusal(w, "query", "must be a well-formed query string")
+		return
+	}
+	query, field, message := parseFeedbackReportQuery(values)
 	if field != "" {
 		writeFeedbackReportReadRefusal(w, field, message)
 		return
@@ -128,7 +135,7 @@ func (s *Server) listFeedbackReports(w http.ResponseWriter, r *http.Request) {
 		writeFeedbackReportStoreError(w, r, err)
 		return
 	}
-	served, err := s.loadServedFeedbackReports(r.Context(), backend, listed.Reports)
+	served, err := s.servedFeedbackReports(r.Context(), listed.Reports, listed.Details)
 	if err != nil {
 		writeFeedbackReportStoreError(w, r, err)
 		return
@@ -151,12 +158,12 @@ func (s *Server) getFeedbackReport(w http.ResponseWriter, r *http.Request) {
 
 // writeServedFeedbackReport reads one report and answers its served form.
 func (s *Server) writeServedFeedbackReport(w http.ResponseWriter, r *http.Request, backend store.ReportStore, reportID string) {
-	report, err := backend.GetFeedbackReport(r.Context(), reportID)
+	report, details, err := backend.ReadFeedbackReport(r.Context(), reportID)
 	if err != nil {
 		writeFeedbackReportStoreError(w, r, err)
 		return
 	}
-	served, err := s.loadServedFeedbackReports(r.Context(), backend, []store.FeedbackReport{report})
+	served, err := s.servedFeedbackReports(r.Context(), []store.FeedbackReport{report}, details)
 	if err != nil {
 		writeFeedbackReportStoreError(w, r, err)
 		return

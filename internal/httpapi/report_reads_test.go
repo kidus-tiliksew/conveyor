@@ -234,6 +234,21 @@ func TestFeedbackReportServedFields(t *testing.T) {
 
 	served := h.detail(report.ID)
 	seen := requireServedFieldNames(t, served)
+	// The entry point that reads details itself, for a surface such as the
+	// Inbox, serves the same report.
+	stored, err := h.st.GetFeedbackReport(h.ctx, report.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := h.server.loadServedFeedbackReports(h.ctx, h.st, []store.FeedbackReport{stored})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedRaw, _ := json.Marshal(loaded[0])
+	var loadedFields map[string]any
+	if err := json.Unmarshal(loadedRaw, &loadedFields); err != nil || fmt.Sprint(loadedFields) != fmt.Sprint(served) {
+		t.Fatalf("loaded report=%v\nserved report=%v", loadedFields, served)
+	}
 	// Every object the design names is served with each of its members.
 	for kind, names := range servedFieldNames {
 		for _, name := range names {
@@ -343,6 +358,14 @@ func TestFeedbackReportListRoute(t *testing.T) {
 		requireJSONError(t, response, http.StatusBadRequest, "invalid_report_query")
 		if !strings.Contains(response.Body.String(), `"field":"`+refused.field+`"`) {
 			t.Fatalf("refusal of %s=%s", refused.query, response.Body)
+		}
+	}
+	// A malformed query encoding is refused, never read as an omitted filter.
+	for _, query := range []string{"?state=%ZZ", "?crate_id=%"} {
+		response := h.do(h.manager(), http.MethodGet, "/v1/feedback-reports"+query, "")
+		requireJSONError(t, response, http.StatusBadRequest, "invalid_report_query")
+		if !strings.Contains(response.Body.String(), `"field":"query"`) {
+			t.Fatalf("refusal of %s=%s", query, response.Body)
 		}
 	}
 	for _, query := range []string{"?limit=0", "?limit=201", "?offset=1", "?limit=1&offset=-1"} {
@@ -460,6 +483,10 @@ func (f *faultyReportStore) ListFeedbackReports(context.Context, store.FeedbackR
 
 func (f *faultyReportStore) GetFeedbackReport(context.Context, string) (store.FeedbackReport, error) {
 	return store.FeedbackReport{}, f.err
+}
+
+func (f *faultyReportStore) ReadFeedbackReport(context.Context, string) (store.FeedbackReport, store.FeedbackReportDetails, error) {
+	return store.FeedbackReport{}, store.FeedbackReportDetails{}, f.err
 }
 
 func (f *faultyReportStore) RecordFeedbackReportAct(context.Context, store.FeedbackReportAct) (store.FeedbackReportActResult, error) {

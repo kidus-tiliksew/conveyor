@@ -333,6 +333,7 @@ func runFeedbackActLinkTargets(t *testing.T, x Fixture) {
 	f.refused(store.FeedbackReportAct{Kind: store.FeedbackReportActLink, TaskID: foreignTask.ID}, actTargetError(store.FeedbackActTaskNotFound))
 	f.refused(store.FeedbackReportAct{Kind: store.FeedbackReportActLink}, fieldError("body"))
 	f.refused(store.FeedbackReportAct{Kind: store.FeedbackReportActLink, TaskID: open.ID, CrateID: "crate-x"}, fieldError("body"))
+	f.refused(store.FeedbackReportAct{Kind: "merge", TaskID: open.ID}, fieldError("kind"))
 	if !f.stored().InInbox {
 		t.Fatal("a refused act took the report out of the Inbox")
 	}
@@ -672,8 +673,12 @@ func runFeedbackActConcurrentSame(t *testing.T, x Fixture) {
 	if n := countEvents(t, x, store.FeedbackReportLinkConfirmedEvent); n != 1 {
 		t.Fatalf("link_confirmed events after two confirmations at once=%d, want 1", n)
 	}
-	if links := f.links(); len(links) != 1 {
-		t.Fatalf("links after two confirmations at once=%+v", links)
+	// The stored rows are counted before they are grouped by task, so two
+	// rows for one task fail too.
+	rows, err := x.Backend.ListFeedbackReportLinks(x.Context, f.report.ID)
+	requireOK(t, err)
+	if len(rows) != 1 || rows[0].TaskID != task.ID || rows[0].State != store.FeedbackReportLinkConfirmed {
+		t.Fatalf("link rows after two confirmations at once=%+v", rows)
 	}
 	closeReport := func() error {
 		_, err := x.Backend.RecordFeedbackReportAct(f.ctx, store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: f.report.ID, Reason: "done", At: feedbackTime(2 * time.Hour)})
@@ -793,8 +798,11 @@ func runFeedbackReportListFilters(t *testing.T, x Fixture) {
 	staging.sendReports(t, time.Hour, newest)
 	closed := reportEntry("closed")
 	production.sendReports(t, time.Hour, closed)
+	memberOnly := reportEntry("member-only")
+	memberOnly.FirstSeen, memberOnly.LastSeen = feedbackReportTimePtr(0), feedbackReportTimePtr(time.Minute)
+	staging.sendReports(t, 2*time.Hour, memberOnly)
 	a, b, c := production.reportByKey(t, "a"), production.reportByKey(t, "b"), production.reportByKey(t, "c")
-	n, cl := staging.reportByKey(t, "newest"), production.reportByKey(t, "closed")
+	n, cl, mo := staging.reportByKey(t, "newest"), production.reportByKey(t, "closed"), staging.reportByKey(t, "member-only")
 	ctx := actContext(x)
 	act := func(act store.FeedbackReportAct) {
 		t.Helper()
@@ -818,18 +826,19 @@ func runFeedbackReportListFilters(t *testing.T, x Fixture) {
 		}
 	}
 	act(store.FeedbackReportAct{Kind: store.FeedbackReportActLink, ReportID: n.ID, CrateID: other.ID})
+	act(store.FeedbackReportAct{Kind: store.FeedbackReportActLink, ReportID: mo.ID, TaskID: member.ID})
 
 	for _, c2 := range []struct {
 		name  string
 		query store.FeedbackReportQuery
 		want  []string
 	}{
-		{"open, newest last_seen first, ID breaks the tie", store.FeedbackReportQuery{}, sortedTie(n.ID, a.ID, b.ID, c.ID)},
+		{"open, newest last_seen first, ID breaks the tie", store.FeedbackReportQuery{}, append(sortedTie(n.ID, a.ID, b.ID, c.ID), mo.ID)},
 		{"closed", store.FeedbackReportQuery{State: store.FeedbackReportClosed}, []string{cl.ID}},
-		{"environment", store.FeedbackReportQuery{EnvironmentID: staging.id}, []string{n.ID}},
-		{"task: served links only", store.FeedbackReportQuery{TaskID: member.ID}, []string{a.ID}},
+		{"environment", store.FeedbackReportQuery{EnvironmentID: staging.id}, []string{n.ID, mo.ID}},
+		{"task: served links only", store.FeedbackReportQuery{TaskID: member.ID}, []string{a.ID, mo.ID}},
 		{"task: the outsider", store.FeedbackReportQuery{TaskID: outsider.ID}, []string{b.ID}},
-		{"crate: direct and member links, counted once", store.FeedbackReportQuery{CrateID: crate.ID}, []string{a.ID}},
+		{"crate: direct and member links, counted once", store.FeedbackReportQuery{CrateID: crate.ID}, []string{a.ID, mo.ID}},
 		{"crate: the other crate", store.FeedbackReportQuery{CrateID: other.ID}, []string{n.ID}},
 		{"no crate", store.FeedbackReportQuery{NoCrate: true}, sortedTie("", b.ID, c.ID)[1:]},
 		{"no crate and a crate select nothing", store.FeedbackReportQuery{NoCrate: true, CrateID: crate.ID}, []string{}},
@@ -851,13 +860,22 @@ func runFeedbackReportListFilters(t *testing.T, x Fixture) {
 			t.Fatalf("page at %d: ids=%v total=%d, want %v of %d", offset, ids, total, want, len(all))
 		}
 	}
+	// The page carries the details of its reports, read with it.
+	page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, CrateID: crate.ID, Limit: 10})
+	requireOK(t, err)
+	if len(page.Details.Links[a.ID]) != 2 || len(page.Details.Links[mo.ID]) != 1 || page.Details.Tasks[member.ID].CrateID != crate.ID {
+		t.Fatalf("page details=%+v", page.Details)
+	}
 	// Membership is read at the read: when the member leaves the crate, a
-	// still belongs through its direct crate link, and the member link no
-	// longer counts.
+	// still belongs through its direct crate link, and the report linked
+	// only to the member no longer belongs.
 	_, err = x.Backend.ClearTaskCrate(x.Context, member.ID)
 	requireOK(t, err)
 	if ids, _ := listIDs(t, x, store.FeedbackReportQuery{CrateID: crate.ID}); !slices.Equal(ids, []string{a.ID}) {
-		t.Fatalf("crate list after the member left=%v", ids)
+		t.Fatalf("crate list after the member left=%v, want only the report with a direct crate link", ids)
+	}
+	if ids, _ := listIDs(t, x, store.FeedbackReportQuery{NoCrate: true}); !slices.Contains(ids, mo.ID) {
+		t.Fatalf("no_crate list after the member left=%v, want the report linked only to the member", ids)
 	}
 	if _, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: "all", Limit: 1}); err == nil {
 		t.Fatal("a query with an unknown state was accepted")
@@ -961,6 +979,14 @@ func runFeedbackReportDetails(t *testing.T, x Fixture) {
 	}
 	if served != 1 {
 		t.Fatalf("served links=%d, want only the member link", served)
+	}
+	read, readDetails, err := x.Backend.ReadFeedbackReport(x.Context, report.ID)
+	requireOK(t, err)
+	if !reflect.DeepEqual(read, report) || !reflect.DeepEqual(readDetails, details) {
+		t.Fatalf("ReadFeedbackReport=%+v %+v, want %+v %+v", read, readDetails, report, details)
+	}
+	if _, _, err := x.Backend.ReadFeedbackReport(x.Context, "rpt-261125-000000"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ReadFeedbackReport of a missing report err=%v", err)
 	}
 	if empty, err := x.Backend.ReadFeedbackReportDetails(x.Context, nil); err != nil || len(empty.Links) != 0 {
 		t.Fatalf("details of no report=%+v err=%v", empty, err)

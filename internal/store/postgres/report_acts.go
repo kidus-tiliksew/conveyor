@@ -61,22 +61,27 @@ func feedbackReportFilter(workspaceID string, query store.FeedbackReportQuery) (
 	return strings.Join(clauses, " AND "), args
 }
 
-// ListFeedbackReports implements store.ReportReadStore. The page and the
-// count are one consistent read: the count is a window over every selected
-// row before the page is cut, and a page past the end reads the count alone.
+// ListFeedbackReports implements store.ReportReadStore. The page, the
+// count, and the details are read in one REPEATABLE READ snapshot, so they
+// agree: the count is a window over every selected row before the page is
+// cut, and a page past the end reads the count alone in the same snapshot.
 func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackReports")
 	query, err := store.NormalizeFeedbackReportQuery(query)
 	if err != nil {
 		return store.FeedbackReportPage{}, err
 	}
-	where, args := feedbackReportFilter(workspace(ctx), query)
+	workspaceID := workspace(ctx)
+	where, args := feedbackReportFilter(workspaceID, query)
 	limit, offset := len(args)+1, len(args)+2
-	args = append(args, query.Limit, query.Offset)
 	sql := `SELECT ` + prefixFeedbackReportColumns("r") + `, count(*) OVER () FROM feedback_reports r WHERE ` + where +
 		` ORDER BY r.last_seen DESC, r.id LIMIT $` + strconv.Itoa(limit) + ` OFFSET $` + strconv.Itoa(offset)
-	page := store.FeedbackReportPage{Reports: []store.FeedbackReport{}}
-	rows, err := s.boundary.Query(ctx, sql, args...)
+	tx, err := s.beginWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return store.FeedbackReportPage{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, sql, append(append([]any{}, args...), query.Limit, query.Offset)...)
 	if err != nil {
 		return store.FeedbackReportPage{}, err
 	}
@@ -84,15 +89,40 @@ func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackRep
 	if err != nil {
 		return store.FeedbackReportPage{}, err
 	}
-	page.Reports = reports
+	page := store.FeedbackReportPage{Reports: reports}
 	if len(totals) > 0 {
 		page.Total = totals[0]
-		return page, nil
+	} else if err := tx.QueryRow(ctx, `SELECT count(*) FROM feedback_reports r WHERE `+where, args...).Scan(&page.Total); err != nil {
+		return store.FeedbackReportPage{}, err
 	}
-	if err := s.boundary.QueryRow(ctx, `SELECT count(*) FROM feedback_reports r WHERE `+where, args[:len(args)-2]...).Scan(&page.Total); err != nil {
+	if page.Details, err = readFeedbackReportDetailsTx(ctx, tx, workspaceID, reports); err != nil {
 		return store.FeedbackReportPage{}, err
 	}
 	return page, nil
+}
+
+// ReadFeedbackReport implements store.ReportReadStore in one REPEATABLE
+// READ snapshot.
+func (s *Store) ReadFeedbackReport(ctx context.Context, reportID string) (store.FeedbackReport, store.FeedbackReportDetails, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadFeedbackReport")
+	workspaceID := workspace(ctx)
+	tx, err := s.beginWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	reports, err := queryFeedbackReports(ctx, tx, `SELECT `+feedbackReportColumns+` FROM feedback_reports WHERE workspace_id=$1 AND id=$2`, workspaceID, reportID)
+	if err != nil {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
+	}
+	if len(reports) != 1 {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, fmt.Errorf("%w: feedback report %s", store.ErrNotFound, reportID)
+	}
+	details, err := readFeedbackReportDetailsTx(ctx, tx, workspaceID, reports)
+	if err != nil {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
+	}
+	return reports[0], details, nil
 }
 
 // prefixFeedbackReportColumns qualifies every report column with a table
@@ -140,12 +170,22 @@ func (s *Store) GetFeedbackReport(ctx context.Context, reportID string) (store.F
 // snapshot, so the links, notes, and records it reads agree.
 func (s *Store) ReadFeedbackReportDetails(ctx context.Context, reports []store.FeedbackReport) (store.FeedbackReportDetails, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ReadFeedbackReportDetails")
+	tx, err := s.beginWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return store.FeedbackReportDetails{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	return readFeedbackReportDetailsTx(ctx, tx, workspace(ctx), reports)
+}
+
+// readFeedbackReportDetailsTx reads the links, notes, tasks, and crates of
+// reports in the caller's transaction.
+func readFeedbackReportDetailsTx(ctx context.Context, tx pgx.Tx, workspaceID string, reports []store.FeedbackReport) (store.FeedbackReportDetails, error) {
 	details := store.FeedbackReportDetails{Links: map[string][]store.FeedbackReportLink{}, Notes: map[string][]store.FeedbackReportNote{},
 		Tasks: map[string]store.FeedbackReportTaskRef{}, Crates: map[string]store.FeedbackReportCrateRef{}}
 	if len(reports) == 0 {
 		return details, nil
 	}
-	workspaceID := workspace(ctx)
 	ids := make([]string, len(reports))
 	taskIDs, crateIDs := []string{}, []string{}
 	for i, report := range reports {
@@ -155,11 +195,6 @@ func (s *Store) ReadFeedbackReportDetails(ctx context.Context, reports []store.F
 			taskIDs = append(taskIDs, report.FixTaskID)
 		}
 	}
-	tx, err := s.beginWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return store.FeedbackReportDetails{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	links, err := scanFeedbackReportLinkRows(ctx, tx, `SELECT id, report_id, task_id, crate_id, state, evidence::text, created_at, created_by, confirmed_by, confirmed_at, removed_by, removed_at
 FROM feedback_report_links WHERE workspace_id=$1 AND report_id=ANY($2::text[]) ORDER BY report_id, id`, workspaceID, ids)
 	if err != nil {

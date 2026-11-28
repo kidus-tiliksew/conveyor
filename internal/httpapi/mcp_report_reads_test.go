@@ -241,3 +241,40 @@ func TestMCPFeedbackReportReadOverTheItemLimit(t *testing.T) {
 	}
 	h.settle()
 }
+
+// TestMCPFeedbackReportRefusedReadAsksNothing proves that a read the
+// framework refuses after it loaded the reports asks the linking job for
+// nothing, and an admitted read asks for its pending reports
+// (component-feedback-reports invariant 15).
+func TestMCPFeedbackReportRefusedReadAsksNothing(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	for i := range 60 {
+		h.storeReport(fmt.Sprintf("pending-%02d", i), func(entry *store.FeedbackReportEntry) {
+			entry.Summary = strings.Repeat("s", 1000)
+		})
+	}
+	claimed := func() int {
+		t.Helper()
+		count := 0
+		for _, report := range h.reports() {
+			if report.LinkingLastAttemptAt != nil {
+				count++
+			}
+		}
+		return count
+	}
+	// One hundred served reports of 1,000-character summaries pass the
+	// 65,536-byte output budget, so the framework refuses the read.
+	if text := refusalAs(t, h.handler, h.manager(), "list_feedback_reports", map[string]any{"workspace_id": "alpha", "limit": 100}); !strings.Contains(text, "output budget") {
+		t.Fatalf("refusal=%q", text)
+	}
+	h.settle()
+	if n := claimed(); n != 0 {
+		t.Fatalf("a refused read asked for linking: %d reports claimed", n)
+	}
+	readAs(t, h.handler, h.manager(), "list_feedback_reports", map[string]any{"workspace_id": "alpha", "limit": 5})
+	h.settle()
+	if n := claimed(); n == 0 {
+		t.Fatal("an admitted read asked for no linking")
+	}
+}

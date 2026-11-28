@@ -43,7 +43,7 @@ func (s *Server) mcpFeedbackReportRead(ctx context.Context, args map[string]any)
 	if listed.Total > mcpReadMaxItems {
 		return nil, fmt.Errorf("read exceeds 1000 items: narrow filters")
 	}
-	served, err := s.loadServedFeedbackReports(ctx, backend, listed.Reports)
+	served, err := s.servedFeedbackReports(ctx, listed.Reports, listed.Details)
 	if err != nil {
 		return nil, err
 	}
@@ -51,6 +51,25 @@ func (s *Server) mcpFeedbackReportRead(ctx context.Context, args map[string]any)
 	for i, report := range served {
 		items[i] = report
 	}
-	s.requestPendingFeedbackLinking(ctx, listed.Reports)
+	// The linking job is asked again only after the read framework admits
+	// the response, so a refused read asks for nothing.
+	onMCPReadSuccess(ctx, func() { s.requestPendingFeedbackLinking(ctx, listed.Reports) })
 	return items, nil
+}
+
+type mcpReadSuccessKey struct{}
+
+// withMCPReadSuccess returns a context in which onMCPReadSuccess registers
+// a function that callMCPRead runs once it has admitted a fresh read's
+// response.
+func withMCPReadSuccess(ctx context.Context, hooks *[]func()) context.Context {
+	return context.WithValue(ctx, mcpReadSuccessKey{}, hooks)
+}
+
+// onMCPReadSuccess registers fn to run after the read's response is
+// admitted. Outside callMCPRead it runs nothing.
+func onMCPReadSuccess(ctx context.Context, fn func()) {
+	if hooks, ok := ctx.Value(mcpReadSuccessKey{}).(*[]func()); ok && hooks != nil {
+		*hooks = append(*hooks, fn)
+	}
 }

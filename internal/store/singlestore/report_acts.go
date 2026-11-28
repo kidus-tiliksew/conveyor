@@ -66,9 +66,10 @@ func prefixFeedbackReportColumns(alias string) string {
 	return strings.Join(columns, ",")
 }
 
-// ListFeedbackReports implements store.ReportReadStore. The count is a
-// window over every selected row before the page is cut, so the page and the
-// count are one statement. A page past the end reads the count alone.
+// ListFeedbackReports implements store.ReportReadStore. One statement
+// answers the IDs of the page and the count of every selected row, also when
+// the page is empty, so the page and the total agree. The records and their
+// details are then read by ID.
 func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackReports")
 	query, err := store.NormalizeFeedbackReportQuery(query)
@@ -80,38 +81,75 @@ func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackRep
 		return store.FeedbackReportPage{}, err
 	}
 	where, args := feedbackReportFilter(ws, query)
-	rows, err := documentRows(ctx, s.db, `SELECT `+prefixFeedbackReportColumns("r")+`,COUNT(*) OVER () FROM feedback_reports r WHERE `+where+
-		` ORDER BY r.last_seen DESC, r.id LIMIT ? OFFSET ?`, append(append([]any{}, args...), query.Limit, query.Offset)...)
+	statement := `SELECT p.id, t.total FROM (SELECT COUNT(*) AS total FROM feedback_reports r WHERE ` + where + `) t
+LEFT JOIN (SELECT r.id, r.last_seen FROM feedback_reports r WHERE ` + where + ` ORDER BY r.last_seen DESC, r.id LIMIT ? OFFSET ?) p ON 1=1
+ORDER BY p.last_seen DESC, p.id`
+	rows, err := documentRows(ctx, s.db, statement, append(append(append([]any{}, args...), args...), query.Limit, query.Offset)...)
 	if err != nil {
 		return store.FeedbackReportPage{}, err
 	}
 	page := store.FeedbackReportPage{Reports: []store.FeedbackReport{}}
-	total := -1
-	func() {
+	ids := []string{}
+	err = func() error {
 		defer rows.Close()
 		for rows.Next() {
-			var count int64
-			report, decodeErr := decodeFeedbackReportRow(rows, &count)
-			if decodeErr != nil {
-				err = decodeErr
-				return
+			var id sql.NullString
+			var total int64
+			if err := rows.Scan(&id, &total); err != nil {
+				return err
 			}
-			page.Reports = append(page.Reports, report)
-			total = int(count)
+			page.Total = int(total)
+			if id.Valid {
+				ids = append(ids, id.String)
+			}
 		}
-		err = rows.Err()
+		return rows.Err()
 	}()
 	if err != nil {
 		return store.FeedbackReportPage{}, err
 	}
-	if total >= 0 {
-		page.Total = total
-		return page, nil
+	if len(ids) > 0 {
+		recordArgs := []any{ws}
+		for _, id := range ids {
+			recordArgs = append(recordArgs, id)
+		}
+		recordRows, err := documentRows(ctx, s.db, `SELECT `+feedbackReportColumns+` FROM feedback_reports WHERE workspace_id=? AND id IN (`+inList(len(ids))+`)`, recordArgs...)
+		if err != nil {
+			return store.FeedbackReportPage{}, err
+		}
+		records, err := collectFeedbackReports(recordRows)
+		if err != nil {
+			return store.FeedbackReportPage{}, err
+		}
+		byID := make(map[string]store.FeedbackReport, len(records))
+		for _, record := range records {
+			byID[record.ID] = record
+		}
+		for _, id := range ids {
+			record, ok := byID[id]
+			if !ok {
+				return store.FeedbackReportPage{}, fmt.Errorf("feedback report %s of the page was not read back", id)
+			}
+			page.Reports = append(page.Reports, record)
+		}
 	}
-	if err := backendRow(ctx, s.db, `SELECT COUNT(*) FROM feedback_reports r WHERE `+where, args...).Scan(&page.Total); err != nil {
+	if page.Details, err = s.ReadFeedbackReportDetails(ctx, page.Reports); err != nil {
 		return store.FeedbackReportPage{}, err
 	}
 	return page, nil
+}
+
+// ReadFeedbackReport implements store.ReportReadStore.
+func (s *Store) ReadFeedbackReport(ctx context.Context, reportID string) (store.FeedbackReport, store.FeedbackReportDetails, error) {
+	report, err := s.GetFeedbackReport(ctx, reportID)
+	if err != nil {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
+	}
+	details, err := s.ReadFeedbackReportDetails(ctx, []store.FeedbackReport{report})
+	if err != nil {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
+	}
+	return report, details, nil
 }
 
 // GetFeedbackReport implements store.ReportReadStore.

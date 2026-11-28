@@ -97,7 +97,28 @@ func (m *volatileMemory) ListFeedbackReports(ctx context.Context, query Feedback
 	if query.Offset < len(matched) {
 		page.Reports = matched[query.Offset:min(len(matched), query.Offset+query.Limit)]
 	}
+	// The details are read under the same read lock as the page.
+	if page.Details, err = m.feedbackReportDetailsLocked(workspace, page.Reports); err != nil {
+		return FeedbackReportPage{}, err
+	}
 	return page, nil
+}
+
+// ReadFeedbackReport implements ReportReadStore under one read lock.
+func (m *volatileMemory) ReadFeedbackReport(ctx context.Context, reportID string) (FeedbackReport, FeedbackReportDetails, error) {
+	workspace := workspaceOrDefault(ctx, "")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, _, report, found := m.feedbackReportLocked(workspace, reportID)
+	if !found {
+		return FeedbackReport{}, FeedbackReportDetails{}, fmt.Errorf("%w: feedback report %s", ErrNotFound, reportID)
+	}
+	report = cloneFeedbackReport(report)
+	details, err := m.feedbackReportDetailsLocked(workspace, []FeedbackReport{report})
+	if err != nil {
+		return FeedbackReport{}, FeedbackReportDetails{}, err
+	}
+	return report, details, nil
 }
 
 // GetFeedbackReport implements ReportReadStore.
@@ -116,6 +137,12 @@ func (m *volatileMemory) ReadFeedbackReportDetails(ctx context.Context, reports 
 	workspace := workspaceOrDefault(ctx, "")
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.feedbackReportDetailsLocked(workspace, reports)
+}
+
+// feedbackReportDetailsLocked reads the details of reports under the held
+// mutex.
+func (m *volatileMemory) feedbackReportDetailsLocked(workspace string, reports []FeedbackReport) (FeedbackReportDetails, error) {
 	details := FeedbackReportDetails{Links: map[string][]FeedbackReportLink{}, Notes: map[string][]FeedbackReportNote{}}
 	taskIDs, crateIDs := []string{}, []string{}
 	for _, report := range reports {

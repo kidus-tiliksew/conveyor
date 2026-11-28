@@ -102,11 +102,13 @@ type FeedbackReportQuery struct {
 // and refuses a larger selection from the count.
 const MaxFeedbackReportQueryLimit = 1000
 
-// FeedbackReportPage is one page of a list and the number of reports the
-// filters select.
+// FeedbackReportPage is one page of a list, the number of reports the
+// filters select, and the details of the page's reports, read together so
+// the page, the total, and the details agree.
 type FeedbackReportPage struct {
 	Reports []FeedbackReport
 	Total   int
+	Details FeedbackReportDetails
 }
 
 // FeedbackReportTaskRef is a task that a report names: a linked task or the
@@ -143,13 +145,16 @@ type FeedbackReportDetails struct {
 // action (invariant 1; DEC-149(1); req-production-feedback AC-11.1).
 type ReportReadStore interface {
 	// ListFeedbackReports answers one page of the reports the query
-	// selects, newest last_seen first and then by ID, and the number the
-	// filters select. Every filter applies before the page and the count,
+	// selects, newest last_seen first and then by ID, the number the filters
+	// select, and the details of the page's reports. Every filter applies before the page and the count,
 	// and a report that matches twice is counted once (FeedbackReportServed
 	// and FeedbackReportInCrate state what a filter matches).
 	ListFeedbackReports(ctx context.Context, query FeedbackReportQuery) (FeedbackReportPage, error)
 	// GetFeedbackReport answers one report, or ErrNotFound.
 	GetFeedbackReport(ctx context.Context, reportID string) (FeedbackReport, error)
+	// ReadFeedbackReport answers one report with its details, read
+	// together, or ErrNotFound.
+	ReadFeedbackReport(ctx context.Context, reportID string) (FeedbackReport, FeedbackReportDetails, error)
 	// ReadFeedbackReportDetails answers the links, notes, tasks, and crates
 	// of the given reports.
 	ReadFeedbackReportDetails(ctx context.Context, reports []FeedbackReport) (FeedbackReportDetails, error)
@@ -326,7 +331,7 @@ func NormalizeFeedbackReportAct(act FeedbackReportAct) (FeedbackReportAct, error
 			return FeedbackReportAct{}, err
 		}
 	default:
-		return FeedbackReportAct{}, fmt.Errorf("unknown report act %q", act.Kind)
+		return FeedbackReportAct{}, feedbackFieldError("kind", "must be link, remove_link, close, reopen, or fix_task")
 	}
 	return act, nil
 }

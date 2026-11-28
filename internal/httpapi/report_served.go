@@ -294,20 +294,31 @@ func buildServedFeedbackReport(report store.FeedbackReport, details store.Feedba
 }
 
 // loadServedFeedbackReports builds the served form of stored reports with
-// one read of their details, their environments, and the newest signal of
-// each environment, at one read clock. A failed read fails the whole result:
-// no partial list is served. A report whose environment the workspace does
-// not hold is a store failure.
+// one read of their details. A surface that holds no details read with its
+// reports, such as the Inbox, calls it.
 func (s *Server) loadServedFeedbackReports(ctx context.Context, backend store.ReportStore, reports []store.FeedbackReport) ([]servedFeedbackReport, error) {
+	if len(reports) == 0 {
+		return []servedFeedbackReport{}, nil
+	}
+	details, err := backend.ReadFeedbackReportDetails(ctx, reports)
+	if err != nil {
+		return nil, err
+	}
+	return s.servedFeedbackReports(ctx, reports, details)
+}
+
+// servedFeedbackReports builds the served form of stored reports and the
+// details read with them, with one read of their environments and the newest
+// signal of each environment, at one read clock. A failed read fails the
+// whole result: no partial list is served. A report whose environment the
+// workspace does not hold is a store failure.
+func (s *Server) servedFeedbackReports(ctx context.Context, reports []store.FeedbackReport, details store.FeedbackReportDetails) ([]servedFeedbackReport, error) {
 	served := make([]servedFeedbackReport, 0, len(reports))
 	if len(reports) == 0 {
 		return served, nil
 	}
 	now := s.feedbackNow()
-	details, err := backend.ReadFeedbackReportDetails(ctx, reports)
-	if err != nil {
-		return nil, err
-	}
+	var err error
 	environments := map[string]store.Environment{}
 	if listing, ok := s.Store.(store.EnvironmentStore); ok {
 		listed, err := listing.ListEnvironments(ctx, store.EnvironmentListQuery{})
