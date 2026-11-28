@@ -333,17 +333,35 @@ type actRoute struct {
 	// setup stores a report in the state the act needs and answers the
 	// request; repeat is a request that changes nothing or is refused once
 	// the act is recorded.
-	setup func(h *reportRoutesHarness, key string) (reportID, method, path, body string)
+	setup func(h *reportRoutesHarness, key string) (reportID, method, path, body string, expect func(served map[string]any) error)
+}
+
+// servedLinks answers the links of a served report.
+func servedLinks(served map[string]any) []map[string]any {
+	links := []map[string]any{}
+	raw, _ := served["links"].([]any)
+	for _, item := range raw {
+		if link, ok := item.(map[string]any); ok {
+			links = append(links, link)
+		}
+	}
+	return links
 }
 
 func feedbackActRoutes() []actRoute {
 	return []actRoute{
-		{"confirm a link", func(h *reportRoutesHarness, key string) (string, string, string, string) {
+		{"confirm a link", func(h *reportRoutesHarness, key string) (string, string, string, string, func(map[string]any) error) {
 			task := h.mergedTask("")
 			report := h.storeReport(key, nil)
-			return report.ID, http.MethodPost, "/links", fmt.Sprintf(`{"task_id":%q}`, task.ID)
+			return report.ID, http.MethodPost, "/links", fmt.Sprintf(`{"task_id":%q}`, task.ID), func(served map[string]any) error {
+				links := servedLinks(served)
+				if len(links) != 1 || links[0]["state"] != store.FeedbackReportLinkConfirmed || links[0]["task"].(map[string]any)["id"] != task.ID {
+					return fmt.Errorf("answer links=%v, want one confirmed link to %s", links, task.ID)
+				}
+				return nil
+			}
 		}},
-		{"remove a link", func(h *reportRoutesHarness, key string) (string, string, string, string) {
+		{"remove a link", func(h *reportRoutesHarness, key string) (string, string, string, string, func(map[string]any) error) {
 			task := h.mergedTask("")
 			report := h.storeReport(key, nil)
 			h.storeAct(store.FeedbackReportAct{Kind: store.FeedbackReportActLink, ReportID: report.ID, TaskID: task.ID})
@@ -351,28 +369,50 @@ func feedbackActRoutes() []actRoute {
 			if err != nil || len(links) != 1 {
 				h.t.Fatalf("links=%v err=%v", links, err)
 			}
-			return report.ID, http.MethodDelete, "/links/" + links[0].ID, ""
+			return report.ID, http.MethodDelete, "/links/" + links[0].ID, "", func(served map[string]any) error {
+				if links := servedLinks(served); len(links) != 0 || served["state"] != store.FeedbackReportOpen {
+					return fmt.Errorf("answer links=%v state=%v, want the removed link gone and the report open", links, served["state"])
+				}
+				return nil
+			}
 		}},
-		{"close", func(h *reportRoutesHarness, key string) (string, string, string, string) {
-			return h.storeReport(key, nil).ID, http.MethodPost, "/close", `{"reason":"fixed"}`
+		{"close", func(h *reportRoutesHarness, key string) (string, string, string, string, func(map[string]any) error) {
+			return h.storeReport(key, nil).ID, http.MethodPost, "/close", `{"reason":"fixed"}`, func(served map[string]any) error {
+				closed, _ := served["closed"].(map[string]any)
+				if served["state"] != store.FeedbackReportClosed || closed == nil || closed["reason"] != "fixed" || served["in_inbox"] != false {
+					return fmt.Errorf("answer state=%v closed=%v in_inbox=%v, want closed for the reason fixed", served["state"], closed, served["in_inbox"])
+				}
+				return nil
+			}
 		}},
-		{"reopen", func(h *reportRoutesHarness, key string) (string, string, string, string) {
+		{"reopen", func(h *reportRoutesHarness, key string) (string, string, string, string, func(map[string]any) error) {
 			report := h.storeReport(key, nil)
 			h.storeAct(store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: report.ID, Reason: "done"})
-			return report.ID, http.MethodPost, "/reopen", ""
+			return report.ID, http.MethodPost, "/reopen", "", func(served map[string]any) error {
+				if served["state"] != store.FeedbackReportOpen || served["reopened_at"] == nil || served["closed"] != nil {
+					return fmt.Errorf("answer state=%v reopened_at=%v closed=%v, want the report open again", served["state"], served["reopened_at"], served["closed"])
+				}
+				return nil
+			}
 		}},
-		{"fix task", func(h *reportRoutesHarness, key string) (string, string, string, string) {
+		{"fix task", func(h *reportRoutesHarness, key string) (string, string, string, string, func(map[string]any) error) {
 			task := h.openTask()
-			return h.storeReport(key, nil).ID, http.MethodPut, "/fix-task", fmt.Sprintf(`{"task_id":%q}`, task.ID)
+			return h.storeReport(key, nil).ID, http.MethodPut, "/fix-task", fmt.Sprintf(`{"task_id":%q}`, task.ID), func(served map[string]any) error {
+				if fix, _ := served["fix_task"].(map[string]any); fix == nil || fix["id"] != task.ID || fix["title"] != task.Title {
+					return fmt.Errorf("answer fix_task=%v, want %s", served["fix_task"], task.ID)
+				}
+				return nil
+			}
 		}},
 	}
 }
 
 // TestFeedbackReportActAnswersMatchTheStore proves, for each of the five act
 // routes, that an answer says "send it again" only when nothing was
-// written, and that once an act has committed the caller always learns that
-// it succeeded (component-persistence invariant 8; component-feedback-reports
-// v4 invariants 17 to 20). The store reads the answer in the act's own
+// written, and that once an act has committed no later step turns its answer
+// into an error, so the caller learns that it succeeded whenever the answer
+// reaches it (component-persistence invariant 8; component-feedback-reports
+// v4 invariants 17 to 20). Each answer shows the act's effect. The store reads the answer in the act's own
 // transaction, so each step after the commit is driven here with a fault:
 // a report read that answers retryable or fails, a request cancelled right
 // after the commit, and a connection that is gone when the answer is
@@ -389,7 +429,7 @@ func TestFeedbackReportActAnswersMatchTheStore(t *testing.T) {
 	for _, route := range feedbackActRoutes() {
 		// Background linking work from an earlier case settles first, so a
 		// before-and-after comparison sees only the act under test.
-		fresh := func() (string, string, string, string) {
+		fresh := func() (string, string, string, string, func(map[string]any) error) {
 			h.settle()
 			n++
 			return route.setup(h, fmt.Sprintf("act-%02d", n))
@@ -397,7 +437,7 @@ func TestFeedbackReportActAnswersMatchTheStore(t *testing.T) {
 		request := func(reportID, method, path, body string) *httptest.ResponseRecorder {
 			return h.do(h.manager(), method, "/v1/feedback-reports/"+reportID+path, body)
 		}
-		committed := func(name, reportID, before string, response *httptest.ResponseRecorder) {
+		committed := func(name, reportID, before string, expect func(map[string]any) error, response *httptest.ResponseRecorder) {
 			t.Helper()
 			if response.Code != http.StatusOK {
 				t.Fatalf("%s, %s: status=%d body=%s, want 200 for a recorded act", route.name, name, response.Code, response.Body)
@@ -407,6 +447,10 @@ func TestFeedbackReportActAnswersMatchTheStore(t *testing.T) {
 				t.Fatalf("%s, %s: body=%s err=%v, want the served report", route.name, name, response.Body, err)
 			}
 			requireServedFieldNames(t, served)
+			// The answer shows the act, and the store holds it.
+			if err := expect(served); err != nil {
+				t.Fatalf("%s, %s: %v", route.name, name, err)
+			}
 			if after, _ := h.reportActState(reportID); after == before {
 				t.Fatalf("%s, %s: the store holds no act", route.name, name)
 			}
@@ -423,7 +467,7 @@ func TestFeedbackReportActAnswersMatchTheStore(t *testing.T) {
 				f.readErr, f.afterAct = context.Canceled, cancel
 			}},
 		} {
-			reportID, method, path, body := fresh()
+			reportID, method, path, body, expect := fresh()
 			before, _ := h.reportActState(reportID)
 			faulty := &actFaultStore{Backend: base}
 			ctx, cancel := context.WithCancel(context.Background())
@@ -435,13 +479,13 @@ func TestFeedbackReportActAnswersMatchTheStore(t *testing.T) {
 			response := h.serve(req)
 			cancel()
 			h.server.Store = base
-			committed(fault.name, reportID, before, response)
+			committed(fault.name, reportID, before, expect, response)
 		}
 
 		// The connection is gone when the answer is written: the act is
 		// recorded, and the linking job is still asked for the pending report.
 		{
-			reportID, method, path, body := fresh()
+			reportID, method, path, body, _ := fresh()
 			before, _ := h.reportActState(reportID)
 			asked := []string{}
 			h.server.feedbackLinkingAsked = func(_ string, id string) { asked = append(asked, id) }
@@ -474,7 +518,7 @@ func TestFeedbackReportActAnswersMatchTheStore(t *testing.T) {
 			{"the act fails", errors.New("write failed"), http.StatusInternalServerError, ""},
 			{"the request is cancelled before the commit", context.Canceled, http.StatusInternalServerError, ""},
 		} {
-			reportID, method, path, body := fresh()
+			reportID, method, path, body, _ := fresh()
 			before, _ := h.reportActState(reportID)
 			h.server.Store = &actFaultStore{Backend: base, actErr: fault.err}
 			response := request(reportID, method, path, body)
@@ -496,7 +540,7 @@ func TestFeedbackReportActAnswersMatchTheStore(t *testing.T) {
 		// or is refused, and its answer comes from the act alone while every
 		// read fails.
 		{
-			reportID, method, path, body := fresh()
+			reportID, method, path, body, _ := fresh()
 			if response := request(reportID, method, path, body); response.Code != http.StatusOK {
 				t.Fatalf("%s: first act status=%d body=%s", route.name, response.Code, response.Body)
 			}

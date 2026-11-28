@@ -304,20 +304,25 @@ A closed report refuses every act but reopening with 409 `report_closed`.
 
 Every refusal records nothing.
 
-The answer of an act depends only on the act. Conveyor reads the report as it
-stands after the act inside the act's own transaction, before it commits. So
-once an act is recorded, the answer is always 200 with that served report, and
-nothing after the commit can turn it into an error. 503 `retryable` therefore
-always means that nothing was recorded. An act that changes nothing answers
-200 in the same way, and a refusal answers its refusal. The answer has the same
-shape on all five act routes.
+The answer of an act depends only on the act. Conveyor builds the served
+report as it stands after the act inside the act's own transaction, before it
+commits, so no separate read after the commit can fail a recorded act. A
+recorded act answers 200 with that served report. Two cases are the
+exception: if the answer to the commit itself is lost, Conveyor cannot know
+whether the act was recorded and answers 500; if the connection closes while
+the answer is sent, the act stays recorded and no answer arrives. Neither
+asks you to send the request again. 503 `retryable` always means that nothing
+was recorded. An act that changes nothing answers 200 in the same way, and a
+refusal answers its refusal. The answer has the same shape on all five act
+routes.
 
-Sending the same act again after a lost answer is safe for confirming or
-adding a link, removing a link, and reopening: the repeat changes nothing and
-answers the report. A repeated close answers 409 `report_closed`, which means
-the first close was recorded. A repeated fix-task request sets the fix task
-again, and replaces a fix task that someone else set in between, so read the
-report first.
+After a 500 or a lost answer, read the report before you act again: someone
+else can act on it in between. When nobody has, sending the same act again
+changes nothing for confirming or adding a link, removing a link, reopening,
+and the same fix task, and answers the report. A close answers 409
+`report_closed` when the report is already closed, whoever closed it. A
+repeated fix-task request replaces a fix task that someone else set in
+between.
 
 ## Crates
 

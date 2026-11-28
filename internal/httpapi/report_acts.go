@@ -104,9 +104,12 @@ func readFeedbackReportActBody(w http.ResponseWriter, r *http.Request, allowed .
 // recordFeedbackReportAct records one act and answers the served report.
 //
 // An answer says "send it again" (503 retryable) only when nothing was
-// written, and once an act has committed the caller always learns that it
-// succeeded (component-persistence invariant 8; component-feedback-reports v4
-// invariants 17 to 20). So the store reads the report as it stands after the
+// written, and once an act has committed no later step can turn its answer
+// into an error: the caller is told that it succeeded whenever the answer
+// reaches it (component-persistence invariant 8; component-feedback-reports
+// v4 invariants 17 to 20). A connection that closes during the answer leaves
+// the act committed with no answer delivered, and a lost answer to the commit
+// statement itself answers a generic 500 that never asks for a repeat. So the store reads the report as it stands after the
 // act, with its details, in the act's own transaction, and every failure is
 // decided before the commit. After the commit the handler only builds the
 // served form from that result, which reads nothing and cannot fail because

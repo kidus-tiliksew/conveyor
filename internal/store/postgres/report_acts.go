@@ -320,6 +320,16 @@ WHERE t.workspace_id=$1 AND t.id=ANY($2::text[])`, workspaceID, taskIDs)
 			return nil, nil, err
 		}
 	}
+	// An act's transaction reads these in two statements without a
+	// snapshot, so a rename in between could give a crate two names. Each
+	// task takes its crate's name from the crate map, and one answer holds
+	// one name for each crate (component-feedback-reports v4 invariant 21).
+	for id, ref := range tasks {
+		if crate, ok := crates[ref.CrateID]; ok && ref.CrateID != "" {
+			ref.CrateName = crate.Name
+			tasks[id] = ref
+		}
+	}
 	return tasks, crates, nil
 }
 

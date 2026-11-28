@@ -1396,12 +1396,34 @@ func runFeedbackReadCrateConcurrent(t *testing.T, x Fixture) {
 		}
 		return requireOneState("the crate count", feedbackReadState{ids: []string{}, total: count[e.id]}, counts)
 	}, func() error {
-		// The last move takes the task out of the crate.
+		// The last move takes the task out of the crate: the crate page, the
+		// page of no crate, and the count all give that last state.
 		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, CrateID: crate.ID, Limit: 1})
 		if err != nil {
 			return err
 		}
-		return requireOneState("the final crate page", feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}, inCrate[1:])
+		if err := requireOneState("the final crate page", feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}, inCrate[1:]); err != nil {
+			return err
+		}
+		page, err = x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, NoCrate: true, Limit: 1})
+		if err != nil {
+			return err
+		}
+		got := feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}
+		if len(page.Reports) == 1 {
+			got.detail = page.Details.Tasks[member.ID].CrateID
+		}
+		if err := requireOneState("the final page of no crate", got, noCrate[1:]); err != nil {
+			return err
+		}
+		count, err := x.Backend.CountCrateOpenFeedbackReports(x.Context, crate.ID)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(count, map[string]int{e.id: 1}) {
+			return fmt.Errorf("final crate counts=%v, want 1", count)
+		}
+		return nil
 	})
 }
 
@@ -1513,7 +1535,14 @@ func runFeedbackReadTotalConcurrent(t *testing.T, x Fixture) {
 		if err != nil {
 			return err
 		}
-		return requireOneState("the final open page", feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}, open[len(open)-1:])
+		if err := requireOneState("the final open page", feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}, open[len(open)-1:]); err != nil {
+			return err
+		}
+		past, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportClosed, Limit: 1, Offset: 1000})
+		if err != nil {
+			return err
+		}
+		return requireOneState("the final closed page past the end", feedbackReadState{ids: feedbackPageIDs(past), total: past.Total}, closed[len(closed)-1:])
 	})
 }
 
@@ -1763,7 +1792,19 @@ func runFeedbackReadTaskCrateConcurrent(t *testing.T, x Fixture) {
 			return err
 		}
 		ref := details.Tasks[member.ID]
-		return requireOneState("the final read", feedbackReadState{ids: []string{}, detail: ref.CrateID + " " + ref.CrateName}, reads[:1])
+		if err := requireOneState("the final read", feedbackReadState{ids: []string{}, detail: ref.CrateID + " " + ref.CrateName}, reads[:1]); err != nil {
+			return err
+		}
+		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, CrateID: crateB.ID, Limit: 1})
+		if err != nil {
+			return err
+		}
+		got := feedbackReadState{ids: feedbackPageIDs(page), total: page.Total}
+		if len(page.Reports) == 1 {
+			listed := page.Details.Tasks[member.ID]
+			got.detail = listed.CrateID + " " + listed.CrateName
+		}
+		return requireOneState("crate B's final page", got, pages[:1])
 	})
 }
 
@@ -1813,7 +1854,17 @@ func runFeedbackReadFixTaskReplacedConcurrent(t *testing.T, x Fixture) {
 		if err != nil {
 			return err
 		}
-		return requireOneState("the final read", fixOf(read, details), states[2:])
+		if err := requireOneState("the final read", fixOf(read, details), states[2:]); err != nil {
+			return err
+		}
+		page, err := x.Backend.ListFeedbackReports(x.Context, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 1})
+		if err != nil {
+			return err
+		}
+		if len(page.Reports) != 1 {
+			return fmt.Errorf("final page=%d reports", len(page.Reports))
+		}
+		return requireOneState("the final page", fixOf(page.Reports[0], page.Details), states[2:])
 	})
 }
 
@@ -1856,9 +1907,16 @@ func runFeedbackReadListeningConcurrent(t *testing.T, x Fixture) {
 		}
 	}
 	read := func(name string, final bool) error {
+		// The writer only moves the clock forward, so the read clock lies
+		// between the clock values just before and just after the call.
+		from := time.Unix(0, clock.Load()).UTC()
 		page, err := x.Backend.ListFeedbackReports(readCtx, store.FeedbackReportQuery{State: store.FeedbackReportOpen, Limit: 2})
+		to := time.Unix(0, clock.Load()).UTC()
 		if err != nil {
 			return err
+		}
+		if page.Details.ReadAt.Before(from) || page.Details.ReadAt.After(to) {
+			return fmt.Errorf("%s has read clock %v, outside the clock values %v to %v seen during the call", name, page.Details.ReadAt, from, to)
 		}
 		want := pages
 		if final {
