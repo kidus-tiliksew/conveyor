@@ -1773,3 +1773,82 @@ test.describe('review findings', () => {
     )
   })
 })
+
+// The follow-up review of the fixes.
+test.describe('review follow-ups', () => {
+  const other = report('rpt-261127-d00010', {
+    summary: 'Second report',
+    links: [taskLink('lnk-s', '261120-b02', 'Store invoice numbers')],
+  })
+  const moveTo = (page: Page, id: string) =>
+    page.evaluate((reportId) => {
+      history.pushState({}, '', `/w/demo/?create=true&report=${reportId}`)
+      dispatchEvent(new PopStateEvent('popstate'))
+    }, id)
+  const saved = (page: Page) =>
+    page.evaluate(() => Object.keys(sessionStorage).filter((key) => key.startsWith('conveyor-fix-task')))
+
+  for (const outcome of ['recorded', 'refused'] as const) {
+    test(`a record request ${outcome} after the address moved to another report changes nothing there`, async ({
+      page,
+    }) => {
+      const server = await mockReportServer(page, { reports: [fixReport, other] })
+      await page.goto(fixAddress)
+      const held = gate()
+      server.actGate = held.promise
+      if (outcome === 'refused') server.actAnswers.push({ status: 503, json: { error: 'retryable' } })
+      await createFixTask(page)
+      await expect(sheet(page).locator('[data-fix-task-created]')).toContainText(
+        'Conveyor records it on the report now…',
+      )
+      await moveTo(page, other.id)
+      await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Second report')
+      held.open()
+      server.actGate = null
+      await expect.poll(() => fixPuts(server).length).toBe(1)
+      await page.waitForTimeout(500)
+      // The second report's flow is untouched: no navigation, no created
+      // task, no error, and its prefill and Create stay as they were.
+      await expect(page).toHaveURL(`/w/demo/?create=true&report=${other.id}`)
+      await expect(sheet(page).locator('[data-fix-task-created], [data-fix-task-error]')).toHaveCount(0)
+      await expect(description(page)).toHaveValue(expectedDescription(other, '```'))
+      // The first report keeps its saved task only while it is not recorded.
+      expect(await saved(page)).toEqual(outcome === 'recorded' ? [] : [`conveyor-fix-task:demo:${fixReport.id}`])
+      expect(server.created).toHaveLength(1)
+    })
+  }
+
+  test('after an unknown answer, a read that waits offline keeps every act blocked until a read answers', async ({
+    page,
+    context,
+  }) => {
+    const server = await mockReportServer(page, { reports: [actReport] })
+    await page.goto('/w/demo/monitor')
+    const item = card(page, actReport.id)
+    const confirm = item.getByRole('button', { name: 'Confirm the link to Send invoices by email' })
+    await expect(confirm).toBeEnabled()
+    // Offline, the act gets no answer and the fresh read waits paused. A
+    // paused read is not an answer, so every act stays blocked.
+    server.actAnswers.push('abort')
+    await context.setOffline(true)
+    await confirm.click()
+    await expect(item.locator('[data-report-act-error]')).toContainText(
+      'Conveyor does not know whether it recorded this, and the report did not load again.',
+    )
+    await expect(confirm).toBeDisabled()
+    await expect(item.getByRole('button', { name: 'Close report' })).toBeDisabled()
+    await expect(item.getByRole('button', { name: 'Link a task or crate' })).toBeDisabled()
+    // Coming back online unblocks nothing by itself.
+    await context.setOffline(false)
+    await page.waitForTimeout(500)
+    await expect(confirm).toBeDisabled()
+    // A read that answers lets the person act again.
+    await item.getByRole('button', { name: 'Read the report again' }).click()
+    await expect(item.locator('[data-report-act-error]')).toHaveText(
+      'Conveyor does not know whether it recorded this. Conveyor read the report again. Look at it before you try again.',
+    )
+    await expect(confirm).toBeEnabled()
+    // The act was sent once and never again by itself.
+    expect(server.acts).toHaveLength(1)
+  })
+})

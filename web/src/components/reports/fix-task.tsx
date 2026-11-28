@@ -145,7 +145,13 @@ export function useFixTaskFlow({
   // The last prefilled text: a description that still equals it was not
   // edited, so the prefill of another report replaces it.
   const lastPrefill = useRef('')
-  const sending = useRef(false)
+  // The flow that a request answers. A request that started for one report
+  // changes nothing on the page once the address names another report: it
+  // only clears its own report's saved task when the record succeeds.
+  const shown = useRef(identity)
+  shown.current = identity
+  // The flow whose record request is on its way, so it is never sent twice.
+  const sending = useRef<string | null>(null)
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -153,6 +159,7 @@ export function useFixTaskFlow({
       mounted.current = false
     }
   }, [])
+  const live = useCallback((flow: string) => mounted.current && shown.current === flow, [])
 
   // Prefill once per report, and only while it is open: a closed report
   // takes no fix task. Text that the person typed while the report loaded
@@ -173,12 +180,12 @@ export function useFixTaskFlow({
       if (reportId) writeCreatedFixTask(workspace, reportId, null)
       void queryClient.invalidateQueries({ queryKey: feedbackReportsQueryKey(workspace) })
       void queryClient.invalidateQueries({ queryKey: ['crates', workspace] })
-      if (!mounted.current) return
+      if (!live(identity)) return
       setCreated(null)
       setRecord({ phase: 'idle' })
       onRecorded(entry.taskId)
     },
-    [queryClient, workspace, reportId, onRecorded],
+    [queryClient, workspace, reportId, onRecorded, live, identity],
   )
 
   // A report that already names the created task as its fix task recorded
@@ -189,8 +196,9 @@ export function useFixTaskFlow({
 
   const sendRecord = useCallback(
     async (entry: CreatedFixTask) => {
-      if (!reportId || sending.current) return
-      sending.current = true
+      const flow = identity
+      if (!reportId || sending.current === flow) return
+      sending.current = flow
       setRecord({ phase: 'sending' })
       try {
         await setFeedbackReportFixTask(workspace, reportId, entry.taskId, entry.causeTaskIds)
@@ -199,7 +207,7 @@ export function useFixTaskFlow({
         if (error instanceof FeedbackReportActError && error.outcome === 'unknown') {
           // The record may be stored. Read the report before the person can
           // send it again.
-          if (mounted.current) setRecord({ phase: 'checking' })
+          if (live(flow)) setRecord({ phase: 'checking' })
           let fresh: FeedbackReport | undefined
           try {
             fresh = await queryClient.fetchQuery({
@@ -212,7 +220,7 @@ export function useFixTaskFlow({
           }
           if (fresh?.fix_task?.id === entry.taskId) {
             finish(entry)
-          } else if (mounted.current) {
+          } else if (live(flow)) {
             setRecord({
               phase: 'failed',
               canSend: fresh !== undefined,
@@ -222,16 +230,16 @@ export function useFixTaskFlow({
                   : 'The report did not record the task. Record it again.',
             })
           }
-        } else if (mounted.current) {
+        } else if (live(flow)) {
           if (error instanceof FeedbackReportActError && error.code === 'report_closed')
             void queryClient.invalidateQueries({ queryKey })
           setRecord({ phase: 'failed', canSend: true, message: recordFailureMessage(error) })
         }
       } finally {
-        sending.current = false
+        if (sending.current === flow) sending.current = null
       }
     },
-    [workspace, reportId, queryClient, queryKey, finish],
+    [workspace, reportId, queryClient, queryKey, finish, identity, live],
   )
 
   const onCreated = useCallback(
@@ -247,7 +255,8 @@ export function useFixTaskFlow({
 
   const rereadReport = useCallback(
     async (restored = false) => {
-      if (!created || sending.current) return
+      const flow = identity
+      if (!created || sending.current === flow) return
       setRecord({ phase: 'checking' })
       try {
         const fresh = await queryClient.fetchQuery({
@@ -256,14 +265,14 @@ export function useFixTaskFlow({
           staleTime: 0,
         })
         if (fresh.fix_task?.id === created.taskId) finish(created)
-        else if (mounted.current)
+        else if (live(flow))
           setRecord(
             restored
               ? { phase: 'idle' }
               : { phase: 'failed', canSend: true, message: 'The report did not record the task. Record it again.' },
           )
       } catch {
-        if (mounted.current)
+        if (live(flow))
           setRecord({
             phase: 'failed',
             canSend: false,
@@ -271,7 +280,7 @@ export function useFixTaskFlow({
           })
       }
     },
-    [created, queryClient, queryKey, workspace, reportId, finish],
+    [created, queryClient, queryKey, workspace, reportId, finish, identity, live],
   )
 
   // A restored task: read the report once before the page offers anything.

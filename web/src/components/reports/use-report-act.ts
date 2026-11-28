@@ -86,12 +86,14 @@ export function useReportAct(workspace: string) {
     await queryClient.invalidateQueries({ queryKey: feedbackReportsQueryKey(workspace) })
   }, [queryClient, workspace])
 
-  // Reads every shown report read again and says whether each one answered.
+  // Reads every shown report read again and says whether each one answered
+  // with a report. A read that failed, or that waits offline in TanStack
+  // Query's paused queue, did not answer, so the card stays blocked.
   const readAgain = useCallback(async () => {
     const started = Date.now()
     await refresh().catch(() => undefined)
     const reads = queryClient.getQueryCache().findAll({ queryKey: feedbackReportsQueryKey(workspace), type: 'active' })
-    return reads.every((query) => !(query.state.errorUpdatedAt >= started && query.state.status === 'error'))
+    return reads.every((query) => query.state.fetchStatus === 'idle' && query.state.dataUpdatedAt >= started)
   }, [queryClient, refresh, workspace])
 
   const run = useCallback(
