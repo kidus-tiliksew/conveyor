@@ -417,60 +417,65 @@ func (s *Store) RecordFeedbackReportAct(ctx context.Context, act store.FeedbackR
 			targets.Crates[act.CrateID] = held
 		}
 		write, err := store.PlanFeedbackReportAct(report, stored, act, targets, actor)
-		if err != nil || !write.Changed {
+		if err != nil {
 			return err
 		}
-		for _, link := range write.NewLinks {
-			if _, err := tx.Exec(ctx, `INSERT INTO feedback_report_links (workspace_id, id, report_id, task_id, crate_id, state, evidence, created_at, created_by, confirmed_by, confirmed_at)
+		if write.Changed {
+			for _, link := range write.NewLinks {
+				if _, err := tx.Exec(ctx, `INSERT INTO feedback_report_links (workspace_id, id, report_id, task_id, crate_id, state, evidence, created_at, created_by, confirmed_by, confirmed_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8, $9, $10, $11)`,
-				workspaceID, link.ID, link.ReportID, feedbackOptionalText(link.TaskID), feedbackOptionalText(link.CrateID), link.State, store.FeedbackReportEvidenceJSON(link.Evidence),
-				link.CreatedAt, link.CreatedBy, feedbackOptionalText(link.ConfirmedBy), link.ConfirmedAt); err != nil {
-				return err
+					workspaceID, link.ID, link.ReportID, feedbackOptionalText(link.TaskID), feedbackOptionalText(link.CrateID), link.State, store.FeedbackReportEvidenceJSON(link.Evidence),
+					link.CreatedAt, link.CreatedBy, feedbackOptionalText(link.ConfirmedBy), link.ConfirmedAt); err != nil {
+					return err
+				}
 			}
-		}
-		for _, link := range write.UpdatedLinks {
-			var confirmedBy, removedBy *string
-			if link.ConfirmedAt != nil {
-				confirmedBy = &link.ConfirmedBy
+			for _, link := range write.UpdatedLinks {
+				var confirmedBy, removedBy *string
+				if link.ConfirmedAt != nil {
+					confirmedBy = &link.ConfirmedBy
+				}
+				if link.RemovedAt != nil {
+					removedBy = &link.RemovedBy
+				}
+				tag, err := tx.Exec(ctx, `UPDATE feedback_report_links SET state=$3, confirmed_by=$4, confirmed_at=$5, removed_by=$6, removed_at=$7 WHERE workspace_id=$1 AND id=$2`,
+					workspaceID, link.ID, link.State, confirmedBy, link.ConfirmedAt, removedBy, link.RemovedAt)
+				if err != nil {
+					return err
+				}
+				if tag.RowsAffected() != 1 {
+					return fmt.Errorf("update link %s: %d rows changed", link.ID, tag.RowsAffected())
+				}
 			}
-			if link.RemovedAt != nil {
-				removedBy = &link.RemovedBy
+			r := write.Report
+			var closedBy, closeReason, reopenSource, reopenLabel, reopenActor, fixTaskID, fixTaskSetBy *string
+			if r.ClosedAt != nil {
+				closedBy, closeReason = &r.ClosedBy, &r.CloseReason
 			}
-			tag, err := tx.Exec(ctx, `UPDATE feedback_report_links SET state=$3, confirmed_by=$4, confirmed_at=$5, removed_by=$6, removed_at=$7 WHERE workspace_id=$1 AND id=$2`,
-				workspaceID, link.ID, link.State, confirmedBy, link.ConfirmedAt, removedBy, link.RemovedAt)
+			if r.ReopenedAt != nil && r.ReopenOrigin != nil {
+				reopenSource, reopenLabel, reopenActor = &r.ReopenOrigin.Source, &r.ReopenOrigin.Label, &r.ReopenOrigin.Actor
+			}
+			if r.FixTaskSetAt != nil {
+				fixTaskID, fixTaskSetBy = &r.FixTaskID, &r.FixTaskSetBy
+			}
+			tag, err := tx.Exec(ctx, `UPDATE feedback_reports SET state=$3, in_inbox=$4, closed_at=$5, closed_by=$6, close_reason=$7,
+reopened_at=$8, reopen_source=$9, reopen_source_label=$10, reopen_actor_id=$11, fix_task_id=$12, fix_task_set_by=$13, fix_task_set_at=$14
+WHERE workspace_id=$1 AND id=$2`,
+				workspaceID, r.ID, r.State, r.InInbox, r.ClosedAt, closedBy, closeReason, r.ReopenedAt, reopenSource, reopenLabel, reopenActor, fixTaskID, fixTaskSetBy, r.FixTaskSetAt)
 			if err != nil {
 				return err
 			}
 			if tag.RowsAffected() != 1 {
-				return fmt.Errorf("update link %s: %d rows changed", link.ID, tag.RowsAffected())
+				return fmt.Errorf("update feedback report %s: %d rows changed", r.ID, tag.RowsAffected())
 			}
+			if err := insertWorkspaceEvent(ctx, q, write.Event); err != nil {
+				return err
+			}
+			result.Changed = true
 		}
-		r := write.Report
-		var closedBy, closeReason, reopenSource, reopenLabel, reopenActor, fixTaskID, fixTaskSetBy *string
-		if r.ClosedAt != nil {
-			closedBy, closeReason = &r.ClosedBy, &r.CloseReason
-		}
-		if r.ReopenedAt != nil && r.ReopenOrigin != nil {
-			reopenSource, reopenLabel, reopenActor = &r.ReopenOrigin.Source, &r.ReopenOrigin.Label, &r.ReopenOrigin.Actor
-		}
-		if r.FixTaskSetAt != nil {
-			fixTaskID, fixTaskSetBy = &r.FixTaskID, &r.FixTaskSetBy
-		}
-		tag, err := tx.Exec(ctx, `UPDATE feedback_reports SET state=$3, in_inbox=$4, closed_at=$5, closed_by=$6, close_reason=$7,
-reopened_at=$8, reopen_source=$9, reopen_source_label=$10, reopen_actor_id=$11, fix_task_id=$12, fix_task_set_by=$13, fix_task_set_at=$14
-WHERE workspace_id=$1 AND id=$2`,
-			workspaceID, r.ID, r.State, r.InInbox, r.ClosedAt, closedBy, closeReason, r.ReopenedAt, reopenSource, reopenLabel, reopenActor, fixTaskID, fixTaskSetBy, r.FixTaskSetAt)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() != 1 {
-			return fmt.Errorf("update feedback report %s: %d rows changed", r.ID, tag.RowsAffected())
-		}
-		if err := insertWorkspaceEvent(ctx, q, write.Event); err != nil {
-			return err
-		}
-		result.Changed = true
-		return nil
+		// The answer is read in the same transaction, before it commits, so
+		// no read after the commit can fail the act.
+		result.Report, result.Details, err = readFeedbackReportActAnswer(ctx, tx, workspaceID, act.ReportID)
+		return err
 	})
 	if err != nil {
 		return store.FeedbackReportActResult{}, err
@@ -493,4 +498,27 @@ func feedbackOptionalText(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+// readFeedbackReportActAnswer reads, in the act's transaction, the report as
+// it stands after the act with its details and the read clock. A report
+// whose environment the workspace does not hold refuses the act, which then
+// rolls back with nothing written.
+func readFeedbackReportActAnswer(ctx context.Context, tx pgx.Tx, workspaceID, reportID string) (store.FeedbackReport, store.FeedbackReportDetails, error) {
+	reports, err := queryFeedbackReports(ctx, tx, `SELECT `+feedbackReportColumns+` FROM feedback_reports WHERE workspace_id=$1 AND id=$2`, workspaceID, reportID)
+	if err != nil {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
+	}
+	if len(reports) != 1 {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, fmt.Errorf("%w: feedback report %s", store.ErrNotFound, reportID)
+	}
+	details, err := readFeedbackReportDetailsTx(ctx, tx, workspaceID, reports)
+	if err != nil {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
+	}
+	if _, ok := details.Environments[reports[0].EnvironmentID]; !ok {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, fmt.Errorf("%w: report %s", store.ErrFeedbackReportEnvironmentMissing, reportID)
+	}
+	details.ReadAt = store.FeedbackReadClock(ctx)
+	return reports[0], details, nil
 }

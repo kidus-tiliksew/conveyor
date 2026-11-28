@@ -76,11 +76,22 @@ type FeedbackReportAct struct {
 	At           time.Time
 }
 
-// FeedbackReportActResult is what an act did. Changed is false for an act
-// that changed nothing, which records nothing.
+// FeedbackReportActResult is what an act did and the report it leaves.
+// Changed is false for an act that changed nothing, which records nothing.
+// Report and Details are the report as it stands after the act, read in the
+// act's own transaction as one answer (ReportReadStore), so the answer of an
+// act is ready before the act commits and no read after the commit can fail
+// it (component-persistence invariant 8; component-feedback-reports v4
+// invariants 17 to 21).
 type FeedbackReportActResult struct {
 	Changed bool
+	Report  FeedbackReport
+	Details FeedbackReportDetails
 }
+
+// ErrFeedbackReportEnvironmentMissing reports a report whose environment the
+// workspace does not hold. An act refuses it before it writes anything.
+var ErrFeedbackReportEnvironmentMissing = errors.New("feedback report names an environment the workspace does not hold")
 
 // FeedbackReportQuery selects reports for a list. State is open or closed.
 // Each other filter is empty when unset. Limit is the page size and Offset
@@ -241,7 +252,11 @@ type ReportReadStore interface {
 	// PlanFeedbackReportAct plans it, under the lock that serializes the
 	// report's writes with report entries of its environment and with the
 	// linking work. A report the workspace does not hold answers
-	// ErrNotFound. Every refusal writes nothing.
+	// ErrNotFound. Every refusal writes nothing. The result carries the
+	// report after the act with its details, read in the same transaction,
+	// also for an act that changed nothing. A report whose environment the
+	// workspace does not hold answers ErrFeedbackReportEnvironmentMissing
+	// and writes nothing, so the served answer can always be built.
 	RecordFeedbackReportAct(ctx context.Context, act FeedbackReportAct) (FeedbackReportActResult, error)
 }
 

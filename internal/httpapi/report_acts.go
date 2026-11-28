@@ -102,6 +102,19 @@ func readFeedbackReportActBody(w http.ResponseWriter, r *http.Request, allowed .
 }
 
 // recordFeedbackReportAct records one act and answers the served report.
+//
+// An answer says "send it again" (503 retryable) only when nothing was
+// written, and once an act has committed the caller always learns that it
+// succeeded (component-persistence invariant 8; component-feedback-reports v4
+// invariants 17 to 20). So the store reads the report as it stands after the
+// act, with its details, in the act's own transaction, and every failure is
+// decided before the commit. After the commit the handler only builds the
+// served form from that result, which reads nothing and cannot fail because
+// the store refused a report without its environment before it wrote,
+// writes the 200 answer, and then asks the linking job for a pending
+// report, which cannot change the answer. An act that changed nothing
+// answers the same way from the same result, and a refused act answers its
+// refusal; neither depends on a later step.
 func (s *Server) recordFeedbackReportAct(w http.ResponseWriter, r *http.Request, backend store.ReportStore, act store.FeedbackReportAct) {
 	act.ReportID, act.At = chi.URLParam(r, "id"), s.feedbackNow()
 	// The rules that need no stored state are decided here, before any
@@ -110,11 +123,27 @@ func (s *Server) recordFeedbackReportAct(w http.ResponseWriter, r *http.Request,
 		writeFeedbackReportActRefusal(w, err)
 		return
 	}
-	if _, err := backend.RecordFeedbackReportAct(r.Context(), act); err != nil {
+	result, err := backend.RecordFeedbackReportAct(s.feedbackReadContext(r.Context()), act)
+	if err != nil {
 		writeFeedbackReportActError(w, r, err)
 		return
 	}
-	s.writeServedFeedbackReport(w, r, backend, act.ReportID)
+	writeJSON(w, http.StatusOK, buildServedFeedbackReport(result.Report, result.Details, servedFeedbackActEnvironment(result), servedFeedbackActSignal(result), result.Details.ReadAt))
+	s.requestPendingFeedbackLinking(r.Context(), []store.FeedbackReport{result.Report})
+}
+
+// servedFeedbackActEnvironment is the environment of an act's report from
+// the act's result; the store refused the act before it wrote if the
+// workspace did not hold it.
+func servedFeedbackActEnvironment(result store.FeedbackReportActResult) store.Environment {
+	environment := result.Details.Environments[result.Report.EnvironmentID]
+	return store.Environment{ID: result.Report.EnvironmentID, Name: environment.Name}
+}
+
+// servedFeedbackActSignal is the newest signal of the act's environment from
+// the act's result, or nil.
+func servedFeedbackActSignal(result store.FeedbackReportActResult) *store.FeedbackSignalState {
+	return result.Details.Environments[result.Report.EnvironmentID].Signal
 }
 
 // linkFeedbackReport serves POST /v1/feedback-reports/{id}/links: it

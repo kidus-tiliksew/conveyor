@@ -63,6 +63,7 @@ func runFeedbackReportActs(t *testing.T, factory Factory) {
 		{"CrateCountsAgreeWithTheList", runFeedbackReportCrateCounts},
 		{"Details", runFeedbackReportDetails},
 		{"ReadWorkBoundedByThePage", runFeedbackReportReadWork},
+		{"ActAnswersTheReportAfterTheAct", runFeedbackActAnswer},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			x := factory.fresh(t, nil)
@@ -1897,4 +1898,53 @@ func runFeedbackReadListeningConcurrent(t *testing.T, x Fixture) {
 		}
 		return nil
 	}, func() error { return read("the page", false) }, func() error { return read("the final page", true) })
+}
+
+// runFeedbackActAnswer holds every backend to the answer an act carries: the
+// report as it stands after the act with its details and a read clock, read
+// in the act's own transaction, for an act that changes the report and for
+// one that changes nothing, so the act route needs no read after the commit
+// (component-persistence invariant 8; component-feedback-reports v4
+// invariants 17 to 21).
+func runFeedbackActAnswer(t *testing.T, x Fixture) {
+	f := newActFixture(t, x, "crash")
+	crate, err := x.Backend.CreateCrate(x.Context, store.CrateInput{Name: "Spring"})
+	requireOK(t, err)
+	member := mergedActTask(t, x, crate.ID)
+	check := func(name string, result store.FeedbackReportActResult, changed bool) {
+		t.Helper()
+		if result.Changed != changed {
+			t.Fatalf("%s: changed=%t, want %t", name, result.Changed, changed)
+		}
+		stored := f.stored()
+		if !reflect.DeepEqual(result.Report, stored) {
+			t.Fatalf("%s: answer report=%+v\nstored=%+v", name, result.Report, stored)
+		}
+		links, err := x.Backend.ListFeedbackReportLinks(x.Context, f.report.ID)
+		requireOK(t, err)
+		if !reflect.DeepEqual(result.Details.Links[f.report.ID], links) {
+			t.Fatalf("%s: answer links=%+v\nstored links=%+v", name, result.Details.Links[f.report.ID], links)
+		}
+		if result.Details.ReadAt.IsZero() || result.Details.Environments[stored.EnvironmentID].ID != stored.EnvironmentID {
+			t.Fatalf("%s: answer details=%+v, want the environment and a read clock", name, result.Details)
+		}
+		if ref := result.Details.Tasks[member.ID]; len(links) > 0 && (ref.Title != member.Title || ref.CrateName != "Spring") {
+			t.Fatalf("%s: answer task=%+v", name, ref)
+		}
+	}
+	result, err := f.act(store.FeedbackReportAct{Kind: store.FeedbackReportActLink, TaskID: member.ID})
+	requireOK(t, err)
+	check("a link", result, true)
+	result, err = f.act(store.FeedbackReportAct{Kind: store.FeedbackReportActLink, TaskID: member.ID})
+	requireOK(t, err)
+	check("the same link again", result, false)
+	result, err = f.act(store.FeedbackReportAct{Kind: store.FeedbackReportActClose, Reason: "fixed"})
+	requireOK(t, err)
+	check("a close", result, true)
+	result, err = f.act(store.FeedbackReportAct{Kind: store.FeedbackReportActReopen})
+	requireOK(t, err)
+	check("a reopen", result, true)
+	result, err = f.act(store.FeedbackReportAct{Kind: store.FeedbackReportActReopen})
+	requireOK(t, err)
+	check("a reopen of an open report", result, false)
 }

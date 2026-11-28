@@ -1,9 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -268,4 +272,262 @@ func TestFeedbackReportActRefusals(t *testing.T) {
 	if stored := h.reportByKey("crash"); strings.Contains(stored.CloseReason, secret) {
 		t.Fatalf("stored reason holds the secret: %q", stored.CloseReason)
 	}
+}
+
+// actFaultStore wraps the harness store so a test can drive each step of an
+// act route: it fails every report read, it fails the act before anything is
+// written, or it runs a step right after the act commits.
+type actFaultStore struct {
+	store.Backend
+	readErr  error
+	actErr   error
+	afterAct func()
+}
+
+func (f *actFaultStore) ReadFeedbackReport(ctx context.Context, id string) (store.FeedbackReport, store.FeedbackReportDetails, error) {
+	if f.readErr != nil {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, f.readErr
+	}
+	return f.Backend.ReadFeedbackReport(ctx, id)
+}
+
+func (f *actFaultStore) ReadFeedbackReports(ctx context.Context, ids []string) ([]store.FeedbackReport, store.FeedbackReportDetails, error) {
+	if f.readErr != nil {
+		return nil, store.FeedbackReportDetails{}, f.readErr
+	}
+	return f.Backend.ReadFeedbackReports(ctx, ids)
+}
+
+func (f *actFaultStore) ListFeedbackReports(ctx context.Context, query store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
+	if f.readErr != nil {
+		return store.FeedbackReportPage{}, f.readErr
+	}
+	return f.Backend.ListFeedbackReports(ctx, query)
+}
+
+func (f *actFaultStore) RecordFeedbackReportAct(ctx context.Context, act store.FeedbackReportAct) (store.FeedbackReportActResult, error) {
+	if f.actErr != nil {
+		return store.FeedbackReportActResult{}, f.actErr
+	}
+	result, err := f.Backend.RecordFeedbackReportAct(ctx, act)
+	if err == nil && f.afterAct != nil {
+		f.afterAct()
+	}
+	return result, err
+}
+
+// failingWriter is a response writer whose connection is gone: every write
+// fails.
+type failingWriter struct {
+	header http.Header
+	status int
+}
+
+func (w *failingWriter) Header() http.Header       { return w.header }
+func (w *failingWriter) WriteHeader(status int)    { w.status = status }
+func (w *failingWriter) Write([]byte) (int, error) { return 0, errors.New("connection closed") }
+
+// actRoute sets up a fresh report for one act route and answers its request.
+type actRoute struct {
+	name string
+	// setup stores a report in the state the act needs and answers the
+	// request; repeat is a request that changes nothing or is refused once
+	// the act is recorded.
+	setup func(h *reportRoutesHarness, key string) (reportID, method, path, body string)
+}
+
+func feedbackActRoutes() []actRoute {
+	return []actRoute{
+		{"confirm a link", func(h *reportRoutesHarness, key string) (string, string, string, string) {
+			task := h.mergedTask("")
+			report := h.storeReport(key, nil)
+			return report.ID, http.MethodPost, "/links", fmt.Sprintf(`{"task_id":%q}`, task.ID)
+		}},
+		{"remove a link", func(h *reportRoutesHarness, key string) (string, string, string, string) {
+			task := h.mergedTask("")
+			report := h.storeReport(key, nil)
+			h.storeAct(store.FeedbackReportAct{Kind: store.FeedbackReportActLink, ReportID: report.ID, TaskID: task.ID})
+			links, err := h.st.ListFeedbackReportLinks(h.ctx, report.ID)
+			if err != nil || len(links) != 1 {
+				h.t.Fatalf("links=%v err=%v", links, err)
+			}
+			return report.ID, http.MethodDelete, "/links/" + links[0].ID, ""
+		}},
+		{"close", func(h *reportRoutesHarness, key string) (string, string, string, string) {
+			return h.storeReport(key, nil).ID, http.MethodPost, "/close", `{"reason":"fixed"}`
+		}},
+		{"reopen", func(h *reportRoutesHarness, key string) (string, string, string, string) {
+			report := h.storeReport(key, nil)
+			h.storeAct(store.FeedbackReportAct{Kind: store.FeedbackReportActClose, ReportID: report.ID, Reason: "done"})
+			return report.ID, http.MethodPost, "/reopen", ""
+		}},
+		{"fix task", func(h *reportRoutesHarness, key string) (string, string, string, string) {
+			task := h.openTask()
+			return h.storeReport(key, nil).ID, http.MethodPut, "/fix-task", fmt.Sprintf(`{"task_id":%q}`, task.ID)
+		}},
+	}
+}
+
+// TestFeedbackReportActAnswersMatchTheStore proves, for each of the five act
+// routes, that an answer says "send it again" only when nothing was
+// written, and that once an act has committed the caller always learns that
+// it succeeded (component-persistence invariant 8; component-feedback-reports
+// v4 invariants 17 to 20). The store reads the answer in the act's own
+// transaction, so each step after the commit is driven here with a fault:
+// a report read that answers retryable or fails, a request cancelled right
+// after the commit, and a connection that is gone when the answer is
+// written. The act still answers 200 with the served report as it stands
+// after the act, or, with no connection, is recorded and still asks the
+// linking job. A failure before the commit (retryable, any other store
+// error, a cancelled request) writes nothing and answers 503 retryable or a
+// generic 500. An act that changes nothing, and a refused act, answer from
+// the act alone while every read fails.
+func TestFeedbackReportActAnswersMatchTheStore(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	base := h.server.Store.(store.Backend)
+	n := 0
+	for _, route := range feedbackActRoutes() {
+		// Background linking work from an earlier case settles first, so a
+		// before-and-after comparison sees only the act under test.
+		fresh := func() (string, string, string, string) {
+			h.settle()
+			n++
+			return route.setup(h, fmt.Sprintf("act-%02d", n))
+		}
+		request := func(reportID, method, path, body string) *httptest.ResponseRecorder {
+			return h.do(h.manager(), method, "/v1/feedback-reports/"+reportID+path, body)
+		}
+		committed := func(name, reportID, before string, response *httptest.ResponseRecorder) {
+			t.Helper()
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s, %s: status=%d body=%s, want 200 for a recorded act", route.name, name, response.Code, response.Body)
+			}
+			var served map[string]any
+			if err := json.Unmarshal(response.Body.Bytes(), &served); err != nil || served["id"] != reportID {
+				t.Fatalf("%s, %s: body=%s err=%v, want the served report", route.name, name, response.Body, err)
+			}
+			requireServedFieldNames(t, served)
+			if after, _ := h.reportActState(reportID); after == before {
+				t.Fatalf("%s, %s: the store holds no act", route.name, name)
+			}
+		}
+		for _, fault := range []struct {
+			name    string
+			install func(f *actFaultStore, cancel context.CancelFunc)
+		}{
+			{"the report read answers retryable", func(f *actFaultStore, _ context.CancelFunc) {
+				f.readErr = fmt.Errorf("%w: report view moved", store.ErrRetryable)
+			}},
+			{"the report read fails", func(f *actFaultStore, _ context.CancelFunc) { f.readErr = errors.New("read failed") }},
+			{"the request is cancelled after the commit", func(f *actFaultStore, cancel context.CancelFunc) {
+				f.readErr, f.afterAct = context.Canceled, cancel
+			}},
+		} {
+			reportID, method, path, body := fresh()
+			before, _ := h.reportActState(reportID)
+			faulty := &actFaultStore{Backend: base}
+			ctx, cancel := context.WithCancel(context.Background())
+			fault.install(faulty, cancel)
+			h.server.Store = faulty
+			req := httptest.NewRequest(method, "/v1/feedback-reports/"+reportID+path, strings.NewReader(body)).WithContext(ctx)
+			req.Header.Set("Authorization", "Bearer "+h.manager())
+			req.Header.Set("X-Workspace-ID", "alpha")
+			response := h.serve(req)
+			cancel()
+			h.server.Store = base
+			committed(fault.name, reportID, before, response)
+		}
+
+		// The connection is gone when the answer is written: the act is
+		// recorded, and the linking job is still asked for the pending report.
+		{
+			reportID, method, path, body := fresh()
+			before, _ := h.reportActState(reportID)
+			asked := []string{}
+			h.server.feedbackLinkingAsked = func(_ string, id string) { asked = append(asked, id) }
+			req := httptest.NewRequest(method, "/v1/feedback-reports/"+reportID+path, strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+h.manager())
+			req.Header.Set("X-Workspace-ID", "alpha")
+			writer := &failingWriter{header: http.Header{}}
+			h.handler.ServeHTTP(writer, req)
+			h.server.feedbackLinkingAsked = nil
+			if writer.status != http.StatusOK {
+				t.Fatalf("%s, the connection is gone: status=%d, want 200", route.name, writer.status)
+			}
+			if after, _ := h.reportActState(reportID); after == before {
+				t.Fatalf("%s, the connection is gone: the store holds no act", route.name)
+			}
+			if !slices.Contains(asked, reportID) {
+				t.Fatalf("%s, the connection is gone: the linking job was not asked, asked=%v", route.name, asked)
+			}
+		}
+
+		// A failure before the commit writes nothing; only a retryable one
+		// asks for the request again.
+		for _, fault := range []struct {
+			name   string
+			err    error
+			status int
+			code   string
+		}{
+			{"the act answers retryable", fmt.Errorf("%w: lock wait", store.ErrRetryable), http.StatusServiceUnavailable, "retryable"},
+			{"the act fails", errors.New("write failed"), http.StatusInternalServerError, ""},
+			{"the request is cancelled before the commit", context.Canceled, http.StatusInternalServerError, ""},
+		} {
+			reportID, method, path, body := fresh()
+			before, _ := h.reportActState(reportID)
+			h.server.Store = &actFaultStore{Backend: base, actErr: fault.err}
+			response := request(reportID, method, path, body)
+			h.server.Store = base
+			if response.Code != fault.status {
+				t.Fatalf("%s, %s: status=%d body=%s, want %d", route.name, fault.name, response.Code, response.Body, fault.status)
+			}
+			if fault.code != "" {
+				requireJSONError(t, response, fault.status, fault.code)
+			} else if strings.Contains(response.Body.String(), "retryable") {
+				t.Fatalf("%s, %s: a failure that is not retryable asks for the request again: %s", route.name, fault.name, response.Body)
+			}
+			if after, _ := h.reportActState(reportID); after != before {
+				t.Fatalf("%s, %s: a refused write recorded something", route.name, fault.name)
+			}
+		}
+
+		// The same request again, after the act is recorded, changes nothing
+		// or is refused, and its answer comes from the act alone while every
+		// read fails.
+		{
+			reportID, method, path, body := fresh()
+			if response := request(reportID, method, path, body); response.Code != http.StatusOK {
+				t.Fatalf("%s: first act status=%d body=%s", route.name, response.Code, response.Body)
+			}
+			h.settle()
+			before, _ := h.reportActState(reportID)
+			h.server.Store = &actFaultStore{Backend: base, readErr: fmt.Errorf("%w: report view moved", store.ErrRetryable)}
+			response := request(reportID, method, path, body)
+			h.server.Store = base
+			switch {
+			case route.name == "close":
+				requireJSONError(t, response, http.StatusConflict, "report_closed")
+			case route.name == "fix task":
+				// The same fix task again changes nothing.
+				if response.Code != http.StatusOK {
+					t.Fatalf("%s repeated: status=%d body=%s", route.name, response.Code, response.Body)
+				}
+			default:
+				if response.Code != http.StatusOK {
+					t.Fatalf("%s repeated: status=%d body=%s, want 200 for an act that changes nothing", route.name, response.Code, response.Body)
+				}
+			}
+			if after, _ := h.reportActState(reportID); after != before {
+				t.Fatalf("%s repeated: recorded something", route.name)
+			}
+		}
+	}
+
+	// A refusal answers its refusal while every read fails.
+	reportID := h.storeReport("refused", nil).ID
+	h.server.Store = &actFaultStore{Backend: base, readErr: fmt.Errorf("%w: report view moved", store.ErrRetryable)}
+	requireJSONError(t, h.do(h.manager(), http.MethodPost, "/v1/feedback-reports/"+reportID+"/links", `{"task_id":"task-missing"}`), http.StatusNotFound, "task_not_found")
+	requireJSONError(t, h.do(h.manager(), http.MethodDelete, "/v1/feedback-reports/"+reportID+"/links/lnk:missing", ""), http.StatusNotFound, "link_not_found")
+	h.server.Store = base
 }

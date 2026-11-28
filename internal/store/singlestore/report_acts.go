@@ -599,55 +599,60 @@ func (s *Store) RecordFeedbackReportAct(ctx context.Context, act store.FeedbackR
 			}
 		}
 		write, err := store.PlanFeedbackReportAct(report, stored, act, targets, actor)
-		if err != nil || !write.Changed {
+		if err != nil {
 			return err
 		}
-		for _, link := range write.NewLinks {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO feedback_report_links (workspace_id,id,report_id,task_id,crate_id,state,evidence,created_at,created_by,confirmed_by,confirmed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-				ws, link.ID, link.ReportID, optionalText(link.TaskID), optionalText(link.CrateID), link.State, store.FeedbackReportEvidenceJSON(link.Evidence),
-				link.CreatedAt, link.CreatedBy, optionalText(link.ConfirmedBy), link.ConfirmedAt); err != nil {
-				return err
+		if write.Changed {
+			for _, link := range write.NewLinks {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO feedback_report_links (workspace_id,id,report_id,task_id,crate_id,state,evidence,created_at,created_by,confirmed_by,confirmed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+					ws, link.ID, link.ReportID, optionalText(link.TaskID), optionalText(link.CrateID), link.State, store.FeedbackReportEvidenceJSON(link.Evidence),
+					link.CreatedAt, link.CreatedBy, optionalText(link.ConfirmedBy), link.ConfirmedAt); err != nil {
+					return err
+				}
 			}
-		}
-		for _, link := range write.UpdatedLinks {
-			var confirmedBy, removedBy sql.NullString
-			if link.ConfirmedAt != nil {
-				confirmedBy = sql.NullString{String: link.ConfirmedBy, Valid: true}
+			for _, link := range write.UpdatedLinks {
+				var confirmedBy, removedBy sql.NullString
+				if link.ConfirmedAt != nil {
+					confirmedBy = sql.NullString{String: link.ConfirmedBy, Valid: true}
+				}
+				if link.RemovedAt != nil {
+					removedBy = sql.NullString{String: link.RemovedBy, Valid: true}
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE feedback_report_links SET state=?,confirmed_by=?,confirmed_at=?,removed_by=?,removed_at=? WHERE workspace_id=? AND id=?`,
+					link.State, confirmedBy, link.ConfirmedAt, removedBy, link.RemovedAt, ws, link.ID); err != nil {
+					return err
+				}
 			}
-			if link.RemovedAt != nil {
-				removedBy = sql.NullString{String: link.RemovedBy, Valid: true}
+			r := write.Report
+			var closedBy, closeReason, reopenSource, reopenLabel, reopenActor, fixTaskID, fixTaskSetBy sql.NullString
+			if r.ClosedAt != nil {
+				closedBy, closeReason = sql.NullString{String: r.ClosedBy, Valid: true}, sql.NullString{String: r.CloseReason, Valid: true}
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE feedback_report_links SET state=?,confirmed_by=?,confirmed_at=?,removed_by=?,removed_at=? WHERE workspace_id=? AND id=?`,
-				link.State, confirmedBy, link.ConfirmedAt, removedBy, link.RemovedAt, ws, link.ID); err != nil {
-				return err
+			if r.ReopenedAt != nil && r.ReopenOrigin != nil {
+				reopenSource = sql.NullString{String: r.ReopenOrigin.Source, Valid: true}
+				reopenLabel = sql.NullString{String: r.ReopenOrigin.Label, Valid: true}
+				reopenActor = sql.NullString{String: r.ReopenOrigin.Actor, Valid: true}
 			}
-		}
-		r := write.Report
-		var closedBy, closeReason, reopenSource, reopenLabel, reopenActor, fixTaskID, fixTaskSetBy sql.NullString
-		if r.ClosedAt != nil {
-			closedBy, closeReason = sql.NullString{String: r.ClosedBy, Valid: true}, sql.NullString{String: r.CloseReason, Valid: true}
-		}
-		if r.ReopenedAt != nil && r.ReopenOrigin != nil {
-			reopenSource = sql.NullString{String: r.ReopenOrigin.Source, Valid: true}
-			reopenLabel = sql.NullString{String: r.ReopenOrigin.Label, Valid: true}
-			reopenActor = sql.NullString{String: r.ReopenOrigin.Actor, Valid: true}
-		}
-		if r.FixTaskSetAt != nil {
-			fixTaskID, fixTaskSetBy = sql.NullString{String: r.FixTaskID, Valid: true}, sql.NullString{String: r.FixTaskSetBy, Valid: true}
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE feedback_reports SET state=?,in_inbox=?,closed_at=?,closed_by=?,close_reason=?,
+			if r.FixTaskSetAt != nil {
+				fixTaskID, fixTaskSetBy = sql.NullString{String: r.FixTaskID, Valid: true}, sql.NullString{String: r.FixTaskSetBy, Valid: true}
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE feedback_reports SET state=?,in_inbox=?,closed_at=?,closed_by=?,close_reason=?,
 reopened_at=?,reopen_source=?,reopen_source_label=?,reopen_actor_id=?,fix_task_id=?,fix_task_set_by=?,fix_task_set_at=? WHERE workspace_id=? AND id=?`,
-			r.State, r.InInbox, r.ClosedAt, closedBy, closeReason, r.ReopenedAt, reopenSource, reopenLabel, reopenActor, fixTaskID, fixTaskSetBy, r.FixTaskSetAt, ws, r.ID); err != nil {
-			return err
+				r.State, r.InInbox, r.ClosedAt, closedBy, closeReason, r.ReopenedAt, reopenSource, reopenLabel, reopenActor, fixTaskID, fixTaskSetBy, r.FixTaskSetAt, ws, r.ID); err != nil {
+				return err
+			}
+			if err := insertWorkspaceEvent(ctx, tx, write.Event); err != nil {
+				return err
+			}
+			if err := claim.touchEnvironment(ctx, tx, report.EnvironmentID); err != nil {
+				return err
+			}
+			result.Changed = true
 		}
-		if err := insertWorkspaceEvent(ctx, tx, write.Event); err != nil {
-			return err
-		}
-		if err := claim.touchEnvironment(ctx, tx, report.EnvironmentID); err != nil {
-			return err
-		}
-		result.Changed = true
-		return nil
+		// The answer is read in the same transaction, under the same claim,
+		// before it commits, so no read after the commit can fail the act.
+		result.Report, result.Details, err = readFeedbackReportActAnswer(ctx, tx, ws, act.ReportID)
+		return err
 	})
 	if err != nil {
 		return store.FeedbackReportActResult{}, err
@@ -658,4 +663,27 @@ reopened_at=?,reopen_source=?,reopen_source_label=?,reopen_actor_id=?,fix_task_i
 // optionalText is NULL for an empty value.
 func optionalText(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: value != ""}
+}
+
+// readFeedbackReportActAnswer reads, in the act's transaction and under its
+// claim, the report as it stands after the act with its details and the read
+// clock. A report whose environment the workspace does not hold refuses the
+// act, which then rolls back with nothing written.
+func readFeedbackReportActAnswer(ctx context.Context, tx *sql.Tx, ws, reportID string) (store.FeedbackReport, store.FeedbackReportDetails, error) {
+	reports, err := queryFeedbackReportPage(ctx, tx, `SELECT `+feedbackReportColumns+` FROM feedback_reports WHERE workspace_id=? AND id=?`, ws, reportID)
+	if err != nil {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
+	}
+	if len(reports) != 1 {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, fmt.Errorf("%w: feedback report %s", store.ErrNotFound, reportID)
+	}
+	details, err := readFeedbackReportPageDetails(ctx, tx, ws, reports)
+	if err != nil {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
+	}
+	if _, ok := details.Environments[reports[0].EnvironmentID]; !ok {
+		return store.FeedbackReport{}, store.FeedbackReportDetails{}, fmt.Errorf("%w: report %s", store.ErrFeedbackReportEnvironmentMissing, reportID)
+	}
+	details.ReadAt = store.FeedbackReadClock(ctx)
+	return reports[0], details, nil
 }

@@ -412,13 +412,31 @@ func (m *volatileMemory) RecordFeedbackReportAct(ctx context.Context, act Feedba
 		_, targets.Crates[act.CrateID] = m.crates[memoryScopedKey{workspace: workspace, id: act.CrateID}]
 	}
 	write, err := PlanFeedbackReportAct(cloneFeedbackReport(report), stored, act, targets, actor)
-	if err != nil || !write.Changed {
+	if err != nil {
 		return FeedbackReportActResult{}, err
 	}
-	for _, link := range append(slices.Clone(write.NewLinks), write.UpdatedLinks...) {
-		m.putFeedbackReportLinkLocked(workspace, feedbackReportLinkRowOf(link))
+	if _, ok := m.environmentState.environments[memoryScopedKey{workspace: workspace, id: report.EnvironmentID}]; !ok {
+		return FeedbackReportActResult{}, fmt.Errorf("%w: report %s", ErrFeedbackReportEnvironmentMissing, report.ID)
 	}
-	m.feedbackReportState.reports[scope][key] = cloneFeedbackReport(write.Report)
-	m.appendEventLocked(ctx, write.Event)
-	return FeedbackReportActResult{Changed: true}, nil
+	// Memory has no rollback, so the details are decoded once before the
+	// write: a stored note or link that fails to decode refuses the act with
+	// nothing written. An act writes only link rows it decodes itself and
+	// never a note, so the read after the write decodes the same rows.
+	if _, err := m.feedbackReportDetailsLocked(workspace, []FeedbackReport{report}); err != nil {
+		return FeedbackReportActResult{}, err
+	}
+	if write.Changed {
+		for _, link := range append(slices.Clone(write.NewLinks), write.UpdatedLinks...) {
+			m.putFeedbackReportLinkLocked(workspace, feedbackReportLinkRowOf(link))
+		}
+		m.feedbackReportState.reports[scope][key] = cloneFeedbackReport(write.Report)
+		m.appendEventLocked(ctx, write.Event)
+	}
+	// The answer is read under the same write lock, before it is released.
+	result := FeedbackReportActResult{Changed: write.Changed, Report: cloneFeedbackReport(m.feedbackReportState.reports[scope][key])}
+	if result.Details, err = m.feedbackReportDetailsLocked(workspace, []FeedbackReport{result.Report}); err != nil {
+		return FeedbackReportActResult{}, err
+	}
+	result.Details.ReadAt = FeedbackReadClock(ctx)
+	return result, nil
 }

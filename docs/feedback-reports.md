@@ -299,10 +299,25 @@ A closed report refuses every act but reopening with 409 `report_closed`.
 | 409 `task_not_merged` | A link or a cause names a task that is not merged |
 | 409 `report_closed` | The report is closed. Reopen it first |
 | 413 | The body is over 16 KiB |
-| 500 | The store failed. The answer holds no detail |
-| 503 `retryable` | The store asks for the request to be sent again. `Retry-After` is `1` |
+| 500 | The store failed before the act was recorded, or the answer of the commit itself was lost. The answer holds no detail and does not ask you to send the request again. Read the report to learn whether the act is there |
+| 503 `retryable` | Nothing was recorded, and the store asks for the request to be sent again. `Retry-After` is `1` |
 
 Every refusal records nothing.
+
+The answer of an act depends only on the act. Conveyor reads the report as it
+stands after the act inside the act's own transaction, before it commits. So
+once an act is recorded, the answer is always 200 with that served report, and
+nothing after the commit can turn it into an error. 503 `retryable` therefore
+always means that nothing was recorded. An act that changes nothing answers
+200 in the same way, and a refusal answers its refusal. The answer has the same
+shape on all five act routes.
+
+Sending the same act again after a lost answer is safe for confirming or
+adding a link, removing a link, and reopening: the repeat changes nothing and
+answers the report. A repeated close answers 409 `report_closed`, which means
+the first close was recorded. A repeated fix-task request sets the fix task
+again, and replaces a fix task that someone else set in between, so read the
+report first.
 
 ## Crates
 
