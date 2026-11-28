@@ -38,6 +38,7 @@ func runFeedbackReportActs(t *testing.T, factory Factory) {
 		{"RemoveLink", runFeedbackActRemoveLink},
 		{"RemovalSurvivesLinking", runFeedbackActRemovalSurvivesLinking},
 		{"CloseAndReopen", runFeedbackActCloseReopen},
+		{"EveryActRaisesOneNotice", runFeedbackActNotices},
 		{"ClosedRefusesEveryActButReopen", runFeedbackActClosedRefuses},
 		{"CloseReasonRedactedAndBounded", runFeedbackActCloseReason},
 		{"EntryAfterAUserClose", runFeedbackActEntryAfterClose},
@@ -234,7 +235,11 @@ func foreignContext(t *testing.T, x Fixture) context.Context {
 	t.Helper()
 	foreign := x.Workspace + "-other"
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), foreign)
-	if _, err := x.Backend.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: foreign}); err != nil {
+	cfg := &config.Config{Workspace: foreign}
+	if x.Config != nil {
+		cfg.Repos = x.Config.Repos
+	}
+	if _, err := x.Backend.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
 	return ctx
@@ -431,6 +436,34 @@ func runFeedbackActCloseReopen(t *testing.T, x Fixture) {
 	}
 	// Reopening an open report changes nothing.
 	f.unchanged(store.FeedbackReportAct{Kind: store.FeedbackReportActReopen})
+}
+
+func runFeedbackActNotices(t *testing.T, x Fixture) {
+	f := newActFixture(t, x, "crash")
+	task, fix := mergedActTask(t, x, ""), openActTask(t, x)
+	notices := x.Backend.Changes().Subscribe(x.Workspace, changes.Workspace)
+	defer notices.Close()
+	settle(notices)
+	for _, act := range []store.FeedbackReportAct{
+		{Kind: store.FeedbackReportActLink, TaskID: task.ID},
+		{Kind: store.FeedbackReportActRemoveLink, LinkID: store.FeedbackReportLinkID(f.report.ID, 1)},
+		{Kind: store.FeedbackReportActFixTask, TaskID: fix.ID, CauseTaskIDs: []string{task.ID}},
+		{Kind: store.FeedbackReportActClose, Reason: "done"},
+		{Kind: store.FeedbackReportActReopen},
+	} {
+		f.changed(act)
+		if n := awaitNotice(t, notices, "workspace notice after "+act.Kind); n.Kind != changes.Workspace || n.Workspace != x.Workspace {
+			t.Fatalf("notice after %s=%+v", act.Kind, n)
+		}
+		settle(notices)
+	}
+	// An act that changes nothing raises no notice.
+	f.unchanged(store.FeedbackReportAct{Kind: store.FeedbackReportActReopen})
+	select {
+	case n := <-notices.C():
+		t.Fatalf("an act that changed nothing raised %+v", n)
+	case <-time.After(300 * time.Millisecond):
+	}
 }
 
 func runFeedbackActClosedRefuses(t *testing.T, x Fixture) {
