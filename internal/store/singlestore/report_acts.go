@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -101,9 +102,15 @@ func feedbackReportTaskPosition(ctx context.Context, tx *sql.Tx, ws string) (int
 //     event position. The view reads the position first and last, and a
 //     change in between reads the whole view again, at most
 //     feedbackReportViewAttempts times, and then answers store.ErrRetryable.
-//   - A crate's name changes under the crate's lock and is read once, only
-//     for the details. Crates are never removed, so the filters do not read
+//   - A crate's name changes only under the crate's state claim
+//     (UpdateCrate), which raises neither of the signals above. The details
+//     take the state claims of the page's crates, in one order, and then
+//     read every crate name, of linked crates and of linked tasks' crates,
+//     in one statement, so no crate of the page changes from there to the
+//     end of the read. Crates are never removed, so the filters do not read
 //     a crate's name.
+//   - The read clock, at which the listening state is decided, is read
+//     after every value and before the last position read.
 //
 // Under the claim it runs: the position; the count, an aggregate that keeps
 // one number, which stops the read when it passes refuseAbove; the page,
@@ -148,6 +155,11 @@ func (s *Store) readFeedbackReportViewOnce(ctx context.Context, ws, where string
 				return err
 			}
 		}
+		// The read clock is read after every value and before the last
+		// statement, while the claims are held and inside the task event
+		// bracket, so the listening state is decided at a moment when every
+		// value read was the stored one.
+		page.Details.ReadAt = store.FeedbackReadClock(ctx)
 		after, err := feedbackReportTaskPosition(ctx, tx, ws)
 		if err != nil {
 			return err
@@ -252,13 +264,16 @@ FROM feedback_report_links WHERE workspace_id=? AND report_id IN (`+marks+`) ORD
 	if err != nil {
 		return details, err
 	}
+	// The tasks are read without their crates: a task's crate ID is covered
+	// by the task event position, and every crate name is read below, under
+	// the crates' claims, in one statement.
+	taskCrates := map[string]string{}
 	if len(taskIDs) > 0 {
 		args := []any{ws}
 		for _, id := range taskIDs {
 			args = append(args, id)
 		}
-		taskRows, err := tx.QueryContext(ctx, `SELECT t.id,t.title,c.id,c.name FROM tasks t LEFT JOIN crates c ON c.workspace_id=t.workspace_id AND c.id=t.crate_id
-WHERE t.workspace_id=? AND t.id IN (`+inList(len(taskIDs))+`)`, args...)
+		taskRows, err := tx.QueryContext(ctx, `SELECT id,title,crate_id FROM tasks WHERE workspace_id=? AND id IN (`+inList(len(taskIDs))+`)`, args...)
 		if err != nil {
 			return details, err
 		}
@@ -266,15 +281,15 @@ WHERE t.workspace_id=? AND t.id IN (`+inList(len(taskIDs))+`)`, args...)
 			defer taskRows.Close()
 			for taskRows.Next() {
 				var ref store.FeedbackReportTaskRef
-				var crateID, crateName sql.NullString
-				if err := taskRows.Scan(&ref.ID, &ref.Title, &crateID, &crateName); err != nil {
+				var crateID sql.NullString
+				if err := taskRows.Scan(&ref.ID, &ref.Title, &crateID); err != nil {
 					return err
 				}
-				if crateID.Valid && crateName.Valid {
-					ref.CrateID, ref.CrateName = crateID.String, crateName.String
-					details.Crates[ref.CrateID] = store.FeedbackReportCrateRef{ID: ref.CrateID, Name: ref.CrateName}
-				}
 				details.Tasks[ref.ID] = ref
+				if crateID.Valid && crateID.String != "" {
+					taskCrates[ref.ID] = crateID.String
+					crateIDs = append(crateIDs, crateID.String)
+				}
 			}
 			return taskRows.Err()
 		}()
@@ -283,6 +298,17 @@ WHERE t.workspace_id=? AND t.id IN (`+inList(len(taskIDs))+`)`, args...)
 		}
 	}
 	if len(crateIDs) > 0 {
+		// A crate's name changes only under the crate's state claim
+		// (UpdateCrate), which raises no task event and no environment claim.
+		// The read takes the same claims for the page's crates, in one order,
+		// so no crate of the page changes from here to the end of the read.
+		slices.Sort(crateIDs)
+		crateIDs = slices.Compact(crateIDs)
+		for _, id := range crateIDs {
+			if _, err := claimKey(ctx, tx, crateStateKey(ws, id)); err != nil {
+				return details, err
+			}
+		}
 		args := []any{ws}
 		for _, id := range crateIDs {
 			args = append(args, id)
@@ -304,6 +330,13 @@ WHERE t.workspace_id=? AND t.id IN (`+inList(len(taskIDs))+`)`, args...)
 		}()
 		if err != nil {
 			return details, err
+		}
+		for taskID, crateID := range taskCrates {
+			if crate, ok := details.Crates[crateID]; ok {
+				ref := details.Tasks[taskID]
+				ref.CrateID, ref.CrateName = crate.ID, crate.Name
+				details.Tasks[taskID] = ref
+			}
 		}
 	}
 	environmentIDs := []any{ws}

@@ -152,13 +152,34 @@ type FeedbackReportEnvironment struct {
 // with their newest signals. A task, crate, or environment the workspace
 // does not hold has no entry. Every value is read in the same view as the
 // records, so a served report never mixes values from two moments
-// (component-feedback-reports invariant 21).
+// (component-feedback-reports invariant 21). ReadAt is the read clock
+// (FeedbackReadClock), read inside the view, at which a served environment's
+// listening state is decided.
 type FeedbackReportDetails struct {
 	Links        map[string][]FeedbackReportLink
 	Notes        map[string][]FeedbackReportNote
 	Tasks        map[string]FeedbackReportTaskRef
 	Crates       map[string]FeedbackReportCrateRef
 	Environments map[string]FeedbackReportEnvironment
+	ReadAt       time.Time
+}
+
+type feedbackReadClockKey struct{}
+
+// WithFeedbackReadClock sets the clock a report read reads inside its view,
+// so the served listening state is decided at a time when the signal it
+// reads was the stored one. The routes pass their own clock.
+func WithFeedbackReadClock(ctx context.Context, clock func() time.Time) context.Context {
+	return context.WithValue(ctx, feedbackReadClockKey{}, clock)
+}
+
+// FeedbackReadClock reads the context's report read clock, or the system
+// clock when the context sets none.
+func FeedbackReadClock(ctx context.Context) time.Time {
+	if clock, ok := ctx.Value(feedbackReadClockKey{}).(func() time.Time); ok && clock != nil {
+		return clock()
+	}
+	return time.Now()
 }
 
 // NewFeedbackReportDetails answers details with every map empty.

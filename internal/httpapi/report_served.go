@@ -303,7 +303,7 @@ func (s *Server) loadServedFeedbackReports(ctx context.Context, backend store.Re
 	if len(reportIDs) == 0 {
 		return []servedFeedbackReport{}, nil
 	}
-	reports, details, err := backend.ReadFeedbackReports(ctx, reportIDs)
+	reports, details, err := backend.ReadFeedbackReports(s.feedbackReadContext(ctx), reportIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -315,15 +315,26 @@ func (s *Server) loadServedFeedbackReports(ctx context.Context, backend store.Re
 	return served, nil
 }
 
+// feedbackReadContext gives a report read the server's clock, which the
+// store reads inside its view (store.FeedbackReadClock), so a served
+// environment's listening state is decided at a moment when the signal it
+// reads was the stored one.
+func (s *Server) feedbackReadContext(ctx context.Context) context.Context {
+	return store.WithFeedbackReadClock(ctx, s.feedbackNow)
+}
+
 // servedFeedbackReports builds the served form of stored reports from the
-// details read with them, at one read clock. The environment and its newest
-// signal come from the details, which the store reads in the same view as
-// the records, so no served value comes from a second read. A report whose
-// environment the details do not hold is a store failure, and a failure
-// serves no partial list.
+// details read with them. The environment and its newest signal come from
+// the details, and the listening state is decided at the details' read
+// clock, so no served value comes from a second read or a later clock. A
+// report whose environment the details do not hold is a store failure, and
+// a failure serves no partial list.
 func (s *Server) servedFeedbackReports(ctx context.Context, reports []store.FeedbackReport, details store.FeedbackReportDetails) ([]servedFeedbackReport, error) {
 	served := make([]servedFeedbackReport, 0, len(reports))
-	now := s.feedbackNow()
+	now := details.ReadAt
+	if now.IsZero() {
+		now = s.feedbackNow()
+	}
 	for _, report := range reports {
 		environment, ok := details.Environments[report.EnvironmentID]
 		if !ok {

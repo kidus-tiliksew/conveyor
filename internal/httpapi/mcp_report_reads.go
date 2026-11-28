@@ -39,7 +39,7 @@ func (s *Server) mcpFeedbackReportRead(ctx context.Context, args map[string]any)
 	query.EnvironmentID = strings.TrimSpace(readString(args, "environment_id"))
 	query.TaskID = strings.TrimSpace(readString(args, "task_id"))
 	query.CrateID = strings.TrimSpace(readString(args, "crate_id"))
-	listed, err := backend.ListFeedbackReports(ctx, query)
+	listed, err := backend.ListFeedbackReports(s.feedbackReadContext(ctx), query)
 	if err != nil {
 		return nil, err
 	}

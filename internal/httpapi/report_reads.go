@@ -130,7 +130,7 @@ func (s *Server) listFeedbackReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query.Limit, query.Offset = page.Limit, page.Offset
-	listed, err := backend.ListFeedbackReports(r.Context(), query)
+	listed, err := backend.ListFeedbackReports(s.feedbackReadContext(r.Context()), query)
 	if err != nil {
 		writeFeedbackReportStoreError(w, r, err)
 		return
@@ -158,7 +158,7 @@ func (s *Server) getFeedbackReport(w http.ResponseWriter, r *http.Request) {
 
 // writeServedFeedbackReport reads one report and answers its served form.
 func (s *Server) writeServedFeedbackReport(w http.ResponseWriter, r *http.Request, backend store.ReportStore, reportID string) {
-	report, details, err := backend.ReadFeedbackReport(r.Context(), reportID)
+	report, details, err := backend.ReadFeedbackReport(s.feedbackReadContext(r.Context()), reportID)
 	if err != nil {
 		writeFeedbackReportStoreError(w, r, err)
 		return

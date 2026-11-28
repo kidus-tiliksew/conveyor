@@ -176,7 +176,9 @@ func (m *volatileMemory) forEachFeedbackReportMatchLocked(workspace string, quer
 }
 
 // ListFeedbackReports implements ReportReadStore under one read lock, so
-// every input of the read is one state. While it runs it keeps a count, at
+// every input of the read, the read clock included, is one state: every
+// write of a report, link, note, task, crate, environment, and signal takes
+// the memory write lock. While it runs it keeps a count, at
 // most Offset+Limit references (sort keys and where a report is kept), and
 // the page's records and details. A query with RefuseAbove counts first and
 // keeps nothing else, and a count over RefuseAbove answers the count alone
@@ -190,6 +192,7 @@ func (m *volatileMemory) ListFeedbackReports(ctx context.Context, query Feedback
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	page := FeedbackReportPage{Reports: []FeedbackReport{}, Details: NewFeedbackReportDetails()}
+	page.Details.ReadAt = FeedbackReadClock(ctx)
 	if query.RefuseAbove > 0 {
 		m.forEachFeedbackReportMatchLocked(workspace, query, func(feedbackReportRef) { page.Total++ })
 		if page.Refused(query) {
@@ -215,9 +218,11 @@ func (m *volatileMemory) ListFeedbackReports(ctx context.Context, query Feedback
 		}
 	}
 	// The details are read under the same read lock as the page.
+	readAt := page.Details.ReadAt
 	if page.Details, err = m.feedbackReportDetailsLocked(workspace, page.Reports); err != nil {
 		return FeedbackReportPage{}, err
 	}
+	page.Details.ReadAt = readAt
 	return page, nil
 }
 
@@ -235,6 +240,7 @@ func (m *volatileMemory) ReadFeedbackReport(ctx context.Context, reportID string
 	if err != nil {
 		return FeedbackReport{}, FeedbackReportDetails{}, err
 	}
+	details.ReadAt = FeedbackReadClock(ctx)
 	return report, details, nil
 }
 
@@ -269,6 +275,7 @@ func (m *volatileMemory) ReadFeedbackReports(ctx context.Context, reportIDs []st
 	if err != nil {
 		return nil, FeedbackReportDetails{}, err
 	}
+	details.ReadAt = FeedbackReadClock(ctx)
 	return reports, details, nil
 }
 

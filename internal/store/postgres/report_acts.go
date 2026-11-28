@@ -71,13 +71,35 @@ func feedbackReportFilter(workspaceID string, query store.FeedbackReportQuery) (
 // its RefuseAbove stops there. The page is ORDER BY ... LIMIT, which the
 // server answers with a top-N sort that keeps Offset+Limit rows, and only the
 // page's rows, their links, notes, tasks, crates, and environments cross the
-// connection (component-feedback-reports invariants 21 and 24).
+// connection. The read clock is read right after the first statement sets
+// the snapshot, and feedbackSignalsHeld then checks that no signal of a read
+// environment committed since, or the whole read runs again, at most
+// feedbackReportViewAttempts times, and then answers store.ErrRetryable
+// (component-feedback-reports invariants 21 and 24).
 func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFeedbackReports")
 	query, err := store.NormalizeFeedbackReportQuery(query)
 	if err != nil {
 		return store.FeedbackReportPage{}, err
 	}
+	for range feedbackReportViewAttempts {
+		page, err := s.listFeedbackReportsOnce(ctx, query)
+		if err != nil {
+			return store.FeedbackReportPage{}, err
+		}
+		held, err := s.feedbackSignalsHeld(ctx, page.Details)
+		if err != nil {
+			return store.FeedbackReportPage{}, err
+		}
+		if held {
+			return page, nil
+		}
+	}
+	return store.FeedbackReportPage{}, fmt.Errorf("%w: %v", store.ErrRetryable, errFeedbackSignalMoved)
+}
+
+func (s *Store) listFeedbackReportsOnce(ctx context.Context, query store.FeedbackReportQuery) (store.FeedbackReportPage, error) {
+	var err error
 	workspaceID := workspace(ctx)
 	where, args := feedbackReportFilter(workspaceID, query)
 	limit, offset := len(args)+1, len(args)+2
@@ -92,6 +114,8 @@ func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackRep
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM feedback_reports r WHERE `+where, args...).Scan(&page.Total); err != nil {
 		return store.FeedbackReportPage{}, err
 	}
+	readAt := store.FeedbackReadClock(ctx)
+	page.Details.ReadAt = readAt
 	if page.Refused(query) || page.Total <= query.Offset {
 		return page, nil
 	}
@@ -101,29 +125,20 @@ func (s *Store) ListFeedbackReports(ctx context.Context, query store.FeedbackRep
 	if page.Details, err = readFeedbackReportDetailsTx(ctx, tx, workspaceID, page.Reports); err != nil {
 		return store.FeedbackReportPage{}, err
 	}
+	page.Details.ReadAt = readAt
 	return page, nil
 }
 
-// ReadFeedbackReport implements store.ReportReadStore in one REPEATABLE
-// READ snapshot.
+// ReadFeedbackReport implements store.ReportReadStore with the view of
+// ReadFeedbackReports.
 func (s *Store) ReadFeedbackReport(ctx context.Context, reportID string) (store.FeedbackReport, store.FeedbackReportDetails, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ReadFeedbackReport")
-	workspaceID := workspace(ctx)
-	tx, err := s.beginWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	reports, err := queryFeedbackReports(ctx, tx, `SELECT `+feedbackReportColumns+` FROM feedback_reports WHERE workspace_id=$1 AND id=$2`, workspaceID, reportID)
+	reports, details, err := s.ReadFeedbackReports(ctx, []string{reportID})
 	if err != nil {
 		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
 	}
 	if len(reports) != 1 {
 		return store.FeedbackReport{}, store.FeedbackReportDetails{}, fmt.Errorf("%w: feedback report %s", store.ErrNotFound, reportID)
-	}
-	details, err := readFeedbackReportDetailsTx(ctx, tx, workspaceID, reports)
-	if err != nil {
-		return store.FeedbackReport{}, store.FeedbackReportDetails{}, err
 	}
 	return reports[0], details, nil
 }
@@ -152,9 +167,27 @@ func (s *Store) GetFeedbackReport(ctx context.Context, reportID string) (store.F
 }
 
 // ReadFeedbackReports implements store.ReportReadStore: the records and
-// their details in one REPEATABLE READ snapshot.
+// their details in one REPEATABLE READ snapshot, with the read clock and
+// the signal check of feedbackSignalsHeld.
 func (s *Store) ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]store.FeedbackReport, store.FeedbackReportDetails, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ReadFeedbackReports")
+	for range feedbackReportViewAttempts {
+		reports, details, err := s.readFeedbackReportsOnce(ctx, reportIDs)
+		if err != nil {
+			return nil, store.FeedbackReportDetails{}, err
+		}
+		held, err := s.feedbackSignalsHeld(ctx, details)
+		if err != nil {
+			return nil, store.FeedbackReportDetails{}, err
+		}
+		if held {
+			return reports, details, nil
+		}
+	}
+	return nil, store.FeedbackReportDetails{}, fmt.Errorf("%w: %v", store.ErrRetryable, errFeedbackSignalMoved)
+}
+
+func (s *Store) readFeedbackReportsOnce(ctx context.Context, reportIDs []string) ([]store.FeedbackReport, store.FeedbackReportDetails, error) {
 	workspaceID := workspace(ctx)
 	tx, err := s.beginWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -165,6 +198,7 @@ func (s *Store) ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]
 	if err != nil {
 		return nil, store.FeedbackReportDetails{}, err
 	}
+	readAt := store.FeedbackReadClock(ctx)
 	byID := make(map[string]store.FeedbackReport, len(stored))
 	for _, report := range stored {
 		byID[report.ID] = report
@@ -180,7 +214,60 @@ func (s *Store) ReadFeedbackReports(ctx context.Context, reportIDs []string) ([]
 	if err != nil {
 		return nil, store.FeedbackReportDetails{}, err
 	}
+	details.ReadAt = readAt
 	return reports, details, nil
+}
+
+// feedbackReportViewAttempts bounds the reads of one view when a signal
+// commits after its snapshot.
+const feedbackReportViewAttempts = 3
+
+// errFeedbackSignalMoved reports that a signal of a read environment
+// committed after the read's snapshot.
+var errFeedbackSignalMoved = errors.New("a signal changed during the report read")
+
+// feedbackSignalsHeld reports whether the newest signal of each environment
+// the view read is still the committed one. The snapshot holds every other
+// value of the read, but the read clock is read after the snapshot is taken,
+// so a signal that commits in between would pair an older signal with a
+// later clock. This statement runs outside the snapshot, after the clock,
+// and reads only the view's environments. A signal's time only moves
+// forward, so an equal answer means no signal of these environments
+// committed between the snapshot and this statement.
+func (s *Store) feedbackSignalsHeld(ctx context.Context, details store.FeedbackReportDetails) (bool, error) {
+	if len(details.Environments) == 0 {
+		return true, nil
+	}
+	ids := make([]string, 0, len(details.Environments))
+	for id := range details.Environments {
+		ids = append(ids, id)
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT environment_id, last_signal_at, next_signal_seconds FROM feedback_signals WHERE workspace_id=$1 AND environment_id=ANY($2::text[])`, workspace(ctx), ids)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	committed := map[string]store.FeedbackSignalState{}
+	for rows.Next() {
+		var state store.FeedbackSignalState
+		if err := rows.Scan(&state.EnvironmentID, &state.LastSignalAt, &state.NextSignalSeconds); err != nil {
+			return false, err
+		}
+		committed[state.EnvironmentID] = state
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	for id, environment := range details.Environments {
+		now, found := committed[id]
+		switch {
+		case environment.Signal == nil && found, environment.Signal != nil && !found:
+			return false, nil
+		case found && (!store.EnvironmentTime(now.LastSignalAt).Equal(environment.Signal.LastSignalAt) || now.NextSignalSeconds != environment.Signal.NextSignalSeconds):
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // readFeedbackReportDetailsTx reads the links, notes, tasks, and crates of
