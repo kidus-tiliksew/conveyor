@@ -146,7 +146,7 @@ export function ReportCard({ report, extra }: { report: FeedbackReport; extra?: 
       <section aria-label="Links" className="min-w-0 space-y-2">
         {report.links_pending && (
           <p data-report-links-pending className="text-xs text-muted">
-            Conveyor is still looking for tasks to link to this report.
+            Conveyor still looks for tasks to link to this report.
           </p>
         )}
         {report.links.length === 0 ? (
@@ -244,20 +244,20 @@ function EvidenceLine({ evidence }: { evidence: FeedbackReportEvidence }) {
   if (evidence.kind === 'timing') {
     return (
       <li data-report-evidence="timing">
-        Timing evidence: <Untrusted>{evidence.service ?? ''}</Untrusted>{' '}
+        Timing evidence: a deploy of <Untrusted>{evidence.service ?? ''}</Untrusted>{' '}
         <Untrusted>
-          {evidence.version?.version ?? evidence.version?.commit?.slice(0, 12) ?? 'unknown version'}
+          {evidence.version?.version ?? evidence.version?.commit?.slice(0, 12) ?? 'an unknown version'}
         </Untrusted>{' '}
-        was deployed {evidence.deployed_at && <ServedTime value={evidence.deployed_at} />}
+        {evidence.deployed_at && <ServedTime value={evidence.deployed_at} />}
         {evidence.prior_signal_at ? (
           <>
-            . The report was first seen after the signal of <ServedTime value={evidence.prior_signal_at} /> and before
-            this deploy was recorded.
+            . The watcher first saw the problem after the signal of <ServedTime value={evidence.prior_signal_at} /> and
+            before Conveyor recorded this deploy.
           </>
         ) : (
           <>
-            , {evidence.elapsed_minutes ?? 0} {evidence.elapsed_minutes === 1 ? 'minute' : 'minutes'} before the report
-            was first seen.
+            , {evidence.elapsed_minutes ?? 0} {evidence.elapsed_minutes === 1 ? 'minute' : 'minutes'} before the watcher
+            first saw the problem.
           </>
         )}
       </li>
@@ -412,7 +412,7 @@ function ActStatus({ state, target }: { state: ReportActState; target: string })
   if (state.phase === 'checking' && state.target === target)
     return (
       <p role="status" className="mt-1.5 text-xs text-muted">
-        Conveyor could not say whether it recorded this. Reading the report again…
+        Conveyor does not know whether it recorded this. Conveyor reads the report again…
       </p>
     )
   if (state.phase === 'failed' && state.target === target)
@@ -534,7 +534,7 @@ function CloseForm({
       }}
     >
       <label htmlFor={`${id}-reason`} className="block text-xs font-medium text-muted">
-        Why are you closing this report?
+        Reason to close the report
       </label>
       <Textarea
         id={`${id}-reason`}

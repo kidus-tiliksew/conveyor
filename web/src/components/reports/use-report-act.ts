@@ -32,7 +32,7 @@ export function reportActMessage(error: unknown) {
   if (!(error instanceof FeedbackReportActError)) return 'Something went wrong. Nothing changed on this page.'
   if (error.outcome === 'retryable') return 'Conveyor recorded nothing. Try again.'
   if (error.outcome === 'unknown')
-    return 'Conveyor could not say whether it recorded this. The report below is read again. Look at it before you try again.'
+    return 'Conveyor does not know whether it recorded this. Look at the report again before you try again.'
   switch (error.code) {
     case 'report_closed':
       return 'This report is closed now. Reopen it first.'

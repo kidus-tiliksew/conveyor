@@ -55,11 +55,11 @@ const ruleLabels: Record<string, string> = { line: 'line', timing: 'timing' }
 export function noteSentence(note: FeedbackReportNote) {
   switch (note.kind) {
     case 'too_many_tasks':
-      return `brought in ${note.task_count ?? 'more than 10'} tasks. That is more than 10, so no task of this deploy is linked.`
+      return `brought in ${note.task_count ?? 'more than 10'} tasks. That is more than 10, so Conveyor links no task of this deploy.`
     case 'no_task_deploy':
       return 'brought in no task.'
     case 'deploy_not_compared':
-      return 'was not compared with the deploy before it, because a commit is unknown or the two commits are in different repositories.'
+      return 'has no known commit, or its commit is in another repository than the deploy before it. Conveyor did not compare the two.'
     case 'file_not_found':
       return 'GitHub did not find the file at the commit of the report.'
     case 'commit_unresolved':

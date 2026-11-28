@@ -196,7 +196,7 @@ export function useFixTaskFlow({
               canSend: fresh !== undefined,
               message:
                 fresh === undefined
-                  ? 'Conveyor could not say whether the report recorded the task, and the report did not load again. Read the report again before you record the task.'
+                  ? 'Conveyor does not know whether the report recorded the task, and the report did not load again. Read the report again before you record the task.'
                   : 'The report did not record the task. Record it again.',
             })
           }
@@ -299,7 +299,7 @@ export function FixTaskPanel({
         <CreatedPanel flow={flow} created={created} workspace={workspace} />
       ) : report.error != null && !data ? (
         <div role="alert" className="space-y-2 text-xs">
-          <p className="text-failure">The report did not load, so the description is not filled in.</p>
+          <p className="text-failure">The report did not load, so Conveyor did not fill in the description.</p>
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="secondary" disabled={report.isFetching} onClick={() => void report.refetch()}>
               {report.isFetching ? 'Loading…' : 'Try again'}
@@ -394,14 +394,14 @@ function CreatedPanel({ flow, created, workspace }: { flow: FixTaskFlow; created
         >
           {created.taskTitle ? <Untrusted>{created.taskTitle}</Untrusted> : created.taskId}
         </Link>{' '}
-        is created.{' '}
+        exists.{' '}
         {record.phase === 'sending'
-          ? 'Recording it on the report…'
+          ? 'Conveyor records it on the report now…'
           : record.phase === 'checking'
-            ? 'Reading the report again to see if it recorded the task…'
+            ? 'Conveyor reads the report again to find out if it recorded the task…'
             : record.phase === 'failed'
               ? 'The report did not record it as the fix task.'
-              : 'It is not recorded on the report yet.'}
+              : 'The report does not record it yet.'}
       </p>
       {record.phase === 'failed' && (
         <p role="alert" data-fix-task-error className="text-failure">

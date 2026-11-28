@@ -151,10 +151,10 @@ test.describe('the report card', () => {
     await expect(timingLink).toContainText('Confirmed link')
     await expect(timingLink).toContainText('Task Store invoice numbers in the crate Billing v2')
     await expect(timingLink.locator('[data-report-evidence="timing"]')).toContainText(
-      'Timing evidence: api v1.4.2 was deployed',
+      'Timing evidence: a deploy of api v1.4.2',
     )
     await expect(timingLink.locator('[data-report-evidence="timing"]')).toContainText(
-      '18 minutes before the report was first seen.',
+      '18 minutes before the watcher first saw the problem.',
     )
     await expect(timing.locator('[data-watcher-state="not-listening"]')).toContainText(
       'No watcher is listening. Last signal',
@@ -167,7 +167,7 @@ test.describe('the report card', () => {
     const bothLink = both.locator('[data-report-link="lnk-both"]')
     await expect(bothLink.locator('[data-report-evidence="line"]')).toHaveCount(1)
     await expect(bothLink.locator('[data-report-evidence="timing"]')).toContainText(
-      'The report was first seen after the signal of',
+      'The watcher first saw the problem after the signal of',
     )
     await expect(bothLink.locator('[data-report-evidence="timing"] time').last()).toHaveAttribute(
       'datetime',
@@ -198,9 +198,11 @@ test.describe('the report card', () => {
     await expect(many).toContainText('Message')
     await expect(many.locator('[data-report-note="too_many_tasks"]')).toContainText('The deploy of api v1.4.3')
     await expect(many.locator('[data-report-note="too_many_tasks"]')).toContainText(
-      'brought in 14 tasks. That is more than 10, so no task of this deploy is linked.',
+      'brought in 14 tasks. That is more than 10, so Conveyor links no task of this deploy.',
     )
-    await expect(many.locator('[data-report-note="deploy_not_compared"]')).toContainText('was not compared')
+    await expect(many.locator('[data-report-note="deploy_not_compared"]')).toContainText(
+      'Conveyor did not compare the two.',
+    )
     await expect(many.locator('[data-report-note="file_not_found"]')).toHaveText(
       'GitHub did not find the file at the commit of the report. File: cmd/missing.go.',
     )
@@ -214,7 +216,7 @@ test.describe('the report card', () => {
     // Links still being looked for, a fix task, and a reopening.
     const looking = card(page, pending.id)
     await expect(looking.locator('[data-report-links-pending]')).toHaveText(
-      'Conveyor is still looking for tasks to link to this report.',
+      'Conveyor still looks for tasks to link to this report.',
     )
     await expect(looking.locator('[data-report-no-link]')).toContainText('No task explains this report.')
     await expect(looking.locator('[data-report-fix-task]')).toHaveText('Fix task: Fix the checkout timeout')
@@ -450,14 +452,14 @@ const actCases: ActCase[] = [
     prepare: async (page) => {
       await card(page, actReport.id).getByRole('button', { name: 'Close report' }).click()
       await card(page, actReport.id)
-        .getByRole('textbox', { name: 'Why are you closing this report?' })
+        .getByRole('textbox', { name: 'Reason to close the report' })
         .fill('Fixed by the retry.')
     },
     button: (page) =>
       card(page, actReport.id)
         .getByRole('form', { name: 'Close the report' })
         .getByRole('button', { name: /^(Close report|Closing…)$/ }),
-    typed: (page) => card(page, actReport.id).getByRole('textbox', { name: 'Why are you closing this report?' }),
+    typed: (page) => card(page, actReport.id).getByRole('textbox', { name: 'Reason to close the report' }),
     typedValue: 'Fixed by the retry.',
     expected: { method: 'POST', path: `${actPath}/close`, body: { reason: 'Fixed by the retry.' } },
     done: async (page) => expect(card(page, actReport.id)).toHaveCount(0),
@@ -513,11 +515,11 @@ test.describe('acts and their answers', () => {
       server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
       server.listGate = held.promise
       await item.button(page).click()
-      await expect(page.getByRole('status').filter({ hasText: 'Reading the report again' })).toBeVisible()
+      await expect(page.getByRole('status').filter({ hasText: 'Conveyor reads the report again' })).toBeVisible()
       await expect(item.button(page)).toBeDisabled()
       held.open()
       server.listGate = null
-      await expect(alert).toContainText('Conveyor could not say whether it recorded this.')
+      await expect(alert).toContainText('Conveyor does not know whether it recorded this.')
       expect(listReads(server).length).toBeGreaterThan(before)
       await expect(item.button(page)).toBeEnabled()
       await expectTyped()
@@ -526,7 +528,7 @@ test.describe('acts and their answers', () => {
       const beforeAbort = listReads(server).length
       server.actAnswers.push('abort')
       await item.button(page).click()
-      await expect(alert).toContainText('Conveyor could not say whether it recorded this.')
+      await expect(alert).toContainText('Conveyor does not know whether it recorded this.')
       expect(listReads(server).length).toBeGreaterThan(beforeAbort)
       await page.waitForTimeout(300)
       expect(server.acts).toHaveLength(4)
@@ -716,7 +718,7 @@ test.describe('starting a fix task', () => {
     await createFixTask(page)
     await expect(sheet(page).locator('[data-fix-task-error]')).toHaveText('The report recorded nothing. Try again.')
     await expect(sheet(page).locator('[data-fix-task-created]')).toContainText(
-      'The task Fix the checkout timeout is created.',
+      'The task Fix the checkout timeout exists.',
     )
     await expect(createButton(page)).toBeDisabled()
     await expect(createButton(page)).toHaveText('Task created')
@@ -833,11 +835,11 @@ test.describe('starting a fix task', () => {
 
     // Opening the sheet again from the report.
     await page.goto(fixAddress)
-    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('It is not recorded on the report yet.')
+    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('The report does not record it yet.')
     await expect(createButton(page)).toBeDisabled()
     // Reloading the page.
     await page.reload()
-    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('It is not recorded on the report yet.')
+    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('The report does not record it yet.')
     await expect(createButton(page)).toBeDisabled()
     await expect(description(page)).toHaveValue('')
     await recordButton(page).click()
@@ -853,7 +855,7 @@ test.describe('starting a fix task', () => {
     const slow = gate()
     server.actGate = slow.promise
     await createFixTask(page)
-    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('Recording it on the report…')
+    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('Conveyor records it on the report now…')
     await expect(recordButton(page)).toHaveCount(0)
     await expect(createButton(page)).toBeDisabled()
     await createButton(page).click({ force: true })
@@ -909,7 +911,7 @@ test.describe('starting a fix task', () => {
     const server = await mockReportServer(page, { reports: [] })
     await page.goto('/w/demo/?create=true&report=rpt-261127-ffffff')
     await expect(sheet(page).locator('[data-fix-task]')).toContainText(
-      'The report did not load, so the description is not filled in.',
+      'The report did not load, so Conveyor did not fill in the description.',
     )
     await expect(description(page)).toHaveValue('')
     await description(page).fill('Fix it anyway')
@@ -1030,7 +1032,9 @@ test.describe('the three pages', () => {
     await expect(card(page, viaMember.id).locator('[data-report-crate-member]')).toHaveText(
       'In this crate through the member tasks Send invoices by email, Store invoice numbers.',
     )
-    await expect(card(page, direct.id).locator('[data-report-crate-member]')).toHaveText('Linked to this crate itself.')
+    await expect(card(page, direct.id).locator('[data-report-crate-member]')).toHaveText(
+      'The report links to this crate itself.',
+    )
     await expect(card(page, outside.id)).toHaveCount(0)
     const lines = page.locator('[data-crate-live-environment]')
     await expect(lines.nth(0).locator('[data-crate-live-reports]')).toHaveText('2 open reports.')
@@ -1060,7 +1064,7 @@ test.describe('the three pages', () => {
     await expect(cards).toHaveCount(50)
     await expect(cards.first().locator('[data-report-summary]')).toHaveText('Report 59')
     await expect(cards.nth(49).locator('[data-report-summary]')).toHaveText('Report 10')
-    await expect(page.locator('[data-report-list-count]')).toHaveText('Showing 50 of 60 reports.')
+    await expect(page.locator('[data-report-list-count]')).toHaveText('This list shows 50 of 60 reports.')
     await page.getByRole('button', { name: 'Show more reports' }).click()
     await expect(cards).toHaveCount(60)
     await expect(cards.last().locator('[data-report-summary]')).toHaveText('Report 0')
@@ -1376,7 +1380,7 @@ test.describe('close reason bounds', () => {
       const item = card(page, actReport.id)
       await item.getByRole('button', { name: 'Close report' }).click()
       await expect(item).toContainText('Write 1 to 500 characters.')
-      await item.getByRole('textbox', { name: 'Why are you closing this report?' }).fill(reason)
+      await item.getByRole('textbox', { name: 'Reason to close the report' }).fill(reason)
       await expect(item).toContainText(counter)
       const submit = item.getByRole('form', { name: 'Close the report' }).getByRole('button', { name: 'Close report' })
       if (reason.length > 0 && !sent) {
@@ -1420,7 +1424,7 @@ test.describe('keyboard and names', () => {
     // Close through the keyboard only.
     await item.getByRole('button', { name: 'Close report' }).focus()
     await page.keyboard.press('Enter')
-    const reason = item.getByRole('textbox', { name: 'Why are you closing this report?' })
+    const reason = item.getByRole('textbox', { name: 'Reason to close the report' })
     await reason.focus()
     await page.keyboard.type('Closed from the keyboard.')
     await page.keyboard.press('Tab')

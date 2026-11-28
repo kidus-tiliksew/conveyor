@@ -138,7 +138,7 @@ export function ReportList({
       {(total > items.length || reports.hasNextPage) && (
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
           <span data-report-list-count>
-            Showing {items.length} of {total} reports.
+            This list shows {items.length} of {total} reports.
           </span>
           {reports.hasNextPage && (
             <Button
@@ -216,7 +216,7 @@ function CrateMembership({ report, crateId }: { report: FeedbackReport; crateId:
           .{direct && ' '}
         </>
       )}
-      {direct && 'Linked to this crate itself.'}
+      {direct && 'The report links to this crate itself.'}
     </p>
   )
 }
