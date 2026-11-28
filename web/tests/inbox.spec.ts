@@ -2117,13 +2117,14 @@ type OrderStep =
   | 'reenter'
   | 'select'
   | 'band'
+  | 'filter'
   | 'answer 200'
   | 'answer 409'
   | 'answer 503'
   | 'answer 500'
   | 'answer 500, read fails'
   | 'no answer'
-type OrderEnd = 'neighbour' | 'fallback' | 'person' | 'stays' | 'empty'
+type OrderEnd = 'neighbour' | 'fallback' | 'person' | 'stays' | 'empty' | 'cleared'
 
 const orderRows: { steps: OrderStep[]; end: OrderEnd; note?: string; only?: boolean }[] = [
   { steps: ['send', 'answer 200'], end: 'neighbour' },
@@ -2144,6 +2145,8 @@ const orderRows: { steps: OrderStep[]; end: OrderEnd; note?: string; only?: bool
   { steps: ['send', 'band', 'answer 200'], end: 'neighbour' },
   { steps: ['send', 'notice', 'band', 'answer 200'], end: 'neighbour' },
   { steps: ['send', 'notice', 'reenter', 'answer 200'], end: 'neighbour' },
+  { steps: ['send', 'filter', 'answer 200'], end: 'cleared', note: 'the narrowing starts from task T-zeta' },
+  { steps: ['send', 'notice', 'filter', 'answer 200'], end: 'cleared', note: 'the narrowing starts from task T-zeta' },
   { steps: ['send', 'answer 200', 'notice'], end: 'neighbour' },
   { steps: ['send', 'answer 200'], end: 'empty', only: true },
   { steps: ['send', 'notice', 'answer 200'], end: 'empty', only: true },
@@ -2167,7 +2170,8 @@ test.describe('the order of events for a selected report', () => {
       harness.holdPosts = new Promise<void>((resolve) => {
         release = resolve
       })
-      await page.goto(`/w/demo/inbox?selected=${REPORT_A}`)
+      const narrowed = row.steps.includes('filter')
+      await page.goto(`/w/demo/inbox?selected=${REPORT_A}${narrowed ? '&task=T-zeta' : ''}`)
       await expect(reportDetail(page).locator(`[data-report-card="${REPORT_A}"]`)).toBeVisible()
       await stream.ready()
       const left = () => !fixture.items.some((item) => (item.report as { id?: string } | undefined)?.id === REPORT_A)
@@ -2216,6 +2220,13 @@ test.describe('the order of events for a selected report', () => {
             break
           case 'select':
             await select(page, 'Alpha agent question')
+            moved = true
+            break
+          case 'filter':
+            // "Show all" clears the narrowing and the selection: the person
+            // changed the address.
+            await page.getByRole('link', { name: 'Show all' }).click()
+            await expect(page).not.toHaveURL(/task=/)
             moved = true
             break
           case 'band':
@@ -2277,6 +2288,11 @@ test.describe('the order of events for a selected report', () => {
         }
         case 'empty':
           await expect(page.locator('[data-no-decisions]')).toContainText("You're clear")
+          break
+        case 'cleared':
+          // The address names no item, so the wide layout shows the first.
+          await expect(page).not.toHaveURL(/selected=/)
+          await expect(title).toHaveText('Zeta plan everyone waits on')
           break
       }
       // The page never sends an act again by itself.

@@ -1036,3 +1036,21 @@ func TestFeedbackInboxLimitsMCPSnapshotBytes(t *testing.T) {
 		t.Fatalf("attention = %+v, want 700", attention)
 	}
 }
+
+// One MCP page holds at most 64 KiB: a page of 100 reports with the longest
+// summary passes it and the framework asks for a smaller limit, and a page
+// of 25 answers.
+func TestFeedbackInboxLimitsMCPPageOutput(t *testing.T) {
+	h := newReportRoutesHarness(t)
+	h.server.UseReadMemoClock(h.clock)
+	h.storeInboxReports(1, 60, 1000) // the longest summary, 1,000 characters
+	if refusal := refusalAs(t, h.handler, h.manager(), "list_operator_inbox", map[string]any{"workspace_id": "alpha", "limit": 100}); !strings.Contains(refusal, "output budget") {
+		t.Fatalf("MCP refusal = %q", refusal)
+	}
+	if page := readAs(t, h.handler, h.manager(), "list_operator_inbox", map[string]any{"workspace_id": "alpha", "limit": 25}); len(page.Items) != 25 {
+		t.Fatalf("MCP page of 25 lists %d items", len(page.Items))
+	}
+	if attention := h.attention(); attention.OperatorDecisions != 60 {
+		t.Fatalf("attention = %+v, want 60", attention)
+	}
+}
