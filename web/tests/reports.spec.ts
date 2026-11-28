@@ -2527,6 +2527,25 @@ test.describe('screenshots of a fix-task request sent before', () => {
       await sheet(page).locator('[data-fix-task]').scrollIntoViewIfNeeded()
       await page.screenshot({ path: `${screenshotDir}/fix-task-sent-before-${width}.png` })
     })
+
+    test(`renders the sheet that asks for the files again after a reload at ${width} px`, async ({ page }) => {
+      await page.clock.setFixedTime(now)
+      await page.setViewportSize({ width, height: 1000 })
+      const server = await mockReportServer(page, { reports: [fixReport] })
+      await page.goto(fixAddress)
+      await expect(description(page)).not.toHaveValue('')
+      await sheet(page)
+        .locator('input[type="file"]')
+        .setInputFiles({ name: 'trace.txt', mimeType: 'text/plain', buffer: Buffer.from('stack trace') })
+      server.refuseCreates = 1
+      server.refuseCreateStatus = 503
+      await createFixTask(page, [])
+      await expect.poll(() => server.intakeKeys.length).toBe(1)
+      await page.reload()
+      await expect(sheet(page).locator('[data-fix-task-attach-again]')).toBeVisible()
+      await sheet(page).locator('[data-fix-task]').scrollIntoViewIfNeeded()
+      await page.screenshot({ path: `${screenshotDir}/fix-task-attach-again-${width}.png` })
+    })
   }
 })
 
@@ -2926,6 +2945,30 @@ test.describe('fix-task intake keys', () => {
     expect(server.attachments).toEqual([['trace.txt'], ['trace.txt']])
   })
 
+  test('after a reload, Create waits until the files of the request sent before are attached again', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    const trace = { name: 'trace.txt', mimeType: 'text/plain', buffer: Buffer.from('stack trace') }
+    await sheet(page).locator('input[type="file"]').setInputFiles(trace)
+    // The first request stores nothing, and its answer is a server error.
+    server.refuseCreates = 1
+    server.refuseCreateStatus = 503
+    await createFixTask(page, [])
+    await expect.poll(() => server.intakeKeys.length).toBe(1)
+    await page.reload()
+    await expect(sheet(page).locator('[data-fix-task-attach-again]')).toContainText('trace.txt')
+    await expect(createButton(page)).toBeDisabled()
+    await sheet(page).locator('input[type="file"]').setInputFiles(trace)
+    await expect(createButton(page)).toBeEnabled()
+    await createButton(page).click()
+    await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
+    expect(server.intakeKeys[1]).toBe(server.intakeKeys[0])
+    expect(server.attachments).toEqual([['trace.txt'], ['trace.txt']])
+  })
+
   test('the request sent before can be discarded, and Create then sends the form as it is', async ({ page }) => {
     const server = await mockReportServer(page, { reports: [fixReport] })
     await page.goto(fixAddress)
@@ -3026,22 +3069,64 @@ test.describe('fix-task reads that overlap', () => {
     const reads = reportReads(server, fixReport.id)
     await createFixTask(page, [])
     await expect.poll(() => reportReads(server, fixReport.id)).toBe(reads + 1)
-    // A newer read of the report starts later and answers first. Its answer
-    // reaches the page before the older read is released.
+    // A newer read of the report starts later and answers first. The page
+    // shows its answer before the older read is released.
     server.readGate = null
-    const newerAnswer = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === `/v1/feedback-reports/${fixReport.id}` &&
-        response.request().method() === 'GET',
-    )
+    server.reports[0] = { ...server.reports[0], summary: 'Checkout timeout, read again' }
     await server.stream.ready()
-    await newerAnswer
+    await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Checkout timeout, read again')
     expect(reportReads(server, fixReport.id)).toBe(reads + 2)
-    await page.waitForTimeout(300)
     held.open()
     // The newer answer stands: the task is recorded, and it opens.
     await expect(page).toHaveURL('/w/demo/tasks/261127-fix')
     expect(fixPuts(server)).toHaveLength(1)
+  })
+
+  test('of two fresh reads of one report, an older one that answers last never replaces the newer answer', async ({
+    page,
+  }) => {
+    const server = await mockReportServer(page, { reports: [fixReport] })
+    await page.goto(fixAddress)
+    await expect(description(page)).not.toHaveValue('')
+    // The record answer is lost and the read after it fails, so the sheet offers a read.
+    server.actAnswers.push({ status: 500, json: { error: 'internal error' } })
+    server.readAnswer = () => ({ status: 500, json: { error: 'internal error' } })
+    await createFixTask(page, [])
+    await expect(sheet(page).locator('[data-fix-task-error]')).toContainText('the report did not load again')
+    // The first fresh read takes the report as it is now, and its answer waits.
+    let first = true
+    const older = { ...server.reports[0], summary: 'Checkout timeout, older read' }
+    server.readAnswer = () => {
+      if (!first) return undefined
+      first = false
+      return { status: 200, json: older }
+    }
+    const held = gate()
+    server.readGate = held.promise
+    const reads = reportReads(server, fixReport.id)
+    await sheet(page).getByRole('button', { name: 'Read the report again' }).click()
+    await expect.poll(() => reportReads(server, fixReport.id)).toBe(reads + 1)
+    server.readGate = null
+    // The sheet closes and opens again. Its own fresh read starts later and
+    // answers first with the newer report.
+    server.reports[0] = { ...server.reports[0], summary: 'Checkout timeout, newer read' }
+    for (const to of ['/w/demo/', fixAddress])
+      await page.evaluate((target) => {
+        history.pushState({}, '', target)
+        dispatchEvent(new PopStateEvent('popstate'))
+      }, to)
+    await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Checkout timeout, newer read')
+    await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('The report does not record it yet.')
+    // The older read answers now and hands over to the newer one.
+    const olderAnswer = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === `/v1/feedback-reports/${fixReport.id}` &&
+        response.request().method() === 'GET',
+    )
+    held.open()
+    await olderAnswer
+    await page.waitForTimeout(300)
+    await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Checkout timeout, newer read')
   })
 
   test('a refresh that already shows the recorded task waits for the pending record answer', async ({ page }) => {
@@ -3053,15 +3138,13 @@ test.describe('fix-task reads that overlap', () => {
     await createFixTask(page, [])
     await expect.poll(() => fixPuts(server).length).toBe(1)
     // The server committed the record; a refresh shows it before the answer.
-    server.reports[0] = { ...server.reports[0], fix_task: { id: '261127-fix', title: 'Fix the checkout timeout' } }
-    const refreshed = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === `/v1/feedback-reports/${fixReport.id}` &&
-        response.request().method() === 'GET',
-    )
+    server.reports[0] = {
+      ...server.reports[0],
+      summary: 'Checkout timeout, recorded',
+      fix_task: { id: '261127-fix', title: 'Fix the checkout timeout' },
+    }
     await server.stream.ready()
-    await refreshed
-    await page.waitForTimeout(300)
+    await expect(sheet(page).locator('[data-fix-task-summary]')).toHaveText('Checkout timeout, recorded')
     await expect(page).toHaveURL(fixAddress)
     await expect(sheet(page).locator('[data-fix-task-created]')).toContainText('Conveyor records it on the report now…')
     held.open()

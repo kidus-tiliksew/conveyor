@@ -59,7 +59,8 @@ function fixActTarget(target: FixTaskTarget) {
   return `fix:${flowOf(target)}`
 }
 
-// The fresh read of each report that started last, by its query key.
+// The fresh read of each report that started last, by its query key. One
+// entry stays for each report read on this page.
 const latestFreshReads = new Map<string, Promise<FeedbackReport | undefined>>()
 
 // Changes the report's act state only while it is still `expected`: the state
@@ -140,9 +141,10 @@ export interface SentFixTaskIntake {
   request: CreateTaskInput
   causeTaskIds: string[]
   // The files sent with the request. Only this page holds them: session
-  // storage keeps no file, so after a reload Create sends the files the form
-  // holds then.
+  // storage keeps no file, so it keeps their names and sizes, and after a
+  // reload Create waits until the form holds the same files again.
   files?: File[]
+  fileNames: { name: string; size: number }[]
   // False when session storage refused to keep this request, so it does not
   // survive a reload.
   saved?: boolean
@@ -162,10 +164,27 @@ function parseSentIntake(raw: string | null): SentFixTaskIntake | null {
     const causes = Array.isArray(value.causeTaskIds)
       ? value.causeTaskIds.filter((id): id is string => typeof id === 'string')
       : []
-    return { key: value.key, request: request as CreateTaskInput, causeTaskIds: causes, saved: true }
+    const fileNames = Array.isArray(value.fileNames)
+      ? value.fileNames.filter(
+          (file): file is { name: string; size: number } =>
+            typeof file?.name === 'string' && typeof file?.size === 'number',
+        )
+      : []
+    return { key: value.key, request: request as CreateTaskInput, causeTaskIds: causes, fileNames, saved: true }
   } catch {
     return null
   }
+}
+
+/**
+ * True when the files of a request sent before are on this page, or when the
+ * form holds the same files again after a reload.
+ */
+export function sentFilesPresent(sent: SentFixTaskIntake, files: File[]) {
+  if (sent.files) return true
+  const held = files.map((file) => `${file.name}\u0000${file.size}`).sort()
+  const wanted = sent.fileNames.map((file) => `${file.name}\u0000${file.size}`).sort()
+  return held.length === wanted.length && held.every((name, index) => name === wanted[index])
 }
 
 /** The request sent before for this report whose answer did not arrive, if any. */
@@ -193,12 +212,23 @@ export function fixTaskIntakeToSend(
   const before = sentFixTaskIntake(target)
   const sent: SentFixTaskIntake = before
     ? { ...before, files: before.files ?? files }
-    : { key: crypto.randomUUID(), request, causeTaskIds, files }
+    : {
+        key: crypto.randomUUID(),
+        request,
+        causeTaskIds,
+        files,
+        fileNames: files.map((file) => ({ name: file.name, size: file.size })),
+      }
   const name = intakeStorageKey(target)
   try {
     window.sessionStorage.setItem(
       name,
-      JSON.stringify({ key: sent.key, request: sent.request, causeTaskIds: sent.causeTaskIds }),
+      JSON.stringify({
+        key: sent.key,
+        request: sent.request,
+        causeTaskIds: sent.causeTaskIds,
+        fileNames: sent.fileNames,
+      }),
     )
     sent.saved = true
   } catch {
@@ -411,9 +441,10 @@ export function useFixTaskFlow({
       // opened again, only the one that started last stores and decides. An
       // earlier one hands over to it.
       const mine: Promise<FeedbackReport | undefined> = readOnce(target).then((answer) => {
+        // The entry stays after the newest read answers, so an older read that
+        // answers later still finds it and hands over.
         const latest = latestFreshReads.get(keyHash)
         if (latest !== undefined && latest !== mine) return latest
-        latestFreshReads.delete(keyHash)
         if (answer.stored)
           queryClient.setQueryData(feedbackReportQueryKey(target.workspace, target.reportId), answer.report)
         return answer.report
@@ -721,6 +752,19 @@ export function FixTaskPanel({
           </button>{' '}
           only after you look for the task on the Board: if the request reached Conveyor, a new request makes a second
           task.
+        </p>
+      )}
+      {flow.sentRequest && !flow.sentRequest.files && flow.sentRequest.fileNames.length > 0 && (
+        <p role="status" data-fix-task-attach-again className="text-xs text-attention">
+          That request had these files, and this page does not hold them after the reload. Attach the same files again
+          before you create the task:{' '}
+          {flow.sentRequest.fileNames.map((file, index) => (
+            <span key={`${file.name}-${index}`}>
+              {index > 0 && ', '}
+              <bdi className="text-foreground [overflow-wrap:anywhere]">{file.name}</bdi>
+            </span>
+          ))}
+          .
         </p>
       )}
       {!created && record.phase === 'idle' && data?.state === 'open' && (

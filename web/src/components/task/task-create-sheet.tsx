@@ -17,7 +17,13 @@ import type { CrateDetail, PlanState } from '../../lib/types'
 import { cn, formatBytes } from '../../lib/utils'
 import { useWorkspace, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import type { BoardSearch } from '../board/board-search'
-import { clearFixTaskIntake, FixTaskPanel, fixTaskIntakeToSend, useFixTaskFlow } from '../reports/fix-task'
+import {
+  clearFixTaskIntake,
+  FixTaskPanel,
+  fixTaskIntakeToSend,
+  sentFilesPresent,
+  useFixTaskFlow,
+} from '../reports/fix-task'
 import { Button } from '../ui/button'
 import { Input, Select, Textarea } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
@@ -537,7 +543,7 @@ export function TaskCreateSheet() {
               // A fix-task request sent before goes again unchanged, so the
               // form's own fields do not decide whether it can be sent.
               (fixTask.sentRequest
-                ? false
+                ? !sentFilesPresent(fixTask.sentRequest, files)
                 : !body.trim() || !repoName || repos.length === 0 || baseCommitError !== '' || crateClosed) ||
               mutation.isPending ||
               (reportId !== undefined && !fixTask.ready)
